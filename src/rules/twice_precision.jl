@@ -94,8 +94,7 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
         return Mooncake.Lifted{TWP{P},N}(primal_twp, Mooncake.NTangent(tangent_twps))
     end
     bare_result = Dual(_new_(TWP{P}, hv, lv), _new_(TWP{P}, ht, lt))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{TWP{P}}}, hi::CoDual{P}, lo::CoDual{P}
@@ -122,8 +121,7 @@ end
         )
     end
     bare_result = Dual(twiceprecision(vv, nb_p), twiceprecision(vt, nb_p))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
@@ -144,8 +142,7 @@ end
         twiceprecision(primal(inner_val), nb_p),
         twiceprecision(_twp_tangent(inner_val), nb_p),
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
@@ -160,8 +157,7 @@ end
 ) where {N,P<:IEEEFloat,S<:TWP}
     inner_x = Mooncake._unlift(x)
     bare_result = Dual(P(primal(inner_x)), P(_twp_tangent(inner_x)))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
@@ -332,8 +328,7 @@ using Base: range_start_step_length
     Tx = tangent_type(typeof(x))
     dx = Tx((ref=at, step=stt, len=NoTangent(), offset=NoTangent()))
     bare_result = Dual(x, dx)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
@@ -375,8 +370,7 @@ const TWPStepRangeLen = StepRangeLen{<:Any,<:TWP,<:TWP}
     dstep = _get_tangent_field(_twp_tangent(inner_r), :step)
     dx = eltype(P)(dref + dstep * (primal(inner_i) - primal(inner_r).offset))
     bare_result = Dual(x, dx)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_getindex)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -420,8 +414,7 @@ using Base: _getindex_hiprec
     dref = _get_tangent_field(_twp_tangent(inner_r), :ref)
     dx = (primal(inner_i) - offset) * dstep + dref
     bare_result = Dual(x, dx)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -451,8 +444,7 @@ end
     T = tangent_type(typeof(x))
     dx = T((ref=sat, step=st, len=NoTangent(), offset=NoTangent()))
     bare_result = Dual(x, dx)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
@@ -473,8 +465,7 @@ end
     dstep = _get_tangent_field(_twp_tangent(inner_x), :step)
     dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
     bare_result = Dual(y, typeof(y)(dy))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len
@@ -507,8 +498,7 @@ end
     T = tangent_type(typeof(y))
     dy = T((ref=sat, step=(spt - sat) / l, len=NoTangent(), offset=NoTangent()))
     bare_result = Dual(y, dy)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base.range_start_stop_length)},
@@ -537,8 +527,7 @@ end
         inner_x = Mooncake._unlift(x)
         y = Base._exp_allowing_twice64(primal(inner_x))
         bare_result = Dual(y, typeof(y)(y * _twp_tangent(inner_x)))
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
@@ -556,8 +545,7 @@ end
         xv, xt = _twp_val(Mooncake._unlift(x))
         y = Base._log_twice64_unchecked(xv)
         bare_result = Dual(y, typeof(y)(xt / xv))
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x

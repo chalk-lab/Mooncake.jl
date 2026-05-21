@@ -359,6 +359,14 @@ end
 
 @inline _wrap_rule_result(::Type{P}, ::Val{N}, x::Lifted) where {P,N} = x
 
+# 2-arg auto-P form: when the caller would otherwise write
+# `_wrap_rule_result(__primal_type(_typeof(bare)), Val(N), bare)` (~80
+# sites across builtins.jl + memory.jl + extensions), use this form to
+# fold the `__primal_type ∘ _typeof` step into the wrap call.
+@inline _wrap_rule_result(::Val{N}, x) where {N} = _wrap_rule_result(
+    __primal_type(_typeof(x)), Val(N), x
+)
+
 # Build an inner element-wise tuple of inner duals from a tuple of bare
 # rule-emitted values. Each element is routed through `Vi(primal, tangent)`
 # when it's a non-canonical `Dual`, otherwise passes through. Shared by

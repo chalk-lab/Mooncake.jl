@@ -212,8 +212,7 @@ end
     ::Mooncake.Lifted{typeof(lgetfield),N}, x::Mooncake.Lifted, name::Mooncake.Lifted{<:Val}
 ) where {N}
     bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
@@ -366,8 +365,7 @@ end
     order::Mooncake.Lifted{<:Val},
 ) where {N}
     bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), primal(order))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Bare-Dual 4-arg lgetfield: paired with the 3-arg `frule!!(::Dual{lgetfield},
 # ::Lifted{P}, ::Dual{Val{f}})` form above. The IR-emit's mixed-dispatch
@@ -420,8 +418,7 @@ end
     bare_name = Mooncake._unlift(name)
     bare_x = _lsetfield_x_to_dual(Mooncake._unlift(x))
     bare_result = lsetfield_frule(bare_value, bare_name, bare_x)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Canonical-NDual value V (AbstractArray{<:NDual}): bare lsetfield! on
 # the array; NDual elements carry tangent so no separate tangent update.
@@ -452,8 +449,7 @@ end
     i = Base.fieldindex(NT, f)
     new_nt = NT(ntuple(n -> n == i ? bare_x : nt[n], fieldcount(NT)))
     setfield!(bare_value, :canonical, new_nt)
-    P_out = __primal_type(_typeof(bare_x))
-    return _wrap_rule_result(P_out, Val(N), bare_x)
+    return _wrap_rule_result(Val(N), bare_x)
 end
 # Bridge `x`'s bare inner V to the `Dual{P_x, T_x}` shape the
 # `Dual{P,T}` value path's `lsetfield_frule` expects.

@@ -513,8 +513,7 @@ end
     # or already-bare MemoryRef; the helper handles both.
     dy = memoryrefget(Mooncake._ntangent_unwrap_singleton(raw_t), ord, bc)
     bare_result = Dual(y, dy)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Bare-Dual delegator: supports direct invocation from
 # `frule!!(zero_dual(lmemoryrefget), x_dual, ...)` by lifting into
@@ -586,8 +585,7 @@ end
         dy = memoryrefget(Mooncake._ntangent_unwrap_singleton(raw_t), ord, bc)
         bare_result = Dual(y, dy)
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Bare-Dual delegator: supports direct invocation.
 @inline Base.@propagate_inbounds function frule!!(
@@ -688,8 +686,7 @@ end
     ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
 ) where {N}
     bare_result = _memoryrefnew_kernel(Mooncake._unlift(x))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
@@ -701,8 +698,7 @@ end
     ii::Mooncake.Lifted{Int},
 ) where {N}
     bare_result = _memoryrefnew_kernel(Mooncake._unlift(x), Mooncake._unlift(ii))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -719,8 +715,7 @@ end
     bare_result = _memoryrefnew_kernel(
         Mooncake._unlift(x), Mooncake._unlift(ii), Mooncake._unlift(boundscheck)
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
@@ -995,8 +990,7 @@ end
         Mooncake._unlift(ord),
         Mooncake._unlift(bc),
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefset!)},
@@ -1325,8 +1319,7 @@ end
         Mooncake._unlift(ref),
         Mooncake._unlift(size),
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_new_),Type{<:Array},<:MemoryRef,<:NTuple{<:Any,Int}}}
@@ -1355,8 +1348,7 @@ end
 ) where {N}
     bare_x = Mooncake._unlift(x)
     bare_result = Dual(primal(copy(bare_x)), tangent(copy(bare_x)))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function frule!!(
     f::Dual{typeof(_foreigncall_)},
@@ -1706,8 +1698,7 @@ end
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
     bare_result = _copy_array_kernel(Mooncake._unlift(a))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Bare-Dual entry for `copy(::Array{<:_HasNDual})` (canonical NDual-element
 # container input); preserves the bare NDual-element output polarity expected
@@ -1763,8 +1754,7 @@ end
         Base._growbeg!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._growbeg!, bare_a, pd)
         bare_result = zero_dual(nothing)
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -1793,8 +1783,7 @@ end
         Base._growend!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._growend!, bare_a, pd)
         bare_result = zero_dual(nothing)
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1822,8 +1811,7 @@ end
         pn = primal(Mooncake._unlift(n))
         sizehint!(_vec_primal(bare_a), pn)
         _apply_to_tangent_vec!(sizehint!, bare_a, pn)
-        P_out = __primal_type(_typeof(bare_a))
-        return _wrap_rule_result(P_out, Val(N), bare_a)
+        return _wrap_rule_result(Val(N), bare_a)
     end
     function rrule!!(
         f::CoDual{typeof(sizehint!)}, _a::CoDual{<:Vector}, _n::CoDual{<:Integer}
@@ -1848,8 +1836,7 @@ end
         Base._deletebeg!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._deletebeg!, bare_a, pd)
         bare_result = zero_dual(nothing)
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1880,8 +1867,7 @@ end
         Base._deleteend!(_vec_primal(bare_a), pd)
         _apply_to_tangent_vec!(Base._deleteend!, bare_a, pd)
         bare_result = zero_dual(nothing)
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1918,8 +1904,7 @@ end
         bare_result = _deleteat_kernel!(
             Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
         )
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deleteat!)},
@@ -1958,8 +1943,7 @@ end
         bare_result = _growat_kernel!(
             Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
         )
-        P_out = __primal_type(_typeof(bare_result))
-        return _wrap_rule_result(P_out, Val(N), bare_result)
+        return _wrap_rule_result(Val(N), bare_result)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growat!)},
@@ -2013,8 +1997,7 @@ end
     bare_a = Mooncake._unlift(a)
     bare_x = Mooncake._unlift(x)
     bare_result = Dual(fill!(primal(bare_a), primal(bare_x)), tangent(bare_a))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function frule!!(
     f::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}

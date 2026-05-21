@@ -264,8 +264,7 @@ end
         tangent_arr = unsafe_wrap(Array, Mooncake._ntangent_unwrap_singleton(raw_t), pdims)
         Dual(primal_arr, tangent_arr)
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(unsafe_wrap),<:Type{<:Array},<:Ptr,Any}}
@@ -326,8 +325,7 @@ end
     end
     atomic_pointerset(primal(bare_p), primal(bare_x), p_order)
     atomic_pointerset(tangent(bare_p), tangent(bare_x), p_order)
-    P_out = __primal_type(_typeof(bare_p))
-    return _wrap_rule_result(P_out, Val(N), bare_p)
+    return _wrap_rule_result(Val(N), bare_p)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
@@ -387,8 +385,7 @@ end
         NoTangent()
     end
     bare_result = Dual(v, dv)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -698,8 +695,7 @@ end
     else
         Dual(a, pointerref(Mooncake._ntangent_unwrap_singleton(raw_t), py, pz))
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
@@ -750,8 +746,7 @@ end
     else
         pointerset(Mooncake._ntangent_unwrap_singleton(raw_t), tangent(bare_x), pidx, pz)
     end
-    P_out = __primal_type(_typeof(bare_p))
-    return _wrap_rule_result(P_out, Val(N), bare_p)
+    return _wrap_rule_result(Val(N), bare_p)
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
@@ -915,8 +910,7 @@ end
     ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
 ) where {N}
     bare_result = _vec_to_tuple_kernel(Mooncake._unlift(v))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__vec_to_tuple),<:Vector}}) = true
 
@@ -971,8 +965,7 @@ end
         # tangent vector first.
         Dual(pv, getindex(Mooncake._ntangent_unwrap_singleton(raw_t), pind))
     end
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(Core._svec_ref),Core.SimpleVector,Int}}
@@ -1011,8 +1004,7 @@ end
     # Tangent type for `SimpleVector` is `Vector{Any}`
     dual_output = collect(Any, map(tangent, bare_args))
     bare_result = Dual(primal_output, dual_output)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(svec),Vararg}}) = true
 
@@ -1087,8 +1079,7 @@ end
     v::Mooncake.Lifted,
 ) where {N}
     bare_result = _compilerbarrier_kernel(Mooncake._unlift(setting), Mooncake._unlift(v))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
     true
@@ -1113,8 +1104,7 @@ end
     inner_a = Mooncake._unlift(a)
     inner_b = Mooncake._unlift(b)
     bare_result = ifelse(_cond, inner_a, inner_b)
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.ifelse),Bool,Any,Any}}) = true
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}

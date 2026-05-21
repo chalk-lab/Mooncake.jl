@@ -103,8 +103,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _deletebeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -143,8 +142,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _deleteend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -197,8 +195,7 @@ end
     bare_result = _deleteat_kernel!(
         Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
@@ -243,8 +240,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _growbeg_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -278,8 +274,7 @@ end
     d::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _growend_kernel!(Mooncake._unlift(a), Mooncake._unlift(d))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -323,8 +318,7 @@ end
     bare_result = _growat_kernel!(
         Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -365,8 +359,7 @@ end
     sz::Mooncake.Lifted{<:Integer},
 ) where {N}
     bare_result = _sizehint_kernel!(Mooncake._unlift(x), Mooncake._unlift(sz))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
     sizehint!(primal(x), primal(sz))
@@ -651,8 +644,7 @@ end
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
 ) where {N}
     bare_result = _copy_array_legacy_kernel(Mooncake._unlift(a))
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
