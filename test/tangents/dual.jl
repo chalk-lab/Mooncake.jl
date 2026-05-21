@@ -896,18 +896,22 @@ end
         # naive broadcast-from-lane-1 would yield identical lanes.
         using LinearAlgebra: BLAS
 
-        # BLAS.nrm2 width-2 with distinct per-lane seeds.
+        # BLAS.nrm2 width-2 with distinct per-lane seeds. Drives the canonical
+        # Lifted entry point — the bare-Dual width-N delegators were folded
+        # into Lifted bodies by the audit cleanup, so this test exercises the
+        # same path AD uses.
         let X = [1.0, 2.0, 3.0], seeds_1 = [0.1, 0.2, 0.3], seeds_2 = [0.01, 0.02, 0.03]
             X_n2 = [NDual{Float64,2}(X[i], (seeds_1[i], seeds_2[i])) for i in 1:length(X)]
             r = Mooncake.frule!!(
-                Mooncake.zero_dual(BLAS.nrm2),
-                Mooncake.zero_dual(3),
-                X_n2,
-                Mooncake.zero_dual(1),
+                Mooncake.zero_lifted(Val(2), BLAS.nrm2),
+                Mooncake.zero_lifted(Val(2), 3),
+                Mooncake.Lifted{Vector{Float64},2,typeof(X_n2)}(X_n2),
+                Mooncake.zero_lifted(Val(2), 1),
             )
-            @test r isa NDual{Float64,2}
+            r_inner = Mooncake._unlift(r)
+            @test r_inner isa NDual{Float64,2}
             # Lane 1 tangent ≠ Lane 2 tangent (distinct seeds → distinct derivatives).
-            @test r.partials[1] != r.partials[2]
+            @test r_inner.partials[1] != r_inner.partials[2]
         end
 
         # BLAS.gemv! width-2 with distinct per-lane seeds.
@@ -922,13 +926,13 @@ end
             α_n2 = NDual{Float64,2}(1.0, (0.0, 0.0))
             β_n2 = NDual{Float64,2}(0.0, (0.0, 0.0))
             Mooncake.frule!!(
-                Mooncake.zero_dual(BLAS.gemv!),
-                Mooncake.zero_dual('N'),
-                α_n2,
-                A_n2,
-                x_n2,
-                β_n2,
-                y_n2,
+                Mooncake.zero_lifted(Val(2), BLAS.gemv!),
+                Mooncake.zero_lifted(Val(2), 'N'),
+                Mooncake.Lifted{Float64,2,NDual{Float64,2}}(α_n2),
+                Mooncake.Lifted{Matrix{Float64},2,typeof(A_n2)}(A_n2),
+                Mooncake.Lifted{Vector{Float64},2,typeof(x_n2)}(x_n2),
+                Mooncake.Lifted{Float64,2,NDual{Float64,2}}(β_n2),
+                Mooncake.Lifted{Vector{Float64},2,typeof(y_n2)}(y_n2),
             )
             # Per-lane tangents differ because seeds differ.
             @test y_n2[1].partials[1] != y_n2[1].partials[2]
@@ -943,11 +947,11 @@ end
             X_n2 = [NDual{Float64,2}(X[i], (0.1 * X[i], 0.01 * X[i])) for i in 1:length(X)]
             a_n2 = NDual{Float64,2}(2.0, (0.5, 0.05))
             Mooncake.frule!!(
-                Mooncake.zero_dual(BLAS.scal!),
-                Mooncake.zero_dual(3),
-                a_n2,
-                X_n2,
-                Mooncake.zero_dual(1),
+                Mooncake.zero_lifted(Val(2), BLAS.scal!),
+                Mooncake.zero_lifted(Val(2), 3),
+                Mooncake.Lifted{Float64,2,NDual{Float64,2}}(a_n2),
+                Mooncake.Lifted{Vector{Float64},2,typeof(X_n2)}(X_n2),
+                Mooncake.zero_lifted(Val(2), 1),
             )
             # Primal X = a*X = 2 * [1, 2, 3] = [2, 4, 6].
             @test [X_n2[i].value for i in 1:3] == [2.0, 4.0, 6.0]
@@ -992,7 +996,7 @@ end
         end
 
         # LAPACK.lacpy! width-2: copy A → B (triangular part); per-lane
-        # tangent copy independent.
+        # tangent copy independent. Drives the canonical Lifted entry.
         let A = [1.0 2.0; 3.0 4.0], B = zeros(2, 2)
             A_n2 = reshape(
                 [NDual{Float64,2}(A[i], (A[i] * 0.1, A[i] * 0.01)) for i in 1:length(A)],
@@ -1002,7 +1006,10 @@ end
             B_n2 = [NDual{Float64,2}(0.0, (0.0, 0.0)) for _ in 1:length(B)]
             B_n2 = reshape(B_n2, 2, 2)
             Mooncake.frule!!(
-                Mooncake.zero_dual(LAPACK.lacpy!), B_n2, A_n2, Mooncake.zero_dual('A')
+                Mooncake.zero_lifted(Val(2), LAPACK.lacpy!),
+                Mooncake.Lifted{Matrix{Float64},2,typeof(B_n2)}(B_n2),
+                Mooncake.Lifted{Matrix{Float64},2,typeof(A_n2)}(A_n2),
+                Mooncake.zero_lifted(Val(2), 'A'),
             )
             # B primal == A primal after full-rectangle copy.
             @test [B_n2[i].value for i in 1:length(B_n2)] == [A[i] for i in 1:length(A)]
