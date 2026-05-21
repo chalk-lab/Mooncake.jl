@@ -583,17 +583,17 @@ end
 # This is counter-intuitive but follows from how NDual cotangents propagate
 # the seed's `partials` component through forward-derived `partials` in the
 # pullback's NDual multiplications.
-@is_primitive MinimalCtx ForwardMode Tuple{<:_GradClosure{1},Vector{Float64}}
+@is_primitive MinimalCtx ForwardMode Tuple{<:_GradClosure{1},Vector{<:IEEEFloat}}
 
 @inline function frule!!(
-    f::Dual{<:_GradClosure{1},NoTangent}, y_ndual::Vector{Nfwd.NDual{Float64,1}}
-)
+    f::Dual{<:_GradClosure{1},NoTangent}, y_ndual::Vector{Nfwd.NDual{T,1}}
+) where {T<:IEEEFloat}
     gc = primal(f)
     f_codual = zero_fcodual(gc.f)
     fdata_ndual = fdata(zero_tangent(y_ndual))
     y_codual = CoDual(y_ndual, fdata_ndual)
     out, pb = gc.ndual_rule(f_codual, y_codual)
-    pb(RData((value=zero(Float64), partials=(one(Float64),))))
+    pb(RData((value=zero(T), partials=(one(T),))))
     grad = [d.fields.partials[1] for d in fdata_ndual]
     hvp = [d.fields.value for d in fdata_ndual]
     return Dual((out.x.value, grad), (out.x.partials[1], hvp))
@@ -602,22 +602,25 @@ end
 # Multi-argument variant: `_GradClosure{N}(ys::Tuple)` for `N >= 2`. The
 # Tuple-form is used because `prepare_derivative_cache(grad_f, x::Tuple)`
 # compiles the closure for tuple-of-vectors input. Each `ys[k]` arrives
-# as `Vector{NDual{Float64,1}}` carrying primal + direction. Output:
+# as `Vector{NDual{T,1}}` carrying primal + direction. Output:
 # `(val, Base.tail(grad))` where `grad` is a Tuple of per-argument
 # gradients (with f's own dropped).
 @is_primitive MinimalCtx ForwardMode Tuple{
-    <:_GradClosure{N},Tuple{Vararg{Vector{Float64}}}
+    <:_GradClosure{N},Tuple{Vararg{Vector{<:IEEEFloat}}}
 } where {N}
 
 @inline function frule!!(
-    f::Dual{GC,NoTangent}, ys_ndual::Tuple{Vararg{Vector{Nfwd.NDual{Float64,1}}}}
+    f::Dual{GC,NoTangent}, ys_ndual::Tuple{Vararg{Vector{<:Nfwd.NDual{<:IEEEFloat,1}}}}
 ) where {GC<:_GradClosure}
     gc = primal(f)
     f_codual = zero_fcodual(gc.f)
     fdata_ndual_tuple = map(y -> fdata(zero_tangent(y)), ys_ndual)
     y_coduals = map(CoDual, ys_ndual, fdata_ndual_tuple)
     out, pb = gc.ndual_rule(f_codual, y_coduals...)
-    pb(RData((value=zero(Float64), partials=(one(Float64),))))
+    # Seed type derived from the output's element type. For mixed-precision
+    # inputs the inner NDual rule produces output of matching width-1 NDual.
+    T_out = typeof(out.x.value)
+    pb(RData((value=zero(T_out), partials=(one(T_out),))))
     grads = map(fdata_ndual_tuple) do fb
         [d.fields.partials[1] for d in fb]
     end
