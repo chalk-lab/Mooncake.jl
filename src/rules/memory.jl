@@ -1711,22 +1711,31 @@ end
 # Lifted wrapper, with no canonicalising `Lifted{T,1}(p, t)` in the
 # chain. The same shape is reused for `_growend!`, `_growat!`,
 # `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!` below.
+#
+# Shape-dispatch helpers `_vec_primal` / `_apply_to_tangent_vec!` collapse
+# the per-shape kernel triple (Dual{<:Vector}, Dual{<:Vector,<:NTangent},
+# AbstractVector{<:NDual}) into one body per op.
+@inline _vec_primal(a::Dual{<:Vector}) = primal(a)
+@inline _vec_primal(a::AbstractVector{<:Mooncake.Nfwd.NDual}) = a
+@inline function _apply_to_tangent_vec!(
+    op, a::Dual{<:Vector}, args::Vararg{Any,M}
+) where {M}
+    op(tangent(a), args...)
+    return nothing
+end
+@inline function _apply_to_tangent_vec!(
+    op, a::Dual{<:Vector,<:Mooncake.NTangent}, args::Vararg{Any,M}
+) where {M}
+    foreach(t -> op(t, args...), tangent(a).lanes)
+    return nothing
+end
+@inline _apply_to_tangent_vec!(op, a::AbstractVector{<:Mooncake.Nfwd.NDual}, ::Vararg) =
+    nothing
 @static if VERSION >= v"1.11-rc4"
     @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
-    @inline function _growbeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
-        Base._growbeg!(primal(a), primal(d))
-        Base._growbeg!(tangent(a), primal(d))
-        return zero_dual(nothing)
-    end
-    @inline function _growbeg_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
-    )
-        Base._growbeg!(primal(a), primal(d))
-        foreach(t -> Base._growbeg!(t, primal(d)), tangent(a).lanes)
-        return zero_dual(nothing)
-    end
-    @inline function _growbeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
-        Base._growbeg!(a, primal(d))
+    @inline function _growbeg_kernel!(a, d::Dual{<:Integer})
+        Base._growbeg!(_vec_primal(a), primal(d))
+        _apply_to_tangent_vec!(Base._growbeg!, a, primal(d))
         return zero_dual(nothing)
     end
     @inline function frule!!(
@@ -1755,20 +1764,9 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
-    @inline function _growend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
-        Base._growend!(primal(a), primal(d))
-        Base._growend!(tangent(a), primal(d))
-        return zero_dual(nothing)
-    end
-    @inline function _growend_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
-    )
-        Base._growend!(primal(a), primal(d))
-        foreach(t -> Base._growend!(t, primal(d)), tangent(a).lanes)
-        return zero_dual(nothing)
-    end
-    @inline function _growend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
-        Base._growend!(a, primal(d))
+    @inline function _growend_kernel!(a, d::Dual{<:Integer})
+        Base._growend!(_vec_primal(a), primal(d))
+        _apply_to_tangent_vec!(Base._growend!, a, primal(d))
         return zero_dual(nothing)
     end
     @inline function frule!!(
@@ -1797,20 +1795,9 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
-    @inline function _sizehint_kernel!(a::Dual{<:Vector}, n::Dual{<:Integer})
-        sizehint!(primal(a), primal(n))
-        sizehint!(tangent(a), primal(n))
-        return a
-    end
-    @inline function _sizehint_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, n::Dual{<:Integer}
-    )
-        sizehint!(primal(a), primal(n))
-        foreach(t -> sizehint!(t, primal(n)), tangent(a).lanes)
-        return a
-    end
-    @inline function _sizehint_kernel!(a::AbstractVector{<:NDual}, n::Dual{<:Integer})
-        sizehint!(a, primal(n))
+    @inline function _sizehint_kernel!(a, n::Dual{<:Integer})
+        sizehint!(_vec_primal(a), primal(n))
+        _apply_to_tangent_vec!(sizehint!, a, primal(n))
         return a
     end
     @inline function frule!!(
@@ -1835,20 +1822,9 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-    @inline function _deletebeg_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
-        Base._deletebeg!(primal(a), primal(d))
-        Base._deletebeg!(tangent(a), primal(d))
-        return zero_dual(nothing)
-    end
-    @inline function _deletebeg_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
-    )
-        Base._deletebeg!(primal(a), primal(d))
-        foreach(t -> Base._deletebeg!(t, primal(d)), tangent(a).lanes)
-        return zero_dual(nothing)
-    end
-    @inline function _deletebeg_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
-        Base._deletebeg!(a, primal(d))
+    @inline function _deletebeg_kernel!(a, d::Dual{<:Integer})
+        Base._deletebeg!(_vec_primal(a), primal(d))
+        _apply_to_tangent_vec!(Base._deletebeg!, a, primal(d))
         return zero_dual(nothing)
     end
     @inline function frule!!(
@@ -1879,20 +1855,9 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
-    @inline function _deleteend_kernel!(a::Dual{<:Vector}, d::Dual{<:Integer})
-        Base._deleteend!(primal(a), primal(d))
-        Base._deleteend!(tangent(a), primal(d))
-        return zero_dual(nothing)
-    end
-    @inline function _deleteend_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, d::Dual{<:Integer}
-    )
-        Base._deleteend!(primal(a), primal(d))
-        foreach(t -> Base._deleteend!(t, primal(d)), tangent(a).lanes)
-        return zero_dual(nothing)
-    end
-    @inline function _deleteend_kernel!(a::AbstractVector{<:NDual}, d::Dual{<:Integer})
-        Base._deleteend!(a, primal(d))
+    @inline function _deleteend_kernel!(a, d::Dual{<:Integer})
+        Base._deleteend!(_vec_primal(a), primal(d))
+        _apply_to_tangent_vec!(Base._deleteend!, a, primal(d))
         return zero_dual(nothing)
     end
     @inline function frule!!(
@@ -1925,24 +1890,9 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
-    @inline function _deleteat_kernel!(
-        a::Dual{<:Vector}, i::Dual{<:Integer}, delta::Dual{<:Integer}
-    )
-        Base._deleteat!(primal(a), primal(i), primal(delta))
-        Base._deleteat!(tangent(a), primal(i), primal(delta))
-        return zero_dual(nothing)
-    end
-    @inline function _deleteat_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, i::Dual{<:Integer}, delta::Dual{<:Integer}
-    )
-        Base._deleteat!(primal(a), primal(i), primal(delta))
-        foreach(t -> Base._deleteat!(t, primal(i), primal(delta)), tangent(a).lanes)
-        return zero_dual(nothing)
-    end
-    @inline function _deleteat_kernel!(
-        a::AbstractVector{<:NDual}, i::Dual{<:Integer}, delta::Dual{<:Integer}
-    )
-        Base._deleteat!(a, primal(i), primal(delta))
+    @inline function _deleteat_kernel!(a, i::Dual{<:Integer}, delta::Dual{<:Integer})
+        Base._deleteat!(_vec_primal(a), primal(i), primal(delta))
+        _apply_to_tangent_vec!(Base._deleteat!, a, primal(i), primal(delta))
         return zero_dual(nothing)
     end
     @inline function frule!!(
@@ -1980,24 +1930,9 @@ end
     @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
     # `Base._growat!` returns `Tuple{Int}` (new length) on Julia 1.12+;
     # return the actual result so the rule output type matches the primal's.
-    @inline function _growat_kernel!(
-        a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
-    )
-        r = Base._growat!(primal(a), primal(i), primal(d))
-        Base._growat!(tangent(a), primal(i), primal(d))
-        return zero_dual(r)
-    end
-    @inline function _growat_kernel!(
-        a::Dual{<:Vector,<:Mooncake.NTangent}, i::Dual{<:Integer}, d::Dual{<:Integer}
-    )
-        r = Base._growat!(primal(a), primal(i), primal(d))
-        foreach(t -> Base._growat!(t, primal(i), primal(d)), tangent(a).lanes)
-        return zero_dual(r)
-    end
-    @inline function _growat_kernel!(
-        a::AbstractVector{<:NDual}, i::Dual{<:Integer}, d::Dual{<:Integer}
-    )
-        r = Base._growat!(a, primal(i), primal(d))
+    @inline function _growat_kernel!(a, i::Dual{<:Integer}, d::Dual{<:Integer})
+        r = Base._growat!(_vec_primal(a), primal(i), primal(d))
+        _apply_to_tangent_vec!(Base._growat!, a, primal(i), primal(d))
         return zero_dual(r)
     end
     @inline function frule!!(
