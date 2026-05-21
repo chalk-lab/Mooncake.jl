@@ -77,7 +77,13 @@ Width-aware forward value type query.
 # `Val(N)` constants or accept a bare `Dual`.
 @unstable function dual_type(::Val{N}, ::Type{P}) where {N,P}
     P == Union{} && return Union{}
-    P == DataType && return Dual
+    # `DataType` primals carry `tangent_type === NoTangent` (types are
+    # non-differentiable), so the canonical inner V is the concrete
+    # `Dual{DataType, NoTangent}`. Returning the abstract `Dual` here
+    # propagated through `_wrap_rule_result` and produced
+    # `Lifted{P, N, Dual}` slots whose subsequent `frule!!` calls failed
+    # to dispatch (the wrapper-exception rule requires `V <: Dual{P,T}`).
+    P == DataType && return Dual{DataType,NoTangent}
     P isa Union && return Union{dual_type(Val(N), P.a),dual_type(Val(N), P.b)}
     (P isa UnionAll || P == UnionAll) && return Dual
 
@@ -91,13 +97,17 @@ Width-aware forward value type query.
         end
     end
 
-    # Concrete Tuple: element-wise lifting — each field type is individually lifted.
-    # Delegate to a `@generated` helper so the per-field `dual_type` calls unroll
-    # at expansion time and Julia can statically infer the result; the inline
-    # generator form `(... for i in 1:fieldcount(P))` iterates `fieldtype(P, i)`
-    # at runtime, leaving each `dual_type(Val(N), ::Type)` call as a runtime
-    # dispatch (JET runtime-dispatch failures in `rules/lapack`).
-    if isconcretetype(P) && P <: Tuple
+    # Dispatch-tuple: element-wise lifting — each field type is individually lifted.
+    # `Base.isdispatchtuple` is true for any Tuple whose field types Julia can
+    # fully resolve for dispatch (covers `Tuple{Float64, Int}` and also
+    # `Tuple{Type{Float64}, Type{Int}}` even though the latter is not
+    # `isconcretetype`). Delegate to a `@generated` helper so the per-field
+    # `dual_type` calls unroll at expansion time and Julia can statically infer
+    # the result; the inline generator form `(... for i in 1:fieldcount(P))`
+    # iterates `fieldtype(P, i)` at runtime, leaving each
+    # `dual_type(Val(N), ::Type)` call as a runtime dispatch (JET
+    # runtime-dispatch failures in `rules/lapack`).
+    if P <: Tuple && P !== Tuple && Base.isdispatchtuple(P)
         return _dual_type_tuple_inner(Val(N), P)
     end
 
@@ -748,10 +758,37 @@ verify_dual_type(d::SplitDual) = verify_dual_type(d.canonical)
     if !isconcretetype(P)
         Q = _typeof(primal)
         InnerT = dual_type(Val(N), Q)
+        # Tuple-shaped V (e.g. `Tuple{Dual{Type{Float64},NoTangent}, ...}` from
+        # the element-wise lift of `Tuple{Type{Float64},...}`): the Tuple type
+        # has no `(::Tuple, ::Tangent)` ctor — build element-wise via
+        # `_build_tuple_v_from_pair`. Same shape as the existing Tuple+NoTangent
+        # `@generated` ctor below, but tolerant of `typeof(primal) ⊊ Q` (the
+        # dispatch-tuple widening that happens for `Tuple{Type{...}, ...}`).
+        if InnerT isa DataType && InnerT <: Tuple
+            return Lifted{Q,N,InnerT}(_build_tuple_v_from_pair(InnerT, primal, tangent))
+        end
         return Lifted{Q,N,InnerT}(InnerT(primal, tangent))
     end
     InnerT = dual_type(Val(N), P)
+    if InnerT isa DataType && InnerT <: Tuple
+        return Lifted{P,N,InnerT}(_build_tuple_v_from_pair(InnerT, primal, tangent))
+    end
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
+end
+
+# Element-wise build of a Tuple-V from a `(primal_tuple, tangent)` pair. Used
+# when `dual_type(Val(N), P)` produces a `Tuple{V_i…}` shape and the value
+# 2-arg path in `Lifted{P,N}(primal, tangent)` would otherwise call
+# `Tuple{V_i…}(primal, tangent)` (which has no such constructor).
+@inline @generated function _build_tuple_v_from_pair(
+    ::Type{InnerT}, primal::Tuple, tangent::NoTangent
+) where {InnerT<:Tuple}
+    n = fieldcount(InnerT)
+    exprs = [
+        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], NoTangent())) for
+        i in 1:n
+    ]
+    return :(($(exprs...),))
 end
 
 # Type-slot specialisation: `dual_type(Val(N), Type{P_user})` may substitute the
@@ -765,7 +802,14 @@ end
 # P_user` (e.g. `Type{Float64}` lifts to itself); the substitution is a no-op.
 @inline function Lifted{P,N}(primal::Type, tangent::NoTangent) where {P<:Type,N}
     InnerT = dual_type(Val(N), P)
-    if InnerT isa DataType && InnerT <: Dual && InnerT.parameters[1] <: Type
+    # Only substitute when the inner primal slot is a specific `Type{P_lifted}`
+    # (one type parameter). For a bare `DataType` slot (no parameters), the
+    # primal *is* the user-supplied value, so the substitution is skipped and
+    # the runtime primal flows through to the inner Dual ctor directly.
+    if InnerT isa DataType &&
+        InnerT <: Dual &&
+        InnerT.parameters[1] <: Type &&
+        length(InnerT.parameters[1].parameters) > 0
         P_lifted = InnerT.parameters[1].parameters[1]
         return Lifted{P,N,InnerT}(InnerT(P_lifted, NoTangent()))
     end

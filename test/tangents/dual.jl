@@ -53,7 +53,12 @@
         (Type{Tuple{T}} where {T}, Dual),
         (Union{Float64,Int}, Union{NDual{Float64,1},Dual{Int,NoTangent}}),
         (UnionAll, Dual),
-        (DataType, Dual),
+        # `DataType` itself has `tangent_type === NoTangent`, so the canonical
+        # inner V is `Dual{DataType, NoTangent}` (concrete). Returning the
+        # abstract UnionAll `Dual` here previously caused
+        # `Lifted{P, N, Dual}` slots whose subsequent `frule!!` calls failed
+        # to dispatch.
+        (DataType, Dual{DataType,NoTangent}),
         (Union{}, Union{}),
 
         # Tuples lift element-wise:
