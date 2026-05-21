@@ -1122,23 +1122,22 @@ end
 #
 # Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
 # in `test/tangents/dual.jl`.
-for Wrapper in (:(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),)
-    @eval begin
-        function dual_type(
-            ::Val{1}, ::Type{$(Wrapper.args[1])}
-        ) where {$(Wrapper.args[2:end]...)}
-            return Dual{$(Wrapper.args[1]),Mooncake.tangent_type($(Wrapper.args[1]))}
-        end
-        function dual_type(
-            ::Val{N}, ::Type{$(Wrapper.args[1])}
-        ) where {N,$(Wrapper.args[2:end]...)}
-            return Dual{
-                $(Wrapper.args[1]),Mooncake.tangent_type(Val(N), $(Wrapper.args[1]))
-            }
-        end
-        dual_type(::Val{0}, ::Type{$(Wrapper.args[1])}) where {$(Wrapper.args[2:end]...)} =
-            $(Wrapper.args[1])
-    end
+function dual_type(
+    ::Val{1}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
+) where {T<:IEEEFloat,D,S,P,W}
+    R = Base.ReinterpretArray{T,D,S,P,W}
+    return Dual{R,Mooncake.tangent_type(R)}
+end
+function dual_type(
+    ::Val{N}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
+) where {N,T<:IEEEFloat,D,S,P,W}
+    R = Base.ReinterpretArray{T,D,S,P,W}
+    return Dual{R,Mooncake.tangent_type(Val(N), R)}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
+) where {T<:IEEEFloat,D,S,P,W}
+    return Base.ReinterpretArray{T,D,S,P,W}
 end
 # Transpose with any `AbstractArray{T}` parent: canonical NDual-element
 # form `Transpose{NDual{T,N}, dual_type(Val(N), P)}`. The parent's own
