@@ -26,9 +26,8 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 > incorrect results, unexpected failures, or behaviour at odds with the
 > documented scope. Feature requests, redesign proposals, and debugging
 > queries lacking a minimal reproducible example sit outside what we can
-> reasonably support, as do requests for rules beyond Julia Base and the
-> standard libraries, or for behaviour noted on the
-> [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
+> reasonably support, as do requests for rules beyond Julia Base, or for
+> behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
 > page; such issues will generally be closed.
 >
 > Organisations relying on Mooncake.jl commercially are warmly encouraged
