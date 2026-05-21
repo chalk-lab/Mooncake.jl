@@ -83,7 +83,11 @@
         ),
 
         # General Abstract Tuples
-        (Tuple{Any}, Dual),
+        # `Tuple{Any}` has a definite (single) field, so the element-wise
+        # lift fires and produces `Tuple{Dual}` (single abstract-Dual
+        # element); previously returned bare `Dual` because the gate
+        # required `isconcretetype(P)`.
+        (Tuple{Any}, Tuple{Dual}),
 
         # Abstract Vararg / NTuple UnionAll tuples (bounded and unbounded)
         (NTuple{N,Int} where {N}, Dual),
