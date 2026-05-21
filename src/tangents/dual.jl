@@ -1133,7 +1133,7 @@ end
     InnerT = try
         dual_type(Val(N), P)
     catch
-        return :(_lifted_struct_runtime_fallback_n($P, Val($N), primal, tangent))
+        return :(_lifted_struct_runtime_fallback($P, Val($N), primal, tangent))
     end
     if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
         # For Complex / NDual / other non-struct inner Vs, route through
@@ -1160,34 +1160,15 @@ end
     end
 end
 
-# Runtime fallback companion: same shape as `_lifted_struct_runtime_fallback`
-# but combines per-lane tangents from NTangent.
-@inline function _lifted_struct_runtime_fallback_n(
-    ::Type{P}, ::Val{N}, primal, tangent
-) where {P,N}
-    InnerT = dual_type(Val(N), P)
-    if InnerT isa DataType && InnerT <: NamedTuple
-        names = fieldnames(P)
-        InnerTup = InnerT.parameters[2]
-        fields = ntuple(Val(fieldcount(P))) do i
-            _inner_dual_for_field(
-                fieldtype(InnerTup, i),
-                getfield(primal, names[i]),
-                ntuple(
-                    d -> _get_tangent_field_for_lift(tangent.lanes[d], names[i]), Val(N)
-                ),
-            )
-        end
-        return Lifted{P,N,InnerT}(NamedTuple{names}(fields))
-    end
-    return Lifted{P,N,InnerT}(InnerT(primal, tangent))
-end
-
-# Runtime fallback for `Lifted{P, N}(primal::P, tangent::Tangent)` when the
-# `@generated` expansion can't resolve `InnerT = dual_type(Val(N), P)` —
-# typically because the recursive `tangent_type` descent through `P`'s
-# fields hits a primitive-leaf world-age boundary (e.g. CuArray's nested
+# Runtime fallback for `Lifted{P, N}(primal::P, tangent::Tangent|NTangent)` when
+# the `@generated` expansion can't resolve `InnerT = dual_type(Val(N), P)` —
+# typically because the recursive `tangent_type` descent through `P`'s fields
+# hits a primitive-leaf world-age boundary (e.g. CuArray's nested
 # `CuPtr{Nothing}` chain). At runtime the call uses the latest world.
+# Dispatches on tangent shape to choose the per-field accessor:
+# `_get_tangent_field_for_lift(tangent, name)` for a single Tangent vs.
+# `ntuple(d -> _get_tangent_field_for_lift(tangent.lanes[d], name), Val(N))`
+# for the multi-lane NTangent case.
 @inline function _lifted_struct_runtime_fallback(
     ::Type{P}, ::Val{N}, primal, tangent
 ) where {P,N}
@@ -1199,13 +1180,19 @@ end
             _inner_dual_for_field(
                 fieldtype(InnerTup, i),
                 getfield(primal, names[i]),
-                _get_tangent_field_for_lift(tangent, names[i]),
+                _lifted_struct_field_tangent(tangent, names[i], Val(N)),
             )
         end
         return Lifted{P,N,InnerT}(NamedTuple{names}(fields))
     end
     return Lifted{P,N,InnerT}(InnerT(primal, tangent))
 end
+@inline _lifted_struct_field_tangent(t::Tangent, name, ::Val) = _get_tangent_field_for_lift(
+    t, name
+)
+@inline _lifted_struct_field_tangent(t::NTangent, name, ::Val{N}) where {N} = ntuple(
+    d -> _get_tangent_field_for_lift(t.lanes[d], name), Val(N)
+)
 
 # Accessors: delegate to the inner's own primal/tangent. Tuple primals need
 # field-type-aware reconstruction: a field can have primal type `CoDual` while
