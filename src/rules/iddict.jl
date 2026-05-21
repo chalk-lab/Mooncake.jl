@@ -264,8 +264,7 @@ end
     bare_result = _get_iddict(
         Mooncake._unlift(d), Mooncake._unlift(key), Mooncake._unlift(default)
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Chunk-size-N correctness: width-N IDdict has tangent
 # `NTangent{NTuple{N, IdDict{K, tangent_type(V)}}}` (one IDdict per lane).
@@ -332,8 +331,7 @@ end
         getindex(primal(inner_d), primal(inner_key)),
         getindex(_iddict_tangent(inner_d), primal(inner_key)),
     )
-    P_out = __primal_type(_typeof(bare_result))
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Width-N getindex on NTangent-wrapped IdDict (parallel to the `get` rule's
 # width-N overload). The generic delegator above calls `_iddict_tangent` →
