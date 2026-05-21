@@ -1149,29 +1149,32 @@ const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any,Any}}) = true
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setfield!),Any,Any,Any}}) = true
 
+# Bare-Dual getfield: Vararg-tail unifies arity 2 (name) and arity 3
+# (name, inbounds). The inbounds extras splat into both the primal
+# `getfield(…)` call and the tangent-side `_get_tangent_field(…)` call.
 function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
-) where {P}
+    ::Dual{typeof(getfield)},
+    x::Dual{P,<:StandardTangentType},
+    name::Dual,
+    extras::Vararg{Dual,M},
+) where {P,M}
     _name = primal(name)
+    _extras = map(primal, extras)
     if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name))
+        return uninit_dual(getfield(primal(x), _name, _extras...))
     else
         return _dual_or_ndual(
-            getfield(primal(x), _name), _get_tangent_field(tangent(x), _name)
+            getfield(primal(x), _name, _extras...),
+            _get_tangent_field(tangent(x), _name, _extras...),
         )
     end
 end
 # Bare Tuple/NamedTuple of inner duals (the inner V of a `Lifted{<:Tuple}`
 # slot). Field access returns the i-th inner dual directly.
 @inline function frule!!(
-    ::Dual{typeof(getfield)}, x::T, name::Dual
-) where {T<:Union{Tuple,NamedTuple}}
-    return getfield(x, primal(name))
-end
-@inline function frule!!(
-    ::Dual{typeof(getfield)}, x::T, name::Dual, inbounds::Dual
-) where {T<:Union{Tuple,NamedTuple}}
-    return getfield(x, primal(name), primal(inbounds))
+    ::Dual{typeof(getfield)}, x::T, name::Dual, extras::Vararg{Dual,M}
+) where {T<:Union{Tuple,NamedTuple},M}
+    return getfield(x, primal(name), map(primal, extras)...)
 end
 # Direct `getfield` Lifted bodies (per inner V shape of x). Each pair below
 # unifies the 2-arg and 3-arg (`inbounds`) `getfield` rules via
@@ -1266,22 +1269,10 @@ end
     field_val = getfield(Mooncake._unlift(x), field)
     return _wrap_rule_result(fieldtype(P, field), Val(N), field_val)
 end
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
-) where {P}
-    _name = primal(name)
-    _inbounds = primal(inbounds)
-    if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name, _inbounds))
-    else
-        y = getfield(primal(x), _name, _inbounds)
-        dy = _get_tangent_field(tangent(x), _name, _inbounds)
-        return _dual_or_ndual(y, dy)
-    end
-end
-# 3-arg `getfield` (with `inbounds`) is covered by the Vararg-tail Lifted
-# bodies above (wrapper-exception, SplitDual) and the unified Tuple/NamedTuple
-# + Val{field} @generated bodies below.
+# Bare-Dual 3-arg getfield (with `inbounds`) is covered by the Vararg-tail
+# arity-2/3 bodies above. The Lifted-side rules likewise span both arities
+# via Vararg{Lifted,M} (wrapper-exception, SplitDual, Tuple/NamedTuple
+# @generated, Val{field}).
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
