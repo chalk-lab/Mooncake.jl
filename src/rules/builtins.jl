@@ -1173,30 +1173,40 @@ end
 ) where {T<:Union{Tuple,NamedTuple}}
     return getfield(x, primal(name), primal(inbounds))
 end
-# Direct 2-arg `getfield` Lifted bodies (per inner V shape of x).
+# Direct `getfield` Lifted bodies (per inner V shape of x). Each pair below
+# unifies the 2-arg and 3-arg (`inbounds`) `getfield` rules via
+# `Vararg{Lifted,M}` over the trailing args — the only structural difference
+# is whether `_inbounds` gets forwarded into the underlying `getfield(…)` call.
+#
 # Wrapper-exception V (Dual{P, T<:StandardTangentType}): general struct.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N,V_x},
     name::Mooncake.Lifted,
-) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T}}
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T},M}
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
+    _extras = map(primal, extras)
     bare_result = if tangent_type(P) == NoTangent
-        uninit_dual(getfield(primal(bare_x), _name))
+        uninit_dual(getfield(primal(bare_x), _name, _extras...))
     else
         _dual_or_ndual(
-            getfield(primal(bare_x), _name), _get_tangent_field(tangent(bare_x), _name)
+            getfield(primal(bare_x), _name, _extras...),
+            _get_tangent_field(tangent(bare_x), _name, _extras...),
         )
     end
     return _wrap_rule_result(Val(N), bare_result)
 end
 # SplitDual V (mutable struct with Array field): project canonical V's field.
+# `inbounds` is non-differentiable and the canonical NamedTuple has no
+# bounds-check semantics, so it's dropped at the Lifted boundary.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N,V_x},
     name::Mooncake.Lifted,
-) where {N,P,V_x<:Mooncake.SplitDual}
+    ::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:Mooncake.SplitDual,M}
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
@@ -1211,11 +1221,15 @@ end
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N,V_x},
     name::Mooncake.Lifted{<:Union{Int,Symbol},N},
-) where {P,N,V_x<:Union{Tuple,NamedTuple}}
+    ::Vararg{Mooncake.Lifted,M},
+) where {P,N,V_x<:Union{Tuple,NamedTuple},M}
     # Determine the field type by looking up the primal field's type. For
     # a Tuple/NamedTuple primal P, use P's own fields. For a struct primal
     # P (structural lift), use the V_x's structural shape — V_x has the
-    # same field count and names as P.
+    # same field count and names as P. `inbounds` (the optional trailing
+    # arg) is dropped at the Lifted boundary; Tuple/NamedTuple V already
+    # holds the unrolled field-wise lift, so bounds-check semantics aren't
+    # needed.
     p_for_field_types = P <: Union{Tuple,NamedTuple} ? P : V_x
     n = fieldcount(p_for_field_types)
     if n == 0
@@ -1247,7 +1261,8 @@ end
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N},
     ::Mooncake.Lifted{Val{field},N},
-) where {P<:Union{Tuple,NamedTuple},N,field}
+    ::Vararg{Mooncake.Lifted,M},
+) where {P<:Union{Tuple,NamedTuple},N,field,M}
     field_val = getfield(Mooncake._unlift(x), field)
     return _wrap_rule_result(fieldtype(P, field), Val(N), field_val)
 end
@@ -1264,77 +1279,9 @@ function frule!!(
         return _dual_or_ndual(y, dy)
     end
 end
-# Direct 3-arg `getfield` Lifted bodies (with `inbounds`).
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{P,N,V_x},
-    name::Mooncake.Lifted,
-    inbounds::Mooncake.Lifted,
-) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T}}
-    bare_x = Mooncake._unlift(x)
-    _name = primal(name)
-    _inbounds = primal(inbounds)
-    bare_result = if tangent_type(P) == NoTangent
-        uninit_dual(getfield(primal(bare_x), _name, _inbounds))
-    else
-        _dual_or_ndual(
-            getfield(primal(bare_x), _name, _inbounds),
-            _get_tangent_field(tangent(bare_x), _name, _inbounds),
-        )
-    end
-    return _wrap_rule_result(Val(N), bare_result)
-end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{P,N,V_x},
-    name::Mooncake.Lifted,
-    ::Mooncake.Lifted,
-) where {N,P,V_x<:Mooncake.SplitDual}
-    bare_x = Mooncake._unlift(x)
-    _name = primal(name)
-    field_val = getfield(bare_x.canonical, _name)
-    return _wrap_rule_result(Val(N), field_val)
-end
-@inline @generated function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{P,N,V_x},
-    name::Mooncake.Lifted{<:Union{Int,Symbol},N},
-    inbounds::Mooncake.Lifted,
-) where {P,N,V_x<:Union{Tuple,NamedTuple}}
-    p_for_field_types = P <: Union{Tuple,NamedTuple} ? P : V_x
-    n = fieldcount(p_for_field_types)
-    if n == 0
-        return quote
-            field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
-            return _wrap_rule_result(Val(N), field_val)
-        end
-    end
-    field_names = fieldnames(p_for_field_types)
-    exprs = map(1:n) do i
-        field = p_for_field_types <: Tuple ? i : field_names[i]
-        P_field = P <: Tuple ? fieldtype(P, i) : fieldtype(P, field_names[i])
-        :(
-            primal(name) === $(QuoteNode(field)) && begin
-                field_val = getfield(Mooncake._unlift(x), $(QuoteNode(field)), primal(inbounds))
-                return _wrap_rule_result($P_field, Val(N), field_val)
-            end
-        )
-    end
-    return quote
-        $(exprs...)
-        field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
-        return _wrap_rule_result(Val(N), field_val)
-    end
-end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{P,N},
-    ::Mooncake.Lifted{Val{field},N},
-    inbounds::Mooncake.Lifted,
-) where {P<:Union{Tuple,NamedTuple},N,field}
-    field_val = getfield(Mooncake._unlift(x), field, primal(inbounds))
-    return _wrap_rule_result(fieldtype(P, field), Val(N), field_val)
-end
+# 3-arg `getfield` (with `inbounds`) is covered by the Vararg-tail Lifted
+# bodies above (wrapper-exception, SplitDual) and the unified Tuple/NamedTuple
+# + Val{field} @generated bodies below.
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
