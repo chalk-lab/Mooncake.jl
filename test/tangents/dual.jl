@@ -116,8 +116,8 @@ end
     extract = Mooncake.extract
 
     @testset "tangent_type wraps once at width 1" begin
-        # Audit test #1: width 1 wraps to a top-level `NTangent{Tuple{T}}` so
-        # the width-aware tangent type is parallel with width N>=2 chunked.
+        # Width 1 wraps to a top-level `NTangent{Tuple{T}}` so the
+        # width-aware tangent type is parallel with width N>=2 chunked.
         @test tangent_type(Val(1), Float64) === NTangent{Tuple{Float64}}
         @test tangent_type(Val(1), Vector{Float64}) === NTangent{Tuple{Vector{Float64}}}
         @test tangent_type(Val(2), Float64) === NTangent{Tuple{Float64,Float64}}
@@ -162,8 +162,8 @@ end
         @test Lifted{Float64,1,NDual{Float64,1}} <: T1real
         @test !(Lifted{Float64,2,NDual{Float64,2}} <: T1real)
 
-        # Audit test #4: `AbstractFloat` should accept width-2 concrete
-        # lifted values and reject width-1, mirroring the `Real` case.
+        # `AbstractFloat` accepts width-2 concrete lifted values and rejects
+        # width-1, mirroring the `Real` case.
         T2af = lifted_type(Val(2), AbstractFloat)
         @test Lifted{Float64,2,NDual{Float64,2}} <: T2af
         @test !(Lifted{Float64,1,NDual{Float64,1}} <: T2af)
@@ -359,9 +359,8 @@ end
     end
 
     @testset "Transpose canonical NDual dual_type" begin
-        # Pin Transpose's canonical NDual-element wrapper form so the
-        # migration cannot silently regress back to `Dual{Transpose, Tangent}`.
-        # The parent recursion covers any `AbstractArray{T}` parent (Array,
+        # `Transpose`'s canonical inner V is the NDual-element wrapper form;
+        # parent recursion covers any `AbstractArray{T}` parent (Array,
         # SubArray, …) via `dual_type(Val(N), P)` on the parent type.
         Tr = LinearAlgebra.Transpose{Float64,Vector{Float64}}
         @test Mooncake.dual_type(Val(0), Tr) === Tr
@@ -567,11 +566,11 @@ end
         @test _lift(Val(2), Float64, _unlift(d)) === d
         @test _lift(Val(0), Float64, 3.0) === 3.0
 
-        # Audit test #9 (struct case): `tangent(::Lifted{struct_P, N, V})`
-        # returns a top-level `NTangent{NTuple{N, Tangent{...}}}`, mirroring
-        # the structural-array convention. Construct via the 1-arg ctor
-        # since the 2-arg path on heterogeneous struct V isn't supported
-        # by NamedTuple's primal+tangent constructor.
+        # `tangent(::Lifted{struct_P, N, V})` returns a top-level
+        # `NTangent{NTuple{N, Tangent{...}}}`, mirroring the structural-array
+        # convention. Construct via the 1-arg ctor since the 2-arg path on
+        # heterogeneous struct V isn't supported by NamedTuple's
+        # primal+tangent constructor.
         inner_v = (
             x=NDual{Float64,2}(1.0, (10.0, 11.0)), y=Mooncake.Dual(:sym, NoTangent())
         )
@@ -892,9 +891,9 @@ end
     end
 
     @testset "BLAS width-N per-lane independence" begin
-        # Pins that the BLAS width-N rules (gemv!, gemm!, scal!, nrm2)
-        # produce independent per-lane tangents — the pre-migration width-1
-        # broadcast-via-`_wrap_rule_result` would yield identical lanes.
+        # The BLAS width-N rules (gemv!, gemm!, scal!, nrm2) must produce
+        # independent per-lane tangents when seeded with distinct directions;
+        # naive broadcast-from-lane-1 would yield identical lanes.
         using LinearAlgebra: BLAS
 
         # BLAS.nrm2 width-2 with distinct per-lane seeds.
