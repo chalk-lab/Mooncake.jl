@@ -692,30 +692,25 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
+# memoryrefnew(MemoryRef, i, [boundscheck]) — Vararg-tail unifies arity 2 + 3.
+# `_memoryrefnew_kernel` itself already accepts `Vararg{Dual,M}` for the
+# trailing index / boundscheck args.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(memoryrefnew),N},
     x::Mooncake.Lifted{<:MemoryRef},
     ii::Mooncake.Lifted{Int},
-) where {N}
-    bare_result = _memoryrefnew_kernel(Mooncake._unlift(x), Mooncake._unlift(ii))
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,M}
+    bare_extras = map(Mooncake._unlift, extras)
+    bare_result = _memoryrefnew_kernel(
+        Mooncake._unlift(x), Mooncake._unlift(ii), bare_extras...
+    )
     return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
 )
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
-end
-
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(memoryrefnew),N},
-    x::Mooncake.Lifted{<:MemoryRef},
-    ii::Mooncake.Lifted{Int},
-    boundscheck::Mooncake.Lifted{Bool},
-) where {N}
-    bare_result = _memoryrefnew_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(ii), Mooncake._unlift(boundscheck)
-    )
-    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
