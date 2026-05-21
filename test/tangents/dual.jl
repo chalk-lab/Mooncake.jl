@@ -359,10 +359,22 @@ end
             T_W_N2 = Mooncake.tangent_type(Val(2), W)
             @test Mooncake.dual_type(Val(2), W) === Mooncake.Dual{W,T_W_N2}
         end
-        _pin_width1_bare_dual(Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}})
         _pin_width1_bare_dual(
             Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
         )
+
+        # ReshapedArray was migrated to canonical NDual-element form via the
+        # Transpose template (parameterised over any AbstractArray parent).
+        # Phase 2 of the wrapper-exception removal — see
+        # temp/wrapper-exception-removal-plan.md.
+        let
+            P = Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}}
+            @test Mooncake.dual_type(Val(0), P) === P
+            @test Mooncake.dual_type(Val(1), P) ===
+                Base.ReshapedArray{NDual{Float64,1},1,Vector{NDual{Float64,1}},Tuple{}}
+            @test Mooncake.dual_type(Val(2), P) ===
+                Base.ReshapedArray{NDual{Float64,2},1,Vector{NDual{Float64,2}},Tuple{}}
+        end
         _pin_width1_bare_dual(LinearAlgebra.Symmetric{Float64,Matrix{Float64}})
         _pin_width1_bare_dual(LinearAlgebra.Hermitian{Float64,Matrix{Float64}})
     end

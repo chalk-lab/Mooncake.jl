@@ -1051,31 +1051,54 @@ function dual_type(
     return SubArray{Complex{T},D,Array{Complex{T},Dp},I,L}
 end
 
-# Durable bare-`Dual` width-1 exceptions, not temporary workarounds.
+# ReshapedArray with any `AbstractArray{T}` parent: canonical NDual-element
+# form `ReshapedArray{NDual{T,N}, D, dual_type(Val(N), P), MI}`. The parent's
+# own canonical V (Array, SubArray, …) is computed recursively; the
+# `ReshapedArray{NDual{T,N}, …}(primal, tangent)` constructor below delegates
+# the parent build to `V_parent`'s own (primal, tangent) constructor, so
+# this works uniformly over any AbstractArray parent. Mirrors the Transpose
+# template at this file's `Transpose` block.
+#
+# Previous attempt (`111512346`) restricted to `P<:Array{T}` parents only and
+# was reverted (`e98728622`) because lapack tests use `ReshapedArray{T,D,
+# <:SubArray{T,…},MI}`. The parameterisation over `P<:AbstractArray{T}` here
+# admits any parent that itself has a canonical NDual lift.
+function dual_type(
+    ::Val{N}, ::Type{Base.ReshapedArray{T,D,P,MI}}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
+    return Base.ReshapedArray{NDual{T,N},D,dual_type(Val(N), P),MI}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.ReshapedArray{T,D,P,MI}}
+) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI}
+    return Base.ReshapedArray{T,D,P,MI}
+end
+# Complex-element variant.
+function dual_type(
+    ::Val{N}, ::Type{Base.ReshapedArray{Complex{T},D,P,MI}}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
+    return Base.ReshapedArray{Complex{NDual{T,N}},D,dual_type(Val(N), P),MI}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.ReshapedArray{Complex{T},D,P,MI}}
+) where {T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
+    return Base.ReshapedArray{Complex{T},D,P,MI}
+end
+
+# Durable bare-`Dual` width-1 exceptions.
 #
 #   - `ReinterpretArray`: the non-trivial use is `T !== S` (e.g.,
-#     `reinterpret(Complex{Float64}, ::Vector{Float64})`). A canonical
-#     NDual-element form would require reinterpreting `Vector{NDual{T,N}}`
-#     as `Vector{Complex{T}}`, but NDual is strictly wider than `T` so the
-#     byte-level cast does not align. The `T === S` case collapses in Julia
-#     (no `ReinterpretArray` instance is produced). The width-1 form here,
-#     paired with the existing `arrayify(::ReinterpretArray, ::TangentOrFData)`
-#     in `src/rules/blas.jl`, is the architecturally-correct representation.
-#
-#   - `ReshapedArray`: keep the parallel-Dual form because the lapack
-#     test suite exercises `ReshapedArray{T,D,<:SubArray{T,...},MI}`
-#     extensively, where a canonical NDual-element form would only
-#     cover `Array`-parent ReshapedArrays. Non-`Array`-parent cases
-#     would fall through to the generic structural NamedTuple lift,
-#     producing inner Vs that no downstream rule accepts. The parallel-
-#     Dual form handles all parents uniformly.
+#     `reinterpret(Complex{Float64}, ::Vector{Float64})`). [Phase 2 TODO:
+#     The byte layout actually aligns — `Vector{NDual{T,N}}` reinterpreted
+#     as `Vector{Complex{NDual{T,N}}}` matches the user's
+#     `Vector{T} → Vector{Complex{T}}` cast. Migrate to canonical NDual
+#     form using the Transpose/ReshapedArray template once a test exposes
+#     the actual non-trivial use case.]
 #
 # Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
 # in `test/tangents/dual.jl`.
 for Wrapper in (
     :(Base.ReinterpretArray{T,D,S,P,W} where {T<:IEEEFloat,D,S,P,W}),
-    :(Base.ReshapedArray{T,D,P,MI} where {T<:IEEEFloat,D,P,MI}),
-    :(Base.ReshapedArray{Complex{T},D,P,MI} where {T<:IEEEFloat,D,P,MI}),
     :(LinearAlgebra.Symmetric{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
     :(LinearAlgebra.Hermitian{T,P} where {T<:IEEEFloat,P<:StridedMatrix{T}}),
 )
@@ -1154,6 +1177,124 @@ function (::Type{LinearAlgebra.Transpose{NDual{T,N},V_parent}})(
     parent_t = Mooncake._get_tangent_field(tangent, :parent)
     parent_lifted = V_parent(parent(primal), parent_t)
     return transpose(parent_lifted)::LinearAlgebra.Transpose{NDual{T,N},V_parent}
+end
+
+# ReshapedArray canonical V ctor + seed factories — same template as Transpose.
+# Delegates the parent lift to V_parent's own (primal, tangent) ctor.
+function (::Type{Base.ReshapedArray{NDual{T,N},D,V_parent,MI}})(
+    primal::Base.ReshapedArray{T,D,P,MI}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D,P<:AbstractArray{T},V_parent<:AbstractArray{NDual{T,N}},MI}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = V_parent(parent(primal), parent_t)
+    return Base.ReshapedArray{NDual{T,N},D,V_parent,MI}(
+        parent_lifted, primal.dims, primal.mi
+    )
+end
+function (::Type{Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}})(
+    primal::Base.ReshapedArray{Complex{T},D,P,MI}, tangent::Mooncake.Tangent
+) where {
+    T<:IEEEFloat,
+    N,
+    D,
+    P<:AbstractArray{Complex{T}},
+    V_parent<:AbstractArray{Complex{NDual{T,N}}},
+    MI,
+}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = V_parent(parent(primal), parent_t)
+    return Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}(
+        parent_lifted, primal.dims, primal.mi
+    )
+end
+# Lifted bridge — mirrors Transpose's `Lifted{P,1}(primal, ::Tangent)` shim.
+@inline function Mooncake.Lifted{P,1}(
+    primal::P, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,P<:Base.ReshapedArray{T,<:Any,<:AbstractArray{T}}}
+    InnerT = Mooncake.dual_type(Val(1), P)
+    return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
+end
+@inline function Mooncake.Lifted{P,1}(
+    primal::P, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,P<:Base.ReshapedArray{Complex{T},<:Any,<:AbstractArray{Complex{T}}}}
+    InnerT = Mooncake.dual_type(Val(1), P)
+    return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
+end
+# Seed factories — route through the canonical V ctor.
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.zero_tangent(x))::V
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.uninit_tangent(x))::V
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{T,D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.randn_tangent(rng, x))::V
+end
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::Base.ReshapedArray{T,D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::Base.ReshapedArray{T,D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::Base.ReshapedArray{T,D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI} = x
+# Complex-element seed factories.
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.zero_tangent(x))::V
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.uninit_tangent(x))::V
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.randn_tangent(rng, x))::V
+end
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::Base.ReshapedArray{Complex{T},D,P,MI}
+) where {T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = x
+# primal / tangent accessors for canonical ReshapedArray V.
+function primal(
+    r::Base.ReshapedArray{NDual{T,N},D,V_parent,MI}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{NDual{T,N}},MI}
+    return Base.ReshapedArray(primal(parent(r)), r.dims, r.mi)
+end
+function tangent(
+    r::Base.ReshapedArray{NDual{T,N},D,V_parent,MI}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{NDual{T,N}},MI}
+    return Mooncake.Tangent((; parent=tangent(parent(r)), dims=NoTangent(), mi=NoTangent()))
+end
+function primal(
+    r::Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{Complex{NDual{T,N}}},MI}
+    return Base.ReshapedArray(primal(parent(r)), r.dims, r.mi)
+end
+function tangent(
+    r::Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{Complex{NDual{T,N}}},MI}
+    return Mooncake.Tangent((; parent=tangent(parent(r)), dims=NoTangent(), mi=NoTangent()))
 end
 
 # Bridge for `Lifted{P,1}(primal, tangent::Tangent)` (CoDual→Lifted in the
@@ -1329,9 +1470,14 @@ for W in (
     end
 end
 @inline function Mooncake.__primal_type(
-    ::Type{Base.ReshapedArray{NDual{T,N},D,Array{NDual{T,N},Dp},MI}}
-) where {T<:IEEEFloat,N,D,Dp,MI}
-    return Base.ReshapedArray{T,D,Array{T,Dp},MI}
+    ::Type{Base.ReshapedArray{NDual{T,N},D,V_parent,MI}}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{NDual{T,N}},MI}
+    return Base.ReshapedArray{T,D,Mooncake.__primal_type(V_parent),MI}
+end
+@inline function Mooncake.__primal_type(
+    ::Type{Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}}
+) where {T<:IEEEFloat,N,D,V_parent<:AbstractArray{Complex{NDual{T,N}}},MI}
+    return Base.ReshapedArray{Complex{T},D,Mooncake.__primal_type(V_parent),MI}
 end
 @inline function Mooncake.__primal_type(
     ::Type{Base.Broadcast.Extruded{X,K,D}}
@@ -2346,6 +2492,21 @@ end
     x::LinearAlgebra.Adjoint{NDual{T,N},<:AbstractArray{NDual{T,N}}}, i::Integer
 ) where {T<:IEEEFloat,N}
     return Mooncake.Tangent((; parent=Mooncake.tangent(parent(x), i)))
+end
+@inline function Mooncake.tangent(
+    x::Base.ReshapedArray{NDual{T,N},<:Any,<:AbstractArray{NDual{T,N}}}, i::Integer
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((;
+        parent=Mooncake.tangent(parent(x), i), dims=NoTangent(), mi=NoTangent()
+    ))
+end
+@inline function Mooncake.tangent(
+    x::Base.ReshapedArray{Complex{NDual{T,N}},<:Any,<:AbstractArray{Complex{NDual{T,N}}}},
+    i::Integer,
+) where {T<:IEEEFloat,N}
+    return Mooncake.Tangent((;
+        parent=Mooncake.tangent(parent(x), i), dims=NoTangent(), mi=NoTangent()
+    ))
 end
 for W in (
     :(LinearAlgebra.UpperTriangular),
