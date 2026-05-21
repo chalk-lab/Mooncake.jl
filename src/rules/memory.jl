@@ -1563,7 +1563,7 @@ end
     N,
     P<:_MemTypes,
     T<:Union{NoTangent,Tuple,NamedTuple,MutableTangent,Mooncake.NTangent,Tangent},
-    V_x<:Dual{P,T},
+    V_x<:Union{Dual{P,T},Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}},
 }
     return frule!!(
         Mooncake.zero_lifted(Val(N), lgetfield),
@@ -1597,10 +1597,9 @@ function frule!!(
 end
 # Lifted-aware bridge for 3-arg `getfield(::_MemTypes, ::Union{Int,Symbol})`.
 # Same shape as the 4-arg variant above; routes via Lifted-aware lgetfield.
-# `V_x` constraint matches the builtins.jl `getfield` Lifted rule's
-# `V_x<:Dual{P, T<:StandardTangentType}` to break method ambiguity for
-# `Memory{Int64}` / `Memory{Vector}` / `Memory{Any}` slots whose lifted
-# tangent is `NTangent{Tuple{Memory{...}}}`.
+# Two methods to break ambiguity with the generic builtins.jl `getfield`
+# Lifted rule: one for the wrapper-exception `V_x<:Dual{P, T}` form, one
+# for canonical NDual-element containers `V_x<:Container{<:_HasNDual}`.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N,V_x},
@@ -1610,6 +1609,19 @@ end
     P<:_MemTypes,
     T<:Union{NoTangent,Tuple,NamedTuple,MutableTangent,Mooncake.NTangent,Tangent},
     V_x<:Dual{P,T},
+}
+    return frule!!(
+        Mooncake.zero_lifted(Val(N), lgetfield),
+        x,
+        Mooncake.zero_lifted(Val(N), Val(primal(name))),
+    )
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    name::Mooncake.Lifted{<:Union{Int,Symbol}},
+) where {
+    N,P<:_MemTypes,V_x<:Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}}
 }
     return frule!!(
         Mooncake.zero_lifted(Val(N), lgetfield),
