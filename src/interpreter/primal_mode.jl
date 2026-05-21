@@ -1057,8 +1057,15 @@ function modify_primal_stmts!(
 end
 
 function modify_primal_stmts!(
-    stmt::PhiNode, lifted_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::LiftedInfo
+    stmt::Union{PhiNode,PhiCNode},
+    lifted_ir::IRCode,
+    ssa::SSAValue,
+    captures::Vector{Any},
+    info::LiftedInfo,
 )
+    # PhiNode + PhiCNode iterate `stmt.values` identically: promote const
+    # values to duals in-place, increment SSA-arg refs, and rewrite the slot
+    # type to the lifted shape. Shared body via `Union` dispatch.
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
@@ -1111,28 +1118,6 @@ function modify_primal_stmts!(
 )
     if !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(_uninit_dual(info.width, get_const_primal_value(stmt.val)))
-    end
-    set_stmt!(lifted_ir, ssa, inc_args(stmt))
-    set_ir!(
-        lifted_ir,
-        ssa,
-        :type,
-        lifted_type(info.width, CC.widenconst(get_ir(lifted_ir, ssa, :type))),
-    )
-    return nothing
-end
-
-function modify_primal_stmts!(
-    stmt::PhiCNode,
-    lifted_ir::IRCode,
-    ssa::SSAValue,
-    captures::Vector{Any},
-    info::LiftedInfo,
-)
-    for n in eachindex(stmt.values)
-        isassigned(stmt.values, n) || continue
-        stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = _uninit_dual(info.width, get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(lifted_ir, ssa, inc_args(stmt))
     set_ir!(
