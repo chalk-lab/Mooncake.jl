@@ -2235,7 +2235,15 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
     end
     grad_cache = prepare_gradient_cache(f, x...; config)
     N = length(x)
-    grad_f = _GradClosure{N,F,typeof(grad_cache)}(f, grad_cache)
+    # Also build an NDual-lifted reverse rule for the HVP-specific frule
+    # registered on `_GradClosure{1}` in `high_order_derivative_patches.jl`.
+    # This is the same rule `:reverse_over_forward` mode uses; reusing it
+    # here removes the fdata-storage-identity gap that otherwise produces
+    # zero gradients/HVPs through `:forward_over_reverse`.
+    ndual_rule = _build_ndual_rule_for_hvp(f, x; config)
+    grad_f = _GradClosure{N,F,typeof(grad_cache),typeof(ndual_rule)}(
+        f, grad_cache, ndual_rule
+    )
     # The outer derivative cache must run width-1: it differentiates a single direction
     # `v` per HVP call. Forwarding the user's `chunk_size` would compile the gradient
     # closure for width-N NDual inputs and then fail when `value_and_gradient!!` reads
@@ -2250,59 +2258,13 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
         )
     end
     specs = _hvp_input_specs(f, x)
-    core = (; grad_cache, grad_f, fwd_cache)
+    core = (; grad_cache, grad_f, fwd_cache, ndual_rule)
     return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)
 end
 
-# `_GradClosure` is the named type-stable boundary between the inner reverse-
-# mode gradient computation and the outer forward-mode derivative compiled
-# by `prepare_derivative_cache`. The struct exists because primal-mode
-# forward AD specialises on the closure's type — giving it a stable nominal
-# identity (a) makes `prepare_derivative_cache` produce a single reusable
-# compiled rule per `(F, GC)` rather than recompiling per anonymous-closure
-# instance, and (b) provides a dispatch hook for `@is_primitive ForwardMode`
-# registrations against `Tuple{<:_GradClosure{N}, ...}`. On `main` the same
-# role is played by an anonymous closure inside `prepare_hvp_cache` because
-# main's wrapper-exception lift form for `Vector{Float64}` aliases fdata
-# storage between the reverse pullback and the outer forward read; on this
-# branch's canonical-NDual lift the two storages disconnect, so the named
-# boundary is needed for any HVP-specific frule that bridges that gap.
-struct _GradClosure{N,F,GC}
-    f::F
-    grad_cache::GC
-end
-
-tangent_type(::Type{<:_GradClosure}) = NoTangent
-
-function _grad_closure_value_and_gradient(gc::_GradClosure, ys...)
-    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, ys...)
-    return val_and_grad[1], val_and_grad[2]
-end
-
-function (gc::_GradClosure{1})(y)
-    val, grad = _grad_closure_value_and_gradient(gc, y)
-    return (val, grad[2])
-end
-# Width-1 + single-Tuple-arg disambiguation: needed because `(::_GradClosure{1})(y)`
-# (catch-all single-arg) and `(::_GradClosure{N})(ys::Tuple)` (the tail-grad
-# helper below) both match `_GradClosure{1}(::Tuple)`. Forward to the single-arg
-# form — at width 1 the value-and-gradient API exposes the bare scalar grad.
-function (gc::_GradClosure{1})(ys::Tuple)
-    val, grad = _grad_closure_value_and_gradient(gc, ys...)
-    return (val, grad[2])
-end
-
-function (gc::_GradClosure{N})(ys...) where {N}
-    val, grad = _grad_closure_value_and_gradient(gc, ys...)
-    return (val, Base.tail(grad))
-end
-function _grad_closure_value_and_tail_gradient(gc::_GradClosure, ys::Tuple)
-    val, grad = _grad_closure_value_and_gradient(gc, ys...)
-    return val, Base.tail(grad)
-end
-function (gc::_GradClosure{N})(ys::Tuple) where {N}
-    return _grad_closure_value_and_tail_gradient(gc, ys)
-end
+# `_GradClosure` and its method table are defined in
+# `src/rules/high_order_derivative_patches.jl` (loaded later in the include
+# order). References in this file's function bodies bind late.
 
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
     if applicable(axes, primal) && applicable(axes, tangent)
@@ -2335,7 +2297,9 @@ function value_and_hvp!!(cache::HVPCache{:forward_over_reverse}, f, v, x1)
         _assert_matching_tangent_shape(x1, v[1], 1)
         v = v[1]
     end
-    grad_f = _GradClosure{1,typeof(f),typeof(core.grad_cache)}(f, core.grad_cache)
+    grad_f = _GradClosure{1,typeof(f),typeof(core.grad_cache),typeof(core.ndual_rule)}(
+        f, core.grad_cache, core.ndual_rule
+    )
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         core.fwd_cache, (grad_f, zero_tangent(grad_f)), (x1, v)
     )
@@ -2354,8 +2318,10 @@ function value_and_hvp!!(
     for i in eachindex(all_x)
         _assert_matching_tangent_shape(all_x[i], v[i], i)
     end
-    grad_f = _GradClosure{length(all_x),typeof(f),typeof(core.grad_cache)}(
-        f, core.grad_cache
+    grad_f = _GradClosure{
+        length(all_x),typeof(f),typeof(core.grad_cache),typeof(core.ndual_rule)
+    }(
+        f, core.grad_cache, core.ndual_rule
     )
     (f_val, grads), (_, hvps) = value_and_derivative!!(
         core.fwd_cache, (grad_f, zero_tangent(grad_f)), (all_x, v)

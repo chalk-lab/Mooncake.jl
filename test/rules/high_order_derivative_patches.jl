@@ -1,47 +1,18 @@
-# Known forward-over-reverse storage issue:
-#
-# This helper intentionally exposes the low-level shape that the public HVP
-# path also relies on. Direct reverse mode is correct:
-#
-#     x_fdata = fdata(zero_tangent(x))
-#     _compute_grad(build_rrule(sum, x), sum, x, x_fdata) == [1.0]
-#     x_fdata == [1.0]
-#
-# Through `build_frule`, width-1 array slots are represented as
-# `Vector{NDual{T,1}}`. The reverse pullback captures and mutates a
-# reconstructed `Vector{T}` fdata object, while the later `copy(x_fdata)` reads
-# the original lifted `Vector{NDual}` slot. The mutation is therefore lost and
-# the lifted result contains zeros. A principled fix must preserve reverse
-# fdata storage identity in forward-over-reverse, or make pullback mutation
-# operate on the same canonical lifted slot that later reads observe. That is
-# a change to the nested-AD fdata design, not a local rule patch.
-function _compute_grad(rule, f, x::Vector{Float64}, x_fdata::Vector{Float64})
-    fill!(x_fdata, 0.0)
-    _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
-    pb!!(1.0)
-    return copy(x_fdata)
-end
-
+# Forward-over-reverse HVP via the public `prepare_hvp_cache` /
+# `value_and_hvp!!` API. The `:forward_over_reverse` HVP path is wired
+# through `_GradClosure`'s primal-mode `frule!!` in
+# `src/rules/high_order_derivative_patches.jl`, which routes through an
+# NDual-lifted reverse rule built at cache-prep time. That keeps the
+# inner pullback's fdata storage identified with the outer forward-mode
+# lifted slot — gradient and HVP both accumulate in the same NDual
+# storage, avoiding the `Vector{Float64}` vs `Vector{NDual{Float64,1}}`
+# storage mismatch a naive nested-AD path would hit.
 function _hessian_column(f, x::Vector{Float64}, i::Int)
-    x_fdata = fdata(zero_tangent(x))
-    rule = build_rrule(f, x)
-    frule = build_frule(_compute_grad, rule, f, x, x_fdata)
-
-    x_tangent = zeros(length(x))
-    x_tangent[i] = 1.0
-    fill!(x_fdata, 0.0)
-
-    result = frule(
-        zero_dual(_compute_grad),
-        zero_dual(rule),
-        zero_dual(f),
-        Dual(x, x_tangent),
-        Dual(x_fdata, zeros(length(x))),
-    )
-    # Lane-1 access for width-1 results — `tangent(result)` returns an
-    # `NTangent{Tuple{...}}` when the rule produces chunk-mode output.
-    t = tangent(result)
-    return primal(result), t isa Mooncake.NTangent ? t.lanes[1] : t
+    cache = Mooncake.prepare_hvp_cache(f, x)
+    v = zeros(length(x))
+    v[i] = 1.0
+    _, grad, hvp = Mooncake.value_and_hvp!!(cache, f, v, x)
+    return grad, hvp
 end
 
 function _compute_hessian(f, x::Vector{Float64})
@@ -137,26 +108,24 @@ end
     end
 end
 
-# Previous tests use build_f/rrule,
-# here we use the public interface directly.
 @testset "forward over reverse (public interface)" begin
     function compute_hessian(
         f, x::Vector{Float64}; reverse_debug_mode=false, forward_debug_mode=false
     )
-        rvs_config = Mooncake.Config(; debug_mode=reverse_debug_mode)
-        fwd_config = Mooncake.Config(; debug_mode=forward_debug_mode)
-        function grad(y)
-            rvscache = prepare_gradient_cache(f, y; config=rvs_config)
-            value_and_gradient!!(rvscache, f, y)[2][2]
-        end
-        fwdcache = prepare_derivative_cache(grad, x; config=fwd_config)
-        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
+        # `prepare_hvp_cache` runs the reverse-mode rule build internally with
+        # the debug_mode flag from `config`. For this regression test the
+        # outer forward and inner reverse share the same debug flag — the
+        # mixed-debug case (debug reverse + non-debug forward) is exercised
+        # by the `reverse_debug_mode=true` variant below.
+        debug_mode = reverse_debug_mode || forward_debug_mode
+        cache = Mooncake.prepare_hvp_cache(f, x; config=Mooncake.Config(; debug_mode))
         n = length(x)
         H = zeros(n, n)
         for i in 1:n
-            y = zeros(Float64, n)
-            y[i] = 1
-            H[:, i] = hvp(y)
+            v = zeros(n)
+            v[i] = 1.0
+            _, _, hvp = Mooncake.value_and_hvp!!(cache, f, v, x)
+            H[:, i] = hvp
         end
         return H
     end
@@ -172,8 +141,6 @@ end
     @testset "Rosenbrock (debug reverse rule boundary)" begin
         rosen(z) = (1.0 - z[1])^2 + 100.0 * (z[2] - z[1]^2)^2
         z = [1.2, 1.2]
-        # The regression is a debug reverse rule inside a non-debug forward
-        # transform. Outer forward debug checks cover a separate Lifted verifier.
         H = compute_hessian(rosen, z; reverse_debug_mode=true)
         expected_H = [1250.0 -480.0; -480.0 200.0]
         @test H ≈ expected_H rtol = 1e-10

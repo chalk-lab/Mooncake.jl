@@ -479,3 +479,154 @@ end
         end
     end
 end
+
+# ── HVP via :forward_over_reverse — `_GradClosure` + custom forward rule ─────
+#
+# `_GradClosure` is the named type-stable boundary between the inner reverse-
+# mode gradient computation and the outer forward-mode derivative compiled
+# by `prepare_derivative_cache`. The struct exists because primal-mode
+# forward AD specialises on the closure's type — giving it a stable nominal
+# identity (a) lets `prepare_derivative_cache` produce a single reusable
+# compiled rule per `(F, GC, NR)` rather than recompiling per anonymous-
+# closure instance, and (b) provides a dispatch hook for the HVP-specific
+# `@is_primitive ForwardMode` registration below. A previous (pre-primal-
+# mode) design played this role with an anonymous closure inside
+# `prepare_hvp_cache`, because that design's wrapper-exception lift form
+# for `Vector{Float64}` aliased fdata storage between the reverse
+# pullback and the outer forward read; primal mode's canonical-NDual lift
+# disconnects those two storages, so the named boundary is needed for the
+# HVP-specific frule that bridges the gap.
+#
+# `ndual_rule` is an additional reverse rule built for NDual-lifted inputs
+# (the same rule `:reverse_over_forward` mode uses). The HVP-specific
+# frule below routes through this rule so the inner pullback's fdata
+# storage IS the lifted slot's NDual storage — gradient and HVP both
+# accumulate in the same place, without the Vector{Float64} ↔
+# Vector{NDual{Float64,1}} storage mismatch the regular path would hit.
+struct _GradClosure{N,F,GC,NR}
+    f::F
+    grad_cache::GC
+    ndual_rule::NR
+end
+
+tangent_type(::Type{<:_GradClosure}) = NoTangent
+
+function _grad_closure_value_and_gradient(gc::_GradClosure, ys...)
+    val_and_grad = value_and_gradient!!(gc.grad_cache, gc.f, ys...)
+    return val_and_grad[1], val_and_grad[2]
+end
+
+function (gc::_GradClosure{1})(y)
+    val, grad = _grad_closure_value_and_gradient(gc, y)
+    return (val, grad[2])
+end
+# Width-1 + single-Tuple-arg disambiguation: needed because `(::_GradClosure{1})(y)`
+# (catch-all single-arg) and `(::_GradClosure{N})(ys::Tuple)` (the tail-grad
+# helper below) both match `_GradClosure{1}(::Tuple)`. Forward to the single-arg
+# form — at width 1 the value-and-gradient API exposes the bare scalar grad.
+function (gc::_GradClosure{1})(ys::Tuple)
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
+    return (val, grad[2])
+end
+
+function (gc::_GradClosure{N})(ys...) where {N}
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
+    return (val, Base.tail(grad))
+end
+function _grad_closure_value_and_tail_gradient(gc::_GradClosure, ys::Tuple)
+    val, grad = _grad_closure_value_and_gradient(gc, ys...)
+    return val, Base.tail(grad)
+end
+function (gc::_GradClosure{N})(ys::Tuple) where {N}
+    return _grad_closure_value_and_tail_gradient(gc, ys)
+end
+
+# Helper used by `_prepare_hvp(:forward_over_reverse, ...)` to build the
+# NDual-lifted reverse rule used by the HVP frule below. Mirrors the
+# rule-build step in `_prepare_hvp(:reverse_over_forward, ...)`.
+function _build_ndual_rule_for_hvp(f, x::Tuple; config)
+    x_ndual_bufs = map(x) do xi
+        Nfwd.NDual{eltype(xi),1}.(xi, Ref(ntuple(_ -> zero(eltype(xi)), Val(1))))
+    end
+    try
+        return build_rrule(
+            f,
+            x_ndual_bufs...;
+            debug_mode=config.debug_mode,
+            silence_debug_messages=config.silence_debug_messages,
+        )
+    catch e
+        if e isa MooncakeRuleCompilationError
+            throw(
+                ArgumentError(
+                    "`:forward_over_reverse` HVP requires `f` to accept NDual-element " *
+                    "vectors. Widen your function's argument types (e.g. " *
+                    "`f(x::AbstractVector)` instead of `f(x::Vector{Float64})`) or " *
+                    "use `:reverse_over_forward` mode.",
+                ),
+            )
+        end
+        rethrow()
+    end
+end
+
+# HVP-specific forward rule. Routes through the NDual-lifted reverse rule
+# so the inner pullback's fdata storage shares identity with the lifted
+# slot's NDual storage — fixes the
+# `Vector{Float64}`-fdata vs `Vector{NDual{Float64,1}}`-slot mismatch that
+# would otherwise leave the outer forward-mode read seeing zero gradients.
+#
+# Seed convention (matches `:reverse_over_forward` mode): seed the pullback
+# with `RData((value=0, partials=(1,)))`. After the pullback,
+#   fdata[i].fields.partials[1] = ∂f/∂x[i]     (gradient)
+#   fdata[i].fields.value       = (H * dir)[i] (HVP)
+# This is counter-intuitive but follows from how NDual cotangents propagate
+# the seed's `partials` component through forward-derived `partials` in the
+# pullback's NDual multiplications.
+@is_primitive MinimalCtx ForwardMode Tuple{<:_GradClosure{1},Vector{Float64}}
+
+@inline function frule!!(
+    f::Dual{<:_GradClosure{1},NoTangent}, y_ndual::Vector{Nfwd.NDual{Float64,1}}
+)
+    gc = primal(f)
+    f_codual = zero_fcodual(gc.f)
+    fdata_ndual = fdata(zero_tangent(y_ndual))
+    y_codual = CoDual(y_ndual, fdata_ndual)
+    out, pb = gc.ndual_rule(f_codual, y_codual)
+    pb(RData((value=zero(Float64), partials=(one(Float64),))))
+    grad = [d.fields.partials[1] for d in fdata_ndual]
+    hvp = [d.fields.value for d in fdata_ndual]
+    return Dual((out.x.value, grad), (out.x.partials[1], hvp))
+end
+
+# Multi-argument variant: `_GradClosure{N}(ys::Tuple)` for `N >= 2`. The
+# Tuple-form is used because `prepare_derivative_cache(grad_f, x::Tuple)`
+# compiles the closure for tuple-of-vectors input. Each `ys[k]` arrives
+# as `Vector{NDual{Float64,1}}` carrying primal + direction. Output:
+# `(val, Base.tail(grad))` where `grad` is a Tuple of per-argument
+# gradients (with f's own dropped).
+@is_primitive MinimalCtx ForwardMode Tuple{
+    <:_GradClosure{N},Tuple{Vararg{Vector{Float64}}}
+} where {N}
+
+@inline function frule!!(
+    f::Dual{GC,NoTangent}, ys_ndual::Tuple{Vararg{Vector{Nfwd.NDual{Float64,1}}}}
+) where {GC<:_GradClosure}
+    gc = primal(f)
+    f_codual = zero_fcodual(gc.f)
+    fdata_ndual_tuple = map(y -> fdata(zero_tangent(y)), ys_ndual)
+    y_coduals = map(CoDual, ys_ndual, fdata_ndual_tuple)
+    out, pb = gc.ndual_rule(f_codual, y_coduals...)
+    pb(RData((value=zero(Float64), partials=(one(Float64),))))
+    grads = map(fdata_ndual_tuple) do fb
+        [d.fields.partials[1] for d in fb]
+    end
+    hvps = map(fdata_ndual_tuple) do fb
+        [d.fields.value for d in fb]
+    end
+    # `_GradClosure{N}(ys::Tuple)` returns `(val, Base.tail(grad))`. The grad
+    # tuple includes f's own gradient at index 1 which we discard. Since the
+    # NDual rule was built for `f(x1, x2, ...)` (no f gradient produced),
+    # `grads` here corresponds directly to the user x arguments.
+    return Dual((out.x.value, grads), (out.x.partials[1], hvps))
+end
