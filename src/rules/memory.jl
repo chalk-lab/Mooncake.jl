@@ -1406,7 +1406,7 @@ end
     wants_length = name === 1 || name === :length
     dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(bare_x).ptr)
     bare_result = Dual(y, dy)
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Direct Lifted body — canonical NDual-element Memory V (NDual carries
 # primal+tangent in elements; field access returns the field of the bare
@@ -1419,7 +1419,7 @@ end
 ) where {N,name,order,V_x<:Memory{<:_HasNDual}}
     bare_x = Mooncake._unlift(x)
     bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -1449,7 +1449,7 @@ end
         tangent(bare_x).mem
     end
     bare_result = Dual(y, dy)
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Direct Lifted body — canonical NDual-element MemoryRef V.
 @inline function frule!!(
@@ -1460,7 +1460,7 @@ end
 ) where {N,name,order,V_x<:MemoryRef{<:_HasNDual}}
     bare_x = Mooncake._unlift(x)
     bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -1486,7 +1486,7 @@ end
     wants_size = name === 2 || name === :size
     dy = wants_size ? NoTangent() : tangent(bare_x).ref
     bare_result = Dual(y, dy)
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # Direct Lifted body — canonical NDual-element Array V.
 @inline function frule!!(
@@ -1497,7 +1497,7 @@ end
 ) where {N,name,order,V_x<:Array{<:_HasNDual}}
     bare_x = Mooncake._unlift(x)
     bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},

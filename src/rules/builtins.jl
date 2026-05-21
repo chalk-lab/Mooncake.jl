@@ -1188,7 +1188,7 @@ end
             getfield(primal(bare_x), _name), _get_tangent_field(tangent(bare_x), _name)
         )
     end
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 # SplitDual V (mutable struct with Array field): project canonical V's field.
 @inline function frule!!(
@@ -1199,7 +1199,7 @@ end
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
-    return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+    return _wrap_rule_result(Val(N), field_val)
 end
 # Tuple/NamedTuple inner V — covers both:
 #   - Tuple/NamedTuple primal lifted to Tuple/NamedTuple of inner duals
@@ -1220,7 +1220,7 @@ end
     if n == 0
         return quote
             field_val = getfield(Mooncake._unlift(x), primal(name))
-            return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+            return _wrap_rule_result(Val(N), field_val)
         end
     end
     field_names = fieldnames(p_for_field_types)
@@ -1239,7 +1239,7 @@ end
         # Runtime field-name dispatch (non-constant field): fall back to
         # generic wrap (loses field-type specialisation).
         field_val = getfield(Mooncake._unlift(x), primal(name))
-        return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+        return _wrap_rule_result(Val(N), field_val)
     end
 end
 @inline function frule!!(
@@ -1281,7 +1281,7 @@ end
             _get_tangent_field(tangent(bare_x), _name, _inbounds),
         )
     end
-    return _wrap_rule_result(__primal_type(_typeof(bare_result)), Val(N), bare_result)
+    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
@@ -1292,7 +1292,7 @@ end
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
-    return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+    return _wrap_rule_result(Val(N), field_val)
 end
 @inline @generated function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
@@ -1305,7 +1305,7 @@ end
     if n == 0
         return quote
             field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
-            return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+            return _wrap_rule_result(Val(N), field_val)
         end
     end
     field_names = fieldnames(p_for_field_types)
@@ -1322,7 +1322,7 @@ end
     return quote
         $(exprs...)
         field_val = getfield(Mooncake._unlift(x), primal(name), primal(inbounds))
-        return _wrap_rule_result(__primal_type(_typeof(field_val)), Val(N), field_val)
+        return _wrap_rule_result(Val(N), field_val)
     end
 end
 @inline function frule!!(
