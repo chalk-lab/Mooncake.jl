@@ -824,27 +824,49 @@ end
 
 # Tuple-primal special case: `dual_type(Val(N), P<:Tuple)` is a bare
 # element-wise `Tuple{...}` of inner duals, which has no user-defined 2-arg
-# constructor. Build the inner tuple here element-wise instead. Nested tuple
-# fields recurse via `_inner_dual_for_field` so that
+# constructor. Build the inner tuple here element-wise. Nested tuple fields
+# recurse via `_inner_dual_for_field` so that
 # `Tuple{NDual, Tuple{NDual, Vector{NDual}}, ...}` is built leaf-by-leaf.
 #
-# `@generated` for the same reason as `_wrap_oc_args` / `_wrap_rule_result`:
-# a runtime `ntuple` with a closure body indexing `primal[i]` / `tangent[i]`
-# leaves the inner result Union-typed (each Vᵢ varies), forcing a heap alloc
-# for the resulting Tuple. Unrolling per-field gives static dispatch on each
-# `_inner_dual_for_field(Vᵢ, ...)` call.
+# `@generated` so the per-field `_inner_dual_for_field` calls unroll
+# statically — a runtime `ntuple` closure body would leave the inner result
+# Union-typed (each Vᵢ varies) and force a heap allocation. The tangent shape
+# is read from the dispatched type parameter `Tt`; the per-field accessor
+# differs (`tangent[i]`, `NoTangent()`, or `NTuple{N, Tᵢ}` for NTangent
+# lanes) but the rest of the body is shared.
 @inline @generated function Lifted{P,N}(
-    primal::P, tangent::Tup
-) where {P<:Tuple,N,Tup<:Tuple}
-    n = fieldcount(P)
+    primal::P, tangent::Tt
+) where {P<:Tuple,N,Tt<:Union{Tuple,NoTangent,NTangent}}
     InnerT = dual_type(Val(N), P)
     if !(InnerT isa DataType) || !(InnerT <: Tuple)
-        # Fall back to the runtime path when InnerT isn't a concrete Tuple of
-        # known inner V's (e.g. abstract P).
+        Tt <: NTangent && return :(
+            if _all_notangent_lanes(tangent)
+                Lifted{$P,$N}(primal, NoTangent())
+            else
+                Lifted{$P,$N,$InnerT}($InnerT(primal, tangent))
+            end
+        )
         return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, tangent))
     end
-    inner_exprs = map(1:n) do i
-        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], tangent[$i]))
+    n = fieldcount(P)
+    inner_exprs = if Tt <: NoTangent
+        map(1:n) do i
+            :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], NoTangent()))
+        end
+    elseif Tt <: Tuple
+        map(1:n) do i
+            :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], tangent[$i]))
+        end
+    else  # Tt <: NTangent
+        map(1:n) do i
+            Vi = fieldtype(InnerT, i)
+            lane_exprs = map(d -> :(_lane_field(tangent.lanes[$d], $i)), 1:N)
+            quote
+                let partials = ($(lane_exprs...),)
+                    $Vi(primal[$i], _all_notangent_lane(partials) ? NoTangent() : partials)
+                end
+            end
+        end
     end
     return quote
         return Lifted{$P,$N,$InnerT}(($(inner_exprs...),))
@@ -978,55 +1000,52 @@ end
     return NamedTuple{names}(inner_tup)
 end
 
-# Tuple-primal with `NoTangent` (whole-tuple) tangent — common when a `Tuple`
-# slot holds non-differentiable elements (e.g. `Tuple{Int}`). Build the inner
-# tuple element-wise with `NoTangent` for each field. Use
-# `_inner_dual_for_field` so nested Tuple fields (e.g. `Tuple{Tuple{}, Int}`)
-# recurse properly instead of trying to call `Tuple{}(::Tuple, ::NoTangent)`
-# which has no method.
-@inline @generated function Lifted{P,N}(primal::P, ::NoTangent) where {P<:Tuple,N}
-    n = fieldcount(P)
-    InnerT = dual_type(Val(N), P)
-    if !(InnerT isa DataType) || !(InnerT <: Tuple)
-        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, NoTangent()))
-    end
-    inner_exprs = map(1:n) do i
-        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], NoTangent()))
-    end
-    return quote
-        return Lifted{$P,$N,$InnerT}(($(inner_exprs...),))
-    end
-end
-
-# Tuple-primal with `NTangent` tangent — width-N chunked vararg case where
-# `_group_vararg_dual` produces an `NTangent` lane structure. Extract per
-# element, per direction.
+# NoTangent / NTangent variants for Tuple-primal are handled by the unified
+# Tuple-primal @generated ctor above (dispatched via `Tt`).
 @inline _all_notangent_lanes(t::NTangent) = all(_all_notangent_lane, t.lanes)
 @inline _all_notangent_lane(t::NoTangent) = true
 @inline _all_notangent_lane(t::Tuple) = all(_all_notangent_lane, t)
 @inline _all_notangent_lane(t::NamedTuple) = all(_all_notangent_lane, values(t))
 @inline _all_notangent_lane(_) = false
 
-@inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:Tuple,N}
-    InnerT = dual_type(Val(N), P)
-    if !(InnerT isa DataType) || !(InnerT <: Tuple)
-        _all_notangent_lanes(tangent) && return Lifted{P,N}(primal, NoTangent())
-        return Lifted{P,N,InnerT}(InnerT(primal, tangent))
-    end
-    lanes = tangent.lanes
-    inner = ntuple(Val(fieldcount(P))) do i
-        Vi = fieldtype(InnerT, i)
-        # Unified width-1/N path. The per-element `partials` is always an
-        # `NTuple{N, Tᵢ}`; the inner V's constructor accepts it at any width.
-        # `NoTangent` lanes degrade per-element to `NoTangent()`.
-        partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
-        Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
-    end
-    return Lifted{P,N,InnerT}(inner)
-end
+# Per-lane element accessor used by the unified width-1/N inner-V constructor.
+# A `NoTangent` lane has no per-element structure, so `lane[i]` would error —
+# return `NoTangent()` instead and let the per-element guard collapse to
+# `NoTangent()` when every lane is `NoTangent`.
+@inline _lane_field(lane::NoTangent, i::Integer) = NoTangent()
+@inline _lane_field(lane, i::Integer) = lane[i]
 
-# NamedTuple-primal: parallel to the Tuple ctor. Inner V is a
-# `NamedTuple{names, Tuple{V_i...}}` of bare inner duals; build element-wise.
+# Unified NamedTuple-primal Lifted ctor — parallels the Tuple-primal one above.
+# Dispatches on tangent shape `Tt` at @generated expansion time so the per-field
+# `_inner_dual_for_field` calls unroll statically with the right tangent
+# accessor. `Tt` excludes `NTangent` here to avoid a dispatch ambiguity with the
+# generic struct-primal `(P, ::NTangent)` ctor below; the NTangent case for
+# NamedTuple primals is handled by a separate disambiguation method.
+@inline @generated function Lifted{P,N}(
+    primal::P, tangent::Tt
+) where {names,P<:NamedTuple{names},N,Tt<:Union{NamedTuple,NoTangent}}
+    InnerT = dual_type(Val(N), P)
+    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
+        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, tangent))
+    end
+    InnerTup = InnerT.parameters[2]
+    n = fieldcount(P)
+    inner_exprs = if Tt <: NoTangent
+        map(1:n) do i
+            :($(fieldtype(InnerTup, i))(primal[$i], NoTangent()))
+        end
+    else  # Tt <: NamedTuple
+        map(1:n) do i
+            :(_inner_dual_for_field($(fieldtype(InnerTup, i)), primal[$i], values(tangent)[$i]))
+        end
+    end
+    return quote
+        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
+    end
+end
+# NamedTuple-primal + NTangent disambiguation: per-field NTuple-of-lane-partials
+# build. Resolves the dispatch ambiguity between the unified NamedTuple-primal
+# ctor above and the generic struct-primal `(P, ::NTangent)` ctor below.
 @inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:NamedTuple,N}
     InnerT = dual_type(Val(N), P)
     if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
@@ -1038,50 +1057,10 @@ end
     lanes = tangent.lanes
     inner = ntuple(Val(fieldcount(P))) do i
         Vi = fieldtype(InnerTup, i)
-        # Unified width-1/N path; see the Tuple-primal ctor above.
         partials = ntuple(d -> _lane_field(lanes[d], i), Val(N))
         Vi(primal[i], _all_notangent_lane(partials) ? NoTangent() : partials)
     end
     return Lifted{P,N,InnerT}(NamedTuple{names}(inner))
-end
-
-# Per-lane element accessor used by the unified width-1/N inner-V constructors
-# above. A `NoTangent` lane has no per-element structure, so `lane[i]` would
-# error — return `NoTangent()` instead and let the per-element guard collapse
-# to `NoTangent()` when every direction is `NoTangent`.
-@inline _lane_field(lane::NoTangent, i::Integer) = NoTangent()
-@inline _lane_field(lane, i::Integer) = lane[i]
-@inline @generated function Lifted{P,N}(
-    primal::P, tangent::NamedTuple{names}
-) where {P<:NamedTuple{names},N} where {names}
-    InnerT = dual_type(Val(N), P)
-    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
-        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, tangent))
-    end
-    InnerTup = InnerT.parameters[2]
-    n = fieldcount(P)
-    inner_exprs = map(1:n) do i
-        :(_inner_dual_for_field($(fieldtype(InnerTup, i)), primal[$i], values(tangent)[$i]))
-    end
-    return quote
-        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
-    end
-end
-@inline @generated function Lifted{P,N}(
-    primal::P, ::NoTangent
-) where {P<:NamedTuple{names},N} where {names}
-    InnerT = dual_type(Val(N), P)
-    if !(InnerT isa DataType) || !(InnerT <: NamedTuple)
-        return :(invoke(Lifted{$P,$N}, Tuple{Vararg{Any}}, primal, NoTangent()))
-    end
-    InnerTup = InnerT.parameters[2]
-    n = fieldcount(P)
-    inner_exprs = map(1:n) do i
-        :($(fieldtype(InnerTup, i))(primal[$i], NoTangent()))
-    end
-    return quote
-        return Lifted{$P,$N,$InnerT}($(NamedTuple{names})(($(inner_exprs...),)))
-    end
 end
 
 # Struct-primal with `Tangent` tangent — recursive lift: the inner V is a
