@@ -258,46 +258,33 @@ end
         },
     },
 ) = true
-# Source-of-truth Lifted body for `unsafe_copyto!`. Handles all three
-# inner-V shapes (Dual-wrapped MemoryRef with singleton-NTangent tangent,
-# bare MemoryRef{<:NDual} / MemoryRef{<:Complex{<:NDual}}, and width N≥2
-# NTangent-wrapped MemoryRef) via tangent introspection. Mutation semantics
-# preserved by relying on the IR-emit's Lifted construction (which carries
-# the original MemoryRef through `_unlift`); bare-Dual delegators below
-# use the 3-param `Lifted{T,1,V}(v)` ctor to bypass canonicalisation so
-# their inner V aliases the user's MemoryRef rather than fresh memory.
+# Canonical NDual / Complex{NDual}-element MemoryRef V: NDual elements pack
+# primal+tangent, so a single `unsafe_copyto!` operates on both halves.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
-    dest::Mooncake.Lifted{MemoryRef{P}},
-    src::Mooncake.Lifted{MemoryRef{P}},
+    dest::Mooncake.Lifted{MemoryRef{P},N,V_d},
+    src::Mooncake.Lifted{MemoryRef{P},N,V_s},
     n::Mooncake.Lifted{Int},
-) where {N,P}
-    inner_dest = Mooncake._unlift(dest)
-    inner_src = Mooncake._unlift(src)
+) where {N,P,V_d<:MemoryRef{<:_HasNDual},V_s<:MemoryRef{<:_HasNDual}}
+    unsafe_copyto!(Mooncake._unlift(dest), Mooncake._unlift(src), primal(n))
+    return dest
+end
+# Wrapper-exception V (Dual{MemoryRef, NTangent}): copy primal + each lane.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
+    dest::Mooncake.Lifted{MemoryRef{P},N,V_d},
+    src::Mooncake.Lifted{MemoryRef{P},N,V_s},
+    n::Mooncake.Lifted{Int},
+) where {
+    N,
+    P,
+    V_d<:Dual{<:MemoryRef,<:Mooncake.NTangent},
+    V_s<:Dual{<:MemoryRef,<:Mooncake.NTangent},
+}
     pn = primal(n)
-    if inner_dest isa MemoryRef
-        # Canonical NDual / Complex{NDual}-element MemoryRef: copy operates
-        # element-wise on the NDual lanes, no separate tangent copy needed.
-        unsafe_copyto!(inner_dest, inner_src, pn)
-    else
-        # Dual-wrapped MemoryRef (wrapper-exception form).
-        unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
-        raw_t_dest = tangent(inner_dest)
-        raw_t_src = tangent(inner_src)
-        if raw_t_dest isa Mooncake.NTangent && length(raw_t_dest.lanes) >= 2
-            # Width N≥2: per-lane MemoryRef copy.
-            ntuple(
-                lane -> unsafe_copyto!(raw_t_dest.lanes[lane], raw_t_src.lanes[lane], pn),
-                Val(length(raw_t_dest.lanes)),
-            )
-        else
-            # Width-1 singleton-NTangent unwrap.
-            unsafe_copyto!(
-                Mooncake._ntangent_unwrap_singleton(raw_t_dest),
-                Mooncake._ntangent_unwrap_singleton(raw_t_src),
-                pn,
-            )
-        end
+    unsafe_copyto!(primal(dest), primal(src), pn)
+    for k in 1:N
+        unsafe_copyto!(Mooncake.tangent(dest, k), Mooncake.tangent(src, k), pn)
     end
     return dest
 end
