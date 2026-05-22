@@ -598,16 +598,15 @@ end
 # (a bare `Tuple{Dual{Int,NoTangent},...}`), not a `Dual{<:NTuple}`. The body
 # uses `primal(dims)` which has overloads for both shapes, so a plain Any
 # annotation lets either form dispatch through.
-@inline function _reshape_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}, dims)
-    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(reshape),N},
     x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     dims::Mooncake.Lifted{<:NTuple,N},
 ) where {N}
-    bare_result = _reshape_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(dims))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pdims = primal(dims)
+    y = reshape(primal(x), pdims)
+    dys = ntuple(n -> reshape(Mooncake.tangent(x, n), pdims), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -619,17 +618,6 @@ end
 # `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
-# `_new_(::Type{<:CuMaybeComplexArray}, data, maxsize, offset, dims)` ctor kernel.
-# `dims` may be a `Dual{<:NTuple}` (legacy) or a bare `Tuple{Dual,...}`
-# (canonical V from `_unlift(::Lifted{<:NTuple, 1})`); `primal(dims)` handles
-# both via the `primal(::Tuple)` overload, so leave it untyped.
-@inline function _cuarray_new_kernel(
-    ::Dual{Type{P}}, data::Dual, maxsize::Dual, offset::Dual, dims
-) where {P<:CuMaybeComplexArray}
-    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
-    dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
-    return Dual(y, dy)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_new_),N},
     _a1::Mooncake.Lifted{Type{P},N},
@@ -638,14 +626,12 @@ end
     offset::Mooncake.Lifted,
     dims::Mooncake.Lifted,
 ) where {N,P<:CuMaybeComplexArray}
-    bare_result = _cuarray_new_kernel(
-        Mooncake._unlift(_a1),
-        Mooncake._unlift(data),
-        Mooncake._unlift(maxsize),
-        Mooncake._unlift(offset),
-        Mooncake._unlift(dims),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pms = primal(maxsize)
+    poff = primal(offset)
+    pdims = primal(dims)
+    y = _new_(P, primal(data), pms, poff, pdims)
+    dys = ntuple(n -> _new_(P, Mooncake.tangent(data, n), pms, poff, pdims), Val(N))
+    return Mooncake.Lifted{P,N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(_new_)},
@@ -668,70 +654,26 @@ end
 @inline _cu_lgetfield_primal(x, name, ::Nothing) = getfield(x, name)
 @inline _cu_lgetfield_primal(x, name, order) = getfield(x, name, order)
 @inline _cuarray_is_data_field(name) = name === 1 || name === :data
-@inline _cu_lgetfield_data_tangent(dx::CuArray, name) =
-    _cuarray_is_data_field(name) ? dx.data : NoTangent()
-# When the CuArray's element type is non-differentiable (e.g. CuArray{Bool}),
-# `tangent_type(P)` collapses to `NoTangent` rather than the parallel `CuArray`.
-# Most field tangents are `NoTangent`; the forward data field path below
-# constructs the canonical opaque zero tangent for the resulting DataRef.
-@inline _cu_lgetfield_data_tangent(::NoTangent, name) = NoTangent()
-# Forward-mode lifted slot V is `NTangent{Tuple{CuArray}}` (width-1) /
-# `NTangent{NTuple{N, CuArray}}` (width-N). Unwrap the singleton lane and
-# delegate; for width-N callers, recursively apply per-lane.
-@inline _cu_lgetfield_data_tangent(dx::Mooncake.NTangent{Tuple{<:CuArray}}, name) = _cu_lgetfield_data_tangent(
-    dx.lanes[1], name
-)
-@inline _cu_lgetfield_data_tangent(dx::Mooncake.NTangent{<:NTuple{N,<:CuArray}}, name) where {N} = Mooncake.NTangent(
-    ntuple(i -> _cu_lgetfield_data_tangent(dx.lanes[i], name), Val(N))
-)
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
-@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), NoTangent()
-)
 @inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), NoFData()
 )
-@inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
-)
-@inline function _cuarray_lgetfield_fwd(
-    x_primal, ::NoTangent, name, order::Union{Nothing,Symbol}=nothing
-)
-    y = _cu_lgetfield_primal(x_primal, name, order)
-    dy = if _cuarray_is_data_field(name)
-        zero_tangent_internal(y, Mooncake.NoCache())
-    else
-        NoTangent()
-    end
-    return Dual(y, dy)
-end
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
 )
 
-# `lgetfield(::CuDataRef, ::Val{name}[, ::Val{order}])` implementation kernels.
-@inline function _lgetfield_cudataref_kernel(
-    x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}, ::Dual{Val{order}}
-) where {name,order}
-    return _cudataref_lgetfield_fwd(primal(x), name, order)
-end
-@inline function _lgetfield_cudataref_kernel(
-    x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
-) where {name}
-    return _cudataref_lgetfield_fwd(primal(x), name)
-end
+# `lgetfield(::CuDataRef, ::Val{name}[, ::Val{order}])` — CuDataRef tangent is
+# itself non-differentiable (the DataRef is an opaque handle), so field access
+# returns `NoTangent` for any field at any width.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:CuDataRef,N},
     _a2::Mooncake.Lifted{Val{name},N},
     _a3::Mooncake.Lifted{Val{order},N},
 ) where {N,name,order}
-    bare_result = _lgetfield_cudataref_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    return Mooncake.zero_lifted(Val(N), _cu_lgetfield_primal(primal(x), name, order))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -746,8 +688,7 @@ end
     x::Mooncake.Lifted{<:CuDataRef,N},
     _a2::Mooncake.Lifted{Val{name},N},
 ) where {N,name}
-    bare_result = _lgetfield_cudataref_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    return Mooncake.zero_lifted(Val(N), _cu_lgetfield_primal(primal(x), name, nothing))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
@@ -758,31 +699,36 @@ end
 # lgetfield rules for CuArray.  CuArray has 4 fields:
 #   :data (field 1) — the DataRef handle; tangent flows here
 #   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
-# `lgetfield(::CuArray, ::Val{name}[, ::Val{order}])` implementation kernels.
-# Drop the `<:CuArray` constraint on the tangent slot so non-differentiable
-# CuArrays (e.g. `CuArray{Bool}`, whose `tangent_type` collapses to
-# `NoTangent`) flow through; `_cu_lgetfield_data_tangent` has a `::NoTangent`
-# overload that returns `NoTangent` for any field name.
-@inline function _lgetfield_cuarray_kernel(
-    x::Dual{<:CuArray}, ::Dual{Val{name}}, ::Dual{Val{order}}
-) where {name,order}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name, order)
-end
-@inline function _lgetfield_cuarray_kernel(
-    x::Dual{<:CuArray}, ::Dual{Val{name}}
-) where {name}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
+# Split by V_x: NTangent V (differentiable element) builds per-lane tangents
+# via `tangent(x, n).data`; NoTangent V (non-differentiable element, e.g.
+# `CuArray{Bool}`) produces zero tangent at any width.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:CuArray,N,V_x},
+    _a2::Mooncake.Lifted{Val{name},N},
+    _a3::Mooncake.Lifted{Val{order},N},
+) where {N,V_x<:Dual{<:CuArray,<:Mooncake.NTangent},name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    if _cuarray_is_data_field(name)
+        dys = ntuple(n -> Mooncake.tangent(x, n).data, Val(N))
+        return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
+    end
+    return Mooncake.zero_lifted(Val(N), y)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:CuArray,N},
+    x::Mooncake.Lifted{<:CuArray,N,V_x},
     _a2::Mooncake.Lifted{Val{name},N},
     _a3::Mooncake.Lifted{Val{order},N},
-) where {N,name,order}
-    bare_result = _lgetfield_cuarray_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(_a2), Mooncake._unlift(_a3)
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+) where {N,V_x<:Dual{<:CuArray,NoTangent},name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    if _cuarray_is_data_field(name)
+        dy = zero_tangent_internal(y, Mooncake.NoCache())
+        return Mooncake.Lifted{Mooncake._typeof(y),N}(
+            y, Mooncake.NTangent(ntuple(_ -> dy, Val(N)))
+        )
+    end
+    return Mooncake.zero_lifted(Val(N), y)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -795,11 +741,29 @@ end
 
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:CuArray,N},
+    x::Mooncake.Lifted{<:CuArray,N,V_x},
     _a2::Mooncake.Lifted{Val{name},N},
-) where {N,name}
-    bare_result = _lgetfield_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(_a2))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+) where {N,V_x<:Dual{<:CuArray,<:Mooncake.NTangent},name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    if _cuarray_is_data_field(name)
+        dys = ntuple(n -> Mooncake.tangent(x, n).data, Val(N))
+        return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
+    end
+    return Mooncake.zero_lifted(Val(N), y)
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{<:CuArray,N,V_x},
+    _a2::Mooncake.Lifted{Val{name},N},
+) where {N,V_x<:Dual{<:CuArray,NoTangent},name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    if _cuarray_is_data_field(name)
+        dy = zero_tangent_internal(y, Mooncake.NoCache())
+        return Mooncake.Lifted{Mooncake._typeof(y),N}(
+            y, Mooncake.NTangent(ntuple(_ -> dy, Val(N)))
+        )
+    end
+    return Mooncake.zero_lifted(Val(N), y)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
