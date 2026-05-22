@@ -62,13 +62,6 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 # Rules. These are required for a lot of functionality in this case.
 #
 
-# Extract `(value, tangent)` from a width-1 / width-N inner V slot. Used by
-# the range-construction rules below that build TWP-tangents in-place.
-@inline _twp_tangent(d::Dual) = Mooncake._ntangent_unwrap_singleton(tangent(d))
-@inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), _twp_tangent(d)
-@inline _twp_val(d::Mooncake.Nfwd.NDual{P,1}) where {P<:IEEEFloat} = d.value, d.partials[1]
-@inline _twp_val(d::Mooncake.Nfwd.NDual{P,N}) where {P<:IEEEFloat,N} = d.value, d.partials
-
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_new_),N},
@@ -293,18 +286,22 @@ using Base: range_start_step_length
 )
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(range_start_step_length),N},
-    a::Mooncake.Lifted,
-    st::Mooncake.Lifted,
+    a::Mooncake.Lifted{T,N},
+    st::Mooncake.Lifted{T,N},
     len::Mooncake.Lifted{<:Integer},
-) where {N}
-    av, at = _twp_val(Mooncake._unlift(a))
-    sv, stt = _twp_val(Mooncake._unlift(st))
+) where {N,T<:IEEEFloat}
     lp = primal(len)
-    x = range_start_step_length(av, sv, lp)
+    x = range_start_step_length(primal(a), primal(st), lp)
     Tx = tangent_type(typeof(x))
-    dx = Tx((ref=at, step=stt, len=NoTangent(), offset=NoTangent()))
-    bare_result = Dual(x, dx)
-    return _wrap_rule_result(Val(N), bare_result)
+    dxs = ntuple(Val(N)) do n
+        Tx((
+            ref=Mooncake.tangent(a, n),
+            step=Mooncake.tangent(st, n),
+            len=NoTangent(),
+            offset=NoTangent(),
+        ))
+    end
+    return Mooncake.Lifted{_typeof(x),N}(x, Mooncake.NTangent(dxs))
 end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
@@ -387,18 +384,21 @@ end
 @is_primitive MinimalCtx Tuple{typeof(:),P,P,P} where {P<:IEEEFloat}
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(:),N},
-    start::Mooncake.Lifted{P},
-    step::Mooncake.Lifted{P},
-    stop::Mooncake.Lifted{P},
+    start::Mooncake.Lifted{P,N},
+    step::Mooncake.Lifted{P,N},
+    stop::Mooncake.Lifted{P,N},
 ) where {N,P<:IEEEFloat}
-    sav, sat = _twp_val(Mooncake._unlift(start))
-    sv, st = _twp_val(Mooncake._unlift(step))
-    sopv, _ = _twp_val(Mooncake._unlift(stop))
-    x = (:)(sav, sv, sopv)
+    x = (:)(primal(start), primal(step), primal(stop))
     T = tangent_type(typeof(x))
-    dx = T((ref=sat, step=st, len=NoTangent(), offset=NoTangent()))
-    bare_result = Dual(x, dx)
-    return _wrap_rule_result(Val(N), bare_result)
+    dxs = ntuple(Val(N)) do n
+        T((
+            ref=Mooncake.tangent(start, n),
+            step=Mooncake.tangent(step, n),
+            len=NoTangent(),
+            offset=NoTangent(),
+        ))
+    end
+    return Mooncake.Lifted{_typeof(x),N}(x, Mooncake.NTangent(dxs))
 end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
@@ -442,19 +442,20 @@ end
 )
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.range_start_stop_length),N},
-    start::Mooncake.Lifted,
-    stop::Mooncake.Lifted,
+    start::Mooncake.Lifted{P,N},
+    stop::Mooncake.Lifted{P,N},
     length::Mooncake.Lifted{<:Integer},
-) where {N}
-    sav, sat = _twp_val(Mooncake._unlift(start))
-    spv, spt = _twp_val(Mooncake._unlift(stop))
+) where {N,P<:IEEEFloat}
     lp = primal(length)
     l = lp - 1
-    y = Base.range_start_stop_length(sav, spv, lp)
+    y = Base.range_start_stop_length(primal(start), primal(stop), lp)
     T = tangent_type(typeof(y))
-    dy = T((ref=sat, step=(spt - sat) / l, len=NoTangent(), offset=NoTangent()))
-    bare_result = Dual(y, dy)
-    return _wrap_rule_result(Val(N), bare_result)
+    dys = ntuple(Val(N)) do n
+        sat = Mooncake.tangent(start, n)
+        spt = Mooncake.tangent(stop, n)
+        T((ref=sat, step=(spt - sat) / l, len=NoTangent(), offset=NoTangent()))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(Base.range_start_stop_length)},
@@ -478,12 +479,11 @@ end
     }
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._exp_allowing_twice64),N},
-        x::Mooncake.Lifted{TwicePrecision{Float64}},
+        x::Mooncake.Lifted{TwicePrecision{Float64},N},
     ) where {N}
-        inner_x = Mooncake._unlift(x)
-        y = Base._exp_allowing_twice64(primal(inner_x))
-        bare_result = Dual(y, typeof(y)(y * _twp_tangent(inner_x)))
-        return _wrap_rule_result(Val(N), bare_result)
+        y = Base._exp_allowing_twice64(primal(x))
+        dys = ntuple(n -> typeof(y)(y * Mooncake.tangent(x, n)), Val(N))
+        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
     end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
@@ -496,12 +496,12 @@ end
     @is_primitive(MinimalCtx, Tuple{typeof(Base._log_twice64_unchecked),Float64})
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._log_twice64_unchecked),N},
-        x::Mooncake.Lifted{Float64},
+        x::Mooncake.Lifted{Float64,N},
     ) where {N}
-        xv, xt = _twp_val(Mooncake._unlift(x))
+        xv = primal(x)
         y = Base._log_twice64_unchecked(xv)
-        bare_result = Dual(y, typeof(y)(xt / xv))
-        return _wrap_rule_result(Val(N), bare_result)
+        dys = ntuple(n -> typeof(y)(Mooncake.tangent(x, n) / xv), Val(N))
+        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x
