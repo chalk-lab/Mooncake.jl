@@ -1389,24 +1389,23 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# Direct Lifted body — wrapper-exception V (Dual{Memory, Memory}).
-# Direct Lifted body — canonical NDual-element Memory V (NDual carries
-# primal+tangent in elements; field access returns the field of the bare
-# canonical container, wrapped via `zero_dual` to the canonical V).
-#
-# The wrapper-exception variant (V_x<:Dual{<:Memory, <:Memory}) was removed
-# in Phase 6 of the wrapper-exception V removal — that constraint requires
-# the tangent slot to be `<:Memory`, but `dual_type(Val(N), Memory{T})`
-# always returns the NTangent-wrapped form `Dual{Memory, NTangent{Tuple{
-# Memory{tangent_type(T)}}}}` for non-IEEEFloat T (and the canonical
-# `Memory{NDual{T,N}}` for IEEEFloat T). Bare-Memory-tangent slots are
-# never produced.
+# Unified Lifted body for canonical NDual-element Memory / MemoryRef / Array V.
+# (Wrapper-exception variants were removed in Phase 6 — `dual_type(Val(N),
+# Memory{T})` for non-IEEEFloat T returns the NTangent-wrapped form
+# `Dual{Memory, NTangent{Tuple{Memory{tangent_type(T)}}}}` rather than a
+# bare-Memory-tangent slot.)
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:Memory,N,V_x},
+    x::Mooncake.Lifted{P,N,V_x},
     ::Mooncake.Lifted{Val{name}},
     ::Mooncake.Lifted{Val{order}},
-) where {N,name,order,V_x<:Memory{<:_HasNDual}}
+) where {
+    N,
+    P<:Union{Memory,MemoryRef,Array},
+    name,
+    order,
+    V_x<:Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}},
+}
     bare_x = Mooncake._unlift(x)
     bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
     return _wrap_rule_result(Val(N), bare_result)
@@ -1423,18 +1422,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-# Direct Lifted body — canonical NDual-element MemoryRef V.
-# (Wrapper-exception variant removed in Phase 6; see Memory comment above.)
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
-    ::Mooncake.Lifted{Val{name}},
-    ::Mooncake.Lifted{Val{order}},
-) where {N,name,order,V_x<:MemoryRef{<:_HasNDual}}
-    bare_x = Mooncake._unlift(x)
-    bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(Val(N), bare_result)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -1445,19 +1432,6 @@ function rrule!!(
     wants_offset = name === 1 || name === :ptr_or_offset
     dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
-end
-
-# Direct Lifted body — canonical NDual-element Array V.
-# (Wrapper-exception variant removed in Phase 6; see Memory comment above.)
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:Array,N,V_x},
-    ::Mooncake.Lifted{Val{name}},
-    ::Mooncake.Lifted{Val{order}},
-) where {N,name,order,V_x<:Array{<:_HasNDual}}
-    bare_x = Mooncake._unlift(x)
-    bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(Val(N), bare_result)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
