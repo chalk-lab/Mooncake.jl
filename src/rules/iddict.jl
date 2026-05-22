@@ -132,13 +132,11 @@ tangent(f::IdDict, ::NoRData) = f
     d::Mooncake.Lifted{<:IdDict},
     newsz::Mooncake.Lifted,
 ) where {N}
-    inner_d = Mooncake._unlift(d)
-    inner_newsz = Mooncake._unlift(newsz)
-    sz = primal(inner_newsz)
-    Base.rehash!(primal(inner_d), sz)
+    sz = primal(newsz)
+    Base.rehash!(primal(d), sz)
     # rehash! all N lane IDdicts. Width-1 unwraps to a single bare IdDict;
     # width-N has NTangent{NTuple{N, IdDict}} — rehash each.
-    _rehash_iddict_tangent!(tangent(inner_d), sz)
+    _rehash_iddict_tangent!(tangent(d), sz)
     return d
 end
 @inline _rehash_iddict_tangent!(t::Mooncake.NTangent, sz) = foreach(
@@ -193,13 +191,12 @@ end
         val::Mooncake.Lifted,
         key::Mooncake.Lifted,
     )
-    bare_d = Mooncake._unlift(d)
-    bare_v = Mooncake._unlift(val)
-    bare_k = primal(key)
-    setindex!(primal(bare_d), primal(bare_v), bare_k)
+    k = primal(key)
+    setindex!(primal(d), primal(val), k)
     # Per-lane tangent write.
+    d_lanes = tangent(d).lanes
     for n in 1:N
-        setindex!(tangent(bare_d).lanes[n], Mooncake.tangent(val, n), bare_k)
+        setindex!(d_lanes[n], Mooncake.tangent(val, n), k)
     end
     return d
 end
@@ -284,15 +281,15 @@ end
         key::Mooncake.Lifted,
         default::Mooncake.Lifted,
     )
-    bare_d = Mooncake._unlift(d)
-    bare_k = primal(key)
-    P_d = primal(bare_d)
-    has_key = in(bare_k, keys(P_d))
-    P_v = has_key ? P_d[bare_k] : primal(default)
+    k = primal(key)
+    P_d = primal(d)
+    has_key = in(k, keys(P_d))
+    P_v = has_key ? P_d[k] : primal(default)
     # Per-lane tangent lookup.
+    d_lanes = tangent(d).lanes
     lane_tangents = ntuple(Val(N)) do n
-        td = tangent(bare_d).lanes[n]
-        in(bare_k, keys(td)) ? td[bare_k] : Mooncake.tangent(default, n)
+        td = d_lanes[n]
+        in(k, keys(td)) ? td[k] : Mooncake.tangent(default, n)
     end
     return Mooncake.Lifted{_typeof(P_v),N}(P_v, Mooncake.NTangent(lane_tangents))
 end
@@ -325,11 +322,9 @@ end
     d::Mooncake.Lifted{<:IdDict},
     key::Mooncake.Lifted,
 ) where {N}
-    inner_d = Mooncake._unlift(d)
-    inner_key = Mooncake._unlift(key)
+    k = primal(key)
     bare_result = Dual(
-        getindex(primal(inner_d), primal(inner_key)),
-        getindex(_iddict_tangent(inner_d), primal(inner_key)),
+        getindex(primal(d), k), getindex(Mooncake._ntangent_unwrap_singleton(tangent(d)), k)
     )
     return _wrap_rule_result(Val(N), bare_result)
 end
@@ -349,11 +344,11 @@ end
         d::Mooncake.Lifted{<:IdDict},
         key::Mooncake.Lifted,
     )
-    bare_d = Mooncake._unlift(d)
-    bare_k = primal(key)
-    P_v = getindex(primal(bare_d), bare_k)
+    k = primal(key)
+    P_v = getindex(primal(d), k)
+    d_lanes = tangent(d).lanes
     lane_tangents = ntuple(Val(N)) do n
-        getindex(tangent(bare_d).lanes[n], bare_k)
+        getindex(d_lanes[n], k)
     end
     return Mooncake.Lifted{_typeof(P_v),N}(P_v, Mooncake.NTangent(lane_tangents))
 end
