@@ -12,14 +12,18 @@ Forward mode has *several* inner shapes at every slot, depending on `(primal typ
 
 | Primal type `P` | Width `N` | Inner dual `V` |
 |---|---|---|
-| `IEEEFloat` (e.g. `Float64`) | 1 | `Dual{P, T}` |
-| `IEEEFloat` | N | `NDual{T, N}` |
+| `IEEEFloat` (e.g. `Float64`) | N | `NDual{T, N}` |
 | `Complex{<:IEEEFloat}` | N | `Complex{NDual{T, N}}` |
 | `Array{<:IEEEFloat, D}` | N | `Array{NDual{T, N}, D}` |
 | `Memory{<:IEEEFloat}` (1.11+) | N | `Memory{NDual{T, N}}` |
-| Concrete `Tuple{P1, ...}` | N | `Tuple{V_1, ...}` (element-wise) |
-| Concrete `NamedTuple{names, T}` | N | `NamedTuple{names, T'}` (element-wise) |
-| Other (struct, abstract, etc.) | N | `Dual{P, NTangent{NTuple{N, T}}}` |
+| `MemoryRef{<:IEEEFloat}` (1.11+) | N | `MemoryRef{NDual{T, N}}` |
+| Concrete `Tuple{P1, ...}` | N | `Tuple{V_1, ...}` (element-wise recursive) |
+| Concrete `NamedTuple{names, T}` | N | `NamedTuple{names, T'}` (element-wise recursive) |
+| `Transpose{<:IEEEFloat, P_parent}` | N | `Transpose{NDual{T, N}, dual_type(Val(N), P_parent)}` |
+| `Adjoint`, `SubArray`, `Diagonal`, `Symmetric`, `Hermitian`, `UpperTriangular`, `LowerTriangular`, `UnitUpperTriangular`, `UnitLowerTriangular`, `UpperHessenberg`, `ReshapedArray`, `ReinterpretArray` over IEEEFloat parents | N | Same template — element type lifted to `NDual{T, N}`, parent V from recursive `dual_type` |
+| Concrete immutable struct with default `Tangent` tangent_type and all fields always initialised | N | `NamedTuple{fieldnames(P), Tuple{V_i, ...}}` (structural lift; recurses per-field) |
+| Concrete mutable struct with at least one Array-of-IEEEFloat field (direct or nested) | N | `SplitDual{NamedTuple{fieldnames(P), Tuple{V_i, ...}}}` |
+| Other (PossiblyUninit, custom tangent_type, non-canonical mutable, `NoTangent` primals, abstract, etc.) | N | `Dual{P, tangent_type(Val(N), P)}` (parallel-Dual fallback) |
 
 A 1-to-1 port of `CoDual`'s surface — having rule bodies write `Dual(y, dy)` — fails at the constructor: a rule body would have to *choose* which inner shape to build for each output slot. Every change to the inner-shape rules (e.g. flipping `IEEEFloat` from `Dual` to `NDual` at width 1) would ripple through every rule body.
 
@@ -42,10 +46,21 @@ Layer 3 — lifted_type:    P  →  L          wrapped slot type
 dual_type(Val(0), P)                       = P
 dual_type(Val(N), T<:IEEEFloat)            = NDual{T, N}
 dual_type(Val(N), Complex{T})              = Complex{NDual{T, N}}
-dual_type(Val(N), Array{T, D})             = Array{NDual{T, N}, D}
+dual_type(Val(N), Array{T, D})             = Array{NDual{T, N}, D}                # T<:IEEEFloat
+dual_type(Val(N), Wrapper{T, P_parent})    = Wrapper{NDual{T, N}, dual_type(Val(N), P_parent)}
+                                            # Wrapper ∈ {Transpose, Adjoint, SubArray, Diagonal,
+                                            # Symmetric, Hermitian, *Triangular, UpperHessenberg,
+                                            # ReshapedArray, ReinterpretArray}; T<:IEEEFloat
 dual_type(Val(N), Tuple{T1, T2, ...})      = Tuple{dual_type(Val(N), T1), ...}
 dual_type(Val(N), NamedTuple{names, T})    = NamedTuple{names, dual_type(Val(N), T)}
-dual_type(Val(N), P)                       = Dual{P, tangent_type(Val(N), P)}  # struct fallback
+dual_type(Val(N), ImmutableStruct{T...})   = NamedTuple{fieldnames, Tuple{V_i, ...}}
+                                            # structural lift; tangent_type(P) <: Tangent +
+                                            # all fields always_initialised + lift-safe fields
+dual_type(Val(N), MutableStruct{T...})     = SplitDual{NamedTuple{fieldnames, Tuple{V_i, ...}}}
+                                            # if struct has an Array-of-IEEEFloat field (direct or nested)
+dual_type(Val(N), P)                       = Dual{P, tangent_type(Val(N), P)}    # parallel-Dual fallback
+                                            # for PossiblyUninit, custom tangent_type, abstract P,
+                                            # NoTangent primals (String, Symbol, Nothing, etc.)
 
 # Layer 3 — wrapped slot type
 lifted_type(Val(0), P)                     = P                                  # primal passthrough
