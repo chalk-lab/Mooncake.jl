@@ -2454,7 +2454,7 @@ function tangent(x::Base.Broadcast.Broadcasted)
     ))
 end
 
-# `tangent(x, i)` for wrapper-NDual containers — return the per-direction
+# `tangent(x, i)` for NDual-element wrapper containers — return the per-direction
 # tangent in the wrapper's `tangent_type` shape (a `Tangent`), matching the
 # `randn_tangent(::W)` shape used by FD comparison in `test_frule_correctness`.
 @inline function Mooncake.tangent(

@@ -89,12 +89,14 @@ Array of NDual (top-level only)
   Array{<:Complex{T}, D}     → Array{Complex{NDual{T, N}}, D}
   Memory{...}, MemoryRef{...}→ same template, NDual element
 
-Wrapper-NDual view (Phases 1+2)
+NDual-element wrapper view (Phases 1+2)
   Wrapper{<:IEEEFloat, P_parent}
                              → Wrapper{NDual{T, N}, V_parent}
   Wrapper ∈ {Transpose, Adjoint, SubArray, Diagonal,
              Symmetric, Hermitian, *Triangular, UpperHessenberg,
              ReshapedArray, ReinterpretArray}
+  (parent V from recursive `dual_type`; wrapper's structural shape is
+   preserved, only its element type is lifted to NDual)
 
 Structural Tuple/NamedTuple (element-wise recursive)
   Tuple{T1, T2, ...}         → Tuple{V_1, V_2, ...}
