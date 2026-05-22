@@ -1095,21 +1095,6 @@ end
         Integer,
     },
 )
-# `unsafe_copyto!` (GPU→GPU) implementation kernel.
-@inline function _unsafe_copyto_gpu_gpu_kernel(
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = arrayify(src)
-    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
-    return dest
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{<:CuMaybeComplexArray,N},
@@ -1118,14 +1103,14 @@ end
     soffs::Mooncake.Lifted{<:Integer,N},
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = _unsafe_copyto_gpu_gpu_kernel(
-        Mooncake._unlift(dest),
-        Mooncake._unlift(doffs),
-        Mooncake._unlift(src),
-        Mooncake._unlift(soffs),
-        Mooncake._unlift(n),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    for k in 1:N
+        unsafe_copyto!(
+            Mooncake.tangent(dest, k), doffs_v, Mooncake.tangent(src, k), soffs_v, n_v
+        )
+    end
+    return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
@@ -1163,55 +1148,11 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
-# `unsafe_copyto!` (CPU→GPU) implementation kernel.
-# `src` may be a `Dual{Array, Array}` (legacy parallel) or a bare canonical V
-# `Vector{NDual{T,1}}` / `Vector{Complex{NDual{T,1}}}` (element-wise lift for
-# CPU `Array{T<:IEEEFloat}`). The bare-canonical-V overload deinterleaves into
-# CPU primal / tangent arrays before transfer.
-@inline function _unsafe_copyto_cpu_gpu_kernel(
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:Array,<:Array},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = primal(src), tangent(src)
-    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
-    return dest
-end
-@inline function _unsafe_copyto_cpu_gpu_kernel(
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::AbstractArray{<:Mooncake.Nfwd.NDual{T,1}},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-) where {T}
-    pdest, ddest = arrayify(dest)
-    psrc = map(d -> d.value, src)
-    dsrc = map(d -> d.partials[1], src)
-    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
-    return dest
-end
-@inline function _unsafe_copyto_cpu_gpu_kernel(
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::AbstractArray{Complex{Mooncake.Nfwd.NDual{T,1}}},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-) where {T}
-    pdest, ddest = arrayify(dest)
-    psrc = map(z -> Complex(z.re.value, z.im.value), src)
-    dsrc = map(z -> Complex(z.re.partials[1], z.im.partials[1]), src)
-    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
-    return dest
-end
+# `unsafe_copyto!` (CPU→GPU). Per-lane assembly: `primal(src)` and
+# `tangent(src, k)` each return a CPU `Array` (canonical V for
+# `Array{<:IEEEFloat}` is `Array{NDual{T,N}}`, whose `tangent(_, k)` accessor
+# returns the lane-k primal-typed Array; for non-IEEEFloat element types the
+# V is NTangent-wrapped and `tangent(_, k)` returns the lane Array directly).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{<:CuMaybeComplexArray,N},
@@ -1220,14 +1161,14 @@ end
     soffs::Mooncake.Lifted{<:Integer,N},
     n::Mooncake.Lifted{<:Integer,N},
 ) where {N}
-    bare_result = _unsafe_copyto_cpu_gpu_kernel(
-        Mooncake._unlift(dest),
-        Mooncake._unlift(doffs),
-        Mooncake._unlift(src),
-        Mooncake._unlift(soffs),
-        Mooncake._unlift(n),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    for k in 1:N
+        unsafe_copyto!(
+            Mooncake.tangent(dest, k), doffs_v, Mooncake.tangent(src, k), soffs_v, n_v
+        )
+    end
+    return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
@@ -1261,18 +1202,15 @@ end
 # It is a pure side-effect with no mathematical output — gradient is zero.
 # Both the primal and its fdata (if any) are independent GPU allocations; free both.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
-# `unsafe_free!(::CuArray)` implementation kernel.
-@inline function _unsafe_free_cuarray_kernel(x::Dual{<:CuArray})
-    unsafe_free!(primal(x))
-    dx = tangent(x)
-    dx isa NoFData || unsafe_free!(dx)
-    return Dual(nothing, NoTangent())
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_free!),N}, x::Mooncake.Lifted{<:CuArray,N}
 ) where {N}
-    bare_result = _unsafe_free_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    unsafe_free!(primal(x))
+    for k in 1:N
+        dx_k = Mooncake.tangent(x, k)
+        dx_k isa NoFData || unsafe_free!(dx_k)
+    end
+    return Mooncake.zero_lifted(Val(N), nothing)
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
     unsafe_free!(primal(x))
@@ -1285,16 +1223,11 @@ end
 # (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
 # The primal registration must happen; the gradient is zero.
 @is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
-# `Core.finalizer(f, x)` implementation kernel.
-@inline function _core_finalizer_kernel(f::Dual, x::Dual)
-    Core.finalizer(primal(f), primal(x))
-    return Dual(nothing, NoTangent())
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.finalizer),N}, f::Mooncake.Lifted, x::Mooncake.Lifted
 ) where {N}
-    bare_result = _core_finalizer_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    Core.finalizer(primal(f), primal(x))
+    return Mooncake.zero_lifted(Val(N), nothing)
 end
 function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
     Core.finalizer(primal(f), primal(x))
@@ -1326,34 +1259,18 @@ end
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
-# `fill!(::CuMaybeComplexArray, x)` implementation kernel.
-# `x` may be a `Dual{P, T}` (legacy parallel) or a bare canonical V — for an
-# IEEEFloat scalar primal that is `NDual{T, 1}`; for a Complex{IEEEFloat} that
-# is `Complex{NDual{T, 1}}`. `_fill_x_primal` / `_fill_x_tangent` extract the
-# scalar primal / scalar tangent from each of these shapes uniformly.
-@inline _fill_x_primal(x::Dual) = primal(x)
-@inline _fill_x_primal(x::Mooncake.Nfwd.NDual) = x.value
-@inline _fill_x_primal(x::Complex{<:Mooncake.Nfwd.NDual}) = Complex(x.re.value, x.im.value)
-@inline _fill_x_tangent(x::Dual) = tangent(x)
-@inline _fill_x_tangent(x::Mooncake.Nfwd.NDual{T,1}) where {T} = x.partials[1]
-@inline function _fill_x_tangent(x::Complex{Mooncake.Nfwd.NDual{T,1}}) where {T}
-    return Complex(x.re.partials[1], x.im.partials[1])
-end
-@inline function _fill_cuarray_kernel(
-    a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x
-)
-    fill!(primal(a), _fill_x_primal(x))
-    tx = _fill_x_tangent(x)
-    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
-    return a
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fill!),N},
     a::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     x::Mooncake.Lifted,
 ) where {N}
-    bare_result = _fill_cuarray_kernel(Mooncake._unlift(a), Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    fill!(primal(a), primal(x))
+    for k in 1:N
+        da_k = Mooncake.tangent(a, k)
+        tx_k = Mooncake.tangent(x, k)
+        fill!(da_k, tx_k isa NoTangent ? zero(eltype(da_k)) : eltype(da_k)(tx_k))
+    end
+    return a
 end
 function rrule!!(
     ::CoDual{typeof(fill!)},
