@@ -1141,12 +1141,20 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
 # Union of tangent shapes the wrapper-exception `Dual{P, T}` bodies need to
-# accept. `Tuple` / `NamedTuple` were members historically but became dead
-# after Phases 1-3 of the wrapper-exception-removal plan: Tuple/NamedTuple
-# primals use structural Tuple / NamedTuple V (not `Dual{Tuple, Tuple}`),
-# and no other primal's `tangent_type` is a bare `Tuple` / `NamedTuple`.
-# Removing them tightens dispatch without changing behavior.
-const StandardTangentType = Union{Tangent,MutableTangent,NoTangent,NTangent}
+# accept. After Phases 1-5 of the wrapper-exception-removal plan, the only
+# reachable T cases at `dual_type(Val(N), P) <: Dual{P, T}` are:
+#   - `T <: NoTangent` — non-differentiable primals (`String`, `Symbol`,
+#     `Nothing`, `Int`, `Char`, `Bool`, `Type{...}`).
+#   - `T <: NTangent` — the NTangent-wrapped fallback for primals outside
+#     the canonical coverage (custom-`tangent_type` like `TwicePrecision`,
+#     `Vector{Any}` / `SimpleVector`, `Vector{Int}` / `Memory{Int}`, mutable
+#     structs with `Any` fields).
+# `Tuple` / `NamedTuple` are dead (Tuple/NamedTuple primals use structural
+# Tuple / NamedTuple V). `Tangent` and `MutableTangent` are also dead — the
+# `dual_type` fallback always wraps in NTangent at `Val(N)` for `N >= 1`,
+# so a bare-`Tangent` / bare-`MutableTangent` second parameter never appears
+# in the output. Probe via `tangent_test_cases()` confirms 0 hits.
+const StandardTangentType = Union{NoTangent,NTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any}}) = true
