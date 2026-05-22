@@ -161,11 +161,18 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 # `lgetfield` implementation kernels (no `Dual{typeof(lgetfield)}` arg). The
 # `Lifted`-typed body below dispatches the runtime inner V (`Dual{P, T}`,
 # `Tuple`, `NamedTuple`) into the matching kernel.
-@inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:StandardTangentType,f}
+# T<:NoTangent (post Phase 6 narrowing): parent has no tangent, so the field
+# is trivially uninit. Skip the runtime parent-NoTangent check by dispatching
+# on T.
+@inline function _lgetfield_impl(x::Dual{P,NoTangent}, ::Val{f}) where {P,f}
+    return uninit_dual(getfield(primal(x), f))
+end
+@inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:NTangent,f}
     primal_field = getfield(primal(x), f)
-    # Short-circuit on either parent-NoTangent or field-NoTangent (see the
-    # 4-arg overload below for rationale).
-    if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
+    # Field-level NoTangent check (e.g., `Vector{Any}.size`): a field's own
+    # tangent_type can still be NoTangent even when the parent's isn't. This
+    # depends on the runtime primal_field's type, so stays as a runtime branch.
+    if tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
@@ -344,18 +351,20 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 # Implementation kernels for `lgetfield(x, Val(f), Val(order))`.
+# T<:NoTangent: parent has no tangent — trivial uninit_dual on the field.
 @inline function _lgetfield_impl(
-    x::Dual{P,<:StandardTangentType}, ::Val{f}, ::Val{order}
+    x::Dual{P,NoTangent}, ::Val{f}, ::Val{order}
 ) where {P,f,order}
+    return uninit_dual(getfield(primal(x), f, order))
+end
+@inline function _lgetfield_impl(
+    x::Dual{P,T}, ::Val{f}, ::Val{order}
+) where {P,T<:NTangent,f,order}
     primal_field = getfield(primal(x), f, order)
-    # Short-circuit when *either* the parent `P` has no tangent, *or* the
-    # specific field is non-differentiable
-    # (`tangent_type(typeof(primal_field)) === NoTangent`). The narrower
-    # field check covers struct/array primals like `Vector{Any}.size` where
-    # the parent has a tangent shape but the specific field doesn't — avoids
-    # recursing into `_get_tangent_field` on a bulk-array tangent that
-    # doesn't structurally decompose.
-    if tangent_type(P) === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
+    # Field-level NoTangent check (e.g., `Vector{Any}.size`): a field's own
+    # tangent_type can still be NoTangent even when the parent's isn't. This
+    # depends on the runtime primal_field's type, so stays as a runtime branch.
+    if tangent_type(_typeof(primal_field)) === NoTangent
         return uninit_dual(primal_field)
     else
         return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
