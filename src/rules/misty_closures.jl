@@ -203,35 +203,24 @@ end
 # NTangent wrapper, not the bare MistyClosureTangent. Unwrap the singleton
 # lane at this boundary so field access (`.captures_tangent`,
 # `.dual_callable`) dispatches on the bare MistyClosureTangent.
-@inline function _misty_closure_kernel(f::Dual{<:MistyClosure}, x...)
-    raw_t = tangent(f)
-    # Width N≥2: each lane has its own MistyClosureTangent; per-lane invocation
-    # of dual_callable, then assemble per-lane tangents into a top-level
-    # NTangent. Mirrors the per-lane assembly pattern used elsewhere for
-    # NTangent-wrapped scalar primal slots (e.g. pointer_from_objref,
-    # _pointerref_kernel, IdDict getindex).
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        N = length(raw_t.lanes)
-        per_lane = ntuple(Val(N)) do lane
-            mct_lane = raw_t.lanes[lane]
-            dc_lane = Dual(primal(f).oc.captures, mct_lane.captures_tangent)
-            mct_lane.dual_callable(dc_lane, x...)
-        end
-        primal_result = primal(per_lane[1])
-        tan_results = ntuple(lane -> tangent(per_lane[lane]), Val(N))
-        return Dual(primal_result, Mooncake.NTangent(tan_results))
-    end
-    mct = Mooncake._ntangent_unwrap_singleton(raw_t)
-    dual_captures = Dual(primal(f).oc.captures, mct.captures_tangent)
-    return mct.dual_callable(dual_captures, x...)
-end
 @inline function frule!!(
     f::Mooncake.Lifted{P,N}, x::Vararg{Mooncake.Lifted,M}
 ) where {P<:MistyClosure,N,M}
-    bare_f = Mooncake._unlift(f)
+    pf = primal(f)
     bare_x = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
-    bare_result = _misty_closure_kernel(bare_f, bare_x...)
-    return _wrap_rule_result(Val(N), bare_result)
+    # Per-lane: each lane has its own MistyClosureTangent. Invoke
+    # `dual_callable` once per lane with a Dual(captures, lane_captures_tangent),
+    # then assemble per-lane primal/tangent into the canonical Lifted shape.
+    per_lane = ntuple(Val(N)) do k
+        mct = Mooncake.tangent(f, k)
+        dc = Dual(pf.oc.captures, mct.captures_tangent)
+        mct.dual_callable(dc, bare_x...)
+    end
+    primal_result = primal(per_lane[1])
+    tan_results = ntuple(k -> tangent(per_lane[k]), Val(N))
+    return Mooncake.Lifted{_typeof(primal_result),N}(
+        primal_result, Mooncake.NTangent(tan_results)
+    )
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:MistyClosure,Vararg}}) = true
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)

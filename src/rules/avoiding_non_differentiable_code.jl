@@ -6,28 +6,12 @@
 # independently from the inner V. No bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.:(+)),N},
-    x::Mooncake.Lifted{P_x},
+    x::Mooncake.Lifted{P_x,N},
     y::Mooncake.Lifted{<:Integer},
 ) where {N,P_x<:Ptr}
-    inner_x = Mooncake._unlift(x)
     py = primal(y)
-    raw_t = tangent(inner_x)
-    # Multi-lane NTangent (width N≥2): per-lane `Ptr + Int`. The original
-    # singleton-only unwrap took lane 1's Ptr only; the 2-arg Lifted ctor
-    # then broadcast that single result across all N NTangent lanes
-    # (silent aliasing — lanes 2..N inherited lane 1's shifted Ptr,
-    # dropping their independent base addresses).
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        dys = ntuple(lane -> raw_t.lanes[lane] + py, Val(length(raw_t.lanes)))
-        return Mooncake.Lifted{P_x,N}(primal(inner_x) + py, Mooncake.NTangent(dys))
-    end
-    # When the inner V is `Dual{Ptr{T}, NTangent{Tuple{Ptr{TT}}}}`,
-    # `tangent(inner_x)` returns the outer NTangent; the `+ py` arithmetic
-    # needs the bare `Ptr` value. Unwrap the singleton-NTangent. The 2-arg
-    # `Lifted{P_x, N}(primal, tangent)` ctor will rewrap via
-    # `dual_type(Val(N), P_x)(...)`.
-    bare_t = Mooncake._ntangent_unwrap_singleton(raw_t)
-    return Mooncake.Lifted{P_x,N}(primal(inner_x) + py, bare_t + py)
+    dys = ntuple(k -> Mooncake.tangent(x, k) + py, Val(N))
+    return Mooncake.Lifted{P_x,N}(primal(x) + py, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.:(+)),<:Ptr,<:Integer}}) = true
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
