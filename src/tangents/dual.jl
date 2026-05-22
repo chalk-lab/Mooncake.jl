@@ -261,6 +261,12 @@ end
 # true`) rather than widening the recursion in the generator body, so
 # precompile expansion stays bounded.
 @inline _field_canonical_ndual_eligible(::Type{T}) where {T} = false
+# Leaf scalar fields: canonical V is `NDual{T, N}` / `Complex{NDual{T, N}}`,
+# already interleaved. A mutable struct with only scalar fields benefits
+# from SplitDual because each field's value+tangent live in the NDual leaf
+# (Phase 5 scalar-only widening).
+@inline _field_canonical_ndual_eligible(::Type{<:IEEEFloat}) = true
+@inline _field_canonical_ndual_eligible(::Type{<:Complex{<:IEEEFloat}}) = true
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:IEEEFloat}}) = true
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:Complex{<:IEEEFloat}}}) = true
 # Nested Array canonical NDual (Phase 4 closure): `DenseArray{<:DenseArray{<:IEEEFloat}}`
