@@ -815,22 +815,15 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
 )
-# `getindex(::CuMaybeComplexArray, ::AbstractVector{Integer})` (gather) kernel.
-@inline function _getindex_cuarray_gather_kernel(
-    x::Dual{<:CuMaybeComplexArray}, idx::Dual{<:AbstractVector{<:Integer}}
-)
-    px, dx = arrayify(x)
-    return Dual(px[primal(idx)], dx[primal(idx)])
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getindex),N},
     x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     idx::Mooncake.Lifted{<:AbstractVector{<:Integer},N},
 ) where {N}
-    bare_result = _getindex_cuarray_gather_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(idx)
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pidx = primal(idx)
+    y = primal(x)[pidx]
+    dys = ntuple(n -> Mooncake.tangent(x, n)[pidx], Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
@@ -854,18 +847,15 @@ end
 # dot (real): d(dot(x,y)) = dot(dx,y) + dot(x,dy)
 #             pullback:     dx += dz*y,  dy += dz*x
 @is_primitive(MinimalCtx, Tuple{typeof(norm),CuMaybeComplexArray})
-# `norm(::CuMaybeComplexArray)` implementation kernel.
-@inline function _norm_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    y = norm(px)
-    dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
-    return Dual(y, dy)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(norm),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = _norm_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    px = primal(x)
+    y = norm(px)
+    dys = ntuple(Val(N)) do n
+        iszero(y) ? zero(real(eltype(px))) : real(dot(px, Mooncake.tangent(x, n))) / y
+    end
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -879,19 +869,18 @@ function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(dot),CuFloatArray,CuFloatArray})
-# `dot(::CuFloatArray, ::CuFloatArray)` implementation kernel.
-@inline function _dot_cuarray_kernel(x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
-    px, dx = arrayify(x)
-    py, dy = arrayify(y)
-    return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(dot),N},
     x::Mooncake.Lifted{<:CuFloatArray,N},
     y::Mooncake.Lifted{<:CuFloatArray,N},
 ) where {N}
-    bare_result = _dot_cuarray_kernel(Mooncake._unlift(x), Mooncake._unlift(y))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    px = primal(x)
+    py = primal(y)
+    z = dot(px, py)
+    dzs = ntuple(
+        n -> dot(Mooncake.tangent(x, n), py) + dot(px, Mooncake.tangent(y, n)), Val(N)
+    )
+    return Mooncake.Lifted{Mooncake._typeof(z),N}(z, Mooncake.NTangent(dzs))
 end
 function rrule!!(
     ::CoDual{typeof(dot)}, x::CoDual{<:CuFloatArray}, y::CoDual{<:CuFloatArray}
@@ -931,18 +920,15 @@ end
 #
 # Note: undefined when any element of x is zero (gradient is skipped in that case).
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
-# `prod(::CuMaybeComplexArray)` implementation kernel.
-@inline function _prod_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    y = prod(px)
-    dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
-    return Dual(y, dy)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(prod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = _prod_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    px = primal(x)
+    y = prod(px)
+    dys = ntuple(Val(N)) do n
+        iszero(y) ? zero(y) : y * sum(Mooncake.tangent(x, n) ./ px)
+    end
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -965,16 +951,12 @@ end
 #
 # Supports the optional `dims` keyword (passed through to CUDA's cumsum).
 @is_primitive(MinimalCtx, Tuple{typeof(cumsum),CuMaybeComplexArray})
-# `cumsum(::CuMaybeComplexArray)` implementation kernel.
-@inline function _cumsum_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
-    return Dual(cumsum(px; kw...), cumsum(dx; kw...))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(cumsum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
-    bare_result = _cumsum_cuarray_kernel(Mooncake._unlift(x); kw...)
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = cumsum(primal(x); kw...)
+    dys = ntuple(n -> cumsum(Mooncake.tangent(x, n); kw...), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -999,19 +981,14 @@ end
 # so the Jacobian at that position is zero (the zero annihilates the product).
 # nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
 @is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
-# `cumprod(::CuMaybeComplexArray)` implementation kernel.
-@inline function _cumprod_cuarray_kernel(x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
-    y = cumprod(px; kw...)
-    inv_px = nan_tangent_guard.(px, inv.(px))
-    dy = y .* cumsum(dx .* inv_px; kw...)
-    return Dual(y, dy)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(cumprod),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray}; kw...
 ) where {N}
-    bare_result = _cumprod_cuarray_kernel(Mooncake._unlift(x); kw...)
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    px = primal(x)
+    y = cumprod(px; kw...)
+    inv_px = nan_tangent_guard.(px, inv.(px))
+    dys = ntuple(n -> y .* cumsum(Mooncake.tangent(x, n) .* inv_px; kw...), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1036,23 +1013,15 @@ end
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
-# `accumulate(+, ::CuMaybeComplexArray)` implementation kernel.
-@inline function _accumulate_plus_cuarray_kernel(
-    ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
-)
-    px, dx = arrayify(x)
-    return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(accumulate),N},
     op::Mooncake.Lifted{typeof(+)},
     x::Mooncake.Lifted{<:CuMaybeComplexArray};
     kw...,
 ) where {N}
-    bare_result = _accumulate_plus_cuarray_kernel(
-        Mooncake._unlift(op), Mooncake._unlift(x); kw...
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = accumulate(+, primal(x); kw...)
+    dys = ntuple(n -> cumsum(Mooncake.tangent(x, n); kw...), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
@@ -1092,16 +1061,12 @@ end
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-# `sum(::CuMaybeComplexArray)` implementation kernel.
-@inline function _sum_cuarray_kernel(x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    return Dual(sum(px), sum(dx))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N}, x::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = _sum_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = sum(primal(x))
+    dys = ntuple(n -> sum(Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     _, dx = arrayify(x)
