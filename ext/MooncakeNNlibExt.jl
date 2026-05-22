@@ -311,10 +311,8 @@ end
     x::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,M},N,V_x},
     b::Mooncake.Lifted{<:SupportedArray{<:IEEEFloat,L},N,V_b},
 ) where {N,M,L,V_x<:Dual,V_b<:Dual}
-    bare_x = Mooncake._unlift(x)
-    bare_b = Mooncake._unlift(b)
-    primal(bare_x) .+= primal(bare_b)
-    tangent(bare_x) .+= tangent(bare_b)
+    primal(x) .+= primal(b)
+    tangent(x) .+= tangent(b)
     return x
 end
 # Canonical NDual-element slot V: NDual addition is element-wise so

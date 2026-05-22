@@ -273,10 +273,9 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{Type{FunctionWrapper{R,A}},N}, obj::Mooncake.Lifted{P}
 ) where {R,A,P,N}
-    bare_obj = Mooncake._unlift(obj)
-    t, _ = _function_wrapper_tangent(R, primal(bare_obj), A, tangent(bare_obj))
-    fw = FunctionWrapper{R,A}(primal(bare_obj))
-    return Mooncake.Lifted{FunctionWrapper{R,A},N}(fw, t)
+    p = primal(obj)
+    t, _ = _function_wrapper_tangent(R, p, A, tangent(obj))
+    return Mooncake.Lifted{FunctionWrapper{R,A},N}(FunctionWrapper{R,A}(p), t)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:FunctionWrapper},Any}}) = true
 
