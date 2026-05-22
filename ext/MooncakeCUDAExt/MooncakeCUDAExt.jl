@@ -1994,32 +1994,19 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-# `cu(::AbstractArray)` implementation kernel.
-# CPU `Array{T<:IEEEFloat}` lifts element-wise to canonical V `Array{NDual{T,N}}`,
-# while the legacy parallel form is `Dual{Array{T}, Array{T}}`. Two overloads:
-# the canonical-V path deinterleaves into two CPU arrays (one per width slot),
-# transfers each via `cu`, and re-pairs them into a parallel `Dual{CuArray, CuArray}`
-# (the CuArray slot's V is parallel because CuArray's `tangent_type` is overridden
-# to itself). The legacy `Dual` overload is kept for direct callers.
-@inline function _cu_kernel(x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
-    return Dual(cu(primal(x)), cu(tangent(x)))
-end
-@inline function _cu_kernel(x::AbstractArray{<:Mooncake.Nfwd.NDual{T,1}}) where {T}
-    p = map(d -> d.value, x)
-    t = map(d -> d.partials[1], x)
-    return Dual(cu(p), cu(t))
-end
-@inline function _cu_kernel(x::AbstractArray{Complex{Mooncake.Nfwd.NDual{T,1}}}) where {T}
-    p = map(z -> Complex(z.re.value, z.im.value), x)
-    t = map(z -> Complex(z.re.partials[1], z.im.partials[1]), x)
-    return Dual(cu(p), cu(t))
-end
+# `cu(::AbstractArray)` — per-lane CPU→GPU transfer. The canonical V for a
+# CPU `Array{T<:IEEEFloat}` is `Array{NDual{T,N}}`; `tangent(x, k)` extracts
+# the lane-k CPU primal-typed Array (e.g. `Array{T}` or `Array{Complex{T}}`),
+# which `cu` then transfers. For non-IEEEFloat element types the canonical V
+# is `Dual{<:Array, <:NTangent}` and `tangent(x, k)` returns the lane Array
+# from the NTangent.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(cu),N},
     x::Mooncake.Lifted{<:AbstractArray{<:CuFloatOrComplex},N},
 ) where {N}
-    bare_result = _cu_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = cu(primal(x))
+    dys = ntuple(k -> cu(Mooncake.tangent(x, k)), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)
@@ -2036,24 +2023,14 @@ end
 @is_primitive(
     MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
 )
-# `Array{T,N}(x::CuArray{T,N})` implementation kernel.
-# Type-slot inner V's primal is `Type{Array{NDual{T,M}, N}}` (per
-# `dual_type(::Val{M}, ::Type{Type{Array{T,N}}})`'s element-type substitution
-# in `nfwd/NfwdMooncake.jl`), while the CuArray slot's V keeps T = `Float64`
-# / `Float32` / `Complex{...}` (parallel-storage CuArray). Drop the shared-T
-# constraint between the two slots and constrain the array slot's tangent to
-# match its primal so the body's `Array(primal/tangent)` calls round-trip.
-@inline function _array_from_cuarray_kernel(
-    ::Dual{<:Type{<:Array}}, x::Dual{X,X}
-) where {T<:CuFloatOrComplex,X<:CuArray{T}}
-    return Dual(Array(primal(x)), Array(tangent(x)))
-end
+# `Array{T,N}(x::CuArray{T,N})` — per-lane GPU→CPU transfer. Each CuArray lane
+# tangent transfers separately via `Array(tangent(x, k))`.
 @inline function frule!!(
     _a0::Mooncake.Lifted{Type{Array{T,N}},M}, x::Mooncake.Lifted{<:CuArray{T,N},M}
 ) where {T<:CuFloatOrComplex,N,M}
-    bare_result = _array_from_cuarray_kernel(Mooncake._unlift(_a0), Mooncake._unlift(x))
-    P_out = Mooncake.__primal_type(Mooncake._typeof(bare_result))
-    return Mooncake._wrap_rule_result(P_out, Val(M), bare_result)
+    y = Array(primal(x))
+    dys = ntuple(k -> Array(Mooncake.tangent(x, k)), Val(M))
+    return Mooncake.Lifted{Mooncake._typeof(y),M}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
@@ -2072,18 +2049,15 @@ end
 # frule:    d(Diagonal(v)) = Diagonal(dv)
 # pullback: dv += diag(dD)  (i.e. extract the diagonal from the output cotangent)
 @is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexArray})
-# `Diagonal(v::CuMaybeComplexArray)` ctor implementation kernel.
-@inline function _diagonal_cuarray_kernel(
-    ::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray}
-)
-    # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
-    return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
-end
+# `Diagonal(v::CuMaybeComplexArray)` ctor — per-lane structural Tangent.
+# Diagonal is a non-mutable struct with one differentiable field `:diag`; each
+# lane tangent is `Tangent((; diag=tangent(v, k)))`.
 @inline function frule!!(
     _a0::Mooncake.Lifted{<:Type{<:Diagonal},N}, v::Mooncake.Lifted{<:CuMaybeComplexArray,N}
 ) where {N}
-    bare_result = _diagonal_cuarray_kernel(Mooncake._unlift(_a0), Mooncake._unlift(v))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = Diagonal(primal(v))
+    dys = ntuple(k -> Tangent((; diag=Mooncake.tangent(v, k))), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
     pv, dv = arrayify(v)
