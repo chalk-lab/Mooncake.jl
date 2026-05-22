@@ -1193,24 +1193,35 @@ end
 # `Vararg{Lifted,M}` over the trailing args — the only structural difference
 # is whether `_inbounds` gets forwarded into the underlying `getfield(…)` call.
 #
-# Wrapper-exception V (Dual{P, T<:StandardTangentType}): general struct.
+# `Dual` V split into two methods by tangent shape (post Phase 6
+# StandardTangentType narrowing — the only reachable Ts are NoTangent
+# and NTangent). Dispatching on T eliminates the runtime
+# `tangent_type(P) == NoTangent` branch.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
     x::Mooncake.Lifted{P,N,V_x},
     name::Mooncake.Lifted,
     extras::Vararg{Mooncake.Lifted,M},
-) where {N,P,T<:StandardTangentType,V_x<:Dual{P,T},M}
+) where {N,P,V_x<:Dual{P,NoTangent},M}
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
     _extras = map(primal, extras)
-    bare_result = if tangent_type(P) == NoTangent
-        uninit_dual(getfield(primal(bare_x), _name, _extras...))
-    else
-        _dual_or_ndual(
-            getfield(primal(bare_x), _name, _extras...),
-            _get_tangent_field(tangent(bare_x), _name, _extras...),
-        )
-    end
+    bare_result = uninit_dual(getfield(primal(bare_x), _name, _extras...))
+    return _wrap_rule_result(Val(N), bare_result)
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    name::Mooncake.Lifted,
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,T<:NTangent,V_x<:Dual{P,T},M}
+    bare_x = Mooncake._unlift(x)
+    _name = primal(name)
+    _extras = map(primal, extras)
+    bare_result = _dual_or_ndual(
+        getfield(primal(bare_x), _name, _extras...),
+        _get_tangent_field(tangent(bare_x), _name, _extras...),
+    )
     return _wrap_rule_result(Val(N), bare_result)
 end
 # SplitDual V (mutable struct with Array field): project canonical V's field.
