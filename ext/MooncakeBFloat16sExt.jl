@@ -37,7 +37,6 @@ import Mooncake:
     extract,
     zero_fcodual,
     MinimalCtx,
-    _unlift,
     _ndual_output_to_width1
 
 # Core.BFloat16 requires Julia >= 1.11.
@@ -129,9 +128,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
 @inline function Mooncake.frule!!(
     ::Lifted{Type{Float32},N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = Float32(primal(inner))
-    lanes = tangent(inner).lanes
+    y = Float32(primal(x))
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> Float32(lanes[n]), Val(N))
     return Lifted{Float32,N}(y, new_lanes)
 end
@@ -145,9 +143,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
 @inline function Mooncake.frule!!(
     ::Lifted{Type{Float64},N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = Float64(primal(inner))
-    lanes = tangent(inner).lanes
+    y = Float64(primal(x))
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> Float64(lanes[n]), Val(N))
     return Lifted{Float64,N}(y, new_lanes)
 end
@@ -161,9 +158,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
 @inline function Mooncake.frule!!(
     ::Lifted{Type{P},N}, x::Lifted{Float32,N}
 ) where {N}
-    inner = _unlift(x)
-    y = P(primal(inner))
-    lanes = tangent(inner).lanes
+    y = P(primal(x))
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> P(lanes[n]), Val(N))
     return Lifted{P,N}(y, new_lanes)
 end
@@ -177,9 +173,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float64}
 @inline function Mooncake.frule!!(
     ::Lifted{Type{P},N}, x::Lifted{Float64,N}
 ) where {N}
-    inner = _unlift(x)
-    y = P(Float32(primal(inner)))
-    lanes = tangent(inner).lanes
+    y = P(Float32(primal(x)))
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> P(Float32(lanes[n])), Val(N))
     return Lifted{P,N}(y, new_lanes)
 end
@@ -195,11 +190,10 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(sqrt),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(sqrt),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = sqrt(_x)
     inv_2y = inv(2 * y)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * inv_2y), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -214,11 +208,10 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(cbrt),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(cbrt),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = cbrt(_x)
     inv_3y2 = inv(3 * y^2)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * inv_3y2), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -231,9 +224,8 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(exp),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    y = exp(primal(inner))
-    lanes = tangent(inner).lanes
+    y = exp(primal(x))
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * y, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -246,10 +238,9 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp2),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(exp2),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    y = exp2(primal(inner))
+    y = exp2(primal(x))
     d = y * P(log(2.0f0))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -264,10 +255,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp10),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(exp10),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = exp10(primal(inner))
+    y = exp10(primal(x))
     d = y * P(log(10.0f0))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -282,10 +272,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(expm1),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(expm1),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = expm1(primal(inner))
+    y = expm1(primal(x))
     d = y + one(P)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -300,11 +289,10 @@ end
 # constant. Common to log, log2, log10. Width-N Lifted body applies per-lane
 # with `nan_tangent_guard`.
 @inline function _bf16_log_family(f, c::P, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = f(_x)
     d = inv(_x * c)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -344,11 +332,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(log1p),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(log1p),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = log1p(_x)
     d = inv(one(P) + _x)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -362,11 +349,10 @@ end
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sin),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(sin),N}, x::Lifted{P,N}) where {N}
     # Use separate sin/cos calls: sincos(::BFloat16) is broken (infinitely recursive) in Julia 1.12.
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     s = sin(_x)
     c = cos(_x)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * c, Val(N))
     return Lifted{typeof(s),N}(s, new_lanes)
 end
@@ -381,11 +367,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cos),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(cos),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     s = sin(_x)
     c = cos(_x)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> -lanes[n] * s, Val(N))
     return Lifted{typeof(c),N}(c, new_lanes)
 end
@@ -400,10 +385,9 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(tan),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(tan),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    y = tan(primal(inner))
+    y = tan(primal(x))
     d = one(P) + y^2
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -416,11 +400,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(asin),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(asin),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = asin(_x)
     d = inv(sqrt(one(P) - _x^2))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -433,11 +416,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(acos),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(acos),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = acos(_x)
     d = -inv(sqrt(one(P) - _x^2))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -450,11 +432,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(atan),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(atan),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = atan(_x)
     d = inv(one(P) + _x^2)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -467,11 +448,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sinh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(sinh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = sinh(_x)
     d = cosh(_x)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -484,11 +464,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cosh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(cosh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = cosh(_x)
     d = sinh(_x)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -501,10 +480,9 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(tanh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(tanh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    y = tanh(primal(inner))
+    y = tanh(primal(x))
     d = one(P) - y^2
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -517,11 +495,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(asinh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(asinh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = asinh(_x)
     d = inv(sqrt(one(P) + _x^2))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -534,11 +511,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(acosh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(acosh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = acosh(_x)
     d = inv(sqrt(_x^2 - one(P)))
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -551,11 +527,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(atanh),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(atanh),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = atanh(_x)
     d = inv(one(P) - _x^2)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -571,16 +546,12 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(hypot),P,P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(hypot),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {N}
-    ix, iy = _unlift(x), _unlift(y)
-    _x, _y = primal(ix), primal(iy)
+    _x, _y = primal(x), primal(y)
     h = hypot(_x, _y)
     inv_h = inv(h)
-    xl = tangent(ix).lanes
-    yl = tangent(iy).lanes
     new_lanes = ntuple(Val(N)) do n
-        (
-            nan_tangent_guard(xl[n], _x * xl[n]) + nan_tangent_guard(yl[n], _y * yl[n])
-        ) * inv_h
+        xn, yn = tangent(x, n), tangent(y, n)
+        (nan_tangent_guard(xn, _x * xn) + nan_tangent_guard(yn, _y * yn)) * inv_h
     end
     return Lifted{typeof(h),N}(h, new_lanes)
 end
@@ -598,8 +569,7 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(^),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {N}
-    ix, iy = _unlift(x), _unlift(y)
-    _x, _y = primal(ix), primal(iy)
+    _x, _y = primal(x), primal(y)
     z = _x^_y
     # `_x^(_y-1)` is computed separately from `z` to handle `_x=0`:
     # `z/_x = 0/0 = NaN`, whereas `_x^(_y-1)` gives the correct value at the
@@ -608,11 +578,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
     # `z*log(_x)` (not `tangent(y)`) is guarded: when `_x=0`, `z=0` and
     # `log(_x)=-Inf`, so `z*log(_x)*tangent(y) = 0*(-Inf)*tangent(y) = NaN`.
     dy_base = z * log(_x)
-    xl = tangent(ix).lanes
-    yl = tangent(iy).lanes
     new_lanes = ntuple(Val(N)) do n
-        nan_tangent_guard(xl[n], dx_coeff * xl[n]) +
-            nan_tangent_guard(z, dy_base * yl[n])
+        xn, yn = tangent(x, n), tangent(y, n)
+        nan_tangent_guard(xn, dx_coeff * xn) + nan_tangent_guard(z, dy_base * yn)
     end
     return Lifted{typeof(z),N}(z, new_lanes)
 end
@@ -634,12 +602,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(max),P,P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(max),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {N}
-    ix, iy = _unlift(x), _unlift(y)
-    _x, _y = primal(ix), primal(iy)
+    _x, _y = primal(x), primal(y)
     z = max(_x, _y)
-    xl = tangent(ix).lanes
-    yl = tangent(iy).lanes
-    new_lanes = _x >= _y ? xl : yl
+    new_lanes = _x >= _y ? tangent(x).lanes : tangent(y).lanes
     return Lifted{typeof(z),N}(z, new_lanes)
 end
 Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(max),P,P}}) = true
@@ -653,12 +618,9 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(min),P,P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(min),N}, x::Lifted{P,N}, y::Lifted{P,N}
 ) where {N}
-    ix, iy = _unlift(x), _unlift(y)
-    _x, _y = primal(ix), primal(iy)
+    _x, _y = primal(x), primal(y)
     z = min(_x, _y)
-    xl = tangent(ix).lanes
-    yl = tangent(iy).lanes
-    new_lanes = _x <= _y ? xl : yl
+    new_lanes = _x <= _y ? tangent(x).lanes : tangent(y).lanes
     return Lifted{typeof(z),N}(z, new_lanes)
 end
 Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(min),P,P}}) = true
@@ -670,11 +632,10 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(abs),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(abs),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    _x = primal(inner)
+    _x = primal(x)
     y = abs(_x)
     sign = _x >= zero(P) ? one(P) : -one(P)
-    lanes = tangent(inner).lanes
+    lanes = tangent(x).lanes
     new_lanes = ntuple(n -> lanes[n] * sign, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -687,8 +648,7 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(Base.eps),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(Base.eps),N}, x::Lifted{P,N}) where {N}
-    inner = _unlift(x)
-    y = eps(primal(inner))
+    y = eps(primal(x))
     new_lanes = ntuple(_ -> zero(P), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
@@ -702,9 +662,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(nextfloat),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(nextfloat),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = nextfloat(primal(inner))
-    return Lifted{typeof(y),N}(y, tangent(inner).lanes)
+    y = nextfloat(primal(x))
+    return Lifted{typeof(y),N}(y, tangent(x).lanes)
 end
 Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(nextfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P})
@@ -716,9 +675,8 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(prevfloat),P}
 @inline function Mooncake.frule!!(
     ::Lifted{typeof(prevfloat),N}, x::Lifted{P,N}
 ) where {N}
-    inner = _unlift(x)
-    y = prevfloat(primal(inner))
-    return Lifted{typeof(y),N}(y, tangent(inner).lanes)
+    y = prevfloat(primal(x))
+    return Lifted{typeof(y),N}(y, tangent(x).lanes)
 end
 Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(prevfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
