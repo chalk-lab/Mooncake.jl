@@ -863,6 +863,20 @@ end
 function dual_type(::Val{N}, ::Type{Array{Complex{T},D}}) where {N,T<:IEEEFloat,D}
     return Array{Complex{NDual{T,N}},D}
 end
+# Nested Array (Phase 4): `Array{Array{<:IEEEFloat, K}, D}` canonical recursion.
+# Element-wise NDual interleaving via the inner Array{NDual{T,N}, K} canonical
+# form. Undef slots in the outer Vector are preserved via `_map_if_assigned!`-
+# style iteration in the ctor and accessors (mirroring reverse-mode's
+# `zero_tangent_internal(x::Array)` at `src/rules/memory.jl:149` and the
+# `_map_if_assigned!` helper at `src/utils.jl:219`).
+function dual_type(::Val{N}, ::Type{Array{Array{T,K},D}}) where {N,T<:IEEEFloat,K,D}
+    return Array{Array{NDual{T,N},K},D}
+end
+function dual_type(
+    ::Val{N}, ::Type{Array{Array{Complex{T},K},D}}
+) where {N,T<:IEEEFloat,K,D}
+    return Array{Array{Complex{NDual{T,N}},K},D}
+end
 
 # MemoryRef / Memory overloads (1.11+): element-wise lifting to NDual containers.
 @static if VERSION >= v"1.11-"
@@ -903,6 +917,13 @@ dual_type(::Val{0}, ::Type{Complex{T}}) where {T<:IEEEFloat} = Complex{T}
 dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
 function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
     return Array{Complex{T},D}
+end
+# Nested Array Val(0) passthrough (Phase 4).
+function dual_type(::Val{0}, ::Type{Array{Array{T,K},D}}) where {T<:IEEEFloat,K,D}
+    return Array{Array{T,K},D}
+end
+function dual_type(::Val{0}, ::Type{Array{Array{Complex{T},K},D}}) where {T<:IEEEFloat,K,D}
+    return Array{Array{Complex{T},K},D}
 end
 function dual_type(
     ::Val{0}, ::Type{Type{Array{T,D}}}
@@ -1639,6 +1660,9 @@ Mooncake.verify_dual_type(::NDual) = true
 Mooncake.verify_dual_type(::Complex{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:Complex{<:NDual}}) = true
+# Nested Array canonical V (Phase 4).
+Mooncake.verify_dual_type(::AbstractArray{<:AbstractArray{<:NDual}}) = true
+Mooncake.verify_dual_type(::AbstractArray{<:AbstractArray{<:Complex{<:NDual}}}) = true
 # `MemoryRef{<:NDual}` and `MemoryRef{<:Complex{<:NDual}}` are valid
 # canonical-V inner-dual shapes alongside their Memory/Array equivalents.
 # Without these overloads, `verify_dual_type` (and downstream `debug_mode`
@@ -1712,6 +1736,22 @@ function (::Type{Array{NDual{T,N},D}})(
     return map(primal, tangent.lanes...) do p, ts::Vararg{T,N}
         NDual{T,N}(p, ts)
     end
+end
+# Nested Array constructor (Phase 4): element-wise via inner
+# `Array{NDual{T,N}, K}` ctor, but `_map_if_assigned!`-style — preserves undef
+# slots from the primal in the canonical output, matching the reverse-mode
+# convention that the tangent's assignment pattern mirrors the primal's.
+function (::Type{Array{Array{NDual{T,N},K},D}})(
+    primal::Array{Array{T,K},D}, tangent::Array{Array{T,K},D}
+) where {T<:IEEEFloat,N,K,D}
+    @assert size(primal) == size(tangent)
+    result = Array{Array{NDual{T,N},K},D}(undef, size(primal))
+    @inbounds for n in eachindex(primal)
+        if isassigned(primal, n)
+            result[n] = Array{NDual{T,N},K}(primal[n], tangent[n])
+        end
+    end
+    return result
 end
 function (::Type{Array{Complex{NDual{T,N}},D}})(
     primal::Array{Complex{T},D}, tangent::Array{Complex{T},D}
@@ -1955,6 +1995,35 @@ end
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, z::Complex{<:IEEEFloat}) = z
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:IEEEFloat}) = x
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) = x
+# Nested Array randn_dual (Phase 4).
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::Array{Array{T,K},D}
+) where {T<:IEEEFloat,K,D} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::Array{Array{Complex{T},K},D}
+) where {T<:IEEEFloat,K,D} = x
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Array{Array{T,K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{NDual{T,N},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.randn_dual(w, rng, x[n])
+        end
+    end
+    return result
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Array{Array{Complex{T},K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.randn_dual(w, rng, x[n])
+        end
+    end
+    return result
+end
 @static if VERSION >= v"1.11-"
     for f in (:zero_dual, :uninit_dual)
         @eval begin
@@ -1988,6 +2057,34 @@ end
 @inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
     x, w, _ -> zero(real(eltype(x)))
 )
+# Nested Array zero_dual (Phase 4): isassigned-guarded iteration preserves the
+# outer Array's undef-assignment pattern.
+@inline Mooncake.zero_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::Array{Array{Complex{T},K},D}
+) where {T<:IEEEFloat,K,D} = x
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::Array{Array{T,K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{NDual{T,N},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.zero_dual(w, x[n])
+        end
+    end
+    return result
+end
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::Array{Array{Complex{T},K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.zero_dual(w, x[n])
+        end
+    end
+    return result
+end
 
 # Ptr — `tangent_type(Ptr{P}) = Ptr{tangent_type(P)}`, a single ptr, not a
 # width-N expansion. The single-arg `zero_tangent(::Ptr)` deliberately
@@ -2013,6 +2110,33 @@ end
 @inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
     x, w, _ -> zero(real(eltype(x)))
 )
+# Nested Array uninit_dual (Phase 4).
+@inline Mooncake.uninit_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::Array{Array{Complex{T},K},D}
+) where {T<:IEEEFloat,K,D} = x
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::Array{Array{T,K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{NDual{T,N},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.uninit_dual(w, x[n])
+        end
+    end
+    return result
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::Array{Array{Complex{T},K},D}
+) where {N,T<:IEEEFloat,K,D}
+    result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
+    @inbounds for n in eachindex(x)
+        if isassigned(x, n)
+            result[n] = Mooncake.uninit_dual(w, x[n])
+        end
+    end
+    return result
+end
 
 @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::IEEEFloat) = _ndual_zero(
     x, w, _ -> randn(rng, typeof(x))
@@ -2157,6 +2281,36 @@ function tangent(a::Array{Complex{NDual{T,N}},D}) where {T,N,D}
 end
 @inline Mooncake._field_primal(a::Array{<:Complex{<:NDual}}) = primal(a)
 @inline Mooncake._field_tangent(a::Array{<:Complex{<:NDual}}) = tangent(a)
+
+# Nested Array accessors (Phase 4): isassigned-guarded iteration mirroring the
+# reverse-mode tangent layout. `primal(a)` returns an `Array{Array{T, K}, D}`
+# with the same undef-assignment pattern as the canonical V; `tangent(a)`
+# returns `NTangent{NTuple{N, Array{Array{T, K}, D}}}` whose per-lane arrays
+# also mirror the undef pattern.
+function primal(a::Array{Array{NDual{T,N},K},D}) where {T<:IEEEFloat,N,K,D}
+    result = Array{Array{T,K},D}(undef, size(a))
+    @inbounds for n in eachindex(a)
+        if isassigned(a, n)
+            result[n] = primal(a[n])
+        end
+    end
+    return result
+end
+function tangent(a::Array{Array{NDual{T,N},K},D}) where {T<:IEEEFloat,N,K,D}
+    return NTangent(
+        ntuple(Val(N)) do i
+            lane = Array{Array{T,K},D}(undef, size(a))
+            @inbounds for n in eachindex(a)
+                if isassigned(a, n)
+                    lane[n] = map(d -> d.partials[i], a[n])
+                end
+            end
+            lane
+        end,
+    )
+end
+@inline Mooncake._field_primal(a::Array{<:Array{<:NDual}}) = primal(a)
+@inline Mooncake._field_tangent(a::Array{<:Array{<:NDual}}) = tangent(a)
 
 # ReshapedArray canonical NDual V — Phase 2 of the wrapper-exception removal.
 # Without these, `primal(::Lifted{<:Tuple})` walks Tuple elements via
