@@ -70,29 +70,64 @@ Width-aware forward value type query.
 
 - `Val(0)` → `P` (primal passthrough)
 - `Val(N)`, concrete `P` → one of the canonical-V shapes below, or the
-  parallel-Dual fallback `Dual{P, tangent_type(Val(N), P)}` for primals
-  outside the canonical coverage.
+  `Dual{P, tangent_type(Val(N), P)}` fallback for primals outside the
+  canonical coverage.
 - abstract/union `P` → `Dual` (bare, for compiler flexibility)
 
-## Canonical-V coverage (where the invariant `runtime V is a fused canonical shape` holds today)
+## Canonical-V coverage
 
-| Category | Canonical shape |
-|---|---|
-| `IEEEFloat`, `Complex{<:IEEEFloat}` | `NDual{T, N}`, `Complex{NDual{T, N}}` (NDual leaf) |
-| Array/Memory/MemoryRef over IEEEFloat | `Array{NDual{T, N}, D}` etc. (top-level) |
-| Wrapper views (`Transpose`, `Adjoint`, `SubArray`, `Diagonal`, `Symmetric`, `Hermitian`, `*Triangular`, `UpperHessenberg`, `ReshapedArray`, `ReinterpretArray`) over IEEEFloat parents | `Wrapper{NDual{T, N}, V_parent}` (wrapper-NDual; Phases 1+2 of the wrapper-exception-removal plan) |
-| `Tuple`, `NamedTuple` | element-wise recursive (structural) |
-| Concrete immutable struct with default `Tangent` + all fields always-initialised + lift-safe fields | `NamedTuple{fieldnames, Tuple{V_i, ...}}` (structural lift) |
-| `StepRangeLen{T<:IEEEFloat, TWP{T}, TWP{T}, Int}` | structural lift (Phase 3) |
-| `Vector{Vector{<:IEEEFloat}}`, `Matrix{Vector{<:IEEEFloat}}`, etc. | `Array{Array{NDual{T, N}, K}, D}` (nested-Array canonical; Phase 4) |
-| Mutable struct with at least one canonical-NDual-eligible field (top-level Array-of-IEEEFloat, or nested-Array — and `PossiblyUninit` fields where the V's primal type is concrete) | `SplitDual{NamedTuple{...}}` (Phase 5) |
+Each category below has a fused canonical V where primal and tangent
+share storage (the runtime invariant the wrapper-exception removal
+plan targets).
 
-Primals outside these categories still produce the parallel-Dual fallback
-at runtime — primarily: custom-`tangent_type` primals (e.g. `TwicePrecision`),
-heterogeneous containers (`Vector{Any}`, `SimpleVector`), `NoTangent`-element
-arrays (`Vector{Int}`), and mutable structs with `Any`-typed or scalar-only
-fields. See the working notes in `temp/wrapper-exception-removal-plan.md`
-for the current list of blockers per category.
+NDual leaf (scalar interleaving)
+  IEEEFloat                  → NDual{T, N}
+  Complex{<:IEEEFloat}       → Complex{NDual{T, N}}
+
+Array of NDual (top-level only)
+  Array{<:IEEEFloat, D}      → Array{NDual{T, N}, D}
+  Array{<:Complex{T}, D}     → Array{Complex{NDual{T, N}}, D}
+  Memory{...}, MemoryRef{...}→ same template, NDual element
+
+Wrapper-NDual view (Phases 1+2)
+  Wrapper{<:IEEEFloat, P_parent}
+                             → Wrapper{NDual{T, N}, V_parent}
+  Wrapper ∈ {Transpose, Adjoint, SubArray, Diagonal,
+             Symmetric, Hermitian, *Triangular, UpperHessenberg,
+             ReshapedArray, ReinterpretArray}
+
+Structural Tuple/NamedTuple (element-wise recursive)
+  Tuple{T1, T2, ...}         → Tuple{V_1, V_2, ...}
+  NamedTuple{names, T}       → NamedTuple{names, T'}
+
+Structural lift for concrete immutable struct
+  (default `Tangent`, all fields always-initialised, lift-safe types)
+                             → NamedTuple{fieldnames, Tuple{V_i, ...}}
+
+StepRangeLen (Phase 3)
+  StepRangeLen{T<:IEEEFloat, TWP{T}, TWP{T}, Int}
+                             → structural lift
+
+Nested-Array canonical (Phase 4)
+  Vector{Vector{<:IEEEFloat}} → Array{Array{NDual{T, N}, K}, D}
+  (and Matrix-of-Vector, Complex variants)
+
+SplitDual for mutable struct (Phase 5)
+  Mutable struct with at least one canonical-NDual-eligible field
+  (top-level Array-of-IEEEFloat, nested-Array, or `PossiblyUninit`
+   field whose V's primal type is concrete)
+                             → SplitDual{NamedTuple{...}}
+
+## Residual `Dual` at runtime
+
+Primals outside the canonical coverage still produce the
+`Dual{P, tangent_type(Val(N), P)}` fallback. Primary categories:
+
+  - Custom-`tangent_type` primals       e.g. `TwicePrecision{Float64}`
+  - Heterogeneous containers            `Vector{Any}`, `SimpleVector`
+  - `NoTangent`-element arrays          `Vector{Int}`, `Memory{Int}`
+  - Mutable structs with `Any` fields   `MutableFoo`, `TypeUnstableMutableStruct`
+  - Mutable structs, scalar-only        `TypeStableMutableStruct{Float64}`
 """
 # `@unstable`: return type depends on the type-domain shape of `P` (Union
 # splitting, Tuple field concreteness). Callers force-specialise via
@@ -172,7 +207,7 @@ for the current list of blockers per category.
 
     # Mutable struct with at least one Array-of-IEEEFloat field: use SplitDual
     # so each field's V is the canonical NDual-element form and `dual_type`
-    # recurses coherently. Falls through to the parallel-Dual fallback below
+    # recurses coherently. Falls through to the `Dual` fallback below
     # for mutable structs without canonical-V Array fields.
     if N >= 1 && _split_dual_eligible(P)
         return _dual_type_split_dual(Val(N), P)
@@ -375,8 +410,8 @@ tangent(x::Dual) = x.tangent
 # canonical V for each field (`dual_type(Val(N), field_type_i)`), so the
 # `dual_type` recursion invariant holds field-wise. Primal values live
 # inside the NDual elements' `.value` slots — no separate primal-half
-# storage, avoiding the duplication of the parallel-Dual `Dual{Struct,
-# MutableTangent}` form.
+# storage, avoiding the duplication of the `Dual{Struct, MutableTangent}`
+# form.
 #
 # `V` is constrained to `NamedTuple` so the field-by-field recursion is
 # structurally typed. `SplitDual` itself is mutable so that
@@ -1174,7 +1209,7 @@ end
 # canonical-V types (`NDual`, `Vector{NDual}`, …) to their 2-arg ctors.
 # `_get_tangent_field_for_lift` unwraps `PossiblyUninitTangent` slots so
 # field tangents pass through unwrapped. Mutable structs keep the existing
-# parallel-Dual path (their `dual_type` does not return `<: NamedTuple`).
+# `Dual` path (their `dual_type` does not return `<: NamedTuple`).
 @inline @generated function Lifted{P,N}(primal::P, tangent::Tangent) where {P,N}
     # `try` to resolve InnerT at expansion time. The static path emits a
     # tight ctor (recursive struct lift). On expansion failure (ext-typed

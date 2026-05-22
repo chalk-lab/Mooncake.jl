@@ -87,8 +87,8 @@ end
         end
         # Route through the 2-arg Lifted ctor so the inner V matches
         # `dual_type(Val(N), P) === Dual{P, NTangent{NTuple{N, T}}}` (the
-        # parallel-Dual ctor's scalar tangent broadcasts across N lanes via
-        # its `Dual{P, NTangent{NTuple{N, T}}}(value, ::T)` overload).
+        # `Dual` ctor's scalar tangent broadcasts across N lanes via its
+        # `Dual{P, NTangent{NTuple{N, T}}}(value, ::T)` overload).
         return Lifted{P,N}(y, zero_tangent(y))
     end
 
@@ -149,13 +149,13 @@ end
         end
     end
 
-    # Struct with NDual content (parallel-Dual path): wrap per-direction
+    # Struct with NDual content (`Dual` path): wrap per-direction
     # tangents in `NTangent` at every positive width. `dual_type(Val(1), P)
     # === Dual{P, NTangent{Tuple{T}}}` for generic concrete P, so width 1
     # and width N>=2 share the same wrapper shape. This branch is only
     # reached for structs whose `dual_type` returns a `Dual` (e.g. types
     # where `tangent_type(P)` is not `<: Tangent`, or which have an explicit
-    # per-type `dual_type` overload pointing at the parallel form).
+    # per-type `dual_type` overload pointing at the `Dual` form).
     if _has_ndual(bare_x...)
         primals_extracted = _new_field_primals(P, bare_x)
         y = _new_(P, primals_extracted...)

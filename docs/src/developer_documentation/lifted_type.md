@@ -23,7 +23,7 @@ Forward mode has *several* inner shapes at every slot, depending on `(primal typ
 | `Adjoint`, `SubArray`, `Diagonal`, `Symmetric`, `Hermitian`, `UpperTriangular`, `LowerTriangular`, `UnitUpperTriangular`, `UnitLowerTriangular`, `UpperHessenberg`, `ReshapedArray`, `ReinterpretArray` over IEEEFloat parents | N | Same template — element type lifted to `NDual{T, N}`, parent V from recursive `dual_type` |
 | Concrete immutable struct with default `Tangent` tangent_type and all fields always initialised | N | `NamedTuple{fieldnames(P), Tuple{V_i, ...}}` (structural lift; recurses per-field) |
 | Concrete mutable struct with at least one Array-of-IEEEFloat field (direct or nested) | N | `SplitDual{NamedTuple{fieldnames(P), Tuple{V_i, ...}}}` |
-| Other (PossiblyUninit, custom tangent_type, non-canonical mutable, `NoTangent` primals, abstract, etc.) | N | `Dual{P, tangent_type(Val(N), P)}` (parallel-Dual fallback) |
+| Other (PossiblyUninit, custom tangent_type, non-canonical mutable, `NoTangent` primals, abstract, etc.) | N | `Dual{P, tangent_type(Val(N), P)}` (`Dual` fallback) |
 
 A 1-to-1 port of `CoDual`'s surface — having rule bodies write `Dual(y, dy)` — fails at the constructor: a rule body would have to *choose* which inner shape to build for each output slot. Every change to the inner-shape rules (e.g. flipping `IEEEFloat` from `Dual` to `NDual` at width 1) would ripple through every rule body.
 
@@ -58,7 +58,7 @@ dual_type(Val(N), ImmutableStruct{T...})   = NamedTuple{fieldnames, Tuple{V_i, .
                                             # all fields always_initialised + lift-safe fields
 dual_type(Val(N), MutableStruct{T...})     = SplitDual{NamedTuple{fieldnames, Tuple{V_i, ...}}}
                                             # if struct has an Array-of-IEEEFloat field (direct or nested)
-dual_type(Val(N), P)                       = Dual{P, tangent_type(Val(N), P)}    # parallel-Dual fallback
+dual_type(Val(N), P)                       = Dual{P, tangent_type(Val(N), P)}    # Dual fallback
                                             # for PossiblyUninit, custom tangent_type, abstract P,
                                             # NoTangent primals (String, Symbol, Nothing, etc.)
 

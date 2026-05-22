@@ -2122,8 +2122,8 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     # Struct-element containers: exercise the NTangent-wrapped V path.
     # `LoHi` has only Float64 fields → its structural-lift inner V is a
     # NamedTuple of NDuals; the container's tangent type is `Array{Tangent}`
-    # / `Memory{Tangent}`, exercising the parallel-Dual width-N wrap that
-    # the existing IEEEFloat fixtures bypass (those route through bare
+    # / `Memory{Tangent}`, exercising the `Dual` width-N wrap that the
+    # existing IEEEFloat fixtures bypass (those route through bare
     # `Array{NDual}`).
     push!(rel_test_cases, TestResources.LoHi(1.5, -2.5))
     push!(rel_test_cases, [TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)])
@@ -2137,7 +2137,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         end
     end
     # TwicePrecision and StepRangeLen (TWP-backed range) exercise the
-    # parallel-Dual `Dual{P, NTangent{NTuple{N, P}}}` canonical V at width N.
+    # `Dual{P, NTangent{NTuple{N, P}}}` canonical V at width N.
     push!(rel_test_cases, Base.TwicePrecision{Float64}(1.0, 0.5))
     push!(rel_test_cases, range(1.0, 2.0; length=5))
     return vcat(

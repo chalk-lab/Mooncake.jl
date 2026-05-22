@@ -1815,7 +1815,7 @@ for W in (
     # ctor so `zero_dual`/`uninit_dual`/`randn_dual` produce the wrapper-
     # shaped canonical NDual form that `dual_type(Val(N), $(W){T,P})`
     # declares — without these, the generic fallback returns the legacy
-    # `Dual{$(W), Tangent{...}}` parallel-Dual form, breaking the
+    # `Dual{$(W), Tangent{...}}` form, breaking the
     # `_typeof(zero_dual(...)) === dual_type(...)` invariant.
     @eval @inline function Mooncake.zero_dual(
         w::Val{N}, x::$(W){T,<:Matrix{T}}
