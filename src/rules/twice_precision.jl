@@ -62,39 +62,25 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 # Rules. These are required for a lot of functionality in this case.
 #
 
-@is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
-# Implementation kernels: dispatch on Dual/NDual inner V to extract value/tangent.
-# `tangent(d::Dual{P, NTangent{Tuple{T}}})` returns the NTangent wrapper.
-# These kernels and downstream rule bodies need the bare lane value so
-# arithmetic / conversion / `twiceprecision(t, nb)` dispatches correctly.
-# Unwrap singleton NTangent at every `tangent(d)` boundary in this file.
+# Extract `(value, tangent)` from a width-1 / width-N inner V slot. Used by
+# the range-construction rules below that build TWP-tangents in-place.
 @inline _twp_tangent(d::Dual) = Mooncake._ntangent_unwrap_singleton(tangent(d))
 @inline _twp_val(d::Dual{P}) where {P<:IEEEFloat} = primal(d), _twp_tangent(d)
 @inline _twp_val(d::Mooncake.Nfwd.NDual{P,1}) where {P<:IEEEFloat} = d.value, d.partials[1]
-# Width-N NDual: return per-lane partials tuple. Callers above (the
-# `twiceprecision` and `_new_(TWP)` rule bodies) detect the tuple shape
-# and apply the op per-lane to build a canonical
-# `Dual{TWP{P}, NTangent{NTuple{N, TWP{P}}}}` result.
 @inline _twp_val(d::Mooncake.Nfwd.NDual{P,N}) where {P<:IEEEFloat,N} = d.value, d.partials
+
+@is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_new_),N},
     ::Mooncake.Lifted{Type{TWP{P}}},
-    hi::Mooncake.Lifted{P},
-    lo::Mooncake.Lifted{P},
+    hi::Mooncake.Lifted{P,N},
+    lo::Mooncake.Lifted{P,N},
 ) where {N,P<:IEEEFloat}
-    hv, ht = _twp_val(Mooncake._unlift(hi))
-    lv, lt = _twp_val(Mooncake._unlift(lo))
-    # Width-N: `ht` / `lt` are `NTuple{N, P}` (per-lane partials), so
-    # `_new_(TWP{P}, ht, lt)` would error. Build per-lane TWP tangents
-    # and wrap in NTangent (matches canonical V `Dual{TWP{P},
-    # NTangent{NTuple{N, TWP{P}}}}`).
-    if ht isa NTuple{N,P} && lt isa NTuple{N,P} && N >= 2
-        primal_twp = _new_(TWP{P}, hv, lv)
-        tangent_twps = ntuple(lane -> _new_(TWP{P}, ht[lane], lt[lane]), Val(N))
-        return Mooncake.Lifted{TWP{P},N}(primal_twp, Mooncake.NTangent(tangent_twps))
+    primal_twp = _new_(TWP{P}, primal(hi), primal(lo))
+    tangent_twps = ntuple(Val(N)) do n
+        _new_(TWP{P}, Mooncake.tangent(hi, n), Mooncake.tangent(lo, n))
     end
-    bare_result = Dual(_new_(TWP{P}, hv, lv), _new_(TWP{P}, ht, lt))
-    return _wrap_rule_result(Val(N), bare_result)
+    return Mooncake.Lifted{TWP{P},N}(primal_twp, Mooncake.NTangent(tangent_twps))
 end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{TWP{P}}}, hi::CoDual{P}, lo::CoDual{P}
@@ -106,22 +92,15 @@ end
 @is_primitive MinimalCtx Tuple{typeof(twiceprecision),IEEEFloat,Integer}
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(twiceprecision),N},
-    val::Mooncake.Lifted,
+    val::Mooncake.Lifted{P,N},
     nb::Mooncake.Lifted{<:Integer},
-) where {N}
-    vv, vt = _twp_val(Mooncake._unlift(val))
+) where {N,P<:IEEEFloat}
     nb_p = primal(nb)
-    # Width-N: `vt` is `NTuple{N, P}` (per-lane partials). Build per-lane
-    # `TWP{P}` tangents and wrap in NTangent.
-    if vt isa Tuple && N >= 2
-        primal_twp = twiceprecision(vv, nb_p)
-        tangent_twps = ntuple(lane -> twiceprecision(vt[lane], nb_p), Val(N))
-        return Mooncake.Lifted{typeof(primal_twp),N}(
-            primal_twp, Mooncake.NTangent(tangent_twps)
-        )
-    end
-    bare_result = Dual(twiceprecision(vv, nb_p), twiceprecision(vt, nb_p))
-    return _wrap_rule_result(Val(N), bare_result)
+    primal_twp = twiceprecision(primal(val), nb_p)
+    tangent_twps = ntuple(n -> twiceprecision(Mooncake.tangent(val, n), nb_p), Val(N))
+    return Mooncake.Lifted{_typeof(primal_twp),N}(
+        primal_twp, Mooncake.NTangent(tangent_twps)
+    )
 end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
@@ -133,16 +112,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(twiceprecision),TWP,Integer}
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(twiceprecision),N},
-    val::Mooncake.Lifted{P},
+    val::Mooncake.Lifted{P,N},
     nb::Mooncake.Lifted{<:Integer},
 ) where {N,P<:TWP}
-    inner_val = Mooncake._unlift(val)
     nb_p = primal(nb)
-    bare_result = Dual(
-        twiceprecision(primal(inner_val), nb_p),
-        twiceprecision(_twp_tangent(inner_val), nb_p),
-    )
-    return _wrap_rule_result(Val(N), bare_result)
+    p_out = twiceprecision(primal(val), nb_p)
+    tangents = ntuple(n -> twiceprecision(Mooncake.tangent(val, n), nb_p), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
@@ -153,11 +129,11 @@ end
 
 @is_primitive MinimalCtx Tuple{Type{<:IEEEFloat},TWP}
 @inline function frule!!(
-    ::Mooncake.Lifted{Type{P},N}, x::Mooncake.Lifted{S}
+    ::Mooncake.Lifted{Type{P},N}, x::Mooncake.Lifted{S,N}
 ) where {N,P<:IEEEFloat,S<:TWP}
-    inner_x = Mooncake._unlift(x)
-    bare_result = Dual(P(primal(inner_x)), P(_twp_tangent(inner_x)))
-    return _wrap_rule_result(Val(N), bare_result)
+    p_out = P(primal(x))
+    tangents = ntuple(n -> P(Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
