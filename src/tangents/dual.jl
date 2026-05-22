@@ -69,8 +69,30 @@ end
 Width-aware forward value type query.
 
 - `Val(0)` → `P` (primal passthrough)
-- `Val(N)`, concrete `P` → `Dual{P, tangent_type(Val(N), P)}`
+- `Val(N)`, concrete `P` → one of the canonical-V shapes below, or the
+  parallel-Dual fallback `Dual{P, tangent_type(Val(N), P)}` for primals
+  outside the canonical coverage.
 - abstract/union `P` → `Dual` (bare, for compiler flexibility)
+
+## Canonical-V coverage (where the invariant `runtime V is a fused canonical shape` holds today)
+
+| Category | Canonical shape |
+|---|---|
+| `IEEEFloat`, `Complex{<:IEEEFloat}` | `NDual{T, N}`, `Complex{NDual{T, N}}` (NDual leaf) |
+| Array/Memory/MemoryRef over IEEEFloat | `Array{NDual{T, N}, D}` etc. (top-level) |
+| Wrapper views (`Transpose`, `Adjoint`, `SubArray`, `Diagonal`, `Symmetric`, `Hermitian`, `*Triangular`, `UpperHessenberg`, `ReshapedArray`, `ReinterpretArray`) over IEEEFloat parents | `Wrapper{NDual{T, N}, V_parent}` (wrapper-NDual; Phases 1+2 of the wrapper-exception-removal plan) |
+| `Tuple`, `NamedTuple` | element-wise recursive (structural) |
+| Concrete immutable struct with default `Tangent` + all fields always-initialised + lift-safe fields | `NamedTuple{fieldnames, Tuple{V_i, ...}}` (structural lift) |
+| `StepRangeLen{T<:IEEEFloat, TWP{T}, TWP{T}, Int}` | structural lift (Phase 3) |
+| `Vector{Vector{<:IEEEFloat}}`, `Matrix{Vector{<:IEEEFloat}}`, etc. | `Array{Array{NDual{T, N}, K}, D}` (nested-Array canonical; Phase 4) |
+| Mutable struct with at least one canonical-NDual-eligible field (top-level Array-of-IEEEFloat, or nested-Array — and `PossiblyUninit` fields where the V's primal type is concrete) | `SplitDual{NamedTuple{...}}` (Phase 5) |
+
+Primals outside these categories still produce the parallel-Dual fallback
+at runtime — primarily: custom-`tangent_type` primals (e.g. `TwicePrecision`),
+heterogeneous containers (`Vector{Any}`, `SimpleVector`), `NoTangent`-element
+arrays (`Vector{Int}`), and mutable structs with `Any`-typed or scalar-only
+fields. See the working notes in `temp/wrapper-exception-removal-plan.md`
+for the current list of blockers per category.
 """
 # `@unstable`: return type depends on the type-domain shape of `P` (Union
 # splitting, Tuple field concreteness). Callers force-specialise via
