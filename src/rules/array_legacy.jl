@@ -634,15 +634,19 @@ function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-@inline _copy_array_legacy_kernel(a::Dual{<:Array}) = Dual(
-    copy(primal(a)), copy(tangent(a))
-)
-@inline _copy_array_legacy_kernel(a::AbstractArray{<:NDual}) = copy(a)
+# Wrapper-exception V (Dual{Array, NTangent}): per-lane copy.
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
-) where {N}
-    bare_result = _copy_array_legacy_kernel(Mooncake._unlift(a))
-    return _wrap_rule_result(Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
+) where {N,V_a<:Dual{<:Array,<:Mooncake.NTangent}}
+    y = copy(primal(a))
+    dys = ntuple(k -> copy(Mooncake.tangent(a, k)), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-element Array V: single copy.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
+) where {N,V_a<:AbstractArray{<:NDual}}
+    return _wrap_rule_result(Val(N), copy(Mooncake._unlift(a)))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})

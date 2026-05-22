@@ -64,14 +64,15 @@ function _threading_run_worker_rules(::Type{F}, ::Val{N}, world::UInt) where {F,
     end
 end
 
-# `Base.Threads.threading_run` implementation kernel. Worker rules are built via
-# `build_frule(interp, Tuple{F, Int}, Val(N))` so they accept the IR-emit's
-# `Lifted{F, N}` / `Lifted{Int, N}` call shape. The frule passes its `Lifted`
-# arguments through unchanged so the worker rule's first-arg dispatch on `F`
-# survives the structural lift (which would otherwise expose a bare NamedTuple
-# from `_unlift` and miss the closure type).
-@inline function _threading_run_kernel(
-    ::Val{N}, fun::Mooncake.Lifted{F,N}, static::Mooncake.Lifted{Bool,N}
+# Worker rules are built via `build_frule(interp, Tuple{F, Int}, Val(N))` so
+# they accept the IR-emit's `Lifted{F, N}` / `Lifted{Int, N}` call shape. The
+# frule passes its `Lifted` arguments through unchanged so the worker rule's
+# first-arg dispatch on `F` survives the structural lift (which would
+# otherwise expose a bare NamedTuple from `_unlift` and miss the closure type).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.Threads.threading_run),N},
+    fun::Mooncake.Lifted{F,N},
+    static::Mooncake.Lifted{Bool,N},
 ) where {N,F}
     worker_rules = _threading_run_worker_rules(
         F, Val(N), get_interpreter(ForwardMode).world
@@ -83,13 +84,6 @@ end
         nothing
     end
     return zero_lifted(Val(N), nothing)
-end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(Base.Threads.threading_run),N},
-    fun::Mooncake.Lifted{F,N},
-    static::Mooncake.Lifted{Bool,N},
-) where {N,F}
-    return _threading_run_kernel(Val(N), fun, static)
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(Base.Threads.threading_run),Any,Bool}}
