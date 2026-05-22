@@ -925,12 +925,15 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(svec),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
-    bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    primal_output = svec(map(primal, bare_args)...)
-    # Tangent type for `SimpleVector` is `Vector{Any}`
-    dual_output = collect(Any, map(tangent, bare_args))
-    bare_result = Dual(primal_output, dual_output)
-    return _wrap_rule_result(Val(N), bare_result)
+    primal_output = svec(ntuple(i -> primal(args[i]), Val(M))...)
+    # Tangent type for `SimpleVector` is `Vector{Any}`; per-lane assembly
+    # collects each lane's per-arg tangent into a `Vector{Any}`.
+    dual_lanes = ntuple(Val(N)) do k
+        collect(Any, ntuple(i -> Mooncake.tangent(args[i], k), Val(M)))
+    end
+    return Mooncake.Lifted{_typeof(primal_output),N}(
+        primal_output, Mooncake.NTangent(dual_lanes)
+    )
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(svec),Vararg}}) = true
 
@@ -989,24 +992,33 @@ function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
+# Wrapper-exception V (Dual): per-lane compilerbarrier on each lane tangent.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(compilerbarrier),N},
     setting::Mooncake.Lifted{Symbol},
-    v::Mooncake.Lifted,
-) where {N}
+    v::Mooncake.Lifted{P,N,V_v},
+) where {N,P,V_v<:Dual}
     p_setting = primal(setting)
-    inner_v = Mooncake._unlift(v)
-    # Inner V shape dispatch: `Dual` wraps `compilerbarrier(primal,tangent)`;
-    # bare canonical V (NDual / Vector{NDual} / etc.) passes through unchanged.
-    bare_result = if inner_v isa Dual
-        Dual(
-            compilerbarrier(p_setting, primal(inner_v)),
-            compilerbarrier(p_setting, tangent(inner_v)),
-        )
-    else
-        compilerbarrier(p_setting, inner_v)
-    end
-    return _wrap_rule_result(Val(N), bare_result)
+    y = compilerbarrier(p_setting, primal(v))
+    dys = ntuple(k -> compilerbarrier(p_setting, Mooncake.tangent(v, k)), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-bearing V: passes through unchanged.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(compilerbarrier),N},
+    setting::Mooncake.Lifted{Symbol},
+    v::Mooncake.Lifted{P,N,V_v},
+) where {
+    N,
+    P,
+    V_v<:Union{
+        Mooncake.Nfwd.NDual,
+        Complex{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Mooncake.Nfwd.NDual},
+        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
+    },
+}
+    return _wrap_rule_result(Val(N), compilerbarrier(primal(setting), Mooncake._unlift(v)))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
     true
@@ -1024,14 +1036,13 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.ifelse),N},
     cond::Mooncake.Lifted{Bool},
-    a::Mooncake.Lifted,
-    b::Mooncake.Lifted,
-) where {N}
+    a::Mooncake.Lifted{P,N},
+    b::Mooncake.Lifted{P,N},
+) where {N,P}
     _cond = primal(cond)
-    inner_a = Mooncake._unlift(a)
-    inner_b = Mooncake._unlift(b)
-    bare_result = ifelse(_cond, inner_a, inner_b)
-    return _wrap_rule_result(Val(N), bare_result)
+    y = ifelse(_cond, primal(a), primal(b))
+    dys = ntuple(k -> ifelse(_cond, Mooncake.tangent(a, k), Mooncake.tangent(b, k)), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.ifelse),Bool,Any,Any}}) = true
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
