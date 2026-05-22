@@ -1719,30 +1719,6 @@ end
         <:CuMaybeComplexArray,
     },
 )
-# `LinearAlgebra.generic_matmatmul!` (5-arg) implementation kernel.
-@inline function _generic_matmatmul_5_kernel(
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
-    tAv = primal(tA)
-    tBv = primal(tB)
-    T = eltype(pA)
-    _check_complex_transpose_flag(T, tAv, tBv)
-    _1 = one(T)
-    _0 = zero(T)
-    # primal: C = op_A(A) * op_B(B)
-    cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
-    # tangent (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
-    cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
-    cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
-    return C
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
     C::Mooncake.Lifted{<:CuMaybeComplexArray,N},
@@ -1751,14 +1727,26 @@ end
     A::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     B::Mooncake.Lifted{<:CuMaybeComplexArray,N},
 ) where {N}
-    bare_result = _generic_matmatmul_5_kernel(
-        Mooncake._unlift(C),
-        Mooncake._unlift(tA),
-        Mooncake._unlift(tB),
-        Mooncake._unlift(A),
-        Mooncake._unlift(B),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    _check_complex_transpose_flag(T, tAv, tBv)
+    _1 = one(T)
+    _0 = zero(T)
+    # primal: C = op_A(A) * op_B(B)
+    cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
+    # tangent per lane (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
+    for k in 1:N
+        dC = Mooncake.tangent(C, k)
+        dA = Mooncake.tangent(A, k)
+        dB = Mooncake.tangent(B, k)
+        cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
+        cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    end
+    return C
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
@@ -1818,33 +1806,6 @@ end
         Number,
     },
 )
-# `LinearAlgebra.generic_matmatmul!` (7-arg) implementation kernel.
-@inline function _generic_matmatmul_7_kernel(
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
-    tAv = primal(tA)
-    tBv = primal(tB)
-    T = eltype(pA)
-    _check_complex_transpose_flag(T, tAv, tBv)
-    _α = T(primal(alpha))
-    _β = T(primal(beta))
-    _1 = one(T)
-    # primal: C := α*op_A(A)*op_B(B) + β*C
-    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
-    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
-    cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
-    cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
-    return C
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matmatmul!),N},
     C::Mooncake.Lifted{<:CuMaybeComplexArray,N},
@@ -1855,16 +1816,27 @@ end
     alpha::Mooncake.Lifted{<:Number,N},
     beta::Mooncake.Lifted{<:Number,N},
 ) where {N}
-    bare_result = _generic_matmatmul_7_kernel(
-        Mooncake._unlift(C),
-        Mooncake._unlift(tA),
-        Mooncake._unlift(tB),
-        Mooncake._unlift(A),
-        Mooncake._unlift(B),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(beta),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
+    tAv = primal(tA)
+    tBv = primal(tB)
+    T = eltype(pA)
+    _check_complex_transpose_flag(T, tAv, tBv)
+    _α = T(primal(alpha))
+    _β = T(primal(beta))
+    _1 = one(T)
+    # primal: C := α*op_A(A)*op_B(B) + β*C
+    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
+    # tangent per lane: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
+    for k in 1:N
+        dC = Mooncake.tangent(C, k)
+        dA = Mooncake.tangent(A, k)
+        dB = Mooncake.tangent(B, k)
+        cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
+        cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    end
+    return C
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
@@ -1945,32 +1917,6 @@ end
         Number,
     },
 )
-# `LinearAlgebra.generic_matvecmul!` (6-arg) implementation kernel.
-@inline function _generic_matvecmul_kernel(
-    Y::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    tA::Dual{<:AbstractChar,NoTangent},
-    A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
-    B::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pY, dY = primal(Y), tangent(Y)
-    pA, dA = primal(A), tangent(A)
-    pB, dB = primal(B), tangent(B)
-    tAv = primal(tA)
-    av = primal(alpha)
-    bv = primal(beta)
-    T = eltype(pA)
-    _check_gemv_eltypes(T, eltype(pB))
-    _check_complex_matvecmul_transpose(T, tAv)
-    _1 = one(T)
-    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
-    cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
-    cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
-    # primal: pY = av*op(pA)*pB + bv*pY
-    cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
-    return Y
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(LinearAlgebra.generic_matvecmul!),N},
     Y::Mooncake.Lifted{<:CuMaybeComplexVec,N},
@@ -1980,15 +1926,27 @@ end
     alpha::Mooncake.Lifted{<:Number,N},
     beta::Mooncake.Lifted{<:Number,N},
 ) where {N}
-    bare_result = _generic_matvecmul_kernel(
-        Mooncake._unlift(Y),
-        Mooncake._unlift(tA),
-        Mooncake._unlift(A),
-        Mooncake._unlift(B),
-        Mooncake._unlift(alpha),
-        Mooncake._unlift(beta),
-    )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pY = primal(Y)
+    pA = primal(A)
+    pB = primal(B)
+    tAv = primal(tA)
+    av = primal(alpha)
+    bv = primal(beta)
+    T = eltype(pA)
+    _check_gemv_eltypes(T, eltype(pB))
+    _check_complex_matvecmul_transpose(T, tAv)
+    _1 = one(T)
+    # tangent per lane (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+    for k in 1:N
+        dY = Mooncake.tangent(Y, k)
+        dA = Mooncake.tangent(A, k)
+        dB = Mooncake.tangent(B, k)
+        cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
+        cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    end
+    # primal: pY = av*op(pA)*pB + bv*pY
+    cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
+    return Y
 end
 function rrule!!(
     ::CoDual{typeof(LinearAlgebra.generic_matvecmul!)},
