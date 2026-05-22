@@ -159,15 +159,12 @@ end
 # the primal copy increments the refcount; the tangent DataRef is also copied so that the
 # new CuArray's .data field holds a separate handle to the same tangent GPU memory.
 @is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
-# `copy(::CuDataRef)` implementation kernel.
-@inline function _copy_cudataref_kernel(x::Dual{<:CuDataRef,<:CuDataRef})
-    return Dual(copy(primal(x)), copy(tangent(x)))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(copy),N}, x::Mooncake.Lifted{<:CuDataRef,N}
 ) where {N}
-    bare_result = _copy_cudataref_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = copy(primal(x))
+    dys = ntuple(n -> copy(Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
     return CoDual(copy(primal(x)), copy(tangent(x))), _nopb(Val(2))
@@ -243,19 +240,14 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
 )
-# `unsafe_convert(Type{CuPtr{T}}, x::CuArray{T})` implementation kernel.
-@inline function _unsafe_convert_cuptr_kernel(
-    ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_convert),N},
     _a1::Mooncake.Lifted{Type{CuPtr{T}},N},
     x::Mooncake.Lifted{X,N},
 ) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    bare_result = _unsafe_convert_cuptr_kernel(Mooncake._unlift(_a1), Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = unsafe_convert(CuPtr{T}, primal(x))
+    dys = ntuple(n -> unsafe_convert(CuPtr{T}, Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
@@ -270,29 +262,25 @@ end
 # For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
 # is NoTangent and the pointer arithmetic carries no gradient.
 @is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
-# `+(p::CuPtr, n::Integer)` implementation kernel (no `Dual{typeof(F)}` arg).
-# Two overloads dispatch on V's tangent shape — `CuPtr{T}` for differentiable T,
-# `NoTangent` otherwise.
-@inline function _cuptr_add_kernel(
-    p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), tangent(p) + primal(n))
-end
-@inline function _cuptr_add_kernel(
-    p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), NoTangent())
-end
-# Single Lifted-typed body: dispatches to the kernel via the inner V's
-# tangent shape. The earlier duplicate Lifted-typed body (identical signature)
-# was a bug — Julia raised a method-overwrite error during precompilation.
+# Differentiable T: V_p tangent is CuPtr{T} per lane; offset each tangent
+# pointer by the same Integer amount.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(+),N},
-    p::Mooncake.Lifted{CuPtr{T},N},
+    p::Mooncake.Lifted{CuPtr{T},N,V_p},
     n::Mooncake.Lifted{<:Integer,N},
-) where {N,T}
-    bare_result = _cuptr_add_kernel(Mooncake._unlift(p), Mooncake._unlift(n))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+) where {N,T,V_p<:Dual{CuPtr{T},<:Mooncake.NTangent}}
+    pn = primal(n)
+    y = primal(p) + pn
+    dys = ntuple(k -> Mooncake.tangent(p, k) + pn, Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Non-differentiable T (e.g. CuPtr{Cvoid}): V_p tangent is NoTangent.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(+),N},
+    p::Mooncake.Lifted{CuPtr{T},N,V_p},
+    n::Mooncake.Lifted{<:Integer,N},
+) where {N,T,V_p<:Dual{CuPtr{T},NoTangent}}
+    return Mooncake.zero_lifted(Val(N), primal(p) + primal(n))
 end
 function rrule!!(
     ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
