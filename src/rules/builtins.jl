@@ -825,44 +825,31 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-# `__vec_to_tuple` implementation kernel (no `Dual{typeof(F)}` arg).
-@inline function _vec_to_tuple_kernel(v::Dual{<:Vector})
+# Wrapper-exception V (Dual{<:Vector, <:NTangent}): build a per-position
+# NTangent of per-lane element tangents. The downstream Lifted ctor for
+# Tuple primal routes through `_inner_dual_for_field(::NamedTuple_V,
+# primal, ::NTangent)` for struct-element positions.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector,N,V_v}
+) where {N,V_v<:Dual{<:Vector,<:Mooncake.NTangent}}
     x = __vec_to_tuple(primal(v))
     if tangent_type(_typeof(x)) == NoTangent
-        return zero_dual(x)
+        return zero_lifted(Val(N), x)
     end
-    raw_t = tangent(v)
-    # Multi-lane NTangent: build per-position NTangent of per-lane
-    # element tangents. The downstream `_wrap_rule_result` for Tuple
-    # primal then routes through the now-fixed
-    # `_inner_dual_for_field(::NamedTuple_V, primal, ::NTangent)` overload
-    # for struct-element positions.
-    if raw_t isa NTangent && length(raw_t.lanes) >= 2
-        n_elements = length(primal(v))
-        N = length(raw_t.lanes)
-        tuple_tan = Tuple(
-            NTangent(ntuple(lane -> raw_t.lanes[lane][i], N)) for i in 1:n_elements
-        )
-        return Dual(x, tuple_tan)
-    end
-    # At width 1, `tangent(v)` for
-    # `Dual{Vector{T}, NTangent{Tuple{Vector{T'}}}}` is the outer
-    # NTangent; `__vec_to_tuple` wants a bare Vector. Unwrap the
-    # singleton-NTangent.
-    return Dual(x, __vec_to_tuple(Mooncake._ntangent_unwrap_singleton(raw_t)))
+    n_elements = length(primal(v))
+    tuple_tan = Tuple(
+        Mooncake.NTangent(ntuple(n -> Mooncake.tangent(v, n)[i], Val(N))) for
+        i in 1:n_elements
+    )
+    return Mooncake.Lifted{_typeof(x),N}(x, tuple_tan)
 end
-# Bare NDual-vector path: when the Lifted-aware adapter unlifts a
-# `Lifted{Vector{T<:IEEEFloat}, 1, Vector{NDual{T,1}}}`, the result is a
-# bare `Vector{NDual}` (the canonical width-1 inner V for IEEEFloat
-# vectors). Convert element-wise into a Tuple of NDuals.
-@inline function _vec_to_tuple_kernel(v::Vector{<:Mooncake.Nfwd.NDual})
-    return tuple(v...)
-end
+# Canonical NDual-element Vector V: NDual elements pack primal+tangent;
+# `tuple(v...)` builds a Tuple of NDuals (the canonical V for Tuple of
+# IEEEFloat-element entries).
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector}
-) where {N}
-    bare_result = _vec_to_tuple_kernel(Mooncake._unlift(v))
-    return _wrap_rule_result(Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector,N,V_v}
+) where {N,V_v<:Vector{<:Mooncake.Nfwd.NDual}}
+    return _wrap_rule_result(Val(N), tuple(Mooncake._unlift(v)...))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__vec_to_tuple),<:Vector}}) = true
 
@@ -896,28 +883,15 @@ end
 
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core._svec_ref),N},
-    v::Mooncake.Lifted{Core.SimpleVector},
+    v::Mooncake.Lifted{Core.SimpleVector,N},
     ind::Mooncake.Lifted{Int},
 ) where {N}
-    bare_v = Mooncake._unlift(v)
     pind = primal(ind)
-    pv = Core._svec_ref(primal(bare_v), pind)
-    raw_t = tangent(bare_v)
-    # Multi-lane NTangent (width N≥2): `getindex(::NTangent, ind)` resolves
-    # to `Base.getindex(::NTangent, ::Int)` and returns LANE ind, not the
-    # ind-th element of the underlying Vector{Any}. Per-lane indexing
-    # recovers the intended per-lane element tangents.
-    bare_result = if raw_t isa NTangent && length(raw_t.lanes) >= 2
-        tvs = ntuple(lane -> getindex(raw_t.lanes[lane], pind), Val(length(raw_t.lanes)))
-        Dual(pv, NTangent(tvs))
-    else
-        # At width 1, `tangent(v)` for a
-        # `Dual{Core.SimpleVector, NTangent{Tuple{Vector{Any}}}}` is the
-        # outer NTangent; unwrap the singleton to the inner per-element
-        # tangent vector first.
-        Dual(pv, getindex(Mooncake._ntangent_unwrap_singleton(raw_t), pind))
-    end
-    return _wrap_rule_result(Val(N), bare_result)
+    pv = Core._svec_ref(primal(v), pind)
+    # Per-lane: `getindex(lane_vector, pind)` retrieves the ind-th element
+    # of each lane's `Vector{Any}` tangent.
+    tvs = ntuple(n -> getindex(Mooncake.tangent(v, n), pind), Val(N))
+    return Mooncake.Lifted{_typeof(pv),N}(pv, Mooncake.NTangent(tvs))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(Core._svec_ref),Core.SimpleVector,Int}}
