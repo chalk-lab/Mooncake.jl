@@ -1567,27 +1567,27 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-# Implementation kernels for `copy(::Array)` (no `Dual{typeof(copy)}` arg).
-@inline _copy_array_kernel(a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
-@inline _copy_array_kernel(a::Array{<:_HasNDual}) = copy(a)
-# NTangent-wrapped Array tangent (canonical V for struct-element Array at any
-# width and non-_HasNDual element types). Per-lane copy of the wrapped
-# tangent arrays preserves width-N semantics.
-@inline function _copy_array_kernel(a::Dual{<:Array,<:Mooncake.NTangent})
-    return Dual(copy(primal(a)), Mooncake.NTangent(map(copy, tangent(a).lanes)))
-end
+# Wrapper-exception V (Dual{Array, NTangent}): per-lane copy of primal +
+# each tangent lane.
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array}
-) where {N}
-    bare_result = _copy_array_kernel(Mooncake._unlift(a))
-    return _wrap_rule_result(Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
+) where {N,V_a<:Dual{<:Array,<:Mooncake.NTangent}}
+    p_out = copy(primal(a))
+    tangents = ntuple(n -> copy(Mooncake.tangent(a, n)), Val(N))
+    return Mooncake.Lifted{_typeof(p_out),N}(p_out, Mooncake.NTangent(tangents))
 end
-# Bare-Dual entry for `copy(::Array{<:_HasNDual})` (canonical NDual-element
-# container input); preserves the bare NDual-element output polarity expected
-# by direct rule-invocation callers (e.g. `frule!!(zero_dual(copy), x_dual)`).
-@inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = _copy_array_kernel(
-    a
-)
+# Canonical NDual-element Array V: NDual elements pack primal+tangent, so a
+# single `copy` produces the canonical result container.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
+) where {N,V_a<:Array{<:_HasNDual}}
+    return _wrap_rule_result(Val(N), copy(Mooncake._unlift(a)))
+end
+# Bare-Dual entry for `copy(::Array{<:_HasNDual})` — preserved for direct
+# rule-invocation callers (`frule!!(zero_dual(copy), x_dual)`); see the
+# `copy with NDual arrays returns bare NDual container` test at
+# `test/rules/memory.jl:54`.
+@inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = copy(a)
 
 # Vector grow/shrink ops. On Julia <1.11 these live in `rules/array_legacy.jl`,
 # but that file is not loaded on 1.11+. The Memory-backed Vector semantics on
