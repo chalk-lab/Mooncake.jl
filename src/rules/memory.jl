@@ -1169,46 +1169,27 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-# `Memory{P}(undef, n)` implementation kernel (no `Dual{typeof(F)}` arg).
-# The `P<:NDual`/`P<:Complex{<:NDual}` overload returns the bare canonical
-# container (no `Dual` wrapping); the generic overload wraps in `Dual`.
-@inline function _memory_init_kernel(
-    ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
-) where {P}
-    x = Memory{P}(undef, primal(n))
-    return Dual(x, zero_tangent_internal(x, NoCache()))
-end
-@inline function _memory_init_kernel(
-    ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
-) where {P<:Union{NDual,Complex{<:NDual}}}
-    return Memory{P}(undef, primal(n))
-end
+# Canonical NDual-element Memory: `Memory{NDual{T,N}}(undef, n)` is the
+# canonical V at width N. No separate primal/tangent — NDual elements pack
+# both.
 @inline function frule!!(
     f::Mooncake.Lifted{Type{Memory{P}},N},
     u::Mooncake.Lifted{UndefInitializer},
     n::Mooncake.Lifted{Int},
-) where {P,N}
-    bare_result = _memory_init_kernel(
-        Mooncake._unlift(f), Mooncake._unlift(u), Mooncake._unlift(n)
-    )
-    P_out = __primal_type(_typeof(bare_result))
-    InnerT = Mooncake.dual_type(Val(N), P_out)
-    # For struct-element Memory at width N≥2, the canonical inner V is
-    # `Dual{Memory{P}, NTangent{NTuple{N, Memory{Tangent}}}}` — wrapping a
-    # SINGLE bare-Dual result via `_wrap_rule_result` would broadcast the
-    # one tangent Memory across all N lanes, producing aliased lanes
-    # (silent correctness bug: writing one lane corrupts all). Detect this
-    # shape and allocate N independent tangent Memories instead.
-    if N >= 2 &&
-        bare_result isa Dual &&
-        InnerT isa DataType &&
-        InnerT <: Dual &&
-        InnerT.parameters[2] <: Mooncake.NTangent
-        x = primal(bare_result)
-        tangents = ntuple(_ -> zero_tangent_internal(x, NoCache()), Val(N))
-        return Mooncake.Lifted{P_out,N,InnerT}(InnerT(x, Mooncake.NTangent(tangents)))
-    end
-    return _wrap_rule_result(P_out, Val(N), bare_result)
+) where {N,P<:Union{NDual,Complex{<:NDual}}}
+    return _wrap_rule_result(Val(N), Memory{P}(undef, primal(n)))
+end
+# Struct-element (non-NDual) Memory: build N independent tangent Memories so
+# `NTangent` lanes don't alias. The canonical V at width N is
+# `Dual{Memory{P}, NTangent{NTuple{N, Memory{tangent_type(P)}}}}`.
+@inline function frule!!(
+    f::Mooncake.Lifted{Type{Memory{P}},N},
+    u::Mooncake.Lifted{UndefInitializer},
+    n::Mooncake.Lifted{Int},
+) where {N,P}
+    x = Memory{P}(undef, primal(n))
+    tangents = ntuple(_ -> zero_tangent_internal(x, NoCache()), Val(N))
+    return Mooncake.Lifted{Memory{P},N}(x, Mooncake.NTangent(tangents))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:Memory},UndefInitializer,Int}}) =
     true
