@@ -486,34 +486,32 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
 ) = true
-# Source-of-truth Lifted body for `lmemoryrefget`. Handles both
-# width-1 (singleton-NTangent unwrap → single memoryrefget) and width N≥2
-# (per-lane NTangent → per-lane memoryrefget) uniformly via tangent
-# introspection. Replaces the prior architecture (bare-Dual width-1 +
-# generic Lifted delegator + width-N NTangent-specific scaffold).
+# Wrapper-exception V (`Dual{MemoryRef, NTangent}`): per-lane memoryrefget.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lmemoryrefget),N},
-    x::Mooncake.Lifted{<:MemoryRef},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
     _ordering::Mooncake.Lifted{<:Val},
     _boundscheck::Mooncake.Lifted{<:Val},
-) where {N}
-    inner_x = Mooncake._unlift(x)
+) where {N,V_x<:Dual{<:MemoryRef,<:Mooncake.NTangent}}
     ord = _val(primal(_ordering))
     bc = _val(primal(_boundscheck))
-    y = memoryrefget(primal(inner_x), ord, bc)
-    raw_t = tangent(inner_x)
-    # Width N≥2 NTangent-wrapped MemoryRef: per-lane memoryrefget.
-    if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-        dys = ntuple(
-            lane -> memoryrefget(raw_t.lanes[lane], ord, bc), Val(length(raw_t.lanes))
-        )
-        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
-    end
-    # Width-1: tangent is `NTangent{Tuple{MemoryRef}}` (canonical singleton)
-    # or already-bare MemoryRef; the helper handles both.
-    dy = memoryrefget(Mooncake._ntangent_unwrap_singleton(raw_t), ord, bc)
-    bare_result = Dual(y, dy)
-    return _wrap_rule_result(Val(N), bare_result)
+    y = memoryrefget(primal(x), ord, bc)
+    dys = ntuple(n -> memoryrefget(Mooncake.tangent(x, n), ord, bc), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-element MemoryRef V: returns an NDual scalar directly.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lmemoryrefget),N},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
+    _ordering::Mooncake.Lifted{<:Val},
+    _boundscheck::Mooncake.Lifted{<:Val},
+) where {N,V_x<:MemoryRef{<:_HasNDual}}
+    return _wrap_rule_result(
+        Val(N),
+        memoryrefget(
+            Mooncake._unlift(x), _val(primal(_ordering)), _val(primal(_boundscheck))
+        ),
+    )
 end
 # Bare-Dual delegator: supports direct invocation from
 # `frule!!(zero_dual(lmemoryrefget), x_dual, ...)` by lifting into
@@ -553,39 +551,29 @@ end
     return CoDual(y, dy), lmemoryrefget_adjoint
 end
 
-# Source-of-truth Lifted body for `memoryrefget`. Parallels the
-# `lmemoryrefget` Pattern A body above; handles all three inner-V shapes
-# (Dual-wrapped MemoryRef with singleton-NTangent tangent, bare
-# MemoryRef{<:NDual}, and width N≥2 NTangent-wrapped MemoryRef) via
-# tangent introspection.
+# Wrapper-exception V: per-lane memoryrefget.
 @inline Base.@propagate_inbounds function frule!!(
     ::Mooncake.Lifted{typeof(memoryrefget),N},
-    x::Mooncake.Lifted{<:MemoryRef},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
     _ordering::Mooncake.Lifted{Symbol},
     _boundscheck::Mooncake.Lifted{Bool},
-) where {N}
-    inner_x = Mooncake._unlift(x)
+) where {N,V_x<:Dual{<:MemoryRef,<:Mooncake.NTangent}}
     ord = primal(_ordering)
     bc = primal(_boundscheck)
-    if inner_x isa MemoryRef
-        # Canonical NDual-element MemoryRef: returns NDual scalar directly.
-        bare_result = memoryrefget(inner_x, ord, bc)
-    else
-        # Dual-wrapped MemoryRef (wrapper-exception form).
-        y = memoryrefget(primal(inner_x), ord, bc)
-        raw_t = tangent(inner_x)
-        if raw_t isa Mooncake.NTangent && length(raw_t.lanes) >= 2
-            # Width N≥2 NTangent-wrapped MemoryRef: per-lane memoryrefget.
-            dys = ntuple(
-                lane -> memoryrefget(raw_t.lanes[lane], ord, bc), Val(length(raw_t.lanes))
-            )
-            return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
-        end
-        # Width-1 singleton-NTangent unwrap.
-        dy = memoryrefget(Mooncake._ntangent_unwrap_singleton(raw_t), ord, bc)
-        bare_result = Dual(y, dy)
-    end
-    return _wrap_rule_result(Val(N), bare_result)
+    y = memoryrefget(primal(x), ord, bc)
+    dys = ntuple(n -> memoryrefget(Mooncake.tangent(x, n), ord, bc), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-element MemoryRef V: returns NDual scalar directly.
+@inline Base.@propagate_inbounds function frule!!(
+    ::Mooncake.Lifted{typeof(memoryrefget),N},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
+    _ordering::Mooncake.Lifted{Symbol},
+    _boundscheck::Mooncake.Lifted{Bool},
+) where {N,V_x<:MemoryRef{<:_HasNDual}}
+    return _wrap_rule_result(
+        Val(N), memoryrefget(Mooncake._unlift(x), primal(_ordering), primal(_boundscheck))
+    )
 end
 # Bare-Dual delegator: supports direct invocation.
 @inline Base.@propagate_inbounds function frule!!(
