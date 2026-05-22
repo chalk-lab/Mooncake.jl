@@ -1110,33 +1110,23 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
     end
 end
 
-# Durable bare-`Dual` width-1 exceptions.
-#
-#   - `ReinterpretArray`: the non-trivial use is `T !== S` (e.g.,
-#     `reinterpret(Complex{Float64}, ::Vector{Float64})`). [Phase 2 TODO:
-#     The byte layout actually aligns — `Vector{NDual{T,N}}` reinterpreted
-#     as `Vector{Complex{NDual{T,N}}}` matches the user's
-#     `Vector{T} → Vector{Complex{T}}` cast. Migrate to canonical NDual
-#     form using the Transpose/ReshapedArray template once a test exposes
-#     the actual non-trivial use case.]
-#
-# Pinned by the `width-1 wrapper bare-Dual durable exceptions` testset
-# in `test/tangents/dual.jl`.
-function dual_type(
-    ::Val{1}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
-) where {T<:IEEEFloat,D,S,P,W}
-    R = Base.ReinterpretArray{T,D,S,P,W}
-    return Dual{R,Mooncake.tangent_type(R)}
-end
+# ReinterpretArray canonical NDual V — Phase 2 of the wrapper-exception
+# removal. For `T<:IEEEFloat` over `S<:IEEEFloat` parent, the byte layout
+# of `reinterpret(NDual{T,N}, ::Vector{NDual{S,N}})` aligns with the user-
+# observed `reinterpret(T, ::Vector{S})` cast: `NDual{*,N}` is `(N+1)` Floats,
+# so an array of `NDual{S,N}` viewed as `NDual{T,N}` preserves the same
+# element-pair count. Same template as Transpose/ReshapedArray. The
+# remaining `T<:IEEEFloat AND S NOT<:IEEEFloat` cases (rare) fall through to
+# the wrapper-exception catch-all in `src/tangents/dual.jl`.
 function dual_type(
     ::Val{N}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
-) where {N,T<:IEEEFloat,D,S,P,W}
-    R = Base.ReinterpretArray{T,D,S,P,W}
-    return Dual{R,Mooncake.tangent_type(Val(N), R)}
+) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
+    Vp = dual_type(Val(N), P)
+    return Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}
 end
 function dual_type(
     ::Val{0}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
-) where {T<:IEEEFloat,D,S,P,W}
+) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
     return Base.ReinterpretArray{T,D,S,P,W}
 end
 # Transpose with any `AbstractArray{T}` parent: canonical NDual-element
@@ -1274,6 +1264,56 @@ function (::Type{Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}})(
         parent_lifted, primal.dims, primal.mi
     )
 end
+# ReinterpretArray canonical V ctor + Lifted bridge — Phase 2 of the
+# wrapper-exception removal. Delegates the parent lift to V_parent's own
+# `(primal, tangent)` ctor, then reinterprets the resulting NDual-element
+# parent. Byte layout aligns because `NDual{T,N}` is `(N+1)*sizeof(T)` and
+# `NDual{S,N}` is `(N+1)*sizeof(S)`, matching the source-T-to-target-S ratio.
+function (::Type{Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}})(
+    primal::Base.ReinterpretArray{T,D,S,P,W}, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,N,D,S<:IEEEFloat,P<:AbstractArray{S},Vp<:AbstractArray{NDual{S,N}},W}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = Vp(parent(primal), parent_t)
+    return reinterpret(
+        NDual{T,N}, parent_lifted
+    )::Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}
+end
+@inline function Mooncake.Lifted{P,1}(
+    primal::P, tangent::Mooncake.Tangent
+) where {T<:IEEEFloat,S<:IEEEFloat,P<:Base.ReinterpretArray{T,<:Any,S,<:AbstractArray{S}}}
+    InnerT = Mooncake.dual_type(Val(1), P)
+    return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
+end
+# Seed factories — same route as ReshapedArray: build via the canonical V
+# 2-arg ctor, with `zero_tangent`/`uninit_tangent`/`randn_tangent` providing
+# the legacy `Tangent{NamedTuple{(:parent, :readable, :writable), …}}` shape.
+@inline function Mooncake.zero_dual(
+    w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.zero_tangent(x))::V
+end
+@inline function Mooncake.uninit_dual(
+    w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.uninit_tangent(x))::V
+end
+@inline function Mooncake.randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, Mooncake.randn_tangent(rng, x))::V
+end
+@inline Mooncake.zero_dual(
+    ::Val{0}, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = x
+@inline Mooncake.uninit_dual(
+    ::Val{0}, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = x
+@inline Mooncake.randn_dual(
+    ::Val{0}, ::AbstractRNG, x::Base.ReinterpretArray{T,D,S,P,W}
+) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = x
 # Lifted bridge — mirrors Transpose's `Lifted{P,1}(primal, ::Tangent)` shim.
 @inline function Mooncake.Lifted{P,1}(
     primal::P, tangent::Mooncake.Tangent

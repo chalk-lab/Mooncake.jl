@@ -343,25 +343,22 @@ end
         ) === LinearAlgebra.Diagonal{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
-    @testset "width-1 wrapper bare-Dual durable exceptions" begin
-        # Each wrapper below uses a parallel `Dual{Wrapper, tangent_type(Wrapper)}`
-        # representation at width 1 because its rules dispatch through `arrayify`
-        # (`Union{Tangent, FData}`-typed), which does not accept `NTangent` or
-        # `NDual`-element wrapper containers. Width >= 2 stays at the chunked
-        # `Dual{Wrapper, NTangent{NTuple{N, T}}}` form. This testset pins the
-        # current behavior so the documented exception cannot regress silently.
-        function _pin_width1_bare_dual(W::Type)
-            T_W = Mooncake.tangent_type(W)
-            @test Mooncake.dual_type(Val(1), W) === Mooncake.Dual{W,T_W}
-            # Width 0 is the primal passthrough.
+    @testset "ReinterpretArray canonical NDual V (Phase 2)" begin
+        # ReinterpretArray for `T<:IEEEFloat AND S<:IEEEFloat` parent migrated
+        # to canonical NDual-element form via the Transpose/ReshapedArray
+        # template. The reinterpret view's byte layout aligns because
+        # `NDual{*, N}` is `(N+1) * sizeof(*)`, so an array of `NDual{S, N}`
+        # viewed as `NDual{T, N}` preserves the element-pair ratio of the
+        # original `Vector{S} → ReinterpretArray{T}` cast.
+        let W = Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
             @test Mooncake.dual_type(Val(0), W) === W
-            # Width 2 must remain the canonical chunked Dual.
-            T_W_N2 = Mooncake.tangent_type(Val(2), W)
-            @test Mooncake.dual_type(Val(2), W) === Mooncake.Dual{W,T_W_N2}
+            @test Mooncake.dual_type(Val(1), W) === Base.ReinterpretArray{
+                NDual{Float64,1},1,NDual{Float64,1},Vector{NDual{Float64,1}},false
+            }
+            @test Mooncake.dual_type(Val(2), W) === Base.ReinterpretArray{
+                NDual{Float64,2},1,NDual{Float64,2},Vector{NDual{Float64,2}},false
+            }
         end
-        _pin_width1_bare_dual(
-            Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
-        )
 
         # ReshapedArray was migrated to canonical NDual-element form via the
         # Transpose template (parameterised over any AbstractArray parent).
