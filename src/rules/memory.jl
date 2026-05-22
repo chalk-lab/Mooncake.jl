@@ -636,76 +636,51 @@ end
 
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(memoryrefnew),Vararg}}) = true
 
-# `memoryrefnew` implementation kernels (no `Dual{typeof(memoryrefnew)}` first
-# arg). Lifted-typed bodies below dispatch the runtime inner V into the
-# matching kernel: `Memory{<:_HasNDual}` / `MemoryRef{<:_HasNDual}` for the
-# canonical NDual path; `Dual{<:Memory}` / `Dual{<:MemoryRef}` for the legacy
-
-# Dual-wrapped path (non-IEEEFloat element types whose `dual_type` falls
-# through to `Dual{P, NTangent{Tuple{Memory}}}` at width 1). The tangent
-# slot is `NTangent{Tuple{Memory}}`; unwrap to the bare `Memory` before
-# calling `memoryrefnew`.
-@inline _memoryrefnew_kernel(x::Dual{<:Memory}) = Dual(
-    memoryrefnew(primal(x)), memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)))
-)
-# Width-N NTangent-wrapped Memory: per-lane memoryrefnew on each lane Memory.
-# `Mooncake._ntangent_unwrap_singleton` only unwraps singleton NTangent — at width N≥2 the wrapper
-# stays and `memoryrefnew(::NTangent)` errors. Build the result NTangent
-# explicitly from per-lane MemoryRefs.
-@inline function _memoryrefnew_kernel(x::Dual{<:Memory,<:Mooncake.NTangent})
-    return Dual(
-        memoryrefnew(primal(x)), Mooncake.NTangent(map(memoryrefnew, tangent(x).lanes))
-    )
-end
-@inline _memoryrefnew_kernel(x::Memory{<:_HasNDual}) = memoryrefnew(x)
-# `memoryrefnew(memref, index, [boundscheck])` — arity 2 and 3 share the same
-# per-shape pattern, parameterised over the extra args via Vararg.
-@inline function _memoryrefnew_kernel(x::Dual{<:MemoryRef}, args::Vararg{Dual,M}) where {M}
-    p_args = map(primal, args)
-    return Dual(
-        memoryrefnew(primal(x), p_args...),
-        memoryrefnew(Mooncake._ntangent_unwrap_singleton(tangent(x)), p_args...),
-    )
-end
-@inline function _memoryrefnew_kernel(
-    x::Dual{<:MemoryRef,<:Mooncake.NTangent}, args::Vararg{Dual,M}
-) where {M}
-    p_args = map(primal, args)
-    return Dual(
-        memoryrefnew(primal(x), p_args...),
-        Mooncake.NTangent(map(t -> memoryrefnew(t, p_args...), tangent(x).lanes)),
-    )
-end
-@inline function _memoryrefnew_kernel(
-    x::MemoryRef{<:_HasNDual}, args::Vararg{Dual,M}
-) where {M}
-    return memoryrefnew(x, map(primal, args)...)
-end
-
+# `memoryrefnew(::Memory)` — split by inner V shape.
+# Wrapper-exception V (`Dual{Memory, NTangent}` at width-1 singleton or
+# width-N): build result tangent per-lane via `tangent(x, n)`.
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory}
-) where {N}
-    bare_result = _memoryrefnew_kernel(Mooncake._unlift(x))
-    return _wrap_rule_result(Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory,N,V_x}
+) where {N,V_x<:Dual{<:Memory,<:Mooncake.NTangent}}
+    y = memoryrefnew(primal(x))
+    dys = ntuple(n -> memoryrefnew(Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-element Memory V: NDual elements pack primal+tangent so
+# a single `memoryrefnew` produces a canonical `MemoryRef{NDual{T,N}}`.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory,N,V_x}
+) where {N,V_x<:Memory{<:_HasNDual}}
+    return _wrap_rule_result(Val(N), memoryrefnew(Mooncake._unlift(x)))
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
 # memoryrefnew(MemoryRef, i, [boundscheck]) — Vararg-tail unifies arity 2 + 3.
-# `_memoryrefnew_kernel` itself already accepts `Vararg{Dual,M}` for the
-# trailing index / boundscheck args.
+# Wrapper-exception V: per-lane assembly.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(memoryrefnew),N},
-    x::Mooncake.Lifted{<:MemoryRef},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
     ii::Mooncake.Lifted{Int},
     extras::Vararg{Mooncake.Lifted,M},
-) where {N,M}
-    bare_extras = map(Mooncake._unlift, extras)
-    bare_result = _memoryrefnew_kernel(
-        Mooncake._unlift(x), Mooncake._unlift(ii), bare_extras...
+) where {N,M,V_x<:Dual{<:MemoryRef,<:Mooncake.NTangent}}
+    p_ii = primal(ii)
+    p_extras = map(primal, extras)
+    y = memoryrefnew(primal(x), p_ii, p_extras...)
+    dys = ntuple(n -> memoryrefnew(Mooncake.tangent(x, n), p_ii, p_extras...), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+# Canonical NDual-element MemoryRef V.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(memoryrefnew),N},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
+    ii::Mooncake.Lifted{Int},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,M,V_x<:MemoryRef{<:_HasNDual}}
+    return _wrap_rule_result(
+        Val(N), memoryrefnew(Mooncake._unlift(x), primal(ii), map(primal, extras)...)
     )
-    return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
