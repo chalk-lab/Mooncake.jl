@@ -1161,25 +1161,27 @@ const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any,Any}}) = true
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setfield!),Any,Any,Any}}) = true
 
-# Bare-Dual getfield: Vararg-tail unifies arity 2 (name) and arity 3
-# (name, inbounds). The inbounds extras splat into both the primal
-# `getfield(…)` call and the tangent-side `_get_tangent_field(…)` call.
+# Bare-Dual getfield split by T (Phase 6 — mirrors `3414084ea` for the
+# Lifted body and `8e6291066` for `_lgetfield_impl`). The Vararg-tail
+# unifies arity 2 (name) and arity 3 (name, inbounds); the inbounds
+# extras splat into both the primal `getfield(…)` call and the
+# tangent-side `_get_tangent_field(…)` call.
 function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{P,<:StandardTangentType},
-    name::Dual,
-    extras::Vararg{Dual,M},
+    ::Dual{typeof(getfield)}, x::Dual{P,NoTangent}, name::Dual, extras::Vararg{Dual,M}
 ) where {P,M}
     _name = primal(name)
     _extras = map(primal, extras)
-    if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name, _extras...))
-    else
-        return _dual_or_ndual(
-            getfield(primal(x), _name, _extras...),
-            _get_tangent_field(tangent(x), _name, _extras...),
-        )
-    end
+    return uninit_dual(getfield(primal(x), _name, _extras...))
+end
+function frule!!(
+    ::Dual{typeof(getfield)}, x::Dual{P,T}, name::Dual, extras::Vararg{Dual,M}
+) where {P,T<:NTangent,M}
+    _name = primal(name)
+    _extras = map(primal, extras)
+    return _dual_or_ndual(
+        getfield(primal(x), _name, _extras...),
+        _get_tangent_field(tangent(x), _name, _extras...),
+    )
 end
 # Bare Tuple/NamedTuple of inner duals (the inner V of a `Lifted{<:Tuple}`
 # slot). Field access returns the i-th inner dual directly.
