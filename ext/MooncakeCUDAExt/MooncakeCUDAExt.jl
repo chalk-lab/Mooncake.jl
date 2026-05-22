@@ -1322,39 +1322,21 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
 # the recursive struct lift (`dual_type(Val(1), Adjoint{...})` falls through
 # to the NamedTuple lift since CuArray-element wrappers don't have a
 # specialised dual_type).
-@inline function _sum_transpose_cuarray_kernel(
-    x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
-end
-@inline function _sum_transpose_cuarray_kernel(x::NamedTuple{(:parent,)})
-    pp = primal(x.parent)
-    pt = tangent(x.parent)
-    return Dual(sum(transpose(pp)), sum(pt))
-end
-@inline function _sum_adjoint_cuarray_kernel(
-    x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
-end
-@inline function _sum_adjoint_cuarray_kernel(x::NamedTuple{(:parent,)})
-    pp = primal(x.parent)
-    pt = tangent(x.parent)
-    return Dual(sum(adjoint(pp)), conj(sum(pt)))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     x::Mooncake.Lifted{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
 ) where {N}
-    bare_result = _sum_transpose_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = sum(primal(x))
+    dys = ntuple(n -> sum(parent(Mooncake.tangent(x, n))), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     x::Mooncake.Lifted{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},
 ) where {N}
-    bare_result = _sum_adjoint_cuarray_kernel(Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    y = sum(primal(x))
+    dys = ntuple(n -> conj(sum(parent(Mooncake.tangent(x, n)))), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
@@ -1418,44 +1400,6 @@ function _check_gpu_sum_f(f)
     return nothing
 end
 
-function _gpu_sum_f_frule(f, x)
-    _check_gpu_sum_f(f)
-    flat_px = parent(primal(x))
-    flat_dx = _fields(tangent(x)).parent
-    flat_pargs = (flat_px,)
-    flat_tangents = (flat_dx,)
-    out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
-    dy = if decoded.is_diff && !(flat_dx isa NoTangent)
-        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
-    else
-        zero(decoded.primal_out)
-    end
-    return Dual(decoded.primal_out, dy)
-end
-
-# Canonical-V overload: when `x` is the recursive struct lift's
-# `NamedTuple{(:parent,), Tuple{Dual{CuArray, CuArray}}}` form (for
-# `Adjoint{T, CuArray{T}}` / `Transpose{T, CuArray{T}}`), extract the parent
-# CuArray's primal/tangent directly. Equivalent to the legacy path's
-# `parent(primal(x))` / `_fields(tangent(x)).parent` extraction but on the
-# new V shape.
-function _gpu_sum_f_frule(f, x::NamedTuple{(:parent,)})
-    _check_gpu_sum_f(f)
-    flat_px = primal(x.parent)
-    flat_dx = tangent(x.parent)
-    flat_pargs = (flat_px,)
-    flat_tangents = (flat_dx,)
-    out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
-    dy = if decoded.is_diff && !(flat_dx isa NoTangent)
-        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
-    else
-        zero(decoded.primal_out)
-    end
-    return Dual(decoded.primal_out, dy)
-end
-
 function _gpu_sum_f_rrule(f, x)
     _check_gpu_sum_f(f)
     flat_px = parent(primal(x))
@@ -1488,23 +1432,36 @@ end
 # Works for both f: ℂ→ℝ (e.g. abs2, real, imag) and f: ℂ→ℂ (e.g. sin, exp).
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
-# `sum(f, ::CuComplexArray)` implementation kernel.
-# Two overloads: legacy parallel `Dual{CuGpuSumFArray, ...}` for direct callers
-# / parallel-storage CuArray slots, and canonical V `NamedTuple{(:parent,)}`
-# for the recursive struct lift on `Adjoint`/`Transpose{<:CuArray}`.
-@inline function _sum_f_cuarray_kernel(f::Dual, x::Dual{<:CuGpuSumFArray})
-    return _gpu_sum_f_frule(primal(f), x)
-end
-@inline function _sum_f_cuarray_kernel(f::Dual, x::NamedTuple{(:parent,)})
-    return _gpu_sum_f_frule(primal(f), x)
+# `sum(f, ::CuMaybeComplexArray)` — per-lane scalar tangent via the existing
+# `_gpu_broadcast_dual` machinery (which uses width-1 NDuals internally). Each
+# lane k runs the broadcast over (primal_x, tangent(x, k)) and extracts a
+# scalar tangent. Refactored from the prior single-shot scaffold.
+@inline function _gpu_sum_f_lane_tangent(f, flat_px, flat_dx_lane)
+    flat_pargs = (flat_px,)
+    flat_tangents = (flat_dx_lane,)
+    out = _gpu_broadcast_dual(f, flat_px)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
+    return if decoded.is_diff && !(flat_dx_lane isa NoTangent)
+        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
+    else
+        zero(decoded.primal_out)
+    end
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     f::Mooncake.Lifted,
     x::Mooncake.Lifted{<:CuGpuSumFArray,N},
 ) where {N}
-    bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    pf = primal(f)
+    px = primal(x)
+    _check_gpu_sum_f(pf)
+    flat_px = parent(px)
+    y = sum(pf, px)
+    dys = ntuple(Val(N)) do k
+        # parent() unwraps Adjoint/Transpose wrappers; identity for plain CuArray.
+        _gpu_sum_f_lane_tangent(pf, flat_px, parent(Mooncake.tangent(x, k)))
+    end
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
@@ -1534,8 +1491,15 @@ for _op in (:(+), :(Base.add_sum))
         ::Mooncake.Lifted{typeof($_op),N},
         x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
     ) where {N}
-        bare_result = _sum_f_cuarray_kernel(Mooncake._unlift(f), Mooncake._unlift(x))
-        return Mooncake._wrap_rule_result(Val(N), bare_result)
+        pf = primal(f)
+        px = primal(x)
+        _check_gpu_sum_f(pf)
+        flat_px = parent(px)
+        y = sum(pf, px)
+        dys = ntuple(Val(N)) do k
+            _gpu_sum_f_lane_tangent(pf, flat_px, parent(Mooncake.tangent(x, k)))
+        end
+        return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
     end
     @eval function rrule!!(
         ::CoDual{typeof(mapreduce)},
@@ -1560,17 +1524,33 @@ end
 # Unlike mapreduce, reduce is user-facing and Base does not route through the
 # add_sum / mul_prod aliases here, so only the literal + and * are needed.
 # The reduce pullback returns one extra NoRData for `op` compared to sum/prod.
-for (_op, _fn, _kernel) in
-    ((:(+), :sum, :_sum_cuarray_kernel), (:(Base.:*), :prod, :_prod_cuarray_kernel))
-    @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
-    @eval @inline function frule!!(
-        ::Mooncake.Lifted{typeof(reduce),N},
-        ::Mooncake.Lifted{typeof($_op),N},
-        x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
-    ) where {N}
-        bare_result = $_kernel(Mooncake._unlift(x))
-        return Mooncake._wrap_rule_result(Val(N), bare_result)
+@is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof(+),CuMaybeComplexArray})
+# `reduce(+, x)` ≡ `sum(x)`: per-lane sum over each tangent CuArray.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(reduce),N},
+    ::Mooncake.Lifted{typeof(+),N},
+    x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
+) where {N}
+    y = sum(primal(x))
+    dys = ntuple(n -> sum(Mooncake.tangent(x, n)), Val(N))
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+@is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof(Base.:*),CuMaybeComplexArray})
+# `reduce(*, x)` ≡ `prod(x)`: per-lane `y * sum(tangent ./ primal)` (annihilated
+# when any primal element is zero).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(reduce),N},
+    ::Mooncake.Lifted{typeof(Base.:*),N},
+    x::Mooncake.Lifted{<:CuMaybeComplexArray,N},
+) where {N}
+    px = primal(x)
+    y = prod(px)
+    dys = ntuple(Val(N)) do n
+        iszero(y) ? zero(y) : y * sum(Mooncake.tangent(x, n) ./ px)
     end
+    return Mooncake.Lifted{Mooncake._typeof(y),N}(y, Mooncake.NTangent(dys))
+end
+for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
     @eval function rrule!!(
         ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
     )
