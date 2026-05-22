@@ -164,8 +164,26 @@ end
            ismutabletype(P) &&
            fieldcount(P) > 0 &&
            tangent_type(P) <: MutableTangent &&
-           all(always_initialised(P)) &&
+           _all_split_dual_field_types_concrete(P) &&
            _has_split_dual_field(P)
+end
+# Per-field concreteness check: SplitDual's per-field canonical V slot needs
+# `dual_type(Val(N), field_type)` to be concrete so the SplitDual generator
+# can produce a typed NamedTuple. Non-concrete (e.g. Any-typed) field types
+# would yield abstract V slots that the inner ctors can't dispatch on.
+# Initialised fields need a concrete field type directly; PossiblyUninit
+# fields wrap the V in `PossiblyUninitTangent{Vi}`, which still needs `Vi`
+# concrete for the wrapper to be useful. `_all_split_dual_field_types_concrete`
+# replaces the old `all(always_initialised(P))` guard — PossiblyUninit
+# fields are now supported via the `PossiblyUninitTangent{Vi}` wrapper
+# pattern (mirroring `MutableTangent`'s field-wise convention) as long as
+# each field's primal type is concrete.
+@generated function _all_split_dual_field_types_concrete(::Type{P}) where {P}
+    for i in 1:fieldcount(P)
+        ft = fieldtype(P, i)
+        isconcretetype(ft) || return :(false)
+    end
+    return :(true)
 end
 # Predicate per field type — true if the field's primal canonicalises to an
 # NDual-element form anywhere (top-level Array/Memory of IEEEFloat /
@@ -232,7 +250,15 @@ end
 @generated function _dual_type_split_dual(::Val{N}, ::Type{P}) where {N,P}
     names = fieldnames(P)
     n = fieldcount(P)
-    field_dual_type_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n]
+    inits = always_initialised(P)
+    # PossiblyUninit fields wrap their canonical V in `PossiblyUninitTangent{Vi}`
+    # so a field that may or may not be assigned in the primal has the same
+    # may-or-may-not-have-tangent semantics in the SplitDual NamedTuple.
+    # Mirrors the `MutableTangent`'s per-field convention.
+    field_dual_type_exprs = map(1:n) do i
+        Vi_expr = :(dual_type(Val($N), $(fieldtype(P, i))))
+        inits[i] ? Vi_expr : :(PossiblyUninitTangent{$Vi_expr})
+    end
     return quote
         SplitDual{NamedTuple{$names,Tuple{$(field_dual_type_exprs...)}}}
     end
@@ -357,11 +383,31 @@ end
     field_exprs = map(1:n) do i
         Vi = fieldtype(Vs, i)
         fname = names[i]
-        :(_inner_dual_for_field(
-            $Vi,
-            getfield(primal, $(QuoteNode(fname))),
-            getfield(tangent.fields, $(QuoteNode(fname))),
-        ))
+        if Vi <: PossiblyUninitTangent
+            # PossiblyUninit field: check `isdefined(primal, fname)`. If
+            # assigned, unwrap the tangent's `PossiblyUninitTangent` slot
+            # (via `val`) and build the inner V; otherwise produce an empty
+            # `PossiblyUninitTangent{Vi_inner}()`.
+            Vi_inner = fieldtype(Vi, :tangent)
+            quote
+                if isdefined(primal, $(QuoteNode(fname)))
+                    inner = _inner_dual_for_field(
+                        $Vi_inner,
+                        getfield(primal, $(QuoteNode(fname))),
+                        val(getfield(tangent.fields, $(QuoteNode(fname)))),
+                    )
+                    $Vi(inner)
+                else
+                    $Vi()
+                end
+            end
+        else
+            :(_inner_dual_for_field(
+                $Vi,
+                getfield(primal, $(QuoteNode(fname))),
+                getfield(tangent.fields, $(QuoteNode(fname))),
+            ))
+        end
     end
     return quote
         SplitDual($(NamedTuple{names})(($(field_exprs...),)))
@@ -380,12 +426,35 @@ end
     field_exprs = map(1:n) do i
         Vi = fieldtype(Vs, i)
         fname = names[i]
-        lane_exprs = map(
-            d -> :(val(getfield(tangent.lanes[$d].fields, $(QuoteNode(fname))))), 1:N
-        )
-        :(_inner_dual_for_field(
-            $Vi, getfield(primal, $(QuoteNode(fname))), NTangent(($(lane_exprs...),))
-        ))
+        if Vi <: PossiblyUninitTangent
+            Vi_inner = fieldtype(Vi, :tangent)
+            lane_exprs = map(
+                d -> :(val(getfield(tangent.lanes[$d].fields, $(QuoteNode(fname))))),
+                1:N,
+            )
+            quote
+                if isdefined(primal, $(QuoteNode(fname)))
+                    inner = _inner_dual_for_field(
+                        $Vi_inner,
+                        getfield(primal, $(QuoteNode(fname))),
+                        NTangent(($(lane_exprs...),)),
+                    )
+                    $Vi(inner)
+                else
+                    $Vi()
+                end
+            end
+        else
+            lane_exprs = map(
+                d -> :(val(getfield(tangent.lanes[$d].fields, $(QuoteNode(fname))))),
+                1:N,
+            )
+            :(_inner_dual_for_field(
+                $Vi,
+                getfield(primal, $(QuoteNode(fname))),
+                NTangent(($(lane_exprs...),)),
+            ))
+        end
     end
     return quote
         SplitDual($(NamedTuple{names})(($(field_exprs...),)))
@@ -743,6 +812,10 @@ verify_dual_type(t::NamedTuple) = all(verify_dual_type, values(t))
 # canonical NamedTuple is field-wise coherent by construction, so
 # delegating to the NamedTuple overload validates each field's V.
 verify_dual_type(d::SplitDual) = verify_dual_type(d.canonical)
+# `PossiblyUninitTangent{Vi}` slots in a SplitDual NamedTuple wrap the
+# canonical V for PossiblyUninit primal fields. Unwrap via `val` and
+# recurse if assigned; an uninitialised slot is trivially valid.
+verify_dual_type(p::PossiblyUninitTangent) = is_init(p) ? verify_dual_type(val(p)) : true
 # Bare canonical-V leaf-scalar shapes (`NDual`, `Complex{<:NDual}`,
 # `<:NTangent`) leak through helper-API boundaries but still represent valid
 # inner dual values. Their concrete overloads are added in `nfwd/NfwdMooncake.jl`
