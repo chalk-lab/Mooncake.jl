@@ -15,7 +15,8 @@ import Mooncake:
     primal,
     notimplemented_tangent_guard,
     ForwardMode,
-    extract
+    extract,
+    _typeof
 
 @from_chainrules DefaultCtx Tuple{typeof(airyai),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(airyaix),IEEEFloat}
@@ -143,32 +144,18 @@ an unimplemented partial is mathematically required.
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# Ensure the frule return type matches the primal type.
-function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
-    return Dual(y, primal_eltype(dy_val))
+# Per-lane scalar tangent constructor — the Lifted-body's per-lane assembly
+# builds an NTangent over scalar T values, one per lane. Replaces the prior
+# `real_or_complex_valued(y, primal_eltype, dy_val) → Dual(y, tangent)` helper
+# which baked a Dual wrapper into the per-lane scalar.
+@inline _sf_lane_tangent(y::IEEEFloat, primal_eltype, dy_val) = primal_eltype(dy_val)
+@inline function _sf_lane_tangent(y::Complex{<:IEEEFloat}, primal_eltype, dy_val)
+    return Complex(primal_eltype(real(dy_val)), primal_eltype(imag(dy_val)))
 end
-function real_or_complex_valued(y::Complex{L}, primal_eltype, dy_val) where {L<:IEEEFloat}
-    return Dual(y, Complex(primal_eltype(real(dy_val)), primal_eltype(imag(dy_val))))
-end
-
-function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
-end
-
-# Helper: extract (primal, single-direction tangent) from a Lifted slot value.
-# Required for Lifted-typed bodies in this extension because the bare bodies
-# use `extract(_a::Dual)`, which doesn't match NDual / Complex{NDual} V shapes.
-@inline function _sf_extract(x::Mooncake.Lifted)
-    inner = Mooncake._unlift(x)
-    return _sf_extract_inner(inner)
-end
-@inline _sf_extract_inner(x::Dual) = (primal(x), tangent(x))
-@inline _sf_extract_inner(x::Mooncake.Nfwd.NDual{T,1}) where {T} = (x.value, x.partials[1])
-@inline function _sf_extract_inner(x::Complex{Mooncake.Nfwd.NDual{T,1}}) where {T}
-    return (complex(x.re.value, x.im.value), complex(x.re.partials[1], x.im.partials[1]))
+@inline function _sf_lane_tangent(y::Complex, primal_eltype, dy_val)
+    return Mooncake.Tangent((
+        re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val))
+    ))
 end
 
 # 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
@@ -176,19 +163,22 @@ end
 
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(gamma_inc),N},
-    _a::Mooncake.Lifted,
-    _x::Mooncake.Lifted,
+    _a::Mooncake.Lifted{<:IEEEFloat,N},
+    _x::Mooncake.Lifted{<:IEEEFloat,N},
     _IND::Mooncake.Lifted,
 ) where {N}
-    a, da = _sf_extract(_a)
-    x, dx = _sf_extract(_x)
+    a = primal(_a)
+    x = primal(_x)
     IND = primal(_IND)
     y = gamma_inc(a, x, IND)
     primal_eltype = eltype(y)
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
     z = exp((a - 1) * log(x) - x - loggamma(a))
-    bare = Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂a = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_a, n))
+        dx = Mooncake.tangent(_x, n)
+        (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z)))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(gamma_inc),<:IEEEFloat,<:IEEEFloat,<:Integer}}
@@ -203,15 +193,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(gamma),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    a, da = _sf_extract(_a)
-    x, dx = _sf_extract(_x)
+    a = primal(_a)
+    x = primal(_x)
     y = gamma(a, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
     ∂x = -exp((a - 1) * log(x) - x)
-    dy_val = ∂a + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂a = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_a, n))
+        _sf_lane_tangent(y, primal_eltype, ∂a + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{
@@ -231,15 +222,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(loggamma),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    a, da = _sf_extract(_a)
-    x, dx = _sf_extract(_x)
+    a = primal(_a)
+    x = primal(_x)
     y = loggamma(a, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
     ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
-    dy_val = ∂a + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂a = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_a, n))
+        _sf_lane_tangent(y, primal_eltype, ∂a + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{
@@ -259,15 +251,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(expint),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    a, da = _sf_extract(_a)
-    x, dx = _sf_extract(_x)
+    a = primal(_a)
+    x = primal(_x)
     y = expint(a, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
     ∂x = -expint(a - 1, x)
-    dy_val = ∂a + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂a = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_a, n))
+        _sf_lane_tangent(y, primal_eltype, ∂a + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{
@@ -287,15 +280,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(expintx),N}, _a::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    a, da = _sf_extract(_a)
-    x, dx = _sf_extract(_x)
+    a = primal(_a)
+    x = primal(_x)
     y = expintx(a, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
     ∂x = y - expintx(a - 1, x)
-    dy_val = ∂a + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂a = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_a, n))
+        _sf_lane_tangent(y, primal_eltype, ∂a + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{
@@ -314,15 +308,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besselj),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besselj(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besselj),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -334,15 +329,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(bessely),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = bessely(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(bessely),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -354,15 +350,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besseli),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besseli(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besseli),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -374,15 +371,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besselk),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besselk(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besselk),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -394,15 +392,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hankelh1),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = hankelh1(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(hankelh1),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -414,15 +413,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hankelh2),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = hankelh2(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(hankelh2),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -439,16 +439,18 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besselix),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besselix(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
     ∂x_2 = -sign(real(x)) * y
-    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * real(dx)
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        dx = Mooncake.tangent(_x, n)
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x_1 * dx + ∂x_2 * real(dx))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besselix),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -460,15 +462,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besselkx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besselkx(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besselkx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -480,16 +483,18 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besseljx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besseljx(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
     ∂x_2 = -sign(imag(x)) * y
-    dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        dx = Mooncake.tangent(_x, n)
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besseljx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -501,16 +506,18 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(besselyx),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = besselyx(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
     ∂x_2 = -sign(imag(x)) * y
-    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        dx = Mooncake.tangent(_x, n)
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(besselyx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -523,15 +530,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hankelh1x),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = hankelh1x(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(hankelh1x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
@@ -543,15 +551,16 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hankelh2x),N}, _v::Mooncake.Lifted, _x::Mooncake.Lifted
 ) where {N}
-    v, dv = _sf_extract(_v)
-    x, dx = _sf_extract(_x)
+    v = primal(_v)
+    x = primal(_x)
     y = hankelh2x(v, x)
     primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
     ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
-    dy_val = ∂v + ∂x * dx
-    bare = real_or_complex_valued(y, primal_eltype, dy_val)
-    return Mooncake._wrap_rule_result(Val(N), bare)
+    dys = ntuple(Val(N)) do n
+        ∂v = Mooncake.notimplemented_tangent_guard(Mooncake.tangent(_v, n))
+        _sf_lane_tangent(y, primal_eltype, ∂v + ∂x * Mooncake.tangent(_x, n))
+    end
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(hankelh2x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
