@@ -102,22 +102,21 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(pointer_from_objref),N}, x::Mooncake.Lifted
 ) where {N}
-    inner = Mooncake._unlift(x)
-    y = pointer_from_objref(primal(inner))
-    inner_tan = tangent(inner)
-    # At width N≥2, `inner_tan` is `NTangent{NTuple{N, T}}` — taking
+    y = pointer_from_objref(primal(x))
+    t = tangent(x)
+    # At width N≥2, `t` is `NTangent{NTuple{N, T}}` — taking
     # `pointer_from_objref(NTangent)` errors (NTangent is immutable). Map
     # per-lane: each lane's tangent is a different mutable tangent object,
     # producing a different pointer.
-    if N >= 2 && inner_tan isa Mooncake.NTangent
+    if N >= 2 && t isa Mooncake.NTangent
         dys = ntuple(Val(N)) do lane
-            bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(inner_tan.lanes[lane]))
+            bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(t.lanes[lane]))
         end
         return Mooncake.Lifted{Ptr{Nothing},N}(y, Mooncake.NTangent(dys))
     end
     dy = bitcast(
         Ptr{tangent_type(Nothing)},
-        pointer_from_objref(Mooncake._ntangent_unwrap_singleton(inner_tan)),
+        pointer_from_objref(Mooncake._ntangent_unwrap_singleton(t)),
     )
     return Mooncake.Lifted{Ptr{Nothing},N}(y, dy)
 end
@@ -141,20 +140,19 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
 ) where {N}
-    inner = Mooncake._unlift(x)
-    y = unsafe_pointer_to_objref(primal(inner))
-    inner_tan = tangent(inner)
-    # At width N≥2, `inner_tan` is `NTangent{NTuple{N, Ptr}}` — the
+    y = unsafe_pointer_to_objref(primal(x))
+    t = tangent(x)
+    # At width N≥2, `t` is `NTangent{NTuple{N, Ptr}}` — the
     # singleton-unwrap helper above only matches `NTangent{Tuple{T}}`, so
     # the multi-lane NTangent would fall through to the no-op fallback and
     # `unsafe_pointer_to_objref(::NTangent)` errors. Map per-lane.
-    if N >= 2 && inner_tan isa Mooncake.NTangent
+    if N >= 2 && t isa Mooncake.NTangent
         dys = ntuple(Val(N)) do lane
-            unsafe_pointer_to_objref(inner_tan.lanes[lane])
+            unsafe_pointer_to_objref(t.lanes[lane])
         end
         return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
     end
-    dy = unsafe_pointer_to_objref(Mooncake._ntangent_unwrap_singleton(inner_tan))
+    dy = unsafe_pointer_to_objref(Mooncake._ntangent_unwrap_singleton(t))
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(
@@ -190,14 +188,12 @@ end
     src::Mooncake.Lifted{Ptr{T}},
     n::Mooncake.Lifted,
 ) where {N,T}
-    inner_dest = Mooncake._unlift(dest)
-    inner_src = Mooncake._unlift(src)
     pn = primal(n)
-    unsafe_copyto!(primal(inner_dest), primal(inner_src), pn)
+    unsafe_copyto!(primal(dest), primal(src), pn)
     # Unwrap NTangent-wrapped Ptr tangent at this boundary.
     unsafe_copyto!(
-        Mooncake._ntangent_unwrap_singleton(tangent(inner_dest)),
-        Mooncake._ntangent_unwrap_singleton(tangent(inner_src)),
+        Mooncake._ntangent_unwrap_singleton(tangent(dest)),
+        Mooncake._ntangent_unwrap_singleton(tangent(src)),
         pn,
     )
     return dest

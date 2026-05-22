@@ -90,9 +90,8 @@ const TaskCoDual = CoDual{Task,TaskTangent}
     x::Mooncake.Lifted{Task,N},
     ::Mooncake.Lifted{Val{f}},
 ) where {N,f}
-    inner = Mooncake._unlift(x)
-    y = getfield(primal(inner), f)
-    dy = _get_tangent_field(tangent(inner), f)
+    y = getfield(primal(x), f)
+    dy = _get_tangent_field(tangent(x), f)
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Task,<:Val}}) = true
@@ -109,10 +108,9 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted{Task,N}, f::Mooncake.Lifted
 ) where {N}
-    inner = Mooncake._unlift(x)
     fname = primal(f)
-    y = getfield(primal(inner), fname)
-    dy = _get_tangent_field(tangent(inner), fname)
+    y = getfield(primal(x), fname)
+    dy = _get_tangent_field(tangent(x), fname)
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Task,Any}}) = true
