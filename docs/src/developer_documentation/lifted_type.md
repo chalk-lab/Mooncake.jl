@@ -14,7 +14,7 @@ Forward mode has *several* inner shapes at every slot, depending on `(primal typ
 |---|---|---|
 | `IEEEFloat` (e.g. `Float64`) | N | `NDual{T, N}` |
 | `Complex{<:IEEEFloat}` | N | `Complex{NDual{T, N}}` |
-| **Top-level** `Array{<:IEEEFloat, D}` (or `Complex{<:IEEEFloat}` elements) | N | `Array{NDual{T, N}, D}` |
+| `Array{<:IEEEFloat, D}` | N | `Array{NDual{T, N}, D}` |
 | `Memory{<:IEEEFloat}` (1.11+) | N | `Memory{NDual{T, N}}` |
 | `MemoryRef{<:IEEEFloat}` (1.11+) | N | `MemoryRef{NDual{T, N}}` |
 | Concrete `Tuple{P1, ...}` | N | `Tuple{V_1, ...}` (element-wise recursive) |
@@ -22,46 +22,8 @@ Forward mode has *several* inner shapes at every slot, depending on `(primal typ
 | `Transpose{<:IEEEFloat, P_parent}` | N | `Transpose{NDual{T, N}, dual_type(Val(N), P_parent)}` |
 | `Adjoint`, `SubArray`, `Diagonal`, `Symmetric`, `Hermitian`, `UpperTriangular`, `LowerTriangular`, `UnitUpperTriangular`, `UnitLowerTriangular`, `UpperHessenberg`, `ReshapedArray`, `ReinterpretArray` over IEEEFloat parents | N | Same template — element type lifted to `NDual{T, N}`, parent V from recursive `dual_type` |
 | Concrete immutable struct with default `Tangent` tangent_type and all fields always initialised | N | `NamedTuple{fieldnames(P), Tuple{V_i, ...}}` (structural lift; recurses per-field) |
-| Concrete mutable struct with at least one **top-level** `Array-of-IEEEFloat` field | N | `SplitDual{NamedTuple{fieldnames(P), Tuple{V_i, ...}}}` |
-| **Nested arrays** (e.g. `Vector{Vector{Float64}}`), PossiblyUninit, custom tangent_type, non-canonical mutable, `NoTangent` primals, abstract, etc. | N | `Dual{P, tangent_type(Val(N), P)}` (parallel-Dual fallback) |
-
-### Where the canonical NDual element form applies
-
-The "Array{NDual{T,N}, D}" canonical form is reserved for **top-level**
-IEEEFloat-element arrays (and their wrapper-views: Transpose, Symmetric,
-etc.) and for **Tuple/NamedTuple** elements that themselves resolve to
-NDual leaves. The reason is element-wise interleaving: an `Array{NDual{T,
-N}}` lays `(value, partials)` in a single packed array, so in-place
-mutations on the dual array propagate through the underlying buffer.
-This requires *every element* to be a defined NDual.
-
-Container types that allow undef elements at the Julia level cannot use
-canonical NDual interleaving, because no NDual can be constructed for an
-undef slot. **`Vector{Vector{Float64}}`** is the canonical example:
-`setindex!(Vector{Vector{Float64}}(undef, 2), [1.0], 1)` leaves slot 2
-unassigned, and any `map(zero_dual, ::Vector{Vector{Float64}})` errors
-with `UndefRefError`. Nested arrays therefore use the parallel-Dual
-fallback form, where the outer Vector stays in parallel storage and the
-inner Vector elements (when defined) are themselves laid out as
-`Vector{Float64}` tangents — no element-wise NDual recursion.
-
-Concrete policy:
-
-- `Array{IEEEFloat, D}` (top-level): canonical `Array{NDual{T, N}, D}`
-- `Array{Complex{IEEEFloat}, D}` (top-level): canonical
-  `Array{Complex{NDual{T, N}}, D}`
-- `Tuple{T1, T2, ...}` / `NamedTuple{names, T}`: element-wise recursive
-  — each element's `dual_type` is computed independently, and if an
-  element is itself a top-level Array its inner form is canonical NDual
-- `Array{Array{IEEEFloat, K}, D}` (nested): parallel-Dual fallback
-  `Dual{Array{Array{T, K}, D}, NTangent{NTuple{N, Array{Array{T, K}, D}}}}`
-- Same fallback applies to any other container that admits undef slots
-  or whose element type lacks a canonical NDual form
-
-The same constraint extends to SplitDual: a mutable struct qualifies
-for `SplitDual{NamedTuple{...}}` only if it has a field whose type is
-**top-level Array-of-IEEEFloat** (direct or via a nested struct
-field). A field of type `Vector{Vector{Float64}}` does *not* count.
+| Concrete mutable struct with at least one Array-of-IEEEFloat field (direct or nested) | N | `SplitDual{NamedTuple{fieldnames(P), Tuple{V_i, ...}}}` |
+| Other (PossiblyUninit, custom tangent_type, non-canonical mutable, `NoTangent` primals, abstract, etc.) | N | `Dual{P, tangent_type(Val(N), P)}` (parallel-Dual fallback) |
 
 A 1-to-1 port of `CoDual`'s surface — having rule bodies write `Dual(y, dy)` — fails at the constructor: a rule body would have to *choose* which inner shape to build for each output slot. Every change to the inner-shape rules (e.g. flipping `IEEEFloat` from `Dual` to `NDual` at width 1) would ripple through every rule body.
 
@@ -84,37 +46,26 @@ Layer 3 — lifted_type:    P  →  L          wrapped slot type
 dual_type(Val(0), P)                       = P
 dual_type(Val(N), T<:IEEEFloat)            = NDual{T, N}
 dual_type(Val(N), Complex{T})              = Complex{NDual{T, N}}
-dual_type(Val(N), Array{T, D})             = Array{NDual{T, N}, D}                # T<:IEEEFloat (top-level only)
+dual_type(Val(N), Array{T, D})             = Array{NDual{T, N}, D}                # T<:IEEEFloat
 dual_type(Val(N), Wrapper{T, P_parent})    = Wrapper{NDual{T, N}, dual_type(Val(N), P_parent)}
                                             # Wrapper ∈ {Transpose, Adjoint, SubArray, Diagonal,
                                             # Symmetric, Hermitian, *Triangular, UpperHessenberg,
                                             # ReshapedArray, ReinterpretArray}; T<:IEEEFloat
-dual_type(Val(N), Tuple{T1, T2, ...})      = Tuple{dual_type(Val(N), T1), ...}    # element-wise recursive
+dual_type(Val(N), Tuple{T1, T2, ...})      = Tuple{dual_type(Val(N), T1), ...}
 dual_type(Val(N), NamedTuple{names, T})    = NamedTuple{names, dual_type(Val(N), T)}
 dual_type(Val(N), ImmutableStruct{T...})   = NamedTuple{fieldnames, Tuple{V_i, ...}}
                                             # structural lift; tangent_type(P) <: Tangent +
                                             # all fields always_initialised + lift-safe fields
 dual_type(Val(N), MutableStruct{T...})     = SplitDual{NamedTuple{fieldnames, Tuple{V_i, ...}}}
-                                            # if struct has a *top-level* Array-of-IEEEFloat field
-                                            # (direct or via a nested struct, not nested-Array element)
+                                            # if struct has an Array-of-IEEEFloat field (direct or nested)
 dual_type(Val(N), P)                       = Dual{P, tangent_type(Val(N), P)}    # parallel-Dual fallback
-                                            # for: nested arrays (e.g. Vector{Vector{Float64}}),
-                                            # PossiblyUninit, custom tangent_type, abstract P,
+                                            # for PossiblyUninit, custom tangent_type, abstract P,
                                             # NoTangent primals (String, Symbol, Nothing, etc.)
 
 # Layer 3 — wrapped slot type
 lifted_type(Val(0), P)                     = P                                  # primal passthrough
 lifted_type(Val(N), P)                     = Lifted{P, N, dual_type(Val(N), P)}
 ```
-
-**Element-wise NDual interleaving is reserved for top-level Array and
-Tuple/NamedTuple elements**. The element type's `dual_type` is computed
-recursively, but the canonical NDual interleaving (laying value+partials
-in a single packed array) only fires at the *top level* of an
-IEEEFloat-element container. Nested arrays like `Vector{Vector{Float64}}`
-fall through to the parallel-Dual fallback because the canonical form
-requires every element to be defined, which Julia's `Vector(undef, n)`
-semantics doesn't guarantee.
 
 `lifted_type` does *not* recurse into `Tuple` / `NamedTuple` primals — the element-wise structure lives in the `dual_type` layer (the `V` parameter). For `P = Tuple{Float64, Float64}` and `N = 2`:
 
