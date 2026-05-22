@@ -1582,53 +1582,32 @@ end
 @inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = copy(a)
 
 # Vector grow/shrink ops. On Julia <1.11 these live in `rules/array_legacy.jl`,
-# but that file is not loaded on 1.11+. The Memory-backed Vector semantics on
-# 1.11+ are compatible: `Base._growbeg!` / `_growend!` / `_growat!` mutate the
-# Vector in place, and `tangent_type(Vector{T}) = Vector{tangent_type(T)}`
-# remains a Vector, so the same in-place mutation works on the tangent.
-#
-# Architectural note: each `*_kernel!` helper accepts the bare
-# `Dual{<:Vector}` / `Dual{<:Vector,<:NTangent}` / `AbstractVector{<:NDual}`
-# input directly — NOT a round-tripped `Lifted{T,1}(primal, tangent)`. This
-# preserves the user's Vector alias so the in-place grow mutates the
-# caller's array. The single `Mooncake.Lifted{Base._growbeg!}` body
-# delegates to `_growbeg_kernel!(_unlift(a), _unlift(d))` — a bare-dispatch
-# kernel plus thin Lifted wrapper, with no canonicalising `Lifted{T,1}(p, t)`
-# in the chain. The same shape is reused for `_growend!`, `_growat!`,
-# `_deletebeg!`, `_deleteend!`, `_deleteat!`, and `sizehint!` below.
-#
-# Shape-dispatch helpers `_vec_primal` / `_apply_to_tangent_vec!` collapse
-# the per-shape kernel triple (Dual{<:Vector}, Dual{<:Vector,<:NTangent},
-# AbstractVector{<:NDual}) into one body per op.
-@inline _vec_primal(a::Dual{<:Vector}) = primal(a)
-@inline _vec_primal(a::AbstractVector{<:Mooncake.Nfwd.NDual}) = a
-@inline function _apply_to_tangent_vec!(
-    op, a::Dual{<:Vector}, args::Vararg{Any,M}
-) where {M}
-    op(tangent(a), args...)
-    return nothing
-end
-@inline function _apply_to_tangent_vec!(
-    op, a::Dual{<:Vector,<:Mooncake.NTangent}, args::Vararg{Any,M}
-) where {M}
-    foreach(t -> op(t, args...), tangent(a).lanes)
-    return nothing
-end
-@inline _apply_to_tangent_vec!(op, a::AbstractVector{<:Mooncake.Nfwd.NDual}, ::Vararg) =
-    nothing
+# but that file is not loaded on 1.11+. Each primitive splits by inner V:
+# `Dual{<:Vector, <:NTangent}` per-lane mutation (primal + each lane Vector)
+# vs `AbstractVector{<:NDual}` single mutation on the canonical NDual
+# container (NDual elements pack primal+tangent). The bare inner V is mutated
+# directly so the user's Vector alias is preserved across both paths.
 @static if VERSION >= v"1.11-rc4"
     @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._growbeg!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         d::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_a = Mooncake._unlift(a)
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
         pd = primal(d)
-        Base._growbeg!(_vec_primal(bare_a), pd)
-        _apply_to_tangent_vec!(Base._growbeg!, bare_a, pd)
-        bare_result = zero_dual(nothing)
-        return _wrap_rule_result(Val(N), bare_result)
+        Base._growbeg!(primal(a), pd)
+        for n in 1:N
+            Base._growbeg!(Mooncake.tangent(a, n), pd)
+        end
+        return zero_lifted(Val(N), nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growbeg!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        Base._growbeg!(Mooncake._unlift(a), primal(d))
+        return zero_lifted(Val(N), nothing)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -1649,15 +1628,23 @@ end
     @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._growend!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         d::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_a = Mooncake._unlift(a)
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
         pd = primal(d)
-        Base._growend!(_vec_primal(bare_a), pd)
-        _apply_to_tangent_vec!(Base._growend!, bare_a, pd)
-        bare_result = zero_dual(nothing)
-        return _wrap_rule_result(Val(N), bare_result)
+        Base._growend!(primal(a), pd)
+        for n in 1:N
+            Base._growend!(Mooncake.tangent(a, n), pd)
+        end
+        return zero_lifted(Val(N), nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growend!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        Base._growend!(Mooncake._unlift(a), primal(d))
+        return zero_lifted(Val(N), nothing)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1678,14 +1665,23 @@ end
     @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(sizehint!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         n::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_a = Mooncake._unlift(a)
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
         pn = primal(n)
-        sizehint!(_vec_primal(bare_a), pn)
-        _apply_to_tangent_vec!(sizehint!, bare_a, pn)
-        return _wrap_rule_result(Val(N), bare_a)
+        sizehint!(primal(a), pn)
+        for k in 1:N
+            sizehint!(Mooncake.tangent(a, k), pn)
+        end
+        return a
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(sizehint!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        n::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        sizehint!(Mooncake._unlift(a), primal(n))
+        return a
     end
     function rrule!!(
         f::CoDual{typeof(sizehint!)}, _a::CoDual{<:Vector}, _n::CoDual{<:Integer}
@@ -1702,15 +1698,23 @@ end
     @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._deletebeg!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         d::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_a = Mooncake._unlift(a)
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
         pd = primal(d)
-        Base._deletebeg!(_vec_primal(bare_a), pd)
-        _apply_to_tangent_vec!(Base._deletebeg!, bare_a, pd)
-        bare_result = zero_dual(nothing)
-        return _wrap_rule_result(Val(N), bare_result)
+        Base._deletebeg!(primal(a), pd)
+        for n in 1:N
+            Base._deletebeg!(Mooncake.tangent(a, n), pd)
+        end
+        return zero_lifted(Val(N), nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deletebeg!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        Base._deletebeg!(Mooncake._unlift(a), primal(d))
+        return zero_lifted(Val(N), nothing)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1733,15 +1737,23 @@ end
     @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._deleteend!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         d::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_a = Mooncake._unlift(a)
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
         pd = primal(d)
-        Base._deleteend!(_vec_primal(bare_a), pd)
-        _apply_to_tangent_vec!(Base._deleteend!, bare_a, pd)
-        bare_result = zero_dual(nothing)
-        return _wrap_rule_result(Val(N), bare_result)
+        Base._deleteend!(primal(a), pd)
+        for n in 1:N
+            Base._deleteend!(Mooncake.tangent(a, n), pd)
+        end
+        return zero_lifted(Val(N), nothing)
+    end
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deleteend!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        Base._deleteend!(Mooncake._unlift(a), primal(d))
+        return zero_lifted(Val(N), nothing)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -1764,21 +1776,27 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
-    @inline function _deleteat_kernel!(a, i::Dual{<:Integer}, delta::Dual{<:Integer})
-        Base._deleteat!(_vec_primal(a), primal(i), primal(delta))
-        _apply_to_tangent_vec!(Base._deleteat!, a, primal(i), primal(delta))
-        return zero_dual(nothing)
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._deleteat!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        i::Mooncake.Lifted{<:Integer},
+        delta::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
+        pi, pd = primal(i), primal(delta)
+        Base._deleteat!(primal(a), pi, pd)
+        for n in 1:N
+            Base._deleteat!(Mooncake.tangent(a, n), pi, pd)
+        end
+        return zero_lifted(Val(N), nothing)
     end
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._deleteat!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         i::Mooncake.Lifted{<:Integer},
         delta::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_result = _deleteat_kernel!(
-            Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(delta)
-        )
-        return _wrap_rule_result(Val(N), bare_result)
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        Base._deleteat!(Mooncake._unlift(a), primal(i), primal(delta))
+        return zero_lifted(Val(N), nothing)
     end
     function rrule!!(
         ::CoDual{typeof(Base._deleteat!)},
@@ -1801,23 +1819,29 @@ end
     end
 
     @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
-    # `Base._growat!` returns `Tuple{Int}` (new length) on Julia 1.12+;
-    # return the actual result so the rule output type matches the primal's.
-    @inline function _growat_kernel!(a, i::Dual{<:Integer}, d::Dual{<:Integer})
-        r = Base._growat!(_vec_primal(a), primal(i), primal(d))
-        _apply_to_tangent_vec!(Base._growat!, a, primal(i), primal(d))
-        return zero_dual(r)
+    # `Base._growat!` returns `nothing` on Julia 1.10/1.11 and a `Tuple{Int}`
+    # (new length) on 1.12+; `zero_lifted` handles either shape.
+    @inline function frule!!(
+        ::Mooncake.Lifted{typeof(Base._growat!),N},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
+        i::Mooncake.Lifted{<:Integer},
+        d::Mooncake.Lifted{<:Integer},
+    ) where {N,V_a<:Dual{<:Vector,<:Mooncake.NTangent}}
+        pi, pd = primal(i), primal(d)
+        r = Base._growat!(primal(a), pi, pd)
+        for n in 1:N
+            Base._growat!(Mooncake.tangent(a, n), pi, pd)
+        end
+        return zero_lifted(Val(N), r)
     end
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Base._growat!),N},
-        a::Mooncake.Lifted{<:Vector},
+        a::Mooncake.Lifted{<:Vector,N,V_a},
         i::Mooncake.Lifted{<:Integer},
         d::Mooncake.Lifted{<:Integer},
-    ) where {N}
-        bare_result = _growat_kernel!(
-            Mooncake._unlift(a), Mooncake._unlift(i), Mooncake._unlift(d)
-        )
-        return _wrap_rule_result(Val(N), bare_result)
+    ) where {N,V_a<:AbstractVector{<:Mooncake.Nfwd.NDual}}
+        r = Base._growat!(Mooncake._unlift(a), primal(i), primal(d))
+        return zero_lifted(Val(N), r)
     end
     function rrule!!(
         ::CoDual{typeof(Base._growat!)},
