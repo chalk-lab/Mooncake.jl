@@ -2814,13 +2814,21 @@ end
     # accept top-level `NTangent`.
     return Mooncake.Lifted{typeof(y),N}(y, Mooncake.NTangent(tangents))
 end
+# Canonical V: bare Broadcasted carrying element-wise NDual partials (the
+# canonical-NDual lift of `Broadcasted{<:CuArrayStyle, ..., F, Args}` is
+# the same Broadcasted with NDual-bearing args). Delegate per lane.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
-    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N},
-) where {N}
-    bare_bc = Mooncake._unlift(bc)
-    bare_bc isa Broadcasted && return _materialize_cuarray_kernel(Val(N), bare_bc)
-    bare_result = _materialize_cuarray_kernel(bare_bc)
+    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N,V_bc},
+) where {N,V_bc<:Broadcasted{<:CuArrayStyle}}
+    return _materialize_cuarray_kernel(Val(N), Mooncake._unlift(bc))
+end
+# Wrapper-exception V: `Dual{Broadcasted, NTangent}` (legacy parallel form).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
+    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N,V_bc},
+) where {N,V_bc<:Dual{<:Broadcasted}}
+    bare_result = _materialize_cuarray_kernel(Mooncake._unlift(bc))
     return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 

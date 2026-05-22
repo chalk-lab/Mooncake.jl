@@ -103,22 +103,10 @@ end
     ::Mooncake.Lifted{typeof(pointer_from_objref),N}, x::Mooncake.Lifted
 ) where {N}
     y = pointer_from_objref(primal(x))
-    t = tangent(x)
-    # At width N≥2, `t` is `NTangent{NTuple{N, T}}` — taking
-    # `pointer_from_objref(NTangent)` errors (NTangent is immutable). Map
-    # per-lane: each lane's tangent is a different mutable tangent object,
-    # producing a different pointer.
-    if N >= 2 && t isa Mooncake.NTangent
-        dys = ntuple(Val(N)) do lane
-            bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(t.lanes[lane]))
-        end
-        return Mooncake.Lifted{Ptr{Nothing},N}(y, Mooncake.NTangent(dys))
+    dys = ntuple(Val(N)) do k
+        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(Mooncake.tangent(x, k)))
     end
-    dy = bitcast(
-        Ptr{tangent_type(Nothing)},
-        pointer_from_objref(Mooncake._ntangent_unwrap_singleton(t)),
-    )
-    return Mooncake.Lifted{Ptr{Nothing},N}(y, dy)
+    return Mooncake.Lifted{Ptr{Nothing},N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(pointer_from_objref),Any}}) = true
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
@@ -141,19 +129,8 @@ end
     ::Mooncake.Lifted{typeof(Base.unsafe_pointer_to_objref),N}, x::Mooncake.Lifted{<:Ptr}
 ) where {N}
     y = unsafe_pointer_to_objref(primal(x))
-    t = tangent(x)
-    # At width N≥2, `t` is `NTangent{NTuple{N, Ptr}}` — the
-    # singleton-unwrap helper above only matches `NTangent{Tuple{T}}`, so
-    # the multi-lane NTangent would fall through to the no-op fallback and
-    # `unsafe_pointer_to_objref(::NTangent)` errors. Map per-lane.
-    if N >= 2 && t isa Mooncake.NTangent
-        dys = ntuple(Val(N)) do lane
-            unsafe_pointer_to_objref(t.lanes[lane])
-        end
-        return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
-    end
-    dy = unsafe_pointer_to_objref(Mooncake._ntangent_unwrap_singleton(t))
-    return Mooncake.Lifted{_typeof(y),N}(y, dy)
+    dys = ntuple(k -> unsafe_pointer_to_objref(Mooncake.tangent(x, k)), Val(N))
+    return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(Base.unsafe_pointer_to_objref),<:Ptr}}
