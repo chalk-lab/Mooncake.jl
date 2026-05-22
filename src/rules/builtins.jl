@@ -1205,10 +1205,9 @@ end
     name::Mooncake.Lifted,
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Dual{P,NoTangent},M}
-    bare_x = Mooncake._unlift(x)
     _name = primal(name)
     _extras = map(primal, extras)
-    bare_result = uninit_dual(getfield(primal(bare_x), _name, _extras...))
+    bare_result = uninit_dual(getfield(primal(x), _name, _extras...))
     return _wrap_rule_result(Val(N), bare_result)
 end
 @inline function frule!!(
@@ -1217,12 +1216,11 @@ end
     name::Mooncake.Lifted,
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,T<:NTangent,V_x<:Dual{P,T},M}
-    bare_x = Mooncake._unlift(x)
     _name = primal(name)
     _extras = map(primal, extras)
     bare_result = _dual_or_ndual(
-        getfield(primal(bare_x), _name, _extras...),
-        _get_tangent_field(tangent(bare_x), _name, _extras...),
+        getfield(primal(x), _name, _extras...),
+        _get_tangent_field(tangent(x), _name, _extras...),
     )
     return _wrap_rule_result(Val(N), bare_result)
 end
