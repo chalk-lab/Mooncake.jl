@@ -669,25 +669,16 @@ function _copy_dict_tangent(mt::MutableTangent)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
-# Source-of-truth Lifted body for `fill!(::Array{UInt8/Int8}, ::Integer)`
-# on Julia <1.11; the bare-Dual entry below thin-wraps to lift its args
-# and invoke this body.
+# Element type is non-differentiable (NoTangent V); `fill!` mutates the
+# primal in place and the same Lifted slot is returned unchanged. The
+# `_is_lifted_aware` trait below routes the AD transform here directly.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fill!),N},
     a::Mooncake.Lifted{<:Array{<:Union{UInt8,Int8}}},
     x::Mooncake.Lifted{<:Integer},
 ) where {N}
-    bare_a = Mooncake._unlift(a)
-    fill!(primal(bare_a), primal(x))
+    fill!(primal(a), primal(x))
     return a
-end
-function frule!!(
-    f::Dual{typeof(fill!)}, a::Dual{<:Array{<:Union{UInt8,Int8}}}, x::Dual{<:Integer}
-)
-    lifted_f = Mooncake.Lifted{typeof(fill!),1}(primal(f), tangent(f))
-    lifted_a = Mooncake.Lifted{_typeof(primal(a)),1}(primal(a), tangent(a))
-    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_a, lifted_x))
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}

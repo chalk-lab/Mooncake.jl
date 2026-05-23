@@ -1765,14 +1765,6 @@ end
     fill!(primal(a), primal(x))
     return a
 end
-function frule!!(
-    f::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
-) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    lifted_f = Mooncake.Lifted{typeof(fill!),1}(primal(f), tangent(f))
-    lifted_a = Mooncake.Lifted{_typeof(primal(a)),1}(primal(a), tangent(a))
-    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_a, lifted_x))
-end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
