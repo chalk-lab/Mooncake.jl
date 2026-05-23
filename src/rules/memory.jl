@@ -1043,6 +1043,11 @@ end
     memoryrefset!(x, value, primal(ordering), primal(boundscheck))
     return value
 end
+# Forward `memoryrefset!(x, value, ordering::Symbol, boundscheck::Bool)` to
+# `lmemoryrefset!(x, value, Val(ordering), Val(boundscheck))` at the Lifted
+# level. Lifted dispatch on `value`'s inner V then routes through
+# `lmemoryrefset!`'s per-V bodies (struct NamedTuple V → direct per-lane
+# write at line 901; everything else → generic adapter at line 924).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(memoryrefset!),N},
     x::Mooncake.Lifted{<:MemoryRef},
@@ -1050,36 +1055,12 @@ end
     ordering::Mooncake.Lifted{Symbol},
     boundscheck::Mooncake.Lifted{Bool},
 ) where {N}
-    ord_val = primal(ordering)
-    bc_val = primal(boundscheck)
-    lsf = Dual(lmemoryrefset!, NoTangent())
-    lsf_lifted = Mooncake.Lifted{typeof(lmemoryrefset!),N,typeof(lsf)}(lsf)
-    ord_inner = Dual(Val(ord_val), NoTangent())
-    bc_inner = Dual(Val(bc_val), NoTangent())
-    ord_lifted = Mooncake.Lifted{Val{ord_val},N,typeof(ord_inner)}(ord_inner)
-    bc_lifted = Mooncake.Lifted{Val{bc_val},N,typeof(bc_inner)}(bc_inner)
-    return frule!!(lsf_lifted, x, value, ord_lifted, bc_lifted)
-end
-# Struct-value memoryrefset!: the bare-Dual dispatch chain at lines 1023-1042
-# constrains `value::Union{Dual, NDual, ...}` (NDual-element path), so it
-# doesn't match the bare NamedTuple inner V of a struct-value Lifted.
-# Forward at the Lifted level to `lmemoryrefset!` (whose `V<:NamedTuple`
-# overload at line 881 handles the per-lane struct write).
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(memoryrefset!),N},
-    x::Mooncake.Lifted{<:MemoryRef},
-    value::Mooncake.Lifted{P,N,V},
-    ordering::Mooncake.Lifted{Symbol},
-    boundscheck::Mooncake.Lifted{Bool},
-) where {N,P,V<:NamedTuple}
-    ord = primal(ordering)
-    bc = primal(boundscheck)
     return frule!!(
         Mooncake.zero_lifted(Val(N), Mooncake.lmemoryrefset!),
         x,
         value,
-        Mooncake.zero_lifted(Val(N), Val(ord)),
-        Mooncake.zero_lifted(Val(N), Val(bc)),
+        Mooncake.zero_lifted(Val(N), Val(primal(ordering))),
+        Mooncake.zero_lifted(Val(N), Val(primal(boundscheck))),
     )
 end
 @inline Mooncake._is_lifted_aware(
