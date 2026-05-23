@@ -158,6 +158,16 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any}}) = true
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any,Any}}) = true
 
+# `lgetfield(x, Val(f), Val(order))` lifts the order arg into `Val`; the
+# downstream `getfield(x, f, order)` call expects the raw value
+# (`Symbol` for ordering, `Bool` for boundscheck). `_lgetfield_extras`
+# unwraps each Lifted-wrapped Val back to its bare value for the
+# arity-3 path; arity-2 returns an empty tuple.
+@inline _unwrap_lifted_val(::Mooncake.Lifted{Val{x}}) where {x} = x
+@inline _lgetfield_extras(extras::Vararg{Mooncake.Lifted,M}) where {M} = ntuple(
+    i -> _unwrap_lifted_val(extras[i]), Val(M)
+)
+
 # Split-by-V Lifted-typed lgetfield bodies. Each body matches one inner-V
 # shape and handles both arity-2 (name only) and arity-3 (name + order) via
 # Vararg-tail unification. Each body extracts the field name from
@@ -171,7 +181,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     ::Mooncake.Lifted{Val{f}},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Dual{P,NoTangent},f,M}
-    return zero_lifted(Val(N), getfield(primal(x), f, map(primal, extras)...))
+    return zero_lifted(Val(N), getfield(primal(x), f, _lgetfield_extras(extras...)...))
 end
 # Wrapper-exception V Dual{P,T<:NTangent}: standard primal+tangent field access.
 @inline function frule!!(
@@ -180,7 +190,7 @@ end
     ::Mooncake.Lifted{Val{f}},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,T<:NTangent,V_x<:Dual{P,T},f,M}
-    p_extras = map(primal, extras)
+    p_extras = _lgetfield_extras(extras...)
     y = getfield(primal(x), f, p_extras...)
     if tangent_type(_typeof(y)) === NoTangent
         return zero_lifted(Val(N), y)
@@ -195,7 +205,7 @@ end
     ::Mooncake.Lifted{Val{f},N},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {P<:Union{Tuple,NamedTuple},N,V_x<:Union{Tuple,NamedTuple},f,M}
-    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     return _wrap_rule_result(fieldtype(P, f), Val(N), field_val)
 end
 @inline function frule!!(
@@ -204,7 +214,7 @@ end
     ::Mooncake.Lifted{Val{f}},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Union{Tuple,NamedTuple},f,M}
-    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     return _wrap_rule_result(Val(N), field_val)
 end
 # SplitDual V: project canonical V's field directly.
@@ -225,7 +235,7 @@ end
     ::Mooncake.Lifted{Val{f}},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:AbstractArray{<:Union{NDual,Complex{<:NDual}}},f,M}
-    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     if field_val isa Union{
         NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
     }
@@ -240,7 +250,7 @@ end
     ::Mooncake.Lifted{Val{f}},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted},f,M}
-    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     return if _has_ndual(field_val)
         _wrap_rule_result(Val(N), field_val)
     else
