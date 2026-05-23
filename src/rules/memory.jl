@@ -1231,7 +1231,10 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# Unified Lifted body for canonical NDual-element Memory / MemoryRef / Array V.
+# Lifted body for canonical NDual-element MemoryRef V. Memory{<:NDual} and
+# Array{<:NDual} are both `<:AbstractArray{<:NDual}` and are covered by
+# `misc.jl`'s `V_x<:AbstractArray{<:NDual}` Vararg-tail rule; MemoryRef
+# does not subtype `AbstractArray`, so it needs its own dispatch here.
 # (Wrapper-exception variants were removed in Phase 6 — `dual_type(Val(N),
 # Memory{T})` for non-IEEEFloat T returns the NTangent-wrapped form
 # `Dual{Memory, NTangent{Tuple{Memory{tangent_type(T)}}}}` rather than a
@@ -1241,13 +1244,7 @@ end
     x::Mooncake.Lifted{P,N,V_x},
     ::Mooncake.Lifted{Val{name}},
     ::Mooncake.Lifted{Val{order}},
-) where {
-    N,
-    P<:Union{Memory,MemoryRef,Array},
-    name,
-    order,
-    V_x<:Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}},
-}
+) where {N,P<:MemoryRef,name,order,V_x<:MemoryRef{<:_HasNDual}}
     bare_x = Mooncake._unlift(x)
     bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
     return _wrap_rule_result(Val(N), bare_result)
@@ -1289,11 +1286,14 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-# 3-arg `lgetfield(::_MemTypes, ::Val)` defaults `order` to `:not_atomic` and
-# delegates to the 4-arg `Lifted` body below. Bare-Dual body deleted under #31.
+# 3-arg `lgetfield(::MemoryRef, ::Val)` defaults `order` to `:not_atomic`
+# and delegates to the 4-arg MemoryRef Lifted body above. Memory and
+# Array canonical V are routed through `misc.jl`'s
+# `V_x<:AbstractArray{<:NDual}` arity-2 rule (Memory and Array subtype
+# AbstractArray; MemoryRef does not).
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:_MemTypes},
+    x::Mooncake.Lifted{<:MemoryRef},
     name::Mooncake.Lifted{<:Val},
 ) where {N}
     return frule!!(f, x, name, Mooncake.zero_lifted(Val(N), Val(:not_atomic)))

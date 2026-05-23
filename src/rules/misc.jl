@@ -226,9 +226,12 @@ end
 ) where {N,P,V_x<:Mooncake.SplitDual,f,M}
     return _wrap_rule_result(Val(N), getfield(Mooncake._unlift(x).canonical, f))
 end
-# AbstractArray{<:NDual} wrappers (Diagonal, Adjoint, SubArray, …): structural
-# lift places canonical V at differentiable leaf fields; non-differentiable
-# fields are bare values.
+# AbstractArray{<:NDual} wrappers (Diagonal, Adjoint, SubArray, Memory, Array,
+# …): structural lift places canonical V at differentiable leaf fields;
+# non-differentiable fields are bare values. The `MemoryRef{<:NDual}` shape
+# (returned by `getfield(::Memory, :ref)` and `getfield(::Array, :ref)`)
+# is also canonical V — `MemoryRef` is not `<:AbstractArray`, so we list
+# it explicitly in the post-`getfield` type check.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{P,N,V_x},
@@ -237,7 +240,12 @@ end
 ) where {N,P,V_x<:AbstractArray{<:Union{NDual,Complex{<:NDual}}},f,M}
     field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     if field_val isa Union{
-        NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
+        NDual,
+        Complex{<:NDual},
+        AbstractArray{<:NDual},
+        AbstractArray{<:Complex{<:NDual}},
+        MemoryRef{<:NDual},
+        MemoryRef{<:Complex{<:NDual}},
     }
         return _wrap_rule_result(Val(N), field_val)
     end
