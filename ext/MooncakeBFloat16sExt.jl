@@ -81,62 +81,37 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 # Bare-Dual entry points removed; the AD transform always supplies
 # Lifted-wrapped args (see comment in `src/rules/rules_via_nfwd.jl`).
 
-# Conversions
+# Conversions: each `(Pout, Pin)` pair has the same per-lane apply-fwd template.
+# `fwd` produces `Pout` from `Pin`; `rev` is the rrule's reverse-direction
+# convert used to map an upstream `Pout` cotangent back to a `Pin` cotangent.
+# `Float64→P` and `P→Float64` route through Float32 because BFloat16s doesn't
+# define direct converts between `Float64` and `BFloat16`.
 
-Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
-@inline function Mooncake.frule!!(
-    ::Lifted{Type{Float32},N}, x::Lifted{P,N}
-) where {N}
-    y = Float32(primal(x))
+@inline function _bf16_convert_frule(
+    ::Type{Pout}, x::Lifted{Pin,N}, fwd::F
+) where {Pout,Pin,N,F}
+    y = fwd(primal(x))
     lanes = tangent(x).lanes
-    new_lanes = ntuple(n -> Float32(lanes[n]), Val(N))
-    return Lifted{Float32,N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{Type{Float32}}, x::CoDual{P})
-    pb(dy::Float32) = NoRData(), P(dy)
-    return zero_fcodual(Float32(primal(x))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
-@inline function Mooncake.frule!!(
-    ::Lifted{Type{Float64},N}, x::Lifted{P,N}
-) where {N}
-    y = Float64(primal(x))
-    lanes = tangent(x).lanes
-    new_lanes = ntuple(n -> Float64(lanes[n]), Val(N))
-    return Lifted{Float64,N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{Type{Float64}}, x::CoDual{P})
-    pb(dy::Float64) = NoRData(), P(Float32(dy))
-    return zero_fcodual(Float64(primal(x))), pb
+    new_lanes = ntuple(n -> fwd(lanes[n]), Val(N))
+    return Lifted{Pout,N}(y, new_lanes)
 end
 
-Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
-@inline function Mooncake.frule!!(
-    ::Lifted{Type{P},N}, x::Lifted{Float32,N}
-) where {N}
-    y = P(primal(x))
-    lanes = tangent(x).lanes
-    new_lanes = ntuple(n -> P(lanes[n]), Val(N))
-    return Lifted{P,N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float32})
-    pb(dy::P) = NoRData(), Float32(dy)
-    return zero_fcodual(P(primal(x))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float64}
-@inline function Mooncake.frule!!(
-    ::Lifted{Type{P},N}, x::Lifted{Float64,N}
-) where {N}
-    y = P(Float32(primal(x)))
-    lanes = tangent(x).lanes
-    new_lanes = ntuple(n -> P(Float32(lanes[n])), Val(N))
-    return Lifted{P,N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
-    pb(dy::P) = NoRData(), Float64(Float32(dy))
-    return zero_fcodual(P(Float32(primal(x)))), pb
+for (Pout, Pin, fwd, rev) in (
+    (:Float32, :P, :(x -> Float32(x)), :(dy -> P(dy))),
+    (:Float64, :P, :(x -> Float64(x)), :(dy -> P(Float32(dy)))),
+    (:P, :Float32, :(x -> P(x)), :(dy -> Float32(dy))),
+    (:P, :Float64, :(x -> P(Float32(x))), :(dy -> Float64(Float32(dy)))),
+)
+    @eval begin
+        Mooncake.@is_primitive MinimalCtx Tuple{Type{$Pout},$Pin}
+        @inline Mooncake.frule!!(
+            ::Lifted{Type{$Pout},N}, x::Lifted{$Pin,N}
+        ) where {N} = _bf16_convert_frule($Pout, x, $fwd)
+        function Mooncake.rrule!!(::CoDual{Type{$Pout}}, x::CoDual{$Pin})
+            pb(dy::$Pout) = (NoRData(), ($rev)(dy))
+            return zero_fcodual(($fwd)(primal(x))), pb
+        end
+    end
 end
 
 # Math rules
@@ -222,6 +197,14 @@ for (op, deriv, guarded) in (
     (:asinh, :((_x, y) -> inv(sqrt(one(P) + _x^2))), false),
     (:acosh, :((_x, y) -> inv(sqrt(_x^2 - one(P)))), true),
     (:atanh, :((_x, y) -> inv(one(P) - _x^2)), true),
+    # abs's derivative is sign(_x) (locally constant ±1; non-differentiable at 0).
+    (:abs, :((_x, y) -> _x >= zero(P) ? one(P) : -one(P)), false),
+    # eps is non-differentiable in the standard sense; rule returns zero tangent.
+    (:(Base.eps), :((_x, y) -> zero(P)), false),
+    # nextfloat/prevfloat are step functions: locally constant primal,
+    # tangent passes through unchanged (derivative = 1).
+    (:nextfloat, :((_x, y) -> one(P)), false),
+    (:prevfloat, :((_x, y) -> one(P)), false),
 )
     fr_helper = guarded ? :_bf16_unary_frule_guarded : :_bf16_unary_frule_plain
     pb_body = guarded ? :(NoRData(), nan_tangent_guard(dy, dy * d)) :
@@ -296,84 +279,26 @@ function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     return zero_fcodual(z), pow_pb
 end
 
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(max),P,P}
-@inline function Mooncake.frule!!(
-    ::Lifted{typeof(max),N}, x::Lifted{P,N}, y::Lifted{P,N}
-) where {N}
-    _x, _y = primal(x), primal(y)
-    z = max(_x, _y)
-    new_lanes = _x >= _y ? tangent(x).lanes : tangent(y).lanes
-    return Lifted{typeof(z),N}(z, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(max)}, x::CoDual{P}, y::CoDual{P})
-    _x_wins = primal(x) >= primal(y)
-    pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
-    return zero_fcodual(max(primal(x), primal(y))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(min),P,P}
-@inline function Mooncake.frule!!(
-    ::Lifted{typeof(min),N}, x::Lifted{P,N}, y::Lifted{P,N}
-) where {N}
-    _x, _y = primal(x), primal(y)
-    z = min(_x, _y)
-    new_lanes = _x <= _y ? tangent(x).lanes : tangent(y).lanes
-    return Lifted{typeof(z),N}(z, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P})
-    _x_wins = primal(x) <= primal(y)
-    pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
-    return zero_fcodual(min(primal(x), primal(y))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(abs),P}
-@inline function Mooncake.frule!!(::Lifted{typeof(abs),N}, x::Lifted{P,N}) where {N}
-    _x = primal(x)
-    y = abs(_x)
-    sign = _x >= zero(P) ? one(P) : -one(P)
-    lanes = tangent(x).lanes
-    new_lanes = ntuple(n -> lanes[n] * sign, Val(N))
-    return Lifted{typeof(y),N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
-    _x = primal(x)
-    pb(dy::P) = NoRData(), _x >= zero(P) ? dy : -dy
-    return zero_fcodual(abs(_x)), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(Base.eps),P}
-@inline function Mooncake.frule!!(::Lifted{typeof(Base.eps),N}, x::Lifted{P,N}) where {N}
-    y = eps(primal(x))
-    new_lanes = ntuple(_ -> zero(P), Val(N))
-    return Lifted{typeof(y),N}(y, new_lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P})
-    pb(::P) = NoRData(), zero(P)
-    return zero_fcodual(eps(primal(x))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(nextfloat),P}
-@inline function Mooncake.frule!!(
-    ::Lifted{typeof(nextfloat),N}, x::Lifted{P,N}
-) where {N}
-    y = nextfloat(primal(x))
-    return Lifted{typeof(y),N}(y, tangent(x).lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P})
-    pb(dy::P) = NoRData(), dy
-    return zero_fcodual(nextfloat(primal(x))), pb
-end
-
-Mooncake.@is_primitive MinimalCtx Tuple{typeof(prevfloat),P}
-@inline function Mooncake.frule!!(
-    ::Lifted{typeof(prevfloat),N}, x::Lifted{P,N}
-) where {N}
-    y = prevfloat(primal(x))
-    return Lifted{typeof(y),N}(y, tangent(x).lanes)
-end
-function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
-    pb(dy::P) = NoRData(), dy
-    return zero_fcodual(prevfloat(primal(x))), pb
+# max / min share a comparison-based branching tangent: the winner's tangent
+# propagates through. `cmp` is the primal comparison (`>=` for max, `<=` for
+# min); the same `cmp` selects the winning tangent in the rrule.
+for (op, _cmp) in ((:max, :>=), (:min, :<=))
+    @eval begin
+        Mooncake.@is_primitive MinimalCtx Tuple{typeof($op),P,P}
+        @inline function Mooncake.frule!!(
+            ::Lifted{typeof($op),N}, x::Lifted{P,N}, y::Lifted{P,N}
+        ) where {N}
+            _x, _y = primal(x), primal(y)
+            z = $op(_x, _y)
+            new_lanes = $_cmp(_x, _y) ? tangent(x).lanes : tangent(y).lanes
+            return Lifted{typeof(z),N}(z, new_lanes)
+        end
+        function Mooncake.rrule!!(::CoDual{typeof($op)}, x::CoDual{P}, y::CoDual{P})
+            _x_wins = $_cmp(primal(x), primal(y))
+            pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
+            return zero_fcodual($op(primal(x), primal(y))), pb
+        end
+    end
 end
 
 end # @static if BFloat16s.BFloat16 === Core.BFloat16
