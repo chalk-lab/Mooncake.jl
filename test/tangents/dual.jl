@@ -234,13 +234,10 @@ end
     end
 
     @testset "_canon_return loud failure on shape mismatch" begin
-        # `_canon_return` should refuse to silently
-        # retag a `Lifted` whose inner V shape disagrees with
-        # `dual_type(Val(N), P_target)` — that would have produced an invalid
-        # parametric V (e.g. `Lifted{Matrix{Float64}, 1, Vector{NDual}}`).
-        # The defensive ndims-reshape in `_wrap_dual_to_lifted` handles the
-        # legitimate "rule produced a flat collection" case before retagging.
-        # This test isolates the failure path.
+        # `_canon_return` must refuse to silently retag a `Lifted` whose
+        # inner V shape disagrees with `dual_type(Val(N), P_target)`; the
+        # invalid shape would otherwise produce a parametric V mismatch
+        # (e.g. `Lifted{Matrix{Float64}, 1, Vector{NDual}}`).
         vec_inner = NDual{Float64,1}[
             NDual{Float64,1}(1.0, (0.0,)), NDual{Float64,1}(2.0, (0.0,))
         ]
@@ -360,10 +357,8 @@ end
             }
         end
 
-        # ReshapedArray was migrated to canonical NDual-element form via the
-        # Transpose template (parameterised over any AbstractArray parent).
-        # Phase 2 of the wrapper-exception removal — see
-        # temp/wrapper-exception-removal-plan.md.
+        # ReshapedArray's canonical inner V is the NDual-element wrapper
+        # form (parameterised over any AbstractArray parent).
         let
             P = Base.ReshapedArray{Float64,1,Vector{Float64},Tuple{}}
             @test Mooncake.dual_type(Val(0), P) === P
@@ -372,9 +367,7 @@ end
             @test Mooncake.dual_type(Val(2), P) ===
                 Base.ReshapedArray{NDual{Float64,2},1,Vector{NDual{Float64,2}},Tuple{}}
         end
-        # Symmetric / Hermitian migrated to canonical NDual form (Phase 1b
-        # of the wrapper-exception V removal — see
-        # temp/wrapper-exception-removal-plan.md).
+        # Symmetric / Hermitian use canonical NDual-element wrapper form.
         for W in (LinearAlgebra.Symmetric, LinearAlgebra.Hermitian)
             P = W{Float64,Matrix{Float64}}
             @test Mooncake.dual_type(Val(0), P) === P
