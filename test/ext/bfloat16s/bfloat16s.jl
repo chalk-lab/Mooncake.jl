@@ -76,23 +76,22 @@ const P = Core.BFloat16
     @testset "^ NaN guard: x=0" begin
         x, y = P(0), P(0.5)
         dx, dy = one(P), one(P)
+        _lift(v::P, dv::P) = Mooncake.Lifted{P,1}(
+            Mooncake.Dual(v, Mooncake.NTangent((dv,)))
+        )
 
         # frule: x-tangent diverges to Inf (correct: d/dx(0^0.5) = +Inf);
         # y-tangent must be exactly 0 (guarded from 0*(-Inf)=NaN).
         fwd_result = Mooncake.frule!!(
-            Mooncake.Dual(^, Mooncake.NoTangent()),
-            Mooncake.Dual(x, dx),
-            Mooncake.Dual(y, dy),
+            Mooncake.zero_lifted(Val(1), ^), _lift(x, dx), _lift(y, dy)
         )
         @test Mooncake.primal(fwd_result) === x^y
-        @test Mooncake.tangent(fwd_result) === P(Inf)  # y-term guarded to 0; x-term = _y * 0^(-0.5) * dx = Inf
+        @test Mooncake.tangent(fwd_result, 1) === P(Inf)  # y-term guarded; x-term = _y * 0^(-0.5) * dx = Inf
 
         fwd_result_zero_dx = Mooncake.frule!!(
-            Mooncake.Dual(^, Mooncake.NoTangent()),
-            Mooncake.Dual(x, zero(P)),  # dx = 0: x-term guarded to 0
-            Mooncake.Dual(y, dy),
+            Mooncake.zero_lifted(Val(1), ^), _lift(x, zero(P)), _lift(y, dy)
         )
-        @test Mooncake.tangent(fwd_result_zero_dx) === zero(P)  # y-term guarded: z*log(0)*dy = 0
+        @test Mooncake.tangent(fwd_result_zero_dx, 1) === zero(P)  # y-term guarded: z*log(0)*dy = 0
 
         # rrule: x-rdata is Inf (dz * _y * 0^(-0.5) = Inf, upstream gradient into diverging slope);
         # y-rdata must be exactly 0 (inner guard on z blocks 0*(-Inf)=NaN).
@@ -104,51 +103,42 @@ const P = Core.BFloat16
         @test dy_r === zero(P)  # inner guard: z=0 blocks z*log(0)*dz = NaN
     end
 
-    @testset "central adapter dispatch (unary + binary + width-N)" begin
-        # The BFloat16-unary and BFloat16-binary central adapters in
-        # `ext/MooncakeBFloat16sExt.jl` route bare-Dual `frule!!` calls to
-        # the Lifted-typed bodies. This testset pins the dispatch contract:
-        # direct bare-Dual calls produce bare-T `Dual{P, P}` results
-        # (matching the legacy width-1 shape), and width-N Lifted calls
-        # produce per-lane NTangent-wrapped results.
-
-        # Unary: sqrt at width-1 via bare-Dual.
-        r1 = Mooncake.frule!!(
-            Mooncake.Dual(sqrt, Mooncake.NoTangent()), Mooncake.Dual(P(4), P(1))
+    @testset "Lifted dispatch (unary + binary + width-N)" begin
+        # Direct `Lifted` invocations of BFloat16 rules. Bare-Dual entry
+        # points were removed when the central adapter family was deleted;
+        # this testset pins the surviving width-1 + width-N Lifted contract.
+        _lift(v::P, dv::P) = Mooncake.Lifted{P,1}(
+            Mooncake.Dual(v, Mooncake.NTangent((dv,)))
         )
-        @test r1 isa Mooncake.Dual{P,P}
-        @test Mooncake.primal(r1) === P(2)
-        @test Mooncake.tangent(r1) === P(2)^-1 * P(0.5)  # d/dx sqrt(4) = 1/(2*2) = 0.25
 
-        # Unary: sqrt at width-2 via direct Lifted call.
+        # Unary: sqrt at width-1.
+        r1 = Mooncake.frule!!(Mooncake.zero_lifted(Val(1), sqrt), _lift(P(4), P(1)))
+        @test r1 isa Mooncake.Lifted{P,1}
+        @test Mooncake.primal(r1) === P(2)
+        @test Mooncake.tangent(r1, 1) === P(2)^-1 * P(0.5)  # d/dx sqrt(4) = 0.25
+
+        # Unary: sqrt at width-2.
         x2 = Mooncake.Lifted{P,2}(P(4), Mooncake.NTangent((P(1), P(0.5))))
         f2 = Mooncake.Lifted{typeof(sqrt),2}(sqrt, Mooncake.NoTangent())
         r2 = Mooncake.frule!!(f2, x2)
         @test r2 isa Mooncake.Lifted{P,2}
         inner = Mooncake._unlift(r2)
         @test Mooncake.primal(inner) === P(2)
-        # Lane-1 deriv = 0.25, lane-2 = 0.125 (= 0.5 * 0.25).
         @test Mooncake.tangent(inner).lanes[1] ≈ P(0.25)
         @test Mooncake.tangent(inner).lanes[2] ≈ P(0.125)
 
-        # Binary: max at width-1 via bare-Dual. `x` wins (x >= y), so
-        # tangent should come from x's tangent.
+        # Binary: max — `x` wins (x >= y) so tangent should come from x.
         rmax = Mooncake.frule!!(
-            Mooncake.Dual(max, Mooncake.NoTangent()),
-            Mooncake.Dual(P(5), P(1)),
-            Mooncake.Dual(P(3), P(0)),
+            Mooncake.zero_lifted(Val(1), max), _lift(P(5), P(1)), _lift(P(3), P(0))
         )
-        @test rmax isa Mooncake.Dual{P,P}
+        @test rmax isa Mooncake.Lifted{P,1}
         @test Mooncake.primal(rmax) === P(5)
-        @test Mooncake.tangent(rmax) === P(1)
+        @test Mooncake.tangent(rmax, 1) === P(1)
 
-        # Conversion: Float32(BFloat16) via the unary adapter (function slot
-        # is `Type{Float32}`, which still satisfies the adapter's `F`).
-        rconv = Mooncake.frule!!(
-            Mooncake.Dual(Float32, Mooncake.NoTangent()), Mooncake.Dual(P(1.5), P(1))
-        )
-        @test rconv isa Mooncake.Dual{Float32,Float32}
+        # Conversion: Float32(BFloat16).
+        rconv = Mooncake.frule!!(Mooncake.zero_lifted(Val(1), Float32), _lift(P(1.5), P(1)))
+        @test rconv isa Mooncake.Lifted{Float32,1}
         @test Mooncake.primal(rconv) === 1.5f0
-        @test Mooncake.tangent(rconv) === 1.0f0
+        @test Mooncake.tangent(rconv, 1) === 1.0f0
     end
 end
