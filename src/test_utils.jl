@@ -821,14 +821,9 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @test all(map((a, b) -> _typeof(a) == _typeof(rdata(b)), x̄_new, x̄))
 end
 
-# Wrap a `Dual{P, T}` into the canonical `Lifted{P, 1, V}` slot. Type-stable
-# from the `Dual`'s `P` parameter. For IEEEFloat / Complex scalars the wrap is
-# allocation-free (the inner V is `NDual{P,1}` / `Complex{NDual{P,1}}`, both
-# isbits); for `Vector{T}` etc. the wrap allocates a fresh canonical-V container,
-# which is unavoidable since the lifted memory layout differs.
-@inline _to_lifted(d::Mooncake.Dual{P,T}) where {P<:Tuple,T<:Tuple} = Mooncake._wrap_rule_result(
-    P, Val(1), d
-)
+# Wrap a `Dual{P, T}` into the canonical `Lifted{P, 1, V}` slot via the 2-arg
+# `Lifted{P, N}(primal, tangent)` ctor, which builds the canonical inner V
+# (including Tuple-shaped V via `_build_tuple_v_from_pair`).
 @inline _to_lifted(d::Mooncake.Dual{P}) where {P} = Mooncake.Lifted{P,1}(
     primal(d), tangent(d)
 )

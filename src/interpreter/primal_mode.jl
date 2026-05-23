@@ -237,89 +237,21 @@ end
 @inline _is_lifted_width(::Val{0}) = false
 @inline _is_lifted_width(::Val{N}) where {N} = true
 
-# Wrap a bare frule result back into `Lifted{P_out, N, V}`. The OC's slot
-# type is `lifted_type(Val(N), P_out)` which fixes V to `dual_type(Val(N),
-# P_out)`. The bare rule may return values whose actual V differs from the
-# canonical (e.g. `getfield` returns `Dual{Float64, Float64}` from
-# `_dual_or_ndual` even when the canonical V at width=Val(1) is
-# `NDual{Float64, 1}`). To canonicalise, route bare `Dual{P, T}` results
-# through the 2-arg `Lifted{P_out, N}(primal, tangent)` ctor — that calls
-# `dual_type(Val(N), P_out)(primal, tangent)`, producing the canonical V.
-# Other shapes (NDual, Complex{<:NDual}, Array{<:NDual}, Dual{P, NTangent}
-# at width N>=2, etc.) are already canonical and use the 1-arg form.
-# Path B: when the IR-inferred `P` is abstract, recover the concrete primal
-# type from the runtime bare value via `__get_primal`. This keeps the outer
-# slot's `P` parameter concrete so downstream `DynamicPrimal` callers (whose
-# child OCs use `_stable_typeof ∘ primal` to pick concrete slot types) see
-# the same `Lifted{P_concrete, N, V}` shape and don't trip parametric
-# invariance at OC typeassert boundaries.
+# Wrap a bare frule result into `Lifted{P_out, N, V}`. Rule call sites
+# always pass already-canonical bare primals (NDual / Complex{NDual} /
+# Array{NDual} / Tuple{V_i…} / nested NamedTuple); the `Lifted{P_out, N}(value)`
+# 1-arg ctor infers V from `typeof(value)` and builds the slot. The Tuple
+# overload below routes through `_canonicalise_tuple_inner` so element-wise
+# Tuple results get their canonical inner-V shape.
+#
+# When the IR-inferred `P` is abstract, recover the concrete primal type from
+# the runtime bare value via `__primal_type(_typeof(x))`. This keeps the outer
+# slot's `P` parameter concrete so downstream `DynamicPrimal` callers see a
+# `Lifted{P_concrete, N, V}` shape and don't trip parametric invariance at OC
+# typeassert boundaries.
 @inline _resolve_concrete_P(::Type{P}, x) where {P} =
     isconcretetype(P) ? P : __primal_type(_typeof(x))
 
-@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Dual) where {P,N}
-    P_out = _resolve_concrete_P(P, x)
-    return if isconcretetype(P_out)
-        _wrap_dual_to_lifted(Val(N), P_out, primal(x), tangent(x))
-    else
-        Lifted{P_out,N}(x)
-    end
-end
-# When `primal` and `tangent` are both `AbstractArray` but disagree on
-# `ndims` (e.g. a `Base._collect` path producing a flat `Vector` tangent
-# for a `Matrix` primal), reshape the tangent to match the primal before
-# delegating to the 2-arg `Lifted{P, N}(primal, tangent)` ctor. The
-# canonical inner V (`Array{NDual{T, N}, D}`) requires both args to share
-# `D`; a defensive reshape resolves the `_collect`-on-Matrix residual
-# without changing semantics (the underlying derivative data is unchanged
-# — only the shape annotation matches the primal).
-@inline _wrap_dual_to_lifted(::Val{N}, ::Type{P_out}, p, t) where {N,P_out} = Lifted{
-    P_out,N
-}(
-    p, t
-)
-@inline function _wrap_dual_to_lifted(
-    ::Val{N}, ::Type{P_out}, p::AbstractArray{Tp,Dp}, t::AbstractArray{Tt,Dt}
-) where {N,P_out,Tp,Dp,Tt,Dt}
-    return Dp === Dt ? Lifted{P_out,N}(p, t) : Lifted{P_out,N}(p, reshape(t, size(p)))
-end
-
-# Bare frules for tuple-returning rules (e.g. `__vec_to_tuple`) often produce
-# `Dual{Tuple{P_i...}, Tuple{T_i...}}`. The canonical V for `Lifted{<:Tuple, N}`
-# is the element-wise `Tuple{V_i...}` (never `Dual{Tuple, Tuple}`). Build the
-# inner V element-wise from the per-field `(p_i, t_i)` pairs, dispatching each
-# through the inner type's own ctor (NDual / Vector{NDual} / Dual / etc.) via
-# `_inner_dual_for_field`. Uses the runtime primal type for per-field
-# canonicalisation so this works even when `P` carries `Type{Float64}` etc.
-#
-# `@generated` for the same reason as `_wrap_oc_args`: a runtime `ntuple` with
-# a closure body indexing `p_tup[i]` / `t_tup[i]` leaves the inner result
-# Union-typed (the per-slot Vᵢ varies), forcing a heap allocation for the
-# returned Tuple. Unrolling at expansion time gives a fully-typed body.
-@inline @generated function _wrap_rule_result(
-    ::Type{P}, ::Val{N}, x::Dual{P_in,T_in}
-) where {P<:Tuple,N,P_in<:Tuple,T_in<:Tuple}
-    n = fieldcount(P_in)
-    inner_exprs = map(1:n) do i
-        :(_inner_dual_for_runtime_field(Val($N), $(fieldtype(P_in, i)), p_tup[$i], t_tup[$i]))
-    end
-    return quote
-        p_tup = primal(x)
-        t_tup = tangent(x)
-        inner = ($(inner_exprs...),)
-        return Lifted{$P_in,$N}(inner)
-    end
-end
-
-@inline function _inner_dual_for_runtime_field(w::Val, ::Type{P}, primal, tangent) where {P}
-    Vi = dual_type(w, P)
-    if Vi isa DataType && isconcretetype(Vi)
-        return _inner_dual_for_field(Vi, primal, tangent)
-    end
-    return Dual(primal, tangent)
-end
-
-# When `P` is concrete and lifts to a Tuple V, canonicalise each returned field
-# before wrapping; otherwise fall back to the generic runtime path.
 @inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Tuple) where {P<:Tuple,N}
     P_out = _resolve_concrete_P(P, x)
     if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
@@ -338,10 +270,8 @@ end
 
 @inline _wrap_rule_result(::Type{P}, ::Val{N}, x::Lifted) where {P,N} = x
 
-# 2-arg auto-P form: when the caller would otherwise write
-# `_wrap_rule_result(__primal_type(_typeof(bare)), Val(N), bare)` (~80
-# sites across builtins.jl + memory.jl + extensions), use this form to
-# fold the `__primal_type ∘ _typeof` step into the wrap call.
+# 2-arg auto-P form: folds the `__primal_type ∘ _typeof` step into the wrap
+# call so the caller doesn't have to recompute the primal type.
 @inline _wrap_rule_result(::Val{N}, x) where {N} = _wrap_rule_result(
     __primal_type(_typeof(x)), Val(N), x
 )
