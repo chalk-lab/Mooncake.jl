@@ -1816,37 +1816,6 @@ end
     return value
 end
 
-# lgetfield/getfield for bare NDual containers. Returns the canonical
-# `dual_type(Val(N), typeof(result))` form via `zero_dual`:
-#  - For NDual-bearing fields (e.g. `getfield(memory, :ref)` returning a
-#    `MemoryRef{NDual}`), `dual_type` returns the bare lifted container.
-#  - For non-differentiable fields (e.g. `getfield(memory, :length)` returning
-#    `Int`), `dual_type` returns `Dual{Int,NoTangent}`.
-# This way the rule never wraps an already-NDual-bearing result in `Dual` — the
-# result polarity matches `dual_type` everywhere, and downstream rules see
-# canonical types.
-const _NDualMemTypes = Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}}
-
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::_NDualMemTypes, ::Dual{Val{name}}, ::Dual{Val{order}}
-) where {name,order}
-    return zero_dual(_ndual_width(x), getfield(x, name, order))
-end
-
-@inline function frule!!(f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val})
-    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
-end
-
-# getfield for bare NDual containers (compiler emits getfield, not lgetfield).
-@inline function frule!!(::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual)
-    return zero_dual(_ndual_width(x), getfield(x, primal(name)))
-end
-@inline function frule!!(
-    ::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual, order::Dual
-)
-    return zero_dual(_ndual_width(x), getfield(x, primal(name), primal(order)))
-end
-
 # Test cases
 
 function _mems()
