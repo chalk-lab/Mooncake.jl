@@ -470,39 +470,6 @@ function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,
     return x
 end
 
-# Bare-Dual lsetfield! with a structural-lift NamedTuple value. Arises in
-# HVP cache-update paths (e.g. `lazy_rule.rule = build_rrule(...)`) where
-# the inner build_rrule output is structurally lifted as a NamedTuple of
-# field Duals rather than wrapped in a single `Dual{P_field, T_field}`.
-# Build the field's primal via `_new_`, materialise the structural tangent
-# from each field's lane-1 / wrapper-exception tangent, and delegate to
-# the standard `lsetfield_frule`.
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!),NoTangent},
-    value::Dual{P,T},
-    name::Dual{Val{f},NoTangent},
-    x::NamedTuple,
-) where {P,T,f}
-    P_field = fieldtype(P, f)
-    field_primals = map(primal, Tuple(x))
-    new_value = Mooncake._new_(P_field, field_primals...)
-    # Lane-1 tangent extraction — fields whose tangent is `NTangent{Tuple{T}}`
-    # (single-lane chunk-mode wrapper) unwrap to their lane-1 element so the
-    # structural tangent has the canonical per-field tangent_type.
-    field_tangents = map(d -> begin
-        t = tangent(d)
-        t isa Mooncake.NTangent ? t.lanes[1] : t
-    end, Tuple(x))
-    T_field = Mooncake.tangent_type(P_field)
-    new_tangent = if T_field === NoTangent || all(t -> t isa NoTangent, field_tangents)
-        NoTangent()
-    else
-        T_field(NamedTuple{fieldnames(P_field)}(field_tangents))
-    end
-    new_x = Dual(new_value, new_tangent)
-    return lsetfield_frule(value, name, new_x)
-end
-
 function lsetfield_rrule(
     value::CoDual{P,F}, ::CoDual{Val{name}}, x::CoDual
 ) where {P,F,name}
