@@ -152,13 +152,6 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
-) where {T}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
-    return dest
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(unsafe_copyto!),N},
     dest::Mooncake.Lifted{Ptr{T}},
@@ -281,23 +274,6 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_isassigned},Vararg}}
 ) = true
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_isassigned}},
-    ::Dual{RT}, # return type is Int32
-    arg_types::Dual{AT}, # arg types are (Any, UInt64)
-    ::Dual{nreq}, # nreq
-    ::Dual{calling_convention}, # calling convention
-    a::Union{Dual{<:Array},Array{<:NDual},Array{<:Complex{<:NDual}}},
-    ii::Dual{UInt},
-    args...,
-) where {RT,AT,nreq,calling_convention}
-    arr = a isa Dual ? primal(a) : a
-    GC.@preserve args begin
-        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), arr, primal(ii))
-    end
-    return zero_dual(y)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_foreigncall_),N},
     ::Mooncake.Lifted{Val{:jl_array_isassigned}},
@@ -333,18 +309,6 @@ function rrule!!(
     return zero_fcodual(y), NoPullback(ntuple(_ -> NoRData(), length(args) + 8))
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_type_unionall}},
-    ::Dual{Val{Any}}, # return type
-    ::Dual{Tuple{Val{Any},Val{Any}}}, # arg types
-    ::Dual{Val{0}}, # number of required args
-    ::Dual{Val{:ccall}},
-    a::Dual,
-    b::Dual,
-)
-    return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_foreigncall_),N},
     ::Mooncake.Lifted{Val{:jl_type_unionall}},
@@ -408,15 +372,6 @@ end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_string_ptr},Vararg}}
 ) = true
-function frule!!(
-    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Any,N}
-) where {N}
-    return uninit_dual(
-        _foreigncall_(
-            Val(:jl_string_ptr), tuple_map(x -> x isa Dual ? primal(x) : x, args)...
-        ),
-    )
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_foreigncall_),N},
     ::Mooncake.Lifted{Val{:jl_string_ptr}},
