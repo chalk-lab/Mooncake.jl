@@ -995,32 +995,6 @@ w.r.t. the underlying data array `A`.
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(logdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-# Source-of-truth Lifted body: derivative logic lives here. The bare-Dual
-# entry below thin-wraps to lift its args and invoke this body, so callers
-# that hit the bare-Dual surface (e.g. direct `frule!!(::Dual, ::Dual)`
-# invocations from `test_rule`) and IR-emit Lifted-typed callsites both
-# go through the same code path.
-#
-# Pattern applicability (empirically delineated): this inversion works for
-# rules with (a) a single closed-form bare-Dual entry, (b) all args
-# Dual-typed (not Vararg or free non-Dual args), and (c) a thin pre-existing
-# Lifted delegator. Rules NOT directly amenable but addressable via element-
-# type Union consolidation (width-1 + width-N) and per-eltype projection
-# helpers for differing math cores:
-# - Multi-bare-Dual rules with width-1 wrapper-exception + width-N canonical
-#   NDual + Complex variants (e.g. `getri!`, `gemv!`, `gemm!`): consolidated
-#   horizontally — width-N Real/Complex byte-identical bodies collapsed via
-#   `AbstractMatrix{<:Union{NDual{P,N},Complex{NDual{P,N}}}}` patterns.
-# - Rules with separate Real/Complex math cores (e.g. `potrf!`, `potrs!`):
-#   unified via `_sym_herm_proj(dA, uplo)` — picks `Symmetric` for real and
-#   `Hermitian` for complex; the two are numerically identical on real input.
-# Rules genuinely NOT amenable:
-# - Rules with Vararg or non-Dual args (e.g. `_foreigncall_(:jl_string_ptr)`) —
-#   non-Dual args don't lift cleanly via 1-arg `Lifted{T,1}(a)` ctor.
-# - Rules where Lifted entries use shared impl helpers rather than delegating
-#   (e.g. misc.jl's `_lgetfield_impl`) — already in good architecture.
-# Successfully migrated under this pattern: logdet/det/logabsdet (this file),
-# _foreigncall_(:jl_genericmemory_copy), fill!(Array{UInt8/Int8}, Integer).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
@@ -1063,7 +1037,6 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(det),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-# Source-of-truth Lifted body; bare-Dual below wraps and delegates.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(det),N}, _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {N,P<:BlasRealFloat}
@@ -1118,7 +1091,6 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(logabsdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
 ) = true
-# Source-of-truth Lifted body; bare-Dual below wraps and delegates.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logabsdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
