@@ -1306,16 +1306,6 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-    order::Dual{Symbol},
-)
-    return frule!!(
-        zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
-    )
-end
 # Lifted-aware bridges for 4-arg `getfield(::_MemTypes, ::Union{Int,Symbol},
 # ::Symbol)`. Reachable from primal-mode IR over reverse-derived rules whose
 # closure bodies access `vec.size` / `vec.ref` / `mem.length` with runtime
@@ -1356,13 +1346,6 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-)
-    return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
-end
 # Lifted-aware bridge for 3-arg `getfield(::_MemTypes, ::Union{Int,Symbol})`.
 # Same shape as the 4-arg variant above; routes via Lifted-aware lgetfield.
 # Two methods to break ambiguity with the generic builtins.jl `getfield`
