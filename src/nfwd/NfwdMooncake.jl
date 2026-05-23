@@ -977,18 +977,22 @@ function dual_type(
     return LinearAlgebra.Diagonal{T,Vector{T}}
 end
 
+# Build canonical NDual V from primal `x` at width N≥1 via `dual_type(w,
+# typeof(x))`'s 2-arg ctor with a precomputed tangent. Shared between
+# `zero_dual` / `uninit_dual` / `randn_dual` for wrapper types (Adjoint,
+# Transpose, ReinterpretArray, ReshapedArray, Symmetric, Hermitian,
+# UpperTriangular family) whose canonical V's `(primal, tangent)` ctor
+# delegates to the parent's own canonical V build.
+@inline function _seed_dual_via_ctor(w::Val{N}, tangent, x) where {N}
+    V = Mooncake.dual_type(w, typeof(x))
+    return V(x, tangent)::V
+end
+
 # Adjoint{T, <:AbstractArray{T}} — single :parent field. Canonical NDual
 # V is `Adjoint{NDual{T,N}, dual_type(Val(N), P)}`; the parent's own
 # canonical V (Array, SubArray, …) is computed recursively, mirroring
 # the Transpose broadening. Seed factories route through the generic
 # `Adjoint{NDual{T,N}, V_parent}(primal, tangent::Tangent)` ctor below.
-#
-# Note: the broadening from `<:Array{T}` to `<:AbstractArray{T}` keeps
-# parity with the Transpose template but is not strictly necessary — the
-# structural NamedTuple lift already produced a recursively coherent V
-# for non-Array parents. Tighten back to `<:Array{T}` if the wrapper-
-# shaped form turns out to cause issues; rule code that relies on
-# matching `Adjoint{<:NDual}` patterns is the only known beneficiary.
 function dual_type(
     ::Val{N}, ::Type{LinearAlgebra.Adjoint{T,P}}
 ) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
@@ -999,24 +1003,15 @@ function dual_type(
 ) where {T<:IEEEFloat,P<:AbstractArray{T}}
     return LinearAlgebra.Adjoint{T,P}
 end
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::LinearAlgebra.Adjoint{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.zero_tangent(x))::V
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::LinearAlgebra.Adjoint{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.uninit_tangent(x))::V
-end
-@inline function Mooncake.randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Adjoint{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.randn_tangent(rng, x))::V
-end
+@inline Mooncake.zero_dual(w::Val{N}, x::LinearAlgebra.Adjoint{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.zero_tangent(x), x
+)
+@inline Mooncake.uninit_dual(w::Val{N}, x::LinearAlgebra.Adjoint{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.uninit_tangent(x), x
+)
+@inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Adjoint{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.randn_tangent(rng, x), x
+)
 @inline Mooncake.zero_dual(
     ::Val{0}, x::LinearAlgebra.Adjoint{T,<:AbstractArray{T}}
 ) where {T<:IEEEFloat} = x
@@ -1167,24 +1162,15 @@ function dual_type(
 ) where {T<:IEEEFloat,P<:AbstractArray{T}}
     return LinearAlgebra.Transpose{T,P}
 end
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::LinearAlgebra.Transpose{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.zero_tangent(x))::V
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::LinearAlgebra.Transpose{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.uninit_tangent(x))::V
-end
-@inline function Mooncake.randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Transpose{T,P}
-) where {N,T<:IEEEFloat,P<:AbstractArray{T}}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.randn_tangent(rng, x))::V
-end
+@inline Mooncake.zero_dual(w::Val{N}, x::LinearAlgebra.Transpose{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.zero_tangent(x), x
+)
+@inline Mooncake.uninit_dual(w::Val{N}, x::LinearAlgebra.Transpose{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.uninit_tangent(x), x
+)
+@inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::LinearAlgebra.Transpose{T,P}) where {N,T<:IEEEFloat,P<:AbstractArray{T}} = _seed_dual_via_ctor(
+    w, Mooncake.randn_tangent(rng, x), x
+)
 # Val(0) passthroughs disambiguate against the generic `Val{0}` primal
 # passthrough below.
 @inline Mooncake.zero_dual(
@@ -1228,24 +1214,15 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
             InnerT = Mooncake.dual_type(Val(1), P)
             return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
         end
-        @inline function Mooncake.zero_dual(
-            w::Val{N}, x::$(W){T,P}
-        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
-            V = Mooncake.dual_type(w, typeof(x))
-            return V(x, Mooncake.zero_tangent(x))::V
-        end
-        @inline function Mooncake.uninit_dual(
-            w::Val{N}, x::$(W){T,P}
-        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
-            V = Mooncake.dual_type(w, typeof(x))
-            return V(x, Mooncake.uninit_tangent(x))::V
-        end
-        @inline function Mooncake.randn_dual(
-            w::Val{N}, rng::AbstractRNG, x::$(W){T,P}
-        ) where {N,T<:IEEEFloat,P<:StridedMatrix{T}}
-            V = Mooncake.dual_type(w, typeof(x))
-            return V(x, Mooncake.randn_tangent(rng, x))::V
-        end
+        @inline Mooncake.zero_dual(w::Val{N}, x::$(W){T,P}) where {N,T<:IEEEFloat,P<:StridedMatrix{T}} = _seed_dual_via_ctor(
+            w, Mooncake.zero_tangent(x), x
+        )
+        @inline Mooncake.uninit_dual(w::Val{N}, x::$(W){T,P}) where {N,T<:IEEEFloat,P<:StridedMatrix{T}} = _seed_dual_via_ctor(
+            w, Mooncake.uninit_tangent(x), x
+        )
+        @inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::$(W){T,P}) where {N,T<:IEEEFloat,P<:StridedMatrix{T}} = _seed_dual_via_ctor(
+            w, Mooncake.randn_tangent(rng, x), x
+        )
         @inline Mooncake.zero_dual(
             ::Val{0}, x::$(W){T,<:StridedMatrix{T}}
         ) where {T<:IEEEFloat} = x
@@ -1308,24 +1285,15 @@ end
 # Seed factories — same route as ReshapedArray: build via the canonical V
 # 2-arg ctor, with `zero_tangent`/`uninit_tangent`/`randn_tangent` providing
 # the legacy `Tangent{NamedTuple{(:parent, :readable, :writable), …}}` shape.
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}
-) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.zero_tangent(x))::V
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}
-) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.uninit_tangent(x))::V
-end
-@inline function Mooncake.randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::Base.ReinterpretArray{T,D,S,P,W}
-) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.randn_tangent(rng, x))::V
-end
+@inline Mooncake.zero_dual(w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = _seed_dual_via_ctor(
+    w, Mooncake.zero_tangent(x), x
+)
+@inline Mooncake.uninit_dual(w::Val{N}, x::Base.ReinterpretArray{T,D,S,P,W}) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = _seed_dual_via_ctor(
+    w, Mooncake.uninit_tangent(x), x
+)
+@inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::Base.ReinterpretArray{T,D,S,P,W}) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = _seed_dual_via_ctor(
+    w, Mooncake.randn_tangent(rng, x), x
+)
 @inline Mooncake.zero_dual(
     ::Val{0}, x::Base.ReinterpretArray{T,D,S,P,W}
 ) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W} = x
@@ -1349,24 +1317,15 @@ end
     return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
 end
 # Seed factories — route through the canonical V ctor.
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.zero_tangent(x))::V
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.uninit_tangent(x))::V
-end
-@inline function Mooncake.randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{T,D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.randn_tangent(rng, x))::V
-end
+@inline Mooncake.zero_dual(w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI} = _seed_dual_via_ctor(
+    w, Mooncake.zero_tangent(x), x
+)
+@inline Mooncake.uninit_dual(w::Val{N}, x::Base.ReshapedArray{T,D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI} = _seed_dual_via_ctor(
+    w, Mooncake.uninit_tangent(x), x
+)
+@inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{T,D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI} = _seed_dual_via_ctor(
+    w, Mooncake.randn_tangent(rng, x), x
+)
 @inline Mooncake.zero_dual(
     ::Val{0}, x::Base.ReshapedArray{T,D,P,MI}
 ) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI} = x
@@ -1377,24 +1336,15 @@ end
     ::Val{0}, ::AbstractRNG, x::Base.ReshapedArray{T,D,P,MI}
 ) where {T<:IEEEFloat,D,P<:AbstractArray{T},MI} = x
 # Complex-element seed factories.
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.zero_tangent(x))::V
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.uninit_tangent(x))::V
-end
-@inline function Mooncake.randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{Complex{T},D,P,MI}
-) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI}
-    V = Mooncake.dual_type(w, typeof(x))
-    return V(x, Mooncake.randn_tangent(rng, x))::V
-end
+@inline Mooncake.zero_dual(w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = _seed_dual_via_ctor(
+    w, Mooncake.zero_tangent(x), x
+)
+@inline Mooncake.uninit_dual(w::Val{N}, x::Base.ReshapedArray{Complex{T},D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = _seed_dual_via_ctor(
+    w, Mooncake.uninit_tangent(x), x
+)
+@inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::Base.ReshapedArray{Complex{T},D,P,MI}) where {N,T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = _seed_dual_via_ctor(
+    w, Mooncake.randn_tangent(rng, x), x
+)
 @inline Mooncake.zero_dual(
     ::Val{0}, x::Base.ReshapedArray{Complex{T},D,P,MI}
 ) where {T<:IEEEFloat,D,P<:AbstractArray{Complex{T}},MI} = x
@@ -1817,24 +1767,15 @@ for W in (
     # declares — without these, the generic fallback returns the legacy
     # `Dual{$(W), Tangent{...}}` form, breaking the
     # `_typeof(zero_dual(...)) === dual_type(...)` invariant.
-    @eval @inline function Mooncake.zero_dual(
-        w::Val{N}, x::$(W){T,<:Matrix{T}}
-    ) where {N,T<:IEEEFloat}
-        V = Mooncake.dual_type(w, typeof(x))
-        return V(x, Mooncake.zero_tangent(x))::V
-    end
-    @eval @inline function Mooncake.uninit_dual(
-        w::Val{N}, x::$(W){T,<:Matrix{T}}
-    ) where {N,T<:IEEEFloat}
-        V = Mooncake.dual_type(w, typeof(x))
-        return V(x, Mooncake.uninit_tangent(x))::V
-    end
-    @eval @inline function Mooncake.randn_dual(
-        w::Val{N}, rng::AbstractRNG, x::$(W){T,<:Matrix{T}}
-    ) where {N,T<:IEEEFloat}
-        V = Mooncake.dual_type(w, typeof(x))
-        return V(x, Mooncake.randn_tangent(rng, x))::V
-    end
+    @eval @inline Mooncake.zero_dual(w::Val{N}, x::$(W){T,<:Matrix{T}}) where {N,T<:IEEEFloat} = _seed_dual_via_ctor(
+        w, Mooncake.zero_tangent(x), x
+    )
+    @eval @inline Mooncake.uninit_dual(w::Val{N}, x::$(W){T,<:Matrix{T}}) where {N,T<:IEEEFloat} = _seed_dual_via_ctor(
+        w, Mooncake.uninit_tangent(x), x
+    )
+    @eval @inline Mooncake.randn_dual(w::Val{N}, rng::AbstractRNG, x::$(W){T,<:Matrix{T}}) where {N,T<:IEEEFloat} = _seed_dual_via_ctor(
+        w, Mooncake.randn_tangent(rng, x), x
+    )
     @eval @inline Mooncake.zero_dual(
         ::Val{0}, x::$(W){T,<:Matrix{T}}
     ) where {T<:IEEEFloat} = x

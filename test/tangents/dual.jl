@@ -721,15 +721,14 @@ end
     end
 end
 
-@testset "Lifted-aware frule!! direct dispatch" begin
+@testset "Lifted frule!! direct dispatch" begin
     # Exercises the `Lifted`-typed `frule!!` overloads directly (bypassing the
     # IR-emit). The integration tests cover these via
-    # `prepare_derivative_cache(...; chunk_size=N)`, but those go through the
-    # IR-emit's `_is_lifted_aware` trait check and the wrap/unwrap
-    # scaffolding for non-registered rules. Here we call the rule with `Lifted`
-    # args directly — Julia dispatch picks the specific `Lifted{typeof(op), N}`
-    # overload (for `tuple`, `_new_`) or the generic `frule!!(::Lifted{F, N},
-    # args::Vararg{Lifted, M})` adapter (for any other rule).
+    # `prepare_derivative_cache(...; chunk_size=N)`. Here we call the rule with
+    # `Lifted` args directly — Julia dispatch picks the specific
+    # `Lifted{typeof(op), N}` overload (for `tuple`, `_new_`) or the generic
+    # `frule!!(::Lifted{F, N}, args::Vararg{Lifted, M})` adapter (for any other
+    # rule).
     Lifted = Mooncake.Lifted
     NDual = Mooncake.NDual
     NTangent = Mooncake.NTangent
