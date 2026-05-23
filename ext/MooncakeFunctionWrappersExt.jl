@@ -290,12 +290,18 @@ end
     f::Mooncake.Lifted{FunctionWrapper{R,A},N}, x::Vararg{Mooncake.Lifted,M}
 ) where {R,A,N,M}
     bare_f = Mooncake._unlift(f)
-    bare_args = ntuple(i -> Mooncake._unlift(x[i]), Val(M))
-    # The user's frule_wrapper produces a Dual{R, T_R} (or similar inner V);
-    # canonicalise via _wrap_rule_result since the runtime shape isn't
-    # statically known per FunctionWrapper instance.
-    bare_result = tangent(bare_f).frule_wrapper(bare_args...)
-    return Mooncake._wrap_rule_result(R, Val(N), bare_result)
+    p_args = ntuple(i -> primal(x[i]), Val(M))
+    fr_wrapper = tangent(bare_f).frule_wrapper
+    # The user's `frule_wrapper` accepts width-1 `Dual` args and returns a
+    # `Dual{R, T_R}`. Per-lane: build width-1 args for each lane and
+    # collect the per-lane scalar tangents into NTangent.
+    lane_results = ntuple(Val(N)) do k
+        lane_args = ntuple(i -> Dual(p_args[i], Mooncake.tangent(x[i], k)), Val(M))
+        fr_wrapper(lane_args...)
+    end
+    y = primal(lane_results[1])
+    dys = ntuple(k -> tangent(lane_results[k]), Val(N))
+    return Mooncake.Lifted{R,N}(y, Mooncake.NTangent(dys))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:FunctionWrapper,Vararg}}) = true
 
