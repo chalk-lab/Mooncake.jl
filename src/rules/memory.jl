@@ -816,6 +816,20 @@ end
     )
     return nothing
 end
+# Canonical V_x (MemoryRef{<:_HasNDual}): NDual elements pack
+# primal+tangent so a single memoryrefset! updates both halves. The
+# value's canonical V is already in the correct shape for the destination
+# element type.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lmemoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
+    value::Mooncake.Lifted,
+    ::Mooncake.Lifted{Val{ordering}},
+    ::Mooncake.Lifted{Val{boundscheck}},
+) where {N,V_x<:MemoryRef{<:_HasNDual},ordering,boundscheck}
+    memoryrefset!(Mooncake._unlift(x), Mooncake._unlift(value), ordering, boundscheck)
+    return value
+end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
     x::Mooncake.Lifted{<:MemoryRef},
@@ -1675,24 +1689,12 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
-# `lmemoryrefset!` bare-Dual entries — reachable through the Lifted-aware
-# adapter at memory.jl:842, which unlifts `x` (the destination MemoryRef)
-# and `value` and re-dispatches to the bare-Dual frule!!. The canonical
-# `MemoryRef{<:NDual}` shape is the primary path for IEEEFloat/Complex
-# element types; the `Dual{MemoryRef{Any}, MemoryRef{Any}}` shape covers
-# the `Vector{Any}` built via `setindex!` at lifted width case.
-
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    ref::MemoryRef{<:_HasNDual},
-    value,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {ordering,boundscheck}
-    memoryrefset!(ref, value, ordering, boundscheck)
-    return value
-end
-
+# `lmemoryrefset!(::Dual{<:MemoryRef{Any},<:MemoryRef{Any}}, ::Union{NDual,
+# …}, …)` — reachable through the Lifted-aware adapter at memory.jl:842
+# which unlifts `Vector{Any}` Memory destinations built via `setindex!` at
+# lifted width. The `Dual{MemoryRef{Any}, MemoryRef{Any}}` slot covers
+# that case; canonical `MemoryRef{<:NDual}` writes are now handled by the
+# direct Lifted body at memory.jl:796.
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
     ref::Dual{<:MemoryRef{Any},<:MemoryRef{Any}},
