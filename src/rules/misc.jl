@@ -392,22 +392,30 @@ end
 @inline _ndual_arg_unwrap(x::Dual) = primal(x)
 @inline _ndual_arg_unwrap(x::Tuple) = map(_ndual_arg_unwrap, x)
 @inline _ndual_arg_unwrap(x) = x
-# Direct Lifted bodies per inner V shape — replace the delegator that
-# unlifted everything and routed to bare-Dual frule!! variants. Each
-# body inlines the same `_unlift`+dispatch the bare-Dual frules did.
-# Wrapper-exception value V (Dual{P, T<:StandardTangentType}): inline
-# the bare-Dual variant's body (lsetfield_frule on the bridged x).
+# Direct Lifted bodies per inner V shape. Wrapper-exception value V (slot
+# inner V is `Dual{P, T<:StandardTangentType}`) splits on T: NoTangent
+# does primal-only setfield!; NTangent additionally updates the tangent
+# field. The per-lane tangent of `x` is recovered from public accessors
+# (`tangent(x::Lifted, lane)`) — no Dual{P_x, NTangent} bridge needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lsetfield!),N},
     value::Mooncake.Lifted{P,N,V},
-    name::Mooncake.Lifted,
+    ::Mooncake.Lifted{Val{f}},
     x::Mooncake.Lifted,
-) where {N,P,T<:StandardTangentType,V<:Dual{P,T}}
-    bare_value = Mooncake._unlift(value)
-    bare_name = Mooncake._unlift(name)
-    bare_x = _lsetfield_x_to_dual(Mooncake._unlift(x))
-    bare_result = lsetfield_frule(bare_value, bare_name, bare_x)
-    return _wrap_rule_result(Val(N), bare_result)
+) where {N,P,V<:Dual{P,NoTangent},f}
+    setfield!(primal(value), f, primal(x))
+    return x
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lsetfield!),N},
+    value::Mooncake.Lifted{P,N,V},
+    ::Mooncake.Lifted{Val{f}},
+    x::Mooncake.Lifted,
+) where {N,P,T<:NTangent,V<:Dual{P,T},f}
+    setfield!(primal(value), f, primal(x))
+    tx = Mooncake.NTangent(ntuple(lane -> Mooncake.tangent(x, lane), Val(N)))
+    set_tangent_field!(tangent(value), f, tx)
+    return x
 end
 # Canonical-NDual value V (AbstractArray{<:NDual}): bare lsetfield! on
 # the array; NDual elements carry tangent so no separate tangent update.
@@ -438,45 +446,6 @@ end
     new_nt = NT(ntuple(n -> n == i ? bare_x : nt[n], fieldcount(NT)))
     setfield!(bare_value, :canonical, new_nt)
     return _wrap_rule_result(Val(N), bare_x)
-end
-# Bridge `x`'s bare inner V to the `Dual{P_x, T_x}` shape the
-# `Dual{P,T}` value path's `lsetfield_frule` expects.
-@inline _lsetfield_x_to_dual(x::Dual) = x
-@inline _lsetfield_x_to_dual(x::Union{NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}}) = _ndual_to_dual_widthN(
-    x
-)
-@inline _lsetfield_x_to_dual(x::Tuple) = _tuple_duals_to_dual(x)
-# `_ndual_to_dual_widthN` bridge: canonical NDual / Complex{NDual} / array
-# container → `Dual{P, NTangent{NTuple{N, T}}}` so the per-lane
-# `set_tangent_field!(::NTangent{NTuple{N, T}}, name, ::NTangent{NTuple{N, Tx}})`
-# overload fires (otherwise `set_tangent_field!` broadcasts lane-1 across
-# all N lanes — wrong with distinct seeds).
-@inline _ndual_to_dual_widthN(x::Dual) = x
-@inline function _ndual_to_dual_widthN(x::NDual{T,N}) where {T,N}
-    return Dual(primal(x), Mooncake.NTangent(x.partials))
-end
-@inline function _ndual_to_dual_widthN(x::Complex{NDual{T,N}}) where {T<:IEEEFloat,N}
-    p = Complex(x.re.value, x.im.value)
-    ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
-    return Dual(p, Mooncake.NTangent(ts))
-end
-@inline function _ndual_to_dual_widthN(x::AbstractArray{NDual{T,N}}) where {T,N}
-    p = map(d -> d.value, x)
-    ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
-    return Dual(p, Mooncake.NTangent(ts))
-end
-@inline function _ndual_to_dual_widthN(
-    x::AbstractArray{Complex{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
-    p = map(c -> Complex(c.re.value, c.im.value), x)
-    ts = ntuple(Val(N)) do n
-        map(c -> Complex(c.re.partials[n], c.im.partials[n]), x)
-    end
-    return Dual(p, Mooncake.NTangent(ts))
-end
-@inline function _tuple_duals_to_dual(x::Tuple)
-    ts = map(tangent, x)
-    return Dual(map(primal, x), ts isa Tuple{Vararg{NoTangent}} ? NoTangent() : ts)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
