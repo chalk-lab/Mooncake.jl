@@ -103,8 +103,6 @@ for f in (
     # so avoiding per-invocation wrapper construction keeps them allocation-free. See the
     # file-level warning above for why hidden cached Rule/RRule state is also a bad fit
     # for primitive rules.
-    # One-for-one Lifted-typed rule per op; bare-Dual and bare-NDual entry
-    # points are routed through the centralised adapters at the top of the file.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
         @inline function frule!!(
@@ -128,9 +126,6 @@ end
 end
 
 # ── tanpi ─────────────────────────────────────────────────────────────────────
-# Migrated to one-for-one Lifted-typed rule. Bare-Dual and bare-NDual entry
-# points are routed through the centralised adapters above; the Lifted-typed
-# body is the single source of truth for the derivative.
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
 @inline function frule!!(::Mooncake.Lifted{typeof(tanpi),N}, x::Mooncake.Lifted) where {N}
@@ -141,8 +136,6 @@ function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
-# One-for-one Lifted-typed rule per op; bare-Dual and bare-NDual entry points
-# are routed through the centralised binary adapters at the top of the file.
 for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
@@ -186,7 +179,6 @@ function rrule!!(
     return zero_fcodual(y), pow_fast_pb!!
 end
 
-# Ternary: bare-Dual and bare-NDual go through the centralised adapters.
 for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
@@ -209,9 +201,7 @@ for f in (clamp,)
 end
 
 # ── sincosd / sincospi / modf ─────────────────────────────────────────────────
-# Tuple-output unary scalars. Bare-Dual and bare-NDual entry points are routed
-# through the centralised unary adapters; the Lifted-typed body is the single
-# source of truth.
+# Tuple-output unary scalars.
 
 for (f, P_out) in
     ((sincosd, :(Tuple{P,P})), (sincospi, :(Tuple{P,P})), (modf, :(Tuple{P,P})))
@@ -276,9 +266,7 @@ using .IntrinsicsWrappers:
     fpext,
     fptrunc
 
-# Unary float intrinsics: one-for-one Lifted-typed rules. Bare-Dual and
-# bare-NDual entry points are routed through the centralised unary adapters
-# at the top of the file.
+# Unary float intrinsics.
 for (op_sym, op_fn) in (
     (:abs_float, :abs),
     (:neg_float, :-),
@@ -295,15 +283,7 @@ for (op_sym, op_fn) in (
     end
 end
 
-# Binary float intrinsics: one-for-one Lifted-typed rules. Same-shape bare-Dual
-# and bare-NDual entry points are routed through the centralised binary adapters
-# at the top of the file. Mixed `(NDual, Dual{<:IEEEFloat})` and
-# `(Dual{<:IEEEFloat}, NDual)` retains specific overloads because the adapters
-# require homogeneous arg shapes — these mixed cases arise when an
-# `@inactive_intrinsic` (e.g. `sitofp(Float64, 2)`) emits a width-1
-# `Dual{Float64}` alongside an `NDual` user input. Unwrapping the `Dual` to its
-# primal is sound because the inactive frule produces
-# `Dual(_, zero_tangent(_))`, contributing nothing.
+# Binary float intrinsics.
 for (op_sym, op_fn) in (
     (:add_float, :+),
     (:add_float_fast, :+),
@@ -401,8 +381,3 @@ end
         end
     end
 end
-
-# ── scalar_math ───────────────────────────────────────────────────────────────
-# Bare-NDual entry points for unary, binary, ternary, and vararg scalar_math ops
-# are routed through the centralised adapters defined at the top of this file,
-# so per-op bare-NDual rules are no longer needed.

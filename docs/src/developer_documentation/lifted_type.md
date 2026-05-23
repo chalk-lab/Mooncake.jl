@@ -160,11 +160,10 @@ function frule!!(::Lifted{typeof(tuple), N}, args::Vararg{Lifted, M}) where {N, 
 end
 ```
 
-`_unlift(::Lifted)` returns the bare inner (the `V` field). Mark the rule as Lifted-aware so the IR-emit dispatches directly:
-
-```julia
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple), Vararg}}) = true
-```
+`_unlift(::Lifted)` returns the bare inner (the `V` field). The IR-emit always
+wraps primitive-call args in `Lifted{P, N, V}` before calling the rule, so
+no per-rule trait or registration is required — Julia dispatch alone routes
+each call to the matching `Lifted{...}` overload.
 
 ## Why the parameterisation works
 

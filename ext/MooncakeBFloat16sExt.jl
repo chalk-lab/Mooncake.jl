@@ -34,10 +34,8 @@ import Mooncake:
     NTangent,
     primal,
     tangent,
-    extract,
     zero_fcodual,
-    MinimalCtx,
-    _ndual_output_to_width1
+    MinimalCtx
 
 # Core.BFloat16 requires Julia >= 1.11.
 # BFloat16s.BFloat16 === Core.BFloat16 is not guaranteed on all platforms.
