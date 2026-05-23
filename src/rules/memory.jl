@@ -243,20 +243,15 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-# Trait register only for IEEEFloat / Complex element types where the
-# bare body's NDual variant exists; for other element types (e.g.
-# `MemoryRef{Vector{Float64}}`) the scaffold path is needed because the
-# bare body's `Dual{MemoryRef{P}, MemoryRef{V}}` signature still relies
-# on the struct-shape destructuring of the slot.
+# `_is_lifted_aware = true` routes the AD transform through the Lifted body
+# below for any MemoryRef element type. IEEEFloat / Complex element types
+# dispatch on the canonical NDual V (line 263); other element types
+# (e.g. `MemoryRef{Vector{Float64}}`) dispatch on the wrapper-exception
+# `Dual{<:MemoryRef, <:NTangent}` V (line 273). Both preserve the user's
+# MemoryRef object identity without canonicalisation (no `Lifted{T,1}(p, t)`
+# rebuild path is taken when the trait is true).
 @inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(unsafe_copyto!),
-            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
-            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
-            <:Int,
-        },
-    },
+    ::Type{<:Tuple{typeof(unsafe_copyto!),<:MemoryRef,<:MemoryRef,<:Int}}
 ) = true
 # Canonical NDual / Complex{NDual}-element MemoryRef V: NDual elements pack
 # primal+tangent, so a single `unsafe_copyto!` operates on both halves.
@@ -286,38 +281,6 @@ end
     for k in 1:N
         unsafe_copyto!(Mooncake.tangent(dest, k), Mooncake.tangent(src, k), pn)
     end
-    return dest
-end
-# Bare-Dual delegator (Dual-wrapped MemoryRef): use `Lifted{T,1,V}(v)` to
-# bypass canonicalisation — the inner V must alias the user's MemoryRef for
-# the in-place copy to be visible. Plain `Lifted{T,1}(p, t)` would
-# canonicalise to `MemoryRef{NDual{T,1}}` (fresh memory), breaking semantics.
-function frule!!(
-    f::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{MemoryRef{P}},
-    src::Dual{MemoryRef{P}},
-    n::Dual{Int},
-) where {P}
-    lifted_f = Mooncake.Lifted{typeof(unsafe_copyto!),1,_typeof(f)}(f)
-    lifted_dest = Mooncake.Lifted{MemoryRef{P},1,_typeof(dest)}(dest)
-    lifted_src = Mooncake.Lifted{MemoryRef{P},1,_typeof(src)}(src)
-    lifted_n = Mooncake.Lifted{Int,1,_typeof(n)}(n)
-    Mooncake._unlift(frule!!(lifted_f, lifted_dest, lifted_src, lifted_n))
-    return dest
-end
-# Bare-Dual delegator (canonical NDual / Complex{NDual} MemoryRef): the
-# IR-emit's unwrap-then-bare path delivers `MemoryRef{<:NDual}` directly.
-function frule!!(
-    f::Dual{typeof(unsafe_copyto!)},
-    dest::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
-    src::MemoryRef{<:Union{Mooncake.Nfwd.NDual,Complex{<:Mooncake.Nfwd.NDual}}},
-    n::Dual{Int},
-)
-    lifted_f = Mooncake.Lifted{typeof(unsafe_copyto!),1,_typeof(f)}(f)
-    lifted_dest = Mooncake.Lifted{_typeof(dest),1,_typeof(dest)}(dest)
-    lifted_src = Mooncake.Lifted{_typeof(src),1,_typeof(src)}(src)
-    lifted_n = Mooncake.Lifted{Int,1,_typeof(n)}(n)
-    Mooncake._unlift(frule!!(lifted_f, lifted_dest, lifted_src, lifted_n))
     return dest
 end
 function rrule!!(
