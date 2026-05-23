@@ -174,7 +174,6 @@ end
 # case, paired with `_arr_writeback!` to push results back element-wise).
 # The `_*_extract_n` / `_arr_writeback_n!` family below mirrors this for
 # width-N callers, returning per-lane tangent tuples.
-@inline _arr_extract(x::Dual{<:AbstractArray}) = arrayify(x)
 @inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
     return (map(d -> d.value, x), map(d -> d.partials[1], x))
 end
@@ -215,13 +214,14 @@ end
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
     return (p, ts)
 end
-# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}` or
-# `Dual{<:Ptr, ...}`): treat as a trivial 1-lane chunk so unified
-# width-1 + width-N rule bodies can call `_arr_extract_n` regardless
-# of which slot shape arrived. `arrayify` returns the (primal, tangent)
-# view-pair as in `_arr_extract`; we wrap the tangent in a 1-tuple to
-# match the multi-lane shape.
-@inline function _arr_extract_n(x::Dual{<:Union{AbstractArray,Ptr}})
+# Wrapper-exception slot V for raw `Dual{<:Ptr, …}` only — `Ptr` canonicalises
+# to `Dual{Ptr, Ptr}` (no NDual lift). For AbstractArray, the canonical V
+# is `Array{<:NDual}` (handled by the `AbstractArray{<:NDual}` variant
+# above); BLAS rules constrain to `BlasFloat` so the wrapper-exception
+# array path is unreachable here. `arrayify` returns the (primal, tangent)
+# view-pair; we wrap the tangent in a 1-tuple to match the multi-lane
+# shape.
+@inline function _arr_extract_n(x::Dual{<:Ptr})
     p, t = arrayify(x)
     return (p, (t,))
 end
@@ -244,11 +244,10 @@ end
     end
     return nothing
 end
-# Wrapper-exception slot V (`Dual{<:AbstractArray, ...}`): `_arr_extract_n`
-# below returns a 1-tuple whose single element aliases the same buffer as
-# the wrapper's tangent (via `arrayify`), so the mutating ops already
-# wrote through and no per-lane writeback is needed.
-@inline _arr_writeback_n!(x::Dual, p, ts) = nothing
+# `Dual{<:Ptr}` writeback noop — `_arr_extract_n` returns a 1-tuple whose
+# single element aliases the original tangent Ptr (via `arrayify`), so the
+# mutating ops already wrote through and no per-lane writeback is needed.
+@inline _arr_writeback_n!(x::Dual{<:Ptr}, p, ts) = nothing
 @inline function _arr_writeback_n!(
     x::AbstractArray{Complex{NDual{T,N}}}, p, ts::NTuple{N,<:AbstractArray}
 ) where {T<:IEEEFloat,N}
