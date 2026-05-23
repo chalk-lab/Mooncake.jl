@@ -1178,19 +1178,10 @@ end
         return _wrap_rule_result(Val(N), field_val)
     end
 end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N},
-    x::Mooncake.Lifted{P,N},
-    ::Mooncake.Lifted{Val{field},N},
-    ::Vararg{Mooncake.Lifted,M},
-) where {P<:Union{Tuple,NamedTuple},N,field,M}
-    field_val = getfield(Mooncake._unlift(x), field)
-    return _wrap_rule_result(fieldtype(P, field), Val(N), field_val)
-end
 # Bare-Dual 3-arg getfield (with `inbounds`) is covered by the Vararg-tail
 # arity-2/3 bodies above. The Lifted-side rules likewise span both arities
 # via Vararg{Lifted,M} (wrapper-exception, SplitDual, Tuple/NamedTuple
-# @generated, Val{field}).
+# @generated).
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
