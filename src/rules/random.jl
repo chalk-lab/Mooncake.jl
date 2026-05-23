@@ -33,13 +33,6 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
-    @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
-    )
-        $f(primal(rng), primal(x))
-        tangent(x) .= 0
-        return x
-    end
     @eval @inline function frule!!(
         ::Mooncake.Lifted{typeof($f),N},
         rng::Mooncake.Lifted{<:SpecialisedRNGs},
