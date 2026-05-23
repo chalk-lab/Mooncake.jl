@@ -633,17 +633,6 @@ end
     },
 ) = true
 
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
-    memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
-    return value
-end
 # NTangent-wrapped MemoryRef tangent. Unwrap the singleton NTangent so
 # `memoryrefset!` sees a bare `MemoryRef`. `value` can be a bare `Dual`
 # (legacy path) or a width-1 `NDual` / `Complex{NDual}` /
@@ -693,18 +682,6 @@ const _MemoryRefSetTupleValue = Tuple{
         },
     },
 }
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::_MemoryRefSetTupleValue,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
-    y = _memoryrefset_tuple_duals_to_dual(P, value)
-    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
-    return y
-end
 # Comms-stack push of a pullback-closure tuple: destination MemoryRef has
 # `NTangent{Tuple{Vararg{MemoryRef}}}` tangent (per-lane separate tangent
 # MemoryRefs), value is a tuple of NamedTuples / Duals representing the
@@ -725,18 +702,6 @@ end
         memoryrefset!(lanes[n], tangent(y), ordering, boundscheck)
     end
     return value
-end
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::NamedTuple,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
-    y = Dual(_ndual_primal(value), tangent(value, 1))
-    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(y), ordering, boundscheck)
-    return y
 end
 @generated function _memoryrefset_tuple_duals_to_dual(
     ::Type{P}, x::Tx
