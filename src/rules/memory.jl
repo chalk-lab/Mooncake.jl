@@ -602,63 +602,15 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
-# Architectural note: `lmemoryrefset!` deliberately exposes a fan-out of
-# bare-`Dual` rule entries below (one per `value` shape: bare `Dual`,
-# canonical `NDual` / `Complex{NDual}` / array-of-NDual, `Tuple`,
-# `NamedTuple`) without a corresponding `Mooncake.Lifted{lmemoryrefset!}`
-# source-of-truth body. Each entry mutates the user's `MemoryRef`
-# in-place; the bare-`Dual` surface receives the original `MemoryRef`
-# directly, which is the required aliasing for the mutation to be
-# observable. A Pattern A inversion that routed everything through a
-# `Lifted{lmemoryrefset!}` body would either (a) require a 3-param
-# `Lifted{T,1,V}(v)` non-canonicalising ctor in every delegator (one
-# per value shape — same entry count) or (b) canonicalise the inner
-# `MemoryRef` to a fresh `MemoryRef{<:NDual}`, breaking in-place
-# semantics. So the multi-entry bare-Dual surface is the correct
-# architecture for this rule, not a scaffold. See
-# `temp/pattern_a_mutation_finding.md` for the full reasoning.
-#
-# Trait register only for IEEEFloat / Complex MemoryRef slots — the bare
-# NDual variant exists at line ~970 and returns the input value
-# unchanged, so canonicalisation matches the NDual shape downstream.
+# `_is_lifted_aware = true` makes the AD transform pass Lifted slots
+# through to the per-V Lifted bodies below. `primal(x::Lifted{<:MemoryRef})`
+# returns the user's MemoryRef directly (no fresh allocation), so in-place
+# mutation aliasing is preserved. Per-V-of-value Lifted bodies cover each
+# value-shape (Dual / NDual / Complex{NDual} / array-of-NDual / Tuple /
+# NamedTuple) that the AD transform can deliver.
 @inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(lmemoryrefset!),
-            <:MemoryRef{<:Union{IEEEFloat,Complex{<:IEEEFloat}}},
-            Any,
-            <:Val,
-            <:Val,
-        },
-    },
+    ::Type{<:Tuple{typeof(lmemoryrefset!),<:MemoryRef,Any,<:Val,<:Val}}
 ) = true
-
-# NTangent-wrapped MemoryRef tangent. Unwrap the singleton NTangent so
-# `memoryrefset!` sees a bare `MemoryRef`. `value` can be a bare `Dual`
-# (legacy path) or a width-1 `NDual` / `Complex{NDual}` /
-# `AbstractArray{<:NDual}` (canonical width-1 lifted forms emerging from
-# `Memory{<:IEEEFloat}` element lookups).
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
-    value::Union{
-        Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
-    },
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,ordering,boundscheck}
-    # Write all N lane MemoryRef tangents (the bare-Dual rule above only
-    # services lane 1).
-    p_val = _ndual_primal(value)
-    memoryrefset!(primal(x), p_val, ordering, boundscheck)
-    lanes = tangent(x).lanes
-    @inbounds for n in eachindex(lanes)
-        # `value` may be bare `NDual{T, N}` (per-lane tangent via `.partials[n]`)
-        # or a `Dual{P, NTangent{...}}` (per-lane via lane n of NTangent).
-        memoryrefset!(lanes[n], _lane_tangent(value, n), ordering, boundscheck)
-    end
-    return value
-end
 # Per-lane tangent extractor for canonical width-1/N forms.
 @inline _lane_tangent(v::NDual, n::Integer) = v.partials[n]
 @inline _lane_tangent(v::Complex{<:NDual}, n::Integer) = complex(
@@ -682,27 +634,6 @@ const _MemoryRefSetTupleValue = Tuple{
         },
     },
 }
-# Comms-stack push of a pullback-closure tuple: destination MemoryRef has
-# `NTangent{Tuple{Vararg{MemoryRef}}}` tangent (per-lane separate tangent
-# MemoryRefs), value is a tuple of NamedTuples / Duals representing the
-# closure's lifted fields. Build a width-1 wholevalue Dual via
-# `_memoryrefset_tuple_duals_to_dual` and store the same tangent into each
-# lane (under width-1 dispatch into this rule, lanes has length 1).
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
-    value::_MemoryRefSetTupleValue,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,ordering,boundscheck}
-    y = _memoryrefset_tuple_duals_to_dual(P, value)
-    memoryrefset!(primal(x), primal(y), ordering, boundscheck)
-    lanes = tangent(x).lanes
-    @inbounds for n in eachindex(lanes)
-        memoryrefset!(lanes[n], tangent(y), ordering, boundscheck)
-    end
-    return value
-end
 @generated function _memoryrefset_tuple_duals_to_dual(
     ::Type{P}, x::Tx
 ) where {P<:Tuple,Tx<:Tuple}
@@ -818,21 +749,65 @@ end
     end
     return value
 end
+# Wrapper-exception V_x (Dual{<:MemoryRef, <:NTangent{Tuple{Vararg{MemoryRef}}}})
+# with NDual-bearing canonical V_value: primal-write once, per-lane
+# tangent-write N times. Covers `value::Union{Dual, NDual, Complex{<:NDual},
+# AbstractArray{<:NDual}, AbstractArray{<:Complex{<:NDual}}}` flowing
+# from Memory{<:IEEEFloat}-element lookups.
 @inline function frule!!(
-    f::Mooncake.Lifted{typeof(lmemoryrefset!),N},
-    x::Mooncake.Lifted{<:MemoryRef},
-    value::Mooncake.Lifted,
-    ord::Mooncake.Lifted{<:Val},
-    bc::Mooncake.Lifted{<:Val},
-) where {N}
-    bare_result = frule!!(
-        Mooncake._unlift(f),
-        Mooncake._unlift(x),
-        Mooncake._unlift(value),
-        Mooncake._unlift(ord),
-        Mooncake._unlift(bc),
-    )
-    return _wrap_rule_result(Val(N), bare_result)
+    ::Mooncake.Lifted{typeof(lmemoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef,N,V_x},
+    value::Mooncake.Lifted{P_val,N,V_v},
+    ::Mooncake.Lifted{Val{ordering}},
+    ::Mooncake.Lifted{Val{boundscheck}},
+) where {
+    N,
+    P_val,
+    V_x<:Dual{<:MemoryRef,<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
+    V_v<:Union{
+        Dual,NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
+    },
+    ordering,
+    boundscheck,
+}
+    bare_x = Mooncake._unlift(x)
+    bare_value = Mooncake._unlift(value)
+    memoryrefset!(primal(bare_x), _ndual_primal(bare_value), ordering, boundscheck)
+    lanes = tangent(bare_x).lanes
+    @inbounds for n in 1:N
+        memoryrefset!(lanes[n], _lane_tangent(bare_value, n), ordering, boundscheck)
+    end
+    return value
+end
+# Wrapper-exception V_x + Tuple V_value (comms-stack push of pullback-
+# closure tuples). Use `_memoryrefset_tuple_duals_to_dual` to build a
+# wholevalue Dual with destination-type-aware struct coercion, then write
+# primal once and store the same tangent into each lane (width-1 dispatch
+# guarantees lanes has length 1).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lmemoryrefset!),N},
+    x::Mooncake.Lifted{<:MemoryRef{P_dest},N,V_x},
+    value::Mooncake.Lifted{P_val,N,V_v},
+    ::Mooncake.Lifted{Val{ordering}},
+    ::Mooncake.Lifted{Val{boundscheck}},
+) where {
+    N,
+    P_dest,
+    P_val,
+    V_x<:Dual{<:MemoryRef,<:Mooncake.NTangent{<:Tuple{Vararg{MemoryRef}}}},
+    V_v<:_MemoryRefSetTupleValue,
+    ordering,
+    boundscheck,
+}
+    bare_x = Mooncake._unlift(x)
+    bare_value = Mooncake._unlift(value)
+    y = _memoryrefset_tuple_duals_to_dual(P_dest, bare_value)
+    memoryrefset!(primal(bare_x), primal(y), ordering, boundscheck)
+    lanes = tangent(bare_x).lanes
+    @inbounds for n in 1:N
+        memoryrefset!(lanes[n], tangent(y), ordering, boundscheck)
+    end
+    return value
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefset!)},
@@ -1652,24 +1627,6 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return a, fill!_pullback!!
-end
-
-# `lmemoryrefset!(::Dual{<:MemoryRef{Any},<:MemoryRef{Any}}, ::Union{NDual,
-# …}, …)` — reachable through the Lifted-aware adapter at memory.jl:842
-# which unlifts `Vector{Any}` Memory destinations built via `setindex!` at
-# lifted width. The `Dual{MemoryRef{Any}, MemoryRef{Any}}` slot covers
-# that case; canonical `MemoryRef{<:NDual}` writes are now handled by the
-# direct Lifted body at memory.jl:796.
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    ref::Dual{<:MemoryRef{Any},<:MemoryRef{Any}},
-    value::Union{NDual,Complex{<:NDual},Array{<:NDual},Array{<:Complex{<:NDual}}},
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {ordering,boundscheck}
-    memoryrefset!(primal(ref), _ndual_primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(ref), value, ordering, boundscheck)
-    return value
 end
 
 # Test cases
