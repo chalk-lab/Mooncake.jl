@@ -234,58 +234,18 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(get),<:IdDict,Any,Any}}) = true
-# Implementation kernels for `get(::IdDict, key, default)`. Lifted body
-# dispatches on the runtime default V.
-@inline function _get_iddict(d::Dual{IdDict{K,V}}, key::Dual, default::Dual) where {K,V}
-    x = get(primal(d), primal(key), primal(default))
-    dx = get(
-        _iddict_tangent(d),
-        primal(key),
-        Mooncake._ntangent_unwrap_singleton(tangent(default)),
-    )
-    return Dual(x, dx)
-end
-@inline function _get_iddict(
-    d::Dual{IdDict{K,V}}, key::Dual, default::Mooncake.Nfwd.NDual{P,1}
-) where {K,V<:IEEEFloat,P<:IEEEFloat}
-    x = get(primal(d), primal(key), default.value)
-    dx = get(_iddict_tangent(d), primal(key), default.partials[1])
-    return Dual(x, dx)
-end
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(get),N},
-    d::Mooncake.Lifted{<:IdDict},
-    key::Mooncake.Lifted,
-    default::Mooncake.Lifted,
-) where {N}
-    bare_result = _get_iddict(
-        Mooncake._unlift(d), Mooncake._unlift(key), Mooncake._unlift(default)
-    )
-    return _wrap_rule_result(Val(N), bare_result)
-end
-# Chunk-size-N correctness: width-N IDdict has tangent
-# `NTangent{NTuple{N, IdDict{K, tangent_type(V)}}}` (one IDdict per lane).
-# The width-1 `_get_iddict` above only services lane 1. For N >= 2, loop
-# per-lane: for each lane `n`, look up `tangent(d, n)[key]` and use
-# `tangent(default, n)` as the fallback, then assemble all lanes into an
-# `NTangent` result. Mirrors the canonical `frule_wrapper` pattern.
+# `get(::IdDict, key, default)` — per-lane lookup. At width N≥2 each lane
+# has its own IdDict tangent; at N=1 the same per-lane body iterates once.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(get),N},
     d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
     key::Mooncake.Lifted,
     default::Mooncake.Lifted,
 ) where {N}
-    N == 1 && return @invoke frule!!(
-        Mooncake.zero_lifted(Val(N), get)::Mooncake.Lifted{typeof(get),N},
-        d::Mooncake.Lifted{<:IdDict},
-        key::Mooncake.Lifted,
-        default::Mooncake.Lifted,
-    )
     k = primal(key)
     P_d = primal(d)
     has_key = in(k, keys(P_d))
     P_v = has_key ? P_d[k] : primal(default)
-    # Per-lane tangent lookup.
     d_lanes = tangent(d).lanes
     lane_tangents = ntuple(Val(N)) do n
         td = d_lanes[n]
@@ -317,39 +277,18 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getindex),<:IdDict,Any}}) = true
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(getindex),N},
-    d::Mooncake.Lifted{<:IdDict},
-    key::Mooncake.Lifted,
-) where {N}
-    k = primal(key)
-    bare_result = Dual(
-        getindex(primal(d), k), getindex(Mooncake._ntangent_unwrap_singleton(tangent(d)), k)
-    )
-    return _wrap_rule_result(Val(N), bare_result)
-end
-# Width-N getindex on NTangent-wrapped IdDict (parallel to the `get` rule's
-# width-N overload). The generic delegator above calls `_iddict_tangent` →
-# `Mooncake._ntangent_unwrap_singleton` (singleton-only), then `getindex(::NTangent, key::Int)`
-# resolves to `Base.getindex(::NTangent, ::Int)` returning LANE `key` — not
-# the value at that key in any of the N per-lane IdDicts. Silent
-# correctness bug (returns the wrong shape entirely).
+# `getindex(::IdDict, key)` — per-lane lookup. Each lane stores its own
+# IdDict tangent, so per-lane `getindex(d_lanes[n], k)` recovers the
+# intended lane tangent at any width.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getindex),N},
     d::Mooncake.Lifted{<:IdDict,N,<:Dual{<:IdDict,<:Mooncake.NTangent}},
     key::Mooncake.Lifted,
 ) where {N}
-    N == 1 && return @invoke frule!!(
-        Mooncake.zero_lifted(Val(N), getindex)::Mooncake.Lifted{typeof(getindex),N},
-        d::Mooncake.Lifted{<:IdDict},
-        key::Mooncake.Lifted,
-    )
     k = primal(key)
     P_v = getindex(primal(d), k)
     d_lanes = tangent(d).lanes
-    lane_tangents = ntuple(Val(N)) do n
-        getindex(d_lanes[n], k)
-    end
+    lane_tangents = ntuple(n -> getindex(d_lanes[n], k), Val(N))
     return Mooncake.Lifted{_typeof(P_v),N}(P_v, Mooncake.NTangent(lane_tangents))
 end
 function rrule!!(
