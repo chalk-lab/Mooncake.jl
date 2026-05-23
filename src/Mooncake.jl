@@ -193,7 +193,6 @@ include(joinpath("nfwd", "NfwdMooncake.jl"))
 # rule files can extend `_uninit_dual` with bare-name `function` syntax.
 import .NfwdMooncake:
     _has_ndual,
-    _dual_or_ndual,
     _ndual_width,
     _ndual_primal,
     _tangent_dir_elem,

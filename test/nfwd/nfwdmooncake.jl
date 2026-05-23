@@ -28,24 +28,6 @@
             @test Mooncake._has_ndual(c)
             @test Mooncake._ndual_width(c) === Val(W)
         end
-
-        # `_dual_or_ndual(val, NTangent(...))` must produce an NDual-bearing value for
-        # each scalar/Complex/Memory primal that can appear as a struct field. Memory
-        # lanes are themselves Memory{T}, mirroring the per-direction fdata layout.
-        nt3 = Mooncake.NTangent((1.0, 0.0, 0.0))
-        @test Mooncake._dual_or_ndual(1.0, nt3) isa Mooncake.NDual{Float64,3}
-        complex_nt = Mooncake.NTangent((1.0 + 0im, 0.0 + 1im, 0.0 + 0im))
-        @test Mooncake._dual_or_ndual(1.0 + 2im, complex_nt) isa
-            Complex{<:Mooncake.NDual{Float64,3}}
-        @static if VERSION >= v"1.11-rc4"
-            mfloat = Memory{Float64}(undef, 2)
-            fill!(mfloat, 1.0)
-            mlane = Memory{Float64}(undef, 2)
-            fill!(mlane, 0.5)
-            mnt3 = Mooncake.NTangent((mlane, mlane, mlane))
-            @test Mooncake._dual_or_ndual(mfloat, mnt3) isa
-                Memory{<:Mooncake.NDual{Float64,3}}
-        end
     end
 
     # Width-aware seed constructors (`zero_dual`, `uninit_dual`, `randn_dual`)

@@ -2659,32 +2659,6 @@ end
 # array_legacy.jl) to dispatch on bare NDual containers without rewrapping.
 const _HasNDual = Union{NDual,Complex{<:NDual}}
 
-# `_dual_or_ndual(val, tangent)` — combine a primal field with its tangent into the
-# canonical width-aware dual representation: Dual for non-IEEEFloat, NDual for
-# IEEEFloat-bearing primals when the tangent is an NTangent.
-@inline _dual_or_ndual(val, tangent) = Dual(val, tangent)
-@inline _dual_or_ndual(val::IEEEFloat, t::NTangent) = NDual(val, t.lanes)
-@inline function _dual_or_ndual(
-    val::Complex{T}, t::NTangent{<:NTuple{W}}
-) where {T<:IEEEFloat,W}
-    lanes = t.lanes
-    re = NDual(real(val), ntuple(j -> real(lanes[j]), Val(W)))
-    im = NDual(imag(val), ntuple(j -> imag(lanes[j]), Val(W)))
-    return Complex(re, im)
-end
-@static if VERSION >= v"1.11-"
-    @inline function _dual_or_ndual(
-        val::Memory{T}, t::NTangent{<:NTuple{W}}
-    ) where {T<:IEEEFloat,W}
-        lanes = t.lanes
-        result = Memory{NDual{T,W}}(undef, length(val))
-        @inbounds for i in eachindex(val)
-            result[i] = NDual(val[i], ntuple(j -> lanes[j][i], Val(W)))
-        end
-        return result
-    end
-end
-
 # `_ndual_width` — extract Val(W) from any NDual-bearing argument; used by `_new_`
 # to size NTangent output. Errors loudly when called with no NDual arguments so
 # missing overloads fail fast rather than producing wrong-width tangents.
