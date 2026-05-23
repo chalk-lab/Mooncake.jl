@@ -1837,16 +1837,14 @@ end
         },
     },
 ) = true
-# Source-of-truth Lifted body for `fill!(::Array{UInt8/Int8}, ::Integer)`
-# and the corresponding `Memory{UInt8/Int8}` variant; the bare-Dual entry
-# below thin-wraps to lift its args and invoke this body.
+# `fill!(::Array{UInt8/Int8}, ::Integer)` and `Memory{UInt8/Int8}` variant.
+# Element type is non-differentiable (NoTangent V); fill! mutates the primal
+# in place and the same Lifted slot is returned unchanged.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fill!),N}, a::Mooncake.Lifted{T}, x::Mooncake.Lifted{<:Integer}
 ) where {N,V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    bare_a = Mooncake._unlift(a)
-    bare_x = Mooncake._unlift(x)
-    bare_result = Dual(fill!(primal(bare_a), primal(bare_x)), tangent(bare_a))
-    return _wrap_rule_result(Val(N), bare_result)
+    fill!(primal(a), primal(x))
+    return a
 end
 function frule!!(
     f::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
