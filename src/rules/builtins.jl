@@ -1144,8 +1144,7 @@ end
 ) where {N,P,V_x<:Dual{P,NoTangent},M}
     _name = primal(name)
     _extras = map(primal, extras)
-    bare_result = uninit_dual(getfield(primal(x), _name, _extras...))
-    return _wrap_rule_result(Val(N), bare_result)
+    return zero_lifted(Val(N), getfield(primal(x), _name, _extras...))
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},
@@ -1155,11 +1154,13 @@ end
 ) where {N,P,T<:NTangent,V_x<:Dual{P,T},M}
     _name = primal(name)
     _extras = map(primal, extras)
-    bare_result = _dual_or_ndual(
-        getfield(primal(x), _name, _extras...),
-        _get_tangent_field(tangent(x), _name, _extras...),
+    y = getfield(primal(x), _name, _extras...)
+    if tangent_type(_typeof(y)) === NoTangent
+        return zero_lifted(Val(N), y)
+    end
+    return Mooncake.Lifted{_typeof(y),N}(
+        y, _get_tangent_field(tangent(x), _name, _extras...)
     )
-    return _wrap_rule_result(Val(N), bare_result)
 end
 # SplitDual V (mutable struct with Array field): project canonical V's field.
 # `inbounds` is non-differentiable and the canonical NamedTuple has no
