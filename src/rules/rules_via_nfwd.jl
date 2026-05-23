@@ -351,33 +351,10 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
-# hypot is vararg, so it gets its own bare-Dual and bare-NDual adapters at this
-# signature (the generic unary/binary/ternary adapters above don't cover Vararg).
-# The Lifted-typed body remains the single source of truth.
+# hypot is vararg, so it needs its own Lifted body at this signature (the
+# generic unary/binary/ternary adapters above don't cover Vararg).
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
-@inline function frule!!(
-    f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
-) where {P<:IEEEFloat,M}
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{typeof(hypot),1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(x), tangent(x)),
-            ntuple(i -> Mooncake.Lifted{P,1}(primal(xs[i]), tangent(xs[i])), Val(M))...,
-        ),
-    )
-end
-@inline function frule!!(
-    f::Dual{typeof(hypot)}, x::NDual{T,N}, xs::Vararg{NDual{T,N},M}
-) where {T<:IEEEFloat,N,M}
-    return Mooncake._unlift(
-        frule!!(
-            Mooncake.Lifted{typeof(hypot),N}(primal(f), tangent(f)),
-            Mooncake.Lifted{T,N}(x),
-            ntuple(i -> Mooncake.Lifted{T,N}(xs[i]), Val(M))...,
-        ),
-    )
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(hypot),N},
     x::Mooncake.Lifted{P,N},
@@ -521,31 +498,6 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
     end
 end
 
-function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::NDual{P,N}
-) where {Pext<:IEEEFloat,P<:IEEEFloat,N}
-    return convert(NDual{Pext,N}, x)
-end
-@inline function _convert_dual_primal_tangent(
-    ::Type{Pout}, x::Dual{<:IEEEFloat,<:IEEEFloat}
-) where {Pout<:IEEEFloat}
-    return Dual(convert(Pout, primal(x)), convert(Pout, tangent(x)))
-end
-function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P,<:IEEEFloat}
-) where {Pext<:IEEEFloat,P<:IEEEFloat}
-    return _convert_dual_primal_tangent(Pext, x)
-end
-function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::NDual{P,N}
-) where {Ptrunc<:IEEEFloat,P<:IEEEFloat,N}
-    return convert(NDual{Ptrunc,N}, x)
-end
-function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P,<:IEEEFloat}
-) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
-    return _convert_dual_primal_tangent(Ptrunc, x)
-end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fpext),N}, ::Mooncake.Lifted{Type{Pext}}, x::Mooncake.Lifted{P}
 ) where {N,Pext<:IEEEFloat,P<:IEEEFloat}

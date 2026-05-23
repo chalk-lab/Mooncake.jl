@@ -1390,22 +1390,10 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-# The bare-Dual `frule!!(::Dual{typeof(lsetfield!)}, value::Dual{<:Array, <:Array}, …)`
-# variants were removed alongside the matching `lgetfield` branches (Phase 6 of
-# the wrapper-exception-removal plan). The bare-Array-tangent slot shape they
-# dispatched on is never produced by `dual_type` after Phases 1-3 — IEEEFloat
-# arrays canonicalise to `Array{NDual{T,N}}` and non-IEEEFloat arrays produce
-# `Dual{Array, NTangent{Tuple{Array{...}}}}` (NTangent-wrapped, not bare-Array).
-# The canonical-NDual Array variant retained below.
-@inline _strip_size_tuple(x::Tuple{Vararg{Dual}}) = map(primal, x)
-@inline _strip_size_tuple(x) = x
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Array{<:_HasNDual}, ::Dual{Val{name}}, x
-) where {name}
-    coerced = (name === :size || name === 2) ? _strip_size_tuple(x) : x
-    setfield!(value, name, coerced)
-    return x
-end
+# The bare-Dual `frule!!(::Dual{typeof(lsetfield!)}, …)` variants for Array
+# values were removed alongside the matching `lgetfield` branches (Phase 6
+# of the wrapper-exception-removal plan). The canonical-NDual Array path is
+# handled by the `V<:AbstractArray{<:NDual}` Lifted body at misc.jl:406.
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
     true
 @inline function rrule!!(
