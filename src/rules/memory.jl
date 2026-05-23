@@ -500,25 +500,6 @@ end
         ),
     )
 end
-# Bare-Dual delegator: supports direct invocation from
-# `frule!!(zero_dual(lmemoryrefget), x_dual, ...)` by lifting into
-# `Lifted{T,1}(p, t)` and calling the Lifted body above.
-@inline function frule!!(
-    f::Dual{typeof(lmemoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{<:Val},
-    _boundscheck::Dual{<:Val},
-)
-    lifted_f = Mooncake.Lifted{typeof(lmemoryrefget),1}(primal(f), tangent(f))
-    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
-    lifted_o = Mooncake.Lifted{_typeof(primal(_ordering)),1}(
-        primal(_ordering), tangent(_ordering)
-    )
-    lifted_b = Mooncake.Lifted{_typeof(primal(_boundscheck)),1}(
-        primal(_boundscheck), tangent(_boundscheck)
-    )
-    return Mooncake._unlift(frule!!(lifted_f, lifted_x, lifted_o, lifted_b))
-end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -561,32 +542,6 @@ end
     return _wrap_rule_result(
         Val(N), memoryrefget(Mooncake._unlift(x), primal(_ordering), primal(_boundscheck))
     )
-end
-# Bare-Dual delegator: supports direct invocation.
-@inline Base.@propagate_inbounds function frule!!(
-    f::Dual{typeof(memoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{Symbol},
-    _boundscheck::Dual{Bool},
-)
-    lifted_f = Mooncake.Lifted{typeof(memoryrefget),1}(primal(f), tangent(f))
-    lifted_x = Mooncake.Lifted{_typeof(primal(x)),1}(primal(x), tangent(x))
-    lifted_o = Mooncake.Lifted{Symbol,1}(primal(_ordering), tangent(_ordering))
-    lifted_b = Mooncake.Lifted{Bool,1}(primal(_boundscheck), tangent(_boundscheck))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_x, lifted_o, lifted_b))
-end
-# Canonical width-1 MemoryRef{NDual} bare-Dual delegator.
-@inline Base.@propagate_inbounds function frule!!(
-    f::Dual{typeof(memoryrefget)},
-    x::MemoryRef{<:Mooncake.Nfwd.NDual},
-    _ordering::Dual{Symbol},
-    _boundscheck::Dual{Bool},
-)
-    lifted_f = Mooncake.Lifted{typeof(memoryrefget),1}(primal(f), tangent(f))
-    lifted_x = Mooncake.Lifted{_typeof(x),1}(x, x)
-    lifted_o = Mooncake.Lifted{Symbol,1}(primal(_ordering), tangent(_ordering))
-    lifted_b = Mooncake.Lifted{Bool,1}(primal(_boundscheck), tangent(_boundscheck))
-    return Mooncake._unlift(frule!!(lifted_f, lifted_x, lifted_o, lifted_b))
 end
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(memoryrefget),<:MemoryRef,Symbol,Bool}}
