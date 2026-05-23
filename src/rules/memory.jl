@@ -1816,13 +1816,6 @@ end
     return value
 end
 
-# Bare-Dual `memoryrefnew` bodies (Dual{typeof(memoryrefnew)} first arg) for
-# both NDual and Dual second-arg variants have been migrated to
-# `_memoryrefnew_kernel` further up the file (under `# Core.memoryrefmodify!`)
-# so the Lifted-typed bodies dispatch on the runtime inner V without going
-# through `frule!!(::Dual{typeof(...)}, ...)`. The `copy(::Array{<:_HasNDual})`
-# body is migrated to `_copy_array_kernel` alongside the legacy `Dual` variant.
-
 # lgetfield/getfield for bare NDual containers. Returns the canonical
 # `dual_type(Val(N), typeof(result))` form via `zero_dual`:
 #  - For NDual-bearing fields (e.g. `getfield(memory, :ref)` returning a

@@ -169,19 +169,6 @@ macro inactive_intrinsic(name)
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
             return Mooncake.zero_adjoint(f, args...)
         end
-        # Bare overload — direct callers (test_rule, etc.) pass `Dual` args.
-        # TRANSITIONAL: kill-width-nothing migration. The IR-emit's
-        # unwrap-then-bare path may also pass non-Dual slot inners
-        # (`NDual{T, 1}`, `Complex{<:NDual}`, etc.) for unregistered rules.
-        # The Lifted-aware overload below is registered, so IR-emit at
-        # width=Val(N) bypasses the unwrap and goes through `Lifted`. The
-        # bare overload kept as `Vararg{Dual,N}` is reached only by direct
-        # callers that wrap inputs in `Dual` (test_rule, examples).
-        function frule!!(f::Dual{typeof($name)}, args::Vararg{Dual,N}) where {N}
-            f_primal = primal(f)
-            args_primal = map(primal, args)
-            return zero_dual(f_primal(args_primal...))
-        end
         # Lifted-aware overload — IR-emit at width=Val(N) passes `Lifted` args
         # directly. Result wraps via `zero_lifted` since the intrinsic's output
         # is non-differentiable (typical inactive: comparison returning Bool).
