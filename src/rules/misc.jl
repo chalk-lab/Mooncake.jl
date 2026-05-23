@@ -202,7 +202,9 @@ end
     extras::Vararg{Mooncake.Lifted,M},
 ) where {P<:Union{Tuple,NamedTuple},N,V_x<:Union{Tuple,NamedTuple},f,M}
     field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
-    return _wrap_rule_result(fieldtype(P, f), Val(N), field_val)
+    P_field = fieldtype(P, f)
+    P_out = isconcretetype(P_field) ? P_field : __primal_type(_typeof(field_val))
+    return Mooncake.Lifted{P_out,N}(field_val)
 end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
@@ -211,7 +213,7 @@ end
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Union{Tuple,NamedTuple},f,M}
     field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
-    return _wrap_rule_result(Val(N), field_val)
+    return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
 end
 # SplitDual V: project canonical V's field directly.
 @inline function frule!!(
@@ -220,7 +222,8 @@ end
     ::Mooncake.Lifted{Val{f}},
     ::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Mooncake.SplitDual,f,M}
-    return _wrap_rule_result(Val(N), getfield(Mooncake._unlift(x).canonical, f))
+    field_val = getfield(Mooncake._unlift(x).canonical, f)
+    return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
 end
 # AbstractArray{<:NDual} wrappers (Diagonal, Adjoint, SubArray, Memory, Array,
 # …): structural lift places canonical V at differentiable leaf fields;
@@ -243,7 +246,7 @@ end
         MemoryRef{<:NDual},
         MemoryRef{<:Complex{<:NDual}},
     }
-        return _wrap_rule_result(Val(N), field_val)
+        return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
     end
     return zero_lifted(Val(N), field_val)
 end
@@ -256,7 +259,7 @@ end
 ) where {N,P,V_x<:Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted},f,M}
     field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     return if _has_ndual(field_val)
-        _wrap_rule_result(Val(N), field_val)
+        Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
     else
         zero_lifted(Val(N), field_val)
     end
@@ -424,7 +427,7 @@ end
     bare_name = Mooncake._unlift(name)
     bare_x = Mooncake._unlift(x)
     result = lsetfield!(bare_value, primal(bare_name), _ndual_arg_unwrap(bare_x))
-    return _wrap_rule_result(Val(N), result)
+    return Mooncake.Lifted{__primal_type(_typeof(result)),N}(result)
 end
 # SplitDual value V: rebuild the canonical NamedTuple in place via an
 # `ntuple` rebuild that preserves zero allocation.
@@ -440,7 +443,7 @@ end
     i = Base.fieldindex(NT, f)
     new_nt = NT(ntuple(n -> n == i ? bare_x : nt[n], fieldcount(NT)))
     setfield!(bare_value, :canonical, new_nt)
-    return _wrap_rule_result(Val(N), bare_x)
+    return Mooncake.Lifted{__primal_type(_typeof(bare_x)),N}(bare_x)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual

@@ -289,7 +289,7 @@ end
     end
     atomic_pointerset(primal(bare_p), primal(bare_x), p_order)
     atomic_pointerset(tangent(bare_p), tangent(bare_x), p_order)
-    return _wrap_rule_result(Val(N), bare_p)
+    return Mooncake.Lifted{__primal_type(_typeof(bare_p)),N}(bare_p)
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
@@ -826,7 +826,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(__vec_to_tuple),N}, v::Mooncake.Lifted{<:Vector,N,V_v}
 ) where {N,V_v<:Vector{<:Mooncake.Nfwd.NDual}}
-    return _wrap_rule_result(Val(N), tuple(Mooncake._unlift(v)...))
+    t = tuple(Mooncake._unlift(v)...)
+    return Mooncake.Lifted{__primal_type(_typeof(t)),N}(t)
 end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
@@ -987,7 +988,8 @@ end
         AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
     },
 }
-    return _wrap_rule_result(Val(N), compilerbarrier(primal(setting), Mooncake._unlift(v)))
+    cb = compilerbarrier(primal(setting), Mooncake._unlift(v))
+    return Mooncake.Lifted{__primal_type(_typeof(cb)),N}(cb)
 end
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
@@ -1107,7 +1109,7 @@ end
     bare_x = Mooncake._unlift(x)
     _name = primal(name)
     field_val = getfield(bare_x.canonical, _name)
-    return _wrap_rule_result(Val(N), field_val)
+    return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
 end
 # Tuple/NamedTuple inner V — covers both:
 #   - Tuple/NamedTuple primal lifted to Tuple/NamedTuple of inner duals
@@ -1132,7 +1134,7 @@ end
     if n == 0
         return quote
             field_val = getfield(Mooncake._unlift(x), primal(name))
-            return _wrap_rule_result(Val(N), field_val)
+            return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
         end
     end
     field_names = fieldnames(p_for_field_types)
@@ -1142,16 +1144,21 @@ end
         :(
             primal(name) === $(QuoteNode(field)) && begin
                 field_val = getfield(Mooncake._unlift(x), $(QuoteNode(field)))
-                return _wrap_rule_result($P_field, Val(N), field_val)
+                P_out = if isconcretetype($P_field)
+                    $P_field
+                else
+                    __primal_type(_typeof(field_val))
+                end
+                return Mooncake.Lifted{P_out,N}(field_val)
             end
         )
     end
     return quote
         $(exprs...)
         # Runtime field-name dispatch (non-constant field): fall back to
-        # generic wrap (loses field-type specialisation).
+        # auto-P inference (loses field-type specialisation).
         field_val = getfield(Mooncake._unlift(x), primal(name))
-        return _wrap_rule_result(Val(N), field_val)
+        return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
     end
 end
 # Bare-Dual 3-arg getfield (with `inbounds`) is covered by the Vararg-tail

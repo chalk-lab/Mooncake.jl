@@ -310,7 +310,7 @@ function _for_rule_lifted(
         _unlift(_sig),
         _unlift(_debug_mode),
     )
-    return _wrap_rule_result(__primal_type(_typeof(y)), width, y)
+    return Mooncake.Lifted{__primal_type(_typeof(y)),N}(y)
 end
 
 # Forward-over-reverse stack handling: the reverse-mode IR-generator emits bare

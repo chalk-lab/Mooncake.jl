@@ -1069,13 +1069,14 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     S, d_data = arrayify(bare_S)
     F = bunchkaufman(S; check=false)
     ld, s = logabsdet(F)
-    bare_result = if iszero(s)
-        Dual((ld, s), (zero(P), zero(P)))
+    primal_out = (ld, s)
+    tangent_out = if iszero(s)
+        (zero(P), zero(P))
     else
         Sinv = inv(F)
-        Dual((ld, s), (dot(Sinv, d_data), zero(P)))
+        (dot(Sinv, d_data), zero(P))
     end
-    return _wrap_rule_result(Val(N), bare_result)
+    return Mooncake.Lifted{Tuple{P,P},N}(primal_out, tangent_out)
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}

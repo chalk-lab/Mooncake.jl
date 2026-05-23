@@ -2917,7 +2917,9 @@ end
     bare_result = _materialize_inplace_cuarray_kernel(
         Mooncake._unlift(dest), Mooncake._unlift(bc)
     )
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
+    return Mooncake.Lifted{Mooncake.__primal_type(Mooncake._typeof(bare_result)),N}(
+        bare_result
+    )
 end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
