@@ -158,95 +158,102 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any}}) = true
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any,Any}}) = true
 
-# `lgetfield` implementation kernels (no `Dual{typeof(lgetfield)}` arg). The
-# `Lifted`-typed body below dispatches the runtime inner V (`Dual{P, T}`,
-# `Tuple`, `NamedTuple`) into the matching kernel.
-# T<:NoTangent (post Phase 6 narrowing): parent has no tangent, so the field
-# is trivially uninit. Skip the runtime parent-NoTangent check by dispatching
-# on T.
-@inline function _lgetfield_impl(x::Dual{P,NoTangent}, ::Val{f}) where {P,f}
-    return uninit_dual(getfield(primal(x), f))
+# Split-by-V Lifted-typed lgetfield bodies. Each body matches one inner-V
+# shape and handles both arity-2 (name only) and arity-3 (name + order) via
+# Vararg-tail unification. Each body extracts the field name from
+# `Val{f}` in the where clause so `getfield(x, f, ...)` receives the bare
+# Int/Symbol.
+#
+# Wrapper-exception V Dual{P,NoTangent}: parent has no tangent.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:Dual{P,NoTangent},f,M}
+    return zero_lifted(Val(N), getfield(primal(x), f, map(primal, extras)...))
 end
-@inline function _lgetfield_impl(x::Dual{P,T}, ::Val{f}) where {P,T<:NTangent,f}
-    primal_field = getfield(primal(x), f)
-    # Field-level NoTangent check (e.g., `Vector{Any}.size`): a field's own
-    # tangent_type can still be NoTangent even when the parent's isn't. This
-    # depends on the runtime primal_field's type, so stays as a runtime branch.
-    if tangent_type(_typeof(primal_field)) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
+# Wrapper-exception V Dual{P,T<:NTangent}: standard primal+tangent field access.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,T<:NTangent,V_x<:Dual{P,T},f,M}
+    p_extras = map(primal, extras)
+    y = getfield(primal(x), f, p_extras...)
+    if tangent_type(_typeof(y)) === NoTangent
+        return zero_lifted(Val(N), y)
     end
+    return Mooncake.Lifted{_typeof(y),N}(y, _get_tangent_field(tangent(x), f))
 end
-# Bare Tuple/NamedTuple with NDual elements — tangent info lives inside each element.
-@inline _lgetfield_impl(x::T, ::Val{f}) where {T<:Union{Tuple,NamedTuple},f} = getfield(
-    x, f
-)
-# `SplitDual{V}` mutable-struct canonical lift: project the canonical V's
-# field directly. The field's value is the canonical V of the primal
-# field type (e.g., `Vector{NDual{T,1}}` for an Array field), so its
-# tangent info lives inside the NDual elements.
-@inline _lgetfield_impl(x::Mooncake.SplitDual, ::Val{f}) where {f} = getfield(
-    x.canonical, f
-)
-# Bare `AbstractArray{<:NDual}` wrappers (Diagonal, Adjoint, SubArray, …) — the
-# structural lift in `nfwd/NfwdMooncake.jl` places `NDual`/`Array{NDual}` at
-# differentiable leaf fields (which are returned as-is, already canonical V).
-# Non-differentiable fields (e.g. `SubArray`'s `:indices`, `:offset1`,
-# `:stride1`) are bare values; lift them via `uninit_dual` so the slot V matches
-# `dual_type(Val(1), fieldtype)` — mirrors the `Dual{P, NoTangent}` field path
-# in the `Dual{P, T}` overload above.
-@inline function _lgetfield_impl(
-    x::AbstractArray{<:Union{NDual,Complex{<:NDual}}}, ::Val{f}
-) where {f}
-    field_val = getfield(x, f)
-    return if field_val isa Union{
+# Tuple / NamedTuple bare element-wise V: field is itself canonical inner V.
+# Specialised for Tuple/NamedTuple primal P to propagate fieldtype(P, field).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f},N},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {P<:Union{Tuple,NamedTuple},N,V_x<:Union{Tuple,NamedTuple},f,M}
+    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    return _wrap_rule_result(fieldtype(P, f), Val(N), field_val)
+end
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:Union{Tuple,NamedTuple},f,M}
+    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    return _wrap_rule_result(Val(N), field_val)
+end
+# SplitDual V: project canonical V's field directly.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    ::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:Mooncake.SplitDual,f,M}
+    return _wrap_rule_result(Val(N), getfield(Mooncake._unlift(x).canonical, f))
+end
+# AbstractArray{<:NDual} wrappers (Diagonal, Adjoint, SubArray, …): structural
+# lift places canonical V at differentiable leaf fields; non-differentiable
+# fields are bare values.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:AbstractArray{<:Union{NDual,Complex{<:NDual}}},f,M}
+    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    if field_val isa Union{
         NDual,Complex{<:NDual},AbstractArray{<:NDual},AbstractArray{<:Complex{<:NDual}}
     }
-        field_val
+        return _wrap_rule_result(Val(N), field_val)
+    end
+    return zero_lifted(Val(N), field_val)
+end
+# Broadcasted / Extruded V.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(lgetfield),N},
+    x::Mooncake.Lifted{P,N,V_x},
+    ::Mooncake.Lifted{Val{f}},
+    extras::Vararg{Mooncake.Lifted,M},
+) where {N,P,V_x<:Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted},f,M}
+    field_val = getfield(Mooncake._unlift(x), f, map(primal, extras)...)
+    return if _has_ndual(field_val)
+        _wrap_rule_result(Val(N), field_val)
     else
-        uninit_dual(field_val)
+        zero_lifted(Val(N), field_val)
     end
 end
-@inline function _lgetfield_impl(
-    x::Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted}, ::Val{f}
-) where {f}
-    field_val = getfield(x, f)
-    return _has_ndual(field_val) ? field_val : uninit_dual(field_val)
-end
-
-# Generic lgetfield Lifted body — Vararg-tail unifies arity 2 (name only)
-# and arity 3 (name + order). `_lgetfield_impl` has matching arity 2 and 3
-# kernels per inner V shape.
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted,
-    name::Mooncake.Lifted{<:Val},
-    extras::Vararg{Mooncake.Lifted,M},
-) where {N,M}
-    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), map(primal, extras)...)
-    return _wrap_rule_result(Val(N), bare_result)
-end
-# Field-type-specialised path for Tuple/NamedTuple primals: same Vararg-tail
-# unification, but propagate `fieldtype(P, field)` through `_wrap_rule_result`
-# so the Lifted slot's P narrows to the field's primal type.
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{P,N},
-    name::Mooncake.Lifted{Val{field},N},
-    extras::Vararg{Mooncake.Lifted,M},
-) where {P<:Union{Tuple,NamedTuple},N,field,M}
-    bare_result = _lgetfield_impl(Mooncake._unlift(x), primal(name), map(primal, extras)...)
-    return _wrap_rule_result(fieldtype(P, field), Val(N), bare_result)
-end
 # Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
-# while the function/index arrive as bare `Dual` (e.g. via the IR-emit constant
-# path that uses `zero_dual` rather than `zero_lifted`). Unlift the slot to
-# its bare inner V and delegate to the implementation kernel.
+# while the function/index arrive as bare `Dual` (e.g. via the IR-emit
+# constant path that uses `zero_dual` rather than `zero_lifted`).
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Mooncake.Lifted{P}, ::Dual{Val{f}}
 ) where {P<:Union{Tuple,NamedTuple},f}
-    return _lgetfield_impl(Mooncake._unlift(x), Val(f))
+    return getfield(Mooncake._unlift(x), f)
 end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
@@ -350,43 +357,18 @@ end
 # code duplication, but it wound up not being any cleaner than this copy + pasted version.
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
-# Implementation kernels for `lgetfield(x, Val(f), Val(order))`.
-# T<:NoTangent: parent has no tangent — trivial uninit_dual on the field.
-@inline function _lgetfield_impl(
-    x::Dual{P,NoTangent}, ::Val{f}, ::Val{order}
-) where {P,f,order}
-    return uninit_dual(getfield(primal(x), f, order))
-end
-@inline function _lgetfield_impl(
-    x::Dual{P,T}, ::Val{f}, ::Val{order}
-) where {P,T<:NTangent,f,order}
-    primal_field = getfield(primal(x), f, order)
-    # Field-level NoTangent check (e.g., `Vector{Any}.size`): a field's own
-    # tangent_type can still be NoTangent even when the parent's isn't. This
-    # depends on the runtime primal_field's type, so stays as a runtime branch.
-    if tangent_type(_typeof(primal_field)) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        return _dual_or_ndual(primal_field, _get_tangent_field(tangent(x), f))
-    end
-end
-@inline _lgetfield_impl(x::Mooncake.SplitDual, ::Val{f}, ::Val{order}) where {f,order} = getfield(
-    x.canonical, f
-)
-@inline _lgetfield_impl(x::T, ::Val{f}, ::Val{order}) where {T<:Union{Tuple,NamedTuple},f,order} = getfield(
-    x, f, order
-)
 
-# arity-3 lgetfield (with `Val(order)`) Lifted body is unified into the
-# Vararg-tail body above.
-#
-# Bare-Dual 4-arg lgetfield: mirrors the bare-Dual 3-arg form above for the
-# IR-emit mixed-dispatch path (bare-Dual function + Lifted struct + bare-Dual
-# Val constants).
+# Bare-Dual 4-arg lgetfield: parent has no tangent → uninit; else extract
+# field tangent. (arity-3 with `Val(order)`. Lifted-typed paths are handled
+# by the split-by-V bodies above which use Vararg-tail unification.)
 @inline function frule!!(
     ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}, ::Dual{Val{order}}
 ) where {P,T<:StandardTangentType,f,order}
-    return _lgetfield_impl(x, Val(f), Val(order))
+    primal_field = getfield(primal(x), f, order)
+    if T === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
+        return uninit_dual(primal_field)
+    end
+    return Dual(primal_field, _get_tangent_field(tangent(x), f))
 end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
