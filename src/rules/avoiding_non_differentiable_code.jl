@@ -13,7 +13,6 @@
     dys = ntuple(k -> Mooncake.tangent(x, k) + py, Val(N))
     return Mooncake.Lifted{P_x,N}(primal(x) + py, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.:(+)),<:Ptr,<:Integer}}) = true
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end

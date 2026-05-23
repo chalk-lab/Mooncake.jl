@@ -222,7 +222,6 @@ end
         primal_result, Mooncake.NTangent(tan_results)
     )
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:MistyClosure,Vararg}}) = true
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =
         "Attempted to compute the adjoint associated to a `MistyClosure`. " *

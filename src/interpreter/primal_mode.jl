@@ -237,27 +237,6 @@ end
 @inline _is_lifted_width(::Val{0}) = false
 @inline _is_lifted_width(::Val{N}) where {N} = true
 
-"""
-    _is_lifted_aware(sig::Type{<:Tuple})
-
-Trait function — returns `true` for primitive call signatures whose
-`frule!!` accepts `Lifted{P, N, V}` arguments directly, `false` (default)
-for primitives that still expect bare slot values and rely on the
-IR-emit's unwrap/wrap scaffolding.
-
-The IR-emit consults this at each primitive rule-call site: when `true`,
-it passes `Lifted` args straight through and trusts the rule to return a
-`Lifted`; when `false`, it inserts the unwrap/wrap scaffolding (unlift
-each arg, call the bare rule, wrap the bare return back into
-`Lifted{primal_retype, N}`).
-
-Lifted-aware rules register their sigs by adding a specialised method
-that returns `true`. The default catch-all keeps every non-registered
-rule on the bare path, so a primitive whose `Lifted`-typed body is not
-yet written stays functional via unwrap-then-call.
-"""
-@inline _is_lifted_aware(::Type) = false
-
 # Wrap a bare frule result back into `Lifted{P_out, N, V}`. The OC's slot
 # type is `lifted_type(Val(N), P_out)` which fixes V to `dual_type(Val(N),
 # P_out)`. The bare rule may return values whose actual V differs from the

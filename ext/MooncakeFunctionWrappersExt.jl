@@ -277,7 +277,6 @@ end
     t, _ = _function_wrapper_tangent(R, p, A, tangent(obj))
     return Mooncake.Lifted{FunctionWrapper{R,A},N}(FunctionWrapper{R,A}(p), t)
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:FunctionWrapper},Any}}) = true
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
 function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
@@ -303,6 +302,5 @@ end
     dys = ntuple(k -> tangent(lane_results[k]), Val(N))
     return Mooncake.Lifted{R,N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{<:FunctionWrapper,Vararg}}) = true
 
 end

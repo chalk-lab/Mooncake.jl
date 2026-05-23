@@ -46,7 +46,6 @@ end
     end
     return Mooncake.Lifted{Matrix{P},N}(Y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(exp),<:Matrix{<:IEEEFloat}}}) = true
 
 function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloat}
     Y, pb = ChainRules.rrule(exp, X.x)

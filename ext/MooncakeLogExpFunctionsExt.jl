@@ -159,13 +159,6 @@ end
     dy = sum(_dx .* (exp.(_x .- y)); kw...)
     return Mooncake.Lifted{typeof(y),N}(y, dy)
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(Core.kwcall),NamedTuple,typeof(logsumexp),<:AbstractArray{<:IEEEFloat}
-        },
-    },
-) = true
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(logsumexp),N}, x::Mooncake.Lifted{<:AbstractArray{P}}
 ) where {N,P<:IEEEFloat}
@@ -178,9 +171,6 @@ end
     end
     return Mooncake.Lifted{P,N}(y, dy)
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(logsumexp),<:AbstractArray{<:IEEEFloat}}}
-) = true
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kwargs::CoDual{<:NamedTuple{(:dims,),<:Tuple{Colon}}},
@@ -240,13 +230,6 @@ end
     Mooncake._arr_writeback!(inner_out, y, _dy)
     return out
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(logsumexp!),<:AbstractArray{<:IEEEFloat},<:AbstractArray{<:IEEEFloat}
-        },
-    },
-) = true
 function rrule!!(
     ::CoDual{typeof(logsumexp!)},
     out::CoDual{<:AbstractArray{P}},

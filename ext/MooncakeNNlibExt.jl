@@ -334,16 +334,6 @@ end
     bare_x .+= bare_b
     return x
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(bias_act!),
-            typeof(identity),
-            <:SupportedArray{<:IEEEFloat},
-            <:SupportedArray{<:IEEEFloat},
-        },
-    },
-) = true
 function rrule!!(
     ::CoDual{typeof(bias_act!)},
     ::CoDual{typeof(identity)},

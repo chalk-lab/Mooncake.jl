@@ -56,7 +56,6 @@ end
 # containers. Root cause undiagnosed; making it a forward-mode primitive that runs
 # `mightalias` on primals sidesteps the broken codegen path.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(Base.unalias),Any,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.unalias),Any,Any}}) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unalias),N},
     dest::Mooncake.Lifted{<:Any,N},
@@ -125,7 +124,6 @@ stop_gradient(x) = x
 ) where {N}
     return zero_lifted(Val(N), primal(x))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(stop_gradient),Any}}) = true
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     # Copy fdata so that in-place gradient accumulation into the output does not
@@ -155,8 +153,6 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any}}) = true
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Any,Any,Any}}) = true
 
 # `lgetfield(x, Val(f), Val(order))` lifts the order arg into `Val`; the
 # downstream `getfield(x, f, order)` call expects the raw value
@@ -388,7 +384,6 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),Any,Any,Any}}) = true
 @inline _ndual_arg_unwrap(x::Dual) = primal(x)
 @inline _ndual_arg_unwrap(x::Tuple) = map(_ndual_arg_unwrap, x)
 @inline _ndual_arg_unwrap(x) = x
@@ -514,7 +509,6 @@ end
             copy(primal(inner)), _copy_dict_tangent(tangent(inner))
         )
     end
-    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Dict}}) = true
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)
         t = dx.fields

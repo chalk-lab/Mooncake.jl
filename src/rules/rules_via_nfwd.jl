@@ -31,121 +31,9 @@
 #     clamp(x, lo, hi) (scalar output, DOF=3)
 #
 
-# ── Centralised bare-Dual / bare-NDual → Lifted dispatch adapters ────────────
-#
-# For primitive rules that have a Lifted-typed `frule!!` body and are registered
-# via `_is_lifted_aware`, these unary adapters route bare-Dual and bare-NDual
-# calls through the Lifted path. Per-op `frule!!(::Dual{op}, ::Dual{P})` and
-# `frule!!(::Dual{op}, ::NDual{T,N})` duplicates that delegate to the same
-# Lifted body are then redundant and can be removed. Specific bare-shape rules
-# dispatch first when present; these adapters only fire when no specific rule
-# exists.
-
-@inline function frule!!(f::Dual{F}, x::Dual{P}) where {F,P<:IEEEFloat}
-    Mooncake._is_lifted_aware(Tuple{F,P}) || throw(MethodError(frule!!, (f, x)))
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(x), tangent(x)),
-        ),
-    )
-end
-
-@inline function frule!!(f::Dual{F}, a::Dual{P}, b::Dual{P}) where {F,P<:IEEEFloat}
-    Mooncake._is_lifted_aware(Tuple{F,P,P}) || throw(MethodError(frule!!, (f, a, b)))
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
-            Mooncake.Lifted{P,1}(primal(b), tangent(b)),
-        ),
-    )
-end
-
-# Binary adapter covering `Union{IEEEFloat, Complex{<:IEEEFloat}}` with
-# independent type parameters per arg. Used by SpecialFunctions rules
-# (e.g. `gamma`, `loggamma`, `besselj`, ...) whose registered signatures
-# mix IEEEFloat and Complex variants. The `P=Q<:IEEEFloat` case is
-# strictly covered by the more-specific adapter above; this method
-# fires only when at least one arg is Complex, or when P ≠ Q.
-@inline function frule!!(
-    f::Dual{F}, a::Dual{P}, b::Dual{Q}
-) where {
-    F,P<:Union{IEEEFloat,Complex{<:IEEEFloat}},Q<:Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-    Mooncake._is_lifted_aware(Tuple{F,P,Q}) || throw(MethodError(frule!!, (f, a, b)))
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
-            Mooncake.Lifted{Q,1}(primal(b), tangent(b)),
-        ),
-    )
-end
-
-@inline function frule!!(
-    f::Dual{F}, a::Dual{P}, b::Dual{P}, c::Dual{P}
-) where {F,P<:IEEEFloat}
-    Mooncake._is_lifted_aware(Tuple{F,P,P,P}) || throw(MethodError(frule!!, (f, a, b, c)))
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
-            Mooncake.Lifted{P,1}(primal(b), tangent(b)),
-            Mooncake.Lifted{P,1}(primal(c), tangent(c)),
-        ),
-    )
-end
-
-# Ternary adapter for `(IEEEFloat, IEEEFloat, Integer)` signatures.
-# Disjoint from the all-IEEEFloat ternary above (the Integer constraint
-# rules out IEEEFloat). Used by `SpecialFunctions.gamma_inc` and any
-# similar mixed-Integer primitive.
-@inline function frule!!(
-    f::Dual{F}, a::Dual{P}, b::Dual{Q}, c::Dual{R}
-) where {F,P<:IEEEFloat,Q<:IEEEFloat,R<:Integer}
-    Mooncake._is_lifted_aware(Tuple{F,P,Q,R}) || throw(MethodError(frule!!, (f, a, b, c)))
-    return Mooncake._ndual_output_to_width1(
-        frule!!(
-            Mooncake.Lifted{F,1}(primal(f), tangent(f)),
-            Mooncake.Lifted{P,1}(primal(a), tangent(a)),
-            Mooncake.Lifted{Q,1}(primal(b), tangent(b)),
-            Mooncake.Lifted{R,1}(primal(c), tangent(c)),
-        ),
-    )
-end
-
-@inline function frule!!(f::Dual{F}, x::NDual{T,N}) where {F,T<:IEEEFloat,N}
-    Mooncake._is_lifted_aware(Tuple{F,T}) || throw(MethodError(frule!!, (f, x)))
-    return Mooncake._unlift(
-        frule!!(Mooncake.Lifted{F,N}(primal(f), tangent(f)), Mooncake.Lifted{T,N}(x))
-    )
-end
-
-@inline function frule!!(f::Dual{F}, a::NDual{T,N}, b::NDual{T,N}) where {F,T<:IEEEFloat,N}
-    Mooncake._is_lifted_aware(Tuple{F,T,T}) || throw(MethodError(frule!!, (f, a, b)))
-    return Mooncake._unlift(
-        frule!!(
-            Mooncake.Lifted{F,N}(primal(f), tangent(f)),
-            Mooncake.Lifted{T,N}(a),
-            Mooncake.Lifted{T,N}(b),
-        ),
-    )
-end
-
-@inline function frule!!(
-    f::Dual{F}, a::NDual{T,N}, b::NDual{T,N}, c::NDual{T,N}
-) where {F,T<:IEEEFloat,N}
-    Mooncake._is_lifted_aware(Tuple{F,T,T,T}) || throw(MethodError(frule!!, (f, a, b, c)))
-    return Mooncake._unlift(
-        frule!!(
-            Mooncake.Lifted{F,N}(primal(f), tangent(f)),
-            Mooncake.Lifted{T,N}(a),
-            Mooncake.Lifted{T,N}(b),
-            Mooncake.Lifted{T,N}(c),
-        ),
-    )
-end
+# Bare-Dual / bare-NDual frule!! entry points removed: IR-emit always
+# wraps args via `Lifted{P, N, V}` (see primal_mode.jl `_wrap_oc_args`),
+# so primitive rules only receive Lifted args.
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
@@ -227,7 +115,6 @@ for f in (
         end
         # Arity-specific registration so this unary loop doesn't overwrite the
         # binary loop's registration for `atan` (which appears in both lists).
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any}}) = true
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
         end
@@ -249,7 +136,6 @@ end
 @inline function frule!!(::Mooncake.Lifted{typeof(tanpi),N}, x::Mooncake.Lifted) where {N}
     return Mooncake.Lifted{_typeof(primal(x)),N}(tanpi(_unlift(x)))
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tanpi),Any}}) = true
 function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -265,7 +151,6 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
         ) where {N}
             return Mooncake.Lifted{_typeof(primal(a)),N}($f(_unlift(a), _unlift(b)))
         end
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any,Any}}) = true
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
         ) where {P<:IEEEFloat}
@@ -289,8 +174,6 @@ end
 ) where {N,P<:IEEEFloat,I<:Integer}
     return Mooncake.Lifted{P,N}(Base.FastMath.pow_fast(_unlift(x), _unlift(n)))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.FastMath.pow_fast),Any,Any}}) =
-    true
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.pow_fast)}, x::CoDual{P}, n::CoDual{I}
 ) where {P<:IEEEFloat,I<:Integer}
@@ -317,7 +200,6 @@ for f in (clamp,)
                 $f(_unlift(x1), _unlift(x2), _unlift(x3))
             )
         end
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any,Any,Any}}) = true
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
         ) where {P<:IEEEFloat}
@@ -340,7 +222,6 @@ for (f, P_out) in
         ) where {N,P<:IEEEFloat}
             return Mooncake.Lifted{$P_out,N}($f(_unlift(x)))
         end
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($f),Any}}) = true
         function rrule!!(f::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
         end
@@ -363,7 +244,6 @@ end
     bare = ntuple(i -> i == 1 ? _unlift(x) : _unlift(xs[i - 1]), Val(M + 1))
     return Mooncake.Lifted{P,N}(hypot(bare...))
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(hypot),Vararg}}) = true
 function rrule!!(
     f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
 ) where {P<:IEEEFloat,M}
@@ -412,7 +292,6 @@ for (op_sym, op_fn) in (
         ) where {N}
             return Mooncake.Lifted{_typeof(primal(x)),N}($op_fn(_unlift(x)))
         end
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($op_sym),<:IEEEFloat}}) = true
     end
 end
 
@@ -455,9 +334,6 @@ for (op_sym, op_fn) in (
         ) where {N}
             return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
         end
-        Mooncake._is_lifted_aware(
-            ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat}}
-        ) = true
     end
 end
 
@@ -492,9 +368,6 @@ for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
                 $op_fn(_unlift(x), _unlift(y), _unlift(z))
             )
         end
-        Mooncake._is_lifted_aware(
-            ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat,<:IEEEFloat}}
-        ) = true
     end
 end
 
@@ -510,12 +383,6 @@ end
 ) where {N,Ptrunc<:IEEEFloat,P<:IEEEFloat}
     return Mooncake.Lifted{Ptrunc,N}(convert(NDual{Ptrunc,N}, _unlift(x)))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(fpext),Type{<:IEEEFloat},<:IEEEFloat}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(fptrunc),Type{<:IEEEFloat},<:IEEEFloat}}
-) = true
 
 @static if VERSION >= v"1.12.0-rc2"
     using .IntrinsicsWrappers: max_float, max_float_fast, min_float, min_float_fast
@@ -531,9 +398,6 @@ end
             ) where {N}
                 return Mooncake.Lifted{_typeof(primal(a)),N}($op_fn(_unlift(a), _unlift(b)))
             end
-            Mooncake._is_lifted_aware(
-                ::Type{<:Tuple{typeof($op_sym),<:IEEEFloat,<:IEEEFloat}}
-            ) = true
         end
     end
 end

@@ -174,29 +174,9 @@ julia> frule!!(zero_dual(foo), zero_dual(3), zero_dual(2))
 Dual{Int64, NoTangent}(5, NoTangent())
 ```
 """
-# `Vararg{Any,N}` kept (not narrowed to `Vararg{Dual,N}`) because some
-# legacy callers still hand bare primals to this entry point. `primal(x)`
-# is a no-op for non-Dual values so the body remains type-stable for both
-# shapes. The Lifted-aware shape goes through the
-# `zero_derivative(::Lifted{F,N}, ::Vararg{Lifted,M})` overload below.
-@inline function zero_derivative(f::Dual, x::Vararg{Any,N}) where {N}
-    return zero_dual(primal(f)(map(primal, x)...))
-end
-# Lifted-aware overload — IR-emit at width=Val(N) passes `Lifted` args directly
-# when the rule sig is registered in `_is_lifted_aware`.
 @inline function zero_derivative(f::Lifted{F,N}, x::Vararg{Lifted,M}) where {F,N,M}
     return zero_lifted(Val(N), primal(f)(map(primal, x)...))
 end
-
-@inline function zero_derivative(
-    f::Dual, x1::T, x_rest::Vararg{T}
-) where {T<:Union{Array{<:Dual},Array{<:Complex{<:Dual}}}}
-    return zero_dual(primal(f)(map(x -> x isa Dual ? primal(x) : x, (x1, x_rest...))...))
-end
-
-# Bare NDual array overload lives in `src/nfwd/NfwdMooncake.jl` (which has
-# `Nfwd.NDual` in scope). The width-N FCache path passes `Array{NDual}` here
-# instead of `Array{Dual}`.
 
 """
     zero_derivative(ctx, sig, [mode=Mode])
@@ -404,18 +384,6 @@ function _zero_derivative_impl(ctx, sig, mode)
         end
     end
 
-    # Auto-register `_is_lifted_aware` for the same sig: `zero_derivative` has
-    # both bare-`Dual` and Lifted-aware overloads in `tools_for_rules.jl`, so
-    # the dispatch already works under the generic Lifted-aware adapter. Emit
-    # the trait so the IR-emit skips the unwrap/wrap scaffolding for these
-    # rules. The trait is mode-agnostic (frule path); harmless for ReverseMode-
-    # only rules since `_is_lifted_aware` only gates the forward IR-emit path.
-    is_lifted_aware_ex = quote
-        @inline function Mooncake._is_lifted_aware(::Type{<:$(esc(sig))})
-            return true
-        end
-    end
-
     # Figuring out which mode argument was actually provided is going to be very hard in
     # general, and rather error prone, because the mode might appear as a `Type`, one of
     # several `Symbol`s, or possibly something else not considered. As a result, we always
@@ -468,9 +436,7 @@ function _zero_derivative_impl(ctx, sig, mode)
         arg_names, lifted_arg_types, lifted_where, body_deriv
     )
 
-    return Expr(
-        :block, is_primitive_ex, is_lifted_aware_ex, frule_ex, lifted_frule_ex, rrule_ex
-    )
+    return Expr(:block, is_primitive_ex, frule_ex, lifted_frule_ex, rrule_ex)
 end
 
 """
@@ -1094,36 +1060,14 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         end
     end
 
-    is_lifted_aware_expr = if include_frule
-        quote
-            @inline function Mooncake._is_lifted_aware(::Type{<:$(esc(sig))})
-                return true
-            end
-        end
-    else
-        nothing
-    end
-
-    kw_is_lifted_aware_expr = if has_kwargs && include_frule
-        quote
-            @inline function Mooncake._is_lifted_aware(::Type{<:$kw_sig})
-                return true
-            end
-        end
-    else
-        nothing
-    end
-
     exprs = filter(
         !isnothing,
         [
             is_primitive_expr,
-            is_lifted_aware_expr,
             frule_expr,
             lifted_frule_expr,
             rrule_expr,
             kw_is_primitive,
-            kw_is_lifted_aware_expr,
             kwargs_frule_expr,
             kwargs_lifted_frule_expr,
             kwargs_rrule_expr,

@@ -121,7 +121,6 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.rehash!),<:IdDict,Any}}) = true
 # `tangent(d::Dual{P, NTangent{Tuple{T}}})` returns the NTangent wrapper
 # rather than the bare T. For mutation-semantic rules (rehash!, setindex!,
 # getindex on IdDict), unwrap the singleton lane so the underlying mutable
@@ -150,8 +149,6 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setindex!),<:IdDict,Any,Any}}) =
-    true
 # Implementation kernels for `setindex!(::IdDict, val, key)`. The Lifted body
 # below dispatches on the runtime val V (`Dual` or `NDual` for IEEEFloat).
 @inline function _setindex_iddict!(d::Dual{IdDict{K,V}}, val::Dual, key) where {K,V}
@@ -233,7 +230,6 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
 end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(get),<:IdDict,Any,Any}}) = true
 # `get(::IdDict, key, default)` — per-lane lookup. At width N≥2 each lane
 # has its own IdDict tangent; at N=1 the same per-lane body iterates once.
 @inline function frule!!(
@@ -276,7 +272,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getindex),<:IdDict,Any}}) = true
 # `getindex(::IdDict, key)` — per-lane lookup. Each lane stores its own
 # IdDict tangent, so per-lane `getindex(d_lanes[n], k)` recovers the
 # intended lane tangent at any width.
@@ -307,7 +302,9 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name}}, args::Vararg{Lifted,M}
+    ) where {N,M}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
@@ -316,7 +313,6 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:IdDict}}}) = true
 # `IdDict{K,V}()`: the Lifted body below computes the result independently
 # — no kernel or bare-Dual body needed.
 @inline function frule!!(::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}

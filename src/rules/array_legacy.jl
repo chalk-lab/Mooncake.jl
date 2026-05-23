@@ -379,9 +379,6 @@ end
     dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(bare_a))
     return Mooncake.Lifted{Ptr{T},N}(y, dy)
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_ptr},Vararg}}
-) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_ptr}},
@@ -648,7 +645,6 @@ end
 ) where {N,V_a<:AbstractArray{<:NDual}}
     return _wrap_rule_result(Val(N), copy(Mooncake._unlift(a)))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(copy),<:Array}}) = true
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -670,8 +666,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 # Element type is non-differentiable (NoTangent V); `fill!` mutates the
-# primal in place and the same Lifted slot is returned unchanged. The
-# `_is_lifted_aware` trait below routes the AD transform here directly.
+# primal in place and the same Lifted slot is returned unchanged.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(fill!),N},
     a::Mooncake.Lifted{<:Array{<:Union{UInt8,Int8}}},
@@ -696,40 +691,6 @@ end
 # Lifted-aware trait registrations for the rules above. Each rule's body
 # accepts the unwrapped slot V and the generic `frule!!(::Lifted{F,N},
 # args::Vararg{Lifted,M})` adapter handles the wrap/unwrap.
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._deletebeg!),<:Vector,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._deleteend!),<:Vector,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._deleteat!),<:Vector,<:Integer,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._growbeg!),<:Vector,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._growend!),<:Vector,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base._growat!),<:Vector,<:Integer,<:Integer}}
-) = true
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sizehint!),<:Vector,<:Integer}}) =
-    true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(unsafe_copyto!),<:Array,Any,<:Array,Any,Any}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Core.arrayref),Bool,<:Array,Vararg{<:Integer}}}
-) = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Core.arrayset),Bool,<:Array,Any,Vararg{<:Integer}}}
-) = true
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.arraysize),<:Array,Any}}) =
-    true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(fill!),<:Array{<:Union{UInt8,Int8}},<:Integer}}
-) = true
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
     _x = Ref(5.0)

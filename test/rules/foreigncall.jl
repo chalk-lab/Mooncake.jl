@@ -41,7 +41,10 @@
     ]
         @test_throws(
             ErrorException,
-            Mooncake.frule!!(zero_dual(Mooncake._foreigncall_), zero_dual(Val(name))),
+            Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), Mooncake._foreigncall_),
+                Mooncake.zero_lifted(Val(1), Val(name)),
+            ),
         )
         @test_throws(
             ErrorException,

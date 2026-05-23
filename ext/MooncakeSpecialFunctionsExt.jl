@@ -180,9 +180,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(gamma_inc),<:IEEEFloat,<:IEEEFloat,<:Integer}}
-) = true
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -204,15 +201,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(gamma),
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-        },
-    },
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(loggamma),
@@ -233,15 +221,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(loggamma),
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-        },
-    },
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(expint),
@@ -262,15 +241,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(expint),
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-        },
-    },
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(expintx),
@@ -291,15 +261,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(expintx),
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-            Union{IEEEFloat,Complex{<:IEEEFloat}},
-        },
-    },
-) = true
 
 # 2-arg standard Bessel and Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -319,9 +280,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besselj),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -340,9 +298,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(bessely),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -361,9 +316,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besseli),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -382,9 +334,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besselk),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -403,9 +352,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(hankelh1),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -424,9 +370,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(hankelh2),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 #
 # Non Holomorphic functions
@@ -452,9 +395,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besselix),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -473,9 +413,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besselkx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -496,9 +433,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besseljx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -519,9 +453,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(besselyx),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 # Scaled Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -541,9 +472,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(hankelh1x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -562,9 +490,6 @@ end
     end
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(hankelh2x),<:IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}}}
-) = true
 
 # ── NDual overloads for SpecialFunctions ──────────────────────────────────────
 #

@@ -243,16 +243,10 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-# `_is_lifted_aware = true` routes the AD transform through the Lifted body
-# below for any MemoryRef element type. IEEEFloat / Complex element types
-# dispatch on the canonical NDual V (line 263); other element types
-# (e.g. `MemoryRef{Vector{Float64}}`) dispatch on the wrapper-exception
-# `Dual{<:MemoryRef, <:NTangent}` V (line 273). Both preserve the user's
-# MemoryRef object identity without canonicalisation (no `Lifted{T,1}(p, t)`
-# rebuild path is taken when the trait is true).
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(unsafe_copyto!),<:MemoryRef,<:MemoryRef,<:Int}}
-) = true
+# IEEEFloat / Complex element types dispatch on the canonical NDual V
+# (line below); other element types (e.g. `MemoryRef{Vector{Float64}}`)
+# dispatch on the wrapper-exception `Dual{<:MemoryRef, <:NTangent}` V.
+# Both preserve the user's MemoryRef object identity (no rebuild path).
 # Canonical NDual / Complex{NDual}-element MemoryRef V: NDual elements pack
 # primal+tangent, so a single `unsafe_copyto!` operates on both halves.
 @inline function frule!!(
@@ -433,9 +427,6 @@ using Core: memoryref_isassigned, memoryrefget, memoryrefset!, memoryrefnew, mem
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(lmemoryrefget),<:MemoryRef,<:Val,<:Val}}
-) = true
 # Wrapper-exception V (`Dual{MemoryRef, NTangent}`): per-lane memoryrefget.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lmemoryrefget),N},
@@ -506,9 +497,6 @@ end
         Val(N), memoryrefget(Mooncake._unlift(x), primal(_ordering), primal(_boundscheck))
     )
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(memoryrefget),<:MemoryRef,Symbol,Bool}}
-) = true
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -526,8 +514,6 @@ end
 end
 
 # Core.memoryrefmodify!
-
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(memoryrefnew),Vararg}}) = true
 
 # `memoryrefnew(::Memory)` — split by inner V shape.
 # Wrapper-exception V (`Dual{Memory, NTangent}` at width-1 singleton or
@@ -602,15 +588,11 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
-# `_is_lifted_aware = true` makes the AD transform pass Lifted slots
-# through to the per-V Lifted bodies below. `primal(x::Lifted{<:MemoryRef})`
-# returns the user's MemoryRef directly (no fresh allocation), so in-place
-# mutation aliasing is preserved. Per-V-of-value Lifted bodies cover each
-# value-shape (Dual / NDual / Complex{NDual} / array-of-NDual / Tuple /
-# NamedTuple) that the AD transform can deliver.
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(lmemoryrefset!),<:MemoryRef,Any,<:Val,<:Val}}
-) = true
+# `primal(x::Lifted{<:MemoryRef})` returns the user's MemoryRef directly
+# (no fresh allocation), so in-place mutation aliasing is preserved.
+# Per-V-of-value Lifted bodies cover each value-shape (Dual / NDual /
+# Complex{NDual} / array-of-NDual / Tuple / NamedTuple) that the AD
+# transform can deliver.
 # Per-lane tangent extractor for canonical width-1/N forms.
 @inline _lane_tangent(v::NDual, n::Integer) = v.partials[n]
 @inline _lane_tangent(v::Complex{<:NDual}, n::Integer) = complex(
@@ -881,9 +863,6 @@ end
         Mooncake.zero_lifted(Val(N), Val(primal(boundscheck))),
     )
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(memoryrefset!),<:MemoryRef,Any,Symbol,Bool}}
-) = true
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -942,9 +921,6 @@ end
         dx = Core.memorynew(Memory{tangent_type(P)}, pn)
         return Lifted{Memory{P},N}(x, dx)
     end
-    @inline Mooncake._is_lifted_aware(
-        ::Type{<:Tuple{typeof(Core.memorynew),Type{<:Memory},Int}}
-    ) = true
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
@@ -977,8 +953,6 @@ end
     tangents = ntuple(_ -> zero_tangent_internal(x, NoCache()), Val(N))
     return Mooncake.Lifted{Memory{P},N}(x, Mooncake.NTangent(tangents))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{Type{<:Memory},UndefInitializer,Int}}) =
-    true
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
@@ -1029,9 +1003,6 @@ end
     end
     return Mooncake.Lifted{Array{P,M},N}(y, Mooncake.NTangent(tangents))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_new_),Type{<:Array},<:MemoryRef,<:NTuple{<:Any,Int}}}
-) = true
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{Array{P,N}}},
@@ -1070,9 +1041,6 @@ end
 ) where {N,V_x<:Memory{<:_HasNDual}}
     return _wrap_rule_result(Val(N), copy(Mooncake._unlift(x)))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_genericmemory_copy},Vararg}}
-) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_genericmemory_copy}},
@@ -1257,8 +1225,6 @@ end
 # values were removed alongside the matching `lgetfield` branches (Phase 6
 # of the wrapper-exception-removal plan). The canonical-NDual Array path is
 # handled by the `V<:AbstractArray{<:NDual}` Lifted body at misc.jl:406.
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),<:Array,<:Val,Any}}) =
-    true
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},
@@ -1598,15 +1564,6 @@ end
 # UInt8/Int8 arrays carry NoTangent (non-differentiable element types), so
 # their lifted slot V is `Dual{Array{UInt8}, NoTangent}` — the bare body's
 # `Dual{T}` signature already matches and there's no NDual lifting risk.
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(fill!),
-            <:Union{Array{<:Union{UInt8,Int8}},Memory{<:Union{UInt8,Int8}}},
-            <:Integer,
-        },
-    },
-) = true
 # `fill!(::Array{UInt8/Int8}, ::Integer)` and `Memory{UInt8/Int8}` variant.
 # Element type is non-differentiable (NoTangent V); fill! mutates the primal
 # in place and the same Lifted slot is returned unchanged.

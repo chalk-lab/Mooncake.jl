@@ -108,7 +108,6 @@ end
     end
     return Mooncake.Lifted{Ptr{Nothing},N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(pointer_from_objref),Any}}) = true
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -132,9 +131,6 @@ end
     dys = ntuple(k -> unsafe_pointer_to_objref(Mooncake.tangent(x, k)), Val(N))
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base.unsafe_pointer_to_objref),<:Ptr}}
-) = true
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
@@ -168,9 +164,6 @@ end
     )
     return dest
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any}} where {T}
-) = true
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
@@ -203,9 +196,6 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_reshape_array},Vararg}}
-) = true
 # Direct Lifted bodies per inner V shape of `a`. Wrapper-exception V
 # (`Dual{Array{P,N_a}, Array{T,N_a}}`): reshape primal and tangent
 # separately via two ccalls.
@@ -271,9 +261,6 @@ function rrule!!(
     return y, NoPullback(ntuple(_ -> NoRData(), 9))
 end
 
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_array_isassigned},Vararg}}
-) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_foreigncall_),N},
     ::Mooncake.Lifted{Val{:jl_array_isassigned}},
@@ -323,9 +310,6 @@ end
         Val(N), ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
     )
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_type_unionall},Vararg}}
-) = true
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_type_unionall}},
@@ -343,7 +327,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(deepcopy),Any}}) = true
 # `deepcopy`: the Lifted-typed body below `deepcopy`s the inner V directly
 # without delegating to a bare-Dual body.
 @inline function frule!!(
@@ -369,9 +352,6 @@ end
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_foreigncall_),Val{:jl_string_ptr},Vararg}}
-) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(_foreigncall_),N},
     ::Mooncake.Lifted{Val{:jl_string_ptr}},
@@ -395,14 +375,11 @@ function rrule!!(
 end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
-    @eval @inline Mooncake._is_lifted_aware(
-        ::Type{<:Tuple{typeof(_foreigncall_),Val{$(QuoteNode(name))},Vararg}}
-    ) = true
     @eval function frule!!(
-        f::Dual{typeof(_foreigncall_)},
-        n::Dual{Val{$(QuoteNode(name))}},
-        args::Vararg{Any,N},
-    ) where {N}
+        f::Lifted{typeof(_foreigncall_),N},
+        n::Lifted{Val{$(QuoteNode(name))}},
+        args::Vararg{Lifted,M},
+    ) where {N,M}
         return zero_derivative(f, n, args...)
     end
     @eval function rrule!!(
@@ -417,21 +394,23 @@ end
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(QuoteNode(name))}},
-        ::Dual{Val{$P}},
-        ::Dual{Tuple{Val{$P},Val{Int32}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:llvmcall}},
-        x::Dual{$P},
-        n::Dual{Int32},
-        ::Dual{Int32},
-        ::Dual{$P},
-    )
-        _x, dx = extract(x)
+        ::Lifted{typeof(_foreigncall_),N},
+        ::Lifted{Val{$(QuoteNode(name))}},
+        ::Lifted{Val{$P}},
+        ::Lifted{Tuple{Val{$P},Val{Int32}}},
+        ::Lifted{Val{0}},
+        ::Lifted{Val{:llvmcall}},
+        x::Lifted{$P,N},
+        n::Lifted{Int32},
+        ::Lifted{Int32},
+        ::Lifted{$P},
+    ) where {N}
+        _x = primal(x)
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
-        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+        coeff = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y))
+        lanes = ntuple(lane -> coeff * tangent(x, lane), Val(N))
+        return Lifted{$P,N}(y, lanes)
     end
 
     @eval function rrule!!(
@@ -511,7 +490,9 @@ for name in [
     ) where {RT,nreq,calling_convention}
         return unexpected_foreigncall_error($name)
     end
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name}}, args::Vararg{Lifted,M}
+    ) where {N,M}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)

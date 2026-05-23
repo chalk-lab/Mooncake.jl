@@ -78,49 +78,8 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
 
-# ── Centralised bare-Dual → Lifted dispatch adapters for BFloat16 ─────────────
-#
-# Parallel to the IEEEFloat adapters in `src/rules/rules_via_nfwd.jl`: route
-# bare-Dual `frule!!` calls with `Dual{Core.BFloat16}` args through the Lifted
-# path for `_is_lifted_aware` primitives. Per-op Lifted-typed bodies (below)
-# are then the single source of truth. The IEEEFloat adapters do not match
-# `P=Core.BFloat16` (BFloat16 is not `<: IEEEFloat`), so these are
-# extension-local.
-
-@inline function Mooncake.frule!!(f::Dual{F}, x::Dual{P}) where {F,P<:Core.BFloat16}
-    Mooncake._is_lifted_aware(Tuple{F,P}) || throw(MethodError(Mooncake.frule!!, (f, x)))
-    return _ndual_output_to_width1(
-        Mooncake.frule!!(
-            Lifted{F,1}(primal(f), tangent(f)),
-            Lifted{P,1}(primal(x), tangent(x)),
-        ),
-    )
-end
-
-# Binary: both args have the same BFloat16 primal type. Used by `hypot`, `^`,
-# `max`, `min`.
-@inline function Mooncake.frule!!(
-    f::Dual{F}, a::Dual{P}, b::Dual{P}
-) where {F,P<:Core.BFloat16}
-    Mooncake._is_lifted_aware(Tuple{F,P,P}) ||
-        throw(MethodError(Mooncake.frule!!, (f, a, b)))
-    return _ndual_output_to_width1(
-        Mooncake.frule!!(
-            Lifted{F,1}(primal(f), tangent(f)),
-            Lifted{P,1}(primal(a), tangent(a)),
-            Lifted{P,1}(primal(b), tangent(b)),
-        ),
-    )
-end
-
-# Conversion rules are covered by existing adapters:
-#   - `Type{Float32}` / `Type{Float64}` from `BFloat16` → matched by the
-#     BFloat16-unary adapter above (F = `Type{Pout}`, P = `BFloat16`).
-#   - `Type{BFloat16}` from `Float32` / `Float64` → matched by the IEEEFloat
-#     unary adapter in `src/rules/rules_via_nfwd.jl` (F = `Type{BFloat16}`,
-#     P <: IEEEFloat).
-# Both delegate through to the Lifted-typed conversion bodies registered
-# below via `_is_lifted_aware`.
+# Bare-Dual entry points removed; the AD transform always supplies
+# Lifted-wrapped args (see comment in `src/rules/rules_via_nfwd.jl`).
 
 # Conversions
 
@@ -133,7 +92,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
     new_lanes = ntuple(n -> Float32(lanes[n]), Val(N))
     return Lifted{Float32,N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{Type{Float32},P}}) = true
 function Mooncake.rrule!!(::CoDual{Type{Float32}}, x::CoDual{P})
     pb(dy::Float32) = NoRData(), P(dy)
     return zero_fcodual(Float32(primal(x))), pb
@@ -148,7 +106,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
     new_lanes = ntuple(n -> Float64(lanes[n]), Val(N))
     return Lifted{Float64,N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{Type{Float64},P}}) = true
 function Mooncake.rrule!!(::CoDual{Type{Float64}}, x::CoDual{P})
     pb(dy::Float64) = NoRData(), P(Float32(dy))
     return zero_fcodual(Float64(primal(x))), pb
@@ -163,7 +120,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
     new_lanes = ntuple(n -> P(lanes[n]), Val(N))
     return Lifted{P,N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{Type{P},Float32}}) = true
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float32})
     pb(dy::P) = NoRData(), Float32(dy)
     return zero_fcodual(P(primal(x))), pb
@@ -178,7 +134,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float64}
     new_lanes = ntuple(n -> P(Float32(lanes[n])), Val(N))
     return Lifted{P,N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{Type{P},Float64}}) = true
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
     pb(dy::P) = NoRData(), Float64(Float32(dy))
     return zero_fcodual(P(Float32(primal(x)))), pb
@@ -197,7 +152,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(sqrt),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * inv_2y), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sqrt),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P})
     y = sqrt(primal(x))
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (2 * y))
@@ -215,7 +169,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(cbrt),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * inv_3y2), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(cbrt),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P})
     y = cbrt(primal(x))
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (3 * y^2))
@@ -229,7 +182,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp),P}
     new_lanes = ntuple(n -> lanes[n] * y, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(exp),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(exp)}, x::CoDual{P})
     y = exp(primal(x))
     pb(dy::P) = NoRData(), dy * y
@@ -244,7 +196,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp2),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(exp2),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(exp2)}, x::CoDual{P})
     y = exp2(primal(x))
     pb(dy::P) = NoRData(), dy * y * P(log(2.0f0))
@@ -261,7 +212,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp10),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(exp10),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(exp10)}, x::CoDual{P})
     y = exp10(primal(x))
     pb(dy::P) = NoRData(), dy * y * P(log(10.0f0))
@@ -278,7 +228,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(expm1),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(expm1),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(expm1)}, x::CoDual{P})
     y = expm1(primal(x))
     pb(dy::P) = NoRData(), dy * (y + one(P))
@@ -301,7 +250,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(log),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(log),N}, x::Lifted{P,N}) where {N}
     return _bf16_log_family(log, one(P), x)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(log),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(log)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / _x)
@@ -312,7 +260,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(log2),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(log2),N}, x::Lifted{P,N}) where {N}
     return _bf16_log_family(log2, P(log(2.0f0)), x)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(log2),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(log2)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (_x * P(log(2.0f0))))
@@ -323,7 +270,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(log10),P}
 @inline function Mooncake.frule!!(::Lifted{typeof(log10),N}, x::Lifted{P,N}) where {N}
     return _bf16_log_family(log10, P(log(10.0f0)), x)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(log10),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(log10)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (_x * P(log(10.0f0))))
@@ -339,7 +285,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(log1p),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(log1p),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (one(P) + _x))
@@ -356,7 +301,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(sin),P}
     new_lanes = ntuple(n -> lanes[n] * c, Val(N))
     return Lifted{typeof(s),N}(s, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sin),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(sin)}, x::CoDual{P})
     _x = primal(x)
     s = sin(_x)
@@ -374,7 +318,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(cos),P}
     new_lanes = ntuple(n -> -lanes[n] * s, Val(N))
     return Lifted{typeof(c),N}(c, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(cos),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(cos)}, x::CoDual{P})
     _x = primal(x)
     s = sin(_x)
@@ -391,7 +334,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(tan),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tan),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(tan)}, x::CoDual{P})
     y = tan(primal(x))
     pb(dy::P) = NoRData(), dy * (one(P) + y^2)
@@ -407,7 +349,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(asin),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(asin),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(asin)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / sqrt(one(P) - _x^2))
@@ -423,7 +364,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(acos),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(acos),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(acos)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, -dy / sqrt(one(P) - _x^2))
@@ -439,7 +379,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(atan),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(atan),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(atan)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy / (one(P) + _x^2)
@@ -455,7 +394,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(sinh),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sinh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(sinh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy * cosh(_x)
@@ -471,7 +409,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(cosh),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(cosh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(cosh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy * sinh(_x)
@@ -486,7 +423,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(tanh),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tanh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P})
     y = tanh(primal(x))
     pb(dy::P) = NoRData(), dy * (one(P) - y^2)
@@ -502,7 +438,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(asinh),P}
     new_lanes = ntuple(n -> lanes[n] * d, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(asinh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(asinh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy / sqrt(one(P) + _x^2)
@@ -518,7 +453,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(acosh),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(acosh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / sqrt(_x^2 - one(P)))
@@ -534,7 +468,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(atanh),P}
     new_lanes = ntuple(n -> nan_tangent_guard(lanes[n], lanes[n] * d), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(atanh),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (one(P) - _x^2))
@@ -555,7 +488,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(hypot),P,P}
     end
     return Lifted{typeof(h),N}(h, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(hypot),P,P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
     h = hypot(_x, _y)
@@ -584,7 +516,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
     end
     return Lifted{typeof(z),N}(z, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(^),P,P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
@@ -607,7 +538,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(max),P,P}
     new_lanes = _x >= _y ? tangent(x).lanes : tangent(y).lanes
     return Lifted{typeof(z),N}(z, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(max),P,P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(max)}, x::CoDual{P}, y::CoDual{P})
     _x_wins = primal(x) >= primal(y)
     pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
@@ -623,7 +553,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(min),P,P}
     new_lanes = _x <= _y ? tangent(x).lanes : tangent(y).lanes
     return Lifted{typeof(z),N}(z, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(min),P,P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P})
     _x_wins = primal(x) <= primal(y)
     pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
@@ -639,7 +568,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(abs),P}
     new_lanes = ntuple(n -> lanes[n] * sign, Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(abs),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), _x >= zero(P) ? dy : -dy
@@ -652,7 +580,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(Base.eps),P}
     new_lanes = ntuple(_ -> zero(P), Val(N))
     return Lifted{typeof(y),N}(y, new_lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Base.eps),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P})
     pb(::P) = NoRData(), zero(P)
     return zero_fcodual(eps(primal(x))), pb
@@ -665,7 +592,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(nextfloat),P}
     y = nextfloat(primal(x))
     return Lifted{typeof(y),N}(y, tangent(x).lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(nextfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(nextfloat(primal(x))), pb
@@ -678,7 +604,6 @@ Mooncake.@is_primitive MinimalCtx Tuple{typeof(prevfloat),P}
     y = prevfloat(primal(x))
     return Lifted{typeof(y),N}(y, tangent(x).lanes)
 end
-Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(prevfloat),P}}) = true
 function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(prevfloat(primal(x))), pb

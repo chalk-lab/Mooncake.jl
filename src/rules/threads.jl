@@ -1,5 +1,5 @@
-@inline function _threading_foreigncall_frule(name::Val, args...)
-    return zero_dual(_foreigncall_(name, tuple_map(primal, args)...))
+@inline function _threading_foreigncall_frule(w::Val{N}, name::Val, args...) where {N}
+    return zero_lifted(w, _foreigncall_(name, tuple_map(primal, args)...))
 end
 
 function _threading_foreigncall_rrule()
@@ -27,8 +27,8 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_frule(
-        Val($(QuoteNode(name))), args...
+    @eval frule!!(::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$(QuoteNode(name))}}, args...) where {N} = _threading_foreigncall_frule(
+        Val(N), Val($(QuoteNode(name))), args...
     )
 
     @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
@@ -85,6 +85,3 @@ end
     end
     return zero_lifted(Val(N), nothing)
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base.Threads.threading_run),Any,Bool}}
-) = true

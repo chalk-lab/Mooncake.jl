@@ -24,7 +24,6 @@
 ) where {N,P<:IEEEFloat}
     return Mooncake.Lifted{P,N}(sum(Mooncake._unlift(x)))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(sum),<:Array{<:IEEEFloat}}}) = true
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
     function sum_pb!!(dz::P)
@@ -50,9 +49,6 @@ end
     ldiv!(Mooncake._unlift(out), Mooncake._unlift(d), Mooncake._unlift(b))
     return out
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(ldiv!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}}}
-) where {T<:IEEEFloat} = true
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
@@ -65,9 +61,6 @@ end
 ) where {N,P<:IEEEFloat}
     return Mooncake.Lifted{P,N}(sum(abs2, Mooncake._unlift(x)))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(sum),typeof(abs2),<:Array{<:IEEEFloat}}}
-) = true
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
 ) where {P<:IEEEFloat}
@@ -130,16 +123,6 @@ end
     _arr_writeback!(out_v, pout, dout)
     return out
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(LinearAlgebra._kron!),
-            <:AbstractMatrix{<:IEEEFloat},
-            <:AbstractMatrix{<:IEEEFloat},
-            <:AbstractMatrix{<:IEEEFloat},
-        },
-    },
-) = true
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Dense Diagonal Kronecker products need a finite concrete forward-mode patch.
@@ -157,9 +140,6 @@ end
     kron!(Mooncake._unlift(out), Mooncake._unlift(d), Mooncake._unlift(b))
     return out
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(kron!),Matrix{T},LinearAlgebra.Diagonal{T,Vector{T}},Matrix{T}}}
-) where {T<:IEEEFloat} = true
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},

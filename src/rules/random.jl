@@ -45,9 +45,6 @@ for f in [rand!, randn!, randexp!]
         _arr_writeback!(x_v, px, dx)
         return x
     end
-    @eval @inline Mooncake._is_lifted_aware(
-        ::Type{<:Tuple{typeof($f),<:SpecialisedRNGs,<:Array{Float64}}}
-    ) = true
     @eval function rrule!!(
         ::CoDual{typeof($f)}, rng::CoDual{<:SpecialisedRNGs}, x::CoDual{<:Array{Float64}}
     )

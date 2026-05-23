@@ -4,9 +4,6 @@
 # `src/rules/blas.jl`.
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(LAPACK.getrf!),<:AbstractMatrix{<:BlasFloat}}}
-) = true
 # Width-1 getrf!: covers Real and Complex via slot Union; `_arr_extract`
 # dispatches on input type.
 #
@@ -74,16 +71,6 @@ end
     MinimalCtx,
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}},
 )
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(Core.kwcall),
-            NamedTuple,
-            typeof(LAPACK.getrf!),
-            <:AbstractMatrix{<:BlasFloat},
-        },
-    },
-) = true
 # Unified kwcall Lifted body: `kwargs.check::Bool` lifts to a
 # bare-NamedTuple inner V (`@NamedTuple{check::Dual{Bool,NoTangent}}`),
 # accessed via `primal(kwargs).check`. Same width-1 + width-N
@@ -199,7 +186,6 @@ end
         AbstractVecOrMat{<:BlasComplexFloat},
     },
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(trtrs!),Vararg}}) = true
 # Unified trtrs! Lifted body: covers wrapper-exception (Dual-slot) and
 # canonical NDual matrices, width 1 and width N≥2, real and complex.
 # `_arr_extract_n` returns a 1-tuple for the wrapper-exception case so
@@ -326,7 +312,6 @@ end
         AbstractVecOrMat{<:BlasComplexFloat},
     },
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getrs!),Vararg}}) = true
 # Unified getrs! Lifted body: primal LU-solve first, then per-lane Frechet
 # via `_getrs_frechet_lane!` (uses post-primal B). Works at any N≥1 via
 # `_arr_extract_n` returning a 1-tuple for wrapper-exception slot or
@@ -465,7 +450,6 @@ end
     ForwardMode,
     Tuple{typeof(getri!),AbstractMatrix{<:BlasComplexFloat},AbstractVector{Int}},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getri!),Vararg}}) = true
 # Unified getri! Lifted body: per-lane pre-primal LU-differential factor
 # `tmp2 = _lu_diff_factor(A, dA, ipiv)` (computed BEFORE the primal
 # overwrites A→A_inv), then the primal `LAPACK.getri!(A, ipiv)`, then per-
@@ -554,9 +538,6 @@ end
 @is_primitive(
     MinimalCtx, ForwardMode, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasComplexFloat}},
 )
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(potrf!),Char,<:AbstractMatrix{<:BlasFloat}}}
-) = true
 # Unified potrf! Lifted body: real (Symmetric projection) and complex
 # Hermitian projection share the same `_potrf!_frule_core!` math via
 # `_sym_herm_proj`. `_arr_extract_n` returns a 1-tuple at width 1 (wrapper-
@@ -709,7 +690,6 @@ end
         AbstractVecOrMat{<:BlasComplexFloat},
     },
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(potrs!),Vararg}}) = true
 # Unified potrs! Lifted body: primal Cholesky-solve first, then per-lane
 # Frechet via `_potrs_frechet_lane!` (uses post-primal B and the
 # `_sym_herm_proj` per-eltype projection). Works at any N≥1.
@@ -806,7 +786,6 @@ end
             typeof(LAPACK.lacpy!),AbstractMatrix{P},AbstractMatrix{P},Char
         } where {P<:BlasFloat},
     )
-    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(LAPACK.lacpy!),Vararg}}) = true
     # Unified lacpy! Lifted body: lacpy is its own Frechet (linear copy),
     # so per-lane tangent step is just `LAPACK.lacpy!(dB, dA, uplo)` + 1
     # primal `LAPACK.lacpy!(B, A, uplo)`. Works at any N≥1.
@@ -992,9 +971,6 @@ w.r.t. the underlying data array `A`.
     MinimalCtx,
     Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(logdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
-) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
@@ -1034,9 +1010,6 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 @is_primitive(
     MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(det),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
-) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(det),N}, _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {N,P<:BlasRealFloat}
@@ -1088,9 +1061,6 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     MinimalCtx,
     Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(logabsdet),<:Symmetric{<:BlasRealFloat,<:StridedMatrix}}}
-) = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(logabsdet),N},
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},

@@ -493,20 +493,16 @@ for (fname, jlfname, elty) in (
         return CoDual(result, NoFData()), dot_pb!!
     end
 
-    # Do NOT add a Lifted-aware delegator for the `cblas_*dot*` foreigncall:
-    # past attempts segfaulted inside libopenblas64_'s `sdot_k_COOPERLAKE`
-    # when called with the canonical width-1 NTangent-wrapped
-    # `Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}}` tangent pointer (likely the
-    # tangent Ptr isn't a valid readable address). Flipping `_is_lifted_aware`
-    # on this foreigncall sig also doesn't help — the IR-emit's foreigncall
-    # dispatch path ignores the trait. With no delegator, the foreigncall
-    # fallback returns a controlled `MissingForeigncallRuleError` instead of
-    # crashing.
-    #
-    # The rule-level workaround is the high-level `BLAS.dot` /
-    # `BLAS.dotc` / `BLAS.dotu` primitive (below) that intercepts user calls
-    # BEFORE the BLAS shim reaches the foreigncall. Reverse mode still uses
-    # the foreigncall rrule above for `Vector{T}` (non-NDual) inputs.
+    # Do NOT add a forward-mode rule for the `cblas_*dot*` foreigncall: past
+    # attempts segfaulted inside libopenblas64_'s `sdot_k_COOPERLAKE` when
+    # called with the canonical width-1 NTangent-wrapped `Dual{Ptr{T},
+    # NTangent{Tuple{Ptr{T}}}}` tangent pointer (likely the tangent Ptr isn't
+    # a valid readable address). With no rule, the foreigncall fallback
+    # returns a controlled `MissingForeigncallRuleError` instead of crashing.
+    # The rule-level workaround is the high-level `BLAS.dot` / `BLAS.dotc` /
+    # `BLAS.dotu` primitive (below) that intercepts user calls BEFORE the
+    # BLAS shim reaches the foreigncall. Reverse mode still uses the
+    # foreigncall rrule above for `Vector{T}` (non-NDual) inputs.
 end
 
 # High-level `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` ForwardMode primitives.
@@ -559,8 +555,6 @@ end
 # conjugation through `f = BLAS.dotc`. Result is an NDual{T,N} scalar
 # packing the value + per-lane partials.
 for fname in (:dot, :dotc, :dotu)
-    @eval @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.$fname),Vararg}}) =
-        true
     @eval @inline function frule!!(
         ::Mooncake.Lifted{typeof(BLAS.$fname),N},
         _n::Mooncake.Lifted{<:Integer},
@@ -616,7 +610,6 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.nrm2),Vararg}}) = true
 # Per-direction nrm2 derivative: d(||X||)/dX_i contracted with dX gives
 # (X' * dX + dX' * X) / (2 * ||X||). `real()` is identity for Float and
 # takes the Real component for Complex, so the same body works for both.
@@ -698,7 +691,6 @@ end
         typeof(BLAS.scal!),Integer,P,X,Integer
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.scal!),Vararg}}) = true
 # Unified scal! Lifted body. Math: scal! computes `X ← a · X`,
 # differential `dX ← a · dX + da · X`, per lane. `_arr_extract_n` and
 # `_scalar_extract_n` handle wrapper-exception slots and canonical NDual
@@ -771,7 +763,6 @@ end
         typeof(BLAS.gemv!),Char,P,AbstractVecOrMat{P},AbstractVector{P},P,AbstractVector{P}
     } where {P<:BlasFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemv!),Vararg}}) = true
 
 # Unified gemv! Lifted body.
 #
@@ -1023,33 +1014,6 @@ for (fname, prim_elty, frule_elty) in (
     end
 end
 
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(BLAS.symv!),
-            Char,
-            T,
-            AbstractMatrix{T},
-            AbstractVector{T},
-            T,
-            AbstractVector{T},
-        },
-    },
-) where {T<:BlasFloat} = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(BLAS.hemv!),
-            Char,
-            T,
-            AbstractMatrix{T},
-            AbstractVector{T},
-            T,
-            AbstractVector{T},
-        },
-    },
-) where {T<:BlasComplexFloat} = true
-
 # Unified symv!/hemv! Lifted bodies. Math: `y ← α · A · x + β · y`
 # (A symmetric for symv!, Hermitian for hemv!). Product-rule
 # differential per lane:
@@ -1100,7 +1064,6 @@ end
         typeof(BLAS.trmv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
     } where {T<:BlasFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmv!),Vararg}}) = true
 
 # Unified trmv! Lifted body.
 #
@@ -1217,7 +1180,6 @@ end
         typeof(BLAS.trsv!),Char,Char,Char,AbstractMatrix{T},AbstractVector{T}
     } where {T<:BlasFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsv!),Vararg}}) = true
 # Unified trsv! Lifted body.
 #
 # Math: trsv! solves `op(A) x = b` (triangular A, post-primal `x` is the
@@ -1329,7 +1291,6 @@ end
         AbstractVecOrMat{T},
     } where {T<:BlasFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.gemm!),Vararg}}) = true
 
 # Helper function to avoid NaN poisoning caused due to adding undef or non initialized C matrices.
 function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
@@ -1566,34 +1527,6 @@ end
 # symm!, Hermitian for hemm!; side='L' shown — 'R' swaps A and B's
 # roles). Product-rule differential per lane:
 #   dC ← dα · A · B + α · dA · B + α · A · dB + dβ · C + β · dC
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(BLAS.symm!),
-            Char,
-            Char,
-            T,
-            AbstractMatrix{T},
-            AbstractMatrix{T},
-            T,
-            AbstractMatrix{T},
-        },
-    },
-) where {T<:BlasFloat} = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(BLAS.hemm!),
-            Char,
-            Char,
-            T,
-            AbstractMatrix{T},
-            AbstractMatrix{T},
-            T,
-            AbstractMatrix{T},
-        },
-    },
-) where {T<:BlasComplexFloat} = true
 for (fname, T_constraint) in ((:symm!, :BlasFloat), (:hemm!, :BlasComplexFloat))
     @eval @inline function frule!!(
         ::Mooncake.Lifted{typeof(BLAS.$fname),N},
@@ -1723,12 +1656,6 @@ end
 #       + dα · A · A^{T/H}                           [syrk!/herk! one call]
 #       + dβ · upper/lower(C)                        [element-wise]
 # herk! additionally calls `real_diag!(dC)` to zero the imaginary diag.
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(BLAS.syrk!),Char,Char,T,AbstractVecOrMat{T},T,AbstractMatrix{T}}}
-) where {T<:BlasFloat} = true
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(BLAS.herk!),Char,Char,R,AbstractVecOrMat{T},R,AbstractMatrix{T}}}
-) where {T<:BlasComplexFloat,R<:BlasRealFloat} = true
 # syrk! (real or complex matrix; α/β share matrix element type).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(BLAS.syrk!),N},
@@ -1810,7 +1737,6 @@ end
         typeof(BLAS.trmm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat}
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trmm!),Vararg}}) = true
 # Unified trmm! Lifted body.
 #
 # Math: trmm! computes `B ← α · op(A) · B` (or `B · op(A)` for side='R',
@@ -1923,7 +1849,6 @@ end
         typeof(BLAS.trsm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat},
 )
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(BLAS.trsm!),Vararg}}) = true
 
 # Unified trsm! Lifted body.
 #

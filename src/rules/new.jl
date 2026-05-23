@@ -184,8 +184,6 @@ end
     return frule!!(f, Lifted{Type{P},N}(P, NoTangent()), x...)
 end
 
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_new_),Vararg}}) = true
-
 @inline _is_base_broadcast_struct(::Type{P}) where {P} =
     P <: Union{Base.Broadcast.Extruded,Base.Broadcast.Broadcasted}
 
@@ -452,8 +450,6 @@ function rrule!!(
     end
     return y, splat_new_pb!!
 end
-
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(_splat_new_),Type,Tuple}}) = true
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 

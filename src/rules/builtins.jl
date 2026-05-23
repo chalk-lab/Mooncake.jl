@@ -152,7 +152,6 @@ macro intrinsic(name)
         # accepts the bare canonical-V slot value (NDual at width=1), so the
         # generic `frule!!(::Lifted{F,N}, args::Vararg{Lifted,M})` adapter
         # handles unwrap+call+wrap at the IR-emit-skipped boundary.
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($name),Vararg}}) = true
     end
     return esc(expr)
 end
@@ -179,7 +178,6 @@ macro inactive_intrinsic(name)
             args_primal = map(primal, args)
             return Mooncake.zero_lifted(Val(N), f_primal(args_primal...))
         end
-        Mooncake._is_lifted_aware(::Type{<:Tuple{typeof($name),Vararg}}) = true
     end
     return esc(expr)
 end
@@ -238,9 +236,6 @@ end
         primal_arr, Mooncake.NTangent(tangent_arrs)
     )
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(unsafe_wrap),<:Type{<:Array},<:Ptr,Any}}
-) = true
 
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
@@ -260,9 +255,6 @@ end
 @is_primitive MinimalCtx ForwardMode Tuple{
     typeof(Base.unsafe_convert),Type{Ptr{T}},Vector{T}
 } where {T}
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Base.unsafe_convert),Type{Ptr{T}},Vector{T}}}
-) where {T} = true
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.unsafe_convert),N},
     ::Mooncake.Lifted{Type{Ptr{T}},N},
@@ -407,7 +399,6 @@ end
 ) where {N,M}
     return Mooncake.zero_lifted(Val(N), __cglobal(map(primal, args)...))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__cglobal),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_fcodual(__cglobal(map(primal, args)...)), NoPullback(f, args...)
 end
@@ -837,7 +828,6 @@ end
 ) where {N,V_v<:Vector{<:Mooncake.Nfwd.NDual}}
     return _wrap_rule_result(Val(N), tuple(Mooncake._unlift(v)...))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__vec_to_tuple),<:Vector}}) = true
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)
@@ -879,9 +869,6 @@ end
     tvs = ntuple(n -> getindex(Mooncake.tangent(v, n), pind), Val(N))
     return Mooncake.Lifted{_typeof(pv),N}(pv, Mooncake.NTangent(tvs))
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(Core._svec_ref),Core.SimpleVector,Int}}
-) = true
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
@@ -921,7 +908,6 @@ end
         primal_output, Mooncake.NTangent(dual_lanes)
     )
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(svec),Vararg}}) = true
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
@@ -946,7 +932,6 @@ end
     ) where {N}
         return zero_lifted(Val(N), Core._svec_len(primal(v)))
     end
-    @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core._svec_len),Any}}) = true
     function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
         return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
     end
@@ -960,7 +945,6 @@ end
     bare_args = ntuple(i -> primal(args[i]), Val(M))
     return zero_lifted(Val(N), Core._typevar(bare_args...))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core._typevar),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
@@ -972,7 +956,6 @@ end
     bare_args = ntuple(i -> primal(args[i]), Val(M))
     return zero_lifted(Val(N), Core.apply_type(bare_args...))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.apply_type),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
@@ -1006,8 +989,6 @@ end
 }
     return _wrap_rule_result(Val(N), compilerbarrier(primal(setting), Mooncake._unlift(v)))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(compilerbarrier),Symbol,Any}}) =
-    true
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
     return compilerbarrier(setting.x, val), compilerbarrier_pb
@@ -1030,7 +1011,6 @@ end
     dys = ntuple(k -> ifelse(_cond, Mooncake.tangent(a, k), Mooncake.tangent(b, k)), Val(N))
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.ifelse),Bool,Any,Any}}) = true
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
     p_a = primal(a)
@@ -1079,10 +1059,6 @@ end
 # in the output. Probe via `tangent_test_cases()` confirms 0 hits.
 const StandardTangentType = Union{NoTangent,NTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
-
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any}}) = true
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Any,Any,Any}}) = true
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(setfield!),Any,Any,Any}}) = true
 
 # Direct `getfield` Lifted bodies (per inner V shape of x). Each pair below
 # unifies the 2-arg and 3-arg (`inbounds`) `getfield` rules via
@@ -1270,7 +1246,6 @@ end
 ) where {N,M}
     throw(map(primal, args)...)
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(throw),Vararg}}) = true
 function rrule!!(::CoDual{typeof(throw)}, args::CoDual...)
     throw(map(primal, args)...), _ -> (NoRData(), map(_ -> NoRData(), args)...)
 end
@@ -1283,9 +1258,6 @@ end
     ) where {N,M}
         Core.throw_methoderror(map(primal, args)...)
     end
-    @inline Mooncake._is_lifted_aware(
-        ::Type{<:Tuple{typeof(Core.throw_methoderror),Vararg}}
-    ) = true
     function rrule!!(::CoDual{typeof(Core.throw_methoderror)}, args::CoDual...)
         return (
             Core.throw_methoderror(map(primal, args)...),
@@ -1300,8 +1272,6 @@ end
 ) where {N,M}
     Core.throw_inexacterror(map(primal, args)...)
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(Core.throw_inexacterror),Vararg}}) =
-    true
 function rrule!!(::CoDual{typeof(Core.throw_inexacterror)}, args::CoDual...)
     return (
         Core.throw_inexacterror(map(primal, args)...),
@@ -1362,7 +1332,6 @@ end
         return :(_wrap_rule_result($P_out, Val($N), ($(bare_exprs...),)))
     end
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(tuple),Vararg}}) = true
 
 function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     primal_output = tuple(map(primal, args)...)
@@ -1407,7 +1376,6 @@ end
     typeassert(primal(x), primal(type))
     return x
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(typeassert),Any,Any}}) = true
 
 @zero_derivative MinimalCtx Tuple{typeof(typeof),Any}
 

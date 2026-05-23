@@ -65,9 +65,6 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(lgetfield),<:Complex{<:IEEEFloat},<:Val}}
-) = true
 # Canonical V for `Complex{P<:IEEEFloat}` is `Complex{NDual{P, N}}`; a
 # single `getfield` extracts the per-direction NDual element directly.
 @inline function frule!!(
@@ -121,9 +118,6 @@ end
         complex(Mooncake._unlift(re), Mooncake._unlift(im))
     )
 end
-@inline Mooncake._is_lifted_aware(
-    ::Type{<:Tuple{typeof(_new_),Type{<:Complex{<:IEEEFloat}},<:IEEEFloat,<:IEEEFloat}}
-) = true
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{Complex{P}}}, re::CoDual{P}, im::CoDual{P}
 ) where {P<:IEEEFloat}

@@ -94,7 +94,6 @@ const TaskCoDual = CoDual{Task,TaskTangent}
     dy = _get_tangent_field(tangent(x), f)
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lgetfield),Task,<:Val}}) = true
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
     function mutable_lgetfield_pb!!(dy)
@@ -113,7 +112,6 @@ end
     dy = _get_tangent_field(tangent(x), fname)
     return Mooncake.Lifted{_typeof(y),N}(y, dy)
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(getfield),Task,Any}}) = true
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
@@ -130,7 +128,6 @@ end
     result = lsetfield_frule(inner_task, inner_name, inner_val)
     return Mooncake.Lifted{_typeof(primal(result)),N}(primal(result), tangent(result))
 end
-@inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(lsetfield!),Task,Any,Any}}) = true
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
 end

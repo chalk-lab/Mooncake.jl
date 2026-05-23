@@ -8,7 +8,6 @@ import ..@zero_derivative
 import ..@is_primitive
 import ..DefaultCtx
 import .._foreigncall_
-import .._is_lifted_aware
 import ..CoDual
 import ..Dual
 import ..Lifted
@@ -62,18 +61,6 @@ import DispatchDoctor._Utils:
 ) where {N}
     return zero_lifted(Val(N), ccall(:jl_generating_output, Cint, ()))
 end
-@inline _is_lifted_aware(
-    ::Type{
-        <:Tuple{
-            typeof(_foreigncall_),
-            Val{:jl_generating_output},
-            Val{Cint},
-            Tuple{},
-            Val{0},
-            Val{:ccall},
-        },
-    },
-) = true
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)},
     name::CoDual{Val{:jl_generating_output}},
