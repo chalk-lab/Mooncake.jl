@@ -146,17 +146,6 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
 }
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    kwargs::Dual{<:NamedTuple},
-    ::Dual{typeof(logsumexp)},
-    x::Dual{<:AbstractArray{P}},
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y = logsumexp(_x; primal(kwargs)...)
-    dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
-    return Dual(y, dy)
-end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(Core.kwcall),N},
     kwargs::Mooncake.Lifted{<:NamedTuple},
@@ -177,18 +166,6 @@ end
         },
     },
 ) = true
-function frule!!(
-    ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y = logsumexp(_x)
-    dy = zero(P)
-    # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
-    for i in eachindex(_dx)
-        @inbounds dy += _dx[i] * exp(_x[i] - y)
-    end
-    return Dual(y, dy)
-end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(logsumexp),N}, x::Mooncake.Lifted{<:AbstractArray{P}}
 ) where {N,P<:IEEEFloat}
@@ -249,15 +226,6 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
 } where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y, _dy = arrayify(out)
-    logsumexp!(y, _x)
-    sum!(_dy, _dx .* exp.(_x .- y))
-    return out
-end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(logsumexp!),N},
     out::Mooncake.Lifted{<:AbstractArray{P}},

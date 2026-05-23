@@ -1,48 +1,5 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-# Bare-Dual `_new_` kernel — invoked by other rules (e.g. legacy
-# `getindex`/`_new_`-via-MemoryRef paths in the test framework) that build
-# composite results from canonical V components. Kept as a kernel rather than
-# deleted because direct callers exist outside the Lifted dispatch path.
-function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Any,N}) where {P,N}
-    primals = map(__get_primal, x)
-    # For NDual containers (Array, etc.), the type P is the primal type but the fields
-    # have NDual elements. Construct the NDual container type instead.
-    # Check `_find_ndual_memref(x...)` on the ORIGINAL args, not on `primals`:
-    # `__get_primal(::MemoryRef{<:NDual})` strips the NDual element type back to
-    # the primal type, which would prevent `_find_ndual_memref` from matching.
-    if P <: Array
-        ref = _find_ndual_memref(x...)
-        if ref !== nothing
-            P_ndual = Array{eltype(ref),ndims(P)}
-            return _new_(P_ndual, ref, primals[2:end]...)
-        end
-        # No NDual content: build the bare array and produce a `Dual{P, T}` with
-        # `zero_tangent(y)`. The struct-output `build_output_tangent` path expects
-        # a NamedTuple-shaped struct ctor, which Array does not have — calling it
-        # would fail on `Vector{T}(::@NamedTuple{ref, size})`.
-        y = _new_(P, primals...)
-        T = tangent_type(P)
-        T == NoTangent && return Dual(y, NoTangent())
-        return Dual(y, zero_tangent(y))
-    end
-    # Complex{NDual} is bare — construct directly from NDual fields.
-    if P <: Complex && _has_ndual(x...)
-        return Complex(primals...)
-    end
-    if _has_ndual(x...)
-        primals_extracted = map(_ndual_primal, x)
-        y = _new_(P, primals_extracted...)
-        T = tangent_type(P)
-        T == NoTangent && return Dual(y, NoTangent())
-        return _ndual_new_result(P, y, x, primals_extracted)
-    end
-    y = _new_(P, primals...)
-    T = tangent_type(P)
-    T == NoTangent && return Dual(y, NoTangent())
-    return Dual(y, build_output_tangent(P, primals, map(tangent, x)))
-end
-
 # Lifted-aware `_new_`. The static `P` from `Lifted{Type{P}, N}` is the
 # source of truth for the result wrap — the generic Lifted-aware adapter
 # can't be used because the Array branch returns `Array{NDual{T,N}, D}`

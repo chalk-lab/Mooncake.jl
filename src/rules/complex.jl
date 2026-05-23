@@ -68,25 +68,8 @@ TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where
 @inline Mooncake._is_lifted_aware(
     ::Type{<:Tuple{typeof(lgetfield),<:Complex{<:IEEEFloat},<:Val}}
 ) = true
-function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
-) where {FieldName}
-    y = getfield(primal(x), FieldName)
-    dy = getfield(tangent(x), FieldName)
-    return Dual(y, dy)
-end
-# Bare Complex{NDual} — tangent info lives inside NDual elements.
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Complex{<:NDual}, ::Dual{Val{FieldName}}
-) where {FieldName}
-    return getfield(x, FieldName)
-end
-# Lifted-typed overload: when the IR-emit hands `Lifted` slots straight
-# through (Path B), accept them and return a `Lifted{P, N, V}` directly so
-# the IR-emit's `_wrap_rule_result` no-op path fires and avoids the
-# unwrap/re-wrap allocation. Per `dual_type(Val(N), Complex{P<:IEEEFloat})`
-# the inner V is always `Complex{NDual{P, N}}` (canonical), so a single
-# `getfield` extracts the per-direction NDual element directly.
+# Canonical V for `Complex{P<:IEEEFloat}` is `Complex{NDual{P, N}}`; a
+# single `getfield` extracts the per-direction NDual element directly.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{<:Complex{P},N},
@@ -126,13 +109,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P}, im::Dual{P}
-) where {P<:IEEEFloat}
-    x = _new_(Complex{P}, primal(re), primal(im))
-    dx = _new_(Complex{P}, tangent(re), tangent(im))
-    return Dual(x, dx)
-end
 # Canonical V for Complex{P<:IEEEFloat} is Complex{NDual{P,N}}; build it directly
 # from the inner NDual{P,N} values of the real and imaginary slots.
 @inline function frule!!(
