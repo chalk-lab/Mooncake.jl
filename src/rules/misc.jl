@@ -257,15 +257,6 @@ end
         zero_lifted(Val(N), field_val)
     end
 end
-# Mixed dispatch fallback: Tuple/NamedTuple primal arrives as a `Lifted` slot
-# while the function/index arrive as bare `Dual` (e.g. via the IR-emit
-# constant path that uses `zero_dual` rather than `zero_lifted`).
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Mooncake.Lifted{P}, ::Dual{Val{f}}
-) where {P<:Union{Tuple,NamedTuple},f}
-    return getfield(Mooncake._unlift(x), f)
-end
-
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
 _get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
@@ -368,18 +359,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 
-# Bare-Dual 4-arg lgetfield: parent has no tangent → uninit; else extract
-# field tangent. (arity-3 with `Val(order)`. Lifted-typed paths are handled
-# by the split-by-V bodies above which use Vararg-tail unification.)
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}, ::Dual{Val{order}}
-) where {P,T<:StandardTangentType,f,order}
-    primal_field = getfield(primal(x), f, order)
-    if T === NoTangent || tangent_type(_typeof(primal_field)) === NoTangent
-        return uninit_dual(primal_field)
-    end
-    return Dual(primal_field, _get_tangent_field(tangent(x), f))
-end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
