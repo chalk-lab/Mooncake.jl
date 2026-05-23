@@ -907,60 +907,6 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
     return value, isbits_lmemoryrefset!_adjoint
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-) where {P,V}
-    return frule!!(
-        zero_dual(lmemoryrefset!),
-        x,
-        value,
-        zero_dual(Val(primal(ordering))),
-        zero_dual(Val(primal(boundscheck))),
-    )
-end
-# Canonical width-1 forms route through this entrypoint with `x` having an
-# `NTangent{Tuple{MemoryRef{V}}}` tangent and `value` arriving as bare
-# `NDual` / `Vector{NDual}` / `Dual{Int}` / etc. Delegate to the matching
-# `lmemoryrefset!` overloads which already handle the canonical shapes.
-@inline function frule!!(
-    f::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:Mooncake.NTangent{Tuple{TT}}},
-    value::Union{
-        Dual,
-        Mooncake.Nfwd.NDual,
-        Complex{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Mooncake.Nfwd.NDual},
-        AbstractArray{<:Complex{<:Mooncake.Nfwd.NDual}},
-    },
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-) where {P,TT<:MemoryRef}
-    return frule!!(
-        zero_dual(lmemoryrefset!),
-        x,
-        value,
-        zero_dual(Val(primal(ordering))),
-        zero_dual(Val(primal(boundscheck))),
-    )
-end
-# Bare MemoryRef{<:NDual} variant: when the Lifted-aware adapter unlifts
-# the destination to the canonical bare `MemoryRef{NDual{T,1}}` (no Dual
-# wrapper), delegate to `memoryrefset!` directly — NDual elements carry
-# their own tangent.
-@inline function frule!!(
-    ::Dual{typeof(memoryrefset!)},
-    x::MemoryRef{<:Mooncake.Nfwd.NDual},
-    value::Mooncake.Nfwd.NDual,
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-)
-    memoryrefset!(x, value, primal(ordering), primal(boundscheck))
-    return value
-end
 # Forward `memoryrefset!(x, value, ordering::Symbol, boundscheck::Bool)` to
 # `lmemoryrefset!(x, value, Val(ordering), Val(boundscheck))` at the Lifted
 # level. Lifted dispatch on `value`'s inner V then routes through
@@ -1729,27 +1675,12 @@ function rrule!!(
     return a, fill!_pullback!!
 end
 
-# NDual container frule!! overloads — containers of NDual elements carry tangent info
-# inside the elements; the container tangent is NoTangent. These dispatch on the NDual
-# element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
-# _HasNDual is defined in NfwdMooncake.jl and re-exported through Mooncake.
-#
-# Single bare-container form per operation: rules along the lifted-IR chain
-# return their results in canonical `dual_type` form (bare `Container{NDual}`
-# for NDual-bearing results, `Dual{P,NoTangent}` for non-differentiable
-# results), so downstream calls receive bare `Container{<:_HasNDual}`
-# arguments and dispatch here. The user-facing call
-# `frule!!(zero_dual(f), zero_dual(Val(N), x))` produces the same bare shape
-# (`dual_type(Val(N), Array{T,D}) == Array{NDual{T,N},D}`).
-
-@inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    ref::MemoryRef{<:_HasNDual},
-    ordering::Dual{<:Val},
-    boundscheck::Dual{<:Val},
-)
-    return memoryrefget(ref, _val(primal(ordering)), _val(primal(boundscheck)))
-end
+# `lmemoryrefset!` bare-Dual entries — reachable through the Lifted-aware
+# adapter at memory.jl:842, which unlifts `x` (the destination MemoryRef)
+# and `value` and re-dispatches to the bare-Dual frule!!. The canonical
+# `MemoryRef{<:NDual}` shape is the primary path for IEEEFloat/Complex
+# element types; the `Dual{MemoryRef{Any}, MemoryRef{Any}}` shape covers
+# the `Vector{Any}` built via `setindex!` at lifted width case.
 
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
@@ -1762,11 +1693,6 @@ end
     return value
 end
 
-# Untyped `MemoryRef{Any}` slot receiving a bare value carrying NDual content
-# (scalar `NDual`, `Complex{<:NDual}`, or container `Array{<:NDual}`). Stores
-# the primal in the Any-typed primal memory and the wrapped value in the
-# tangent slot. Used when `Vector{Any}` is built via `setindex!` at lifted
-# width.
 @inline function frule!!(
     ::Dual{typeof(lmemoryrefset!)},
     ref::Dual{<:MemoryRef{Any},<:MemoryRef{Any}},
