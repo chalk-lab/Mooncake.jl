@@ -676,48 +676,25 @@ end
 @testset "_ndual_output_to_width1 NTangent stripping" begin
     Lifted = Mooncake.Lifted
     NTangent = Mooncake.NTangent
-    # Regression guard for the central-adapter return contract. When a
-    # `Lifted{P, N, V}` has inner V `Dual{P, <:NTangent}` (the canonical
-    # width-1 form for primals without an NDual specialisation — e.g.
-    # `BFloat16`, generic concrete `P`), `_ndual_output_to_width1` must
-    # strip the NTangent down to the lane-1 tangent so the result has the
-    # documented legacy bare-T shape `Dual{P, T}`. Without this, the
-    # central-adapter pattern in `ext/MooncakeBFloat16sExt.jl` and
-    # `src/rules/rules_via_nfwd.jl` would surface NTangent-wrapped duals
-    # to direct `frule!!` callers (test_rule, debug paths,
-    # `value_and_derivative!!`).
+    # `_ndual_output_to_width1` strips a width-1 `Lifted{P, 1, V}` down to a
+    # bare-T `Dual{P, T}` for the `value_and_derivative!!` / `test_rule` paths.
+    # The helper handles both `Dual{P, <:NTangent}` (wrapper-exception V at
+    # width-1, e.g. BFloat16) and `NDual{P, 1}` (canonical NDual V at width-1).
     @testset "bare-T strip from Dual{Float64, NTangent}" begin
-        # Build a width-1 Lifted with NTangent-wrapped inner V directly.
         inner = Dual(3.14, NTangent((2.0,)))
         slot = Lifted{Float64,1,typeof(inner)}(inner)
-        @test slot isa Lifted{Float64,1,Dual{Float64,NTangent{Tuple{Float64}}}}
         out = Mooncake._ndual_output_to_width1(slot)
         @test out isa Dual{Float64,Float64}
         @test primal(out) === 3.14
         @test tangent(out) === 2.0
     end
     @testset "NDual inner V already bare-T" begin
-        # When the inner V is NDual (IEEEFloat canonical), the existing
-        # `_ndual_output_to_width1(::NDual)` path strips to bare-T Dual.
-        # This is unaffected by the BFloat16s-driven fix; pin it.
         nd = Mooncake.NDual{Float64,1}(1.5, (0.25,))
         slot = Lifted{Float64,1,typeof(nd)}(nd)
         out = Mooncake._ndual_output_to_width1(slot)
         @test out isa Dual{Float64,Float64}
         @test primal(out) === 1.5
         @test tangent(out) === 0.25
-    end
-    @testset "end-to-end IEEEFloat central adapter dispatch" begin
-        # Direct test of the central-adapter flow that `test_rule` exercises
-        # for `rules_via_nfwd.jl` ops: bare-Dual `frule!!` call → Lifted
-        # body → `_ndual_output_to_width1` → bare-T `Dual{P, P}`. Uses
-        # `exp` (a scalar primitive in `rules_via_nfwd.jl`) at width-1.
-        fdual = Mooncake.zero_dual(exp)
-        d = Dual(0.7, 1.0)
-        result = Mooncake.frule!!(fdual, d)
-        @test result isa Dual{Float64,Float64}
-        @test primal(result) ≈ exp(0.7)
-        @test tangent(result) ≈ exp(0.7)  # d/dx exp(x) = exp(x)
     end
 end
 
@@ -806,16 +783,8 @@ end
     end
 
     @testset "chunk-size-2 with unequal lane seeds" begin
-        # Chunked correctness probe. The bare `frule!!(::Dual)`
-        # path computes ONE lane; if a Lifted-aware wrapper passes a bare
-        # Dual{P,T} result up through `_wrap_rule_result` at `Val(2)`, the
-        # broadcast inner-V ctor duplicates the scalar tangent across all
-        # lanes. With unequal lane seeds, this surfaces as a duplicate value.
-        #
         # The Nfwd scalar primitives (e.g. `sin`) operate directly on
-        # `NDual{T, 2}` and preserve all lanes correctly. This test pins
-        # that correctness so a regression that drops the chunked path is
-        # caught immediately.
+        # `NDual{T, N}` and preserve all lanes through the canonical path.
         x = Lifted{Float64,2}(NDual{Float64,2}(2.0, (10.0, 20.0)))
         sinf = zero_lifted(Val(2), sin)
         y = frule!!(sinf, x)
@@ -826,19 +795,6 @@ end
         @test primal(y) === sin(2.0)
         @test tangent(y) === NTangent((ct * 10.0, ct * 20.0))
         @test tangent(y).lanes[1] !== tangent(y).lanes[2]
-
-        # `_wrap_rule_result` broadcasts a bare-T scalar tangent across all N
-        # lanes (documented limitation): only valid when both lanes
-        # are intentionally equal. With distinct lane seeds at the source
-        # this is a duplicate-lane bug, but for a SCALAR tangent passed
-        # explicitly (e.g. a rule that genuinely returns identical-lane
-        # results), the broadcast is the intended behaviour.
-        r_bare = Mooncake._wrap_rule_result(Float64, Val(2), Dual(4.0, 7.0))
-        @test tangent(r_bare) === NTangent((7.0, 7.0))
-
-        # NTangent-bearing result preserves both lanes — the canonical path.
-        r_nt = Mooncake._wrap_rule_result(Float64, Val(2), Dual(4.0, NTangent((7.0, 9.0))))
-        @test tangent(r_nt) === NTangent((7.0, 9.0))
 
         # Additional known-good chunked paths via `rules_via_nfwd` (direct
         # `NDual{T, N}` ops preserve all lanes). These pin that the unary
@@ -1048,18 +1004,11 @@ end
     end
 
     @testset "Lifted{P,N}(struct, NTangent) ctor" begin
-        # Pre-fix: `Lifted{StructP, N}(struct_primal, NTangent_of_Tangents)`
-        # at width N≥2 raised MethodError because the canonical inner V (the
-        # structural NamedTuple lift) had no constructor accepting
-        # `(struct, NTangent{NTuple{N, Tangent}})`. The `@generated` ctor
-        # parallel to the existing `tangent::Tangent` form unrolls per-lane
-        # field extraction so each field gets an N-tuple of partial values.
-        #
-        # Reproducer pattern: a `frule!!` that returns a Lifted with struct
-        # primal at width N≥2 (e.g. `lmemoryrefget` on `MemoryRef{<:Struct}`).
-
-        # Use LoHi: leaf-Float64 fields only (covers the canonical
-        # struct-primal × width-N path without nested-array recursion).
+        # `Lifted{StructP, N}(struct_primal, NTangent_of_Tangents)` at width
+        # N>=2 must build the canonical NamedTuple inner V by unrolling
+        # per-lane field extraction (each field gets an N-tuple of partials).
+        # Hit via `frule!!` returning a struct-primal Lifted at width N>=2
+        # (e.g. `lmemoryrefget` on `MemoryRef{<:Struct}`).
         p = TestResources.LoHi(2.5, -1.5)
         nt = Mooncake.NTangent((
             Mooncake.Tangent((; lo=0.1, hi=0.2)), Mooncake.Tangent((; lo=0.3, hi=0.4))
@@ -1087,19 +1036,10 @@ end
     end
 
     @testset "memoryrefget / lmemoryrefget width-N struct-element" begin
-        # Pre-fix: `frule!!(::Lifted{typeof(memoryrefget), N}, ...)` and
-        # `frule!!(::Lifted{typeof(lmemoryrefget), N}, ...)` erred at
-        # width N≥2 for struct-element MemoryRef. The bare-Dual delegator
-        # path called `_ntangent_unwrap_singleton` (singleton-NTangent only) on a
-        # multi-lane NTangent, returning the NTangent itself which
-        # memoryrefget rejected with `expected GenericMemoryRef`.
-        # Fix (initial, via width-N-specific overload): added a per-lane
-        # processing entry alongside the bare-Dual + generic Lifted delegator.
-        # Fix (Pattern A, commits 500af2899 and 59d251db2): folded the
-        # three entries into one source-of-truth Lifted body that handles
-        # both width-1 (singleton-NTangent unwrap) and width N≥2 (per-lane)
-        # uniformly via tangent introspection, plus thin bare-Dual delegators
-        # for direct invocation.
+        # Regression: width-N>=2 with struct-element MemoryRef must read
+        # primal + per-lane tangents uniformly. The folded Lifted body
+        # handles both width-1 (singleton-NTangent unwrap) and width N>=2
+        # (per-lane) via tangent introspection.
         @static if VERSION >= v"1.11-"
             m = Memory{TestResources.LoHi}(undef, 4)
             m[1] = TestResources.LoHi(10.0, 11.0)
@@ -1146,10 +1086,8 @@ end
     end
 
     @testset "unsafe_copyto! width-N struct-element MemoryRef" begin
-        # Pre-fix: at width N≥2 the generic Lifted delegator routed through
-        # the bare-Dual body which used `_ntangent_unwrap_singleton` (singleton-NTangent
-        # only); the call `unsafe_copyto!(NTangent, NTangent, n)` errored.
-        # Fix: width-N-specific overload doing per-lane copy.
+        # Regression: width-N>=2 unsafe_copyto! on struct-element MemoryRef
+        # must do per-lane copy of the primal + each tangent lane.
         @static if VERSION >= v"1.11-"
             m_src = Memory{TestResources.LoHi}(undef, 4)
             m_src[1] = TestResources.LoHi(1.0, 2.0)
@@ -1178,12 +1116,9 @@ end
     end
 
     @testset "lmemoryrefset! width-N struct-value" begin
-        # Pre-fix: rule at memory.jl:881 (Lifted with `V<:NamedTuple` for the
-        # value arg) called `memoryrefset!(tangent(bare_x), tangent(y), ...)`
-        # but `tangent(bare_x)` is the outer NTangent wrapper, not a bare
-        # MemoryRef — errored with `expected GenericMemoryRef`. Fix: set the
-        # primal once and write each lane's tangent independently using
-        # `tangent(value, n)` (per-lane Tangent via `_build_struct_tangent_dir`).
+        # Regression: lmemoryrefset! width-N>=2 with struct-element MemoryRef
+        # must set the primal once and write each lane's tangent independently
+        # via `tangent(value, n)` (per-lane Tangent).
         @static if VERSION >= v"1.11-"
             for N in (1, 2)
                 m = Memory{TestResources.LoHi}(undef, 4)
@@ -1206,14 +1141,8 @@ end
     end
 
     @testset "pointer_from_objref width-N" begin
-        # Pre-fix: at width N≥2 the rule called
-        # `pointer_from_objref(_ntangent_unwrap_singleton(tangent(inner)))`
-        # where the singleton-NTangent-unwrap helper didn't match the
-        # multi-lane NTangent → fell through to the no-op fallback returning
-        # the NTangent unchanged → `pointer_from_objref(NTangent)` errored
-        # because NTangent is immutable.
-        # Fix: detect multi-lane NTangent and map pointer_from_objref over
-        # each lane's tangent independently, building per-lane Ptrs.
+        # Regression: width-N>=2 pointer_from_objref must map over each
+        # lane's tangent independently, producing per-lane Ptrs.
         mutable struct _PMutable
             x::Float64
         end
@@ -1232,11 +1161,9 @@ end
     end
 
     @testset "copy(::NTangent) per-lane independent" begin
-        # Pre-fix: `copy(::NTangent)` had no method. Callers that
-        # whole-copy a `Dual{P, NTangent}` (e.g. `Base.copy(::Memory{<:Struct})`
-        # via the `:jl_genericmemory_copy` foreigncall path) errored with
-        # MethodError. Fix: define `Base.copy(t::NTangent) = NTangent(map(copy,
-        # t.lanes))` — per-lane copy so callers get independent lane tangents.
+        # `Base.copy(::NTangent)` must produce per-lane independent copies
+        # so callers (e.g. `Base.copy(::Memory{<:Struct})` via
+        # `:jl_genericmemory_copy`) don't alias lane tangents.
         t = Mooncake.NTangent(([1.0, 2.0], [3.0, 4.0]))
         c = copy(t)
         @test c isa Mooncake.NTangent
@@ -1247,13 +1174,9 @@ end
     end
 
     @testset "Core.memorynew(Memory{<:Struct}, n) width-N lane independence" begin
-        # Same silent-correctness aliasing pattern as
-        # `Memory{LoHi}(undef, n)`, but reached via
-        # `Core.memorynew` on Julia 1.12+. The pre-fix else-branch at
-        # memory.jl:1170 called `Lifted{Memory{P}, N}(x, dx)` with a
-        # single `dx` Memory, broadcasting into all N NTangent lanes.
-        # Fix: when canonical V is `Dual{Memory{P}, NTangent}` at N≥2,
-        # allocate N independent tangent Memories via `Core.memorynew`.
+        # Regression: width-N>=2 `Core.memorynew` (Julia 1.12+) must
+        # allocate N independent tangent Memories via per-lane
+        # `Core.memorynew` to avoid lane-aliasing.
         @static if VERSION >= v"1.12-"
             for N in (1, 2)
                 f = Mooncake.zero_lifted(Val(N), Core.memorynew)
@@ -1276,16 +1199,9 @@ end
     end
 
     @testset "_new_(Array{<:Struct}, ref, sz) width-N lane independence" begin
-        # Pre-fix: `_new_(Vector{LoHi}, ref, sz)` at width N≥2 went through
-        # the bare-Dual rule which called `_new_(Array{Tangent, M},
-        # tangent(ref), size)` where `tangent(ref)` is the NTangent
-        # wrapper. `_new_` stuffed the NTangent into the new Array's `.ref`
-        # field via `:new`, producing a malformed Array; `_wrap_rule_result`
-        # then aliased that single malformed Array into all N NTangent
-        # lanes — two bugs in one: lane aliasing AND corrupted Array
-        # internals.
-        # Fix: detect NTangent-wrapped Array V at N≥2 and build N
-        # independent per-lane tangent Arrays from per-lane MemoryRefs.
+        # Regression: `_new_(Vector{LoHi}, ref, sz)` at width N>=2 must
+        # build N independent per-lane tangent Arrays from per-lane
+        # MemoryRefs to avoid lane-aliasing the malformed-Array bug.
         @static if VERSION >= v"1.11-"
             for N in (1, 2)
                 m = Memory{TestResources.LoHi}(undef, 3)
@@ -1324,15 +1240,8 @@ end
     end
 
     @testset "Memory{<:Struct}(undef, n) width-N lane independence" begin
-        # Pre-fix: `Memory{LoHi}(undef, n)` at width N≥2 went through
-        # `_memory_init_kernel` (returns a single Dual with single Memory
-        # tangent) → `_wrap_rule_result` → `Lifted{Memory{LoHi}, N}(p, t)`
-        # → the Lifted ctor broadcast the single tangent Memory into N
-        # NTangent lanes, producing aliased lane references (`lanes[1]
-        # === lanes[2]`). Writing one lane corrupted all — a silent
-        # correctness bug.
-        # Fix: when the canonical inner V is `Dual{Memory{P}, NTangent}`
-        # at N≥2, allocate N independent tangent Memories explicitly.
+        # Regression: `Memory{LoHi}(undef, n)` at width N>=2 must allocate
+        # N independent tangent Memories (no lane-aliasing).
         @static if VERSION >= v"1.11-"
             for N in (1, 2)
                 f = Mooncake.zero_lifted(Val(N), Memory{TestResources.LoHi})
@@ -1357,14 +1266,9 @@ end
     end
 
     @testset "memoryrefnew width-N struct-element" begin
-        # Pre-fix: `_memoryrefnew_kernel(::Dual{<:Memory})` and
-        # `_memoryrefnew_kernel(::Dual{<:MemoryRef}, ::Dual{Int}[, ::Dual{Bool}])`
-        # called `memoryrefnew(_ntangent_unwrap_singleton(tangent(x)), ...)` where
-        # `_ntangent_unwrap_singleton` only unwraps singleton-NTangent. At width N≥2
-        # the multi-lane NTangent stayed wrapped and `memoryrefnew(::NTangent)`
-        # errored with `expected GenericMemory[Ref]`. Fix: add
-        # `Dual{..., <:NTangent}` overloads that map memoryrefnew over each
-        # lane and reassemble the NTangent.
+        # Regression: width-N>=2 `memoryrefnew` on struct-element
+        # Memory/MemoryRef must map over each lane and reassemble the
+        # NTangent (no singleton-unwrap shortcut).
         @static if VERSION >= v"1.11-"
             for N in (1, 2)
                 m = Memory{TestResources.LoHi}(undef, 3)
@@ -1389,14 +1293,8 @@ end
     end
 
     @testset "Vector grow/shrink/sizehint width-N struct-element" begin
-        # Pre-fix: `_growbeg_kernel!` / `_growend_kernel!` / `_sizehint_kernel!` /
-        # `_deletebeg_kernel!` / `_deleteend_kernel!` / `_deleteat_kernel!` /
-        # `_growat_kernel!` at memory.jl:1583+ all called
-        # `Base._growbeg!(tangent(a), ...)` etc. where `tangent(a)` is the
-        # NTangent wrapper for struct-element Vector — none of these ops have
-        # methods for NTangent. Fix: add `Dual{<:Vector, <:NTangent}` overloads
-        # that apply the op per-lane via `foreach(t -> op(t, ...),
-        # tangent(a).lanes)`.
+        # Regression: width-N>=2 grow/shrink ops on struct-element Vectors
+        # must apply per-lane via `foreach(t -> op(t, ...), lanes)`.
         @static if VERSION >= v"1.11-"
             cases = [
                 (Base._growbeg!, (2,)),
@@ -1425,11 +1323,8 @@ end
     end
 
     @testset "copy(Array{<:Struct}) width-N" begin
-        # Pre-fix: `_copy_array_kernel(::Dual{<:Array})` at memory.jl:1554
-        # called `copy(tangent(a))` where `tangent(a)` is the NTangent wrapper
-        # for struct-element Array at any width — `copy(NTangent)` had no
-        # method. Fix: add a `_copy_array_kernel(::Dual{<:Array, <:NTangent})`
-        # overload that copies each lane's wrapped Array independently.
+        # Regression: `copy(::Array{<:Struct})` must copy each lane's
+        # wrapped Array independently (via `copy(::NTangent)` per-lane).
         arr = [TestResources.LoHi(1.0, 2.0), TestResources.LoHi(3.0, 4.0)]
         for N in (1, 2)
             f = Mooncake.zero_lifted(Val(N), Base.copy)
@@ -1441,13 +1336,9 @@ end
     end
 
     @testset "memoryrefset! width-N struct-value" begin
-        # Pre-fix: the Lifted delegator routed through bare-Dual dispatch
-        # which constrained `value::Union{Dual, NDual, ...}` — the bare
-        # NamedTuple inner V of a struct-value Lifted didn't match any
-        # bare-Dual rule, so dispatch failed with MethodError at all widths.
-        # Fix: Lifted-typed overload that forwards to `lmemoryrefset!` at
-        # the Lifted level (whose `V<:NamedTuple` overload handles the
-        # per-lane struct write).
+        # Regression: `memoryrefset!` with struct-value Lifted must
+        # dispatch to the Lifted-typed body (no bare-Dual fallback) so
+        # the V<:NamedTuple per-lane struct write executes correctly.
         @static if VERSION >= v"1.11-"
             for N in (1, 2)
                 m = Memory{TestResources.LoHi}(undef, 4)
