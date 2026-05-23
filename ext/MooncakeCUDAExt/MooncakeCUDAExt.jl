@@ -2798,38 +2798,25 @@ end
     dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
     return Dual(decoded.primal_out, dy)
 end
-@inline function _materialize_cuarray_kernel(
-    ::Val{N}, bc::Broadcasted{<:CuArrayStyle}
+# Unified per-lane Lifted body. Handles both canonical V (bare
+# `Broadcasted{<:CuArrayStyle}` carrying element-wise NDual partials) and
+# wrapper-exception V (`Dual{<:Broadcasted, …}`). `primal(bc)` returns the
+# float-element Broadcasted via the Lifted accessor; `tangent(bc, k)`
+# returns the lane-`k` tangent shape that `_prepare_gpu_broadcast`
+# accepts (a `Tangent((; style, f, args, axes))` for canonical V or a
+# bare `Broadcasted` for wrapper-exception V).
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
+    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N},
 ) where {N}
-    bc_primal = Mooncake._ndual_primal(bc)
-    lane_results = ntuple(Val(N)) do i
-        _materialize_cuarray_kernel(Dual(bc_primal, Mooncake.tangent(bc, i)))
+    bc_primal = primal(bc)
+    lane_results = ntuple(Val(N)) do k
+        _materialize_cuarray_kernel(Dual(bc_primal, Mooncake.tangent(bc, k)))
     end
     y = primal(lane_results[1])
-    tangents = ntuple(i -> tangent(lane_results[i]), Val(N))
+    tangents = ntuple(k -> tangent(lane_results[k]), Val(N))
     all(t -> t isa NoTangent, tangents) && return Mooncake.zero_lifted(Val(N), y)
-    # Uniform `NTangent(tangents)` at every positive width; the
-    # singleton-`NTangent` ctor on `Dual{P,T}` unwraps for the width-1 bare
-    # form, and the specialised IEEEFloat / Array / Memory inner ctors all
-    # accept top-level `NTangent`.
     return Mooncake.Lifted{typeof(y),N}(y, Mooncake.NTangent(tangents))
-end
-# Canonical V: bare Broadcasted carrying element-wise NDual partials (the
-# canonical-NDual lift of `Broadcasted{<:CuArrayStyle, ..., F, Args}` is
-# the same Broadcasted with NDual-bearing args). Delegate per lane.
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
-    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N,V_bc},
-) where {N,V_bc<:Broadcasted{<:CuArrayStyle}}
-    return _materialize_cuarray_kernel(Val(N), Mooncake._unlift(bc))
-end
-# Wrapper-exception V: `Dual{Broadcasted, NTangent}` (legacy parallel form).
-@inline function frule!!(
-    ::Mooncake.Lifted{typeof(Base.Broadcast.materialize),N},
-    bc::Mooncake.Lifted{<:Broadcasted{<:CuArrayStyle},N,V_bc},
-) where {N,V_bc<:Dual{<:Broadcasted}}
-    bare_result = _materialize_cuarray_kernel(Mooncake._unlift(bc))
-    return Mooncake._wrap_rule_result(Val(N), bare_result)
 end
 
 function rrule!!(

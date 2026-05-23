@@ -418,8 +418,7 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
-    bare_args = ntuple(i -> Mooncake._unlift(args[i]), Val(M))
-    return Mooncake.zero_lifted(Val(N), __cglobal(map(primal, bare_args)...))
+    return Mooncake.zero_lifted(Val(N), __cglobal(map(primal, args)...))
 end
 @inline Mooncake._is_lifted_aware(::Type{<:Tuple{typeof(__cglobal),Vararg}}) = true
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
