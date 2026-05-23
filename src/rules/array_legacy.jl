@@ -643,7 +643,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
 ) where {N,V_a<:AbstractArray{<:NDual}}
-    return _wrap_rule_result(Val(N), copy(Mooncake._unlift(a)))
+    c = copy(Mooncake._unlift(a))
+    return Mooncake.Lifted{__primal_type(_typeof(c)),N}(c)
 end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)

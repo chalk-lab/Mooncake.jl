@@ -447,12 +447,10 @@ end
     _ordering::Mooncake.Lifted{<:Val},
     _boundscheck::Mooncake.Lifted{<:Val},
 ) where {N,V_x<:MemoryRef{<:_HasNDual}}
-    return _wrap_rule_result(
-        Val(N),
-        memoryrefget(
-            Mooncake._unlift(x), _val(primal(_ordering)), _val(primal(_boundscheck))
-        ),
+    nd = memoryrefget(
+        Mooncake._unlift(x), _val(primal(_ordering)), _val(primal(_boundscheck))
     )
+    return Mooncake.Lifted{__primal_type(_typeof(nd)),N}(nd)
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
@@ -493,9 +491,8 @@ end
     _ordering::Mooncake.Lifted{Symbol},
     _boundscheck::Mooncake.Lifted{Bool},
 ) where {N,V_x<:MemoryRef{<:_HasNDual}}
-    return _wrap_rule_result(
-        Val(N), memoryrefget(Mooncake._unlift(x), primal(_ordering), primal(_boundscheck))
-    )
+    nd = memoryrefget(Mooncake._unlift(x), primal(_ordering), primal(_boundscheck))
+    return Mooncake.Lifted{__primal_type(_typeof(nd)),N}(nd)
 end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
@@ -530,7 +527,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(memoryrefnew),N}, x::Mooncake.Lifted{<:Memory,N,V_x}
 ) where {N,V_x<:Memory{<:_HasNDual}}
-    return _wrap_rule_result(Val(N), memoryrefnew(Mooncake._unlift(x)))
+    mref = memoryrefnew(Mooncake._unlift(x))
+    return Mooncake.Lifted{__primal_type(_typeof(mref)),N}(mref)
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
@@ -557,9 +555,8 @@ end
     ii::Mooncake.Lifted{Int},
     extras::Vararg{Mooncake.Lifted,M},
 ) where {N,M,V_x<:MemoryRef{<:_HasNDual}}
-    return _wrap_rule_result(
-        Val(N), memoryrefnew(Mooncake._unlift(x), primal(ii), map(primal, extras)...)
-    )
+    mref = memoryrefnew(Mooncake._unlift(x), primal(ii), map(primal, extras)...)
+    return Mooncake.Lifted{__primal_type(_typeof(mref)),N}(mref)
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -939,7 +936,8 @@ end
     u::Mooncake.Lifted{UndefInitializer},
     n::Mooncake.Lifted{Int},
 ) where {N,P<:Union{NDual,Complex{<:NDual}}}
-    return _wrap_rule_result(Val(N), Memory{P}(undef, primal(n)))
+    mem = Memory{P}(undef, primal(n))
+    return Mooncake.Lifted{__primal_type(_typeof(mem)),N}(mem)
 end
 # Struct-element (non-NDual) Memory: build N independent tangent Memories so
 # `NTangent` lanes don't alias. The canonical V at width N is
@@ -974,7 +972,7 @@ end
 
 # Canonical NDual-element MemoryRef V: construct the canonical
 # `Array{NDual{T,N},M}` directly. The bare canonical container IS the
-# inner V — `_wrap_rule_result` lifts it back to `Lifted{Array{P,M},N}`.
+# inner V.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(_new_),N},
     p::Mooncake.Lifted{Type{Array{P,M}}},
@@ -983,13 +981,10 @@ end
 ) where {N,P,M,V_ref<:MemoryRef{<:_HasNDual}}
     bare_ref = Mooncake._unlift(ref)
     y = _new_(Array{eltype(bare_ref),M}, bare_ref, primal(size))
-    return _wrap_rule_result(Val(N), y)
+    return Mooncake.Lifted{__primal_type(_typeof(y)),N}(y)
 end
 # Wrapper-exception V (Dual{MemoryRef, NTangent}): allocate N independent
-# per-lane tangent Arrays from per-lane MemoryRefs. (Pre-fix the bare-Dual
-# body stuffed an NTangent into the new Array's `.ref` field, producing a
-# malformed Array; `_wrap_rule_result` then aliased that single malformed
-# Array across all N NTangent lanes.)
+# per-lane tangent Arrays from per-lane MemoryRefs.
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(_new_),N},
     p::Mooncake.Lifted{Type{Array{P,M}}},
@@ -1039,7 +1034,8 @@ end
     ::Mooncake.Lifted{Val{:ccall}},
     x::Mooncake.Lifted{<:Memory,N,V_x},
 ) where {N,V_x<:Memory{<:_HasNDual}}
-    return _wrap_rule_result(Val(N), copy(Mooncake._unlift(x)))
+    y = copy(Mooncake._unlift(x))
+    return Mooncake.Lifted{__primal_type(_typeof(y)),N}(y)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -1077,8 +1073,8 @@ end
     ::Mooncake.Lifted{Val{order}},
 ) where {N,P<:MemoryRef,name,order,V_x<:MemoryRef{<:_HasNDual}}
     bare_x = Mooncake._unlift(x)
-    bare_result = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
-    return _wrap_rule_result(Val(N), bare_result)
+    inner = zero_dual(_ndual_width(bare_x), getfield(bare_x, name, order))
+    return Mooncake.Lifted{__primal_type(_typeof(inner)),N}(inner)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -1260,7 +1256,8 @@ end
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(copy),N}, a::Mooncake.Lifted{<:Array,N,V_a}
 ) where {N,V_a<:Array{<:_HasNDual}}
-    return _wrap_rule_result(Val(N), copy(Mooncake._unlift(a)))
+    c = copy(Mooncake._unlift(a))
+    return Mooncake.Lifted{__primal_type(_typeof(c)),N}(c)
 end
 # Bare-Dual entry for `copy(::Array{<:_HasNDual})` — preserved for direct
 # rule-invocation callers (`frule!!(zero_dual(copy), x_dual)`); see the
