@@ -174,15 +174,11 @@ function _uninit_dual_fallback(w::Val{N}, v) where {N}
     end
 end
 
-# Extract the integer N from `Val{N}`. Used at IR-emit time to construct
-# `Lifted{P, N}` parametric types when wrapping rule results.
-@inline _val_n(::Val{N}) where {N} = N
-
 # `@generated` shim: forces `dual_type(Val(N), P)` to resolve at expansion
 # time and emits the result as a literal type. `dual_type` is `@unstable`
 # and its struct-lift / Tuple branches contain runtime predicates (e.g.
-# `_all(_is_lift_safe_field_type, fieldtypes(P), :)`) that the inliner
-# can't constant-fold. The fully-inlined IR ends up with abstract V types
+# `_uses_structural_dual_type`) that the inliner can't constant-fold.
+# The fully-inlined IR ends up with abstract V types
 # (e.g. `@NamedTuple{x::Dual, y::Dual}`) flowing into the invariant
 # `Lifted{P, N, V}` constructor; the runtime value's V is concrete (e.g.
 # `@NamedTuple{x::NDual{Float64, 1}, y::Dual{Int, NoTangent}}`) and the

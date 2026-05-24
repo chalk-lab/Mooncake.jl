@@ -196,7 +196,7 @@ Primals outside the canonical coverage still produce the
     # - Structs with nested-struct fields (e.g. `Broadcasted`'s `args` is a
     #   `Tuple` containing an `Extruded` struct, which would itself recurse
     #   through this lift, losing its struct identity inside the Tuple V).
-    #   `_is_lift_safe_field_type` walks Tuple/NamedTuple containers to
+    #   `_uses_structural_dual_type` walks Tuple/NamedTuple containers to
     #   detect any non-flat struct lurking inside. Keep the legacy form.
     #
     # Specific per-wrapper `dual_type` overloads (e.g. `Diagonal{T,Vector{T}}`
