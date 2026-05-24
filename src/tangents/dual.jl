@@ -262,7 +262,7 @@ end
 @inline _field_canonical_ndual_eligible(::Type{T}) where {T} = false
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:IEEEFloat}}) = true
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:Complex{<:IEEEFloat}}}) = true
-# Nested Array canonical NDual (Phase 4 closure): `DenseArray{<:DenseArray{<:IEEEFloat}}`
+# Nested Array canonical NDual: `DenseArray{<:DenseArray{<:IEEEFloat}}`
 # now has a canonical form, so a mutable struct field of that shape can also
 # participate in SplitDual.
 @inline _field_canonical_ndual_eligible(::Type{<:DenseArray{<:DenseArray{<:IEEEFloat}}}) =

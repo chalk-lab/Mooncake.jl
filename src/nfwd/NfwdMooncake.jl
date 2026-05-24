@@ -863,7 +863,7 @@ end
 function dual_type(::Val{N}, ::Type{Array{Complex{T},D}}) where {N,T<:IEEEFloat,D}
     return Array{Complex{NDual{T,N}},D}
 end
-# Nested Array (Phase 4): `Array{Array{<:IEEEFloat, K}, D}` canonical recursion.
+# Nested Array: `Array{Array{<:IEEEFloat, K}, D}` canonical recursion.
 # Element-wise NDual interleaving via the inner Array{NDual{T,N}, K} canonical
 # form. Undef slots in the outer Vector are preserved via `_map_if_assigned!`-
 # style iteration in the ctor and accessors (mirroring reverse-mode's
@@ -918,7 +918,7 @@ dual_type(::Val{0}, ::Type{Array{T,D}}) where {T<:IEEEFloat,D} = Array{T,D}
 function dual_type(::Val{0}, ::Type{Array{Complex{T},D}}) where {T<:IEEEFloat,D}
     return Array{Complex{T},D}
 end
-# Nested Array Val(0) passthrough (Phase 4).
+# Nested Array Val(0) passthrough.
 function dual_type(::Val{0}, ::Type{Array{Array{T,K},D}}) where {T<:IEEEFloat,K,D}
     return Array{Array{T,K},D}
 end
@@ -1126,9 +1126,9 @@ for W in (:(LinearAlgebra.Hermitian), :(LinearAlgebra.Symmetric))
     end
 end
 
-# ReinterpretArray canonical NDual V — Phase 2 of the wrapper-exception
-# removal. For `T<:IEEEFloat` over `S<:IEEEFloat` parent, the byte layout
-# of `reinterpret(NDual{T,N}, ::Vector{NDual{S,N}})` aligns with the user-
+# ReinterpretArray canonical NDual V. For `T<:IEEEFloat` over
+# `S<:IEEEFloat` parent, the byte layout of
+# `reinterpret(NDual{T,N}, ::Vector{NDual{S,N}})` aligns with the user-
 # observed `reinterpret(T, ::Vector{S})` cast: `NDual{*,N}` is `(N+1)` Floats,
 # so an array of `NDual{S,N}` viewed as `NDual{T,N}` preserves the same
 # element-pair count. Same template as Transpose/ReshapedArray. The
@@ -1262,11 +1262,11 @@ function (::Type{Base.ReshapedArray{Complex{NDual{T,N}},D,V_parent,MI}})(
         parent_lifted, primal.dims, primal.mi
     )
 end
-# ReinterpretArray canonical V ctor + Lifted bridge — Phase 2 of the
-# wrapper-exception removal. Delegates the parent lift to V_parent's own
-# `(primal, tangent)` ctor, then reinterprets the resulting NDual-element
-# parent. Byte layout aligns because `NDual{T,N}` is `(N+1)*sizeof(T)` and
-# `NDual{S,N}` is `(N+1)*sizeof(S)`, matching the source-T-to-target-S ratio.
+# ReinterpretArray canonical V ctor + Lifted bridge. Delegates the parent
+# lift to V_parent's own `(primal, tangent)` ctor, then reinterprets the
+# resulting NDual-element parent. Byte layout aligns because `NDual{T,N}`
+# is `(N+1)*sizeof(T)` and `NDual{S,N}` is `(N+1)*sizeof(S)`, matching the
+# source-T-to-target-S ratio.
 function (::Type{Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}})(
     primal::Base.ReinterpretArray{T,D,S,P,W}, tangent::Mooncake.Tangent
 ) where {T<:IEEEFloat,N,D,S<:IEEEFloat,P<:AbstractArray{S},Vp<:AbstractArray{NDual{S,N}},W}
@@ -1386,13 +1386,11 @@ end
     return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
 end
 
-# StepRangeLen with TwicePrecision ref/step fields previously had an explicit
-# `dual_type` wrapper-exception override here. As of Phase 3 of the
-# wrapper-exception-removal plan, SRL routes through the generic structural
-# lift in `src/tangents/dual.jl`, producing
+# StepRangeLen with TwicePrecision ref/step fields routes through the
+# generic structural lift in `src/tangents/dual.jl`, producing
 # `NamedTuple{(:ref,:step,:len,:offset), Tuple{Dual{TWP, NTangent{NTuple{N, TWP}}}, ...}}`.
 # Rule bodies in `src/rules/twice_precision.jl` extract `:ref` / `:step` via
-# `tangent(_unlift(r).ref, lane)` rather than the legacy Tangent path.
+# `tangent(_unlift(r).ref, lane)`.
 
 @inline _type_has_ndual(::Type) = false
 @inline _type_has_ndual(::Type{<:NDual}) = true
@@ -1608,7 +1606,7 @@ Mooncake.verify_dual_type(::NDual) = true
 Mooncake.verify_dual_type(::Complex{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:NDual}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:Complex{<:NDual}}) = true
-# Nested Array canonical V (Phase 4).
+# Nested Array canonical V.
 Mooncake.verify_dual_type(::AbstractArray{<:AbstractArray{<:NDual}}) = true
 Mooncake.verify_dual_type(::AbstractArray{<:AbstractArray{<:Complex{<:NDual}}}) = true
 # `MemoryRef{<:NDual}` and `MemoryRef{<:Complex{<:NDual}}` are valid
@@ -1685,7 +1683,7 @@ function (::Type{Array{NDual{T,N},D}})(
         NDual{T,N}(p, ts)
     end
 end
-# Nested Array constructor (Phase 4): element-wise via inner
+# Nested Array constructor: element-wise via inner
 # `Array{NDual{T,N}, K}` ctor, but `_map_if_assigned!`-style — preserves undef
 # slots from the primal in the canonical output, matching the reverse-mode
 # convention that the tangent's assignment pattern mirrors the primal's.
@@ -1934,7 +1932,7 @@ end
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, z::Complex{<:IEEEFloat}) = z
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:IEEEFloat}) = x
 @inline Mooncake.randn_dual(::Val{0}, ::AbstractRNG, x::Array{<:Complex{<:IEEEFloat}}) = x
-# Nested Array randn_dual (Phase 4).
+# Nested Array randn_dual.
 @inline Mooncake.randn_dual(
     ::Val{0}, ::AbstractRNG, x::Array{Array{T,K},D}
 ) where {T<:IEEEFloat,K,D} = x
@@ -1996,7 +1994,7 @@ end
 @inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
     x, w, _ -> zero(real(eltype(x)))
 )
-# Nested Array zero_dual (Phase 4): isassigned-guarded iteration preserves the
+# Nested Array zero_dual: isassigned-guarded iteration preserves the
 # outer Array's undef-assignment pattern.
 @inline Mooncake.zero_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
 @inline Mooncake.zero_dual(
@@ -2049,7 +2047,7 @@ end
 @inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
     x, w, _ -> zero(real(eltype(x)))
 )
-# Nested Array uninit_dual (Phase 4).
+# Nested Array uninit_dual.
 @inline Mooncake.uninit_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
 @inline Mooncake.uninit_dual(
     ::Val{0}, x::Array{Array{Complex{T},K},D}
@@ -2221,7 +2219,7 @@ end
 @inline Mooncake._field_primal(a::Array{<:Complex{<:NDual}}) = primal(a)
 @inline Mooncake._field_tangent(a::Array{<:Complex{<:NDual}}) = tangent(a)
 
-# Nested Array accessors (Phase 4): isassigned-guarded iteration mirroring the
+# Nested Array accessors: isassigned-guarded iteration mirroring the
 # reverse-mode tangent layout. `primal(a)` returns an `Array{Array{T, K}, D}`
 # with the same undef-assignment pattern as the canonical V; `tangent(a)`
 # returns `NTangent{NTuple{N, Array{Array{T, K}, D}}}` whose per-lane arrays
@@ -2251,7 +2249,7 @@ end
 @inline Mooncake._field_primal(a::Array{<:Array{<:NDual}}) = primal(a)
 @inline Mooncake._field_tangent(a::Array{<:Array{<:NDual}}) = tangent(a)
 
-# ReshapedArray canonical NDual V — Phase 2 of the wrapper-exception removal.
+# ReshapedArray canonical NDual V.
 # Without these, `primal(::Lifted{<:Tuple})` walks Tuple elements via
 # `_field_primal` which falls through to the catch-all (returns x unchanged),
 # leaving the ReshapedArray element type as NDual instead of reconstructing
