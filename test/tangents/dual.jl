@@ -176,6 +176,26 @@ end
         T2af = lifted_type(Val(2), AbstractFloat)
         @test Lifted{Float64,2,NDual{Float64,2}} <: T2af
         @test !(Lifted{Float64,1,NDual{Float64,1}} <: T2af)
+
+        # Leaf-kind P (DataType, UnionAll, Union, Core.TypeofBottom): widen V
+        # to UnionAll. `isconcretetype(DataType)` is `true` (DataType is a leaf
+        # type), so the standard concrete-V branch would otherwise return
+        # `Lifted{DataType, 1, Dual{DataType, NoTangent}}` — an 8-byte
+        # boxed-pointer slot incompatible with `Dual{Type{X}, NoTangent}`
+        # singleton (0-byte) runtime values. Verified by SIGSEGV in
+        # `jl_valid_type_param` from `Core.apply_type` (CUDA `view → fieldtypes`).
+        for (P, X) in (
+            (DataType, Float64),  # Type{Float64} :: DataType
+            (UnionAll, Vector),  # Type{Vector} :: UnionAll
+            (Union, Union{Int,Float64}),  # Type{Union{...}} :: Union (Core.Type)
+            (Core.TypeofBottom, Union{}),  # Type{Union{}} :: Core.TypeofBottom
+        )
+            @test !isconcretetype(lifted_type(Val(1), P))
+            @test Lifted{Type{X},1,Dual{Type{X},NoTangent}} <: lifted_type(Val(1), P)
+        end
+        # `Type{X}` singletons: storage matches, concrete slot is correct.
+        @test lifted_type(Val(1), Type{Float64}) ===
+            Lifted{Type{Float64},1,Dual{Type{Float64},NoTangent}}
     end
 
     @testset "verify_lifted_type" begin
