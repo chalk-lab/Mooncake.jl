@@ -1255,11 +1255,6 @@ end
     c = copy(Mooncake._unlift(a))
     return Mooncake.Lifted{__primal_type(_typeof(c)),N}(c)
 end
-# Bare-Dual entry for `copy(::Array{<:_HasNDual})` — preserved for direct
-# rule-invocation callers (`frule!!(zero_dual(copy), x_dual)`); see the
-# `copy with NDual arrays returns bare NDual container` test at
-# `test/rules/memory.jl:54`.
-@inline frule!!(::Dual{typeof(copy),NoTangent}, a::Array{<:_HasNDual}) = copy(a)
 
 # Vector grow/shrink ops. On Julia <1.11 these live in `rules/array_legacy.jl`,
 # but that file is not loaded on 1.11+. Each primitive splits by inner V:
