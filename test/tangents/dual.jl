@@ -360,13 +360,13 @@ end
         ) === LinearAlgebra.Diagonal{NDual{Float64,2},Vector{NDual{Float64,2}}}
     end
 
-    @testset "ReinterpretArray canonical NDual V (Phase 2)" begin
-        # ReinterpretArray for `T<:IEEEFloat AND S<:IEEEFloat` parent migrated
-        # to canonical NDual-element form via the Transpose/ReshapedArray
-        # template. The reinterpret view's byte layout aligns because
-        # `NDual{*, N}` is `(N+1) * sizeof(*)`, so an array of `NDual{S, N}`
-        # viewed as `NDual{T, N}` preserves the element-pair ratio of the
-        # original `Vector{S} → ReinterpretArray{T}` cast.
+    @testset "ReinterpretArray canonical NDual V" begin
+        # ReinterpretArray for `T<:IEEEFloat AND S<:IEEEFloat` parent uses the
+        # canonical NDual-element form via the Transpose/ReshapedArray template.
+        # The reinterpret view's byte layout aligns because `NDual{*, N}` is
+        # `(N+1) * sizeof(*)`, so an array of `NDual{S, N}` viewed as
+        # `NDual{T, N}` preserves the element-pair ratio of the original
+        # `Vector{S} → ReinterpretArray{T}` cast.
         let W = Base.ReinterpretArray{Float64,1,Float64,Vector{Float64},false}
             @test Mooncake.dual_type(Val(0), W) === W
             @test Mooncake.dual_type(Val(1), W) === Base.ReinterpretArray{
