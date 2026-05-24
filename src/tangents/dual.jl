@@ -1511,14 +1511,10 @@ slot). Symmetric with reverse mode's `codual_type`.
 lifted_type(::Val{0}, ::Type{P}) where {P} = P
 function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
-    # Concrete `(P, V)`: produce the fully-parameterised slot type — unless
-    # `P` is an abstract `<:Type` supertype (e.g. `DataType`) whose V wraps a
-    # non-singleton `primal::P` field. Runtime values inhabiting such a slot
-    # are typically `Dual{Type{X}, NoTangent}` singletons (0 bytes); the
-    # concrete slot's OC compiler emits layout-specific loads against the
-    # boxed-pointer offset and reads uninitialised memory — segfault inside
-    # `jl_valid_type_param` from the `Core.apply_type` frule. Widen V to a
-    # UnionAll so the OC compiler emits a generic boxed field access.
+    # Concrete `(P, V)`: produce the fully-parameterised slot type — except
+    # when `P` is a leaf "kind" (DataType etc.), where concrete V would
+    # mismatch the singleton-V runtime values it admits. See
+    # `_has_type_singleton_storage_mismatch`.
     if isconcretetype(V) && !_has_type_singleton_storage_mismatch(P, V)
         return Lifted{P,N,V}
     end
@@ -1538,15 +1534,14 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # subtype of `P` at the bound width.
     return Lifted{Q,N,V_inner} where {Q<:P,V_inner}
 end
-# `P` is a leaf "kind" supertype of `Type{X}` singletons (`DataType`,
-# `UnionAll`, `Union`, `Core.TypeofBottom`), and `V`'s primal field references
-# the kind `P` directly rather than a concrete `Type{X}` singleton. Runtime
-# values inhabiting this slot will be `Dual{Type{X}, NoTangent}` singletons
-# (0 bytes), incompatible with `V`'s boxed-pointer layout (8 bytes for
-# `primal::P`). `isconcretetype(DataType)` is `true` because `DataType` is a
-# leaf type, so the standard "concrete V" branch above doesn't catch this —
-# detect it explicitly via `P <: Type` plus zero type-parameters (which
-# excludes the well-behaved `Type{X}` singleton form).
+# Leaf-kind `P` (`DataType`, `UnionAll`, `Union`, `Core.TypeofBottom`) — i.e.
+# `P <: Type` with zero type-parameters — has `isconcretetype(P) == true` but
+# its inhabitants are `Type{X}` singletons (0 bytes). A concrete slot
+# `Lifted{P, N, Dual{P, NoTangent}}` declares `primal::P` as an 8-byte boxed
+# pointer; passing a singleton `Dual{Type{X}, NoTangent}` value leaves that
+# slot uninitialised — segfault in `jl_valid_type_param` from the
+# `Core.apply_type` frule (e.g. CUDA `view → fieldtypes → ntupleany`). Widen
+# V to UnionAll for these P so the OC emits a generic boxed access.
 @inline function _has_type_singleton_storage_mismatch(::Type{P}, ::Type{V}) where {P,V}
     P isa DataType && P <: Type && length(P.parameters) == 0 || return false
     V isa DataType && V <: Dual || return false
