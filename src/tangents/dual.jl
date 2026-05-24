@@ -1511,8 +1511,17 @@ slot). Symmetric with reverse mode's `codual_type`.
 lifted_type(::Val{0}, ::Type{P}) where {P} = P
 function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     V = dual_type(Val(N), P)
-    # Concrete `(P, V)`: produce the fully-parameterised slot type.
-    isconcretetype(V) && return Lifted{P,N,V}
+    # Concrete `(P, V)`: produce the fully-parameterised slot type — unless
+    # `P` is an abstract `<:Type` supertype (e.g. `DataType`) whose V wraps a
+    # non-singleton `primal::P` field. Runtime values inhabiting such a slot
+    # are typically `Dual{Type{X}, NoTangent}` singletons (0 bytes); the
+    # concrete slot's OC compiler emits layout-specific loads against the
+    # boxed-pointer offset and reads uninitialised memory — segfault inside
+    # `jl_valid_type_param` from the `Core.apply_type` frule. Widen V to a
+    # UnionAll so the OC compiler emits a generic boxed field access.
+    if isconcretetype(V) && !_has_type_singleton_storage_mismatch(P, V)
+        return Lifted{P,N,V}
+    end
     # A `Tuple{Type{T1}, Type{T2}, ...}` primal lifts to a
     # `Tuple{Dual{Type{T1}, NoTangent}, Dual{Type{T2}, NoTangent}, ...}` V.
     # `isconcretetype` returns false for these (Type-of-Type fields), but
@@ -1528,6 +1537,23 @@ function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # rejects cross-width substitution while still accepting any concrete
     # subtype of `P` at the bound width.
     return Lifted{Q,N,V_inner} where {Q<:P,V_inner}
+end
+# `P` is a leaf "kind" supertype of `Type{X}` singletons (`DataType`,
+# `UnionAll`, `Union`, `Core.TypeofBottom`), and `V`'s primal field references
+# the kind `P` directly rather than a concrete `Type{X}` singleton. Runtime
+# values inhabiting this slot will be `Dual{Type{X}, NoTangent}` singletons
+# (0 bytes), incompatible with `V`'s boxed-pointer layout (8 bytes for
+# `primal::P`). `isconcretetype(DataType)` is `true` because `DataType` is a
+# leaf type, so the standard "concrete V" branch above doesn't catch this —
+# detect it explicitly via `P <: Type` plus zero type-parameters (which
+# excludes the well-behaved `Type{X}` singleton form).
+@inline function _has_type_singleton_storage_mismatch(::Type{P}, ::Type{V}) where {P,V}
+    P isa DataType && P <: Type && length(P.parameters) == 0 || return false
+    V isa DataType && V <: Dual || return false
+    length(V.parameters) == 2 || return false
+    Vp = V.parameters[1]
+    Vp isa DataType && Vp <: Type && length(Vp.parameters) == 0 || return false
+    return true
 end
 # A Tuple V is "instantiable" if every field is either concrete or a
 # `Dual{Type{T}, NoTangent}` (which has a single inhabitant per T).
