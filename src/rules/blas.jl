@@ -645,9 +645,7 @@ end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(BLAS.nrm2),N}, X_dX::Mooncake.Lifted
 ) where {N}
-    X_dX_inner = Mooncake._unlift(X_dX)
-    p = X_dX_inner isa Dual ? primal(X_dX_inner) : X_dX_inner
-    n = length(p)
+    n = length(primal(X_dX))
     return frule!!(
         f,
         Mooncake.Lifted{Int,N,Dual{Int,NoTangent}}(Dual(n, NoTangent())),
