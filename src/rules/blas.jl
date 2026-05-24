@@ -375,51 +375,6 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    @eval @inline function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(blas_name(fname))}},
-        ::Dual, # return type
-        ::Dual, # argument types
-        ::Dual, # nreq
-        ::Dual, # calling convention
-        _n::Dual{BLAS.BlasInt},
-        _DX::Dual{Ptr{$elty}},
-        _incx::Dual{BLAS.BlasInt},
-        _DY::Dual{Ptr{$elty}},
-        _incy::Dual{BLAS.BlasInt},
-        # For complex numbers the result is stored in an extra pointer
-        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
-        args::Vararg{Any,N},
-    ) where {N}
-        GC.@preserve args begin
-            # Load in values from pointers.
-            n, incx, incy = map(primal, (_n, _incx, _incy))
-            DX, _dDX = arrayify(_DX)
-            DY, _dDY = arrayify(_DY)
-
-            result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            _dresult =
-                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
-                BLAS.$jlfname(n, DX, incx, _dDY, incy)
-
-            # For complex numbers the result must be stored in the pointer
-            $(
-                if isreal
-                    quote
-                        Dual(result, _dresult)
-                    end
-                else
-                    quote
-                        presult, _dpresult = arrayify(_presult)
-                        Base.unsafe_store!(presult, result)
-                        Base.unsafe_store!(_dpresult, _dresult)
-
-                        Dual(nothing, NoTangent())
-                    end
-                end
-            )
-        end
-    end
     @eval @inline function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{$(blas_name(fname))}},
@@ -493,16 +448,14 @@ for (fname, jlfname, elty) in (
         return CoDual(result, NoFData()), dot_pb!!
     end
 
-    # Do NOT add a forward-mode rule for the `cblas_*dot*` foreigncall: past
-    # attempts segfaulted inside libopenblas64_'s `sdot_k_COOPERLAKE` when
-    # called with the canonical width-1 NTangent-wrapped `Dual{Ptr{T},
-    # NTangent{Tuple{Ptr{T}}}}` tangent pointer (likely the tangent Ptr isn't
-    # a valid readable address). With no rule, the foreigncall fallback
-    # returns a controlled `MissingForeigncallRuleError` instead of crashing.
-    # The rule-level workaround is the high-level `BLAS.dot` / `BLAS.dotc` /
-    # `BLAS.dotu` primitive (below) that intercepts user calls BEFORE the
-    # BLAS shim reaches the foreigncall. Reverse mode still uses the
-    # foreigncall rrule above for `Vector{T}` (non-NDual) inputs.
+    # Forward mode is handled by the high-level `BLAS.dot` / `BLAS.dotc` /
+    # `BLAS.dotu` primitives (below), which intercept user calls before the
+    # BLAS shim reaches the foreigncall. A forward-mode rule on the
+    # `cblas_*dot*` foreigncall itself segfaulted inside libopenblas64_'s
+    # `sdot_k_COOPERLAKE` when called with the canonical width-1
+    # NTangent-wrapped `Dual{Ptr{T}, NTangent{Tuple{Ptr{T}}}}` tangent pointer
+    # (likely the tangent Ptr isn't a valid readable address). Reverse mode
+    # uses the foreigncall rrule above for `Vector{T}` (non-NDual) inputs.
 end
 
 # High-level `BLAS.dot` / `BLAS.dotc` / `BLAS.dotu` ForwardMode primitives.
