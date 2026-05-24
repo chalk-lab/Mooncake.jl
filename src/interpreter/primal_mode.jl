@@ -566,10 +566,6 @@ end
 # these via `dual_type(P)`), route through the 2-arg `Lifted{P, N}(primal,
 # tangent)` so `dual_type(Val(N), P)(primal, tangent)` builds the canonical V.
 @inline _wrap_arg(::Val{N}, ::Type{P}, x) where {N,P} = Lifted{P,N}(x)
-@inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P,T}) where {N,P<:Tuple,T<:Tuple}
-    P_out = isconcretetype(P) ? P : __primal_type(_typeof(x))
-    return Lifted{P_out,N}(x)
-end
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
     return Lifted{P,N}(primal(x), tangent(x))
 end
@@ -577,7 +573,10 @@ end
 # (legacy bare path). Sharpen `P` to the runtime primal type via `__primal_type`
 # when the slot's static `P` is abstract — keeps the outer slot concrete so
 # downstream `DynamicPrimal` callers see `Lifted{P_concrete, N, V}` and don't
-# trip parametric invariance at OC typeassert boundaries.
+# trip parametric invariance at OC typeassert boundaries. Covers both the
+# exact-match case (slot P equals x's primal type) and the abstract-slot case
+# (slot P<:Tuple, x's primal is some concrete Tuple); when P is concrete it
+# already equals `__primal_type(_typeof(x))` so the branch is moot.
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{<:Tuple,<:Tuple}) where {N,P<:Tuple}
     P_out = isconcretetype(P) ? P : __primal_type(_typeof(x))
     return Lifted{P_out,N}(x)
