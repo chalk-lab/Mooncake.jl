@@ -118,8 +118,7 @@ import ..Mooncake:
     nan_tangent_guard,
     _typeof,
     __get_primal,
-    __primal_type,
-    _wrap_rule_result
+    __primal_type
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -1336,7 +1335,17 @@ end
         end
         return :(Lifted{$P_out,$N}(($(bare_exprs...),)))
     catch
-        return :(_wrap_rule_result($P_out, Val($N), ($(bare_exprs...),)))
+        return quote
+            x_inner = ($(bare_exprs...),)
+            P_runtime = isconcretetype($P_out) ? $P_out : __primal_type(_typeof(x_inner))
+            InnerT_rt = dual_type(Val($N), P_runtime)
+            if InnerT_rt isa DataType && InnerT_rt <: Tuple
+                return Lifted{P_runtime,$N,InnerT_rt}(
+                    _canonicalise_tuple_inner(InnerT_rt, x_inner)
+                )
+            end
+            return Lifted{P_runtime,$N}(x_inner)
+        end
     end
 end
 

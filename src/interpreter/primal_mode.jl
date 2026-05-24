@@ -237,49 +237,11 @@ end
 @inline _is_lifted_width(::Val{0}) = false
 @inline _is_lifted_width(::Val{N}) where {N} = true
 
-# Wrap a bare frule result into `Lifted{P_out, N, V}`. Rule call sites
-# always pass already-canonical bare primals (NDual / Complex{NDual} /
-# Array{NDual} / Tuple{V_i…} / nested NamedTuple); the `Lifted{P_out, N}(value)`
-# 1-arg ctor infers V from `typeof(value)` and builds the slot. The Tuple
-# overload below routes through `_canonicalise_tuple_inner` so element-wise
-# Tuple results get their canonical inner-V shape.
-#
-# When the IR-inferred `P` is abstract, recover the concrete primal type from
-# the runtime bare value via `__primal_type(_typeof(x))`. This keeps the outer
-# slot's `P` parameter concrete so downstream `DynamicPrimal` callers see a
-# `Lifted{P_concrete, N, V}` shape and don't trip parametric invariance at OC
-# typeassert boundaries.
-@inline _resolve_concrete_P(::Type{P}, x) where {P} =
-    isconcretetype(P) ? P : __primal_type(_typeof(x))
-
-@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x::Tuple) where {P<:Tuple,N}
-    P_out = _resolve_concrete_P(P, x)
-    if isconcretetype(P_out) && P_out <: Tuple && fieldcount(P_out) == length(x)
-        InnerT = dual_type(Val(N), P_out)
-        if InnerT isa DataType && InnerT <: Tuple
-            return Lifted{P_out,N,InnerT}(_canonicalise_tuple_inner(InnerT, x))
-        end
-    end
-    return Lifted{P_out,N}(x)
-end
-
-@inline function _wrap_rule_result(::Type{P}, ::Val{N}, x) where {P,N}
-    P_out = _resolve_concrete_P(P, x)
-    return Lifted{P_out,N}(x)
-end
-
-@inline _wrap_rule_result(::Type{P}, ::Val{N}, x::Lifted) where {P,N} = x
-
-# 2-arg auto-P form: folds the `__primal_type ∘ _typeof` step into the wrap
-# call so the caller doesn't have to recompute the primal type.
-@inline _wrap_rule_result(::Val{N}, x) where {N} = _wrap_rule_result(
-    __primal_type(_typeof(x)), Val(N), x
-)
-
 # Build an inner element-wise tuple of inner duals from a tuple of bare
 # rule-emitted values. Each element is routed through `Vi(primal, tangent)`
-# when it's a non-canonical `Dual`, otherwise passes through. Shared by
-# `_wrap_rule_result(::Type{<:Tuple})` and the `tuple` Lifted-aware frule.
+# when it's a non-canonical `Dual`, otherwise passes through. Used by the
+# `tuple` Lifted-aware frule and the Tuple-V branch of the Lifted-rewrap
+# `_wrap_arg`.
 @inline @generated function _canonicalise_tuple_inner(
     ::Type{InnerT}, x::Tx
 ) where {InnerT<:Tuple,Tx<:Tuple}
@@ -605,21 +567,20 @@ end
 # tangent)` so `dual_type(Val(N), P)(primal, tangent)` builds the canonical V.
 @inline _wrap_arg(::Val{N}, ::Type{P}, x) where {N,P} = Lifted{P,N}(x)
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P,T}) where {N,P<:Tuple,T<:Tuple}
-    return _wrap_rule_result(P, Val(N), x)
+    P_out = isconcretetype(P) ? P : __primal_type(_typeof(x))
+    return Lifted{P_out,N}(x)
 end
 @inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{P}) where {N,P}
     return Lifted{P,N}(primal(x), tangent(x))
 end
 # `__unflatten_dual_varargs` packs a Vararg slot as `Dual{Tuple{...}, Tuple{...}}`
-# (legacy bare path). For the lifted OC slot, route through the same element-wise
-# `_wrap_rule_result` path so the inner V is `Tuple{V_i...}` — the canonical
-# shape for `Lifted{<:Tuple, N}`. Without this, the V stays as `Dual{Tuple,
-# Tuple}` and `primal(::Lifted{<:Tuple})` (which uses `map(primal, d.value)`)
-# fails on the inner Dual.
-@inline function _wrap_arg(
-    w::Val{N}, ::Type{P}, x::Dual{<:Tuple,<:Tuple}
-) where {N,P<:Tuple}
-    return _wrap_rule_result(P, w, x)
+# (legacy bare path). Sharpen `P` to the runtime primal type via `__primal_type`
+# when the slot's static `P` is abstract — keeps the outer slot concrete so
+# downstream `DynamicPrimal` callers see `Lifted{P_concrete, N, V}` and don't
+# trip parametric invariance at OC typeassert boundaries.
+@inline function _wrap_arg(::Val{N}, ::Type{P}, x::Dual{<:Tuple,<:Tuple}) where {N,P<:Tuple}
+    P_out = isconcretetype(P) ? P : __primal_type(_typeof(x))
+    return Lifted{P_out,N}(x)
 end
 # Passthrough for callers that already hold the slot type (option (c) of the
 # boundary contract: caller built a `Lifted{P, N}` directly via `zero_lifted`
@@ -1107,10 +1068,8 @@ function modify_primal_stmts!(
         end
 
         # Every primitive `frule!!` and DerivedPrimal/LazyPrimal/DynamicPrimal
-        # all return `Lifted` directly. The generic Lifted-aware adapter
-        # (which delegates to bare bodies) also internally wraps via
-        # `_wrap_rule_result` before returning. So no IR-emit-level wrap is
-        # needed; the SSA value flowing out is already canonical.
+        # returns `Lifted` directly, so no IR-emit-level wrap is needed; the
+        # SSA value flowing out is already canonical.
         replace_call!(lifted_ir, ssa, Expr(:call, rule_callable, dual_args...))
     elseif isexpr(stmt, :boundscheck)
         # Keep the boundscheck, but wrap it as a slot value (Dual at legacy

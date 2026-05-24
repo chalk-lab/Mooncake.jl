@@ -939,11 +939,9 @@ __get_primal(x) = x
 #
 # The value-level `__get_primal` materializes deinterleaved primal containers
 # (e.g. `Memory{NDual{Float64,1}}` → `Memory{Float64}` via `map(d -> d.value,
-# x)`), allocating O(N) bytes just so the caller can read off a type. Many
-# rule bodies use the value-only for `__primal_type(_typeof(bare_result))` to
-# compute a `P_out` for `_wrap_rule_result`. `__primal_type` lets those
-# callers compute `P_out` directly from the canonical-V type without
-# materialization.
+# x)`), allocating O(N) bytes just so the caller can read off a type.
+# `__primal_type` lets rule bodies compute `P_out` directly from the
+# canonical-V type without materialization.
 #
 # Default: `V` is its own primal type (no canonical-V lifting). NDual /
 # Complex{NDual} / array-of-NDual / Memory / MemoryRef overloads live in

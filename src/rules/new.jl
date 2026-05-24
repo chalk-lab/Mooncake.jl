@@ -277,10 +277,9 @@ end
 ) where {P}
     # Width 1 here returns a bare-tangent `Dual{P, tangent_type(P)}` for the
     # bare-rule output boundary. The canonical width-1 inner V is
-    # `Dual{P, NTangent{Tuple{T}}}` for generic concrete `P`, but
-    # `_ndual_new_result` feeds into `_wrap_rule_result` which canonicalises
-    # shape at the slot boundary — so the bare-T form here is an explicit
-    # compatibility output that gets rewrapped downstream.
+    # `Dual{P, NTangent{Tuple{T}}}` for generic concrete `P`; this bare-T form
+    # is an explicit compatibility output that gets rewrapped at the slot
+    # boundary downstream.
     dir_tangents = map(xi -> tangent(xi, 1), x)
     return Dual(y, build_output_tangent(P, primals, dir_tangents))
 end

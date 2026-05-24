@@ -1467,9 +1467,8 @@ end
 
 # __get_primal for NDual-bearing shapes — primal_mode.jl defines the
 # `Dual` overload, reverse_mode.jl defines `CoDual` and the generic
-# fallback. The bare frule result paths (especially through the generic
-# Lifted-aware adapter) need these so `_wrap_rule_result` recovers the
-# correct primal type for `Lifted{P_out, N, V}`.
+# fallback. Rule bodies use these to recover the primal type for
+# `Lifted{P_out, N, V}` slot construction.
 Mooncake.__get_primal(x::NDual) = primal(x)
 Mooncake.__get_primal(x::Complex{<:NDual}) = primal(x)
 Mooncake.__get_primal(x::AbstractArray{<:NDual}) = map(d -> d.value, x)
@@ -1478,9 +1477,8 @@ function Mooncake.__get_primal(x::AbstractArray{<:Complex{<:NDual}})
 end
 
 # `__primal_type` — type-level analog (no value materialization). Mirrors the
-# `__get_primal` overloads above so rule bodies that only need
-# `__primal_type(_typeof(bare_result))` for `_wrap_rule_result` can use
-# `__primal_type(_typeof(bare_result))` instead, skipping the deinterleave.
+# `__get_primal` overloads above so rule bodies can compute `P_out` from a
+# bare-result type directly, skipping the deinterleave.
 @inline Mooncake.__primal_type(::Type{NDual{T,N}}) where {T,N} = T
 @inline Mooncake.__primal_type(::Type{Complex{NDual{T,N}}}) where {T,N} = Complex{T}
 @inline Mooncake.__primal_type(::Type{Array{NDual{T,N},D}}) where {T,N,D} = Array{T,D}
@@ -1488,9 +1486,9 @@ end
     return Array{Complex{T},D}
 end
 # Wrapper types with canonical NDual-element forms: peel NDual back to the
-# primal element. Without these, `_wrap_rule_result(P_out, Val(N), tuple)` in
-# `interpreter/primal_mode.jl` carries the canonical NDual form through as
-# the "primal" tuple element, then `dual_type(Val(N), P_out)` falls through
+# primal element. Without these, an abstract-P Tuple slot's runtime
+# canonicalisation would carry the canonical NDual form through as the
+# "primal" tuple element, then `dual_type(Val(N), P_out)` would fall through
 # to the generic structural NamedTuple lift (because no dual_type overload
 # accepts a wrapper with NDual elements), producing a NamedTuple V that the
 # canonical-NDual bare_result can't convert into.

@@ -139,9 +139,8 @@ Primals outside the canonical coverage still produce the
     # `DataType` primals carry `tangent_type === NoTangent` (types are
     # non-differentiable), so the canonical inner V is the concrete
     # `Dual{DataType, NoTangent}`. Returning the abstract `Dual` here
-    # propagated through `_wrap_rule_result` and produced
-    # `Lifted{P, N, Dual}` slots whose subsequent `frule!!` calls failed
-    # to dispatch (the wrapper-exception rule requires `V <: Dual{P,T}`).
+    # produced `Lifted{P, N, Dual}` slots whose subsequent `frule!!` calls
+    # failed to dispatch (the wrapper-exception rule requires `V <: Dual{P,T}`).
     P == DataType && return Dual{DataType,NoTangent}
     P isa Union && return Union{dual_type(Val(N), P.a),dual_type(Val(N), P.b)}
     (P isa UnionAll || P == UnionAll) && return Dual
