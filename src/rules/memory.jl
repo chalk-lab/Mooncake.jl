@@ -1213,10 +1213,6 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-# The bare-Dual `frule!!(::Dual{typeof(lsetfield!)}, …)` variants for Array
-# values were removed alongside the matching `lgetfield` branches (Phase 6
-# of the wrapper-exception-removal plan). The canonical-NDual Array path is
-# handled by the `V<:AbstractArray{<:NDual}` Lifted body at misc.jl:406.
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},

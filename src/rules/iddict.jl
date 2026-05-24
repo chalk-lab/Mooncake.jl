@@ -313,8 +313,6 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
-# `IdDict{K,V}()`: the Lifted body below computes the result independently
-# — no kernel or bare-Dual body needed.
 @inline function frule!!(::Mooncake.Lifted{Type{IdDict{K,V}},N}) where {K,V,N}
     # Per-lane independent tangent IdDicts. The naive
     # `Lifted{IdDict, N}(IdDict_primal, single_tangent_IdDict)` would

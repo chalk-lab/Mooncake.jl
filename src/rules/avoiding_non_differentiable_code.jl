@@ -2,8 +2,6 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-# `+(::Ptr, ::Integer)`: the Lifted-typed body below computes the result
-# independently from the inner V. No bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Base.:(+)),N},
     x::Mooncake.Lifted{P_x,N},

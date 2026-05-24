@@ -183,8 +183,6 @@ end
 
 @intrinsic abs_float
 # `abs_float` frule lives in `rules_via_nfwd.jl` (the unary-intrinsic loop).
-# `_unlift` produces an `NDual` on which `abs(::NDual)` dispatches directly
-# without a bare-Dual indirection.
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
     y = abs_float(primal(x))
@@ -391,8 +389,6 @@ function Mooncake._is_primitive(
 )
     return true
 end
-# `__cglobal`: the Lifted body below computes the result independently from
-# the unlifted args' primals; no bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(__cglobal),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -925,8 +921,6 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
 end
 
 @static if VERSION > v"1.12-"
-    # `Core._svec_len`: the Lifted body below computes the result
-    # independently; no bare-Dual body is needed.
     @inline function frule!!(
         ::Mooncake.Lifted{typeof(Core._svec_len),N}, v::Mooncake.Lifted
     ) where {N}
@@ -999,8 +993,6 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-# `Core.ifelse` frule: the Lifted-typed body below selects between unlifted
-# V values directly; no bare-Dual indirection is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.ifelse),N},
     cond::Mooncake.Lifted{Bool},
@@ -1223,11 +1215,9 @@ end
 # replacefield!
 
 # `setfield!` Lifted body: lift the runtime field-name to a `Val(name)` Lifted
-# slot and delegate to the Lifted `lsetfield!` rule. The three Lifted
-# `lsetfield!` bodies (wrapper-exception / canonical-NDual array / SplitDual)
-# handle every inner-V shape — routing through them avoids re-implementing the
-# bridge logic and the kernel's bare-Dual hop, which had no method for the
-# mutable-struct value + bare-NDual `x` case.
+# slot and delegate to the Lifted `lsetfield!` rule, whose three bodies
+# (wrapper-exception / canonical-NDual array / SplitDual) handle every inner-V
+# shape.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(setfield!),N},
     value::Mooncake.Lifted,
@@ -1245,8 +1235,6 @@ end
 
 # swapfield!
 
-# `throw`: the Lifted body throws directly from primals — no bare-Dual
-# delegation needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(throw),N}, args::Vararg{Mooncake.Lifted,M}
 ) where {N,M}
@@ -1297,12 +1285,10 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
-# Lifted-aware `tuple`: single outer `Lifted{<:Tuple}` whose `V` is a bare
-# element-wise tuple of inner duals. The Lifted-typed body canonicalises
-# the per-element inner V directly via `_canonicalise_tuple_inner`, so no
-# bare-Dual `tuple` body is needed — slot identity from `Lifted{P_i, N}`
-# carries the dispatch information that an `_has_ndual` runtime branch
-# would otherwise need.
+# `tuple` frule: single outer `Lifted{<:Tuple}` whose `V` is a bare
+# element-wise tuple of inner duals. The body canonicalises the per-element
+# inner V via `_canonicalise_tuple_inner`; slot identity from `Lifted{P_i, N}`
+# provides the static dispatch information.
 # `@generated` so `dual_type(Val(N), P_out)` is computed at expansion time
 # (it's `@unstable` and a runtime call leaves a dynamic invoke + branch in
 # the IR, costing per-call allocation). When each `args[i]` has a concrete
@@ -1364,7 +1350,7 @@ end
 
 # `typeassert`: the two Lifted-typed bodies below dispatch on whether the
 # type-assert target is a concrete `Type{T}` (slot narrows to `Lifted{T}`)
-# or an arbitrary value (slot stays). No bare-Dual body needed.
+# or an arbitrary value (slot stays).
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
     return CoDual(typeassert(primal(x), primal(type)), tangent(x)), typeassert_pullback

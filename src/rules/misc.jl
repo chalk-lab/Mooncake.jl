@@ -284,10 +284,9 @@ _get_tangent_field(t::AbstractArray, name) = getfield(t, name)
 _get_tangent_field(t::AbstractArray, name, inbounds) = getfield(t, name, inbounds)
 # MemoryRef tangent shape arises from `lgetfield(::Array, :ref)` paths. The
 # `:mem` field returns the underlying `Memory` tangent (matching shape). The
-# `:ptr_or_offset` field is a `Ptr{Nothing}` in the primal — but its tangent
-# is `Ptr{NoTangent}` per the Mooncake convention (mirrors the bare-Dual
-# `lgetfield(::Dual{<:MemoryRef, <:MemoryRef}, :ptr_or_offset)` rule which
-# also `bitcast`s the value).
+# `:ptr_or_offset` field is a `Ptr{Nothing}` in the primal but its tangent
+# is `Ptr{NoTangent}` per the Mooncake convention — `bitcast` to keep the
+# tangent's static type aligned.
 @inline _get_tangent_field(t::MemoryRef, name::Symbol) =
     name === :ptr_or_offset ? bitcast(Ptr{NoTangent}, t.ptr_or_offset) : getfield(t, name)
 @inline _get_tangent_field(t::MemoryRef, name::Symbol, inbounds) =

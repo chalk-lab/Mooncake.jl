@@ -618,9 +618,6 @@ function isbits_arrayset_rrule(
     return A, isbits_arrayset_pullback!!
 end
 
-# `Core.arraysize`: the Lifted-typed body below computes the result
-# independently (no `_unlift` delegation), so no kernel function or
-# bare-Dual body is needed.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(Core.arraysize),N}, X::Mooncake.Lifted, dim::Mooncake.Lifted
 ) where {N}
