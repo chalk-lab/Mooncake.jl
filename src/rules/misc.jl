@@ -450,11 +450,10 @@ end
     return lsetfield_rrule(value, name, x)
 end
 
-# `lsetfield_frule` split by tangent shape — after Phase 6 StandardTangentType
-# narrowing, the reachable T are `NoTangent` and `NTangent`. `NoTangent` means
-# the primal has no tangent to update, so we skip `set_tangent_field!`; `NTangent`
-# (and other non-NoTangent T) needs both the primal mutation and the tangent
-# update. Dispatch on T eliminates the runtime `T !== NoTangent` check.
+# `lsetfield_frule` split by tangent shape. Reachable T are `NoTangent` and
+# `NTangent`. `NoTangent` means the primal has no tangent to update, so we
+# skip `set_tangent_field!`; `NTangent` needs both the primal mutation and
+# the tangent update. Dispatch on T eliminates the runtime check.
 function lsetfield_frule(
     value::Dual{P,NoTangent}, ::Dual{Val{name}}, x::Dual
 ) where {P,name}

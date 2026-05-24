@@ -1317,11 +1317,9 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
 # `sum(::Transpose{<:CuArray})` and `sum(::Adjoint{<:CuArray})` kernels.
-# Two overloads each: legacy `Dual{Adjoint/Transpose, Tangent}` for direct
-# callers, and canonical V `NamedTuple{(:parent,), Tuple{Dual{CuArray}}}` for
-# the recursive struct lift (`dual_type(Val(1), Adjoint{...})` falls through
-# to the NamedTuple lift since CuArray-element wrappers don't have a
-# specialised dual_type).
+# The Lifted bodies below operate on the canonical `Dual{Adjoint/Transpose,
+# Tangent}` V produced by the parallel-form dual_type override above;
+# Adjoint conjugates each lane tangent before reducing.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(sum),N},
     x::Mooncake.Lifted{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},N},

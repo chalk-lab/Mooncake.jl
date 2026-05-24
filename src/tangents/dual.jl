@@ -106,15 +106,15 @@ Structural lift for concrete immutable struct
   (default `Tangent`, all fields always-initialised, lift-safe types)
                              → NamedTuple{fieldnames, Tuple{V_i, ...}}
 
-StepRangeLen (Phase 3)
+StepRangeLen
   StepRangeLen{T<:IEEEFloat, TWP{T}, TWP{T}, Int}
                              → structural lift
 
-Nested-Array canonical (Phase 4)
+Nested-Array canonical
   Vector{Vector{<:IEEEFloat}} → Array{Array{NDual{T, N}, K}, D}
   (and Matrix-of-Vector, Complex variants)
 
-SplitDual for mutable struct (Phase 5)
+SplitDual for mutable struct
   Mutable struct with at least one canonical-NDual-eligible field
   (top-level Array-of-IEEEFloat, nested-Array, or `PossiblyUninit`
    field whose V's primal type is concrete)

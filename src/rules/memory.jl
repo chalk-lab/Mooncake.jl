@@ -1058,10 +1058,6 @@ end
 # Array{<:NDual} are both `<:AbstractArray{<:NDual}` and are covered by
 # `misc.jl`'s `V_x<:AbstractArray{<:NDual}` Vararg-tail rule; MemoryRef
 # does not subtype `AbstractArray`, so it needs its own dispatch here.
-# (Wrapper-exception variants were removed in Phase 6 — `dual_type(Val(N),
-# Memory{T})` for non-IEEEFloat T returns the NTangent-wrapped form
-# `Dual{Memory, NTangent{Tuple{Memory{tangent_type(T)}}}}` rather than a
-# bare-Memory-tangent slot.)
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{P,N,V_x},

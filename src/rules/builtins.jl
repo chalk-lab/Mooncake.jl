@@ -1036,20 +1036,14 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(applicable),Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(fieldtype),Vararg}
 
-# Union of tangent shapes the wrapper-exception `Dual{P, T}` bodies need to
-# accept. After Phases 1-5 of the wrapper-exception-removal plan, the only
-# reachable T cases at `dual_type(Val(N), P) <: Dual{P, T}` are:
+# Union of tangent shapes reachable at `dual_type(Val(N), P) <: Dual{P, T}`
+# for wrapper-exception Lifted bodies:
 #   - `T <: NoTangent` — non-differentiable primals (`String`, `Symbol`,
 #     `Nothing`, `Int`, `Char`, `Bool`, `Type{...}`).
 #   - `T <: NTangent` — the NTangent-wrapped fallback for primals outside
 #     the canonical coverage (custom-`tangent_type` like `TwicePrecision`,
 #     `Vector{Any}` / `SimpleVector`, `Vector{Int}` / `Memory{Int}`, mutable
 #     structs with `Any` fields).
-# `Tuple` / `NamedTuple` are dead (Tuple/NamedTuple primals use structural
-# Tuple / NamedTuple V). `Tangent` and `MutableTangent` are also dead — the
-# `dual_type` fallback always wraps in NTangent at `Val(N)` for `N >= 1`,
-# so a bare-`Tangent` / bare-`MutableTangent` second parameter never appears
-# in the output. Probe via `tangent_test_cases()` confirms 0 hits.
 const StandardTangentType = Union{NoTangent,NTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
@@ -1058,9 +1052,8 @@ const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 # `Vararg{Lifted,M}` over the trailing args — the only structural difference
 # is whether `_inbounds` gets forwarded into the underlying `getfield(…)` call.
 #
-# `Dual` V split into two methods by tangent shape (post Phase 6
-# StandardTangentType narrowing — the only reachable Ts are NoTangent
-# and NTangent). Dispatching on T eliminates the runtime
+# `Dual` V is split into two methods by tangent shape (reachable Ts are
+# `NoTangent` and `NTangent`). Dispatching on T eliminates the runtime
 # `tangent_type(P) == NoTangent` branch.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getfield),N},

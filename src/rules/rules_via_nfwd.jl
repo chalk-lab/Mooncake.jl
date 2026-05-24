@@ -31,10 +31,6 @@
 #     clamp(x, lo, hi) (scalar output, DOF=3)
 #
 
-# Bare-Dual / bare-NDual frule!! entry points removed: IR-emit always
-# wraps args via `Lifted{P, N, V}` (see primal_mode.jl `_wrap_oc_args`),
-# so primitive rules only receive Lifted args.
-
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
     exp,
