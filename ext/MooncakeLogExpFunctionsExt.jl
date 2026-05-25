@@ -1,6 +1,5 @@
 module MooncakeLogExpFunctionsExt
 
-using LinearAlgebra: dot
 using LogExpFunctions
 using Base: IEEEFloat
 using Mooncake: Mooncake
@@ -9,14 +8,11 @@ import Mooncake:
     @from_chainrules,
     frule!!,
     rrule!!,
-    Dual,
     CoDual,
     primal,
-    tangent,
     @is_primitive,
     zero_fcodual,
     NoRData,
-    extract,
     arrayify
 using Mooncake.Nfwd: NDual
 
