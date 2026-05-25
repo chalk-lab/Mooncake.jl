@@ -2,20 +2,16 @@ module MooncakeSpecialFunctionsExt
 
 using SpecialFunctions, Mooncake
 using Base: IEEEFloat
-import ChainRulesCore as CRC
 import Mooncake:
     DefaultCtx,
     @from_chainrules,
     @from_rrule,
     @zero_derivative,
     @is_primitive,
-    Dual,
     frule!!,
-    Tangent,
     primal,
     notimplemented_tangent_guard,
     ForwardMode,
-    extract,
     _typeof
 
 @from_chainrules DefaultCtx Tuple{typeof(airyai),IEEEFloat}
