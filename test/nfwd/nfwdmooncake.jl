@@ -149,7 +149,12 @@
             return Mooncake.Lifted{Complex{T},1,typeof(inner)}(inner)
         end
         @inline function _to_ndual_slot(v, t)
-            return Mooncake.lifted_type(Val(1), typeof(v))(v, t)
+            # Mirror the type-arg pinning in the reference path so `Type{Pext}`
+            # in `fpext`/`fptrunc` etc. routes through the concrete
+            # `Lifted{Type{Pext},1,...}` ctor instead of the abstract
+            # `Lifted{Q,1,V} where Q<:DataType` slot.
+            Pslot = v isa Type ? Type{v} : typeof(v)
+            return Mooncake.lifted_type(Val(1), Pslot)(v, t)
         end
 
         function ndual_test_rule(f, vt_pairs::Tuple...; check_finite=true)
@@ -162,8 +167,17 @@
             # arg types (`Type{Pext}` in `fpext`, etc.) it falls through to a
             # wrapper-exception `Dual` V. The width-1 collapse normalises the
             # output back to a bare `Dual` for the comparison.
+            #
+            # Type-valued args (e.g. `Type{Float32}` in `fptrunc`) have
+            # `typeof(v) === DataType`; `lifted_type(Val(1), DataType)` widens
+            # to the abstract `Lifted{Q,1,V} where Q<:DataType` slot, which
+            # has no concrete 2-arg ctor. Pin the slot's primal type to the
+            # specific `Type{...}` form so the concrete
+            # `Lifted{Type{Float32},1,Dual{Type{Float32},NoTangent}}` ctor
+            # fires.
             ref_args = map(vt_pairs) do p
-                Mooncake.lifted_type(Val(1), typeof(p[1]))(p[1], p[2])
+                Pslot = p[1] isa Type ? Type{p[1]} : typeof(p[1])
+                Mooncake.lifted_type(Val(1), Pslot)(p[1], p[2])
             end
             d_dual = Mooncake._ndual_output_to_width1(Mooncake.frule!!(f_slot, ref_args...))
             # Direct-NDual path: same canonical NDual V but constructed
