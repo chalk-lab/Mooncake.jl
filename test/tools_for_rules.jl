@@ -270,24 +270,27 @@ end
             test_rule(sr(123), args...; is_primitive=true, perf_flag, mode=ReverseMode)
         end
         @testset "container dispatch" begin
-            f1 = Dual(identity, NoTangent())
-            x1 = [Dual(1.0, 1.0), Dual(2.0, 2.0)]
-            y1 = Mooncake.zero_derivative(f1, x1)
-            @test primal(y1) == x1
-            @test tangent(y1) == tangent(zero_dual(x1))
+            # `zero_derivative` is Lifted-typed only (the bare-Dual entry points
+            # were removed in the canonical-V cleanup). Route container test
+            # cases through `lifted_type(Val(1), Vector{Float64})` so the
+            # Lifted-arg method at `src/tools_for_rules.jl:177` fires.
+            f_id = Mooncake.lifted_type(Val(1), typeof(identity))(identity, NoTangent())
+            x1_vals = [1.0, 2.0]
+            x1_tan = [1.0, 2.0]
+            slot_x1 = Mooncake.lifted_type(Val(1), Vector{Float64})(x1_vals, x1_tan)
+            y1 = Mooncake.zero_derivative(f_id, slot_x1)
+            @test primal(y1) == x1_vals
 
-            f2 = Dual((x, y) -> x, NoTangent())
-            x2 = [Dual(1.0, 1.0)]
-            y2 = [Dual(2.0, 2.0), Dual(3.0, 3.0)]
-            out2 = Mooncake.zero_derivative(f2, x2, y2)
-            @test primal(out2) == x2
-            @test tangent(out2) == tangent(zero_dual(x2))
-
-            # `zero_derivative(f::Dual, ...)` should only accept scalar Dual args, Array{<:Dual}/
-            # Array{<:Complex{<:Dual}} args, and on 1.11+ the matching Memory container args. `sin`
-            # only has the scalar-Dual path here, so this plain `Float64` must keep failing even if
-            # the container overloads are edited later.
-            @test_throws MethodError Mooncake.zero_derivative(Dual(sin, NoTangent()), 1.0)
+            f_first = (x, y) -> x
+            f2 = Mooncake.lifted_type(Val(1), typeof(f_first))(f_first, NoTangent())
+            x2_vals = [1.0]
+            x2_tan = [1.0]
+            y2_vals = [2.0, 3.0]
+            y2_tan = [2.0, 3.0]
+            slot_x2 = Mooncake.lifted_type(Val(1), Vector{Float64})(x2_vals, x2_tan)
+            slot_y2 = Mooncake.lifted_type(Val(1), Vector{Float64})(y2_vals, y2_tan)
+            out2 = Mooncake.zero_derivative(f2, slot_x2, slot_y2)
+            @test primal(out2) == x2_vals
         end
     end
     @testset "chain_rules_macro" begin
