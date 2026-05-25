@@ -2640,6 +2640,17 @@ end
 @inline _ndual_primal(r::Base.ReshapedArray{<:NDual}) = primal(r)
 @inline _ndual_primal(s::LinearAlgebra.Symmetric{<:NDual}) = primal(s)
 @inline _ndual_primal(h::LinearAlgebra.Hermitian{<:NDual}) = primal(h)
+# Triangular family: delegate to per-wrapper `primal` so the underlying
+# data matrix preserves its full contents. The `AbstractArray{<:NDual}`
+# fallback below uses `map(d -> d.value, x)` which iterates through the
+# triangular *view* (zeroing the off-triangle) and loses the original
+# data, breaking `has_equal_data` against the primal `LowerTriangular(A)`
+# / `UpperTriangular(A)` (whose `.data` field keeps the full input).
+@inline _ndual_primal(t::LinearAlgebra.UpperTriangular{<:NDual}) = primal(t)
+@inline _ndual_primal(t::LinearAlgebra.LowerTriangular{<:NDual}) = primal(t)
+@inline _ndual_primal(t::LinearAlgebra.UnitUpperTriangular{<:NDual}) = primal(t)
+@inline _ndual_primal(t::LinearAlgebra.UnitLowerTriangular{<:NDual}) = primal(t)
+@inline _ndual_primal(t::LinearAlgebra.UpperHessenberg{<:NDual}) = primal(t)
 # Complex variants — same wrapper-preserving requirement: `map` over a SubArray
 # / Adjoint / Diagonal returns the underlying material type (e.g. Matrix), so
 # the subsequent `tangent(...)` call would see a wrapper-shape tangent paired
