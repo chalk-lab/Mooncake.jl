@@ -252,9 +252,9 @@ end
     return (p, ts)
 end
 
-# Width-N matrix extract: like `_mat_extract` but per-lane tangents. Reshape
-# Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely on the
-# `AbstractMatrix` shape regardless of input rank.
+# Width-N matrix extract: returns `(primal, NTuple{N, AbstractMatrix})`.
+# Reshape Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely
+# on the `AbstractMatrix` shape regardless of input rank.
 @inline function _mat_extract_n(x::AbstractVector{NDual{T,N}}) where {T,N}
     p, ts = _arr_extract_n(x)
     return (reshape(p, :, 1), map(t -> reshape(t, :, 1), ts))
