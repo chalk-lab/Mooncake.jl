@@ -156,21 +156,18 @@ end
 # Array arguments arrive as one of two shapes: a `Dual{Wrapper{P,...}, ...}`
 # for struct wrappers (`ReshapedArray`, `SubArray`, `ReinterpretArray`) or an
 # `Array{NDual{T,N}}` / `Array{Complex{NDual{T,N}}}` for plain `Array` primals
-# that lift elementwise. `_arr_extract` returns a `(primal, tangent)` pair for
-# the width-1 NDual array shape; `arrayify` covers the Dual case for callers
-# that need the view-pair (so mutations propagate). The `_*_extract_n` /
-# `_arr_writeback_n!` family below provides width-N per-lane tangent tuples.
-@inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
-    return (map(d -> d.value, x), map(d -> d.partials[1], x))
-end
-# Complex-element overload: each element is `Complex{NDual{R,1}}` with the
-# canonical width-1 representation putting real & imag parts in separate
-# NDuals. Primals/tangents are reconstructed elementwise as `Complex{R}`.
-@inline function _arr_extract(x::AbstractArray{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
-    return (
-        map(c -> Complex(c.re.value, c.im.value), x),
-        map(c -> Complex(c.re.partials[1], c.im.partials[1]), x),
-    )
+# that lift elementwise. `_arr_extract_n` is the width-N de-interleave —
+# returns `(primal, NTuple{N, tangent_array})`. The width-1 thin wrapper
+# `_arr_extract` below preserves the strict `N==1` dispatch constraint for
+# width-1-only callers (`performance_patches`, `random`, `LogExpFunctionsExt`).
+# `arrayify` covers the Dual case for callers that need the view-pair (so
+# mutations propagate). `_arr_writeback_n!` is the inverse of
+# `_arr_extract_n`.
+@inline function _arr_extract(
+    x::AbstractArray{<:Union{NDual{<:Any,1},Complex{<:NDual{<:IEEEFloat,1}}}}
+)
+    p, ts = _arr_extract_n(x)
+    return p, ts[1]
 end
 
 @inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
