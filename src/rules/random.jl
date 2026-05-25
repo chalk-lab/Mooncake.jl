@@ -33,16 +33,19 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
+    # `$f` is non-differentiable: the output doesn't depend on its input
+    # tangents, only on the rng's state. Width-N: write the new random
+    # primal once and zero all N lane tangents.
     @eval @inline function frule!!(
         ::Mooncake.Lifted{typeof($f),N},
         rng::Mooncake.Lifted{<:SpecialisedRNGs},
         x::Mooncake.Lifted{<:Array{Float64},N},
     ) where {N}
         x_v = Mooncake._unlift(x)
-        px, dx = _arr_extract(x_v)
-        $f(primal(rng), px)
-        fill!(dx, 0.0)
-        _arr_writeback!(x_v, px, dx)
+        p, dxs = Mooncake.unpack_ndual(x_v)
+        $f(primal(rng), p)
+        foreach(dx -> fill!(dx, 0.0), dxs)
+        Mooncake.pack_ndual!(x_v, p, dxs)
         return x
     end
     @eval function rrule!!(
