@@ -470,8 +470,15 @@ end
 @foldable @generated function tangent_type(::Type{P}) where {P}
 
     # This method can only handle struct types. Something has gone wrong if P is primitive.
+    # Defer the error to runtime (`return :(error(...))` rather than
+    # `return error(...)`) so dispatch can still route to a more-specific
+    # overload first. The eager-error form bakes the throw into compiled
+    # OpaqueClosure bodies via @foldable constant-folding, where it can't
+    # be dislodged by a later extension overload. Mirrors `fdata_type`'s
+    # primitive-type branch at `fwds_rvs_data.jl:176`.
     if isprimitivetype(P)
-        return error("$P is a primitive type. Implement a method of `tangent_type` for it.")
+        msg = "$P is a primitive type. Implement a method of `tangent_type` for it."
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.

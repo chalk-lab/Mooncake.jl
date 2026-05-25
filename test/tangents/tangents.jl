@@ -118,6 +118,20 @@ using DispatchDoctor: allow_unstable
         @test_throws "two-argument form" zero_tangent(Ptr{Float64}())
     end
 
+    @testset "tangent_type primitive-type error is deferred to runtime" begin
+        # The @generated `tangent_type(::Type{P})` body returns
+        # `:(error(msg))` for primitive `P` with no specific overload (mirrors
+        # `fdata_type`). The deferred form lets normal dispatch route to
+        # extension overloads first; the eager `return error(...)` form baked
+        # the throw into compiled OpaqueClosure bodies via @foldable
+        # constant-folding, where no later extension overload could dislodge
+        # it. Verify this regression test by defining a fresh primitive type
+        # in the test scope: calling `tangent_type` on it must error at
+        # invocation rather than during method specialization.
+        primitive type _DeferredErrorPrim 64 end
+        @test_throws ErrorException Mooncake.tangent_type(_DeferredErrorPrim)
+    end
+
     tangent(nt::NamedTuple) = Tangent(map(PossiblyUninitTangent, nt))
     mutable_tangent(nt::NamedTuple) = MutableTangent(map(PossiblyUninitTangent, nt))
 

@@ -22,14 +22,13 @@ using CUDA.CUDACore:
     DeviceMemory,
     UnifiedMemory,
     HostMemory,
-    Managed,
     is_capturing,
     capture_status,
     hasfieldcount
 using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
-using CUDA.CUDACore.GPUArrays: unsafe_free!, DataRef, RefCounted
+using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
 import Mooncake:
     MinimalCtx,
@@ -190,21 +189,6 @@ end
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
-
-# Source-pin tangent_type for CuArray's internal reference-count chain
-# (`CuArray.data → DataRef.rc → RefCounted.obj → Managed.mem → DeviceMemory.ptr`)
-# so the generic `@generated tangent_type` body's field-walk terminates at
-# `NoTangent` instead of recursing into the trailing primitive `CuPtr{Nothing}`.
-# These pin the top-level dispatch result for completeness — the @generated
-# specialization cache may have been seeded with the original "primitive type"
-# error path for these intermediate types before MooncakeCUDAExt loaded, in
-# which case OpaqueClosure bodies built from those cached specializations
-# still error. See AGENTS.md for the @foldable + @generated world-age caveat.
-@foldable tangent_type(::Type{DeviceMemory}) = NoTangent
-@foldable tangent_type(::Type{<:Managed}) = NoTangent
-@foldable tangent_type(::Type{<:RefCounted}) = NoTangent
-@foldable tangent_type(::Type{<:DataRef}) = NoTangent
-@foldable tangent_type(::Type{CuPtr{Nothing}}) = NoTangent
 
 # Wrapper-specialised `dual_type` for `Adjoint`/`Transpose{<:CuArray}`. Without
 # these, the recursive struct lift in `src/tangents/dual.jl` fires (since
