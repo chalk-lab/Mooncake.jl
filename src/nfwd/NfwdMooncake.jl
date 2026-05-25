@@ -1836,6 +1836,25 @@ end
         end
         return out
     end
+    # NTangent-wrapped tangent: pack the N per-lane Complex Memorys into
+    # element-wise `Complex{NDual{T,N}}` storage. Mirrors the NTangent
+    # variant of `Memory{NDual{T,N}}` above; without this overload the
+    # structural lift through `_inner_dual_for_field` errors when a
+    # mutable-struct field of type `Memory{Complex{T}}` is reached from a
+    # canonical SplitDual slot.
+    function (::Type{Memory{Complex{NDual{T,N}}}})(
+        primal::Memory{Complex{T}}, tangent::Mooncake.NTangent{NTuple{N,Memory{Complex{T}}}}
+    ) where {T<:IEEEFloat,N}
+        out = Memory{Complex{NDual{T,N}}}(undef, length(primal))
+        lanes = tangent.lanes
+        @inbounds for i in eachindex(primal)
+            out[i] = Complex{NDual{T,N}}(
+                NDual{T,N}(real(primal[i]), ntuple(d -> real(lanes[d][i]), Val(N))),
+                NDual{T,N}(imag(primal[i]), ntuple(d -> imag(lanes[d][i]), Val(N))),
+            )
+        end
+        return out
+    end
     function (::Type{MemoryRef{NDual{T,N}}})(
         primal::MemoryRef{T}, tangent::MemoryRef{T}
     ) where {T<:IEEEFloat,N}
