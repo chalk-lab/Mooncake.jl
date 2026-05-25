@@ -152,12 +152,20 @@ end
 ) where {P,N,Tx<:Tuple}
     # `_new_` creates struct values in primal-mode IR, so its lifted result
     # must use the same structural V chosen by `dual_type(Val(N), P)`. Gate
-    # on the *result* of `dual_type` (does it choose the structural NamedTuple
-    # lift?) rather than `_uses_structural_dual_type` alone. An explicit
-    # per-type overload (e.g. `Base.Broadcast.Extruded`) may return a
-    # non-NamedTuple shape even when the generic struct-lift gate predicate
-    # is true; honour the overload by skipping this branch.
-    if N >= 1 && fieldcount(P) == fieldcount(Tx) && _uses_structural_dual_type(P)
+    # purely on the *result* of `dual_type` (does it choose the structural
+    # NamedTuple lift?). An explicit per-type overload (e.g.
+    # `Base.Broadcast.Extruded`) may return a non-NamedTuple shape, in
+    # which case `DT <: NamedTuple` is false and we fall through.
+    #
+    # The previous form also gated on `_uses_structural_dual_type(P)`, but
+    # that predicate calls `tangent_type(P)` recursively from the meta-
+    # function body — an AGENTS.md world-age violation. When `P`'s field
+    # chain reaches an un-overloaded primitive (e.g. `CuPtr{Nothing}` for
+    # `Adjoint{Float64, <:CuArray}`) at meta-function-runtime, the chain
+    # threw a "primitive type" error that baked into compiled OpaqueClosure
+    # bodies. Rely on the `try/catch` around `_static_dual_type_value` to
+    # absorb the same failure mode without touching tangent_type at all.
+    if N >= 1 && fieldcount(P) == fieldcount(Tx)
         DT = try
             _static_dual_type_value(Val(N), P)
         catch
