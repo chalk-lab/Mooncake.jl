@@ -8,13 +8,11 @@ import Mooncake:
     @is_primitive,
     CoDual,
     DefaultCtx,
-    Dual,
     MinimalCtx,
     NoRData,
     frule!!,
     primal,
-    rrule!!,
-    tangent
+    rrule!!
 
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
 
