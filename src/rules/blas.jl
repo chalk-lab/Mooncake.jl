@@ -453,9 +453,9 @@ end
     end
     return dy / 2y
 end
-# Unified 3-arg nrm2 Lifted body. `unpack_ndual` returns a 1-tuple for
-# wrapper-exception slot or N-tuple for canonical NDual; we index the
-# underlying stride-incx slice for the per-lane gradient.
+# Unified 3-arg nrm2 Lifted body. `unpack_ndual` returns the canonical
+# `(primal, NTuple{N, Array})` de-interleave; we index the underlying
+# stride-incx slice for the per-lane gradient.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(BLAS.nrm2),N},
     _n::Mooncake.Lifted{<:Integer},
@@ -523,10 +523,10 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 # Unified scal! Lifted body. Math: scal! computes `X ← a · X`,
-# differential `dX ← a · dX + da · X`, per lane. `unpack_ndual` and
-# `unpack_ndual` handle wrapper-exception slots and canonical NDual
-# at any N≥1; the legacy `Ptr{P}` shape is not handled here (covered by
-# the `_foreigncall_` dot loop above).
+# differential `dX ← a · dX + da · X`, per lane. `unpack_ndual` returns
+# the canonical NDual de-interleave at any N≥1; the legacy `Ptr{P}`
+# shape is not handled here (covered by the `_foreigncall_` dot loop
+# above).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(BLAS.scal!),N},
     _n::Mooncake.Lifted{<:Integer},

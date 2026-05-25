@@ -26,11 +26,10 @@
     )
 end
 # Unified width-1 + width-N Lifted body. `unpack_ndual` /
-# `Mooncake.pack_ndual!` accept both canonical NDual matrices
+# `Mooncake.pack_ndual!` handle the canonical NDual matrices
 # (`AbstractMatrix{<:NDual{P,N}}` /
-# `AbstractMatrix{Complex{<:NDual{P,N}}}`) and wrapper-exception slots
-# (`Dual{<:AbstractMatrix, …}`, treated as a trivial 1-lane chunk). The
-# loop runs `_getrf_fwd_core!` once per lane.
+# `AbstractMatrix{Complex{<:NDual{P,N}}}`). The loop runs
+# `_getrf_fwd_core!` once per lane.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
 ) where {N,P<:BlasFloat}
@@ -185,11 +184,10 @@ end
         AbstractVecOrMat{<:BlasComplexFloat},
     },
 )
-# Unified trtrs! Lifted body: covers wrapper-exception (Dual-slot) and
-# canonical NDual matrices, width 1 and width N≥2, real and complex.
-# `unpack_ndual` returns a 1-tuple for the wrapper-exception case so
-# the per-lane loop runs once; `Mooncake.pack_ndual!` is a no-op for the
-# wrapper-exception arrayify view (mutations propagate through the view).
+# Unified trtrs! Lifted body: covers canonical NDual matrices at any
+# width N≥1, real and complex. `unpack_ndual` de-interleaves the slot
+# into `(primal, NTuple{N, Array})`; the per-lane loop applies the
+# Frechet derivative once per lane.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(trtrs!),N},
     _uplo::Mooncake.Lifted{Char},
@@ -312,9 +310,8 @@ end
     },
 )
 # Unified getrs! Lifted body: primal LU-solve first, then per-lane Frechet
-# via `_getrs_frechet_lane!` (uses post-primal B). Works at any N≥1 via
-# `unpack_ndual` returning a 1-tuple for wrapper-exception slot or
-# canonical NDual matrix at N=1.
+# via `_getrs_frechet_lane!` (uses post-primal B). Works at any N≥1
+# via `unpack_ndual` returning the canonical NDual de-interleave.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getrs!),N},
     _trans::Mooncake.Lifted{Char},
@@ -453,8 +450,7 @@ end
 # `tmp2 = _lu_diff_factor(A, dA, ipiv)` (computed BEFORE the primal
 # overwrites A→A_inv), then the primal `LAPACK.getri!(A, ipiv)`, then per-
 # lane `dA = -A_inv * tmp2 * A_inv`. Works at any width N≥1 via
-# `unpack_ndual` returning a 1-tuple for wrapper-exception slot or
-# canonical NDual matrix at N=1.
+# `unpack_ndual` returning the canonical NDual de-interleave.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getri!),N},
     A_dA::Mooncake.Lifted{<:AbstractMatrix{P}},
