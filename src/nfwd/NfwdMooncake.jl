@@ -1073,12 +1073,9 @@ end
 # `ReshapedArray{NDual{T,N}, …}(primal, tangent)` constructor below delegates
 # the parent build to `V_parent`'s own (primal, tangent) constructor, so
 # this works uniformly over any AbstractArray parent. Mirrors the Transpose
-# template at this file's `Transpose` block.
-#
-# Previous attempt (`111512346`) restricted to `P<:Array{T}` parents only and
-# was reverted (`e98728622`) because lapack tests use `ReshapedArray{T,D,
-# <:SubArray{T,…},MI}`. The parameterisation over `P<:AbstractArray{T}` here
-# admits any parent that itself has a canonical NDual lift.
+# template at this file's `Transpose` block. The `P<:AbstractArray{T}`
+# parameterisation (not the narrower `P<:Array{T}`) is required for lapack
+# tests that use `ReshapedArray{T, D, <:SubArray{T,…}, MI}`.
 function dual_type(
     ::Val{N}, ::Type{Base.ReshapedArray{T,D,P,MI}}
 ) where {N,T<:IEEEFloat,D,P<:AbstractArray{T},MI}
