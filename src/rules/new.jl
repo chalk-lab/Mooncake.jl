@@ -400,18 +400,9 @@ _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 @inline @generated function frule!!(
     f::Lifted{typeof(_splat_new_),N}, p::Lifted{Type{P},N}, x::Lifted{Tx,N}
 ) where {N,P,Tx<:Tuple}
-    args = [
-        :(Lifted{$(fieldtype(Tx, i)),$N}(
-            _canonical_splat_new_arg(Val($N), _unlift(x)[$i])
-        )) for i in 1:fieldcount(Tx)
-    ]
+    args = [:(Lifted{$(fieldtype(Tx, i)),$N}(_unlift(x)[$i])) for i in 1:fieldcount(Tx)]
     return :(frule!!(Lifted{typeof(_new_),$N}(_new_, tangent(f)), p, $(args...)))
 end
-
-@inline _canonical_splat_new_arg(::Val, x) = x
-@inline _canonical_splat_new_arg(::Val{N}, x::Dual{P,T}) where {N,P<:IEEEFloat,T<:IEEEFloat} = pack_ndual(
-    primal(x), ntuple(_ -> tangent(x), Val(N))
-)
 
 @inline _splat_new_field_fdata(::NoFData, _) = NoFData()
 @inline _splat_new_field_fdata(fdata::Tuple, n) = fdata[n]
