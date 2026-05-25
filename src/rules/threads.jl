@@ -27,7 +27,11 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$(QuoteNode(name))}}, args...) where {N} = _threading_foreigncall_frule(
+    # Constrain the trailing varargs to `Vararg{Lifted, M}` so this method is
+    # strictly more specific than the generic foreigncall.jl:13 fallback
+    # (`frule!!(::Lifted{_foreigncall_,N}, ::Vararg{Lifted, M})`); without the
+    # constraint Aqua flags the pair as ambiguous.
+    @eval frule!!(::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$(QuoteNode(name))}}, args::Vararg{Lifted,M}) where {N,M} = _threading_foreigncall_frule(
         Val(N), Val($(QuoteNode(name))), args...
     )
 
