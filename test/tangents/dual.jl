@@ -54,10 +54,8 @@
         (Union{Float64,Int}, Union{NDual{Float64,1},Dual{Int,NoTangent}}),
         (UnionAll, Dual),
         # `DataType` itself has `tangent_type === NoTangent`, so the canonical
-        # inner V is `Dual{DataType, NoTangent}` (concrete). Returning the
-        # abstract UnionAll `Dual` here previously caused
-        # `Lifted{P, N, Dual}` slots whose subsequent `frule!!` calls failed
-        # to dispatch.
+        # inner V is `Dual{DataType, NoTangent}` (concrete). Without the
+        # concrete return here `Lifted{P, N, Dual}` slots fail to dispatch.
         (DataType, Dual{DataType,NoTangent}),
         (Union{}, Union{}),
 
@@ -84,9 +82,7 @@
 
         # General Abstract Tuples
         # `Tuple{Any}` has a definite (single) field, so the element-wise
-        # lift fires and produces `Tuple{Dual}` (single abstract-Dual
-        # element); previously returned bare `Dual` because the gate
-        # required `isconcretetype(P)`.
+        # lift fires and produces `Tuple{Dual}` (single abstract-Dual element).
         (Tuple{Any}, Tuple{Dual}),
 
         # Abstract Vararg / NTuple UnionAll tuples (bounded and unbounded)
@@ -161,8 +157,7 @@ end
             Lifted{Tuple{Float64,Float64},2,Tuple{NDual{Float64,2},NDual{Float64,2}}}
 
         # Abstract P preserves the width parameter — a width-N abstract slot
-        # must NOT accept a width-(N±k) concrete lifted value. The previous
-        # behaviour of returning bare `Lifted` allowed that and was unsound.
+        # must NOT accept a width-(N±k) concrete lifted value.
         T2 = lifted_type(Val(2), Any)
         @test Lifted{Float64,2,NDual{Float64,2}} <: T2
         @test !(Lifted{Float64,1,NDual{Float64,1}} <: T2)
@@ -445,7 +440,7 @@ end
 
     @testset "`.data::Matrix{T}` wrappers canonical NDual dual_type" begin
         # All five wrappers share a single `data::Matrix{T}` field and
-        # migrate via the same @eval template in NfwdMooncake.jl.
+        # share the same @eval template in NfwdMooncake.jl.
         for W in (
             LinearAlgebra.UpperTriangular,
             LinearAlgebra.LowerTriangular,
@@ -891,10 +886,8 @@ end
         # naive broadcast-from-lane-1 would yield identical lanes.
         using LinearAlgebra: BLAS
 
-        # BLAS.nrm2 width-2 with distinct per-lane seeds. Drives the canonical
-        # Lifted entry point — the bare-Dual width-N delegators were folded
-        # into Lifted bodies by the audit cleanup, so this test exercises the
-        # same path AD uses.
+        # BLAS.nrm2 width-2 with distinct per-lane seeds, exercising the
+        # canonical Lifted entry point (same path AD uses).
         let X = [1.0, 2.0, 3.0], seeds_1 = [0.1, 0.2, 0.3], seeds_2 = [0.01, 0.02, 0.03]
             X_n2 = [NDual{Float64,2}(X[i], (seeds_1[i], seeds_2[i])) for i in 1:length(X)]
             r = Mooncake.frule!!(
@@ -1050,9 +1043,9 @@ end
 
     @testset "memoryrefget / lmemoryrefget width-N struct-element" begin
         # Regression: width-N>=2 with struct-element MemoryRef must read
-        # primal + per-lane tangents uniformly. The folded Lifted body
-        # handles both width-1 (singleton-NTangent unwrap) and width N>=2
-        # (per-lane) via tangent introspection.
+        # primal + per-lane tangents uniformly. The Lifted body handles
+        # both width-1 (singleton-NTangent unwrap) and width N>=2 (per-lane)
+        # via tangent introspection.
         @static if VERSION >= v"1.11-"
             m = Memory{TestResources.LoHi}(undef, 4)
             m[1] = TestResources.LoHi(10.0, 11.0)
