@@ -1883,6 +1883,17 @@ end
     return Dual(primal(output), tangent(output, 1))
 end
 
+# Mutable-struct-primal slot with SplitDual inner V: parallel to the
+# NamedTuple branch above. `_unlift` on a SplitDual returns the bare
+# canonical NamedTuple-of-Vs which `_has_ndual` does not recurse into, so
+# the generic fallback would hand back the SplitDual itself and downstream
+# `primal(::SplitDual)` has no method. Build the user-facing `Dual` directly
+# via the Lifted accessors that this branch has already specialized for
+# SplitDual (including PossiblyUninitTangent-aware field reconstruction).
+@inline function _ndual_output_to_width1(output::Lifted{P,N,V}) where {P,N,V<:SplitDual}
+    return Dual(primal(output), tangent(output, 1))
+end
+
 """
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 
