@@ -161,8 +161,8 @@ end
 # `_arr_extract` below preserves the strict `N==1` dispatch constraint for
 # width-1-only callers (`performance_patches`, `random`, `LogExpFunctionsExt`).
 # `arrayify` covers the Dual case for callers that need the view-pair (so
-# mutations propagate). `_arr_writeback_n!` is the inverse of
-# `_arr_extract_n`.
+# mutations propagate). The inverse of `_arr_extract_n` is
+# `Mooncake._combine_to_ndual!` (defined in `src/interface.jl`).
 @inline function _arr_extract(
     x::AbstractArray{<:Union{NDual{<:Any,1},Complex{<:NDual{<:IEEEFloat,1}}}}
 )
@@ -204,28 +204,6 @@ end
         map(c -> Complex(c.re.partials[n], c.im.partials[n]), x)
     end
     return (p, ts)
-end
-
-@inline function _arr_writeback_n!(
-    x::AbstractArray{NDual{T,N}}, p, ts::NTuple{N,<:AbstractArray}
-) where {T,N}
-    @inbounds for i in eachindex(x)
-        partials = ntuple(n -> ts[n][i], Val(N))
-        x[i] = NDual{T,N}(p[i], partials)
-    end
-    return nothing
-end
-@inline function _arr_writeback_n!(
-    x::AbstractArray{Complex{NDual{T,N}}}, p, ts::NTuple{N,<:AbstractArray}
-) where {T<:IEEEFloat,N}
-    @inbounds for i in eachindex(x)
-        re_partials = ntuple(n -> real(ts[n][i]), Val(N))
-        im_partials = ntuple(n -> imag(ts[n][i]), Val(N))
-        x[i] = Complex(
-            NDual{T,N}(real(p[i]), re_partials), NDual{T,N}(imag(p[i]), im_partials)
-        )
-    end
-    return nothing
 end
 
 # Width-N scalar extract: returns (primal, NTuple{N, T_tangent}).
@@ -569,7 +547,7 @@ end
         BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
     end
     BLAS.scal!(nn, a, X, incx)
-    _arr_writeback_n!(X_dX_inner, X, dXs)
+    Mooncake._combine_to_ndual!(X_dX_inner, X, dXs)
     return X_dX
 end
 function rrule!!(
@@ -659,7 +637,7 @@ end
         end
     end
     BLAS.gemv!(ta, α, A, x, β, y)
-    _arr_writeback_n!(y_dy_inner, y, dys)
+    Mooncake._combine_to_ndual!(y_dy_inner, y, dys)
     return y_dy
 end
 
@@ -873,7 +851,7 @@ for (fname, T_constraint) in ((:symv!, :BlasFloat), (:hemv!, :BlasComplexFloat))
             end
         end
         BLAS.$fname(ul, α, A, x, β, y)
-        _arr_writeback_n!(y_dy_inner, y, dys)
+        Mooncake._combine_to_ndual!(y_dy_inner, y, dys)
         return y_dy
     end
 end
@@ -917,7 +895,7 @@ end
         end
     end
     BLAS.trmv!(uplo, trans, diag, A, x)
-    _arr_writeback_n!(x_dx_inner, x, dxs)
+    Mooncake._combine_to_ndual!(x_dx_inner, x, dxs)
     return x_dx
 end
 function rrule!!(
@@ -1036,7 +1014,7 @@ end
         BLAS.trsv!(uplo, trans, diag, A, tmp)
         dxs[lane] .-= tmp
     end
-    _arr_writeback_n!(x_dx_inner, x, dxs)
+    Mooncake._combine_to_ndual!(x_dx_inner, x, dxs)
     return x_dx
 end
 function rrule!!(
@@ -1163,7 +1141,7 @@ end
         end
     end
     BLAS.gemm!(tA, tB, α, A, B, β, C)
-    _arr_writeback_n!(C_dC_inner, C, dCs)
+    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 @inline function rrule!!(
@@ -1385,7 +1363,7 @@ for (fname, T_constraint) in ((:symm!, :BlasFloat), (:hemm!, :BlasComplexFloat))
             end
         end
         BLAS.$fname(s, ul, α, A, B, β, C)
-        _arr_writeback_n!(C_dC_inner, C, dCs)
+        Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
         return C_dC
     end
 end
@@ -1506,7 +1484,7 @@ end
         end
     end
     BLAS.syrk!(ul, tt, α, A, β, C)
-    _arr_writeback_n!(C_dC_inner, C, dCs)
+    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 # herk! (complex matrix, real α/β).
@@ -1541,7 +1519,7 @@ end
     end
     BLAS.herk!(ul, tt, α, A, β, C)
     real_diag!(C)
-    _arr_writeback_n!(C_dC_inner, C, dCs)
+    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 
@@ -1595,7 +1573,7 @@ end
         end
     end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    _arr_writeback_n!(B_dB_inner, B, dBs)
+    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 function rrule!!(
@@ -1717,7 +1695,7 @@ end
         dBs[lane] .-= tmp
     end
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    _arr_writeback_n!(B_dB_inner, B, dBs)
+    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 function rrule!!(
