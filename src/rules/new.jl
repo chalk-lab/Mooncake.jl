@@ -118,14 +118,14 @@
         y = _new_(P, primals_extracted...)
         T = tangent_type(P)
         T == NoTangent && return Lifted{P,N}(Dual(y, NoTangent()))
-        # Uniform `NTangent(tangent_dirs)` at every positive width, routed
+        # Uniform `NTangent(tangent_lanes)` at every positive width, routed
         # through the 2-arg `Lifted{P,N}(primal, tangent)` ctor so the inner
         # V matches `dual_type(Val(N), P) === Dual{P, NTangent{NTuple{N, T}}}`.
-        tangent_dirs = ntuple(Val(N)) do dir
-            dir_tangents = _new_field_tangents(P, bare_x, dir)
-            build_output_tangent(P, primals_extracted, dir_tangents)
+        tangent_lanes = ntuple(Val(N)) do lane
+            lane_tangents = _new_field_tangents(P, bare_x, lane)
+            build_output_tangent(P, primals_extracted, lane_tangents)
         end
-        return Lifted{P,N}(y, NTangent(tangent_dirs))
+        return Lifted{P,N}(y, NTangent(tangent_lanes))
     end
 
     # No NDual content (e.g. all-non-differentiable args): pure struct construction.
@@ -240,36 +240,37 @@ end
     P, _new_field_primals(P, values(x))...
 )
 
-@generated function _new_field_tangents(::Type{P}, bare_x::Tx, dir) where {P,Tx<:Tuple}
+@generated function _new_field_tangents(::Type{P}, bare_x::Tx, lane) where {P,Tx<:Tuple}
     exprs = [
-        :(_new_field_tangent($(fieldtype(P, i)), bare_x[$i], dir)) for i in 1:fieldcount(Tx)
+        :(_new_field_tangent($(fieldtype(P, i)), bare_x[$i], lane)) for
+        i in 1:fieldcount(Tx)
     ]
     return :(($(exprs...),))
 end
-@inline _new_field_tangent(::Type, x, dir) = tangent(x, dir)
+@inline _new_field_tangent(::Type, x, lane) = tangent(x, lane)
 # Match the primal reconstruction so nested fields get canonical tangents.
-@generated function _new_field_tangent(::Type{P}, x::Tx, dir) where {P<:Tuple,Tx<:Tuple}
+@generated function _new_field_tangent(::Type{P}, x::Tx, lane) where {P<:Tuple,Tx<:Tuple}
     exprs = [
-        :(_new_field_tangent($(fieldtype(P, i)), x[$i], dir)) for i in 1:fieldcount(Tx)
+        :(_new_field_tangent($(fieldtype(P, i)), x[$i], lane)) for i in 1:fieldcount(Tx)
     ]
     return :(($(exprs...),))
 end
 @generated function _new_field_tangent(
-    ::Type{P}, x::NamedTuple{names}, dir
+    ::Type{P}, x::NamedTuple{names}, lane
 ) where {names,P<:NamedTuple{names}}
     InnerTup = P.parameters[2]
     exprs = [
-        :(_new_field_tangent($(fieldtype(InnerTup, i)), values(x)[$i], dir)) for
+        :(_new_field_tangent($(fieldtype(InnerTup, i)), values(x)[$i], lane)) for
         i in 1:fieldcount(InnerTup)
     ]
     return :(NamedTuple{$names}(($(exprs...),)))
 end
-@inline function _new_field_tangent(::Type{P}, x::NamedTuple, dir) where {P}
+@inline function _new_field_tangent(::Type{P}, x::NamedTuple, lane) where {P}
     # Struct primal with NamedTuple inner V: recurse field-wise with primal
     # type info via `_new_field_tangents` so nested struct fields are rebuilt
     # as `Tangent{...}` rather than leaking raw `NamedTuple`.
     return build_output_tangent(
-        P, Tuple(_ndual_primal(x)), _new_field_tangents(P, values(x), dir)
+        P, Tuple(_ndual_primal(x)), _new_field_tangents(P, values(x), lane)
     )
 end
 
@@ -288,17 +289,17 @@ end
     # `Dual{P, NTangent{Tuple{T}}}` for generic concrete `P`; this bare-T form
     # is an explicit compatibility output that gets rewrapped at the slot
     # boundary downstream.
-    dir_tangents = map(xi -> tangent(xi, 1), x)
-    return Dual(y, build_output_tangent(P, primals, dir_tangents))
+    lane_tangents = map(xi -> tangent(xi, 1), x)
+    return Dual(y, build_output_tangent(P, primals, lane_tangents))
 end
 @inline function _ndual_new_result(
     ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{W}
 ) where {P,W}
-    tangent_dirs = ntuple(Val(W)) do i
-        dir_tangents = map(xi -> tangent(xi, i), x)
-        build_output_tangent(P, primals, dir_tangents)
+    tangent_lanes = ntuple(Val(W)) do i
+        lane_tangents = map(xi -> tangent(xi, i), x)
+        build_output_tangent(P, primals, lane_tangents)
     end
-    return Dual(y, NTangent(tangent_dirs))
+    return Dual(y, NTangent(tangent_lanes))
 end
 
 function rrule!!(

@@ -522,12 +522,12 @@ end
 # Mooncake-protocol accessors for Lifted{P, N, SplitDual{V}} live below
 # the `Lifted` type definition (see "SplitDual Lifted accessors" block).
 
-# `tangent(x, dir)` — per-lane tangent accessor. Per-type fast paths for
+# `tangent(x, lane)` — per-lane tangent accessor. Per-type fast paths for
 # NDual, Complex{NDual}, Array{<:NDual}, NTangent, Memory, MemoryRef, etc.
 # live in `nfwd/NfwdMooncake.jl`. The two-argument overload must not
-# materialise all lanes before selecting one — extracting a single
-# direction from a width-N container should remain O(container size), not
-# O(N × container size). Per-type lane-extraction methods live directly on
+# materialise all lanes before selecting one — extracting a single lane
+# from a width-N container should remain O(container size), not O(N ×
+# container size). Per-type lane-extraction methods live directly on
 # `tangent(x, ::Integer)` rather than a private `_tangent_dir` helper. The
 # untyped fallback below returns `zero_tangent(x)` for primals that aren't
 # NDual-bearing.

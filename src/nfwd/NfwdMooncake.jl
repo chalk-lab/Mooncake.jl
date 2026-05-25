@@ -122,13 +122,13 @@ end
 @inline function _nfwd_seed_tangent(
     x::IEEEFloat, chunk_size::Int, start_slot::Int, offset::Int
 )
-    # offset+1 is this scalar's global slot; dir is its 1-indexed position in the chunk.
+    # offset+1 is this scalar's global slot; lane is its 1-indexed position in the chunk.
     global_slot = offset + 1
-    dir = global_slot - start_slot + 1
+    lane = global_slot - start_slot + 1
     if chunk_size == 1
-        return dir == 1 ? one(x) : zero(x)
+        return lane == 1 ? one(x) : zero(x)
     end
-    return ntuple(k -> typeof(x)(k == dir), Val(chunk_size))
+    return ntuple(k -> typeof(x)(k == lane), Val(chunk_size))
 end
 
 function _nfwd_seed_tangent(
@@ -168,11 +168,11 @@ function _nfwd_seed_tangent(
     end
     dx = zeros(T, size(x)..., chunk_size)
     cart_inds = CartesianIndices(x)
-    for dir in 1:chunk_size
-        global_slot = start_slot + dir - 1
+    for lane in 1:chunk_size
+        global_slot = start_slot + lane - 1
         if offset < global_slot <= offset + length(x)
             idx = Tuple(cart_inds[global_slot - offset])
-            dx[idx..., dir] = one(T)
+            dx[idx..., lane] = one(T)
         end
     end
     return dx
@@ -201,13 +201,13 @@ function _nfwd_seed_tangent(
     end
     dx = zeros(Complex{T}, size(x)..., chunk_size)
     cart_inds = CartesianIndices(x)
-    for dir in 1:chunk_size
-        global_slot = start_slot + dir - 1
+    for lane in 1:chunk_size
+        global_slot = start_slot + lane - 1
         if offset < global_slot <= offset + 2 * length(x)
             local_slot = global_slot - offset
             elem = cld(local_slot, 2)
             idx = Tuple(cart_inds[elem])
-            dx[idx..., dir] =
+            dx[idx..., lane] =
                 isodd(local_slot) ? complex(one(T), zero(T)) : complex(zero(T), one(T))
         end
     end
@@ -252,9 +252,9 @@ function _nfwd_scatter_chunk!(grads::Tuple, inputs::Tuple, dy::Tuple, start_slot
         g = first(remaining_grads)
         n_slots = _count_slots(x)
         for k in 1:n_slots
-            dir = offset + k - start_slot + 1
-            if 1 <= dir <= length(dy)
-                _nfwd_add_slot!(g, k, dy[dir])
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                _nfwd_add_slot!(g, k, dy[lane])
             end
         end
         return nothing, (offset + n_slots, Base.tail(remaining_grads))
@@ -305,9 +305,9 @@ end
         g = first(remaining_grads)
         n_slots = _count_slots(x)
         for k in 1:n_slots
-            dir = offset + k - start_slot + 1
-            if 1 <= dir <= length(dy)
-                g = _nfwd_accumulate_gradient(g, k, dy[dir])
+            lane = offset + k - start_slot + 1
+            if 1 <= lane <= length(dy)
+                g = _nfwd_accumulate_gradient(g, k, dy[lane])
             end
         end
         return g, (offset + n_slots, Base.tail(remaining_grads))
@@ -414,7 +414,7 @@ function _nfwd_contract_output(
     end
 end
 
-# Tuple outputs: contract each element independently and sum dir contributions.
+# Tuple outputs: contract each element independently and sum lane contributions.
 function _nfwd_contract_output(ȳ::Tuple, dy::Tuple)
     length(ȳ) == length(dy) || _nfwd_output_error(dy)
     isempty(ȳ) && return ()

@@ -326,8 +326,8 @@ end
         end
     end
 
-    @testset "tangent(x, dir) per-lane access" begin
-        # Single-direction extraction for NDual leaves.
+    @testset "tangent(x, lane) per-lane access" begin
+        # Single-lane extraction for NDual leaves.
         x_ndual = NDual{Float64,3}(10.0, (1.0, 2.0, 3.0))
         @test Mooncake.tangent(x_ndual, 1) === 1.0
         @test Mooncake.tangent(x_ndual, 3) === 3.0
