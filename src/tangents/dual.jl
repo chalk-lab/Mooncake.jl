@@ -789,6 +789,18 @@ function Base.convert(::Type{Dual{P,NTangent{Tuple{T}}}}, x::Dual{P,T}) where {P
     return Dual(primal(x), NTangent((tangent(x),)))
 end
 
+# Bare-tangent 2-arg ctor for the canonical width-1 `Dual{P, NTangent{Tuple{T}}}`
+# slot. Callers crossing the AD boundary with a paired `Dual{P, T}` (e.g.
+# `test_frule_interface` lifting `Dual{CuArray, CuArray}` to
+# `Lifted{CuArray, 1, Dual{CuArray, NTangent{Tuple{CuArray}}}}` via the
+# `Lifted{P,N}(primal, tangent)` ctor) reach this constructor with a raw
+# tangent rather than the NTangent-wrapped form. Wrap it here so the
+# downstream auto-generated `Dual{P, NTangent{Tuple{T}}}(::P, ::NTangent{...})`
+# dispatch succeeds.
+function Dual{P,NTangent{Tuple{T}}}(value::P, tangent::T) where {P,T}
+    return Dual{P,NTangent{Tuple{T}}}(value, NTangent((tangent,)))
+end
+
 # `lsetfield!` rule bodies can produce a bare new value (e.g. an Int when
 # updating a `Vector`'s `:size` field). The slot type expects
 # `Dual{Int64, NoTangent}`; this convert lets Julia's `setfield!` /
