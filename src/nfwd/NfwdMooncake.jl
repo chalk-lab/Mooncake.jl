@@ -1996,47 +1996,51 @@ end
     ) = x
 end
 
-# Width-N entry points share the per-element builder. `zero_dual` and `uninit_dual`
-# both pick a zero generator (matching the bare `zero_dual(x::NDual)` /
-# `uninit_dual(x::NDual)` semantics).
-
-@inline Mooncake.zero_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
-@inline Mooncake.zero_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
-    z, w, _ -> zero(typeof(real(z)))
-)
-@inline Mooncake.zero_dual(w::Val, x::Array{<:IEEEFloat}) = _ndual_array(
-    x, w, _ -> zero(eltype(x))
-)
-@inline Mooncake.zero_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
-    x, w, _ -> zero(real(eltype(x)))
-)
-# Nested Array zero_dual: isassigned-guarded iteration preserves the
-# outer Array's undef-assignment pattern.
-@inline Mooncake.zero_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
-@inline Mooncake.zero_dual(
-    ::Val{0}, x::Array{Array{Complex{T},K},D}
-) where {T<:IEEEFloat,K,D} = x
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::Array{Array{T,K},D}
-) where {N,T<:IEEEFloat,K,D}
-    result = Array{Array{NDual{T,N},K},D}(undef, size(x))
-    @inbounds for n in eachindex(x)
-        if isassigned(x, n)
-            result[n] = Mooncake.zero_dual(w, x[n])
+# Width-N entry points share the per-element builder. `zero_dual` and
+# `uninit_dual` have identical bodies — both pick a zero generator
+# (matching the bare `zero_dual(x::NDual)` / `uninit_dual(x::NDual)`
+# semantics) — so we collapse both families through a single `@eval`
+# loop. The nested-Array variants share an `isassigned`-guarded iteration
+# pattern that preserves the outer Array's undef-assignment pattern.
+for f in (:zero_dual, :uninit_dual)
+    @eval begin
+        @inline Mooncake.$f(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
+        @inline Mooncake.$f(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
+            z, w, _ -> zero(typeof(real(z)))
+        )
+        @inline Mooncake.$f(w::Val, x::Array{<:IEEEFloat}) = _ndual_array(
+            x, w, _ -> zero(eltype(x))
+        )
+        @inline Mooncake.$f(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
+            x, w, _ -> zero(real(eltype(x)))
+        )
+        @inline Mooncake.$f(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
+        @inline Mooncake.$f(
+            ::Val{0}, x::Array{Array{Complex{T},K},D}
+        ) where {T<:IEEEFloat,K,D} = x
+        @inline function Mooncake.$f(
+            w::Val{N}, x::Array{Array{T,K},D}
+        ) where {N,T<:IEEEFloat,K,D}
+            result = Array{Array{NDual{T,N},K},D}(undef, size(x))
+            @inbounds for n in eachindex(x)
+                if isassigned(x, n)
+                    result[n] = Mooncake.$f(w, x[n])
+                end
+            end
+            return result
+        end
+        @inline function Mooncake.$f(
+            w::Val{N}, x::Array{Array{Complex{T},K},D}
+        ) where {N,T<:IEEEFloat,K,D}
+            result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
+            @inbounds for n in eachindex(x)
+                if isassigned(x, n)
+                    result[n] = Mooncake.$f(w, x[n])
+                end
+            end
+            return result
         end
     end
-    return result
-end
-@inline function Mooncake.zero_dual(
-    w::Val{N}, x::Array{Array{Complex{T},K},D}
-) where {N,T<:IEEEFloat,K,D}
-    result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
-    @inbounds for n in eachindex(x)
-        if isassigned(x, n)
-            result[n] = Mooncake.zero_dual(w, x[n])
-        end
-    end
-    return result
 end
 
 # Ptr — `tangent_type(Ptr{P}) = Ptr{tangent_type(P)}`, a single ptr, not a
@@ -2053,44 +2057,10 @@ end
 # Val{0} is the primal passthrough — return `x` unchanged.
 @inline Mooncake.zero_dual(::Val{0}, x::Ptr) = x
 
-@inline Mooncake.uninit_dual(w::Val, x::IEEEFloat) = _ndual_zero(x, w, _ -> zero(typeof(x)))
-@inline Mooncake.uninit_dual(w::Val, z::Complex{<:IEEEFloat}) = _ndual_zero(
-    z, w, _ -> zero(typeof(real(z)))
-)
-@inline Mooncake.uninit_dual(w::Val, x::Array{<:IEEEFloat}) = _ndual_array(
-    x, w, _ -> zero(eltype(x))
-)
-@inline Mooncake.uninit_dual(w::Val, x::Array{<:Complex{<:IEEEFloat}}) = _ndual_array(
-    x, w, _ -> zero(real(eltype(x)))
-)
-# Nested Array uninit_dual.
-@inline Mooncake.uninit_dual(::Val{0}, x::Array{Array{T,K},D}) where {T<:IEEEFloat,K,D} = x
-@inline Mooncake.uninit_dual(
-    ::Val{0}, x::Array{Array{Complex{T},K},D}
-) where {T<:IEEEFloat,K,D} = x
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::Array{Array{T,K},D}
-) where {N,T<:IEEEFloat,K,D}
-    result = Array{Array{NDual{T,N},K},D}(undef, size(x))
-    @inbounds for n in eachindex(x)
-        if isassigned(x, n)
-            result[n] = Mooncake.uninit_dual(w, x[n])
-        end
-    end
-    return result
-end
-@inline function Mooncake.uninit_dual(
-    w::Val{N}, x::Array{Array{Complex{T},K},D}
-) where {N,T<:IEEEFloat,K,D}
-    result = Array{Array{Complex{NDual{T,N}},K},D}(undef, size(x))
-    @inbounds for n in eachindex(x)
-        if isassigned(x, n)
-            result[n] = Mooncake.uninit_dual(w, x[n])
-        end
-    end
-    return result
-end
-
+# `randn_dual` shares the same per-element builder as `zero_dual` /
+# `uninit_dual`; conceptually `randn_dual = zero_dual .+ randn`-tangents.
+# The extra `rng` argument keeps it in a parallel loop rather than the
+# same one as `zero_dual` / `uninit_dual`.
 @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::IEEEFloat) = _ndual_zero(
     x, w, _ -> randn(rng, typeof(x))
 )
@@ -2104,38 +2074,32 @@ end
     x, w, _ -> randn(rng, real(eltype(x)))
 )
 
+# Memory / MemoryRef triplets. The zero/uninit pair share bodies again, so
+# they fold into one `@eval` loop; randn_dual is a parallel loop with the
+# rng-aware generator.
 @static if VERSION >= v"1.11-"
-    @inline Mooncake.zero_dual(w::Val, x::Memory{<:IEEEFloat}) = _ndual_memory(
-        x, w, _ -> zero(eltype(x))
-    )
-    @inline Mooncake.zero_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
-        x, w, _ -> zero(real(eltype(x)))
-    )
-    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:IEEEFloat}) = _ndual_memory(
-        x, w, _ -> zero(eltype(x))
-    )
-    @inline Mooncake.uninit_dual(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
-        x, w, _ -> zero(real(eltype(x)))
-    )
+    for f in (:zero_dual, :uninit_dual)
+        @eval begin
+            @inline Mooncake.$f(w::Val, x::Memory{<:IEEEFloat}) = _ndual_memory(
+                x, w, _ -> zero(eltype(x))
+            )
+            @inline Mooncake.$f(w::Val, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
+                x, w, _ -> zero(real(eltype(x)))
+            )
+            # MemoryRef: lift the underlying Memory and rebuild the offset.
+            @inline Mooncake.$f(w::Val, x::MemoryRef{<:IEEEFloat}) = memoryref(
+                Mooncake.$f(w, x.mem), Core.memoryrefoffset(x)
+            )
+            @inline Mooncake.$f(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
+                Mooncake.$f(w, x.mem), Core.memoryrefoffset(x)
+            )
+        end
+    end
     @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:IEEEFloat}) = _ndual_memory(
         x, w, _ -> randn(rng, eltype(x))
     )
     @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::Memory{<:Complex{<:IEEEFloat}}) = _ndual_memory(
         x, w, _ -> randn(rng, real(eltype(x)))
-    )
-
-    # MemoryRef: lift the underlying Memory and rebuild the offset.
-    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:IEEEFloat}) = memoryref(
-        Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x)
-    )
-    @inline Mooncake.zero_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
-        Mooncake.zero_dual(w, x.mem), Core.memoryrefoffset(x)
-    )
-    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:IEEEFloat}) = memoryref(
-        Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x)
-    )
-    @inline Mooncake.uninit_dual(w::Val, x::MemoryRef{<:Complex{<:IEEEFloat}}) = memoryref(
-        Mooncake.uninit_dual(w, x.mem), Core.memoryrefoffset(x)
     )
     @inline Mooncake.randn_dual(w::Val, rng::AbstractRNG, x::MemoryRef{<:IEEEFloat}) = memoryref(
         Mooncake.randn_dual(w, rng, x.mem), Core.memoryrefoffset(x)
