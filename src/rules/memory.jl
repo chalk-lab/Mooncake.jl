@@ -882,13 +882,6 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
-    function frule!!(
-        ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
-    ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return Dual(x, dx)
-    end
     @inline function frule!!(
         ::Lifted{typeof(Core.memorynew),N}, ::Lifted{Type{Memory{P}},N}, n::Lifted{Int,N}
     ) where {P,N}
