@@ -590,17 +590,6 @@ end
 # Per-V-of-value Lifted bodies cover each value-shape (Dual / NDual /
 # Complex{NDual} / array-of-NDual / Tuple / NamedTuple) that the AD
 # transform can deliver.
-# Per-lane tangent extractor for canonical width-1/N forms.
-@inline _lane_tangent(v::NDual, n::Integer) = v.partials[n]
-@inline _lane_tangent(v::Complex{<:NDual}, n::Integer) = complex(
-    v.re.partials[n], v.im.partials[n]
-)
-@inline _lane_tangent(v::AbstractArray{<:NDual}, n::Integer) = map(d -> d.partials[n], v)
-@inline _lane_tangent(v::AbstractArray{<:Complex{<:NDual}}, n::Integer) = map(
-    z -> complex(z.re.partials[n], z.im.partials[n]), v
-)
-@inline _lane_tangent(v::Dual{<:Any,<:Mooncake.NTangent}, n::Integer) = tangent(v).lanes[n]
-@inline _lane_tangent(v::Dual, ::Integer) = tangent(v)
 const _MemoryRefSetTupleValue = Tuple{
     Vararg{
         Union{
@@ -750,7 +739,7 @@ end
     memoryrefset!(primal(bare_x), _ndual_primal(bare_value), ordering, boundscheck)
     lanes = tangent(bare_x).lanes
     @inbounds for n in 1:N
-        memoryrefset!(lanes[n], _lane_tangent(bare_value, n), ordering, boundscheck)
+        memoryrefset!(lanes[n], Mooncake.tangent(bare_value, n), ordering, boundscheck)
     end
     return value
 end
