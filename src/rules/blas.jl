@@ -156,17 +156,17 @@ end
 # Array arguments arrive as one of two shapes: a `Dual{Wrapper{P,...}, ...}`
 # for struct wrappers (`ReshapedArray`, `SubArray`, `ReinterpretArray`) or an
 # `Array{NDual{T,N}}` / `Array{Complex{NDual{T,N}}}` for plain `Array` primals
-# that lift elementwise. `_arr_extract_n` is the width-N de-interleave —
+# that lift elementwise. `unpack_ndual` is the width-N de-interleave —
 # returns `(primal, NTuple{N, tangent_array})`. The width-1 thin wrapper
 # `_arr_extract` below preserves the strict `N==1` dispatch constraint for
 # width-1-only callers (`performance_patches`, `random`, `LogExpFunctionsExt`).
 # `arrayify` covers the Dual case for callers that need the view-pair (so
-# mutations propagate). The inverse of `_arr_extract_n` is
-# `Mooncake._combine_to_ndual!` (defined in `src/interface.jl`).
+# mutations propagate). The inverse of `unpack_ndual` is
+# `Mooncake.pack_ndual!` (defined in `src/interface.jl`).
 @inline function _arr_extract(
     x::AbstractArray{<:Union{NDual{<:Any,1},Complex{<:NDual{<:IEEEFloat,1}}}}
 )
-    p, ts = _arr_extract_n(x)
+    p, ts = unpack_ndual(x)
     return p, ts[1]
 end
 
@@ -191,14 +191,12 @@ end
 # where each `ts[n]` is the n-th lane tangent (separate array per lane).
 # Used by rules that compute per-lane derivatives separately and then
 # reassemble lanes at the output.
-@inline function _arr_extract_n(x::AbstractArray{NDual{T,N}}) where {T,N}
+@inline function unpack_ndual(x::AbstractArray{NDual{T,N}}) where {T,N}
     p = map(d -> d.value, x)
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
     return (p, ts)
 end
-@inline function _arr_extract_n(
-    x::AbstractArray{Complex{NDual{T,N}}}
-) where {T<:IEEEFloat,N}
+@inline function unpack_ndual(x::AbstractArray{Complex{NDual{T,N}}}) where {T<:IEEEFloat,N}
     p = map(c -> Complex(c.re.value, c.im.value), x)
     ts = ntuple(Val(N)) do n
         map(c -> Complex(c.re.partials[n], c.im.partials[n]), x)
@@ -207,8 +205,8 @@ end
 end
 
 # Width-N scalar extract: returns (primal, NTuple{N, T_tangent}).
-@inline _scalar_extract_n(x::NDual{T,N}) where {T,N} = (x.value, x.partials)
-@inline function _scalar_extract_n(x::Complex{NDual{R,N}}) where {R<:IEEEFloat,N}
+@inline unpack_ndual(x::NDual{T,N}) where {T,N} = (x.value, x.partials)
+@inline function unpack_ndual(x::Complex{NDual{R,N}}) where {R<:IEEEFloat,N}
     p = Complex(x.re.value, x.im.value)
     ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
     return (p, ts)
@@ -217,21 +215,21 @@ end
 # Width-N matrix extract: returns `(primal, NTuple{N, AbstractMatrix})`.
 # Reshape Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely
 # on the `AbstractMatrix` shape regardless of input rank.
-@inline function _mat_extract_n(x::AbstractVector{NDual{T,N}}) where {T,N}
-    p, ts = _arr_extract_n(x)
+@inline function unpack_ndual_as_matrix(x::AbstractVector{NDual{T,N}}) where {T,N}
+    p, ts = unpack_ndual(x)
     return (reshape(p, :, 1), map(t -> reshape(t, :, 1), ts))
 end
-@inline _mat_extract_n(x::AbstractMatrix{NDual{T,N}}) where {T,N} = _arr_extract_n(x)
-@inline function _mat_extract_n(
+@inline unpack_ndual_as_matrix(x::AbstractMatrix{NDual{T,N}}) where {T,N} = unpack_ndual(x)
+@inline function unpack_ndual_as_matrix(
     x::AbstractVector{Complex{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
-    p, ts = _arr_extract_n(x)
+    p, ts = unpack_ndual(x)
     return (reshape(p, :, 1), map(t -> reshape(t, :, 1), ts))
 end
-@inline function _mat_extract_n(
+@inline function unpack_ndual_as_matrix(
     x::AbstractMatrix{Complex{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
-    return _arr_extract_n(x)
+    return unpack_ndual(x)
 end
 
 #
@@ -403,8 +401,8 @@ for fname in (:dot, :dotc, :dotu)
         incy = primal(_incy)
         X_dX_inner = Mooncake._unlift(X_dX)
         Y_dY_inner = Mooncake._unlift(Y_dY)
-        X, dXs = _arr_extract_n(X_dX_inner)
-        Y, dYs = _arr_extract_n(Y_dY_inner)
+        X, dXs = unpack_ndual(X_dX_inner)
+        Y, dYs = unpack_ndual(Y_dY_inner)
         val = BLAS.$fname(n, X, incx, Y, incy)
         dvals = ntuple(
             lane ->
@@ -455,7 +453,7 @@ end
     end
     return dy / 2y
 end
-# Unified 3-arg nrm2 Lifted body. `_arr_extract_n` returns a 1-tuple for
+# Unified 3-arg nrm2 Lifted body. `unpack_ndual` returns a 1-tuple for
 # wrapper-exception slot or N-tuple for canonical NDual; we index the
 # underlying stride-incx slice for the per-lane gradient.
 @inline function frule!!(
@@ -467,7 +465,7 @@ end
     n = primal(_n)
     incx = primal(_incx)
     X_dX_inner = Mooncake._unlift(X_dX)
-    X, dXs = _arr_extract_n(X_dX_inner)
+    X, dXs = unpack_ndual(X_dX_inner)
     y = BLAS.nrm2(n, X, incx)
     Xinds = 1:incx:(incx * n)
     Xv = view(X, Xinds)
@@ -525,8 +523,8 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 # Unified scal! Lifted body. Math: scal! computes `X ← a · X`,
-# differential `dX ← a · dX + da · X`, per lane. `_arr_extract_n` and
-# `_scalar_extract_n` handle wrapper-exception slots and canonical NDual
+# differential `dX ← a · dX + da · X`, per lane. `unpack_ndual` and
+# `unpack_ndual` handle wrapper-exception slots and canonical NDual
 # at any N≥1; the legacy `Ptr{P}` shape is not handled here (covered by
 # the `_foreigncall_` dot loop above).
 @inline function frule!!(
@@ -540,14 +538,14 @@ end
     incx = primal(_incx)
     a_da_inner = Mooncake._unlift(a_da)
     X_dX_inner = Mooncake._unlift(X_dX)
-    a, das = _scalar_extract_n(a_da_inner)
-    X, dXs = _arr_extract_n(X_dX_inner)
+    a, das = unpack_ndual(a_da_inner)
+    X, dXs = unpack_ndual(X_dX_inner)
     @inbounds for lane in 1:length(dXs)
         BLAS.scal!(nn, a, dXs[lane], incx)
         BLAS.axpy!(nn, das[lane], X, incx, dXs[lane], incx)
     end
     BLAS.scal!(nn, a, X, incx)
-    Mooncake._combine_to_ndual!(X_dX_inner, X, dXs)
+    Mooncake.pack_ndual!(X_dX_inner, X, dXs)
     return X_dX
 end
 function rrule!!(
@@ -620,11 +618,11 @@ end
     x_dx_inner = Mooncake._unlift(x_dx)
     beta_inner = Mooncake._unlift(beta)
     y_dy_inner = Mooncake._unlift(y_dy)
-    α, dαs = _scalar_extract_n(alpha_inner)
-    A, dAs = _mat_extract_n(A_dA_inner)
-    x, dxs = _arr_extract_n(x_dx_inner)
-    β, dβs = _scalar_extract_n(beta_inner)
-    y, dys = _arr_extract_n(y_dy_inner)
+    α, dαs = unpack_ndual(alpha_inner)
+    A, dAs = unpack_ndual_as_matrix(A_dA_inner)
+    x, dxs = unpack_ndual(x_dx_inner)
+    β, dβs = unpack_ndual(beta_inner)
+    y, dys = unpack_ndual(y_dy_inner)
     @inbounds for lane in 1:length(dys)
         BLAS.gemv!(ta, dαs[lane], A, x, β, dys[lane])
         BLAS.gemv!(ta, α, dAs[lane], x, one(P), dys[lane])
@@ -637,7 +635,7 @@ end
         end
     end
     BLAS.gemv!(ta, α, A, x, β, y)
-    Mooncake._combine_to_ndual!(y_dy_inner, y, dys)
+    Mooncake.pack_ndual!(y_dy_inner, y, dys)
     return y_dy
 end
 
@@ -834,11 +832,11 @@ for (fname, T_constraint) in ((:symv!, :BlasFloat), (:hemv!, :BlasComplexFloat))
         x_dx_inner = Mooncake._unlift(x_dx)
         beta_inner = Mooncake._unlift(beta)
         y_dy_inner = Mooncake._unlift(y_dy)
-        α, dαs = _scalar_extract_n(alpha_inner)
-        A, dAs = _arr_extract_n(A_dA_inner)
-        x, dxs = _arr_extract_n(x_dx_inner)
-        β, dβs = _scalar_extract_n(beta_inner)
-        y, dys = _arr_extract_n(y_dy_inner)
+        α, dαs = unpack_ndual(alpha_inner)
+        A, dAs = unpack_ndual(A_dA_inner)
+        x, dxs = unpack_ndual(x_dx_inner)
+        β, dβs = unpack_ndual(beta_inner)
+        y, dys = unpack_ndual(y_dy_inner)
         @inbounds for lane in 1:length(dys)
             BLAS.$fname(ul, dαs[lane], A, x, β, dys[lane])
             BLAS.$fname(ul, α, dAs[lane], x, one(T), dys[lane])
@@ -851,7 +849,7 @@ for (fname, T_constraint) in ((:symv!, :BlasFloat), (:hemv!, :BlasComplexFloat))
             end
         end
         BLAS.$fname(ul, α, A, x, β, y)
-        Mooncake._combine_to_ndual!(y_dy_inner, y, dys)
+        Mooncake.pack_ndual!(y_dy_inner, y, dys)
         return y_dy
     end
 end
@@ -883,8 +881,8 @@ end
     diag = primal(_diag)
     A_dA_inner = Mooncake._unlift(A_dA)
     x_dx_inner = Mooncake._unlift(x_dx)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    x, dxs = _arr_extract_n(x_dx_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    x, dxs = unpack_ndual(x_dx_inner)
     @inbounds for lane in 1:length(dxs)
         BLAS.trmv!(uplo, trans, diag, A, dxs[lane])
         tmp = copy(x)
@@ -895,7 +893,7 @@ end
         end
     end
     BLAS.trmv!(uplo, trans, diag, A, x)
-    Mooncake._combine_to_ndual!(x_dx_inner, x, dxs)
+    Mooncake.pack_ndual!(x_dx_inner, x, dxs)
     return x_dx
 end
 function rrule!!(
@@ -1002,8 +1000,8 @@ end
     diag = primal(_diag)
     A_dA_inner = Mooncake._unlift(A_dA)
     x_dx_inner = Mooncake._unlift(x_dx)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    x, dxs = _arr_extract_n(x_dx_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    x, dxs = unpack_ndual(x_dx_inner)
     BLAS.trsv!(uplo, trans, diag, A, x)
     @inbounds for lane in 1:length(dxs)
         BLAS.trsv!(uplo, trans, diag, A, dxs[lane])
@@ -1014,7 +1012,7 @@ end
         BLAS.trsv!(uplo, trans, diag, A, tmp)
         dxs[lane] .-= tmp
     end
-    Mooncake._combine_to_ndual!(x_dx_inner, x, dxs)
+    Mooncake.pack_ndual!(x_dx_inner, x, dxs)
     return x_dx
 end
 function rrule!!(
@@ -1121,11 +1119,11 @@ end
     B_dB_inner = Mooncake._unlift(B_dB)
     beta_inner = Mooncake._unlift(beta)
     C_dC_inner = Mooncake._unlift(C_dC)
-    α, dαs = _scalar_extract_n(alpha_inner)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
-    β, dβs = _scalar_extract_n(beta_inner)
-    C, dCs = _arr_extract_n(C_dC_inner)
+    α, dαs = unpack_ndual(alpha_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
+    β, dβs = unpack_ndual(beta_inner)
+    C, dCs = unpack_ndual(C_dC_inner)
     @inbounds for lane in 1:length(dCs)
         BLAS.gemm!(tA, tB, α, dAs[lane], B, β, dCs[lane])
         BLAS.gemm!(tA, tB, α, A, dBs[lane], one(T), dCs[lane])
@@ -1141,7 +1139,7 @@ end
         end
     end
     BLAS.gemm!(tA, tB, α, A, B, β, C)
-    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
+    Mooncake.pack_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 @inline function rrule!!(
@@ -1343,11 +1341,11 @@ for (fname, T_constraint) in ((:symm!, :BlasFloat), (:hemm!, :BlasComplexFloat))
         B_dB_inner = Mooncake._unlift(B_dB)
         beta_inner = Mooncake._unlift(beta)
         C_dC_inner = Mooncake._unlift(C_dC)
-        α, dαs = _scalar_extract_n(alpha_inner)
-        A, dAs = _arr_extract_n(A_dA_inner)
-        B, dBs = _arr_extract_n(B_dB_inner)
-        β, dβs = _scalar_extract_n(beta_inner)
-        C, dCs = _arr_extract_n(C_dC_inner)
+        α, dαs = unpack_ndual(alpha_inner)
+        A, dAs = unpack_ndual(A_dA_inner)
+        B, dBs = unpack_ndual(B_dB_inner)
+        β, dβs = unpack_ndual(beta_inner)
+        C, dCs = unpack_ndual(C_dC_inner)
         @inbounds for lane in 1:length(dCs)
             BLAS.$fname(s, ul, α, A, dBs[lane], β, dCs[lane])
             BLAS.$fname(s, ul, α, dAs[lane], B, one(T), dCs[lane])
@@ -1363,7 +1361,7 @@ for (fname, T_constraint) in ((:symm!, :BlasFloat), (:hemm!, :BlasComplexFloat))
             end
         end
         BLAS.$fname(s, ul, α, A, B, β, C)
-        Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
+        Mooncake.pack_ndual!(C_dC_inner, C, dCs)
         return C_dC
     end
 end
@@ -1470,10 +1468,10 @@ end
     A_dA_inner = Mooncake._unlift(A_dA)
     β_dβ_inner = Mooncake._unlift(β_dβ)
     C_dC_inner = Mooncake._unlift(C_dC)
-    α, dαs = _scalar_extract_n(α_dα_inner)
-    A, dAs = _mat_extract_n(A_dA_inner)
-    β, dβs = _scalar_extract_n(β_dβ_inner)
-    C, dCs = _arr_extract_n(C_dC_inner)
+    α, dαs = unpack_ndual(α_dα_inner)
+    A, dAs = unpack_ndual_as_matrix(A_dA_inner)
+    β, dβs = unpack_ndual(β_dβ_inner)
+    C, dCs = unpack_ndual(C_dC_inner)
     @inbounds for lane in 1:length(dCs)
         BLAS.syr2k!(ul, tt, T(α), A, dAs[lane], β, dCs[lane])
         if !iszero(dαs[lane])
@@ -1484,7 +1482,7 @@ end
         end
     end
     BLAS.syrk!(ul, tt, α, A, β, C)
-    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
+    Mooncake.pack_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 # herk! (complex matrix, real α/β).
@@ -1503,10 +1501,10 @@ end
     A_dA_inner = Mooncake._unlift(A_dA)
     β_dβ_inner = Mooncake._unlift(β_dβ)
     C_dC_inner = Mooncake._unlift(C_dC)
-    α, dαs = _scalar_extract_n(α_dα_inner)
-    A, dAs = _mat_extract_n(A_dA_inner)
-    β, dβs = _scalar_extract_n(β_dβ_inner)
-    C, dCs = _arr_extract_n(C_dC_inner)
+    α, dαs = unpack_ndual(α_dα_inner)
+    A, dAs = unpack_ndual_as_matrix(A_dA_inner)
+    β, dβs = unpack_ndual(β_dβ_inner)
+    C, dCs = unpack_ndual(C_dC_inner)
     @inbounds for lane in 1:length(dCs)
         BLAS.her2k!(ul, tt, T(α), A, dAs[lane], β, dCs[lane])
         if !iszero(dαs[lane])
@@ -1519,7 +1517,7 @@ end
     end
     BLAS.herk!(ul, tt, α, A, β, C)
     real_diag!(C)
-    Mooncake._combine_to_ndual!(C_dC_inner, C, dCs)
+    Mooncake.pack_ndual!(C_dC_inner, C, dCs)
     return C_dC
 end
 
@@ -1559,9 +1557,9 @@ end
     α_dα_inner = Mooncake._unlift(α_dα)
     A_dA_inner = Mooncake._unlift(A_dA)
     B_dB_inner = Mooncake._unlift(B_dB)
-    α, dαs = _scalar_extract_n(α_dα_inner)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
+    α, dαs = unpack_ndual(α_dα_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
     @inbounds for lane in 1:length(dBs)
         BLAS.trmm!(side, uplo, ta, diag, α, A, dBs[lane])
         dBs[lane] .+= BLAS.trmm!(side, uplo, ta, diag, α, dAs[lane], copy(B))
@@ -1573,7 +1571,7 @@ end
         end
     end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+    Mooncake.pack_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 function rrule!!(
@@ -1678,9 +1676,9 @@ end
     α_dα_inner = Mooncake._unlift(α_dα)
     A_dA_inner = Mooncake._unlift(A_dA)
     B_dB_inner = Mooncake._unlift(B_dB)
-    α, dαs = _scalar_extract_n(α_dα_inner)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
+    α, dαs = unpack_ndual(α_dα_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
     @inbounds for lane in 1:length(dBs)
         BLAS.trsm!(side, uplo, trans, diag, α, A, dBs[lane])
         tmp = copy(B)
@@ -1695,7 +1693,7 @@ end
         dBs[lane] .-= tmp
     end
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+    Mooncake.pack_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 function rrule!!(

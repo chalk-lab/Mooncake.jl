@@ -424,7 +424,7 @@ _splat_new_(::Type{P}, x::Tuple) where {P} = _new_(P, x...)
 end
 
 @inline _canonical_splat_new_arg(::Val, x) = x
-@inline _canonical_splat_new_arg(::Val{N}, x::Dual{P,T}) where {N,P<:IEEEFloat,T<:IEEEFloat} = _combine_to_ndual(
+@inline _canonical_splat_new_arg(::Val{N}, x::Dual{P,T}) where {N,P<:IEEEFloat,T<:IEEEFloat} = pack_ndual(
     primal(x), ntuple(_ -> tangent(x), Val(N))
 )
 

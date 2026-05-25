@@ -4,7 +4,7 @@
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 # Width-N getrf!: covers Real and Complex via slot Union;
-# `_arr_extract_n` dispatches on inner V type.
+# `unpack_ndual` dispatches on inner V type.
 #
 # Tuple-output: return canonical inner V form (a tuple of inner duals per
 # AGENTS.md tuple-lifting). The first element preserves the input array's
@@ -25,8 +25,8 @@
         Dual(info, Mooncake.NoTangent()),
     )
 end
-# Unified width-1 + width-N Lifted body. `_arr_extract_n` /
-# `Mooncake._combine_to_ndual!` accept both canonical NDual matrices
+# Unified width-1 + width-N Lifted body. `unpack_ndual` /
+# `Mooncake.pack_ndual!` accept both canonical NDual matrices
 # (`AbstractMatrix{<:NDual{P,N}}` /
 # `AbstractMatrix{Complex{<:NDual{P,N}}}`) and wrapper-exception slots
 # (`Dual{<:AbstractMatrix, …}`, treated as a trivial 1-lane chunk). The
@@ -35,12 +35,12 @@ end
     ::Mooncake.Lifted{typeof(LAPACK.getrf!),N}, A_dA::Mooncake.Lifted{<:AbstractMatrix{P}}
 ) where {N,P<:BlasFloat}
     A_dA_inner = Mooncake._unlift(A_dA)
-    A, dAs = _arr_extract_n(A_dA_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
     _, ipiv, info = LAPACK.getrf!(A)
     @inbounds for lane in 1:length(dAs)
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
     inner = (A_dA_inner, ipiv_dual, info_dual)
     P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Vector{Int},Int}
@@ -82,12 +82,12 @@ end
 ) where {N,P<:BlasFloat}
     check = primal(kwargs).check
     A_dA_inner = Mooncake._unlift(A_dA)
-    A, dAs = _arr_extract_n(A_dA_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
     _, ipiv, info = LAPACK.getrf!(A; check)
     @inbounds for lane in 1:length(dAs)
         _getrf_fwd_core!(A, dAs[lane], ipiv)
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
     ipiv_dual, info_dual = _ipiv_info_wrap(ipiv, info, Val(N))
     inner = (A_dA_inner, ipiv_dual, info_dual)
     P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Vector{Int},Int}
@@ -187,8 +187,8 @@ end
 )
 # Unified trtrs! Lifted body: covers wrapper-exception (Dual-slot) and
 # canonical NDual matrices, width 1 and width N≥2, real and complex.
-# `_arr_extract_n` returns a 1-tuple for the wrapper-exception case so
-# the per-lane loop runs once; `Mooncake._combine_to_ndual!` is a no-op for the
+# `unpack_ndual` returns a 1-tuple for the wrapper-exception case so
+# the per-lane loop runs once; `Mooncake.pack_ndual!` is a no-op for the
 # wrapper-exception arrayify view (mutations propagate through the view).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(trtrs!),N},
@@ -203,14 +203,14 @@ end
     diag = primal(_diag)
     A_dA_inner = Mooncake._unlift(A_dA)
     B_dB_inner = Mooncake._unlift(B_dB)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
     @inbounds for lane in 1:length(dAs)
         _trtrs_frechet_lane!(uplo, trans, diag, A, dAs[lane], B, dBs[lane])
     end
     LAPACK.trtrs!(uplo, trans, diag, A, B)
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
-    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 # Per-`trans` op selector: 'N' → identity, 'T' → transpose (no conjugate),
@@ -313,7 +313,7 @@ end
 )
 # Unified getrs! Lifted body: primal LU-solve first, then per-lane Frechet
 # via `_getrs_frechet_lane!` (uses post-primal B). Works at any N≥1 via
-# `_arr_extract_n` returning a 1-tuple for wrapper-exception slot or
+# `unpack_ndual` returning a 1-tuple for wrapper-exception slot or
 # canonical NDual matrix at N=1.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getrs!),N},
@@ -326,14 +326,14 @@ end
     ipiv = primal(_ipiv)
     A_dA_inner = Mooncake._unlift(A_dA)
     B_dB_inner = Mooncake._unlift(B_dB)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
     LAPACK.getrs!(trans, A, ipiv, B)
     @inbounds for lane in 1:length(dAs)
         _getrs_frechet_lane!(trans, A, dAs[lane], ipiv, B, dBs[lane])
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
-    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 # Per-lane Frechet helper for getrs! (uses post-primal B). The Lifted body
@@ -453,7 +453,7 @@ end
 # `tmp2 = _lu_diff_factor(A, dA, ipiv)` (computed BEFORE the primal
 # overwrites A→A_inv), then the primal `LAPACK.getri!(A, ipiv)`, then per-
 # lane `dA = -A_inv * tmp2 * A_inv`. Works at any width N≥1 via
-# `_arr_extract_n` returning a 1-tuple for wrapper-exception slot or
+# `unpack_ndual` returning a 1-tuple for wrapper-exception slot or
 # canonical NDual matrix at N=1.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(getri!),N},
@@ -462,13 +462,13 @@ end
 ) where {N,P<:BlasFloat}
     ipiv = primal(_ipiv)
     A_dA_inner = Mooncake._unlift(A_dA)
-    A, dAs = _arr_extract_n(A_dA_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
     tmp2_lanes = ntuple(lane -> _lu_diff_factor(A, dAs[lane], ipiv), Val(N))
     LAPACK.getri!(A, ipiv)
     @inbounds for lane in 1:N
         dAs[lane] .= (-A * tmp2_lanes[lane] * A)
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
     return A_dA
 end
 # LU-decomposition Frechet factor: given an LU-factorised `A` and its
@@ -539,7 +539,7 @@ end
 )
 # Unified potrf! Lifted body: real (Symmetric projection) and complex
 # Hermitian projection share the same `_potrf!_frule_core!` math via
-# `_sym_herm_proj`. `_arr_extract_n` returns a 1-tuple at width 1 (wrapper-
+# `_sym_herm_proj`. `unpack_ndual` returns a 1-tuple at width 1 (wrapper-
 # exception or canonical NDual at N=1), so the per-lane loop runs once.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(potrf!),N},
@@ -548,12 +548,12 @@ end
 ) where {N,P<:BlasFloat}
     uplo = primal(_uplo)
     A_dA_inner = Mooncake._unlift(A_dA)
-    A, dAs = _arr_extract_n(A_dA_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
     _, info = LAPACK.potrf!(uplo, A)
     @inbounds for lane in 1:length(dAs)
         _potrf!_frule_core!(uplo, A, dAs[lane])
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
     info_dual = if N == 1
         Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),)))
     else
@@ -701,14 +701,14 @@ end
     uplo = primal(_uplo)
     A_dA_inner = Mooncake._unlift(A_dA)
     B_dB_inner = Mooncake._unlift(B_dB)
-    A, dAs = _arr_extract_n(A_dA_inner)
-    B, dBs = _arr_extract_n(B_dB_inner)
+    A, dAs = unpack_ndual(A_dA_inner)
+    B, dBs = unpack_ndual(B_dB_inner)
     LAPACK.potrs!(uplo, A, B)
     @inbounds for lane in 1:N
         _potrs_frechet_lane!(uplo, A, dAs[lane], B, dBs[lane])
     end
-    Mooncake._combine_to_ndual!(A_dA_inner, A, dAs)
-    Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+    Mooncake.pack_ndual!(A_dA_inner, A, dAs)
+    Mooncake.pack_ndual!(B_dB_inner, B, dBs)
     return B_dB
 end
 # Per-lane Frechet helper for potrs! (uses post-primal B). Shared by
@@ -797,13 +797,13 @@ end
         uplo = primal(_uplo)
         B_dB_inner = Mooncake._unlift(B_dB)
         A_dA_inner = Mooncake._unlift(A_dA)
-        B, dBs = _arr_extract_n(B_dB_inner)
-        A, dAs = _arr_extract_n(A_dA_inner)
+        B, dBs = unpack_ndual(B_dB_inner)
+        A, dAs = unpack_ndual(A_dA_inner)
         LAPACK.lacpy!(B, A, uplo)
         @inbounds for lane in 1:N
             LAPACK.lacpy!(dBs[lane], dAs[lane], uplo)
         end
-        Mooncake._combine_to_ndual!(B_dB_inner, B, dBs)
+        Mooncake.pack_ndual!(B_dB_inner, B, dBs)
         return B_dB
     end
     function rrule!!(

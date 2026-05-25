@@ -975,7 +975,7 @@ buffers and input specs. `W` is `Nothing` for width-1 or `Val{N}` for width-N.
 
 The `seed_buf` field lets `_gradient_width1`/`_gradient_widthN` reuse a single
 seed-tangent tuple across slot iterations. The `lift_buf` field caches the
-per-input `Container{NDual{T,W}}` lift target used by `_combine_to_ndual` in
+per-input `Container{NDual{T,W}}` lift target used by `pack_ndual` in
 the width-N path so that chunk evaluation doesn't allocate a fresh
 `Array{NDual,...}` / `Memory{NDual,...}` lift container on every chunk.
 """
@@ -1522,7 +1522,7 @@ function _gradient_width1_scalar(rule, input_primals, native_gradients, total_sl
     while slot <= total_slots
         seed = _top_level_scalar_seed(input_primals, slot)
         ndual_inputs = tuple_map(input_primals, seed) do p, t
-            _combine_to_ndual_or_buffer(nothing, p, (t,))
+            pack_ndual_or_buffer(nothing, p, (t,))
         end
         output = rule(ndual_inputs...)
         y = output isa NDual ? output.value : primal(output)
@@ -1574,7 +1574,7 @@ function _gradient_widthN_generic(
         end
     end
     # Per-input NDual lift buffer; `Nothing` for scalar/struct inputs that
-    # `_combine_to_ndual` doesn't allocate for. Allocated lazily once per cache
+    # `pack_ndual` doesn't allocate for. Allocated lazily once per cache
     # then mutated in place each chunk.
     lift_bufs = let cached = cache.lift_buf[]
         if cached === nothing
@@ -1598,7 +1598,7 @@ function _gradient_widthN_generic(
             _seed_inplace!(seed_bufs[d], input_primals, slot + d - 1, cursor, seed_seen)
         end
         ndual_inputs = ntuple(Val(length(input_primals))) do i
-            _combine_to_ndual_or_buffer(
+            pack_ndual_or_buffer(
                 lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
             )
         end
@@ -1638,7 +1638,7 @@ end
 end
 
 # Per-input lift container type. Inputs without array storage (scalars, Complex,
-# structs) don't need a buffer — `_combine_to_ndual` for those is allocation-free.
+# structs) don't need a buffer — `pack_ndual` for those is allocation-free.
 # For Array/Memory eltypes that the nfwd path supports, delegate to `dual_type`,
 # which already returns the correct `Array{NDual{T,W},D}` / `Memory{NDual{T,W}}` shape.
 const _LiftEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -1663,40 +1663,40 @@ end
 end
 
 # Pick between in-place (when a pre-allocated buffer is available) and
-# allocating `_combine_to_ndual` based on the buffer slot.
-@inline _combine_to_ndual_or_buffer(::Nothing, x, partials) = _combine_to_ndual(x, partials)
-# Scalar width-1 fast paths are deliberately duplicated from `_combine_to_ndual`;
+# allocating `pack_ndual` based on the buffer slot.
+@inline pack_ndual_or_buffer(::Nothing, x, partials) = pack_ndual(x, partials)
+# Scalar width-1 fast paths are deliberately duplicated from `pack_ndual`;
 # the hot cached-gradient path relies on these concrete methods to stay
 # allocation-free.
-@inline _combine_to_ndual_or_buffer(::Nothing, x::T, partials::Tuple{T}) where {T<:IEEEFloat} = NDual{
+@inline pack_ndual_or_buffer(::Nothing, x::T, partials::Tuple{T}) where {T<:IEEEFloat} = NDual{
     T,1
 }(
     x, partials
 )
-@inline function _combine_to_ndual_or_buffer(
+@inline function pack_ndual_or_buffer(
     ::Nothing, x::Complex{T}, partials::Tuple{Complex{T}}
 ) where {T<:IEEEFloat}
     return Complex(
         NDual{T,1}(real(x), (real(partials[1]),)), NDual{T,1}(imag(x), (imag(partials[1]),))
     )
 end
-@inline function _combine_to_ndual_or_buffer(
+@inline function pack_ndual_or_buffer(
     buf::AbstractArray{<:NDual}, x::AbstractArray{<:IEEEFloat}, partials::NTuple{W}
 ) where {W}
-    return _combine_to_ndual!(buf, x, partials)
+    return pack_ndual!(buf, x, partials)
 end
-@inline function _combine_to_ndual_or_buffer(
+@inline function pack_ndual_or_buffer(
     buf::AbstractArray{<:Complex{<:NDual}},
     x::AbstractArray{<:Complex{<:IEEEFloat}},
     partials::NTuple{W},
 ) where {W}
-    return _combine_to_ndual!(buf, x, partials)
+    return pack_ndual!(buf, x, partials)
 end
 
 # In-place lift used by the FCache lift-buf path. `tangent_dirs` is typed
 # tighter than `NTuple{W}` so the inner `ntuple` closure specialises (an
 # untyped tuple boxes per index).
-@inline function _combine_to_ndual!(
+@inline function pack_ndual!(
     result::AbstractArray{NDual{T,W}},
     x::AbstractArray{<:IEEEFloat},
     tangent_dirs::NTuple{W,<:AbstractArray{<:IEEEFloat}},
@@ -1706,7 +1706,7 @@ end
     end
     return result
 end
-@inline function _combine_to_ndual!(
+@inline function pack_ndual!(
     result::AbstractArray{Complex{NDual{T,W}}},
     x::AbstractArray{<:Complex{<:IEEEFloat}},
     tangent_dirs::NTuple{W,<:AbstractArray{<:Complex{<:IEEEFloat}}},
@@ -1719,11 +1719,11 @@ end
     return result
 end
 
-@inline function _combine_to_ndual(x::T, partials::NTuple{W,T}) where {T<:IEEEFloat,W}
+@inline function pack_ndual(x::T, partials::NTuple{W,T}) where {T<:IEEEFloat,W}
     return NDual{T,W}(x, partials)
 end
 
-@inline function _combine_to_ndual(
+@inline function pack_ndual(
     x::Complex{T}, partials::NTuple{W,Complex{T}}
 ) where {T<:IEEEFloat,W}
     re = NDual{T,W}(real(x), ntuple(d -> real(partials[d]), Val(W)))
@@ -1731,7 +1731,7 @@ end
     return Complex(re, im)
 end
 
-function _combine_to_ndual(
+function pack_ndual(
     x::AbstractArray{T}, tangent_dirs::NTuple{W,<:AbstractArray{T}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, NDual{T,W})
@@ -1741,7 +1741,7 @@ function _combine_to_ndual(
     return result
 end
 
-function _combine_to_ndual(
+function pack_ndual(
     x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W,<:AbstractArray{Complex{T}}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, Complex{NDual{T,W}})
@@ -1753,51 +1753,45 @@ function _combine_to_ndual(
     return result
 end
 
-@inline _combine_to_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
-@inline _combine_to_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
+@inline pack_ndual(x, ::NTuple{W,NoTangent}) where {W} = Dual(x, NoTangent())
+@inline pack_ndual(x::Tuple, ::Tuple{}) = Dual(x, NoTangent())
 # Empty-tangent disambiguators: the W=0 case satisfies both
 # `NTuple{W, <:AbstractArray{T}}` and `NTuple{W, NoTangent}` (Tuple{}
 # vacuously satisfies any element constraint). Pick the same NoTangent
 # behaviour as the other AbstractArray empty-tangent overloads below.
-@inline _combine_to_ndual(x::AbstractArray{<:IEEEFloat}, ::Tuple{}) = Dual(x, NoTangent())
-@inline _combine_to_ndual(x::AbstractArray{Complex{T}}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
+@inline pack_ndual(x::AbstractArray{<:IEEEFloat}, ::Tuple{}) = Dual(x, NoTangent())
+@inline pack_ndual(x::AbstractArray{Complex{T}}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
     x, NoTangent()
 )
-@inline function _combine_to_ndual(
-    x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}
-) where {W}
+@inline function pack_ndual(x::AbstractArray{<:IEEEFloat}, ::NTuple{W,NoTangent}) where {W}
     return Dual(x, NoTangent())
 end
-@inline function _combine_to_ndual(
-    x::Complex{T}, ::NTuple{W,NoTangent}
-) where {T<:IEEEFloat,W}
+@inline function pack_ndual(x::Complex{T}, ::NTuple{W,NoTangent}) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
-    x, NoTangent()
-)
-@inline function _combine_to_ndual(
+@inline pack_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(x, NoTangent())
+@inline function pack_ndual(
     x::AbstractArray{Complex{T}}, ::NTuple{W,NoTangent}
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline function _combine_to_ndual(x::Tuple, tangent_dirs::NTuple{W,<:Tuple}) where {W}
+@inline function pack_ndual(x::Tuple, tangent_dirs::NTuple{W,<:Tuple}) where {W}
     return ntuple(Val(length(x))) do i
         element_partials = ntuple(d -> tangent_dirs[d][i], Val(W))
-        _combine_to_ndual(x[i], element_partials)
+        pack_ndual(x[i], element_partials)
     end
 end
-@inline function _combine_to_ndual(
+@inline function pack_ndual(
     x, tangent_dirs::Tuple{<:Union{Tangent,MutableTangent,PossiblyUninitTangent}}
 )
     return Dual(x, tangent_dirs[1])
 end
-@inline function _combine_to_ndual(
+@inline function pack_ndual(
     x::AbstractArray, tangent_dirs::Tuple{<:AbstractArray{NoTangent}}
 )
     return Dual(x, tangent_dirs[1])
 end
-@inline function _combine_to_ndual(x, tangent_dirs::NTuple{W}) where {W}
+@inline function pack_ndual(x, tangent_dirs::NTuple{W}) where {W}
     return Dual(x, NTangent(tangent_dirs))
 end
 
@@ -1821,7 +1815,7 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Dual,N}) where {N}
             ntuple(i -> i == 1 ? t : zero_tangent(p), width)
         end
     end
-    ndual_inputs = map(_combine_to_ndual, input_primals, padded)
+    ndual_inputs = map(pack_ndual, input_primals, padded)
     output = cache.rule(ndual_inputs...)
     return _ndual_output_to_width1(output)
 end
@@ -1947,7 +1941,7 @@ inputs are rejected.
             else
                 ntuple(d -> d == 1 ? t : zero_tangent(p), cache_width)
             end
-            _combine_to_ndual(p, padded)
+            pack_ndual(p, padded)
         end
         # Rule is compiled at `cache_width`; convert its width-N output back to the
         # caller's per-direction width-1 view.
@@ -2468,7 +2462,7 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     seed1 = _make_seed_tangent(input_primals, 1)
     # cache.rule expects width-1 NDual inputs; the OC then wraps them in
     # `Lifted{P, 1, NDual{T, 1}}` and unwraps the result for us.
-    ndual1 = map(_combine_to_ndual, input_primals, map(t -> (t,), seed1))
+    ndual1 = map(pack_ndual, input_primals, map(t -> (t,), seed1))
     output1 = try
         cache.rule(ndual1...)
     catch err
@@ -2482,7 +2476,7 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
     @inbounds J[:, 1] .= _jacobian_col_tangent(output1)
     for slot in 2:total_dof
         seed = _make_seed_tangent(input_primals, slot)
-        ndual = map(_combine_to_ndual, input_primals, map(t -> (t,), seed))
+        ndual = map(pack_ndual, input_primals, map(t -> (t,), seed))
         output = cache.rule(ndual...)
         @inbounds J[:, slot] .= _jacobian_col_tangent(output)
     end
