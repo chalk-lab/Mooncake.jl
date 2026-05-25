@@ -1599,7 +1599,7 @@ function _gradient_widthN_generic(
         end
         ndual_inputs = ntuple(Val(length(input_primals))) do i
             pack_ndual_or_buffer(
-                lift_bufs[i], input_primals[i], ntuple(d -> seeds[d][i], Val(W))
+                lift_bufs[i], input_primals[i], ntuple(lane -> seeds[lane][i], Val(W))
             )
         end
         output = rule(ndual_inputs...)
@@ -1625,7 +1625,7 @@ end
 end
 @inline function _gradient_coeffs(output, ::Val{W}, chunk) where {W}
     if _has_ndual(output)
-        return ntuple(d -> tangent(output, d), Val(W))
+        return ntuple(lane -> tangent(output, lane), Val(W))
     elseif chunk == 1
         return (tangent(output, 1),)
     else
@@ -1693,27 +1693,27 @@ end
     return pack_ndual!(buf, x, partials)
 end
 
-# In-place lift used by the FCache lift-buf path. `tangent_dirs` is typed
+# In-place lift used by the FCache lift-buf path. `tangent_lanes` is typed
 # tighter than `NTuple{W}` so the inner `ntuple` closure specialises (an
 # untyped tuple boxes per index).
 @inline function pack_ndual!(
     result::AbstractArray{NDual{T,W}},
     x::AbstractArray{<:IEEEFloat},
-    tangent_dirs::NTuple{W,<:AbstractArray{<:IEEEFloat}},
+    tangent_lanes::NTuple{W,<:AbstractArray{<:IEEEFloat}},
 ) where {T<:IEEEFloat,W}
     @inbounds for I in eachindex(x)
-        result[I] = NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+        result[I] = NDual{T,W}(x[I], ntuple(lane -> tangent_lanes[lane][I], Val(W)))
     end
     return result
 end
 @inline function pack_ndual!(
     result::AbstractArray{Complex{NDual{T,W}}},
     x::AbstractArray{<:Complex{<:IEEEFloat}},
-    tangent_dirs::NTuple{W,<:AbstractArray{<:Complex{<:IEEEFloat}}},
+    tangent_lanes::NTuple{W,<:AbstractArray{<:Complex{<:IEEEFloat}}},
 ) where {T<:IEEEFloat,W}
     @inbounds for I in eachindex(x)
-        re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
-        im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+        re = NDual{T,W}(real(x[I]), ntuple(lane -> real(tangent_lanes[lane][I]), Val(W)))
+        im = NDual{T,W}(imag(x[I]), ntuple(lane -> imag(tangent_lanes[lane][I]), Val(W)))
         result[I] = Complex(re, im)
     end
     return result
@@ -1726,28 +1726,28 @@ end
 @inline function pack_ndual(
     x::Complex{T}, partials::NTuple{W,Complex{T}}
 ) where {T<:IEEEFloat,W}
-    re = NDual{T,W}(real(x), ntuple(d -> real(partials[d]), Val(W)))
-    im = NDual{T,W}(imag(x), ntuple(d -> imag(partials[d]), Val(W)))
+    re = NDual{T,W}(real(x), ntuple(lane -> real(partials[lane]), Val(W)))
+    im = NDual{T,W}(imag(x), ntuple(lane -> imag(partials[lane]), Val(W)))
     return Complex(re, im)
 end
 
 function pack_ndual(
-    x::AbstractArray{T}, tangent_dirs::NTuple{W,<:AbstractArray{T}}
+    x::AbstractArray{T}, tangent_lanes::NTuple{W,<:AbstractArray{T}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, NDual{T,W})
     @inbounds for I in eachindex(x)
-        result[I] = NDual{T,W}(x[I], ntuple(d -> tangent_dirs[d][I], Val(W)))
+        result[I] = NDual{T,W}(x[I], ntuple(lane -> tangent_lanes[lane][I], Val(W)))
     end
     return result
 end
 
 function pack_ndual(
-    x::AbstractArray{Complex{T}}, tangent_dirs::NTuple{W,<:AbstractArray{Complex{T}}}
+    x::AbstractArray{Complex{T}}, tangent_lanes::NTuple{W,<:AbstractArray{Complex{T}}}
 ) where {T<:IEEEFloat,W}
     result = similar(x, Complex{NDual{T,W}})
     @inbounds for I in eachindex(x)
-        re = NDual{T,W}(real(x[I]), ntuple(d -> real(tangent_dirs[d][I]), Val(W)))
-        im = NDual{T,W}(imag(x[I]), ntuple(d -> imag(tangent_dirs[d][I]), Val(W)))
+        re = NDual{T,W}(real(x[I]), ntuple(lane -> real(tangent_lanes[lane][I]), Val(W)))
+        im = NDual{T,W}(imag(x[I]), ntuple(lane -> imag(tangent_lanes[lane][I]), Val(W)))
         result[I] = Complex(re, im)
     end
     return result
@@ -1775,24 +1775,24 @@ end
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline function pack_ndual(x::Tuple, tangent_dirs::NTuple{W,<:Tuple}) where {W}
+@inline function pack_ndual(x::Tuple, tangent_lanes::NTuple{W,<:Tuple}) where {W}
     return ntuple(Val(length(x))) do i
-        element_partials = ntuple(d -> tangent_dirs[d][i], Val(W))
+        element_partials = ntuple(lane -> tangent_lanes[lane][i], Val(W))
         pack_ndual(x[i], element_partials)
     end
 end
 @inline function pack_ndual(
-    x, tangent_dirs::Tuple{<:Union{Tangent,MutableTangent,PossiblyUninitTangent}}
+    x, tangent_lanes::Tuple{<:Union{Tangent,MutableTangent,PossiblyUninitTangent}}
 )
-    return Dual(x, tangent_dirs[1])
+    return Dual(x, tangent_lanes[1])
 end
 @inline function pack_ndual(
-    x::AbstractArray, tangent_dirs::Tuple{<:AbstractArray{NoTangent}}
+    x::AbstractArray, tangent_lanes::Tuple{<:AbstractArray{NoTangent}}
 )
-    return Dual(x, tangent_dirs[1])
+    return Dual(x, tangent_lanes[1])
 end
-@inline function pack_ndual(x, tangent_dirs::NTuple{W}) where {W}
-    return Dual(x, NTangent(tangent_dirs))
+@inline function pack_ndual(x, tangent_lanes::NTuple{W}) where {W}
+    return Dual(x, NTangent(tangent_lanes))
 end
 
 # ── value_and_derivative!! (FCache) ─────────────────────────────────────────
@@ -1950,7 +1950,7 @@ inputs are rejected.
             padded = if t isa NoTangent
                 ntuple(_ -> NoTangent(), cache_width)
             else
-                ntuple(d -> d == 1 ? t : zero_tangent(p), cache_width)
+                ntuple(lane -> lane == 1 ? t : zero_tangent(p), cache_width)
             end
             pack_ndual(p, padded)
         end
