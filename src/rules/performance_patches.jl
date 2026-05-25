@@ -105,20 +105,26 @@ end
     out_v = Mooncake._unlift(out)
     x1_v = Mooncake._unlift(x1)
     x2_v = Mooncake._unlift(x2)
-    pout, dout = _arr_extract(out_v)
-    px1, dx1 = _arr_extract(x1_v)
-    px2, dx2 = _arr_extract(x2_v)
+    pout, douts = Mooncake.unpack_ndual(out_v)
+    px1, dx1s = Mooncake.unpack_ndual(x1_v)
+    px2, dx2s = Mooncake.unpack_ndual(x2_v)
     LinearAlgebra._kron!(pout, px1, px2)
-    m = firstindex(dout)
-    for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
-        x1ij = px1[i, j]
-        dx1ij = dx1[i, j]
-        for k in axes(px2, 1)
-            dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
-            m += 1
+    # Per-lane Kronecker derivative: `d(kron(x1,x2)) = kron(dx1,x2) + kron(x1,dx2)`.
+    @inbounds for lane in 1:N
+        dout = douts[lane]
+        dx1 = dx1s[lane]
+        dx2 = dx2s[lane]
+        m = firstindex(dout)
+        for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+            x1ij = px1[i, j]
+            dx1ij = dx1[i, j]
+            for k in axes(px2, 1)
+                dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
+                m += 1
+            end
         end
     end
-    _arr_writeback!(out_v, pout, dout)
+    Mooncake.pack_ndual!(out_v, pout, douts)
     return out
 end
 
