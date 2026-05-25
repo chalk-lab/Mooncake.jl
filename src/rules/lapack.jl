@@ -1,6 +1,6 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-# Width-N `_*_extract_n` helpers and `_arr_writeback!` are defined alongside
-# `arrayify` in `src/rules/blas.jl`.
+# Width-N `unpack_ndual` / `unpack_ndual_as_matrix` helpers and `arrayify`
+# are defined in `src/rules/blas.jl`.
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 # Width-N getrf!: covers Real and Complex via slot Union;

@@ -157,35 +157,10 @@ end
 # for struct wrappers (`ReshapedArray`, `SubArray`, `ReinterpretArray`) or an
 # `Array{NDual{T,N}}` / `Array{Complex{NDual{T,N}}}` for plain `Array` primals
 # that lift elementwise. `unpack_ndual` is the width-N de-interleave —
-# returns `(primal, NTuple{N, tangent_array})`. The width-1 thin wrapper
-# `_arr_extract` below preserves the strict `N==1` dispatch constraint for
-# width-1-only callers (`performance_patches`, `random`, `LogExpFunctionsExt`).
-# `arrayify` covers the Dual case for callers that need the view-pair (so
-# mutations propagate). The inverse of `unpack_ndual` is
-# `Mooncake.pack_ndual!` (defined in `src/interface.jl`).
-@inline function _arr_extract(
-    x::AbstractArray{<:Union{NDual{<:Any,1},Complex{<:NDual{<:IEEEFloat,1}}}}
-)
-    p, ts = unpack_ndual(x)
-    return p, ts[1]
-end
-
-@inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
-    @inbounds for i in eachindex(x)
-        x[i] = NDual{T,1}(p[i], (t[i],))
-    end
-    return nothing
-end
-@inline function _arr_writeback!(
-    x::AbstractArray{Complex{NDual{T,1}}}, p, t
-) where {T<:IEEEFloat}
-    @inbounds for i in eachindex(x)
-        x[i] = Complex(
-            NDual{T,1}(real(p[i]), (real(t[i]),)), NDual{T,1}(imag(p[i]), (imag(t[i]),))
-        )
-    end
-    return nothing
-end
+# returns `(primal, NTuple{N, tangent_array})`. `arrayify` covers the Dual
+# case for callers that need the view-pair (so mutations propagate). The
+# inverse of `unpack_ndual` is `Mooncake.pack_ndual!` (defined in
+# `src/interface.jl`).
 
 # Width-N extract / writeback: returns (p, ts::NTuple{N, AbstractArray})
 # where each `ts[n]` is the n-th lane tangent (separate array per lane).
