@@ -554,11 +554,8 @@ end
         _potrf!_frule_core!(uplo, A, dAs[lane])
     end
     Mooncake.pack_ndual!(A_dA_inner, A, dAs)
-    info_dual = if N == 1
-        Dual(info, Mooncake.NTangent((Mooncake.zero_tangent(info),)))
-    else
-        Dual(info, Mooncake.NoTangent())
-    end
+    # `info::Int` canonical V at any width N: bare `Dual{Int, NoTangent}`.
+    info_dual = Dual(info, Mooncake.NoTangent())
     inner = (A_dA_inner, info_dual)
     P_out = Tuple{Mooncake.__primal_type(_typeof(A_dA_inner)),Int}
     return Mooncake.Lifted{P_out,N}(inner)
