@@ -168,12 +168,10 @@ end
 # Array arguments arrive as one of two shapes: a `Dual{Wrapper{P,...}, ...}`
 # for struct wrappers (`ReshapedArray`, `SubArray`, `ReinterpretArray`) or an
 # `Array{NDual{T,N}}` / `Array{Complex{NDual{T,N}}}` for plain `Array` primals
-# that lift elementwise. `_arr_extract` / `_mat_extract` / `_scalar_extract`
-# return a `(primal, tangent)` pair for the width-1 shapes (arrayify-views for
-# the Dual case so mutations propagate; `map`-allocated copies for the NDual
-# case, paired with `_arr_writeback!` to push results back element-wise).
-# The `_*_extract_n` / `_arr_writeback_n!` family below mirrors this for
-# width-N callers, returning per-lane tangent tuples.
+# that lift elementwise. `_arr_extract` returns a `(primal, tangent)` pair for
+# the width-1 NDual array shape; `arrayify` covers the Dual case for callers
+# that need the view-pair (so mutations propagate). The `_*_extract_n` /
+# `_arr_writeback_n!` family below provides width-N per-lane tangent tuples.
 @inline function _arr_extract(x::AbstractArray{NDual{T,1}}) where {T}
     return (map(d -> d.value, x), map(d -> d.partials[1], x))
 end
@@ -273,32 +271,6 @@ end
 ) where {T<:IEEEFloat,N}
     return _arr_extract_n(x)
 end
-
-@inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
-@inline function _mat_extract(x::AbstractVector{NDual{T,1}}) where {T}
-    p, t = _arr_extract(x)
-    return reshape(p, :, 1), reshape(t, :, 1)
-end
-@inline _mat_extract(x::AbstractMatrix{NDual{T,1}}) where {T} = _arr_extract(x)
-@inline function _mat_extract(x::AbstractVector{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
-    p, t = _arr_extract(x)
-    return reshape(p, :, 1), reshape(t, :, 1)
-end
-@inline function _mat_extract(x::AbstractMatrix{Complex{NDual{T,1}}}) where {T<:IEEEFloat}
-    return _arr_extract(x)
-end
-
-# Scalar counterpart: at width 1, an `IEEEFloat` slot may arrive as either
-# `NDual{T,1}` (the canonical IEEEFloat lifted form) or `Dual{T,T}` (when
-# constructed by the test framework or by zero_dual). Both unwrap to a
-# `(primal, tangent)` pair the same way.
-@inline _scalar_extract(x::Dual{<:Number}) = (primal(x), tangent(x))
-@inline _scalar_extract(x::NDual{T,1}) where {T} = (x.value, x.partials[1])
-# Complex-scalar canonical width-1 form: `Complex{NDual{R, 1}}` with real
-# and imag NDuals.
-@inline _scalar_extract(x::Complex{NDual{R,1}}) where {R<:IEEEFloat} = (
-    Complex(x.re.value, x.im.value), Complex(x.re.partials[1], x.im.partials[1])
-)
 
 # Slot-level Union that matches either a struct-wrapped Dual array or a
 # plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
