@@ -135,10 +135,43 @@
             end
         end
 
+        # Wrap a bare NDual/Complex/Dual value in a `Lifted` slot whose primal
+        # type matches the underlying numeric type. Mirrors `_to_ndual_arg`
+        # but adds the Lifted carrier, which is what `frule!!` dispatches on.
+        @inline function _to_ndual_slot(v::T, t) where {T<:Base.IEEEFloat}
+            return Mooncake.Lifted{T,1,Mooncake.NDual{T,1}}(Mooncake.NDual{T,1}(v, (t,)))
+        end
+        @inline function _to_ndual_slot(v::Complex{T}, t) where {T<:Base.IEEEFloat}
+            inner = Complex(
+                Mooncake.NDual{T,1}(real(v), (real(t),)),
+                Mooncake.NDual{T,1}(imag(v), (imag(t),)),
+            )
+            return Mooncake.Lifted{Complex{T},1,typeof(inner)}(inner)
+        end
+        @inline function _to_ndual_slot(v, t)
+            return Mooncake.lifted_type(Val(1), typeof(v))(v, t)
+        end
+
         function ndual_test_rule(f, vt_pairs::Tuple...; check_finite=true)
-            fdual = Mooncake.zero_dual(f)
-            d_dual = Mooncake.frule!!(fdual, map(p -> Mooncake.Dual(p...), vt_pairs)...)
-            d_ndual = Mooncake.frule!!(fdual, map(p -> _to_ndual_arg(p...), vt_pairs)...)
+            # Wrap the function slot as Lifted (the canonical primal-mode entry
+            # for `frule!!`). The bare-Dual scalar frules were deleted as part
+            # of the canonical-V cleanup; reach the rule through Lifted slots.
+            f_slot = Mooncake.lifted_type(Val(1), typeof(f))(f, Mooncake.NoTangent())
+            # Reference path: Lifted-wrap each (value, tangent). For IEEEFloat
+            # this dispatches to the canonical `NDual{T,1}` inner V; for other
+            # arg types (`Type{Pext}` in `fpext`, etc.) it falls through to a
+            # wrapper-exception `Dual` V. The width-1 collapse normalises the
+            # output back to a bare `Dual` for the comparison.
+            ref_args = map(vt_pairs) do p
+                Mooncake.lifted_type(Val(1), typeof(p[1]))(p[1], p[2])
+            end
+            d_dual = Mooncake._ndual_output_to_width1(Mooncake.frule!!(f_slot, ref_args...))
+            # Direct-NDual path: same canonical NDual V but constructed
+            # explicitly via `_to_ndual_slot` to keep the original test's
+            # intent of exercising NDual dispatch directly. `_unlift` extracts
+            # the bare inner value for comparison against the reference Dual.
+            ndual_args = map(p -> _to_ndual_slot(p...), vt_pairs)
+            d_ndual = Mooncake._unlift(Mooncake.frule!!(f_slot, ndual_args...))
             if d_ndual isa Tuple
                 ps = Mooncake.primal(d_dual)
                 ts = Mooncake.tangent(d_dual)
@@ -248,13 +281,16 @@
         # Mixed NDual × Dual{<:IEEEFloat} — exercises the "scalar Dual on the
         # right" branch in the `$op_sym` loop in `rules_via_nfwd.jl`. No Dual
         # reference: result type alone confirms dispatch landed on the
-        # NDual-aware overload rather than falling through.
+        # NDual-aware overload rather than falling through. Both args are
+        # routed through `_to_ndual_slot` / `lifted_type` to reach the
+        # Lifted-dispatch entry point.
         @testset "binary mixed $f" for f in (intr.add_float, intr.mul_float)
-            d = Mooncake.frule!!(
-                Mooncake.zero_dual(f),
-                Mooncake.NDual{Float64,1}(1.5, (1.0,)),
-                Mooncake.Dual(2.5, 0.0),
+            d_lifted = Mooncake.frule!!(
+                Mooncake.lifted_type(Val(1), typeof(f))(f, Mooncake.NoTangent()),
+                _to_ndual_slot(1.5, 1.0),
+                Mooncake.lifted_type(Val(1), Float64)(2.5, 0.0),
             )
+            d = Mooncake._unlift(d_lifted)
             @test d isa Mooncake.NDual{Float64,1}
         end
     end
