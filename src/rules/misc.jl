@@ -439,7 +439,9 @@ end
     return Mooncake.Lifted{__primal_type(_typeof(result)),N}(result)
 end
 # SplitDual value V: rebuild the canonical NamedTuple in place via an
-# `ntuple` rebuild that preserves zero allocation.
+# `ntuple` rebuild that preserves zero allocation. When the target slot
+# type is `PossiblyUninitTangent` (the primal field may be `#undef`), wrap
+# the bare value so the NamedTuple ctor's per-field `convert` succeeds.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lsetfield!),N},
     value::Mooncake.Lifted{P,N,V},
@@ -450,7 +452,13 @@ end
     bare_x = Mooncake._unlift(x)
     nt = getfield(bare_value, :canonical)
     i = Base.fieldindex(NT, f)
-    new_nt = NT(ntuple(n -> n == i ? bare_x : nt[n], fieldcount(NT)))
+    NewTi = fieldtype(NT, i)
+    new_field = if NewTi <: Mooncake.PossiblyUninitTangent
+        bare_x isa NewTi ? bare_x : NewTi(bare_x)
+    else
+        bare_x
+    end
+    new_nt = NT(ntuple(n -> n == i ? new_field : nt[n], fieldcount(NT)))
     setfield!(bare_value, :canonical, new_nt)
     return Mooncake.Lifted{__primal_type(_typeof(bare_x)),N}(bare_x)
 end
