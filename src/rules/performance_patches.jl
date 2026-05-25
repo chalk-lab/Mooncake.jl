@@ -73,29 +73,6 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-function Mooncake.frule!!(
-    ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractVecOrMat{<:T}},
-    x2::Dual{<:AbstractVecOrMat{<:T}},
-) where {T<:Base.IEEEFloat}
-    pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
-    LinearAlgebra._kron!(pout, px1, px2)
-    # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
-    # suffers
-    m = firstindex(dout)
-    for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
-        x1ij = px1[i, j]
-        dx1ij = dx1[i, j]
-        for k in axes(px2, 1)
-            dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
-            m += 1
-        end
-    end
-    return out
-end
 @inline function Mooncake.frule!!(
     ::Mooncake.Lifted{typeof(LinearAlgebra._kron!),N},
     out::Mooncake.Lifted{<:AbstractMatrix{<:T},N},
