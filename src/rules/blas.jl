@@ -185,7 +185,6 @@ end
     )
 end
 
-@inline _arr_writeback!(::Dual, _, _) = nothing
 @inline function _arr_writeback!(x::AbstractArray{NDual{T,1}}, p, t) where {T}
     @inbounds for i in eachindex(x)
         x[i] = NDual{T,1}(p[i], (t[i],))
