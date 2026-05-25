@@ -278,30 +278,6 @@ end
 # and `_tangent_dir_elem` are defined in `nfwd/NfwdMooncake.jl` so that all
 # NDual container dispatch lives in one file.
 
-@inline function _ndual_new_result(::Type{P}, y, x::Tuple, primals::Tuple) where {P}
-    return _ndual_new_result(P, y, x, primals, _ndual_width(x...))
-end
-@inline function _ndual_new_result(
-    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{1}
-) where {P}
-    # Width 1 here returns a bare-tangent `Dual{P, tangent_type(P)}` for the
-    # bare-rule output boundary. The canonical width-1 inner V is
-    # `Dual{P, NTangent{Tuple{T}}}` for generic concrete `P`; this bare-T form
-    # is an explicit compatibility output that gets rewrapped at the slot
-    # boundary downstream.
-    lane_tangents = map(xi -> tangent(xi, 1), x)
-    return Dual(y, build_output_tangent(P, primals, lane_tangents))
-end
-@inline function _ndual_new_result(
-    ::Type{P}, y, x::Tuple, primals::Tuple, ::Val{W}
-) where {P,W}
-    tangent_lanes = ntuple(Val(W)) do i
-        lane_tangents = map(xi -> tangent(xi, i), x)
-        build_output_tangent(P, primals, lane_tangents)
-    end
-    return Dual(y, NTangent(tangent_lanes))
-end
-
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
 ) where {P,N}
