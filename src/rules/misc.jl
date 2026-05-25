@@ -215,7 +215,10 @@ end
     field_val = getfield(Mooncake._unlift(x), f, _lgetfield_extras(extras...)...)
     return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
 end
-# SplitDual V: project canonical V's field directly.
+# SplitDual V: project canonical V's field directly. For PossiblyUninitTangent-
+# wrapped fields (whose primal field may be `#undef`), unwrap before lifting and
+# use the static primal field type — `__primal_type(::Type{<:PUT{V}})` would
+# resolve to PUT itself, leaking the internal wrapper out of the rule.
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
     x::Mooncake.Lifted{P,N,V_x},
@@ -223,6 +226,13 @@ end
     ::Vararg{Mooncake.Lifted,M},
 ) where {N,P,V_x<:Mooncake.SplitDual,f,M}
     field_val = getfield(Mooncake._unlift(x).canonical, f)
+    if field_val isa Mooncake.PossiblyUninitTangent
+        # Calling `lgetfield` on an `#undef` field is a user-side primal error
+        # (the primal would throw `UndefRefError`); the frule should fault the
+        # same way rather than fabricating a value.
+        Mooncake.is_init(field_val) || throw(UndefRefError())
+        return Mooncake.Lifted{fieldtype(P, f),N}(Mooncake.val(field_val))
+    end
     return Mooncake.Lifted{__primal_type(_typeof(field_val)),N}(field_val)
 end
 # AbstractArray{<:NDual} wrappers (Diagonal, Adjoint, SubArray, Memory, Array,

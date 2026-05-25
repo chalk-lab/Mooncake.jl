@@ -1344,15 +1344,60 @@ tangent(d::Lifted) = tangent(d.value)
 # canonical Vs' `.value`s; build the matching `MutableTangent` from each
 # field's `tangent(_, i)`. Reconstruction yields a fresh primal struct;
 # SplitDual deliberately does not carry the user's struct identity.
+#
+# PossiblyUninitTangent-wrapped fields (whose primal counterpart may be
+# undef) take the `jl_new_struct_uninit + jl_set_nth_field` path so that
+# uninitialized fields stay undef in the reconstructed primal. With all
+# fields always-initialised the generated body delegates to `P(args...)`.
 @generated function primal(d::Lifted{P,N,V}) where {P,N,V<:SplitDual}
     nt_type = V.parameters[1]
     names = nt_type.parameters[1]
-    field_exprs = map(enumerate(names)) do (i, f)
-        :(_field_primal_for_type(
-            fieldtype(P, $i), getfield(d.value.canonical, $(QuoteNode(f)))
-        ))
+    field_types = nt_type.parameters[2].parameters
+    has_put = any(T -> T <: PossiblyUninitTangent, field_types)
+    if !has_put
+        field_exprs = map(enumerate(names)) do (i, f)
+            :(_field_primal_for_type(
+                fieldtype(P, $i), getfield(d.value.canonical, $(QuoteNode(f)))
+            ))
+        end
+        return :(P($(field_exprs...)))
     end
-    return :(P($(field_exprs...)))
+    set_exprs = map(enumerate(names)) do (i, f)
+        Ti = field_types[i]
+        if Ti <: PossiblyUninitTangent
+            quote
+                v = getfield(d.value.canonical, $(QuoteNode(f)))
+                if is_init(v)
+                    ccall(
+                        :jl_set_nth_field,
+                        Cvoid,
+                        (Any, Csize_t, Any),
+                        temp,
+                        $(i - 1),
+                        _field_primal_for_type(fieldtype(P, $i), val(v)),
+                    )
+                end
+            end
+        else
+            quote
+                ccall(
+                    :jl_set_nth_field,
+                    Cvoid,
+                    (Any, Csize_t, Any),
+                    temp,
+                    $(i - 1),
+                    _field_primal_for_type(
+                        fieldtype(P, $i), getfield(d.value.canonical, $(QuoteNode(f)))
+                    ),
+                )
+            end
+        end
+    end
+    return quote
+        temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)::P
+        $(set_exprs...)
+        return temp::P
+    end
 end
 # Type-guided field-primal extraction. Delegate to `_new_field_primal`
 # (defined in `rules/new.jl`) which handles the canonical structural
@@ -1390,6 +1435,14 @@ end
 @inline _field_tangent_for_type(::Type{T}, val::SplitDual, i) where {T} = _build_mutable_tangent(
     T, val, i
 )
+# PossiblyUninitTangent-wrapped V: rebuild the matching PUT-wrapped tangent so
+# `MutableTangent{NT}` (whose field types are `PUT{tangent_type(field)}`) gets
+# the right shape. Uninit V → uninit PUT; init V → init PUT carrying the
+# lane-extracted tangent of the inner canonical value.
+@inline function _field_tangent_for_type(::Type{T}, val::PossiblyUninitTangent, i) where {T}
+    Tput = PossiblyUninitTangent{tangent_type(T)}
+    return is_init(val) ? Tput(_new_field_tangent(T, val.tangent, i)) : Tput()
+end
 @generated function _build_mutable_tangent(
     ::Type{T}, sd::SplitDual{V}, i
 ) where {T,V<:NamedTuple}
