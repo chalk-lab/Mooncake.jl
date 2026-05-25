@@ -942,6 +942,21 @@ end
     ]
     return :(($(exprs...),))
 end
+# Tuple-tangent variant: per-element `(primal[i], tangent[i])` pair feeds the
+# matching field-V ctor. Reached when `Lifted{P<:Tuple, N}(primal::P,
+# tangent::Tuple)` is invoked at a width where each element's tangent has
+# already been lifted (e.g. NTangent per element from a mixed Val/Type/Float64
+# primal Tuple inside `_apply_iterate_equivalent`).
+@inline @generated function _build_tuple_v_from_pair(
+    ::Type{InnerT}, primal::Tuple, tangent::Tuple
+) where {InnerT<:Tuple}
+    n = fieldcount(InnerT)
+    exprs = [
+        :(_inner_dual_for_field($(fieldtype(InnerT, i)), primal[$i], tangent[$i])) for
+        i in 1:n
+    ]
+    return :(($(exprs...),))
+end
 
 # Type-slot specialisation: `dual_type(Val(N), Type{P_user})` may substitute the
 # inner type parameter (e.g. `Type{Memory{Float64}}` → V-primal
