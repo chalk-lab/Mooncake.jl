@@ -2,7 +2,7 @@
 
 ```@meta
 DocTestSetup = quote
-    using Mooncake, ADTypes
+    using Mooncake
 end
 ```
 
@@ -42,13 +42,17 @@ You can straightforwardly enable it when building a rule via the `debug_mode` kw
 Mooncake.build_rrule
 ```
 
-When using ADTypes.jl, you can choose whether or not to use it via the `debug_mode` kwarg:
+You can also enable it through [`Mooncake.Config`](@ref), which is the configuration
+struct accepted by the prepare-cache functions:
 ```jldoctest
-julia> backend = AutoMooncake(; config=Mooncake.Config(; debug_mode=true));
+julia> config = Mooncake.Config(; debug_mode=true);
 
-julia> backend.config.debug_mode
+julia> config.debug_mode
 true
 ```
+
+When using Mooncake via `ADTypes.AutoMooncake`, the same `Config` is forwarded through the
+`config` keyword.
 
 ### When Should You Use Debug Mode?
 

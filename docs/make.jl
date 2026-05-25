@@ -13,10 +13,7 @@ DocMeta.setdocmeta!(
     recursive=true,
 )
 
-links = InterLinks(
-    "ADTypes" => "https://sciml.github.io/ADTypes.jl/stable/",
-    "DifferentiationInterface" => "https://juliadiff.org/DifferentiationInterface.jl/DifferentiationInterface/stable/",
-)
+links = InterLinks("ADTypes" => "https://sciml.github.io/ADTypes.jl/stable/")
 
 makedocs(;
     sitename="Mooncake.jl",
