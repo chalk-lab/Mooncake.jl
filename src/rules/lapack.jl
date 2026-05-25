@@ -1,11 +1,10 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-# Helpers `_arr_extract`, `_arr_writeback!`, and the `_MatLikeWidth1` /
-# `_VecOrMatLikeWidth1` slot-shape Unions are defined alongside `arrayify` in
-# `src/rules/blas.jl`.
+# Width-N `_*_extract_n` helpers and `_arr_writeback!` are defined alongside
+# `arrayify` in `src/rules/blas.jl`.
 
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
-# Width-1 getrf!: covers Real and Complex via slot Union; `_arr_extract`
-# dispatches on input type.
+# Width-N getrf!: covers Real and Complex via slot Union;
+# `_arr_extract_n` dispatches on inner V type.
 #
 # Tuple-output: return canonical inner V form (a tuple of inner duals per
 # AGENTS.md tuple-lifting). The first element preserves the input array's

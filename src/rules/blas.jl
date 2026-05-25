@@ -272,31 +272,6 @@ end
     return _arr_extract_n(x)
 end
 
-# Slot-level Union that matches either a struct-wrapped Dual array or a
-# plain NDual-elementwise array, per the AGENTS.md "NDual shapes" rule.
-const _MatLikeWidth1{P} = Union{Dual{<:AbstractMatrix{P}},AbstractMatrix{NDual{P,1}}}
-const _VecOrMatLikeWidth1{P} = Union{
-    Dual{<:AbstractVecOrMat{P}},AbstractVecOrMat{NDual{P,1}}
-}
-const _ArrLikeWidth1{P} = Union{Dual{<:AbstractArray{P}},AbstractArray{NDual{P,1}}}
-const _ScalarLikeWidth1{T} = Union{Dual{T},NDual{T,1}}
-
-# Complex-element analogues: the canonical width-1 lift of
-# `Matrix{Complex{R}}` is `Matrix{Complex{NDual{R, 1}}}` (real and imag
-# parts each carried by an NDual), NOT `Matrix{NDual{Complex{R}, 1}}`.
-# Existing `_MatLikeWidth1{Complex{R}}` accepts only the Dual-wrapper form;
-# the NDual-element form needs these separate aliases.
-const _MatLikeWidth1Complex{R} = Union{
-    Dual{<:AbstractMatrix{Complex{R}}},AbstractMatrix{Complex{NDual{R,1}}}
-}
-const _VecOrMatLikeWidth1Complex{R} = Union{
-    Dual{<:AbstractVecOrMat{Complex{R}}},AbstractVecOrMat{Complex{NDual{R,1}}}
-}
-const _ArrLikeWidth1Complex{R} = Union{
-    Dual{<:AbstractArray{Complex{R}}},AbstractArray{Complex{NDual{R,1}}}
-}
-const _ScalarLikeWidth1Complex{R} = Union{Dual{Complex{R}},Complex{NDual{R,1}}}
-
 #
 # Utility
 #
