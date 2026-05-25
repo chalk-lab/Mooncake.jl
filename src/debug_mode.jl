@@ -29,7 +29,14 @@ forward-mode inner values from `Lifted` calls. See [`DebugFRule`](@ref).
 @noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
-    y = __call_rule(rule.rule, x)
+    # Public bare-`Dual` callers (e.g. `build_frule(zero_dual(sin), 0.0)` followed
+    # by `rule(zero_dual(sin), Dual(3.14, 1.0))`) cross the rule boundary at a
+    # legacy width-1 shape. `frule!!` itself is now Lifted-typed only after the
+    # canonical-V cleanup, so route through Lifted slots here at the
+    # debug-mode boundary (the canonical Layer-2 ctor matches what
+    # `test_frule_interface` does at `test_utils.jl:729`).
+    x_lifted = map(d -> lifted_type(Val(1), _typeof(primal(d)))(primal(d), tangent(d)), x)
+    y = __call_rule(rule.rule, x_lifted)
     # Legacy Dual callers expect a legacy width-1 Dual result even when the
     # wrapped rule runs through the canonical Lifted/NDual path internally.
     y_width1 = y isa Dual ? y : _ndual_output_to_width1(y)

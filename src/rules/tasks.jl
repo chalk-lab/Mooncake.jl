@@ -122,12 +122,16 @@ function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
+# Match misc.jl's lsetfield! `name::Lifted{Val{f}}` parameterisation so this
+# Task-pinned method strictly dominates the generic `Lifted{P,N,V<:Dual{P,T<:NTangent}}`
+# handler in `misc.jl:416` (otherwise the two are orthogonal on the 4-arg
+# call and Julia reports ambiguity).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lsetfield!),N},
     task::Mooncake.Lifted{Task,N,<:Dual{Task,<:NTangent{<:Tuple{TaskTangent}}}},
-    name::Mooncake.Lifted,
+    name::Mooncake.Lifted{Val{f}},
     val::Mooncake.Lifted,
-) where {N}
+) where {N,f}
     inner_task = Mooncake._unlift(task)
     inner_name = Mooncake._unlift(name)
     inner_val = Mooncake._unlift(val)
