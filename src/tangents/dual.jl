@@ -2,7 +2,7 @@
     Dual(primal::P, tangent::T)
 
 Used to pair together a `primal` value and a `tangent` to it. In the context of foward mode
-AD (aka computing Frechet derivatives), `primal` governs the point at which the derivative
+AD (aka computing Fréchet derivatives), `primal` governs the point at which the derivative
 is computed, and `tangent` the direction in which it is computed.
 
 Must satisfy `tangent_type(P) == T`.

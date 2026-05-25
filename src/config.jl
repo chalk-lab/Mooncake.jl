@@ -8,7 +8,7 @@
         empty_cache::Bool=false,
     )
 
-Configuration struct for use with `ADTypes.AutoMooncake`.
+Configuration struct accepted by Mooncake's `prepare_*_cache` functions.
 
 # Keyword Arguments
 - `debug_mode::Bool=false`: whether or not to run additional type checks when

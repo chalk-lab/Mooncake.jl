@@ -80,7 +80,7 @@ f := f_N \circ \dots \circ f_1 \implies D f [x] = (D f_N [x_N]) \circ \dots \cir
 where ``x_{n+1} := f_n(x_n)``, and ``x_1 := x``.
 
 
-_**An aside: the definition of the Frechet Derivative**_
+_**An aside: the definition of the Fréchet Derivative**_
 
 The definition of the derivative we have been using is a generalisation of the Total Derivative.
 Formally, we say that a function ``f : \mathcal{X} \to \mathcal{Y}`` is differentiable at a point ``x \in \mathcal{X}`` if there exists a linear operator ``A : \mathcal{X} \to \mathcal{Y}`` satisfying
@@ -88,9 +88,9 @@ Formally, we say that a function ``f : \mathcal{X} \to \mathcal{Y}`` is differen
 \lim_{\text{d} h \to 0} \frac{\| f(x + \text{d} h) - f(x) - A (\text{d} h)  \|_\mathcal{Y}}{\| \text{d}h \|_\mathcal{X}} = 0,
 ```
 where ``\| \cdot \|_\mathcal{X}`` and ``\| \cdot \|_\mathcal{Y}`` are the norms associated to Hilbert spaces ``\mathcal{X}`` and ``\mathcal{Y}`` respectively.
-This linear operator ``A`` is known as the _Frechet derivative_ of ``f`` at ``x``, denoted ``D f [x]``.
-Note that the Frechet derivative is a _linear operator_, not a vector: when people casually refer to "the derivative" they often mean the gradient (a vector), but here we are working with the more general notion of a derivative as a linear map.
-(The Frechet derivative does not depend on the choice of norms. All norms are _equivalent_ in finite dimensions, meaning they define the same topology and notion of convergence: if this equation is satisfied for one norm, it holds for all.)
+This linear operator ``A`` is known as the _Fréchet derivative_ of ``f`` at ``x``, denoted ``D f [x]``.
+Note that the Fréchet derivative is a _linear operator_, not a vector: when people casually refer to "the derivative" they often mean the gradient (a vector), but here we are working with the more general notion of a derivative as a linear map.
+(The Fréchet derivative does not depend on the choice of norms. All norms are _equivalent_ in finite dimensions, meaning they define the same topology and notion of convergence: if this equation is satisfied for one norm, it holds for all.)
 
 It is a good idea to consider what this looks like when ``\mathcal{X} = \mathcal{Y} = \RR`` and when ``\mathcal{X} = \mathcal{Y} = \RR^D``.
 It is sometimes helpful to refer to this definition to e.g. verify the correctness of the derivative of a function -- as with single-variable calculus, however, this is rare.
@@ -171,7 +171,7 @@ Following either resource will yield the derivative:
 D f [X] (\dot{X}) = \dot{X}^\top X + X^\top \dot{X}
 ```
 Observe that this is indeed a linear operator (i.e. it is linear in its argument, ``\dot{X}``).
-(You can always plug it in to the definition of the Frechet derivative to confirm that it is indeed the derivative.)
+(You can always plug it in to the definition of the Fréchet derivative to confirm that it is indeed the derivative.)
 
 In order to perform reverse-mode AD, we need to find the adjoint operator.
 Using the usual definition of the inner product between matrices,
@@ -413,7 +413,7 @@ This "vector-Jacobian product" expression is commonly used to explain AD, and is
 
 Now we turn to using forwards- and reverse-mode AD to compute the gradient of a function.
 
-Recall that if ``D f[x] : \mathcal{X} \to \mathbb{R}`` is the Frechet derivative discussed here then ``D f[x](\dot{x})`` is the _directional derivative_ in the ``\dot{x}`` direction.
+Recall that if ``D f[x] : \mathcal{X} \to \mathbb{R}`` is the Fréchet derivative discussed here then ``D f[x](\dot{x})`` is the _directional derivative_ in the ``\dot{x}`` direction.
 
 The _gradient_ of ``f : \mathcal{X} \to \mathbb{R}`` at ``x`` is defined to be the vector ``\nabla f (x) \in \mathcal{X}`` such that
 ```math

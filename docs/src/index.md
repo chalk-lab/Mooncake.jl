@@ -21,24 +21,18 @@ Documentation for Mooncake.jl is on its way!
 Check that you're running a version of Julia that Mooncake.jl supports.
 See the [`SUPPORT_POLICY.md`](https://github.com/chalk-lab/Mooncake.jl/blob/main/SUPPORT_POLICY.md) for more info.
 
-There are several ways to interact with `Mooncake.jl`.
-The way that we recommend people to interact with `Mooncake.jl` is via  [`DifferentiationInterface.jl`](https://github.com/gdalle/DifferentiationInterface.jl/).
+The main entry point to `Mooncake.jl` is its API, using `Mooncake.prepare_gradient_cache` and `Mooncake.value_and_gradient!!`.
 For example, use it as follows to compute the gradient of a function mapping a `Vector{Float64}` to `Float64`.
 ```julia
-using DifferentiationInterface
 import Mooncake
 
 f(x) = sum(cos, x)
-backend = AutoMooncake(; config=nothing)
 x = ones(1_000)
-prep = prepare_gradient(f, backend, x)
-gradient(f, prep, backend, x)
+cache = Mooncake.prepare_gradient_cache(f, x)
+Mooncake.value_and_gradient!!(cache, f, x)
 ```
-You should expect that `prepare_gradient` takes a little bit of time to run, but that `gradient` is fast.
-
-We are committed to ensuring support for DifferentiationInterface, which is why we recommend using that.
-If you are interested in interacting in a more direct fashion with `Mooncake.jl`, you should consider `Mooncake.value_and_gradient!!`.
-See its docstring for more info.
+You should expect that `prepare_gradient_cache` takes a little bit of time to run, but that `value_and_gradient!!` is fast.
+See the [Tutorial](@ref) for a walkthrough of the rest of the API (Jacobians, Hessians, Hessian-vector products, friendly tangents, and more) and [Interface](@ref) for the full API reference.
 
 ## Project Goals
 
