@@ -214,17 +214,6 @@ end
     ts = ntuple(n -> map(d -> d.partials[n], x), Val(N))
     return (p, ts)
 end
-# Wrapper-exception slot V for raw `Dual{<:Ptr, …}` only — `Ptr` canonicalises
-# to `Dual{Ptr, Ptr}` (no NDual lift). For AbstractArray, the canonical V
-# is `Array{<:NDual}` (handled by the `AbstractArray{<:NDual}` variant
-# above); BLAS rules constrain to `BlasFloat` so the wrapper-exception
-# array path is unreachable here. `arrayify` returns the (primal, tangent)
-# view-pair; we wrap the tangent in a 1-tuple to match the multi-lane
-# shape.
-@inline function _arr_extract_n(x::Dual{<:Ptr})
-    p, t = arrayify(x)
-    return (p, (t,))
-end
 @inline function _arr_extract_n(
     x::AbstractArray{Complex{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
@@ -244,10 +233,6 @@ end
     end
     return nothing
 end
-# `Dual{<:Ptr}` writeback noop — `_arr_extract_n` returns a 1-tuple whose
-# single element aliases the original tangent Ptr (via `arrayify`), so the
-# mutating ops already wrote through and no per-lane writeback is needed.
-@inline _arr_writeback_n!(x::Dual{<:Ptr}, p, ts) = nothing
 @inline function _arr_writeback_n!(
     x::AbstractArray{Complex{NDual{T,N}}}, p, ts::NTuple{N,<:AbstractArray}
 ) where {T<:IEEEFloat,N}
@@ -268,10 +253,6 @@ end
     ts = ntuple(n -> Complex(x.re.partials[n], x.im.partials[n]), Val(N))
     return (p, ts)
 end
-# Wrapper-exception slot V (`Dual{<:Number, …}`): treat as a trivial 1-lane
-# chunk so unified width-1 + width-N rule bodies can call
-# `_scalar_extract_n` regardless of which slot shape arrived.
-@inline _scalar_extract_n(x::Dual{<:Number}) = (primal(x), (tangent(x),))
 
 # Width-N matrix extract: like `_mat_extract` but per-lane tangents. Reshape
 # Vector inputs to M×1 columns so BLAS Level 2/3 callers can rely on the
@@ -291,14 +272,6 @@ end
     x::AbstractMatrix{Complex{NDual{T,N}}}
 ) where {T<:IEEEFloat,N}
     return _arr_extract_n(x)
-end
-# Wrapper-exception slot V (`Dual{<:AbstractVecOrMat}`): treat as a
-# trivial 1-lane chunk so unified width-1 + width-N BLAS Level-2/3 rule
-# bodies can call `_mat_extract_n` uniformly. `matrixify` reshapes
-# 1D inputs to `M×1` and handles wrapper unwrapping.
-@inline function _mat_extract_n(x::Dual{<:AbstractVecOrMat})
-    p, t = matrixify(x)
-    return (p, (t,))
 end
 
 @inline _mat_extract(x::Dual{<:AbstractVecOrMat}) = matrixify(x)
