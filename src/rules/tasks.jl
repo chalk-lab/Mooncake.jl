@@ -85,9 +85,13 @@ end
 const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
+# Pin V_x to the canonical Task slot shape so this method outranks the
+# generic `Dual{P, T<:NTangent}` lgetfield handler in `misc.jl` (which would
+# otherwise be ambiguous on the same 3-arg call and produces the wrong
+# tangent for `TaskTangent`).
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{Task,N},
+    x::Mooncake.Lifted{Task,N,<:Dual{Task,<:NTangent{<:Tuple{TaskTangent}}}},
     ::Mooncake.Lifted{Val{f}},
 ) where {N,f}
     y = getfield(primal(x), f)
@@ -105,7 +109,9 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
 end
 
 @inline function frule!!(
-    ::Mooncake.Lifted{typeof(getfield),N}, x::Mooncake.Lifted{Task,N}, f::Mooncake.Lifted
+    ::Mooncake.Lifted{typeof(getfield),N},
+    x::Mooncake.Lifted{Task,N,<:Dual{Task,<:NTangent{<:Tuple{TaskTangent}}}},
+    f::Mooncake.Lifted,
 ) where {N}
     fname = primal(f)
     y = getfield(primal(x), fname)
@@ -118,7 +124,7 @@ end
 
 @inline function frule!!(
     ::Mooncake.Lifted{typeof(lsetfield!),N},
-    task::Mooncake.Lifted{Task,N},
+    task::Mooncake.Lifted{Task,N,<:Dual{Task,<:NTangent{<:Tuple{TaskTangent}}}},
     name::Mooncake.Lifted,
     val::Mooncake.Lifted,
 ) where {N}

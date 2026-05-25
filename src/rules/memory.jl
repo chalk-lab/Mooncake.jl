@@ -1102,10 +1102,14 @@ const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 # and delegates to the 4-arg MemoryRef Lifted body above. Memory and
 # Array canonical V are routed through `misc.jl`'s
 # `V_x<:AbstractArray{<:NDual}` arity-2 rule (Memory and Array subtype
-# AbstractArray; MemoryRef does not).
+# AbstractArray; MemoryRef does not). Constrain V_x to the canonical
+# `MemoryRef{<:NDual}` family so the wrapper-exception
+# `Dual{MemoryRef, NTangent}` shape stays with `misc.jl`'s generic
+# `Dual{P, T<:NTangent}` handler (otherwise the two rules would be
+# ambiguous on the 3-arg call).
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(lgetfield),N},
-    x::Mooncake.Lifted{<:MemoryRef},
+    x::Mooncake.Lifted{<:MemoryRef,N,<:MemoryRef{<:_HasNDual}},
     name::Mooncake.Lifted{<:Val},
 ) where {N}
     return frule!!(f, x, name, Mooncake.zero_lifted(Val(N), Val(:not_atomic)))
