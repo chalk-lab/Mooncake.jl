@@ -95,18 +95,6 @@ function arrayify(
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, adjoint(_dx)
 end
-function arrayify(x::Transpose{NDual{T,1},<:AbstractArray{NDual{T,1}}}) where {T<:IEEEFloat}
-    p_parent, d_parent = _arr_extract(x.parent)
-    return transpose(p_parent), transpose(d_parent)
-end
-function arrayify(
-    x::Symmetric{NDual{T,1},<:AbstractMatrix{NDual{T,1}}}
-) where {T<:IEEEFloat}
-    p_data, d_data = _arr_extract(x.data)
-    sym_kind = x.uplo == 'U' ? :U : :L
-    return Symmetric(p_data, sym_kind), Symmetric(d_data, sym_kind)
-end
-
 @static if VERSION >= v"1.11-rc4"
     arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
 end
