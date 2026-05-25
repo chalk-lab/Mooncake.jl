@@ -1280,6 +1280,16 @@ end
 # Specificity: `P<:Tuple` (line ~720) and `P<:NamedTuple` (line ~740) have
 # their own `NTangent` ctors that are strictly more specific, so this generic
 # variant only fires for "other" concrete struct primals.
+#
+# Disambiguator for `P<:Tuple, tangent::NTangent`: the Tuple-primal generated
+# ctor above (line ~988) takes `Tt<:Union{Tuple,NoTangent,NTangent}` so its P
+# is narrower but its tangent type is broader. This generic body has the
+# narrower tangent type. Neither dominates → ambiguous. Pin both `P<:Tuple`
+# and `tangent::NTangent` so this method is strictly more specific than both
+# and route through the Tuple-primal body via `invoke`.
+@inline function Lifted{P,N}(primal::P, tangent::NTangent) where {P<:Tuple,N}
+    return invoke(Lifted{P,N}, Tuple{P,Union{Tuple,NoTangent,NTangent}}, primal, tangent)
+end
 @inline @generated function Lifted{P,N}(primal::P, tangent::NTangent) where {P,N}
     InnerT = try
         dual_type(Val(N), P)
