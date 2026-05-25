@@ -153,23 +153,28 @@ end
     x::Mooncake.Lifted{<:AbstractArray{P}},
 ) where {N,P<:IEEEFloat}
     inner_x = Mooncake._unlift(x)
-    _x, _dx = Mooncake._arr_extract(inner_x)
+    _x, _dxs = Mooncake.unpack_ndual(inner_x)
     kw = primal(kwargs)
     y = logsumexp(_x; kw...)
-    dy = sum(_dx .* (exp.(_x .- y)); kw...)
-    return Mooncake.Lifted{typeof(y),N}(y, dy)
+    w = exp.(_x .- y)
+    dys = ntuple(lane -> sum(_dxs[lane] .* w; kw...), Val(N))
+    return Mooncake.Lifted{typeof(y),N}(y, Mooncake.NTangent(dys))
 end
 @inline function frule!!(
     f::Mooncake.Lifted{typeof(logsumexp),N}, x::Mooncake.Lifted{<:AbstractArray{P}}
 ) where {N,P<:IEEEFloat}
     inner_x = Mooncake._unlift(x)
-    _x, _dx = Mooncake._arr_extract(inner_x)
+    _x, _dxs = Mooncake.unpack_ndual(inner_x)
     y = logsumexp(_x)
-    dy = zero(P)
-    for i in eachindex(_dx)
-        @inbounds dy += _dx[i] * exp(_x[i] - y)
-    end
-    return Mooncake.Lifted{P,N}(y, dy)
+    w = exp.(_x .- y)
+    dys = ntuple(lane -> begin
+        acc = zero(P)
+        @inbounds for i in eachindex(_x)
+            acc += _dxs[lane][i] * w[i]
+        end
+        acc
+    end, Val(N))
+    return Mooncake.Lifted{P,N}(y, Mooncake.NTangent(dys))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -223,11 +228,14 @@ end
 ) where {N,P<:IEEEFloat}
     inner_out = Mooncake._unlift(out)
     inner_x = Mooncake._unlift(x)
-    y, _dy = Mooncake._arr_extract(inner_out)
-    _x, _dx = Mooncake._arr_extract(inner_x)
+    y, _dys = Mooncake.unpack_ndual(inner_out)
+    _x, _dxs = Mooncake.unpack_ndual(inner_x)
     logsumexp!(y, _x)
-    sum!(_dy, _dx .* exp.(_x .- y))
-    Mooncake._arr_writeback!(inner_out, y, _dy)
+    w = exp.(_x .- y)
+    @inbounds for lane in 1:N
+        sum!(_dys[lane], _dxs[lane] .* w)
+    end
+    Mooncake.pack_ndual!(inner_out, y, _dys)
     return out
 end
 function rrule!!(
