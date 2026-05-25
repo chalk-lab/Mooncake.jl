@@ -975,10 +975,13 @@ w.r.t. the underlying data array `A`.
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
     bare_S = Mooncake._unlift(_S)
-    S, d_data = arrayify(bare_S)
+    uplo_sym = bare_S.uplo == 'U' ? :U : :L
+    A, dAs = unpack_ndual(bare_S.data)
+    S = Symmetric(A, uplo_sym)
     F = bunchkaufman(S)
     Sinv = inv(F)
-    return Mooncake.Lifted{P,N}(logdet(F), dot(Sinv, d_data))
+    lane_tangents = ntuple(n -> dot(Sinv, Symmetric(dAs[n], uplo_sym)), Val(N))
+    return Mooncake.Lifted{P,N}(logdet(F), lane_tangents)
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1013,19 +1016,21 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
     ::Mooncake.Lifted{typeof(det),N}, _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {N,P<:BlasRealFloat}
     bare_S = Mooncake._unlift(_S)
-    S, d_data = arrayify(bare_S)
+    uplo_sym = bare_S.uplo == 'U' ? :U : :L
+    A, dAs = unpack_ndual(bare_S.data)
+    S = Symmetric(A, uplo_sym)
     F = bunchkaufman(S; check=false)
     d = det(F)
     # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
     # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
     # measure-zero in practice.
-    tangent_value = if iszero(d)
-        zero(P)
+    lane_tangents = if iszero(d)
+        ntuple(_ -> zero(P), Val(N))
     else
         Sinv = inv(F)
-        d * dot(Sinv, d_data)
+        ntuple(n -> d * dot(Sinv, Symmetric(dAs[n], uplo_sym)), Val(N))
     end
-    return Mooncake.Lifted{P,N}(d, tangent_value)
+    return Mooncake.Lifted{P,N}(d, lane_tangents)
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1065,17 +1070,25 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     _S::Mooncake.Lifted{<:Symmetric{P,<:StridedMatrix{P}}},
 ) where {N,P<:BlasRealFloat}
     bare_S = Mooncake._unlift(_S)
-    S, d_data = arrayify(bare_S)
+    uplo_sym = bare_S.uplo == 'U' ? :U : :L
+    A, dAs = unpack_ndual(bare_S.data)
+    S = Symmetric(A, uplo_sym)
     F = bunchkaufman(S; check=false)
     ld, s = logabsdet(F)
-    primal_out = (ld, s)
-    tangent_out = if iszero(s)
-        (zero(P), zero(P))
+    # Sign component has zero derivative w.r.t. A; only `ld` carries lanes.
+    ld_lanes, s_lanes = if iszero(s)
+        ntuple(_ -> zero(P), Val(N)), ntuple(_ -> zero(P), Val(N))
     else
         Sinv = inv(F)
-        (dot(Sinv, d_data), zero(P))
+        (
+            ntuple(n -> dot(Sinv, Symmetric(dAs[n], uplo_sym)), Val(N)),
+            ntuple(_ -> zero(P), Val(N)),
+        )
     end
-    return Mooncake.Lifted{Tuple{P,P},N}(primal_out, tangent_out)
+    inner_out = (
+        Mooncake.Nfwd.NDual{P,N}(ld, ld_lanes), Mooncake.Nfwd.NDual{P,N}(s, s_lanes)
+    )
+    return Mooncake.Lifted{Tuple{P,P},N}(inner_out)
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
