@@ -292,16 +292,6 @@ for (op_sym, op_fn) in (
     (:copysign_float, :copysign),
 )
     @eval begin
-        @inline function frule!!(
-            ::Dual{typeof($op_sym)}, a::NDual{T,N}, b::Dual{<:IEEEFloat}
-        ) where {T<:IEEEFloat,N}
-            return $op_fn(a, primal(b))
-        end
-        @inline function frule!!(
-            ::Dual{typeof($op_sym)}, a::Dual{<:IEEEFloat}, b::NDual{T,N}
-        ) where {T<:IEEEFloat,N}
-            return $op_fn(primal(a), b)
-        end
         # Lifted-typed overload — accepts canonical V from `_unlift`. Per
         # AGENTS.md "no inner-V branching", the body just calls the operator
         # which dispatches on the canonical V (NDual / Dual / mixed).
@@ -313,27 +303,11 @@ for (op_sym, op_fn) in (
     end
 end
 
-# Ternary float intrinsics: one-for-one Lifted-typed rules. Same-shape entry
-# points route through the centralised ternary adapters. The (≥1 NDual, rest
-# Dual) mixes that arise from `@inactive_intrinsic` callers keep their specific
-# overloads.
+# Ternary float intrinsics: one-for-one Lifted-typed rules; the body calls
+# the operator on canonical V values which dispatches on the inner shape
+# (NDual / Dual / mixed).
 for (op_sym, op_fn) in ((:fma_float, :fma), (:muladd_float, :muladd))
     @eval begin
-        @inline function frule!!(
-            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::NDual{T,N}, z::Dual{<:IEEEFloat}
-        ) where {T<:IEEEFloat,N}
-            return $op_fn(x, y, primal(z))
-        end
-        @inline function frule!!(
-            ::Dual{typeof($op_sym)}, x::NDual{T,N}, y::Dual{<:IEEEFloat}, z::NDual{T,N}
-        ) where {T<:IEEEFloat,N}
-            return $op_fn(x, primal(y), z)
-        end
-        @inline function frule!!(
-            ::Dual{typeof($op_sym)}, x::Dual{<:IEEEFloat}, y::NDual{T,N}, z::NDual{T,N}
-        ) where {T<:IEEEFloat,N}
-            return $op_fn(primal(x), y, z)
-        end
         @inline function frule!!(
             ::Mooncake.Lifted{typeof($op_sym),N},
             x::Mooncake.Lifted,
