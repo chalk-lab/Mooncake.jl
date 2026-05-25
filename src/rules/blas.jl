@@ -834,13 +834,12 @@ end
 end
 
 # Note that the complex symv are not BLAS but auxiliary functions in LAPACK.
-# `symv!` is primitive for `T<:BlasFloat`, but its bare-`Dual` `frule!!` only
-# needs to cover `BlasComplexFloat` because the width1-aware method below
-# handles `BlasRealFloat` (its `Union{Dual,NDual}` arg shapes subsume the
-# pure-`Dual` case there). `hemv!` is restricted to `BlasComplexFloat`.
-for (fname, prim_elty, frule_elty) in (
-    (:(symv!), BlasFloat, BlasComplexFloat), (:(hemv!), BlasComplexFloat, BlasComplexFloat)
-)
+# `symv!` is primitive for `T<:BlasFloat`; `hemv!` is restricted to
+# `BlasComplexFloat`. The width-N Lifted frule body below at the
+# `for (fname, T_constraint) in ((:symv!, :BlasFloat), (:hemv!, ...))` block
+# covers both cases — IR-emit always wraps args via Lifted, so a bare-Dual
+# frule is unreachable.
+for (fname, prim_elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     isherm = fname == :(hemv!)
 
     @eval @is_primitive(
@@ -855,40 +854,6 @@ for (fname, prim_elty, frule_elty) in (
             AbstractVector{T},
         } where {T<:$prim_elty},
     )
-
-    @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        x_dx::Dual{<:AbstractVector{T}},
-        beta::Dual{T},
-        y_dy::Dual{<:AbstractVector{T}},
-    ) where {T<:$frule_elty}
-        # Extract primals.
-        ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        x, dx = arrayify(x_dx)
-        y, dy = arrayify(y_dy)
-
-        # Compute Frechet derivative.
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(T), dy)
-        BLAS.$fname(ul, α, A, dx, one(T), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
-            end
-        end
-
-        # Run primal computation.
-        BLAS.$fname(ul, α, A, x, β, y)
-
-        return y_dy
-    end
 
     @eval function rrule!!(
         ::CoDual{typeof(BLAS.$fname)},
