@@ -58,6 +58,52 @@
         @test Mooncake.tangent(rl) == r  # Same rng + width.
     end
 
+    @testset "dual_type / lifted_type (Array{T<:IEEEFloat, D})" begin
+        @test Mooncake.dual_type(Val(2), Vector{Float64}) ===
+            Vector{Mooncake.NDual{Float64,2}}
+        @test Mooncake.dual_type(Val(1), Matrix{Float32}) ===
+            Matrix{Mooncake.NDual{Float32,1}}
+        @test Mooncake.lifted_type(Val(2), Vector{Float64}) ===
+            Mooncake.Lifted{Vector{Float64},2,Vector{Mooncake.NDual{Float64,2}}}
+        @test Mooncake.lifted_type(Val(3), Array{Float64,3}) ===
+            Mooncake.Lifted{Array{Float64,3},3,Array{Mooncake.NDual{Float64,3},3}}
+    end
+
+    @testset "seed factories (Array{T<:IEEEFloat, D})" begin
+        x = [1.0, 2.0, 3.0]
+
+        v = Mooncake.zero_dual(Val(2), x)
+        @test typeof(v) === Vector{Mooncake.NDual{Float64,2}}
+        @test [d.value for d in v] == x
+        @test all(d -> d.partials == (0.0, 0.0), v)
+
+        u = Mooncake.uninit_dual(Val(3), x)
+        @test typeof(u) === Vector{Mooncake.NDual{Float64,3}}
+        @test [d.value for d in u] == x
+
+        rng = Random.MersenneTwister(0)
+        r = Mooncake.randn_dual(Val(2), rng, x)
+        @test typeof(r) === Vector{Mooncake.NDual{Float64,2}}
+        @test [d.value for d in r] == x
+        @test any(d -> any(!iszero, d.partials), r)
+
+        # Layer-3 wrapped slot.
+        z = Mooncake.zero_lifted(Val(2), x)
+        @test typeof(z) ===
+            Mooncake.Lifted{Vector{Float64},2,Vector{Mooncake.NDual{Float64,2}}}
+        @test Mooncake.primal(z) === x  # primal aliases user storage.
+        @test Mooncake.tangent(z) == v
+        @test Mooncake.tangent(z) !== x  # tangent is slot-local, not aliased.
+
+        # Matrix shape (D = 2).
+        M = [1.0 2.0; 3.0 4.0]
+        zM = Mooncake.zero_lifted(Val(2), M)
+        @test typeof(zM) ===
+            Mooncake.Lifted{Matrix{Float64},2,Matrix{Mooncake.NDual{Float64,2}}}
+        @test size(Mooncake.tangent(zM)) == size(M)
+        @test all(d -> d.partials == (0.0, 0.0), Mooncake.tangent(zM))
+    end
+
     @testset "dual_type / lifted_type (Complex{<:IEEEFloat})" begin
         @test Mooncake.dual_type(Val(2), Complex{Float64}) ===
             Complex{Mooncake.NDual{Float64,2}}

@@ -98,12 +98,18 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `NDual{P, N}` — the packed scalar forward value.
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
+- `Array{T, D}` with `T <: IEEEFloat`: `Array{NDual{T, N}, D}` — element-wise
+  recursion through the array elements (array-of-NDuals layout).
 
-Other primal shapes are added in follow-up commits.
+Other primal shapes (Tuple, NamedTuple, struct lifts, MemoryRef, …) are
+added in follow-up commits.
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}
+end
+@inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
+    return Array{NDual{T,N},D}
 end
 
 """
@@ -116,10 +122,14 @@ Shapes defined so far:
 
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
+- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, Array{NDual{T, N}, D}}`.
 """
 @inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
 @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Lifted{Complex{R},N,Complex{NDual{R,N}}}
+end
+@inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
+    return Lifted{Array{T,D},N,Array{NDual{T,N},D}}
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -158,4 +168,38 @@ end
 
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::T) where {N,T<:IEEEFloat}
     return Lifted{T,N}(x, randn_dual(w, rng, x))
+end
+
+# ── Array seed factories (T <: IEEEFloat) ───────────────────────────────────
+#
+# Element-wise build into an `Array{NDual{T, N}, D}` with primal taken
+# from the user's primal array, partials drawn from the seed factory.
+# The returned container is slot-local — no aliasing with the user's array.
+
+@inline function zero_dual(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
+    return map(xi -> zero_dual(w, xi), x)
+end
+
+@inline function uninit_dual(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
+    return map(xi -> uninit_dual(w, xi), x)
+end
+
+@inline function randn_dual(
+    w::Val{N}, rng::AbstractRNG, x::Array{T,D}
+) where {N,T<:IEEEFloat,D}
+    return map(xi -> randn_dual(w, rng, xi), x)
+end
+
+@inline function zero_lifted(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
+    return Lifted{Array{T,D},N}(x, zero_dual(w, x))
+end
+
+@inline function uninit_lifted(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
+    return Lifted{Array{T,D},N}(x, uninit_dual(w, x))
+end
+
+@inline function randn_lifted(
+    w::Val{N}, rng::AbstractRNG, x::Array{T,D}
+) where {N,T<:IEEEFloat,D}
+    return Lifted{Array{T,D},N}(x, randn_dual(w, rng, x))
 end
