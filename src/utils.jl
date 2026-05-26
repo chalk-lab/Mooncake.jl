@@ -834,6 +834,11 @@ end
 @inline function _tangent_can_have_scalar(::Type{T}) where {T}
     T === NoTangent && return false
     T <: AbstractArray && return _tangent_can_have_scalar(eltype(T))
+    # `Ptr{T}` has `tangent_type(Ptr{T})` equal to either `Ptr{T}` (for
+    # differentiable element `T`) or `Ptr{NoTangent}` (for non-differentiable
+    # element). Recurse on the element type so e.g. `Ptr{NoTangent}` (the
+    # tangent of `Ptr{Int32}`/`Ptr{Cvoid}`) reports no scalar content.
+    T <: Ptr && return _tangent_can_have_scalar(eltype(T))
     return true
 end
 
