@@ -186,7 +186,7 @@ end
 
             cache = Mooncake.prepare_gradient_cache(f, x)
             v, dx = Mooncake.value_and_gradient!!(cache, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             cache = Mooncake.prepare_gradient_cache(
@@ -200,7 +200,7 @@ end
             rule = build_rrule(f, x)
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x)
-            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64, x2::Float64}}
+            @test dx[2] isa Mooncake.Tangent{@NamedTuple{x1::Float64,x2::Float64}}
             @test dx[2].fields == (; x1=2 * x.x1, x2=cos(x.x2))
 
             v, dx = Mooncake.value_and_gradient!!(rule, f, x; friendly_tangents=true)
@@ -457,6 +457,7 @@ end
 
         @testset "__exclude_unsupported_output , $(test_set)" for test_set in
                                                                   additional_test_set
+
             try
                 Mooncake.__exclude_unsupported_output(test_set[2])
             catch err
@@ -466,6 +467,7 @@ end
 
         @testset "_copy_output & _copy_to_output!!, $(test_set)" for test_set in
                                                                      additional_test_set
+
             original = test_set[2]
             try
                 if isnothing(Mooncake.__exclude_unsupported_output(original))
@@ -1423,6 +1425,8 @@ end
                 x2 = [2.0, 3.0]
                 cache = prepare_hessian_cache(f, x1)
                 v1, g1, H1 = value_gradient_and_hessian!!(cache, f, x1)
+                # `cache` owns the returned `g`/`H`; snapshot before reusing the cache.
+                g1, H1 = copy(g1), copy(H1)
                 v2, g2, H2 = value_gradient_and_hessian!!(cache, f, x2)
                 @test v1 ≈ 1.0
                 @test v2 ≈ 13.0
@@ -1486,6 +1490,8 @@ end
                 v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_gradient_and_hessian!!(
                     cache, f, x1, y1
                 )
+                # `cache` owns the returned tuples; snapshot before reusing the cache.
+                gx1, gy1, Hxx1, Hyy1 = copy(gx1), copy(gy1), copy(Hxx1), copy(Hyy1)
                 v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_gradient_and_hessian!!(
                     cache, f, x2, y2
                 )
@@ -1642,8 +1648,7 @@ end
                 f(x, y) = sum(x .^ 2) + sum(y .^ 2)
                 x = Float64[1.0, 2.0]
                 y = Float32[3.0, 4.0]
-                cache = prepare_hessian_cache(f, x, y)
-                @test_throws ArgumentError value_gradient_and_hessian!!(cache, f, x, y)
+                @test_throws ArgumentError prepare_hessian_cache(f, x, y)
             end
 
             @testset "reject mismatched function object" begin
@@ -1656,11 +1661,78 @@ end
                 )
             end
 
+            @testset "reject HVP-only cache" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0, 2.0]
+                cache = Mooncake.prepare_hvp_cache(f, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, f, x)
+            end
+
+            @testset "cache buffer reuse (output aliasing)" begin
+                f(x) = sum(x .^ 2)
+                x = [1.0, 2.0, 3.0]
+                cache = prepare_hessian_cache(f, x)
+                _, g1, H1 = value_gradient_and_hessian!!(cache, f, x)
+                _, g2, H2 = value_gradient_and_hessian!!(cache, f, x)
+                # Both calls return the same cache-owned buffers.
+                @test g1 === g2
+                @test H1 === H2
+            end
+
+            @testset "multi-arg cache buffer reuse" begin
+                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
+                x = [1.0, 2.0]
+                y = [3.0, 4.0]
+                cache = prepare_hessian_cache(f, x, y)
+                _, (gx1, gy1), ((Hxx1, Hxy1), (Hyx1, Hyy1)) = value_gradient_and_hessian!!(
+                    cache, f, x, y
+                )
+                _, (gx2, gy2), ((Hxx2, Hxy2), (Hyx2, Hyy2)) = value_gradient_and_hessian!!(
+                    cache, f, x, y
+                )
+                @test gx1 === gx2 && gy1 === gy2
+                @test Hxx1 === Hxx2 && Hxy1 === Hxy2
+                @test Hyx1 === Hyx2 && Hyy1 === Hyy2
+            end
+
+            @testset "reject mismatched cache arity" begin
+                f(x) = sum(abs2, x)
+                f(x, y) = sum(abs2, x) + sum(abs2, y)
+                # 2-arg cache, 3-arg call.
+                cache2 = prepare_hessian_cache(f, [1.0], [2.0])
+                @test_throws r"cache was prepared for 2 arguments but called with 3" value_gradient_and_hessian!!(
+                    cache2, f, [1.0], [2.0], [3.0]
+                )
+                # 2-arg cache, 1-arg call — single-arg dispatch must report arity, not
+                # the generic "not a hessian cache" error.
+                @test_throws r"cache was prepared for 2 arguments but called with 1" value_gradient_and_hessian!!(
+                    cache2, f, [1.0]
+                )
+                # 1-arg cache, 2-arg call — multi-arg dispatch, same expectation.
+                cache1 = prepare_hessian_cache(f, [1.0, 2.0])
+                @test_throws r"cache was prepared for 1 argument but called with 2" value_gradient_and_hessian!!(
+                    cache1, f, [1.0, 2.0], [3.0]
+                )
+            end
+
+            @testset "empty-cache reused at non-empty input" begin
+                f(x) = sum(x .^ 2)
+                cache = prepare_hessian_cache(f, Float64[])
+                @test_throws ArgumentError value_gradient_and_hessian!!(
+                    cache, f, [1.0, 2.0]
+                )
+                g(x, y) = sum(x .^ 2) + sum(y .^ 2)
+                cache2 = prepare_hessian_cache(g, Float64[], Float64[])
+                @test_throws ArgumentError value_gradient_and_hessian!!(
+                    cache2, g, [1.0], Float64[]
+                )
+            end
+
             @testset "hessian cache mismatch errors" begin
                 f(x) = sum(x .^ 2)
                 x = [1.0, 2.0]
                 cache = prepare_hessian_cache(f, x)
-                @test_throws r"Cached autodiff call has a size mismatch for `x1`" value_gradient_and_hessian!!(
+                @test_throws r"input vector has length 3 but cache was prepared for length 2" value_gradient_and_hessian!!(
                     cache, f, [1.0, 2.0, 3.0]
                 )
                 @test_throws r"Cached autodiff call has a type mismatch for `x1`" value_gradient_and_hessian!!(

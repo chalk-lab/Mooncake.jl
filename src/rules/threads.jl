@@ -27,12 +27,11 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) =
-        _threading_foreigncall_frule(Val($(QuoteNode(name))), args...)
+    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_frule(
+        Val($(QuoteNode(name))), args...
+    )
 
-    @eval rrule!!(
-        ::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...
-    ) = _threading_foreigncall_rrule()
+    @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
 end
 
 @is_primitive MinimalCtx ForwardMode Tuple{

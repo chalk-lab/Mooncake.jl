@@ -16,10 +16,23 @@
 The goal of the `Mooncake.jl` project is to produce an AD package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`, and `Zygote.jl` in several ways.
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
-> [!IMPORTANT]                                                                                                                                                                                                                                               
-> `Mooncake.jl` accepts issues and pull requests pertaining to reproducible defects only. Feature requests, enhancements, redesign proposals, support requests, and debugging requests not accompanied by a minimal reproducible example are outside the scope of this project and will be closed. Mooncake.jl is intended to differentiate through the vast majority of Julia Base and the standard libraries. Known limitations are documented on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/) page. Requests for rules covering functionality outside Julia Base are considered out of scope.                                                                              
->                                                                                                                                                                                                                                                            
-> Mooncake.jl is open-source software developed primarily by academic researchers working within grant-funded institutions. Consequently, our capacity to triage issues and review contributions is necessarily constrained by available resources. Organisations that depend on Mooncake.jl in a commercial or industrial setting are encouraged to consider contributing financially or through direct code contributions.
+> [!IMPORTANT]
+> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded
+> institutions, with correspondingly limited capacity for triage and review. In the spirit of
+> long-lived projects such as R and TeX, we favour correctness, stability,
+> and tightly scoped fixes over open-ended expansion.
+>
+> Contributions are most welcome when they concern reproducible defects:
+> incorrect results, unexpected failures, or behaviour at odds with the
+> documented scope. Feature requests, redesign proposals, and debugging
+> queries lacking a minimal reproducible example sit outside what we can
+> reasonably support, as do requests for rules beyond Julia Base, or for
+> behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
+> page; such issues will generally be closed.
+>
+> Organisations relying on Mooncake.jl commercially are warmly encouraged
+> to contribute, whether through focused code contributions, financial
+> support, or both.
 
 ## Getting Started
 

@@ -899,8 +899,7 @@ InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
     end
 end
 
-@inline _cache_spec_summary(spec::InputSpec{T}) where {T} =
-    "$(T) ($(_cache_spec_size_summary(spec)))"
+@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
 
 struct PreparedCacheError <: Exception
     msg::String
@@ -1044,8 +1043,9 @@ end
 
 # ── fcache gradient seeding ───────────────────────────────────────────────────────
 
-@inline _make_seed_tangent(x, slot::Int) =
-    _make_seed_tangent(x, slot, Ref(0), IdDict{Any,Any}())
+@inline _make_seed_tangent(x, slot::Int) = _make_seed_tangent(
+    x, slot, Ref(0), IdDict{Any,Any}()
+)
 @inline function _make_seed_tangent(
     ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 )
@@ -1181,8 +1181,7 @@ end
 # Used by `_gradient_width1` / `_gradient_widthN` to avoid re-allocating
 # tangent arrays for each direction.
 
-@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}) =
-    NoTangent()
+@inline _seed_inplace!(::NoTangent, _x, _slot::Int, _cursor::Base.RefValue{Int}) = NoTangent()
 @inline function _seed_inplace!(
     _buf::T, x::T, slot::Int, cursor::Base.RefValue{Int}
 ) where {T<:IEEEFloat}
@@ -1470,8 +1469,9 @@ end
 ) where {T<:IEEEFloat,W}
     return Dual(x, NoTangent())
 end
-@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} =
-    Dual(x, NoTangent())
+@inline _combine_to_ndual(x::Complex{T}, ::Tuple{}) where {T<:IEEEFloat} = Dual(
+    x, NoTangent()
+)
 @inline function _combine_to_ndual(
     x::AbstractArray{Complex{T}}, ::NTuple{W,NoTangent}
 ) where {T<:IEEEFloat,W}

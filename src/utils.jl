@@ -697,8 +697,9 @@ end
     return _fold_slots(f, acc, Base.tail(x), state)
 end
 
-@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} =
-    _fold_slots(f, init, values(x), state)
+@inline _fold_slots(f::F, init, x::NamedTuple, state) where {F} = _fold_slots(
+    f, init, values(x), state
+)
 
 @inline function _fold_slots(f::F, init, x::AbstractArray, state) where {F}
     tangent_type(typeof(x)) == NoTangent && return (init, state)
@@ -791,5 +792,6 @@ end
 @inline _count_slots(::Tuple{}) = 0
 @inline _count_slots(x::Tuple) = _count_slots(first(x)) + _count_slots(Base.tail(x))
 @inline _count_slots(x::NamedTuple) = _count_slots(values(x))
-@inline _count_slots(x) =
-    first(_fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}()))
+@inline _count_slots(x) = first(
+    _fold_slots((acc, _, _, s) -> (acc + 1, s), 0, x, IdDict{Any,Any}())
+)
