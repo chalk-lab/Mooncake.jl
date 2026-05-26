@@ -100,9 +100,11 @@ Shapes defined so far:
   recursion through the complex real/imag parts.
 - `Array{T, D}` with `T <: IEEEFloat`: `Array{NDual{T, N}, D}` — element-wise
   recursion through the array elements (array-of-NDuals layout).
+- `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
+  element-wise recursion via head/tail type-cons.
 
-Other primal shapes (Tuple, NamedTuple, struct lifts, MemoryRef, …) are
-added in follow-up commits.
+Other primal shapes (NamedTuple, struct lifts, MemoryRef, …) are added
+in follow-up commits.
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -110,6 +112,15 @@ added in follow-up commits.
 end
 @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return Array{NDual{T,N},D}
+end
+# Tuple recursion: empty base case + head/tail cons. Specialized per concrete
+# tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
+# time without an @generated function.
+@inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
+@inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    H = Base.tuple_type_head(P)
+    Tail = Base.tuple_type_tail(P)
+    return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
 end
 
 """
@@ -123,6 +134,7 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, Array{NDual{T, N}, D}}`.
+- `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
 """
 @inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
 @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -130,6 +142,9 @@ Shapes defined so far:
 end
 @inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return Lifted{Array{T,D},N,Array{NDual{T,N},D}}
+end
+@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    return Lifted{P,N,dual_type(Val(N), P)}
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -202,4 +217,25 @@ end
     w::Val{N}, rng::AbstractRNG, x::Array{T,D}
 ) where {N,T<:IEEEFloat,D}
     return Lifted{Array{T,D},N}(x, randn_dual(w, rng, x))
+end
+
+# ── Tuple seed factories (concrete tuple) ───────────────────────────────────
+#
+# Element-wise build via Tuple-aware `map`. Each element's dispatch picks
+# its own seed factory recursively.
+
+@inline zero_dual(w::Val{N}, x::Tuple) where {N} = map(xi -> zero_dual(w, xi), x)
+@inline uninit_dual(w::Val{N}, x::Tuple) where {N} = map(xi -> uninit_dual(w, xi), x)
+@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
+    return map(xi -> randn_dual(w, rng, xi), x)
+end
+
+@inline function zero_lifted(w::Val{N}, x::P) where {N,P<:Tuple}
+    return Lifted{P,N}(x, zero_dual(w, x))
+end
+@inline function uninit_lifted(w::Val{N}, x::P) where {N,P<:Tuple}
+    return Lifted{P,N}(x, uninit_dual(w, x))
+end
+@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:Tuple}
+    return Lifted{P,N}(x, randn_dual(w, rng, x))
 end

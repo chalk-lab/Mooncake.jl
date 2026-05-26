@@ -189,6 +189,41 @@
         @test rt2.partials[2] ≈ 2 * (1.0 * 0.5 + 2.0 * 1.0 + 3.0 * 0.0)
     end
 
+    @testset "dual_type / lifted_type (Tuple)" begin
+        @test Mooncake.dual_type(Val(2), Tuple{}) === Tuple{}
+        @test Mooncake.dual_type(Val(2), Tuple{Float64}) ===
+            Tuple{Mooncake.NDual{Float64,2}}
+        @test Mooncake.dual_type(Val(2), Tuple{Float64,Float32}) ===
+            Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float32,2}}
+        # Nested: a tuple of (scalar, array).
+        @test Mooncake.dual_type(Val(2), Tuple{Float64,Vector{Float64}}) ===
+            Tuple{Mooncake.NDual{Float64,2},Vector{Mooncake.NDual{Float64,2}}}
+        @test Mooncake.lifted_type(Val(2), Tuple{Float64,Float64}) === Mooncake.Lifted{
+            Tuple{Float64,Float64},
+            2,
+            Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float64,2}},
+        }
+    end
+
+    @testset "seed factories (Tuple)" begin
+        x = (1.0, 2.0f0, [3.0, 4.0])
+
+        v = Mooncake.zero_dual(Val(2), x)
+        @test typeof(v) === Tuple{
+            Mooncake.NDual{Float64,2},
+            Mooncake.NDual{Float32,2},
+            Vector{Mooncake.NDual{Float64,2}},
+        }
+        @test v[1].value === 1.0 && v[1].partials == (0.0, 0.0)
+        @test v[2].value === 2.0f0 && v[2].partials == (0.0f0, 0.0f0)
+        @test [d.value for d in v[3]] == [3.0, 4.0]
+
+        z = Mooncake.zero_lifted(Val(2), x)
+        @test typeof(z) === Mooncake.Lifted{typeof(x),2,typeof(v)}
+        @test Mooncake.primal(z) === x  # outer tuple aliases user storage.
+        @test Mooncake.tangent(z) == v
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}
