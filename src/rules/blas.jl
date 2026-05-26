@@ -99,6 +99,25 @@ end
     arrayify(x::A, dx::A) where {A<:Memory{<:BlasFloat}} = (x, dx)
 end
 
+# Canonical NDual wrapper arrayify: split a `Transpose{NDual{T,1}, …}` (or
+# `Adjoint{NDual{T,1}, …}` for IEEEFloat) into a `(Transpose{T, …},
+# Transpose{T, …})` primal-tangent pair. Used by callers that hand a
+# bare canonical-NDual wrapper to `arrayify` instead of the
+# CoDual/Dual-wrapped form. The width-1 constraint mirrors the strict
+# `_arr_extract` shape these callers expect.
+@inline function arrayify(
+    x::Transpose{NDual{T,1},<:AbstractArray{NDual{T,1}}}
+) where {T<:IEEEFloat}
+    p_parent, ts_parent = unpack_ndual(x.parent)
+    return transpose(p_parent), transpose(ts_parent[1])
+end
+@inline function arrayify(
+    x::Adjoint{NDual{T,1},<:AbstractArray{NDual{T,1}}}
+) where {T<:IEEEFloat}
+    p_parent, ts_parent = unpack_ndual(x.parent)
+    return adjoint(p_parent), adjoint(ts_parent[1])
+end
+
 function arrayify(x::A, dx::DA) where {A,DA}
     msg =
         "Encountered unexpected array type in `Mooncake.arrayify`. This error is likely " *
