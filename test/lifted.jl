@@ -58,6 +58,55 @@
         @test Mooncake.tangent(rl) == r  # Same rng + width.
     end
 
+    @testset "dual_type / lifted_type (Complex{<:IEEEFloat})" begin
+        @test Mooncake.dual_type(Val(2), Complex{Float64}) ===
+            Complex{Mooncake.NDual{Float64,2}}
+        @test Mooncake.dual_type(Val(1), Complex{Float32}) ===
+            Complex{Mooncake.NDual{Float32,1}}
+        @test Mooncake.lifted_type(Val(2), Complex{Float64}) ===
+            Mooncake.Lifted{Complex{Float64},2,Complex{Mooncake.NDual{Float64,2}}}
+    end
+
+    @testset "frule!! one-to-one parallels (complex.jl)" begin
+        N = 2
+        P = Float64
+        # Build a Complex{NDual{P,N}} inner V manually for the input slot.
+        re_inner = Mooncake.NDual{P,N}(1.5, (1.0, 0.0))
+        im_inner = Mooncake.NDual{P,N}(-0.5, (0.0, 1.0))
+        z_primal = Complex{P}(1.5, -0.5)
+        z_inner = Complex{Mooncake.NDual{P,N}}(re_inner, im_inner)
+        z = Mooncake.Lifted{Complex{P},N}(z_primal, z_inner)
+
+        # lgetfield :re
+        f_slot = Mooncake.Lifted{typeof(Mooncake.lgetfield),N}(
+            Mooncake.lgetfield, Mooncake.NoTangent()
+        )
+        val_re = Mooncake.Lifted{Val{:re},N}(Val(:re), Mooncake.NoTangent())
+        r = Mooncake.frule!!(f_slot, z, val_re)
+        @test typeof(r) === Mooncake.Lifted{P,N,Mooncake.NDual{P,N}}
+        @test Mooncake.primal(r) == 1.5
+        @test Mooncake.tangent(r) === re_inner
+
+        # lgetfield :im
+        val_im = Mooncake.Lifted{Val{:im},N}(Val(:im), Mooncake.NoTangent())
+        r2 = Mooncake.frule!!(f_slot, z, val_im)
+        @test typeof(r2) === Mooncake.Lifted{P,N,Mooncake.NDual{P,N}}
+        @test Mooncake.primal(r2) == -0.5
+        @test Mooncake.tangent(r2) === im_inner
+
+        # _new_(Complex{P}, re, im)
+        new_slot = Mooncake.Lifted{typeof(Mooncake._new_),N}(
+            Mooncake._new_, Mooncake.NoTangent()
+        )
+        type_slot = Mooncake.Lifted{Type{Complex{P}},N}(Complex{P}, Mooncake.NoTangent())
+        re_slot = Mooncake.Lifted{P,N}(1.5, re_inner)
+        im_slot = Mooncake.Lifted{P,N}(-0.5, im_inner)
+        r3 = Mooncake.frule!!(new_slot, type_slot, re_slot, im_slot)
+        @test typeof(r3) === Mooncake.Lifted{Complex{P},N,Complex{Mooncake.NDual{P,N}}}
+        @test Mooncake.primal(r3) == Complex{P}(1.5, -0.5)
+        @test Mooncake.tangent(r3) === z_inner
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

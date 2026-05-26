@@ -72,6 +72,15 @@ function frule!!(
     dy = getfield(tangent(x), FieldName)
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(lgetfield),N},
+    x::Lifted{Complex{P},N,Complex{NDual{P,N}}},
+    ::Lifted{Val{FieldName},N},
+) where {N,P<:IEEEFloat,FieldName}
+    y = getfield(primal(x), FieldName)
+    dy = getfield(tangent(x), FieldName)
+    return Lifted{P,N}(y, dy)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     obj_cd::CoDual{<:CF,<:CF},
@@ -110,6 +119,16 @@ function frule!!(
     x = _new_(Complex{P}, primal(re), primal(im))
     dx = _new_(Complex{P}, tangent(re), tangent(im))
     return Dual(x, dx)
+end
+function frule!!(
+    ::Lifted{typeof(_new_),N},
+    ::Lifted{Type{Complex{P}},N},
+    re::Lifted{P,N,NDual{P,N}},
+    im::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
+    x = _new_(Complex{P}, primal(re), primal(im))
+    dx = _new_(Complex{NDual{P,N}}, tangent(re), tangent(im))
+    return Lifted{Complex{P},N}(x, dx)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{Complex{P}}}, re::CoDual{P}, im::CoDual{P}

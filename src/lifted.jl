@@ -93,10 +93,18 @@ Return the canonical `N`-width forward-mode value type for a primal of
 type `P`. This is the type of the inner `V` carried by a
 `Lifted{P, N, V}` slot.
 
-For `P <: IEEEFloat`, returns `NDual{P, N}` — the packed scalar forward
-value. Other primal shapes are added in follow-up commits.
+Shapes defined so far:
+
+- `P <: IEEEFloat`: `NDual{P, N}` — the packed scalar forward value.
+- `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
+  recursion through the complex real/imag parts.
+
+Other primal shapes are added in follow-up commits.
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
+@inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
+    return Complex{NDual{R,N}}
+end
 
 """
     lifted_type(::Val{N}, ::Type{P}) -> Type
@@ -104,9 +112,15 @@ value. Other primal shapes are added in follow-up commits.
 Return the canonical `Lifted{P, N, V}` slot type for a primal of type `P`
 at width `N`. For concrete `P`, equals `Lifted{P, N, dual_type(Val(N), P)}`.
 
-For `P <: IEEEFloat`, returns `Lifted{P, N, NDual{P, N}}`.
+Shapes defined so far:
+
+- `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
+- `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 """
 @inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
+@inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
+    return Lifted{Complex{R},N,Complex{NDual{R,N}}}
+end
 
 # ──────────────────────────────────────────────────────────────────────────
 # Seed factories.
