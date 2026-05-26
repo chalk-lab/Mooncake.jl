@@ -224,6 +224,37 @@
         @test Mooncake.tangent(z) == v
     end
 
+    @testset "dual_type / lifted_type (NamedTuple)" begin
+        NT_ab = NamedTuple{(:a, :b),Tuple{Float64,Float32}}
+        @test Mooncake.dual_type(Val(2), NT_ab) === NamedTuple{
+            (:a, :b),Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float32,2}}
+        }
+        NT_xy = NamedTuple{(:x, :y),Tuple{Float64,Vector{Float64}}}
+        @test Mooncake.dual_type(Val(2), NT_xy) === NamedTuple{
+            (:x, :y),Tuple{Mooncake.NDual{Float64,2},Vector{Mooncake.NDual{Float64,2}}}
+        }
+        @test Mooncake.lifted_type(Val(2), NT_ab) === Mooncake.Lifted{
+            NT_ab,
+            2,
+            NamedTuple{(:a, :b),Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float32,2}}},
+        }
+    end
+
+    @testset "seed factories (NamedTuple)" begin
+        x = (; a=1.0, b=2.0f0, c=[3.0, 4.0])
+
+        v = Mooncake.zero_dual(Val(2), x)
+        @test v isa NamedTuple{(:a, :b, :c)}
+        @test v.a.value === 1.0 && v.a.partials == (0.0, 0.0)
+        @test v.b.value === 2.0f0
+        @test [d.value for d in v.c] == [3.0, 4.0]
+
+        z = Mooncake.zero_lifted(Val(2), x)
+        @test typeof(z) === Mooncake.Lifted{typeof(x),2,typeof(v)}
+        @test Mooncake.primal(z) === x
+        @test Mooncake.tangent(z) == v
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

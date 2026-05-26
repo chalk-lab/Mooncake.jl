@@ -102,9 +102,11 @@ Shapes defined so far:
   recursion through the array elements (array-of-NDuals layout).
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
+- `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
+  — same names, fields recursively lifted via the tuple-type path.
 
-Other primal shapes (NamedTuple, struct lifts, MemoryRef, …) are added
-in follow-up commits.
+Other primal shapes (struct lifts, MemoryRef, …) are added in follow-up
+commits.
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -122,6 +124,9 @@ end
     Tail = Base.tuple_type_tail(P)
     return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
 end
+@inline function dual_type(::Val{N}, ::Type{NamedTuple{names,T}}) where {N,names,T<:Tuple}
+    return NamedTuple{names,dual_type(Val(N), T)}
+end
 
 """
     lifted_type(::Val{N}, ::Type{P}) -> Type
@@ -135,6 +140,7 @@ Shapes defined so far:
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, Array{NDual{T, N}, D}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
+- `P <: NamedTuple{names, <:Tuple}`: `Lifted{P, N, dual_type(Val(N), P)}`.
 """
 @inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
 @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -144,6 +150,11 @@ end
     return Lifted{Array{T,D},N,Array{NDual{T,N},D}}
 end
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    return Lifted{P,N,dual_type(Val(N), P)}
+end
+@inline function lifted_type(
+    ::Val{N}, ::Type{P}
+) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
 
@@ -237,5 +248,26 @@ end
     return Lifted{P,N}(x, uninit_dual(w, x))
 end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:Tuple}
+    return Lifted{P,N}(x, randn_dual(w, rng, x))
+end
+
+# ── NamedTuple seed factories ───────────────────────────────────────────────
+#
+# Julia's `map(f, ::NamedTuple)` preserves the names and returns a
+# NamedTuple, so element-wise seed building works the same as for Tuple.
+
+@inline zero_dual(w::Val{N}, x::NamedTuple) where {N} = map(xi -> zero_dual(w, xi), x)
+@inline uninit_dual(w::Val{N}, x::NamedTuple) where {N} = map(xi -> uninit_dual(w, xi), x)
+@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::NamedTuple) where {N}
+    return map(xi -> randn_dual(w, rng, xi), x)
+end
+
+@inline function zero_lifted(w::Val{N}, x::P) where {N,P<:NamedTuple}
+    return Lifted{P,N}(x, zero_dual(w, x))
+end
+@inline function uninit_lifted(w::Val{N}, x::P) where {N,P<:NamedTuple}
+    return Lifted{P,N}(x, uninit_dual(w, x))
+end
+@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:NamedTuple}
     return Lifted{P,N}(x, randn_dual(w, rng, x))
 end
