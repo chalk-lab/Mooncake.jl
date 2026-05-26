@@ -1128,9 +1128,13 @@ end
 # `reinterpret(NDual{T,N}, ::Vector{NDual{S,N}})` aligns with the user-
 # observed `reinterpret(T, ::Vector{S})` cast: `NDual{*,N}` is `(N+1)` Floats,
 # so an array of `NDual{S,N}` viewed as `NDual{T,N}` preserves the same
-# element-pair count. Same template as Transpose/ReshapedArray. The
-# remaining `T<:IEEEFloat AND S NOT<:IEEEFloat` cases (rare) fall through to
-# the wrapper-exception catch-all in `src/tangents/dual.jl`.
+# element-pair count. Same template as Transpose/ReshapedArray.
+# The `T<:IEEEFloat` over `Complex{R<:IEEEFloat}` parent path covers
+# Real-view-of-Complex reinterprets (e.g. `gemm_wrapper!` internally
+# views `Matrix{ComplexF64}` as `Matrix{Float64}` for BLAS). Byte ratio
+# preserved: `sizeof(NDual{T,N}) = (N+1)·sizeof(T)` and
+# `sizeof(Complex{NDual{R,N}}) = 2·(N+1)·sizeof(R)`, mirroring the
+# `sizeof(T) : sizeof(Complex{R})` = 1:2 cast.
 function dual_type(
     ::Val{N}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
 ) where {N,T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
@@ -1138,9 +1142,20 @@ function dual_type(
     return Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}
 end
 function dual_type(
+    ::Val{N}, ::Type{Base.ReinterpretArray{T,D,Complex{R},P,W}}
+) where {N,T<:IEEEFloat,D,R<:IEEEFloat,P<:AbstractArray{Complex{R}},W}
+    Vp = dual_type(Val(N), P)
+    return Base.ReinterpretArray{NDual{T,N},D,Complex{NDual{R,N}},Vp,W}
+end
+function dual_type(
     ::Val{0}, ::Type{Base.ReinterpretArray{T,D,S,P,W}}
 ) where {T<:IEEEFloat,D,S<:IEEEFloat,P<:AbstractArray{S},W}
     return Base.ReinterpretArray{T,D,S,P,W}
+end
+function dual_type(
+    ::Val{0}, ::Type{Base.ReinterpretArray{T,D,Complex{R},P,W}}
+) where {T<:IEEEFloat,D,R<:IEEEFloat,P<:AbstractArray{Complex{R}},W}
+    return Base.ReinterpretArray{T,D,Complex{R},P,W}
 end
 # Transpose with any `AbstractArray{T}` parent: canonical NDual-element
 # form `Transpose{NDual{T,N}, dual_type(Val(N), P)}`. The parent's own
@@ -1273,9 +1288,38 @@ function (::Type{Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}})(
         NDual{T,N}, parent_lifted
     )::Base.ReinterpretArray{NDual{T,N},D,NDual{S,N},Vp,W}
 end
+# Real-view-of-Complex variant — mirrors the IEEEFloat→IEEEFloat ctor
+# above but lifts a `Complex{R}` parent to `Complex{NDual{R,N}}`.
+function (::Type{Base.ReinterpretArray{NDual{T,N},D,Complex{NDual{R,N}},Vp,W}})(
+    primal::Base.ReinterpretArray{T,D,Complex{R},P,W}, tangent::Mooncake.Tangent
+) where {
+    T<:IEEEFloat,
+    N,
+    D,
+    R<:IEEEFloat,
+    P<:AbstractArray{Complex{R}},
+    Vp<:AbstractArray{Complex{NDual{R,N}}},
+    W,
+}
+    parent_t = Mooncake._get_tangent_field(tangent, :parent)
+    parent_lifted = Vp(parent(primal), parent_t)
+    return reinterpret(
+        NDual{T,N}, parent_lifted
+    )::Base.ReinterpretArray{NDual{T,N},D,Complex{NDual{R,N}},Vp,W}
+end
 @inline function Mooncake.Lifted{P,1}(
     primal::P, tangent::Mooncake.Tangent
 ) where {T<:IEEEFloat,S<:IEEEFloat,P<:Base.ReinterpretArray{T,<:Any,S,<:AbstractArray{S}}}
+    InnerT = Mooncake.dual_type(Val(1), P)
+    return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
+end
+@inline function Mooncake.Lifted{P,1}(
+    primal::P, tangent::Mooncake.Tangent
+) where {
+    T<:IEEEFloat,
+    R<:IEEEFloat,
+    P<:Base.ReinterpretArray{T,<:Any,Complex{R},<:AbstractArray{Complex{R}}},
+}
     InnerT = Mooncake.dual_type(Val(1), P)
     return Mooncake.Lifted{P,1,InnerT}(InnerT(primal, tangent))
 end
