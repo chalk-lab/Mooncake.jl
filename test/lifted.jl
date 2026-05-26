@@ -389,6 +389,30 @@ end
             Mooncake.Lifted{P_mut,3,Mooncake.dual_type(Val(3), P_mut)}
     end
 
+    @testset "MutableDualTangentView (NDual field)" begin
+        N = 2
+        r = LiftedTest_RefF(3.0)
+        slot = Mooncake.zero_lifted(Val(N), r)
+
+        # Per-lane view via `tangent(::Lifted, lane)`.
+        view = Mooncake.tangent(slot, 1)
+        @test view isa Mooncake.MutableDualTangentView
+        @test getfield(view, :parent) === slot.value
+        @test getfield(view, :primal) === r
+        @test getfield(view, :lane) === 1
+
+        # Read: getproperty returns the lane-1 partial of the `v` field.
+        @test view.v === 0.0
+
+        # Write: setproperty! routes back to parent.value via setfield!.
+        view.v = 5.0
+        @test view.v === 5.0
+        @test slot.value.value.v.partials === (5.0, 0.0)
+        # Other lane unchanged.
+        view2 = Mooncake.tangent(slot, 2)
+        @test view2.v === 0.0
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

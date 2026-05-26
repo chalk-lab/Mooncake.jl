@@ -179,6 +179,61 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
+# `MutableDualTangentView{SD, P}` — per-lane proxy view for mutable struct
+# slots (dual-types.md §13.6). The view is an immutable struct with three
+# fields:
+#
+#   parent::SD  — the underlying `MutableDual` (writeback target).
+#   primal::P   — back-reference to the slot's primal struct.
+#   lane::Int   — which lane this view refers to.
+#
+# `getproperty` reads from the parent's NamedTuple and extracts the lane;
+# `setproperty!` writes the lane back to the parent via `setfield!`. This
+# enables `view.field = x` to mutate the slot's V from within a forward-mode
+# rule body.
+#
+# This initial commit supports V_i = `NDual{T, N}` (scalar IEEEFloat field)
+# only. Other V_i shapes (NDualArray, Complex{NDual}, nested MutableDual,
+# PossiblyUninitTangent) are added in follow-up commits.
+# ──────────────────────────────────────────────────────────────────────────
+
+struct MutableDualTangentView{SD<:MutableDual,P}
+    parent::SD
+    primal::P
+    lane::Int
+end
+
+# Lane-extraction (read) and lane-replacement (write) for individual V_i shapes.
+# Add new V_i methods as additional shapes (NDualArray, Complex{NDual}, …) come
+# online for mutable-struct field tangents.
+@inline _lane_tangent(v::NDual, lane::Int) = v.partials[lane]
+
+@inline function _replace_lane_tangent(v::NDual{T,N}, lane::Int, x::T) where {T,N}
+    new_partials = ntuple(k -> k == lane ? x : v.partials[k], Val(N))
+    return NDual{T,N}(v.value, new_partials)
+end
+
+function Base.getproperty(v::MutableDualTangentView, name::Symbol)
+    name in (:parent, :primal, :lane) && return getfield(v, name)
+    nt = getfield(v, :parent).value
+    return _lane_tangent(getfield(nt, name), getfield(v, :lane))
+end
+
+function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
+    parent = getfield(v, :parent)
+    lane = getfield(v, :lane)
+    nt = parent.value
+    new_V_i = _replace_lane_tangent(getfield(nt, name), lane, x)
+    setfield!(parent, :value, merge(nt, NamedTuple{(name,)}((new_V_i,))))
+    return x
+end
+
+# Per-lane tangent accessor on a `Lifted{MutS, N, <:MutableDual}` slot.
+@inline function tangent(d::Lifted{MutS,N,<:MutableDual}, lane::Integer) where {MutS,N}
+    return MutableDualTangentView{typeof(d.value),MutS}(d.value, d.primal, Int(lane))
+end
+
+# ──────────────────────────────────────────────────────────────────────────
 # Width-N `dual_type` and `lifted_type` queries.
 #
 # `dual_type(Val(N), P)` returns the canonical inner V for a primal of
