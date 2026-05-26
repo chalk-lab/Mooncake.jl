@@ -263,6 +263,42 @@ end
         @test Mooncake.tangent(z) == v
     end
 
+    @testset "seed factories (Complex{<:IEEEFloat})" begin
+        z = 1.5 + (-0.5)im
+
+        v = Mooncake.zero_dual(Val(2), z)
+        @test typeof(v) === Complex{Mooncake.NDual{Float64,2}}
+        @test real(v).value === 1.5 && real(v).partials == (0.0, 0.0)
+        @test imag(v).value === -0.5 && imag(v).partials == (0.0, 0.0)
+
+        zl = Mooncake.zero_lifted(Val(2), z)
+        @test typeof(zl) ===
+            Mooncake.Lifted{Complex{Float64},2,Complex{Mooncake.NDual{Float64,2}}}
+        @test Mooncake.primal(zl) === z
+        @test Mooncake.tangent(zl) === v
+    end
+
+    @testset "seed factories (concrete struct lift)" begin
+        p = LiftedTest_Point(1.0, 2.0)
+        v = Mooncake.zero_dual(Val(2), p)
+        @test typeof(v) === Mooncake.dual_type(Val(2), LiftedTest_Point)
+        @test v isa Mooncake.ImmutableDual
+        @test v.value.x.value === 1.0 && v.value.x.partials == (0.0, 0.0)
+        @test v.value.y.value === 2.0 && v.value.y.partials == (0.0, 0.0)
+
+        zl = Mooncake.zero_lifted(Val(2), p)
+        @test typeof(zl) === Mooncake.lifted_type(Val(2), LiftedTest_Point)
+        @test Mooncake.primal(zl) === p
+        @test Mooncake.tangent(zl) === v
+
+        # Mutable struct lift.
+        r = LiftedTest_RefF(3.0)
+        vm = Mooncake.zero_dual(Val(2), r)
+        @test typeof(vm) === Mooncake.dual_type(Val(2), LiftedTest_RefF)
+        @test vm isa Mooncake.MutableDual
+        @test vm.value.v.value === 3.0 && vm.value.v.partials == (0.0, 0.0)
+    end
+
     @testset "dual_type / lifted_type (concrete struct lift)" begin
         # Immutable struct → ImmutableDual{NamedTuple{...}}.
         P_imm = LiftedTest_Point

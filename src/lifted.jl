@@ -304,8 +304,79 @@ end
     return Lifted{P,N}(x, randn_dual(w, rng, x))
 end
 
-# Seed factories for concrete struct primals (ImmutableDual / MutableDual V)
-# are deferred to a follow-up commit that also adds specific Complex seed
-# factories; otherwise a generic struct-lift seed factory would silently
-# route `Complex{<:IEEEFloat}` (which has its own canonical V
-# `Complex{NDual{R, N}}`) to an inconsistent `ImmutableDual{...}` V.
+# ── Complex seed factories (R <: IEEEFloat) ─────────────────────────────────
+#
+# Defined before the generic struct-lift seed factory so the more-specific
+# Complex overload wins for `Complex{<:IEEEFloat}` slots — the canonical V
+# is `Complex{NDual{R, N}}`, not the structural-lift `ImmutableDual{...}`.
+
+@inline function zero_dual(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
+    return Complex{NDual{R,N}}(zero_dual(w, real(z)), zero_dual(w, imag(z)))
+end
+@inline function uninit_dual(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
+    return Complex{NDual{R,N}}(uninit_dual(w, real(z)), uninit_dual(w, imag(z)))
+end
+@inline function randn_dual(
+    w::Val{N}, rng::AbstractRNG, z::Complex{R}
+) where {N,R<:IEEEFloat}
+    return Complex{NDual{R,N}}(randn_dual(w, rng, real(z)), randn_dual(w, rng, imag(z)))
+end
+
+@inline function zero_lifted(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
+    return Lifted{Complex{R},N}(z, zero_dual(w, z))
+end
+@inline function uninit_lifted(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
+    return Lifted{Complex{R},N}(z, uninit_dual(w, z))
+end
+@inline function randn_lifted(
+    w::Val{N}, rng::AbstractRNG, z::Complex{R}
+) where {N,R<:IEEEFloat}
+    return Lifted{Complex{R},N}(z, randn_dual(w, rng, z))
+end
+
+# ── Concrete-struct seed factories (generic @generated fallback) ────────────
+#
+# Build a `NamedTuple{fieldnames(P), Tuple{V_i...}}` of recursive field Vs
+# and wrap in `ImmutableDual` or `MutableDual` based on mutability. Sub-
+# function calls (`zero_dual`, etc.) live in the returned expression per
+# AGENTS.md; non-concrete and primitive `P` use the deferred-error pattern.
+# More-specific overloads above (IEEEFloat, Complex, Array, Tuple,
+# NamedTuple) take precedence, so this fallback only fires for user-defined
+# struct primals.
+
+for f in (:zero_dual, :uninit_dual)
+    @eval @generated function $f(::Val{N}, x::P) where {N,P}
+        isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
+        isprimitivetype(P) && return :(error($("$($f): primitive P=$P unsupported")))
+        names = fieldnames(P)
+        seeds = [
+            :($($f)(Val($N), getfield(x, $(QuoteNode(names[i]))))) for i in 1:fieldcount(P)
+        ]
+        inner = :(NamedTuple{$names}(($(seeds...),)))
+        wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        return :($wrapper($inner))
+    end
+end
+
+@generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
+    isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
+    isprimitivetype(P) && return :(error("randn_dual: primitive P=$P unsupported"))
+    names = fieldnames(P)
+    seeds = [
+        :(randn_dual(Val($N), rng, getfield(x, $(QuoteNode(names[i]))))) for
+        i in 1:fieldcount(P)
+    ]
+    inner = :(NamedTuple{$names}(($(seeds...),)))
+    wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+    return :($wrapper($inner))
+end
+
+@inline function zero_lifted(w::Val{N}, x::P) where {N,P}
+    return Lifted{P,N}(x, zero_dual(w, x))
+end
+@inline function uninit_lifted(w::Val{N}, x::P) where {N,P}
+    return Lifted{P,N}(x, uninit_dual(w, x))
+end
+@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P}
+    return Lifted{P,N}(x, randn_dual(w, rng, x))
+end
