@@ -1004,6 +1004,19 @@ end
     dys = ntuple(k -> ifelse(_cond, Mooncake.tangent(a, k), Mooncake.tangent(b, k)), Val(N))
     return Mooncake.Lifted{_typeof(y),N}(y, Mooncake.NTangent(dys))
 end
+# Heterogeneous-branch `Core.ifelse(cond, a, b)`: when `typeof(a) !=
+# typeof(b)` the output type is `Union{typeof(a), typeof(b)}` and the
+# tangent shape depends on which branch fires. Return the selected
+# branch's `Lifted` directly — preserves its inner V and avoids needing
+# to materialise an inert tangent for the unused branch.
+@inline function frule!!(
+    ::Mooncake.Lifted{typeof(Core.ifelse),N},
+    cond::Mooncake.Lifted{Bool},
+    a::Mooncake.Lifted{Pa,N},
+    b::Mooncake.Lifted{Pb,N},
+) where {N,Pa,Pb}
+    return primal(cond) ? a : b
+end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
     p_a = primal(a)
