@@ -1,3 +1,11 @@
+struct LiftedTest_Point
+    x::Float64
+    y::Float64
+end
+mutable struct LiftedTest_RefF
+    v::Float64
+end
+
 @testset "lifted" begin
     @testset "Lifted struct + accessors" begin
         inner = Mooncake.NDual{Float64,2}(3.0, (1.0, -1.0))
@@ -253,6 +261,23 @@
         @test typeof(z) === Mooncake.Lifted{typeof(x),2,typeof(v)}
         @test Mooncake.primal(z) === x
         @test Mooncake.tangent(z) == v
+    end
+
+    @testset "dual_type / lifted_type (concrete struct lift)" begin
+        # Immutable struct → ImmutableDual{NamedTuple{...}}.
+        P_imm = LiftedTest_Point
+        @test Mooncake.dual_type(Val(2), P_imm) === Mooncake.ImmutableDual{
+            NamedTuple{(:x, :y),Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float64,2}}}
+        }
+        @test Mooncake.lifted_type(Val(2), P_imm) ===
+            Mooncake.Lifted{P_imm,2,Mooncake.dual_type(Val(2), P_imm)}
+
+        # Mutable struct → MutableDual{NamedTuple{...}}.
+        P_mut = LiftedTest_RefF
+        @test Mooncake.dual_type(Val(3), P_mut) ===
+            Mooncake.MutableDual{NamedTuple{(:v,),Tuple{Mooncake.NDual{Float64,3}}}}
+        @test Mooncake.lifted_type(Val(3), P_mut) ===
+            Mooncake.Lifted{P_mut,3,Mooncake.dual_type(Val(3), P_mut)}
     end
 
     @testset "type-stability" begin

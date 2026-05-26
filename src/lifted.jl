@@ -104,9 +104,12 @@ Shapes defined so far:
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
   — same names, fields recursively lifted via the tuple-type path.
+- Concrete struct `P` (immutable): `ImmutableDual{NamedTuple{fieldnames(P), Tuple{V_i...}}}`
+  where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
+- Concrete struct `P` (mutable): `MutableDual{NamedTuple{...}}` — mutable
+  counterpart for in-place tangent updates.
 
-Other primal shapes (struct lifts, MemoryRef, …) are added in follow-up
-commits.
+Other primal shapes (MemoryRef, …) are added in follow-up commits.
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -128,6 +131,28 @@ end
     return NamedTuple{names,dual_type(Val(N), T)}
 end
 
+# Recursive structural lift for concrete struct primals — the @generated
+# fallback. Per AGENTS.md, all sub-function calls (`dual_type` on field types)
+# live in the *returned expression*, not the generator body; primitive and
+# non-concrete cases use the deferred-error pattern so a later more-specific
+# overload can override without world-age trouble.
+@generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
+    if !isconcretetype(P)
+        msg = "dual_type(::Val{N}, ::Type{P}) is only defined for concrete P; got P=$P"
+        return :(error($msg))
+    end
+    if isprimitivetype(P)
+        msg = "dual_type(::Val{N}, ::Type{P}) for primitive type P=$P is not supported"
+        return :(error($msg))
+    end
+    field_names = fieldnames(P)
+    n_fields = fieldcount(P)
+    field_dual_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n_fields]
+    inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
+    wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+    return :($wrapper{$inner_nt_type})
+end
+
 """
     lifted_type(::Val{N}, ::Type{P}) -> Type
 
@@ -141,6 +166,8 @@ Shapes defined so far:
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, Array{NDual{T, N}, D}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
 - `P <: NamedTuple{names, <:Tuple}`: `Lifted{P, N, dual_type(Val(N), P)}`.
+- Concrete struct `P`: `Lifted{P, N, dual_type(Val(N), P)}` where the inner
+  V is `ImmutableDual` (immutable) or `MutableDual` (mutable).
 """
 @inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
 @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -155,6 +182,11 @@ end
 @inline function lifted_type(
     ::Val{N}, ::Type{P}
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
+    return Lifted{P,N,dual_type(Val(N), P)}
+end
+# Concrete-struct fallback. More-specific overloads above (IEEEFloat,
+# Complex, Array, Tuple, NamedTuple) win when applicable; structs land here.
+@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
 
@@ -271,3 +303,9 @@ end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:NamedTuple}
     return Lifted{P,N}(x, randn_dual(w, rng, x))
 end
+
+# Seed factories for concrete struct primals (ImmutableDual / MutableDual V)
+# are deferred to a follow-up commit that also adds specific Complex seed
+# factories; otherwise a generic struct-lift seed factory would silently
+# route `Complex{<:IEEEFloat}` (which has its own canonical V
+# `Complex{NDual{R, N}}`) to an inconsistent `ImmutableDual{...}` V.
