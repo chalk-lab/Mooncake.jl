@@ -67,6 +67,73 @@ function Base.:(==)(a::Lifted, b::Lifted)
 end
 
 # ──────────────────────────────────────────────────────────────────────────
+# `NDualArray{Element, N, D, A, Wrapped}` — SoA canonical V for arrays.
+#
+# Per dual-types.md §14: `primal::A` aliases user storage; `partials::NTuple{N, A}`
+# holds slot-local lane tangents. `Wrapped` is determined by `(Element, N)`
+# — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
+# `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
+# element-wise code through the array interface continues to dispatch; element
+# access is lazy (constructs an `NDual` on the fly from SoA storage).
+# ──────────────────────────────────────────────────────────────────────────
+
+const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
+
+struct NDualArray{Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped} <:
+       AbstractArray{Wrapped,D}
+    primal::A
+    partials::NTuple{N,A}
+end
+
+# 4-parameter outer constructors fill in `Wrapped` from `Element`.
+@inline function NDualArray{Element,N,D,A}(
+    p::A, ts::NTuple{N,A}
+) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,NDual{Element,N}}(p, ts)
+end
+@inline function NDualArray{Element,N,D,A}(
+    p::A, ts::NTuple{N,A}
+) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,Complex{NDual{T,N}}}(p, ts)
+end
+
+# Zero-init seed: allocate fresh slot-local partials matching the primal.
+@inline function NDualArray{Element,N,D,A}(
+    p::A
+) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
+end
+@inline function NDualArray{Element,N,D,A}(
+    p::A
+) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
+end
+
+# Whole-array accessors — O(1) by aliasing.
+@inline primal(a::NDualArray) = a.primal
+@inline tangent(a::NDualArray) = NTangent(a.partials)
+@inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
+
+# AbstractArray interface.
+Base.size(a::NDualArray) = size(a.primal)
+function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
+    return IndexStyle(A)
+end
+
+@inline function Base.getindex(
+    a::NDualArray{Element,N}, i::Vararg{Int}
+) where {Element<:IEEEFloat,N}
+    return NDual{Element,N}(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
+end
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
+) where {Element<:IEEEFloat,N}
+    a.primal[i...] = x.value
+    ntuple(k -> (a.partials[k][i...]=x.partials[k]; nothing), Val(N))
+    return a
+end
+
+# ──────────────────────────────────────────────────────────────────────────
 # Width-N `dual_type` and `lifted_type` queries.
 #
 # `dual_type(Val(N), P)` returns the canonical inner V for a primal of
@@ -98,8 +165,8 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `NDual{P, N}` — the packed scalar forward value.
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
-- `Array{T, D}` with `T <: IEEEFloat`: `Array{NDual{T, N}, D}` — element-wise
-  recursion through the array elements (array-of-NDuals layout).
+- `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
+  — the SoA canonical V wrapper (see §14 in dual-types.md).
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
@@ -116,7 +183,7 @@ Other primal shapes (MemoryRef, …) are added in follow-up commits.
     return Complex{NDual{R,N}}
 end
 @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return Array{NDual{T,N},D}
+    return NDualArray{T,N,D,Array{T,D},NDual{T,N}}
 end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
 # tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
@@ -163,7 +230,7 @@ Shapes defined so far:
 
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
-- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, Array{NDual{T, N}, D}}`.
+- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
 - `P <: NamedTuple{names, <:Tuple}`: `Lifted{P, N, dual_type(Val(N), P)}`.
 - Concrete struct `P`: `Lifted{P, N, dual_type(Val(N), P)}` where the inner
@@ -174,7 +241,7 @@ Shapes defined so far:
     return Lifted{Complex{R},N,Complex{NDual{R,N}}}
 end
 @inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N,Array{NDual{T,N},D}}
+    return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}}
 end
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     return Lifted{P,N,dual_type(Val(N), P)}
@@ -230,36 +297,36 @@ end
 
 # ── Array seed factories (T <: IEEEFloat) ───────────────────────────────────
 #
-# Element-wise build into an `Array{NDual{T, N}, D}` with primal taken
-# from the user's primal array, partials drawn from the seed factory.
-# The returned container is slot-local — no aliasing with the user's array.
+# Build an `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}` whose `primal` aliases
+# the user's array and whose `partials` is slot-local — no aliasing with the
+# user's array. The zero-init path uses `zero(::Array)` for each lane.
 
-@inline function zero_dual(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
-    return map(xi -> zero_dual(w, xi), x)
+@inline function zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return NDualArray{T,N,D,A}(x)
 end
 
-@inline function uninit_dual(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
-    return map(xi -> uninit_dual(w, xi), x)
+@inline function uninit_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return NDualArray{T,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
 end
 
 @inline function randn_dual(
-    w::Val{N}, rng::AbstractRNG, x::Array{T,D}
-) where {N,T<:IEEEFloat,D}
-    return map(xi -> randn_dual(w, rng, xi), x)
+    ::Val{N}, rng::AbstractRNG, x::A
+) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return NDualArray{T,N,D,A}(x, ntuple(_ -> randn(rng, T, size(x)), Val(N)))
 end
 
-@inline function zero_lifted(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N}(x, zero_dual(w, x))
+@inline function zero_lifted(w::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return Lifted{A,N}(x, zero_dual(w, x))
 end
 
-@inline function uninit_lifted(w::Val{N}, x::Array{T,D}) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N}(x, uninit_dual(w, x))
+@inline function uninit_lifted(w::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return Lifted{A,N}(x, uninit_dual(w, x))
 end
 
 @inline function randn_lifted(
-    w::Val{N}, rng::AbstractRNG, x::Array{T,D}
-) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N}(x, randn_dual(w, rng, x))
+    w::Val{N}, rng::AbstractRNG, x::A
+) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return Lifted{A,N}(x, randn_dual(w, rng, x))
 end
 
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────

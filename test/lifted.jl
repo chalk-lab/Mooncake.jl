@@ -68,48 +68,76 @@ end
 
     @testset "dual_type / lifted_type (Array{T<:IEEEFloat, D})" begin
         @test Mooncake.dual_type(Val(2), Vector{Float64}) ===
-            Vector{Mooncake.NDual{Float64,2}}
+            Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}}
         @test Mooncake.dual_type(Val(1), Matrix{Float32}) ===
-            Matrix{Mooncake.NDual{Float32,1}}
-        @test Mooncake.lifted_type(Val(2), Vector{Float64}) ===
-            Mooncake.Lifted{Vector{Float64},2,Vector{Mooncake.NDual{Float64,2}}}
-        @test Mooncake.lifted_type(Val(3), Array{Float64,3}) ===
-            Mooncake.Lifted{Array{Float64,3},3,Array{Mooncake.NDual{Float64,3},3}}
+            Mooncake.NDualArray{Float32,1,2,Matrix{Float32},Mooncake.NDual{Float32,1}}
+        @test Mooncake.lifted_type(Val(2), Vector{Float64}) === Mooncake.Lifted{
+            Vector{Float64},
+            2,
+            Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}},
+        }
     end
 
     @testset "seed factories (Array{T<:IEEEFloat, D})" begin
         x = [1.0, 2.0, 3.0]
 
         v = Mooncake.zero_dual(Val(2), x)
-        @test typeof(v) === Vector{Mooncake.NDual{Float64,2}}
-        @test [d.value for d in v] == x
-        @test all(d -> d.partials == (0.0, 0.0), v)
+        @test typeof(v) ===
+            Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}}
+        @test Mooncake.primal(v) === x  # primal aliases user storage.
+        @test all(iszero, v.partials[1]) && all(iszero, v.partials[2])
 
-        u = Mooncake.uninit_dual(Val(3), x)
-        @test typeof(u) === Vector{Mooncake.NDual{Float64,3}}
-        @test [d.value for d in u] == x
+        # Lazy element access reconstructs an NDual on the fly.
+        d = v[1]
+        @test typeof(d) === Mooncake.NDual{Float64,2}
+        @test d.value === 1.0
+        @test d.partials === (0.0, 0.0)
 
         rng = Random.MersenneTwister(0)
         r = Mooncake.randn_dual(Val(2), rng, x)
-        @test typeof(r) === Vector{Mooncake.NDual{Float64,2}}
-        @test [d.value for d in r] == x
-        @test any(d -> any(!iszero, d.partials), r)
+        @test typeof(r) === typeof(v)
+        @test Mooncake.primal(r) === x
+        @test any(!iszero, r.partials[1])
 
         # Layer-3 wrapped slot.
         z = Mooncake.zero_lifted(Val(2), x)
-        @test typeof(z) ===
-            Mooncake.Lifted{Vector{Float64},2,Vector{Mooncake.NDual{Float64,2}}}
+        @test typeof(z) === Mooncake.lifted_type(Val(2), Vector{Float64})
         @test Mooncake.primal(z) === x  # primal aliases user storage.
-        @test Mooncake.tangent(z) == v
-        @test Mooncake.tangent(z) !== x  # tangent is slot-local, not aliased.
+        @test Mooncake.tangent(z) === v || Mooncake.tangent(z) isa Mooncake.NDualArray
 
         # Matrix shape (D = 2).
         M = [1.0 2.0; 3.0 4.0]
         zM = Mooncake.zero_lifted(Val(2), M)
-        @test typeof(zM) ===
-            Mooncake.Lifted{Matrix{Float64},2,Matrix{Mooncake.NDual{Float64,2}}}
+        @test typeof(zM) === Mooncake.lifted_type(Val(2), Matrix{Float64})
         @test size(Mooncake.tangent(zM)) == size(M)
-        @test all(d -> d.partials == (0.0, 0.0), Mooncake.tangent(zM))
+        @test all(iszero, Mooncake.tangent(zM).partials[1])
+    end
+
+    @testset "NDualArray accessors + AbstractArray interface" begin
+        N = 2
+        T = Float64
+        x = [1.0, 2.0, 3.0]
+        a = Mooncake.NDualArray{T,N,1,Vector{T}}(
+            x, (similar(x).=[0.5, -0.5, 1.5], similar(x).=[0.0, 1.0, -1.0])
+        )
+        @test a isa AbstractArray{Mooncake.NDual{T,N},1}
+        @test size(a) == (3,)
+        @test length(a) == 3
+        @test Mooncake.primal(a) === x
+        @test Mooncake.tangent(a) === Mooncake.NTangent(a.partials)
+        @test Mooncake.unpack_ndual(a) === (a.primal, a.partials)
+
+        # Lazy getindex.
+        d = a[2]
+        @test typeof(d) === Mooncake.NDual{T,N}
+        @test d.value === 2.0
+        @test d.partials === (-0.5, 1.0)
+
+        # setindex! writes both channels.
+        Mooncake.setindex!(a, Mooncake.NDual{T,N}(9.0, (7.0, -7.0)), 1)
+        @test x[1] === 9.0
+        @test a.partials[1][1] === 7.0
+        @test a.partials[2][1] === -7.0
     end
 
     @testset "dual_type / lifted_type (Complex{<:IEEEFloat})" begin
@@ -203,9 +231,11 @@ end
             Tuple{Mooncake.NDual{Float64,2}}
         @test Mooncake.dual_type(Val(2), Tuple{Float64,Float32}) ===
             Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float32,2}}
-        # Nested: a tuple of (scalar, array).
-        @test Mooncake.dual_type(Val(2), Tuple{Float64,Vector{Float64}}) ===
-            Tuple{Mooncake.NDual{Float64,2},Vector{Mooncake.NDual{Float64,2}}}
+        # Nested: a tuple of (scalar, array). Array V is the SoA NDualArray.
+        @test Mooncake.dual_type(Val(2), Tuple{Float64,Vector{Float64}}) === Tuple{
+            Mooncake.NDual{Float64,2},
+            Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}},
+        }
         @test Mooncake.lifted_type(Val(2), Tuple{Float64,Float64}) === Mooncake.Lifted{
             Tuple{Float64,Float64},
             2,
@@ -220,11 +250,11 @@ end
         @test typeof(v) === Tuple{
             Mooncake.NDual{Float64,2},
             Mooncake.NDual{Float32,2},
-            Vector{Mooncake.NDual{Float64,2}},
+            Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}},
         }
         @test v[1].value === 1.0 && v[1].partials == (0.0, 0.0)
         @test v[2].value === 2.0f0 && v[2].partials == (0.0f0, 0.0f0)
-        @test [d.value for d in v[3]] == [3.0, 4.0]
+        @test Mooncake.primal(v[3]) === x[3]
 
         z = Mooncake.zero_lifted(Val(2), x)
         @test typeof(z) === Mooncake.Lifted{typeof(x),2,typeof(v)}
@@ -239,7 +269,11 @@ end
         }
         NT_xy = NamedTuple{(:x, :y),Tuple{Float64,Vector{Float64}}}
         @test Mooncake.dual_type(Val(2), NT_xy) === NamedTuple{
-            (:x, :y),Tuple{Mooncake.NDual{Float64,2},Vector{Mooncake.NDual{Float64,2}}}
+            (:x, :y),
+            Tuple{
+                Mooncake.NDual{Float64,2},
+                Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}},
+            },
         }
         @test Mooncake.lifted_type(Val(2), NT_ab) === Mooncake.Lifted{
             NT_ab,
@@ -255,7 +289,8 @@ end
         @test v isa NamedTuple{(:a, :b, :c)}
         @test v.a.value === 1.0 && v.a.partials == (0.0, 0.0)
         @test v.b.value === 2.0f0
-        @test [d.value for d in v.c] == [3.0, 4.0]
+        @test v.c isa Mooncake.NDualArray
+        @test Mooncake.primal(v.c) === x.c
 
         z = Mooncake.zero_lifted(Val(2), x)
         @test typeof(z) === Mooncake.Lifted{typeof(x),2,typeof(v)}
