@@ -153,6 +153,42 @@
         @test Mooncake.tangent(r3) === z_inner
     end
 
+    @testset "frule!! one-to-one parallels (performance_patches.jl)" begin
+        N = 2
+        P = Float64
+        x = [1.0, 2.0, 3.0]
+
+        # Build the slot with a non-trivial tangent so partial computations are tested.
+        x_inner = [
+            Mooncake.NDual{P,N}(1.0, (1.0, 0.5)),
+            Mooncake.NDual{P,N}(2.0, (0.0, 1.0)),
+            Mooncake.NDual{P,N}(3.0, (-0.5, 0.0)),
+        ]
+        x_slot = Mooncake.Lifted{Vector{P},N}(x, x_inner)
+
+        # sum(::Array)
+        sum_slot = Mooncake.Lifted{typeof(sum),N}(sum, Mooncake.NoTangent())
+        r = Mooncake.frule!!(sum_slot, x_slot)
+        @test typeof(r) === Mooncake.Lifted{P,N,Mooncake.NDual{P,N}}
+        @test Mooncake.primal(r) == sum(x)
+        # Tangent's partials should be element-wise sums of x_inner partials.
+        rt = Mooncake.tangent(r)
+        @test rt.value == sum(x)
+        @test rt.partials == (1.0 + 0.0 + -0.5, 0.5 + 1.0 + 0.0)
+
+        # sum(abs2, ::Array)
+        abs2_slot = Mooncake.Lifted{typeof(abs2),N}(abs2, Mooncake.NoTangent())
+        r2 = Mooncake.frule!!(sum_slot, abs2_slot, x_slot)
+        @test typeof(r2) === Mooncake.Lifted{P,N,Mooncake.NDual{P,N}}
+        @test Mooncake.primal(r2) == sum(abs2, x)
+        # Forward derivative of sum(abs2, x) along direction d is 2*dot(x, d).
+        # For lane 1, d=[1.0, 0.0, -0.5]; for lane 2, d=[0.5, 1.0, 0.0].
+        rt2 = Mooncake.tangent(r2)
+        @test rt2.value == sum(abs2, x)
+        @test rt2.partials[1] ≈ 2 * (1.0 * 1.0 + 2.0 * 0.0 + 3.0 * -0.5)
+        @test rt2.partials[2] ≈ 2 * (1.0 * 0.5 + 2.0 * 1.0 + 3.0 * 0.0)
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

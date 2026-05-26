@@ -20,6 +20,11 @@
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
+function frule!!(
+    ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,Array{NDual{P,N},D}}
+) where {N,P<:IEEEFloat,D}
+    return Lifted{P,N}(sum(primal(x)), sum(tangent(x)))
+end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
     function sum_pb!!(dz::P)
@@ -35,6 +40,13 @@ function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
     return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+end
+function frule!!(
+    ::Lifted{typeof(sum),N},
+    ::Lifted{typeof(abs2),N},
+    x::Lifted{Array{P,D},N,Array{NDual{P,N},D}},
+) where {N,P<:IEEEFloat,D}
+    return Lifted{P,N}(sum(abs2, primal(x)), sum(abs2, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
