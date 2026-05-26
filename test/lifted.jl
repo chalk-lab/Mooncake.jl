@@ -140,6 +140,44 @@ end
         @test a.partials[2][1] === -7.0
     end
 
+    @static if VERSION >= v"1.11-rc4"
+        @testset "NDualMemoryRef (MemoryRef{T<:IEEEFloat})" begin
+            T = Float64
+            N = 2
+            mem = Memory{T}(undef, 3)
+            mem[1] = 1.0
+            mem[2] = 2.0
+            mem[3] = 3.0
+            p = Core.memoryref(mem, 1)
+
+            # Type-level query.
+            @test Mooncake.dual_type(Val(N), MemoryRef{T}) ===
+                Mooncake.NDualMemoryRef{T,N,Memory{T}}
+            @test Mooncake.lifted_type(Val(N), MemoryRef{T}) ===
+                Mooncake.Lifted{MemoryRef{T},N,Mooncake.NDualMemoryRef{T,N,Memory{T}}}
+
+            # Seed factory: zero-init partials at the same offset, slot-local.
+            a = Mooncake.zero_dual(Val(N), p)
+            @test typeof(a) === Mooncake.NDualMemoryRef{T,N,Memory{T}}
+            @test Mooncake.primal(a) === p  # aliases user storage.
+            @test Mooncake.tangent(a) === Mooncake.NTangent(a.partials)
+            @test Mooncake.unpack_ndual(a) === (a.primal, a.partials)
+            @test all(iszero, a.partials[1].mem)
+            @test all(iszero, a.partials[2].mem)
+
+            # Element access via _memoryrefget_ndual.
+            d = Mooncake._memoryrefget_ndual(a, :not_atomic, false)
+            @test typeof(d) === Mooncake.NDual{T,N}
+            @test d.value === 1.0
+            @test d.partials === (0.0, 0.0)
+
+            # Layer-3 wrapped slot.
+            z = Mooncake.zero_lifted(Val(N), p)
+            @test typeof(z) === Mooncake.lifted_type(Val(N), MemoryRef{T})
+            @test Mooncake.primal(z) === p
+        end
+    end
+
     @testset "dual_type / lifted_type (Complex{<:IEEEFloat})" begin
         @test Mooncake.dual_type(Val(2), Complex{Float64}) ===
             Complex{Mooncake.NDual{Float64,2}}

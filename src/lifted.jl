@@ -134,6 +134,51 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
+# `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
+# (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
+# primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
+# cover it. Per dual-types.md §14.2: `partials[k]` is a framework-allocated
+# `MemoryRef` at the same offset as `primal`, into a fresh
+# `Memory{Element}` of the same length.
+# ──────────────────────────────────────────────────────────────────────────
+
+@static if VERSION >= v"1.11-rc4"
+    struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
+        primal::MemoryRef{Element}
+        partials::NTuple{N,MemoryRef{Element}}
+    end
+
+    # Zero-init seed: allocate fresh slot-local partials at the same offset
+    # as `primal`. Element types in `NDualEltype` are bits types, so undef
+    # iteration is not needed (§14.2 vs §14.1.2).
+    @inline function NDualMemoryRef{Element,N,M}(
+        p::MemoryRef{Element}
+    ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+        offset = Core.memoryrefoffset(p)
+        len = length(p.mem)
+        alloc_partial() = (
+            mem=Memory{Element}(undef, len);
+            fill!(mem, zero(Element));
+            Core.memoryref(mem, offset)
+        )
+        return NDualMemoryRef{Element,N,M}(p, ntuple(_ -> alloc_partial(), Val(N)))
+    end
+
+    @inline primal(a::NDualMemoryRef) = a.primal
+    @inline tangent(a::NDualMemoryRef) = NTangent(a.partials)
+    @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials)
+
+    # Element access via Core.memoryref* — `MemoryRef` is not AbstractArray.
+    @inline function _memoryrefget_ndual(
+        a::NDualMemoryRef{Element,N}, order::Symbol, boundscheck::Bool
+    ) where {Element<:IEEEFloat,N}
+        v = Core.memoryrefget(a.primal, order, boundscheck)
+        parts = ntuple(k -> Core.memoryrefget(a.partials[k], order, boundscheck), Val(N))
+        return NDual{Element,N}(v, parts)
+    end
+end
+
+# ──────────────────────────────────────────────────────────────────────────
 # Width-N `dual_type` and `lifted_type` queries.
 #
 # `dual_type(Val(N), P)` returns the canonical inner V for a primal of
@@ -175,8 +220,8 @@ Shapes defined so far:
   where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
 - Concrete struct `P` (mutable): `MutableDual{NamedTuple{...}}` — mutable
   counterpart for in-place tangent updates.
-
-Other primal shapes (MemoryRef, …) are added in follow-up commits.
+- `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
+  `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (§14.2).
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
@@ -196,6 +241,12 @@ end
 end
 @inline function dual_type(::Val{N}, ::Type{NamedTuple{names,T}}) where {N,names,T<:Tuple}
     return NamedTuple{names,dual_type(Val(N), T)}
+end
+# MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
+@static if VERSION >= v"1.11-rc4"
+    @inline function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
+        return NDualMemoryRef{T,N,Memory{T}}
+    end
 end
 
 # Recursive structural lift for concrete struct primals — the @generated
@@ -231,6 +282,8 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}}}`.
+- `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
+  `Lifted{MemoryRef{T}, N, NDualMemoryRef{T, N, Memory{T}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
 - `P <: NamedTuple{names, <:Tuple}`: `Lifted{P, N, dual_type(Val(N), P)}`.
 - Concrete struct `P`: `Lifted{P, N, dual_type(Val(N), P)}` where the inner
@@ -251,8 +304,15 @@ end
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
+# MemoryRef canonical lift (Julia 1.11+).
+@static if VERSION >= v"1.11-rc4"
+    @inline function lifted_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
+        return Lifted{MemoryRef{T},N,NDualMemoryRef{T,N,Memory{T}}}
+    end
+end
 # Concrete-struct fallback. More-specific overloads above (IEEEFloat,
-# Complex, Array, Tuple, NamedTuple) win when applicable; structs land here.
+# Complex, Array, Tuple, NamedTuple, MemoryRef) win when applicable;
+# structs land here.
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
@@ -446,4 +506,18 @@ end
 end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     return Lifted{P,N}(x, randn_dual(w, rng, x))
+end
+
+# ── MemoryRef seed factories (Julia 1.11+) ──────────────────────────────────
+#
+# `uninit_dual` / `randn_dual` for MemoryRef are deferred — `zero_dual` is
+# the canonical entry point per §14.2 (bits-element dense zero-init).
+
+@static if VERSION >= v"1.11-rc4"
+    @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
+        return NDualMemoryRef{T,N,Memory{T}}(p)
+    end
+    @inline function zero_lifted(w::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
+        return Lifted{MemoryRef{T},N}(p, zero_dual(w, p))
+    end
 end
