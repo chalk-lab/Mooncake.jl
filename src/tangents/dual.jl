@@ -87,3 +87,57 @@ end
 function Dual(x::Type{P}, dx::NoTangent) where {P}
     return Dual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(x, dx)
 end
+
+# ── Structural-lift wrappers ─────────────────────────────────────────────────
+#
+# `ImmutableDual{T<:NamedTuple}` and `MutableDual{T<:NamedTuple}` are
+# single-field wrappers used as the canonical V for concrete struct primals
+# under the forward-mode structural lift. They mirror reverse mode's
+# `Tangent{Tfields<:NamedTuple}` / `MutableTangent{Tfields<:NamedTuple}` split:
+# `ImmutableDual` is the immutable variant (for immutable struct primals),
+# `MutableDual` is the mutable variant (for mutable struct primals; the
+# mutability is load-bearing for the `MutableDualTangentView` proxy that
+# writes back to the parent via `setfield!`).
+#
+# Both wrappers hold the recursive NamedTuple of canonical field Vs in their
+# `value` field. The slot-level primal back-reference lives in the outer
+# `Lifted{P, N, V}` wrapper (defined elsewhere), not inside these V wrappers.
+#
+# See AGENTS.md (Working Conventions) and the design notes referenced under
+# the Documentation section there for the full specification.
+
+"""
+    ImmutableDual{T<:NamedTuple}
+
+Single-field immutable wrapper used as the canonical V for *immutable struct*
+primals under the forward-mode structural lift. Its `value::T` field holds
+the recursive `NamedTuple{fieldnames(P), Tuple{V_i...}}` of canonical field
+Vs, where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
+
+Mirrors reverse-mode `Tangent{Tfields<:NamedTuple}`: same single-field shape,
+immutable variant. The slot-level primal back-reference lives in the outer
+`Lifted{P, N, V}` wrapper.
+"""
+struct ImmutableDual{T<:NamedTuple}
+    value::T
+end
+
+Base.:(==)(x::ImmutableDual, y::ImmutableDual) = x.value == y.value
+
+"""
+    MutableDual{T<:NamedTuple}
+
+Single-field mutable wrapper used as the canonical V for *mutable struct*
+primals under the forward-mode structural lift. Counterpart to
+`ImmutableDual`; its mutability is load-bearing for the
+`MutableDualTangentView` proxy that writes back to `value` via `setfield!`.
+
+Mirrors reverse-mode `MutableTangent{Tfields<:NamedTuple}`: same single-field
+shape, mutable variant. The slot-level primal back-reference lives in the
+outer `Lifted{P, N, V}` wrapper.
+"""
+mutable struct MutableDual{T<:NamedTuple}
+    value::T
+end
+
+Base.:(==)(x::MutableDual, y::MutableDual) = x.value == y.value
