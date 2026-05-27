@@ -1211,6 +1211,8 @@ function frule!!(
         return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
     end
 end
+# Lifted 2-arg parallel lives in memory.jl (delegates to `lgetfield`, which
+# has the generic Lifted body via `_get_lifted_field` in misc.jl).
 function frule!!(
     ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
 ) where {P}
@@ -1222,6 +1224,19 @@ function frule!!(
         y = getfield(primal(x), _name, _inbounds)
         dy = _get_tangent_field(tangent(x), _name, _inbounds)
         return Dual(y, dy)
+    end
+end
+function frule!!(
+    ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
+) where {Nw}
+    _name = primal(name)
+    _inbounds = primal(inbounds)
+    y = getfield(primal(x), _name, _inbounds)
+    P = _typeof(primal(x))
+    if tangent_type(P) == NoTangent
+        return Lifted{_typeof(y),Nw}(y, NoDual())
+    else
+        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
 end
 function rrule!!(
@@ -1379,6 +1394,15 @@ function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
         return zero_dual(primal_output)
     else
         return Dual(primal_output, tuple(map(tangent, args)...))
+    end
+end
+function frule!!(f::Lifted{typeof(tuple),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    primal_output = tuple(tuple_map(primal, args)...)
+    P_out = _typeof(primal_output)
+    if dual_type(Val(Nw), P_out) === NoDual
+        return Lifted{P_out,Nw}(primal_output, NoDual())
+    else
+        return Lifted{P_out,Nw}(primal_output, tuple_map(tangent, args))
     end
 end
 
