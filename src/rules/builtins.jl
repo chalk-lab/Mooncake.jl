@@ -238,6 +238,20 @@ function frule!!(
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
+# Ptr tangents require canonical V infrastructure that's not yet built;
+# defer this rule with a clear error until Ptr V lands.
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    ::Lifted{<:Ptr{T},Nw},
+    ::Lifted,
+) where {Nw,T}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(unsafe_wrap)}, …) deferred — needs Ptr canonical V."
+        ),
+    )
+end
 
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
@@ -264,6 +278,15 @@ function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(primal(p), primal(x), primal(order))
     atomic_pointerset(tangent(p), tangent(x), primal(order))
     return p
+end
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw}, p::Lifted, x::Lifted, order::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(atomic_pointerset)}, …) deferred — needs Ptr canonical V.",
+        ),
+    )
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
@@ -306,6 +329,22 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
         dv = NoTangent()
     end
     return Dual(v, dv)
+end
+function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
+    if T <: IEEEFloat
+        msg =
+            "It is not permissible to bitcast to a differentiable type during AD, as " *
+            "this risks dropping tangents, and therefore risks silently giving the wrong " *
+            "answer. If this call to bitcast appears as part of the implementation of a " *
+            "differentiable function, you should write a rule for this function, or modify " *
+            "its implementation to avoid the bitcast."
+        throw(ArgumentError(msg))
+    end
+    v = bitcast(T, primal(x))
+    # Ptr-cast tangent path needs Ptr canonical V — return NoTangent for now;
+    # the bare-Dual rule preserves the bitcast pointer when both T and primal
+    # are Ptr, which can be wired up after Ptr V lands.
+    return Lifted{typeof(v),Nw}(v, NoTangent())
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -362,6 +401,10 @@ function Mooncake._is_primitive(
     ::Type{MinimalCtx}, ::Type{<:Mode}, ::Type{<:Tuple{typeof(__cglobal),Vararg}}
 )
     return true
+end
+function frule!!(::Lifted{typeof(__cglobal),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = __cglobal(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
 end
 function frule!!(::Dual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
@@ -721,6 +764,15 @@ function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     da = pointerref(tangent(x), primal(y), primal(z))
     return Dual(a, da)
 end
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw}, x::Lifted, y::Lifted, z::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(pointerref)}, …) deferred — needs Ptr canonical V."
+        ),
+    )
+end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -739,6 +791,15 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw}, p::Lifted, x::Lifted, idx::Lifted, z::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(pointerset)}, …) deferred — needs Ptr canonical V."
+        ),
+    )
+end
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     pointerset(tangent(p), tangent(x), primal(idx), primal(z))
@@ -780,6 +841,14 @@ function frule!!(::Dual{typeof(sqrt_llvm)}, x)
     dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
+) where {Nw,T<:IEEEFloat}
+    # NDual.sqrt overload (Nfwd.jl) applies _pt_guarded_scale — the NDual
+    # analogue of nan_tangent_guard — so the singular `sqrt(0)` case has
+    # zeroed partials instead of NaN.
+    return Lifted{T,Nw}(sqrt_llvm(primal(x)), sqrt(tangent(x)))
+end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
     function llvm_sqrt_pullback!!(dy)
@@ -795,6 +864,11 @@ function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
     y = sqrt_llvm_fast(_x)
     dy = nan_tangent_guard(dx, dx / (2 * y))
     return Dual(y, dy)
+end
+function frule!!(
+    ::Lifted{typeof(sqrt_llvm_fast),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
+) where {Nw,T<:IEEEFloat}
+    return Lifted{T,Nw}(sqrt_llvm_fast(primal(x)), sqrt(tangent(x)))
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
@@ -898,6 +972,19 @@ function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
         return Dual(x, __vec_to_tuple(tangent(v)))
     end
 end
+# Lifted parallel — for `Vector{T<:IEEEFloat}`, the slot's V is an
+# NDualArray; iterate via `getindex` (which returns NDual elements) and
+# build the tuple V from per-element NDuals.
+function frule!!(
+    ::Lifted{typeof(__vec_to_tuple),Nw},
+    v::Lifted{Vector{T},Nw,NDualArray{T,Nw,1,Vector{T},NDual{T,Nw}}},
+) where {Nw,T<:IEEEFloat}
+    x = __vec_to_tuple(primal(v))
+    # __vec_to_tuple on NDualArray iterates the AbstractArray interface
+    # producing NDual elements — yields a Tuple{NDual{T,Nw}, …}.
+    tv = __vec_to_tuple(tangent(v))
+    return Lifted{typeof(x),Nw}(x, tv)
+end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)
@@ -996,12 +1083,20 @@ end
 function frule!!(::Dual{typeof(Core._typevar)}, args...)
     return zero_dual(Core._typevar(map(primal, args)...))
 end
+function frule!!(::Lifted{typeof(Core._typevar),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = Core._typevar(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
 function frule!!(::Dual{typeof(Core.apply_type)}, args...)
     return zero_dual(Core.apply_type(map(primal, args)...))
+end
+function frule!!(::Lifted{typeof(Core.apply_type),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = Core.apply_type(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
 end
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
@@ -1013,6 +1108,12 @@ function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual
         compilerbarrier(primal(setting), primal(v)),
         compilerbarrier(primal(setting), tangent(v)),
     )
+end
+function frule!!(
+    ::Lifted{typeof(compilerbarrier),Nw}, setting::Lifted{Symbol,Nw}, v::Lifted{P,Nw,V}
+) where {Nw,P,V}
+    s = primal(setting)
+    return Lifted{P,Nw}(compilerbarrier(s, primal(v)), compilerbarrier(s, tangent(v)))
 end
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
@@ -1026,6 +1127,17 @@ end
 function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
     _cond = primal(cond)
     return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
+end
+function frule!!(
+    ::Lifted{typeof(Core.ifelse),Nw},
+    cond::Lifted{Bool,Nw},
+    a::Lifted{P,Nw,V},
+    b::Lifted{P,Nw,V},
+) where {Nw,P,V}
+    _c = primal(cond)
+    return Lifted{P,Nw}(
+        ifelse(_c, primal(a), primal(b)), ifelse(_c, tangent(a), tangent(b))
+    )
 end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
@@ -1162,6 +1274,21 @@ is_homogeneous_and_immutable(::Any) = false
 
 # replacefield!
 
+function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted, name::Lifted, x::Lifted
+) where {Nw}
+    # Mirrors the bare-Dual `lsetfield_frule` body via `setfield!` + tangent
+    # write. `setproperty!` on a MutableDualTangentView routes through the
+    # slot's parent — needed when `value` is a mutable struct slot.
+    nm = primal(name)
+    setfield!(primal(value), nm, primal(x))
+    # If `value`'s V isn't `NoTangent`, propagate the tangent into its lane.
+    tv = tangent(value)
+    if !(tv === NoTangent())
+        setproperty!(tv, nm, tangent(x))
+    end
+    return x
+end
 function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
     literal_name = zero_dual(Val(primal(name)))
     return frule!!(zero_dual(lsetfield!), value, literal_name, x)
@@ -1191,6 +1318,12 @@ end
     end
 end
 
+function frule!!(
+    ::Lifted{typeof(Core.throw_inexacterror),Nw}, args::Vararg{Lifted,M}
+) where {Nw,M}
+    # Throws regardless — replicate via bare-Dual call on primal args.
+    return Core.throw_inexacterror(tuple_map(primal, args)...)
+end
 function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
     Core.throw_inexacterror(map(primal, args)...)
 end
@@ -1237,6 +1370,11 @@ end
 
 function frule!!(::Dual{typeof(typeassert)}, x::Dual, type::Dual)
     return Dual(typeassert(primal(x), primal(type)), tangent(x))
+end
+function frule!!(
+    ::Lifted{typeof(typeassert),Nw}, x::Lifted{P,Nw,V}, type::Lifted
+) where {Nw,P,V}
+    return Lifted{P,Nw}(typeassert(primal(x), primal(type)), tangent(x))
 end
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
