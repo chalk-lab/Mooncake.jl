@@ -103,7 +103,7 @@ function frule!!(
     for lane in 1:N
         Base._deletebeg!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -142,7 +142,7 @@ function frule!!(
     for lane in 1:N
         Base._deleteend!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -195,7 +195,7 @@ function frule!!(
     for lane in 1:N
         Base._deleteat!(tangent(a).partials[lane], i_p, d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
@@ -242,7 +242,7 @@ function frule!!(
     for lane in 1:N
         Base._growbeg!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -276,7 +276,7 @@ function frule!!(
     for lane in 1:N
         Base._growend!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -314,7 +314,7 @@ function frule!!(
     for lane in 1:N
         Base._growat!(tangent(a).partials[lane], i_p, d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoTangent())
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -629,7 +629,7 @@ function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
 end
 function frule!!(::Lifted{typeof(Core.arraysize),N}, X::Lifted, dim::Lifted) where {N}
     y = Core.arraysize(primal(X), primal(dim))
-    return Lifted{typeof(y),N}(y, NoTangent())
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)

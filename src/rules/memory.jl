@@ -876,7 +876,7 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,name,order}
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -910,7 +910,7 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,name,order}
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -942,7 +942,7 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,D,name,order}
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -987,14 +987,14 @@ end
 function frule!!(
     ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, order::Lifted{Symbol}
 ) where {Nw}
-    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoTangent())
+    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual())
     name_v = Val(primal(name))
     ord_v = Val(primal(order))
     return frule!!(
         lg,
         x,
-        Lifted{typeof(name_v),Nw}(name_v, NoTangent()),
-        Lifted{typeof(ord_v),Nw}(ord_v, NoTangent()),
+        Lifted{typeof(name_v),Nw}(name_v, NoDual()),
+        Lifted{typeof(ord_v),Nw}(ord_v, NoDual()),
     )
 end
 function rrule!!(
@@ -1021,9 +1021,9 @@ function frule!!(
     return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
 end
 function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
-    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoTangent())
+    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual())
     name_v = Val(primal(name))
-    return frule!!(lg, x, Lifted{typeof(name_v),Nw}(name_v, NoTangent()))
+    return frule!!(lg, x, Lifted{typeof(name_v),Nw}(name_v, NoDual()))
 end
 function rrule!!(
     f::CoDual{typeof(getfield)},

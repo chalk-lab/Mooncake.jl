@@ -70,7 +70,7 @@ function frule!!(
     ::Lifted{Val{:ccall},Nw},
 ) where {Nw}
     y = ccall(:jl_generating_output, Cint, ())
-    return Lifted{Cint,Nw}(y, NoTangent())
+    return Lifted{Cint,Nw}(y, NoDual())
 end
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)},

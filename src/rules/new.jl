@@ -43,7 +43,7 @@ end
     elseif isprimitivetype(P) || fieldcount(P) == 0
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            return Lifted{P,Nw}(y, NoTangent())
+            return Lifted{P,Nw}(y, NoDual())
         end
     else
         names = fieldnames(P)

@@ -284,7 +284,7 @@ function frule!!(
     GC.@preserve args begin
         y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
     end
-    return Lifted{Cint,Nw}(y, NoTangent())
+    return Lifted{Cint,Nw}(y, NoDual())
 end
 
 function rrule!!(
@@ -327,7 +327,7 @@ function frule!!(
     b::Lifted,
 ) where {Nw}
     y = ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -379,7 +379,7 @@ function frule!!(
 ) where {Nw,M}
     y = _foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...)
     # Returns a `Ptr{UInt8}` — tangent is structurally non-differentiable.
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 
 function rrule!!(
@@ -404,7 +404,7 @@ for name in (:jl_get_world_counter, :jl_matching_methods)
         args::Vararg{Lifted,M},
     ) where {Nw,M}
         y = _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
-        return Lifted{typeof(y),Nw}(y, NoTangent())
+        return Lifted{typeof(y),Nw}(y, NoDual())
     end
     @eval function rrule!!(
         f::CoDual{typeof(_foreigncall_)},

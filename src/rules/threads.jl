@@ -8,7 +8,7 @@ end
 # Bool, etc.). Width N comes from the per-rule signature below.
 @inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
     y = _foreigncall_(name, tuple_map(primal, args)...)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 
 function _threading_foreigncall_rrule()

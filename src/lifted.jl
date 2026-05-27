@@ -35,6 +35,21 @@ struct Lifted{P,N,V}
     value::V
 end
 
+"""
+    NoDual
+
+Forward-mode sentinel for "this slot has no derivative". Used as the
+`V` of `Lifted{P, N, V}` and as the return of `dual_type(Val(N), P)` for
+primal types without a meaningful tangent space (integers, booleans,
+symbols, modules, types, …).
+
+Parallels reverse-mode's `NoTangent` but lives in the forward-mode V
+layer so the dual_type return shape is self-documenting. The two are
+intentionally distinct types so a code path's mode (forward vs reverse)
+is visible from its argument types.
+"""
+struct NoDual end
+
 # Two-argument constructor with V inferred from typeof(value). The
 # canonical wrapping path: `value` is already a built inner V of the
 # correct shape; this overload just wraps the (primal, value) pair.
@@ -281,6 +296,18 @@ Shapes defined so far:
   `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (§14.2).
 """
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
+# Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
+# in reverse mode, returning the forward-mode V sentinel `NoDual`.
+@inline dual_type(::Val{N}, ::Type{<:Integer}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Char}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Symbol}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Nothing}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{<:Type}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{<:TypeVar}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Module}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Expr}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Cstring}) where {N} = NoDual
+@inline dual_type(::Val{N}, ::Type{Cwstring}) where {N} = NoDual
 @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}
 end

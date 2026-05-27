@@ -305,7 +305,7 @@ end
         a::Lifted{<:Memory},
     ) where {Nw}
         y = ccall(:jl_genericmemory_owner, Any, (Any,), primal(a))
-        return Lifted{typeof(y),Nw}(y, NoTangent())
+        return Lifted{typeof(y),Nw}(y, NoDual())
     end
     function rrule!!(
         ::CoDual{typeof(_foreigncall_)},

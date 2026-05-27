@@ -107,7 +107,7 @@ end
 # the result V is `NoTangent` regardless of input shape.
 function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
     p = primal(x)
-    return Lifted{typeof(p),Nw}(p, NoTangent())
+    return Lifted{typeof(p),Nw}(p, NoDual())
 end
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
@@ -165,7 +165,7 @@ end
 @inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = getfield(
     getfield(V, :value), name
 )
-@inline _get_lifted_field(::NoTangent, _) = NoTangent()
+@inline _get_lifted_field(::NoDual, _) = NoDual()
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)

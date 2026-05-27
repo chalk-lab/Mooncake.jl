@@ -356,7 +356,7 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
     # Ptr-cast tangent path needs Ptr canonical V — return NoTangent for now;
     # the bare-Dual rule preserves the bitcast pointer when both T and primal
     # are Ptr, which can be wired up after Ptr V lands.
-    return Lifted{typeof(v),Nw}(v, NoTangent())
+    return Lifted{typeof(v),Nw}(v, NoDual())
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -416,7 +416,7 @@ function Mooncake._is_primitive(
 end
 function frule!!(::Lifted{typeof(__cglobal),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     y = __cglobal(tuple_map(primal, args)...)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function frule!!(::Dual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
@@ -1112,7 +1112,7 @@ function frule!!(::Dual{typeof(Core._typevar)}, args...)
 end
 function frule!!(::Lifted{typeof(Core._typevar),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     y = Core._typevar(tuple_map(primal, args)...)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
@@ -1123,7 +1123,7 @@ function frule!!(::Dual{typeof(Core.apply_type)}, args...)
 end
 function frule!!(::Lifted{typeof(Core.apply_type),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     y = Core.apply_type(tuple_map(primal, args)...)
-    return Lifted{typeof(y),Nw}(y, NoTangent())
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
