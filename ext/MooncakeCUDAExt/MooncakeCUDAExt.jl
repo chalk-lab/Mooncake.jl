@@ -1232,6 +1232,15 @@ function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     dx isa NoFData || unsafe_free!(dx)
     return Dual(nothing, NoTangent())
 end
+function frule!!(
+    ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,<:NDualArray}
+) where {Nw}
+    unsafe_free!(primal(x))
+    for partial in tangent(x).partials
+        unsafe_free!(partial)
+    end
+    return Lifted{Nothing,Nw}(nothing, NoDual())
+end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
     unsafe_free!(primal(x))
     dx = tangent(x)
@@ -1247,6 +1256,10 @@ function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
     Core.finalizer(primal(f), primal(x))
     return Dual(nothing, NoTangent())
 end
+function frule!!(::Lifted{typeof(Core.finalizer),Nw}, f::Lifted, x::Lifted) where {Nw}
+    Core.finalizer(primal(f), primal(x))
+    return Lifted{Nothing,Nw}(nothing, NoDual())
+end
 function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
     Core.finalizer(primal(f), primal(x))
     return CoDual(nothing, NoFData()), _nopb(Val(3))
@@ -1259,6 +1272,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
 function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
     return Dual(hasfieldcount(primal(T)), NoTangent())
+end
+function frule!!(::Lifted{typeof(hasfieldcount),Nw}, T::Lifted{<:Type}) where {Nw}
+    return Lifted{Bool,Nw}(hasfieldcount(primal(T)), NoDual())
 end
 function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
     return CoDual(hasfieldcount(primal(T)), NoFData()), _nopb(Val(2))
@@ -1280,6 +1296,24 @@ function frule!!(
     fill!(primal(a), primal(x))
     tx = tangent(x)
     fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    return a
+end
+function frule!!(
+    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}, x::Lifted
+) where {Nw}
+    fill!(primal(a), primal(x))
+    a_partials = tangent(a).partials
+    Eout = eltype(a_partials[1])
+    x_v = tangent(x)
+    if x_v isa NoDual
+        for partial in a_partials
+            fill!(partial, zero(Eout))
+        end
+    else
+        @inbounds for lane in 1:Nw
+            fill!(a_partials[lane], Eout(x_v.partials[lane]))
+        end
+    end
     return a
 end
 function rrule!!(
