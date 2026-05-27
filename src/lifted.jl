@@ -458,6 +458,19 @@ end
     return NDual{T,N}(x, ntuple(_ -> randn(rng, T), Val(N)))
 end
 
+# Non-differentiable primitives — mirrors `dual_type(Val(N), T) === NoDual`
+# above. Without these the @generated struct-lift fallback errors on
+# primitive `T` (Int, Symbol, …), blocking `zero_lifted(Val(N), 42)` etc.
+# at the interpreter boundary.
+for f in (:zero_dual, :uninit_dual)
+    @eval @inline $f(::Val{N}, ::Union{Integer,Char,Symbol,Nothing}) where {N} = NoDual()
+    @eval @inline $f(::Val{N}, ::Union{Type,TypeVar,Module,Expr}) where {N} = NoDual()
+    @eval @inline $f(::Val{N}, ::Union{Cstring,Cwstring}) where {N} = NoDual()
+end
+@inline randn_dual(::Val{N}, ::AbstractRNG, ::Union{Integer,Char,Symbol,Nothing}) where {N} = NoDual()
+@inline randn_dual(::Val{N}, ::AbstractRNG, ::Union{Type,TypeVar,Module,Expr}) where {N} = NoDual()
+@inline randn_dual(::Val{N}, ::AbstractRNG, ::Union{Cstring,Cwstring}) where {N} = NoDual()
+
 # ── Array seed factories (T <: IEEEFloat) ───────────────────────────────────
 #
 # Build an `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}` whose `primal` aliases
