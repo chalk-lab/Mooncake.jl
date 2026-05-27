@@ -10,6 +10,8 @@ import ..DefaultCtx
 import .._foreigncall_
 import ..CoDual
 import ..Dual
+import ..Lifted
+import ..primal
 import ..NoTangent
 import ..NoPullback
 import ..zero_fcodual
@@ -58,6 +60,17 @@ function frule!!(
     ::Dual{Val{:ccall}},
 )
     return Dual(ccall(:jl_generating_output, Cint, ()), NoTangent())
+end
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_generating_output},Nw},
+    ::Lifted{Val{Cint},Nw},
+    ::Lifted{Tuple{},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+) where {Nw}
+    y = ccall(:jl_generating_output, Cint, ())
+    return Lifted{Cint,Nw}(y, NoTangent())
 end
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)},

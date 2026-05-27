@@ -40,6 +40,20 @@ for f in [rand!, randn!, randexp!]
         tangent(x) .= 0
         return x
     end
+    # `$f` is non-differentiable — it overwrites the primal with new random
+    # values; the output doesn't depend on input tangents. Write the new
+    # primal once, then zero each lane's partial.
+    @eval function frule!!(
+        ::Lifted{typeof($f),Nw},
+        rng::Lifted{<:SpecialisedRNGs},
+        x::Lifted{
+            Array{Float64,D},Nw,NDualArray{Float64,Nw,D,Array{Float64,D},NDual{Float64,Nw}}
+        },
+    ) where {Nw,D}
+        $f(primal(rng), primal(x))
+        foreach(p -> fill!(p, 0.0), tangent(x).partials)
+        return x
+    end
     @eval function rrule!!(
         ::CoDual{typeof($f)}, rng::CoDual{<:SpecialisedRNGs}, x::CoDual{<:Array{Float64}}
     )
