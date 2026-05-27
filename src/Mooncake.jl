@@ -59,25 +59,6 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`
 function frule!! end
 
 """
-    _fcache_derivative_chunked!!(
-        cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
-    )
-
-Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
-forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
-  user provides chunk tangents.
-- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `_fcache_derivative_chunked!!` and accumulates the lane
-  contributions into gradient buffers.
-
-The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
-"""
-function _fcache_derivative_chunked!! end
-
-"""
     build_primitive_frule(sig::Type{<:Tuple})
 
 Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
@@ -188,17 +169,33 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
-include(joinpath("interpreter", "forward_mode.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
+include(joinpath("interpreter", "primal_mode.jl"))
 end
 
 include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
-include("interface.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
+
 include(joinpath("nfwd", "NfwdMooncake.jl"))
+
+# NDual container dispatch helpers (and the `_HasNDual` alias) live in
+# `NfwdMooncake.jl`. Bring them into the `Mooncake` namespace so rule files can
+# reference them by bare name. `import` (rather than `using`) is required so
+# rule files can extend `_uninit_dual` with bare-name `function` syntax.
+import .NfwdMooncake:
+    _has_ndual,
+    _dual_or_ndual,
+    _ndual_width,
+    _ndual_primal,
+    _tangent_dir,
+    _tangent_dir_elem,
+    _find_ndual_memref,
+    _HasNDual
+
+include("interface.jl")
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))

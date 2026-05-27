@@ -72,6 +72,12 @@ function frule!!(
     dy = getfield(tangent(x), FieldName)
     return Dual(y, dy)
 end
+# Bare Complex{NDual} — tangent info lives inside NDual elements.
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::Complex{<:NDual}, ::Dual{Val{FieldName}}
+) where {FieldName}
+    return getfield(x, FieldName)
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     obj_cd::CoDual{<:CF,<:CF},

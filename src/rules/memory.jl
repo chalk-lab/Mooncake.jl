@@ -1,18 +1,17 @@
-# This file was introduced as part of the transition from 1.10 to 1.11. Its purpose is to
-# ensure that Mooncake can handle the new implementation of `Array`s. This implementation
-# relies on the new `Memory` and `MemoryRef` types (aliases for specific parametrisations of
-# `GenericMemory` and `GenericMemoryRef`). Consequently, the code here will make little
-# sense unless you are familiar with these types, and how they relate to `Array`s.
-# Fortunately, Oscar Smith and Jameson Nash gave an excellent talk at JuliaCon 2024 on
-# exactly this topic, which you can find here: https://www.youtube.com/watch?v=L6BFQ1d8xNs .
+# Rules and tangent support for Julia's `Memory` / `MemoryRef`-backed `Array`
+# implementation. This file also carries the branch-specific NDual container overloads
+# needed for primal-mode forward execution on `Memory`-backed storage.
 
 #
 # Memory
 #
 
-# Tangent Interface Implementation
+# NDual dispatch helpers for Memory / MemoryRef, the `_uninit_dual` Memory
+# container overloads, and the `zero_derivative` Memory-container method all
+# live in `nfwd/NfwdMooncake.jl` so that all NDual / Memory dual-dispatch
+# entry points sit in one file.
 
-const Maybe{T} = Union{Nothing,T}
+# Tangent Interface Implementation
 
 @foldable tangent_type(::Type{<:Memory{P}}) where {P} = Memory{tangent_type(P)}
 
@@ -639,6 +638,11 @@ function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
     x = Memory{P}(undef, primal(n))
     return Dual(x, zero_tangent_internal(x, NoCache()))
 end
+function frule!!(
+    ::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}
+) where {P<:Union{NDual,Complex{<:NDual}}}
+    return Memory{P}(undef, primal(n))
+end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
@@ -896,6 +900,130 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return a, fill!_pullback!!
+end
+
+# NDual container frule!! overloads — containers of NDual elements carry tangent info
+# inside the elements; the container tangent is NoTangent. These dispatch on the NDual
+# element type to avoid calling memoryrefnew/memoryrefget on NoTangent.
+# _HasNDual is defined in NfwdMooncake.jl and re-exported through Mooncake.
+#
+# Each operation has both a `Dual{<:Container{<:_HasNDual}}` form and a bare
+# `Container{<:_HasNDual}` form. They serve different callers:
+#  - The bare form is what the primal-mode lifted IR dispatches to: arguments flow
+#    as bare typed SSAValues whose static type already encodes NDual elements (see
+#    `_lift_type` in primal_mode.jl), so inliner picks this overload at compile time.
+#  - The `Dual{...}` form is the stable user-facing frule!! interface — present so
+#    that direct `frule!!(zero_dual(f), zero_dual(container))` calls outside the
+#    lifted IR (e.g. from custom rule chains or test harnesses) still resolve.
+#    TODO: this user-facing entry point is hard to drive at width N because
+#    `zero_dual` is currently width-1 only — `zero_dual(x::IEEEFloat)` returns a
+#    bare `Dual{Float64,Float64}`, not `dual_type(Val(N), Float64) = NDual{T,N}`.
+#    Making `zero_dual` width-aware (e.g. `zero_dual(::Val{N}, x)`) so its output
+#    matches `dual_type(Val(N), typeof(x))` would close this gap and let user
+#    code construct width-N seeds without reaching into NDual constructors.
+#    Tracked in pr1151.md.
+# Aqua confirms no ambiguities between the pair (`Aqua.test_ambiguities([Mooncake])`).
+
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
+    ref::Dual{<:MemoryRef{<:_HasNDual}},
+    ordering::Dual{<:Val},
+    boundscheck::Dual{<:Val},
+)
+    return memoryrefget(primal(ref), _val(primal(ordering)), _val(primal(boundscheck)))
+end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefget)},
+    ref::MemoryRef{<:_HasNDual},
+    ordering::Dual{<:Val},
+    boundscheck::Dual{<:Val},
+)
+    return memoryrefget(ref, _val(primal(ordering)), _val(primal(boundscheck)))
+end
+
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    ref::Dual{<:MemoryRef{<:_HasNDual},NoTangent},
+    value,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {ordering,boundscheck}
+    memoryrefset!(primal(ref), value, ordering, boundscheck)
+    return value
+end
+@inline function frule!!(
+    ::Dual{typeof(lmemoryrefset!)},
+    ref::MemoryRef{<:_HasNDual},
+    value,
+    ::Dual{Val{ordering}},
+    ::Dual{Val{boundscheck}},
+) where {ordering,boundscheck}
+    memoryrefset!(ref, value, ordering, boundscheck)
+    return value
+end
+
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory{<:_HasNDual}})
+    return Dual(memoryrefnew(primal(x)), NoTangent())
+end
+@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Memory{<:_HasNDual})
+    return memoryrefnew(x)
+end
+
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef{<:_HasNDual}}, ii::Dual{Int}
+)
+    return Dual(memoryrefnew(primal(x), primal(ii)), NoTangent())
+end
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)}, x::MemoryRef{<:_HasNDual}, ii::Dual{Int}
+)
+    return memoryrefnew(x, primal(ii))
+end
+
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)},
+    x::Dual{<:MemoryRef{<:_HasNDual}},
+    ii::Dual{Int},
+    boundscheck::Dual{Bool},
+)
+    return Dual(memoryrefnew(primal(x), primal(ii), primal(boundscheck)), NoTangent())
+end
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)},
+    x::MemoryRef{<:_HasNDual},
+    ii::Dual{Int},
+    boundscheck::Dual{Bool},
+)
+    return memoryrefnew(x, primal(ii), primal(boundscheck))
+end
+
+function frule!!(::Dual{typeof(copy)}, a::Dual{<:Array{<:_HasNDual}})
+    return copy(primal(a))
+end
+frule!!(::Dual{typeof(copy)}, a::Array{<:_HasNDual}) = copy(a)
+
+# lgetfield for bare NDual containers — tangent info lives in NDual elements, so all
+# field tangents are NoTangent.
+const _NDualMemTypes = Union{Memory{<:_HasNDual},MemoryRef{<:_HasNDual},Array{<:_HasNDual}}
+
+@inline function frule!!(
+    ::Dual{typeof(lgetfield)}, x::_NDualMemTypes, ::Dual{Val{name}}, ::Dual{Val{order}}
+) where {name,order}
+    return Dual(getfield(x, name, order), NoTangent())
+end
+
+@inline function frule!!(f::Dual{typeof(lgetfield)}, x::_NDualMemTypes, name::Dual{<:Val})
+    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
+end
+
+# getfield for bare NDual containers (compiler emits getfield, not lgetfield).
+@inline function frule!!(::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual)
+    return getfield(x, primal(name))
+end
+@inline function frule!!(
+    ::Dual{typeof(getfield)}, x::_NDualMemTypes, name::Dual, order::Dual
+)
+    return getfield(x, primal(name), primal(order))
 end
 
 # Test cases

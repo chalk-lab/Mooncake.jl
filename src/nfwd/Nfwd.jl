@@ -51,10 +51,8 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
 `Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
+provides primitive scalar frule/rrule support via NDual lifting.
 """
 module Nfwd
 
@@ -196,7 +194,7 @@ and handle the wrapping / gradient extraction in `_leaf_effective_tangent`,
 
 ### Background: Mooncake forward mode is width-1
 
-Mooncake's forward mode computes one JVP per pass. `DerivedFRule` is called **once**
+Mooncake's forward mode computes one JVP per pass. `DerivedPrimal` is called **once**
 with all arguments seeded simultaneously:
 
 ```julia
@@ -234,7 +232,7 @@ seed_ntangent(::Val{N}, ::Type{T}, k::Int) where {N,T<:IEEEFloat} =
     NDual{T,N}(zero(T), ntuple(i -> i == k ? one(T) : zero(T), Val(N)))
 ```
 
-**The transform change is surgical**: `generate_dual_ir` calls `dual_type(P)` at 7
+**The transform change is surgical**: `generate_lifted_ir` calls `dual_type(P)` at 7
 sites to assign IR argument types.  Threading the mode through those calls is the only
 required modification — all statement rewriting (PhiNode, ReturnNode, GotoIfNot, …) is
 tangent-type-agnostic.  `is_primitive` dispatch is unchanged (it operates on primal

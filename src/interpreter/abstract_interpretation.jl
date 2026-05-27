@@ -84,6 +84,9 @@ context_type(::MooncakeInterpreter{C}) where {C} = C
 CC.InferenceParams(interp::MooncakeInterpreter) = interp.inf_params
 CC.OptimizationParams(interp::MooncakeInterpreter) = interp.opt_params
 CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
+# ForwardMode / ReverseMode use Mooncake's own code cache and overlay method table.
+# PrimalMode overrides below delegate to BugPatchInterpreter (native Julia code cache)
+# so that the inliner sees frule!! method bodies directly.
 function CC.code_cache(interp::MooncakeInterpreter)
     return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
 end
@@ -105,12 +108,25 @@ function CC.method_table(interp::MooncakeInterpreter)
     return CC.OverlayMethodTable(interp.world, mooncake_method_table)
 end
 
+# PrimalMode delegates code_cache, method_table, and cache_owner to the
+# BugPatchInterpreter stored in meta, giving the inliner visibility into the native
+# Julia code cache where frule!! method bodies live.
+function CC.code_cache(interp::MooncakeInterpreter{<:Any,PrimalMode})
+    return CC.code_cache(interp.meta)
+end
+function CC.method_table(interp::MooncakeInterpreter{<:Any,PrimalMode})
+    return CC.method_table(interp.meta)
+end
+
 @static if VERSION < v"1.11.0"
     CC.get_world_counter(interp::MooncakeInterpreter) = interp.world
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_world_counter(interp)
 else
     CC.get_inference_world(interp::MooncakeInterpreter) = interp.world
     CC.cache_owner(::MooncakeInterpreter) = nothing
+    CC.cache_owner(interp::MooncakeInterpreter{<:Any,PrimalMode}) = CC.cache_owner(
+        interp.meta
+    )
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
@@ -350,6 +366,17 @@ function get_interpreter(mode::Type{<:Mode})
     return GLOBAL_INTERPRETERS[mode]
 end
 
+# PrimalMode interpreter construction is deferred to primal_mode.jl because it depends
+# on BugPatchInterpreter (loaded after abstract_interpretation.jl). This specialization
+# ensures get_interpreter(PrimalMode) rebuilds with _make_primal_mode_interp.
+function get_interpreter(::Type{PrimalMode})
+    if !haskey(GLOBAL_INTERPRETERS, PrimalMode) ||
+        GLOBAL_INTERPRETERS[PrimalMode].world != Base.get_world_counter()
+        GLOBAL_INTERPRETERS[PrimalMode] = _make_primal_mode_interp(DefaultCtx)
+    end
+    return GLOBAL_INTERPRETERS[PrimalMode]
+end
+
 """
     empty_mooncake_caches!()
 
@@ -357,7 +384,8 @@ This is an internal function and not part of the public API. Called by `prepare_
 `prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
 is passed.
 
-Empties all three per-interpreter caches for both `ForwardMode` and `ReverseMode`:
+Empties all three per-interpreter caches for `ForwardMode`, `ReverseMode`, and
+`PrimalMode`:
 - `oc_cache` : compiled `DerivedRule` / `OpaqueClosures`
 - `code_cache` : `CodeInstance` objects (Julia IR per `MethodInstance`)
 - `inf_cache` : `InferenceResult` objects from type inference

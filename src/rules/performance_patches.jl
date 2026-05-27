@@ -20,6 +20,7 @@
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
+frule!!(::Dual{typeof(sum)}, x::Array{<:_HasNDual}) = sum(x)
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
     function sum_pb!!(dz::P)
@@ -35,6 +36,9 @@ function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
 ) where {P<:IEEEFloat}
     return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+end
+function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Array{<:_HasNDual})
+    return sum(abs2, x)
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
