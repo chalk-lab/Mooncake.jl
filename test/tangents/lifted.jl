@@ -456,6 +456,10 @@ end
         neg_float_fast = Mooncake.IntrinsicsWrappers.neg_float_fast
         sub_float = Mooncake.IntrinsicsWrappers.sub_float
         sub_float_fast = Mooncake.IntrinsicsWrappers.sub_float_fast
+        fma_float = Mooncake.IntrinsicsWrappers.fma_float
+        muladd_float = Mooncake.IntrinsicsWrappers.muladd_float
+        fpext = Mooncake.IntrinsicsWrappers.fpext
+        fptrunc = Mooncake.IntrinsicsWrappers.fptrunc
         N = 2
         T = Float64
 
@@ -477,6 +481,10 @@ end
             test_rule(MersenneTwister(0), neg_float_fast, 4.0; perf_flag=:none)
             test_rule(MersenneTwister(0), sub_float, 5.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), sub_float_fast, 5.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), fma_float, 1.5, 2.0, 0.5; perf_flag=:none)
+            test_rule(MersenneTwister(0), muladd_float, 1.5, 2.0, 0.5; perf_flag=:none)
+            test_rule(MersenneTwister(0), fpext, Float64, 1.5f0; perf_flag=:none)
+            test_rule(MersenneTwister(0), fptrunc, Float32, 1.5; perf_flag=:none)
         end
 
         # abs_float: y = abs(x); dy = sign(x) * dx.
@@ -578,6 +586,40 @@ end
         r_sub_fast = Mooncake.frule!!(sff, a5, b5)
         @test Mooncake.primal(r_sub_fast) === 3.0
         @test Mooncake.tangent(r_sub_fast).partials === (1.0, -1.0)
+
+        # fma_float / muladd_float: a = x*y + z; product rule on first two + z.
+        x6 = Mooncake.Lifted{T,N}(1.5, Mooncake.NDual{T,N}(1.5, (1.0, 0.0)))
+        y6 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (0.0, 1.0)))
+        z6 = Mooncake.Lifted{T,N}(0.5, Mooncake.NDual{T,N}(0.5, (0.0, 0.0)))
+        for (op, op_slot_T) in
+            ((fma_float, typeof(fma_float)), (muladd_float, typeof(muladd_float)))
+            sl = Mooncake.Lifted{op_slot_T,N}(op, Mooncake.NoTangent())
+            r = Mooncake.frule!!(sl, x6, y6, z6)
+            @test Mooncake.primal(r) === 3.5  # 1.5*2.0 + 0.5
+            # ∂(x*y+z)/∂x = y = 2.0, ∂/∂y = x = 1.5, ∂/∂z = 1.
+            # Lane 1 seeds dx; lane 2 seeds dy → (2.0, 1.5).
+            @test Mooncake.tangent(r).partials === (2.0, 1.5)
+        end
+
+        # fpext: cross-precision lift, NDual{Float64,N}(NDual{Float32,N}).
+        xf32 = Mooncake.Lifted{Float32,N}(
+            1.5f0, Mooncake.NDual{Float32,N}(1.5f0, (1.0f0, 0.0f0))
+        )
+        ext_sl = Mooncake.Lifted{typeof(fpext),N}(fpext, Mooncake.NoTangent())
+        ty_sl = Mooncake.Lifted{Type{Float64},N}(Float64, Mooncake.NoTangent())
+        r_ext = Mooncake.frule!!(ext_sl, ty_sl, xf32)
+        @test typeof(r_ext) === Mooncake.Lifted{Float64,N,Mooncake.NDual{Float64,N}}
+        @test Mooncake.primal(r_ext) === 1.5
+        @test Mooncake.tangent(r_ext).partials === (1.0, 0.0)
+
+        # fptrunc: cross-precision truncate, NDual{Float32,N}(NDual{Float64,N}).
+        xf64 = Mooncake.Lifted{Float64,N}(1.5, Mooncake.NDual{Float64,N}(1.5, (1.0, 0.0)))
+        tr_sl = Mooncake.Lifted{typeof(fptrunc),N}(fptrunc, Mooncake.NoTangent())
+        tyf32 = Mooncake.Lifted{Type{Float32},N}(Float32, Mooncake.NoTangent())
+        r_tr = Mooncake.frule!!(tr_sl, tyf32, xf64)
+        @test typeof(r_tr) === Mooncake.Lifted{Float32,N,Mooncake.NDual{Float32,N}}
+        @test Mooncake.primal(r_tr) === 1.5f0
+        @test Mooncake.tangent(r_tr).partials === (1.0f0, 0.0f0)
     end
 
     @testset "type-stability" begin

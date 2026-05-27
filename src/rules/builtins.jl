@@ -462,6 +462,16 @@ function frule!!(::Dual{typeof(fma_float)}, x, y, z)
     da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
     return Dual(a, da)
 end
+function frule!!(
+    ::Lifted{typeof(fma_float),N},
+    x::Lifted{T,N,NDual{T,N}},
+    y::Lifted{T,N,NDual{T,N}},
+    z::Lifted{T,N,NDual{T,N}},
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(
+        fma_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
+    )
+end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -474,6 +484,12 @@ function frule!!(
     ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
 ) where {Pext<:IEEEFloat,P<:IEEEFloat}
     return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
+end
+function frule!!(
+    ::Lifted{typeof(fpext),N}, ::Lifted{Type{Pext},N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,Pext<:IEEEFloat,P<:IEEEFloat}
+    # NDual{Pext,N}(::NDual{P,N}) is the cross-precision constructor.
+    return Lifted{Pext,N}(fpext(Pext, primal(x)), NDual{Pext,N}(tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
@@ -491,6 +507,11 @@ function frule!!(
     ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
 ) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
     return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
+end
+function frule!!(
+    ::Lifted{typeof(fptrunc),N}, ::Lifted{Type{Ptrunc},N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return Lifted{Ptrunc,N}(fptrunc(Ptrunc, primal(x)), NDual{Ptrunc,N}(tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
@@ -639,6 +660,16 @@ function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
     dz = tangent(z)
     da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
     return Dual(a, da)
+end
+function frule!!(
+    ::Lifted{typeof(muladd_float),N},
+    x::Lifted{T,N,NDual{T,N}},
+    y::Lifted{T,N,NDual{T,N}},
+    z::Lifted{T,N,NDual{T,N}},
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(
+        muladd_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
+    )
 end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
