@@ -1663,9 +1663,12 @@ Cache for Hessian-vector products and Hessian evaluation. `M` is the nesting mod
 `:forward_over_reverse` or `:reverse_over_forward`, controlled by
 `config.second_order_mode` in [`prepare_hvp_cache`](@ref).
 """
-struct HVPCache{M,C,S<:Tuple}
+struct HVPCache{M,C,S<:Tuple,THB}
     core::C
     input_specs::S
+    # `nothing` for caches built via `prepare_hvp_cache`; populated by
+    # `prepare_hessian_cache` so `value_gradient_and_hessian!!` can avoid allocation.
+    hess_buffers::THB
 end
 
 function Base.show(io::IO, cache::HVPCache{M}) where {M}
@@ -1789,7 +1792,9 @@ function _prepare_hvp(::Val{:reverse_over_forward}, f, x::Tuple, config)
     seed = _hvp_make_seed(T_out)
     specs = _hvp_input_specs(f, x)
     core = (; ndual_rule, fdata_bufs, x_ndual_bufs, seed)
-    return HVPCache{:reverse_over_forward,typeof(core),typeof(specs)}(core, specs)
+    return HVPCache{:reverse_over_forward,typeof(core),typeof(specs),Nothing}(
+        core, specs, nothing
+    )
 end
 
 function _hvp_make_seed(::Type{T}) where {T<:IEEEFloat}
@@ -1809,6 +1814,12 @@ For multi-argument `f(x1, x2, ...)`, returns
 
 `v` must provide one direction vector per differentiable input, matching the shape
 of `x`. Only `Vector{<:IEEEFloat}` inputs are supported.
+
+!!! warning
+    The returned `gradient` and `hvp` vectors may alias buffers owned by `cache`
+    (`:forward_over_reverse` mode does, `:reverse_over_forward` mode returns fresh
+    allocations). Treat them as cache-owned: copy (`copy`/`deepcopy`) before mutating
+    or if you need to retain previous results across calls.
 """
 function value_and_hvp!!(
     cache::HVPCache{:reverse_over_forward}, f, v, x::Vararg{Any,N}
@@ -1869,7 +1880,9 @@ function _prepare_hvp(::Val{:forward_over_reverse}, f::F, x::Tuple, config) wher
     fwd_cache = prepare_derivative_cache(grad_f, x...; config)
     specs = _hvp_input_specs(f, x)
     core = (; grad_cache, grad_f, grad_tangent=zero_tangent(grad_f), fwd_cache)
-    return HVPCache{:forward_over_reverse,typeof(core),typeof(specs)}(core, specs)
+    return HVPCache{:forward_over_reverse,typeof(core),typeof(specs),Nothing}(
+        core, specs, nothing
+    )
 end
 
 struct _GradClosure{N,F,GC}
@@ -1922,7 +1935,7 @@ function value_and_hvp!!(cache::HVPCache{:forward_over_reverse}, f, v, x1)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         core.fwd_cache, (grad_f, core.grad_tangent), (x1, v)
     )
-    return f_val, copy(grad), copy(hvp)
+    return f_val, grad, hvp
 end
 
 function value_and_hvp!!(
@@ -1943,7 +1956,7 @@ function value_and_hvp!!(
     (f_val, grads), (_, hvps) = value_and_derivative!!(
         core.fwd_cache, (grad_f, core.grad_tangent), map(tuple, all_x, v)...
     )
-    return f_val, map(copy, grads), map(copy, hvps)
+    return f_val, grads, hvps
 end
 
 # ── Shared helpers ───────────────────────────────────────────────────────────────
@@ -1988,11 +2001,23 @@ end
 """
     prepare_hessian_cache(f, x...; config=Mooncake.Config())
 
-Prepare a cache for Hessian evaluation. Delegates to [`prepare_hvp_cache`](@ref).
+Prepare a cache for Hessian evaluation. Delegates to [`prepare_hvp_cache`](@ref) and
+additionally pre-allocates the Hessian, gradient, and basis-direction buffers that
+[`value_gradient_and_hessian!!`](@ref) writes into, so subsequent calls do not allocate
+fresh outputs.
 
-Only `Vector{<:IEEEFloat}` inputs are supported.
+Only `Vector{<:IEEEFloat}` inputs are supported, and all arguments must share the same
+element type. Validation is eager: `ArgumentError` is raised here rather than at
+evaluation time.
+
+!!! warning
+    The `gradient` and Hessian returned by [`value_gradient_and_hessian!!`](@ref) alias
+    buffers owned by the returned cache. Copy them if you need to retain previous
+    results.
 """
 function prepare_hessian_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
+    N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
+    T = eltype(first(x))
     for (i, xi) in enumerate(x)
         xi isa Vector{<:IEEEFloat} || throw(
             ArgumentError(
@@ -2000,8 +2025,61 @@ function prepare_hessian_cache(f, x::Vararg{Any,N}; config=Config()) where {N}
                 "argument $i has type `$(typeof(xi))`.",
             ),
         )
+        eltype(xi) === T || throw(
+            ArgumentError(
+                "All Hessian inputs must have the same element type; " *
+                "argument 1 has `$T` but argument $i has `$(eltype(xi))`.",
+            ),
+        )
     end
-    return prepare_hvp_cache(f, x...; config)
+    return _attach_hessian_buffers(
+        prepare_hvp_cache(f, x...; config), _make_hessian_buffers(T, x)
+    )
+end
+
+# `where {M}` extracts the mode tag so the returned cache stays concretely typed.
+function _attach_hessian_buffers(base::HVPCache{M}, buffers) where {M}
+    core = getfield(base, :core)
+    specs = getfield(base, :input_specs)
+    return HVPCache{M,typeof(core),typeof(specs),typeof(buffers)}(core, specs, buffers)
+end
+
+function _make_hessian_buffers(::Type{T}, xs::Tuple) where {T}
+    if length(xs) == 1
+        n = length(xs[1])
+        return (; H=zeros(T, n, n), grad=zeros(T, n), v=zeros(T, n))
+    end
+    ns = map(length, xs)
+    nargs = length(xs)
+    # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]
+    H_blocks = ntuple(k -> ntuple(j -> zeros(T, ns[k], ns[j]), nargs), nargs)
+    grads = map(ni -> zeros(T, ni), ns)
+    vs = map(ni -> zeros(T, ni), ns)
+    return (; H_blocks, grads, vs)
+end
+
+function _throw_not_hessian_cache()
+    throw(
+        ArgumentError(
+            "`cache` was not built with `prepare_hessian_cache`; rebuild via `prepare_hessian_cache(f, x...)` to use `value_gradient_and_hessian!!`",
+        ),
+    )
+end
+
+function _throw_hessian_arity_mismatch(cached::Int, got::Int)
+    throw(
+        ArgumentError(
+            "cache was prepared for $cached argument$(cached == 1 ? "" : "s") but called with $got; rebuild via `prepare_hessian_cache`",
+        ),
+    )
+end
+
+function _throw_hessian_length_mismatch(label::AbstractString, got::Int, expected::Int)
+    return throw(
+        ArgumentError(
+            "$label has length $got but cache was prepared for length $expected; rebuild via `prepare_hessian_cache`",
+        ),
+    )
 end
 
 function _validate_jacobian_argument(x)
@@ -2140,113 +2218,95 @@ end
 """
     value_gradient_and_hessian!!(cache, f, x...)
 
-Compute the value, gradient, and Hessian of `f` at `x`.
+Compute the value, gradient, and Hessian of `f` at `x` using a cache built by
+[`prepare_hessian_cache`](@ref). HVP-only caches built via [`prepare_hvp_cache`](@ref)
+are rejected.
 
 For single-argument `f(x::Vector)`, returns `(value, gradient, hessian_matrix)`.
 For multi-argument `f(x1, x2, ...)`, returns
 `(value, (g1, g2, ...), ((H11, H12, ...), (H21, H22, ...), ...))`.
 
 Only `Vector{<:IEEEFloat}` inputs are supported. All inputs must have the same element type.
+
+!!! warning
+    The returned `gradient` and Hessian alias buffers owned by `cache` and are
+    overwritten on the next call with the same cache. Copy them (`copy`/`deepcopy`)
+    before mutating or if you need to retain previous results.
 """
-function value_gradient_and_hessian!!(cache::HVPCache, f, x::Vararg{Any,N}) where {N}
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x...))
-
-    # Validate inputs
-    for (i, xi) in enumerate(x)
-        xi isa Vector{<:IEEEFloat} || throw(
-            ArgumentError(
-                "Hessian requires `Vector{<:IEEEFloat}` inputs; " *
-                "argument $i has type `$(typeof(xi))`.",
-            ),
-        )
+function value_gradient_and_hessian!!(cache::HVPCache, f, x1)
+    buf = getfield(cache, :hess_buffers)
+    buf === nothing && _throw_not_hessian_cache()
+    if buf isa NamedTuple{(:H_blocks, :grads, :vs)}
+        _throw_hessian_arity_mismatch(length(buf.vs), 1)
     end
-    T = eltype(first(x))
-    for (i, xi) in enumerate(x)
-        eltype(xi) === T || throw(
-            ArgumentError(
-                "All Hessian inputs must have the same element type; " *
-                "argument 1 has `$T` but argument $i has `$(eltype(xi))`.",
-            ),
-        )
-    end
-
-    sizes = map(length, x)
-    n = sum(sizes; init=0)
-
+    H = buf.H
+    g = buf.grad
+    v = buf.v
+    n = length(x1)
+    n == length(v) || _throw_hessian_length_mismatch("input vector", n, length(v))
+    T = eltype(v)
+    # Reset `v` in case a prior call threw between `v[i] = one(T)` and `v[i] = zero(T)`.
+    fill!(v, zero(T))
     if n == 0
-        val = f(x...)
-        if N == 1
-            return val, zeros(T, 0), zeros(T, 0, 0)
-        else
-            grad_zeros = ntuple(k -> zeros(T, sizes[k]), Val(N))
-            H_blocks = ntuple(Val(N)) do i
-                ntuple(Val(N)) do j
-                    zeros(T, sizes[i], sizes[j])
-                end
-            end
-            return val, grad_zeros, H_blocks
-        end
+        fval, _, _ = value_and_hvp!!(cache, f, (v,), x1)
+        return fval, g, H
     end
-
-    # Build Hessian column by column using HVP with standard basis vectors.
-    # The first call also gives us the value and gradient.
-    if N == 1
-        H = Matrix{T}(undef, n, n)
-        local val, grad_vec
-        for j in 1:n
-            ej = zeros(T, n)
-            ej[j] = one(T)
-            v, g, hvp = value_and_hvp!!(cache, f, (ej,), x...)
-            H[:, j] .= hvp
-            if j == 1
-                val = v
-                grad_vec = copy(g)
-            end
+    local value
+    for i in 1:n
+        v[i] = one(T)
+        fval, grad_alias, hvp = value_and_hvp!!(cache, f, (v,), x1)
+        if i == 1
+            value = fval
+            g .= grad_alias
         end
-        return val, grad_vec, H
-    else
-        H_full = Matrix{T}(undef, n, n)
-        local val, grad_copies
-        for j in 1:n
-            ej_vecs = _hessian_basis_vectors(sizes, j, T)
-            v, grads, hvp = value_and_hvp!!(cache, f, ej_vecs, x...)
-            col_offset = 0
-            for k in 1:N
-                H_full[(col_offset + 1):(col_offset + sizes[k]), j] .= hvp[k]
-                col_offset += sizes[k]
-            end
-            if j == 1
-                val = v
-                grad_copies = map(copy, grads)
-            end
-        end
-
-        # Slice into blocks
-        H_blocks = ntuple(N) do i
-            row_start = sum(sizes[1:(i - 1)]; init=0) + 1
-            row_end = row_start + sizes[i] - 1
-            ntuple(N) do j2
-                col_start = sum(sizes[1:(j2 - 1)]; init=0) + 1
-                col_end = col_start + sizes[j2] - 1
-                H_full[row_start:row_end, col_start:col_end]
-            end
-        end
-        return val, grad_copies, H_blocks
+        @inbounds @views H[:, i] .= hvp
+        v[i] = zero(T)
     end
+    return value, g, H
 end
 
-function _hessian_basis_vectors(sizes::Tuple, j::Int, ::Type{T}) where {T}
-    N = length(sizes)
-    vecs = Vector{Vector{T}}(undef, N)
-    offset = 0
-    for k in 1:N
-        v = zeros(T, sizes[k])
-        local_j = j - offset
-        if 1 <= local_j <= sizes[k]
-            v[local_j] = one(T)
-        end
-        vecs[k] = v
-        offset += sizes[k]
+function value_gradient_and_hessian!!(
+    cache::HVPCache, f, x1, xrest::Vararg{Any,N}
+) where {N}
+    buf = getfield(cache, :hess_buffers)
+    nargs = N + 1
+    buf === nothing && _throw_not_hessian_cache()
+    if buf isa NamedTuple{(:H, :grad, :v)}
+        _throw_hessian_arity_mismatch(1, nargs)
     end
-    return Tuple(vecs)
+    H_blocks = buf.H_blocks
+    grads = buf.grads
+    vs = buf.vs
+    nargs == length(vs) || _throw_hessian_arity_mismatch(length(vs), nargs)
+    all_xs = (x1, xrest...)
+    ns = map(length, all_xs)
+    for k in 1:nargs
+        ns[k] == length(vs[k]) ||
+            _throw_hessian_length_mismatch("argument $k", ns[k], length(vs[k]))
+    end
+    T = eltype(vs[1])
+    # Reset each `vs[k]` in case a prior call threw between `vs[k][i] = one(T)` and
+    # `vs[k][i] = zero(T)`.
+    map(vk -> fill!(vk, zero(T)), vs)
+    if all(==(0), ns)
+        fval, _, _ = value_and_hvp!!(cache, f, vs, all_xs...)
+        return fval, grads, H_blocks
+    end
+    local value
+    first_iter = true
+    for argidx in 1:nargs
+        v_i = vs[argidx]
+        for i in 1:ns[argidx]
+            v_i[i] = one(T)
+            fval, gs_alias, hvps = value_and_hvp!!(cache, f, vs, all_xs...)
+            if first_iter
+                value = fval
+                map((g, a) -> (g .= a), grads, gs_alias)
+                first_iter = false
+            end
+            map((Hk, hk) -> (@inbounds @views Hk[argidx][:, i] .= hk), H_blocks, hvps)
+            v_i[i] = zero(T)
+        end
+    end
+    return value, grads, H_blocks
 end

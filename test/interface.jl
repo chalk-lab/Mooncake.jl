@@ -1318,6 +1318,7 @@ end
                 z = [1.2, 1.2]
                 cache = prepare_hvp_cache(rosen, z; config)
                 _, _, hvp1 = value_and_hvp!!(cache, rosen, [1.0, 0.0], z)
+                hvp1 = copy(hvp1)  # cache-owned; snapshot before next call
                 _, _, hvp2 = value_and_hvp!!(cache, rosen, [0.0, 1.0], z)
                 H = hcat(hvp1, hvp2)
                 @test H ≈ [1250.0 -480.0; -480.0 200.0] rtol = 1e-10
@@ -1346,6 +1347,7 @@ end
                 v = [2.0, 3.0]
                 cache = prepare_hvp_cache(f, v; config)
                 _, _, hvp1 = value_and_hvp!!(cache, f, [1.0, 0.0], v)
+                hvp1 = copy(hvp1)  # cache-owned; snapshot before next call
                 _, _, hvp2 = value_and_hvp!!(cache, f, [0.0, 1.0], v)
                 # H = [0 v[2]; v[2] v[1]] = [0 3; 3 2]
                 @test hcat(hvp1, hvp2) ≈ [0.0 3.0; 3.0 2.0] rtol = 1e-10
@@ -1367,8 +1369,12 @@ end
                     1.0 0.0 0.0 0.0
                     0.0 4.0 0.0 0.0
                 ]
+                # `copy` each column: hvp aliases the same cache buffer across calls.
                 H = hcat(
-                    [value_and_hvp!!(cache, f, Float64.(I(4)[:, i]), v)[3] for i in 1:4]...
+                    [
+                        copy(value_and_hvp!!(cache, f, Float64.(I(4)[:, i]), v)[3]) for
+                        i in 1:4
+                    ]...,
                 )
                 @test H ≈ H_expected rtol = 1e-10
             end
