@@ -29,6 +29,7 @@ import Mooncake:
     NoRData,
     CoDual,
     Dual,
+    Lifted,
     primal,
     tangent,
     extract,
@@ -73,6 +74,18 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 @foldable can_produce_zero_rdata_from_type(::Type{P}) = true
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
+
+# Forward-mode canonical V for `Core.BFloat16` — `NTuple{N, BFloat16}`,
+# i.e. N parallel BFloat16 partials, one per lane. BFloat16 is not in
+# `IEEEFloat` (so `NDual` doesn't cover it), and it's a single-number
+# leaf type, so the structural-lift fallback doesn't apply either.
+# Mirrors the TWP / Ptr V pattern (`NTuple{N, T}`).
+@inline function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N}
+    return NTuple{N,P}
+end
+@inline function Mooncake.lifted_type(::Val{N}, ::Type{P}) where {N}
+    return Mooncake.Lifted{P,N,NTuple{N,P}}
+end
 
 # Conversions
 
@@ -471,6 +484,205 @@ end
 function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(prevfloat(primal(x))), pb
+end
+
+# ──────────────────────────────────────────────────────────────────────────
+# Lifted-arg parallels for every bare-Dual frule above.
+#
+# V for BFloat16 is `NTuple{Nw, BFloat16}` (defined at the top of this
+# module). Bodies mirror the bare-Dual derivative formulas with a per-lane
+# `ntuple` over the partials tuple. For BFloat16 → Float32/Float64
+# conversion rules, the output V is `NDual{F, Nw}` because the output
+# primal is in `IEEEFloat`.
+# ──────────────────────────────────────────────────────────────────────────
+
+const _PNT{N} = NTuple{N,P}
+using Mooncake: NDual
+
+# Conversions
+function Mooncake.frule!!(
+    ::Lifted{Type{Float32},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    y = Float32(primal(x))
+    parts = tangent(x)
+    dy = ntuple(k -> Float32(parts[k]), Val(Nw))
+    return Lifted{Float32,Nw}(y, NDual{Float32,Nw}(y, dy))
+end
+function Mooncake.frule!!(
+    ::Lifted{Type{Float64},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    y = Float64(primal(x))
+    parts = tangent(x)
+    dy = ntuple(k -> Float64(parts[k]), Val(Nw))
+    return Lifted{Float64,Nw}(y, NDual{Float64,Nw}(y, dy))
+end
+function Mooncake.frule!!(
+    ::Lifted{Type{P},Nw}, x::Lifted{Float32,Nw,NDual{Float32,Nw}}
+) where {Nw}
+    y = P(primal(x))
+    parts = tangent(x).partials
+    dy = ntuple(k -> P(parts[k]), Val(Nw))
+    return Lifted{P,Nw}(y, dy)
+end
+function Mooncake.frule!!(
+    ::Lifted{Type{P},Nw}, x::Lifted{Float64,Nw,NDual{Float64,Nw}}
+) where {Nw}
+    y = P(Float32(primal(x)))
+    parts = tangent(x).partials
+    dy = ntuple(k -> P(Float32(parts[k])), Val(Nw))
+    return Lifted{P,Nw}(y, dy)
+end
+
+# Unary scalar primitives — per-lane `deriv * partial` (with optional
+# nan_tangent_guard for safety on degenerate inputs).
+for (op, deriv_expr, guarded) in (
+    (:sqrt, :(dx / (2 * y)), true),
+    (:cbrt, :(dx / (3 * y^2)), true),
+    (:exp, :(dx * y), false),
+    (:exp2, :(dx * y * P(log(2.0f0))), false),
+    (:exp10, :(dx * y * P(log(10.0f0))), false),
+    (:expm1, :(dx * (y + one(P))), false),
+    (:log, :(dx / _x), true),
+    (:log2, :(dx / (_x * P(log(2.0f0)))), true),
+    (:log10, :(dx / (_x * P(log(10.0f0)))), true),
+    (:log1p, :(dx / (one(P) + _x)), true),
+    (:tan, :(dx * (one(P) + y^2)), false),
+    (:asin, :(dx / sqrt(one(P) - _x^2)), true),
+    (:acos, :(-dx / sqrt(one(P) - _x^2)), true),
+    (:atan, :(dx / (one(P) + _x^2)), false),
+    (:sinh, :(dx * cosh(_x)), false),
+    (:cosh, :(dx * sinh(_x)), false),
+    (:tanh, :(dx * (one(P) - y^2)), false),
+    (:asinh, :(dx / sqrt(one(P) + _x^2)), false),
+    (:acosh, :(dx / sqrt(_x^2 - one(P))), true),
+    (:atanh, :(dx / (one(P) - _x^2)), true),
+)
+    lane_expr = guarded ? :(nan_tangent_guard(dx, $deriv_expr)) : deriv_expr
+    @eval function Mooncake.frule!!(
+        ::Lifted{typeof($op),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+    ) where {Nw}
+        _x = primal(x)
+        y = $op(_x)
+        parts = tangent(x)
+        dy = ntuple(Val(Nw)) do k
+            dx = parts[k]
+            $lane_expr
+        end
+        return Lifted{P,Nw}(y, dy)
+    end
+end
+
+# sin / cos — use separate calls because sincos(::BFloat16) is broken in 1.12.
+function Mooncake.frule!!(
+    ::Lifted{typeof(sin),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
+    parts = tangent(x)
+    dy = ntuple(k -> parts[k] * c, Val(Nw))
+    return Lifted{P,Nw}(s, dy)
+end
+function Mooncake.frule!!(
+    ::Lifted{typeof(cos),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    _x = primal(x)
+    s = sin(_x)
+    c = cos(_x)
+    parts = tangent(x)
+    dy = ntuple(k -> -parts[k] * s, Val(Nw))
+    return Lifted{P,Nw}(c, dy)
+end
+
+# Binary: hypot, ^
+function Mooncake.frule!!(
+    ::Lifted{typeof(hypot),Nw},
+    x::Lifted{P,Nw,_PNT{Nw}},
+    y::Lifted{P,Nw,_PNT{Nw}},
+) where {Nw}
+    _x = primal(x)
+    _y = primal(y)
+    h = hypot(_x, _y)
+    x_parts = tangent(x)
+    y_parts = tangent(y)
+    dh = ntuple(Val(Nw)) do k
+        (
+            nan_tangent_guard(x_parts[k], _x * x_parts[k]) +
+            nan_tangent_guard(y_parts[k], _y * y_parts[k])
+        ) / h
+    end
+    return Lifted{P,Nw}(h, dh)
+end
+function Mooncake.frule!!(
+    ::Lifted{typeof(^),Nw},
+    x::Lifted{P,Nw,_PNT{Nw}},
+    y::Lifted{P,Nw,_PNT{Nw}},
+) where {Nw}
+    _x = primal(x)
+    _y = primal(y)
+    z = _x^_y
+    x_parts = tangent(x)
+    y_parts = tangent(y)
+    dz = ntuple(Val(Nw)) do k
+        nan_tangent_guard(x_parts[k], _y * _x^(_y - one(P)) * x_parts[k]) +
+            nan_tangent_guard(z, z * log(_x) * y_parts[k])
+    end
+    return Lifted{P,Nw}(z, dz)
+end
+
+# Binary: max, min — branch on which arg wins
+function Mooncake.frule!!(
+    ::Lifted{typeof(max),Nw},
+    x::Lifted{P,Nw,_PNT{Nw}},
+    y::Lifted{P,Nw,_PNT{Nw}},
+) where {Nw}
+    _x = primal(x)
+    _y = primal(y)
+    x_parts = tangent(x)
+    y_parts = tangent(y)
+    dz = ntuple(k -> _x >= _y ? x_parts[k] : y_parts[k], Val(Nw))
+    return Lifted{P,Nw}(max(_x, _y), dz)
+end
+function Mooncake.frule!!(
+    ::Lifted{typeof(min),Nw},
+    x::Lifted{P,Nw,_PNT{Nw}},
+    y::Lifted{P,Nw,_PNT{Nw}},
+) where {Nw}
+    _x = primal(x)
+    _y = primal(y)
+    x_parts = tangent(x)
+    y_parts = tangent(y)
+    dz = ntuple(k -> _x <= _y ? x_parts[k] : y_parts[k], Val(Nw))
+    return Lifted{P,Nw}(min(_x, _y), dz)
+end
+
+# abs — sign-based branch on per-lane tangent
+function Mooncake.frule!!(
+    ::Lifted{typeof(abs),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    _x = primal(x)
+    parts = tangent(x)
+    dy = ntuple(k -> _x >= zero(P) ? parts[k] : -parts[k], Val(Nw))
+    return Lifted{P,Nw}(abs(_x), dy)
+end
+
+# Base.eps — zero tangent
+function Mooncake.frule!!(
+    ::Lifted{typeof(Base.eps),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    return Lifted{P,Nw}(eps(primal(x)), ntuple(_ -> zero(P), Val(Nw)))
+end
+
+# nextfloat, prevfloat — passthrough tangent
+function Mooncake.frule!!(
+    ::Lifted{typeof(nextfloat),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    return Lifted{P,Nw}(nextfloat(primal(x)), tangent(x))
+end
+function Mooncake.frule!!(
+    ::Lifted{typeof(prevfloat),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+) where {Nw}
+    return Lifted{P,Nw}(prevfloat(primal(x)), tangent(x))
 end
 
 end # @static if BFloat16s.BFloat16 === Core.BFloat16
