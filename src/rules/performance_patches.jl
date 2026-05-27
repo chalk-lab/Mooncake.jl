@@ -17,9 +17,6 @@
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
-    return Dual(sum(primal(x)), sum(tangent(x)))
-end
 function frule!!(
     ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}}
 ) where {N,P<:IEEEFloat,D}
@@ -39,11 +36,6 @@ end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
-function frule!!(
-    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
-) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
-end
 function frule!!(
     ::Lifted{typeof(sum),N},
     ::Lifted{typeof(abs2),N},
@@ -65,34 +57,9 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-function Mooncake.frule!!(
-    ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractVecOrMat{<:T}},
-    x2::Dual{<:AbstractVecOrMat{<:T}},
-) where {T<:Base.IEEEFloat}
-    pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
-    LinearAlgebra._kron!(pout, px1, px2)
-    # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
-    # suffers
-    m = firstindex(dout)
-    for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
-        x1ij = px1[i, j]
-        dx1ij = dx1[i, j]
-        for k in axes(px2, 1)
-            dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
-            m += 1
-        end
-    end
-    return out
-end
-# Lifted parallel — same body shape, with an outer lane loop that writes
-# `dout.partials[lane]` per lane using each input's `partials[lane]`. The
-# primal `LinearAlgebra._kron!(pout, px1, px2)` runs once; only the matrix
-# (D=2) input shape is supported here — the bare-Dual `matrixify` Vec→Mat
-# reshape is left to a follow-up if needed.
+# Outer lane loop writes `dout.partials[lane]` per lane using each input's
+# `partials[lane]`; the primal `LinearAlgebra._kron!(pout, px1, px2)` runs
+# once. Only the matrix (D=2) input shape is supported.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{Aout,N,NDualArray{T,N,2,Aout,NDual{T,N}}},
