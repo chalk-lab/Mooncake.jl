@@ -33,14 +33,9 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-function frule!!(::Dual{typeof(exp)}, X_dX::Dual{Matrix{P}}) where {P<:IEEEFloat}
-    X = copy(primal(X_dX))
-    dX = copy(tangent(X_dX))
-    return Dual(ChainRules.frule((ChainRules.NoTangent(), dX), LinearAlgebra.exp!, X)...)
-end
-# Lifted parallel — per-lane `ChainRules.frule` call. ChainRules expects a
-# Matrix tangent per lane; produce both via per-lane partial copy, then
-# rebuild the result `NDualArray`.
+# Per-lane `ChainRules.frule` call. ChainRules expects a Matrix tangent
+# per lane; produce both via per-lane partial copy, then rebuild the
+# result `NDualArray`.
 function frule!!(
     ::Lifted{typeof(exp),Nw},
     X_dX::Lifted{Matrix{P},Nw,NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
