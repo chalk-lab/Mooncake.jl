@@ -2,12 +2,8 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
-end
-# Lifted parallel — V for `Ptr{T}` is `NTuple{N, Ptr{T}}` (per-lane
-# partial pointers). The pointer shift `tangent_lane + primal(y)` is
-# applied to each lane.
+# V for `Ptr{T}` is `NTuple{N, Ptr{T}}` (per-lane partial pointers); the
+# pointer shift `tangent_lane + primal(y)` is applied to each lane.
 function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw},
     x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
