@@ -94,11 +94,14 @@ function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
     return Dual(y, dy)
 end
-# Lifted parallel omitted — `pointer_from_objref` produces a Ptr whose
-# tangent is informational only (used by GC-aware code, not for derivative
-# propagation). Per-lane Ptrs would require per-lane structural-tangent
-# struct addresses, which the Lifted V shape doesn't expose. The bare-Dual
-# rule handles current callers.
+# Lifted parallel — output is a Ptr whose tangent is informational only
+# (the bare-Dual rule's `Ptr{NoTangent}` carries no derivative content).
+# Per-lane Ptrs aren't expressible in the Lifted V shape (no single
+# tangent address), so the canonical V is `NoDual`.
+function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
+    y = pointer_from_objref(primal(x))
+    return Lifted{typeof(y),Nw}(y, NoDual())
+end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -113,11 +116,18 @@ end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
     return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
 end
-# Lifted parallel omitted — output is an Any object deserialized from a
-# tangent Ptr; under Lifted, each lane would need its own deserialized
-# tangent object packaged into a V matching dual_type(Val(N), typeof(y)).
-# That construction depends on the dynamic output type and isn't expressible
-# without more infrastructure. The bare-Dual rule handles current callers.
+# Lifted parallel — the bare-Dual rule deserializes the input's tangent
+# Ptr into a per-call tangent object, which has no Lifted analogue (each
+# lane would need its own deserialized object packaged into a V matching
+# `dual_type(Val(N), typeof(y))`, and the V shape depends on the dynamic
+# output type). Treat the output as non-differentiable from Lifted's
+# perspective; the canonical V is `NoDual`.
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
+) where {Nw}
+    y = unsafe_pointer_to_objref(primal(x))
+    return Lifted{typeof(y),Nw}(y, NoDual())
+end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
