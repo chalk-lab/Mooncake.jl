@@ -10,9 +10,6 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
-function frule!!(::Dual{typeof(_foreigncall_)}, args...)
-    return throw_missing_foreigncall_rule_error(:frule!!, args...)
-end
 function frule!!(::Lifted{typeof(_foreigncall_),Nw}, args...) where {Nw}
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
@@ -89,15 +86,8 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-function frule!!(::Dual{typeof(pointer_from_objref)}, x)
-    y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
-    return Dual(y, dy)
-end
-# Lifted parallel — output is a Ptr whose tangent is informational only
-# (the bare-Dual rule's `Ptr{NoTangent}` carries no derivative content).
-# Per-lane Ptrs aren't expressible in the Lifted V shape (no single
-# tangent address), so the canonical V is `NoDual`.
+# Output is a Ptr; per-lane Ptrs aren't expressible in the Lifted V shape
+# (no single tangent address), so the canonical V is `NoDual`.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
     return Lifted{typeof(y),Nw}(y, NoDual())
@@ -113,14 +103,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
-end
-# Lifted parallel — the bare-Dual rule deserializes the input's tangent
-# Ptr into a per-call tangent object, which has no Lifted analogue (each
-# lane would need its own deserialized object packaged into a V matching
-# `dual_type(Val(N), typeof(y))`, and the V shape depends on the dynamic
-# output type). Treat the output as non-differentiable from Lifted's
+# Each lane would need its own deserialized object packaged into a V matching
+# `dual_type(Val(N), typeof(y))`, but the V shape depends on the dynamic
+# output type. Treat the output as non-differentiable from Lifted's
 # perspective; the canonical V is `NoDual`.
 function frule!!(
     ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
@@ -145,16 +130,9 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
-) where {T}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
-    return dest
-end
-# Lifted parallel — Ptr V is `NTuple{N, Ptr{T}}` (per-lane partial pointers).
-# Copy the primal data and each lane's tangent data through its own per-lane
-# pair of source/destination pointers.
+# Ptr V is `NTuple{N, Ptr{T}}` (per-lane partial pointers). Copy the primal
+# data and each lane's tangent data through its own per-lane pair of
+# source/destination pointers.
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
@@ -202,23 +180,7 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_reshape_array}},
-    ::Dual{Val{Array{P,M}}},
-    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    x::Dual{Type{Array{P,M}}},
-    a::Dual{Array{P,N},Array{T,N}},
-    dims::Dual,
-) where {P,T,M,N}
-    d = primal(dims)
-    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
-    dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
-    return Dual(y, dy)
-end
-# Lifted parallel — reshape both primal and per-lane partials via ccall.
+# Reshape both primal and per-lane partials via ccall.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_reshape_array},Nw},
@@ -265,22 +227,6 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_isassigned}},
-    ::Dual{RT}, # return type is Int32
-    arg_types::Dual{AT}, # arg types are (Any, UInt64)
-    ::Dual{nreq}, # nreq
-    ::Dual{calling_convention}, # calling convention
-    a::Dual{<:Array},
-    ii::Dual{UInt},
-    args...,
-) where {RT,AT,nreq,calling_convention}
-    GC.@preserve args begin
-        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
-    end
-    return zero_dual(y)
-end
-function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_array_isassigned},Nw},
     ::Lifted{RT,Nw},
@@ -315,18 +261,6 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_type_unionall}},
-    ::Dual{Val{Any}}, # return type
-    ::Dual{Tuple{Val{Any},Val{Any}}}, # arg types
-    ::Dual{Val{0}}, # number of required args
-    ::Dual{Val{:ccall}},
-    a::Dual,
-    b::Dual,
-)
-    return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
-end
-function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_type_unionall},Nw},
     ::Lifted{Val{Any},Nw},
@@ -356,7 +290,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
-frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
 function frule!!(::Lifted{typeof(deepcopy),Nw}, x::Lifted{P,Nw,V}) where {Nw,P,V}
     return Lifted{P,Nw}(deepcopy(primal(x)), deepcopy(tangent(x)))
 end
@@ -377,11 +310,6 @@ end
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Dual,N}
-) where {N}
-    return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
-end
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_string_ptr},Nw},
@@ -522,7 +450,9 @@ for name in [
     ) where {RT,nreq,calling_convention}
         return unexpected_foreigncall_error($name)
     end
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$name},Nw}, args...
+    ) where {Nw}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
