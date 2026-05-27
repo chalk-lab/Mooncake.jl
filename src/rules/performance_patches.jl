@@ -85,6 +85,40 @@ function Mooncake.frule!!(
     end
     return out
 end
+# Lifted parallel — same body shape, with an outer lane loop that writes
+# `dout.partials[lane]` per lane using each input's `partials[lane]`. The
+# primal `LinearAlgebra._kron!(pout, px1, px2)` runs once; only the matrix
+# (D=2) input shape is supported here — the bare-Dual `matrixify` Vec→Mat
+# reshape is left to a follow-up if needed.
+function Mooncake.frule!!(
+    ::Lifted{typeof(LinearAlgebra._kron!),N},
+    out::Lifted{Aout,N,NDualArray{T,N,2,Aout,NDual{T,N}}},
+    x1::Lifted{A1,N,NDualArray{T,N,2,A1,NDual{T,N}}},
+    x2::Lifted{A2,N,NDualArray{T,N,2,A2,NDual{T,N}}},
+) where {N,T<:IEEEFloat,Aout<:AbstractMatrix{T},A1<:AbstractMatrix{T},A2<:AbstractMatrix{T}}
+    pout = primal(out)
+    px1 = primal(x1)
+    px2 = primal(x2)
+    LinearAlgebra._kron!(pout, px1, px2)
+    dout_ts = tangent(out).partials
+    dx1_ts = tangent(x1).partials
+    dx2_ts = tangent(x2).partials
+    for lane in 1:N
+        dout_l = dout_ts[lane]
+        dx1_l = dx1_ts[lane]
+        dx2_l = dx2_ts[lane]
+        m = firstindex(dout_l)
+        for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+            x1ij = px1[i, j]
+            dx1ij = dx1_l[i, j]
+            for k in axes(px2, 1)
+                dout_l[m] = (x1ij * dx2_l[k, l]) + (dx1ij * px2[k, l])
+                m += 1
+            end
+        end
+    end
+    return out
+end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},

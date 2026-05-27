@@ -289,6 +289,33 @@ end
         @test rt2.value == sum(abs2, x)
         @test rt2.partials[1] ≈ 2 * (1.0 * 1.0 + 2.0 * 0.0 + 3.0 * -0.5)
         @test rt2.partials[2] ≈ 2 * (1.0 * 0.5 + 2.0 * 1.0 + 3.0 * 0.0)
+
+        # LinearAlgebra._kron!: per-lane Kronecker product into dout.
+        # x1 (1×2), x2 (2×1) → out (2×2). Pure NDualArray slot construction.
+        x1m = [1.0 2.0]
+        x2m = reshape([3.0, 4.0], 2, 1)
+        outm = Matrix{P}(undef, 2, 2)
+        # Seed: lane-1 perturbs x1, lane-2 perturbs x2.
+        x1_slot = Mooncake.Lifted{Matrix{P},N}(
+            x1m, Mooncake.NDualArray{P,N,2,Matrix{P}}(x1m, (copy(x1m), zeros(P, 1, 2)))
+        )
+        x2_slot = Mooncake.Lifted{Matrix{P},N}(
+            x2m, Mooncake.NDualArray{P,N,2,Matrix{P}}(x2m, (zeros(P, 2, 1), copy(x2m)))
+        )
+        out_slot = Mooncake.Lifted{Matrix{P},N}(
+            outm,
+            Mooncake.NDualArray{P,N,2,Matrix{P}}(outm, (zeros(P, 2, 2), zeros(P, 2, 2))),
+        )
+        kron_slot = Mooncake.Lifted{typeof(LinearAlgebra._kron!),N}(
+            LinearAlgebra._kron!, Mooncake.NoTangent()
+        )
+        r_kron = Mooncake.frule!!(kron_slot, out_slot, x1_slot, x2_slot)
+        # Primal: kron(x1m, x2m) = [[3 6]; [4 8]].
+        @test outm == [3.0 6.0; 4.0 8.0]
+        # Lane 1 perturbs x1 by x1 itself: d(kron(x1+ε*x1, x2)) = kron(x1, x2)*ε → same.
+        @test r_kron.value.partials[1] == [3.0 6.0; 4.0 8.0]
+        # Lane 2 perturbs x2 by x2 itself: kron(x1, x2+ε*x2) gives kron(x1, x2)*ε.
+        @test r_kron.value.partials[2] == [3.0 6.0; 4.0 8.0]
     end
 
     @testset "dual_type / lifted_type (Tuple)" begin
