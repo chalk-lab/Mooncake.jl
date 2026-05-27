@@ -168,6 +168,11 @@ end
 function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
     return Dual(copy(primal(x)), copy(tangent(x)))
 end
+function frule!!(::Lifted{typeof(copy),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}) where {Nw}
+    # CuDataRef has NoDual V (opaque handle); copy primal only — the V is
+    # already a no-derivative sentinel and needs no per-lane work.
+    return Lifted{_typeof(primal(x)),Nw}(copy(primal(x)), NoDual())
+end
 function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
     return CoDual(copy(primal(x)), copy(tangent(x))), _nopb(Val(2))
 end
@@ -714,12 +719,22 @@ const _SCALAR_IDX_MSG =
 function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
+function frule!!(
+    ::Lifted{typeof(getindex),Nw}, x::Lifted{<:CuArray}, i::Lifted{<:Integer}
+) where {Nw}
+    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+end
 function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:Integer})
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
 function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
+    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+end
+function frule!!(
+    ::Lifted{typeof(setindex!),Nw}, x::Lifted{<:CuArray}, v::Lifted, i::Lifted{<:Integer}
+) where {Nw}
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(
@@ -774,6 +789,18 @@ function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
     dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(norm),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = norm(px)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(R) : real(dot(px, x_partials[k])) / y
+    end
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+end
 function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     y = norm(px)
@@ -790,6 +817,20 @@ function frule!!(::Dual{typeof(dot)}, x::Dual{<:CuFloatArray}, y::Dual{<:CuFloat
     px, dx = arrayify(x)
     py, dy = arrayify(y)
     return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
+end
+function frule!!(
+    ::Lifted{typeof(dot),Nw},
+    x::Lifted{<:CuFloatArray,Nw,<:NDualArray},
+    y::Lifted{<:CuFloatArray,Nw,<:NDualArray},
+) where {Nw}
+    px = primal(x)
+    py = primal(y)
+    z = dot(px, py)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    y_partials = tangent(y).partials
+    dz_lanes = ntuple(k -> dot(x_partials[k], py) + dot(px, y_partials[k]), Val(Nw))
+    return Lifted{R,Nw}(z, NDual{R,Nw}(z, dz_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(dot)}, x::CoDual{<:CuFloatArray}, y::CoDual{<:CuFloatArray}
@@ -810,6 +851,9 @@ const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
     @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
+        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+    )
+    @eval frule!!(::Lifted{typeof($_fn),Nw}, x::Lifted{<:CuArray}; kwargs...) where {Nw} = _throw_gpu_argument_error(
         "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     )
     @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
