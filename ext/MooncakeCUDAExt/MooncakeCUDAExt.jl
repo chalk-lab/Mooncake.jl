@@ -875,6 +875,38 @@ function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
     dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = prod(px)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(R) : y * sum(x_partials[k] ./ px)
+    end
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+end
+function frule!!(
+    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = prod(px)
+    Y = typeof(y)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(Y) : y * sum(x_partials[k] ./ px)
+    end
+    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
+    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
+    return Lifted{Y,Nw}(
+        y,
+        Complex{NDual{R,Nw}}(
+            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
+        ),
+    )
+end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     y = prod(px)
@@ -899,6 +931,17 @@ end
 function frule!!(::Dual{typeof(cumsum)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
     return Dual(cumsum(px; kw...), cumsum(dx; kw...))
+end
+function frule!!(
+    ::Lifted{typeof(cumsum),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
+) where {Nw}
+    px = primal(x)
+    y = cumsum(px; kw...)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -930,6 +973,18 @@ function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     dy = y .* cumsum(dx .* inv_px; kw...)
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(cumprod),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
+) where {Nw}
+    px = primal(x)
+    y = cumprod(px; kw...)
+    inv_px = nan_tangent_guard.(px, inv.(px))
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> y .* cumsum(x_partials[k] .* inv_px; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
     y = cumprod(px; kw...)
@@ -959,6 +1014,20 @@ function frule!!(
     px, dx = arrayify(x)
     return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
 end
+function frule!!(
+    ::Lifted{typeof(accumulate),Nw},
+    ::Lifted{typeof(+),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray};
+    kw...,
+) where {Nw}
+    px = primal(x)
+    y = accumulate(+, px; kw...)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
     ::CoDual{typeof(+)},
@@ -982,6 +1051,14 @@ function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwarg
         _UNIMPL_MSG,
     )
 end
+function frule!!(
+    ::Lifted{typeof(accumulate),Nw}, op::Lifted, x::Lifted{<:CuArray}; kwargs...
+) where {Nw}
+    _throw_gpu_argument_error(
+        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+        _UNIMPL_MSG,
+    )
+end
 function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray}; kwargs...)
     _throw_gpu_argument_error(
         "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
@@ -995,6 +1072,34 @@ end
 function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     return Dual(sum(px), sum(dx))
+end
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = sum(px)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+end
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = sum(px)
+    Y = typeof(y)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
+    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
+    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
+    return Lifted{Y,Nw}(
+        y,
+        Complex{NDual{R,Nw}}(
+            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
+        ),
+    )
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     _, dx = arrayify(x)
