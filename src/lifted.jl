@@ -450,6 +450,30 @@ end
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
 end
 
+# ── Width-1 boundary helper for user-supplied tangents ──────────────────────
+#
+# `_lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
+# a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
+# (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
+# direction, and by the upcoming interpreter cutover boundary.
+@inline _lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
+@inline function _lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
+    return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
+end
+@inline function _lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+    return Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+end
+@inline function _lift(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
+    re = NDual{R,1}(real(x), (real(ẋ),))
+    im_ = NDual{R,1}(imag(x), (imag(ẋ),))
+    return Lifted{Complex{R},1}(x, Complex{NDual{R,1}}(re, im_))
+end
+# Non-differentiable primal (NoTangent tangent) — delegate to `uninit_lifted`
+# so the V matches `dual_type(Val(1), typeof(x))` for any non-diff primal:
+# `NoDual` for primitive types like Int/Symbol, `ImmutableDual{@NamedTuple{}}`
+# for function singletons, etc.
+@inline _lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
+
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
 end
