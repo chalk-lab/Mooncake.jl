@@ -89,6 +89,22 @@ function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:
     Base._deletebeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
+# Lifted parallel — mutate the user's Vector and every lane's partial
+# Vector in sync. Restricted to `T <: IEEEFloat` element types
+# (NDualArray V); non-IEEEFloat element vectors still go through the
+# bare-Dual rule above.
+function frule!!(
+    ::Lifted{typeof(Base._deletebeg!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    d::Lifted,
+) where {N,T<:IEEEFloat}
+    d_p = primal(d)
+    Base._deletebeg!(primal(a), d_p)
+    for lane in 1:N
+        Base._deletebeg!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -115,6 +131,18 @@ function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:
     Base._deleteend!(primal(a), primal(d))
     Base._deleteend!(tangent(a), primal(d))
     return zero_dual(nothing)
+end
+function frule!!(
+    ::Lifted{typeof(Base._deleteend!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    d::Lifted,
+) where {N,T<:IEEEFloat}
+    d_p = primal(d)
+    Base._deleteend!(primal(a), d_p)
+    for lane in 1:N
+        Base._deleteend!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -155,6 +183,20 @@ function frule!!(
     Base._deleteat!(tangent(a), primal(i), primal(delta))
     return zero_dual(nothing)
 end
+function frule!!(
+    ::Lifted{typeof(Base._deleteat!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    i::Lifted,
+    delta::Lifted,
+) where {N,T<:IEEEFloat}
+    i_p = primal(i)
+    d_p = primal(delta)
+    Base._deleteat!(primal(a), i_p, d_p)
+    for lane in 1:N
+        Base._deleteat!(tangent(a).partials[lane], i_p, d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
     _a::CoDual{<:Vector},
@@ -190,6 +232,18 @@ function frule!!(
     Base._growbeg!(tangent(a), primal(d))
     return zero_dual(nothing)
 end
+function frule!!(
+    ::Lifted{typeof(Base._growbeg!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    d::Lifted,
+) where {N,T<:IEEEFloat}
+    d_p = primal(d)
+    Base._growbeg!(primal(a), d_p)
+    for lane in 1:N
+        Base._growbeg!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
@@ -211,6 +265,18 @@ function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:In
     Base._growend!(primal(a), primal(d))
     Base._growend!(tangent(a), primal(d))
     return zero_dual(nothing)
+end
+function frule!!(
+    ::Lifted{typeof(Base._growend!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    d::Lifted,
+) where {N,T<:IEEEFloat}
+    d_p = primal(d)
+    Base._growend!(primal(a), d_p)
+    for lane in 1:N
+        Base._growend!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -235,6 +301,20 @@ function frule!!(
     Base._growat!(primal(a), primal(i), primal(d))
     Base._growat!(tangent(a), primal(i), primal(d))
     return zero_dual(nothing)
+end
+function frule!!(
+    ::Lifted{typeof(Base._growat!),N},
+    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    i::Lifted,
+    d::Lifted,
+) where {N,T<:IEEEFloat}
+    i_p = primal(i)
+    d_p = primal(d)
+    Base._growat!(primal(a), i_p, d_p)
+    for lane in 1:N
+        Base._growat!(tangent(a).partials[lane], i_p, d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoTangent())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -264,6 +344,18 @@ function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Intege
     sizehint!(tangent(x), primal(sz))
     return x
 end
+function frule!!(
+    ::Lifted{typeof(sizehint!),N},
+    x::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    sz::Lifted,
+) where {N,T<:IEEEFloat}
+    sz_p = primal(sz)
+    sizehint!(primal(x), sz_p)
+    for lane in 1:N
+        sizehint!(tangent(x).partials[lane], sz_p)
+    end
+    return x
+end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
     sizehint!(primal(x), primal(sz))
     sizehint!(tangent(x), primal(sz))
@@ -282,6 +374,24 @@ function frule!!(
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
     dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
     return Dual(y, dy)
+end
+# Lifted parallel — non-canonical V here: returns `NTuple{N, Ptr{T}}` since
+# the proper `dual_type(Val(N), Ptr{T})` infrastructure is not yet defined.
+# Once Ptr V lands, swap this to the canonical wrapper.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{T}},N},
+    ::Lifted{Tuple{Val{Any}},N},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+) where {N,T<:IEEEFloat,D}
+    y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
+    dy_partials = ntuple(
+        k -> ccall(:jl_array_ptr, Ptr{T}, (Any,), tangent(a).partials[k]), Val(N)
+    )
+    return Lifted{Ptr{T},N}(y, dy_partials)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -313,6 +423,25 @@ function frule!!(
     _n = primal(n)
     Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
     Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
+    return dest
+end
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+    doffs::Lifted,
+    src::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+    soffs::Lifted,
+    n::Lifted,
+) where {N,T<:IEEEFloat,D}
+    _n = primal(n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    for lane in 1:N
+        Base.unsafe_copyto!(
+            tangent(dest).partials[lane], _doffs, tangent(src).partials[lane], _soffs, _n
+        )
+    end
     return dest
 end
 function rrule!!(
@@ -373,6 +502,18 @@ Base.@propagate_inbounds function frule!!(
     dy = arrayref(primal(inbounds), tangent(x), _inds...)
     return Dual(y, dy)
 end
+Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{Array{T,D},Nw,NDualArray{T,Nw,D,Array{T,D},NDual{T,Nw}}},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:IEEEFloat,D,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
+    return Lifted{T,Nw}(y, NDual{T,Nw}(y, dy_partials))
+end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
     checkbounds::CoDual{Bool},
@@ -406,6 +547,21 @@ function frule!!(
     _inds = tuple_map(primal, inds)
     Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
     Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    return A
+end
+function frule!!(
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{Array{T,D},Nw,NDualArray{T,Nw,D,Array{T,D},NDual{T,Nw}}},
+    v::Lifted{T,Nw,NDual{T,Nw}},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:IEEEFloat,D,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    for lane in 1:Nw
+        Core.arrayset(_inb, tangent(A).partials[lane], tangent(v).partials[lane], _inds...)
+    end
     return A
 end
 function rrule!!(
@@ -471,12 +627,26 @@ end
 function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
     return zero_dual(Core.arraysize(primal(X), primal(dim)))
 end
+function frule!!(::Lifted{typeof(Core.arraysize),N}, X::Lifted, dim::Lifted) where {N}
+    y = Core.arraysize(primal(X), primal(dim))
+    return Lifted{typeof(y),N}(y, NoTangent())
+end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
 frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+function frule!!(
+    ::Lifted{typeof(copy),N},
+    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+) where {N,T<:IEEEFloat,D}
+    new_primal = copy(primal(a))
+    new_partials = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
+    return Lifted{Array{T,D},N}(
+        new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_partials)
+    )
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -500,6 +670,15 @@ end
 function frule!!(
     ::Dual{typeof(fill!)}, a::Dual{<:Array{<:Union{UInt8,Int8}}}, x::Dual{<:Integer}
 )
+    fill!(primal(a), primal(x))
+    return a
+end
+# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
+# update needed. The Lifted parallel just mutates the primal and returns
+# the slot unchanged.
+function frule!!(
+    ::Lifted{typeof(fill!),N}, a::Lifted{<:Array{<:Union{UInt8,Int8}},N}, x::Lifted
+) where {N}
     fill!(primal(a), primal(x))
     return a
 end
