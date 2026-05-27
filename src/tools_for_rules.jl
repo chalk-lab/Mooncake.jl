@@ -183,6 +183,9 @@ Dual{Int64, NoTangent}(5, NoTangent())
 @inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
     return zero_dual(primal(f)(map(primal, x)...))
 end
+@inline function zero_derivative(f::Lifted, x::Vararg{Lifted,N}) where {N}
+    return zero_lifted(Val(1), primal(f)(tuple_map(primal, x)...))
+end
 
 """
     zero_derivative(ctx, sig, [mode=Mode])
@@ -313,6 +316,10 @@ function _zero_derivative_impl(ctx, sig, mode)
             map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
             _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
         )
+        arg_types_lifted = vcat(
+            map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols[1:(end - 1)]),
+            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Lifted)),
+        )
         arg_types_adjoint = vcat(
             map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols[1:(end - 1)]),
             _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.CoDual)),
@@ -323,6 +330,7 @@ function _zero_derivative_impl(ctx, sig, mode)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
         arg_types_deriv = map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols)
+        arg_types_lifted = map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols)
         arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
         body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, arg_names...)
@@ -346,9 +354,12 @@ function _zero_derivative_impl(ctx, sig, mode)
     # above to determine whether or not they do anything. This might inflate the method
     # table a bit for `frule!!` and `rrule!!` unnecessarily, but it will be robust.
     frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
+    frule_lifted_ex = construct_frule_def(
+        arg_names, arg_types_lifted, where_params, body_deriv
+    )
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, frule_ex, rrule_ex)
+    return Expr(:block, is_primitive_ex, frule_ex, frule_lifted_ex, rrule_ex)
 end
 
 """

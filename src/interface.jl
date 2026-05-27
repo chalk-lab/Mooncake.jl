@@ -2048,20 +2048,9 @@ in `f` and `x`.
 #   lane count
 # - tuple inputs whose tangents are ordinary width-1 tangents are first wrapped into
 #   `Dual(primal, tangent)` values, then passed to the cached `frule`
-function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Dual,N}) where {N}
+function value_and_derivative!!(cache::ForwardCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache_inputs(getfield(cache, :input_specs), input_primals)
-    if any(x -> tangent(x) isa NTangent, fx)
-        # Bug fix note: routing chunked `Dual(...)` inputs through the tuple path hit a
-        # Julia 1.10 compiler/codegen crash, so chunked inputs currently stay tuple-only.
-        throw(
-            ArgumentError(
-                "NTangent inputs are currently supported via the tuple interface " *
-                "only. Use `value_and_derivative!!(cache, (f, df), (x, dx), ...)`.",
-            ),
-        )
-    end
-    # TODO: check Dual coherence here like we do below?
     return __call_rule(cache.rule, fx)
 end
 

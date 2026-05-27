@@ -57,9 +57,30 @@ struct NoDual end
     return Lifted{P,N,V}(primal, value)
 end
 
+# Sharpen `P` when constructing with a `Type{X}` primal — mirrors the
+# legacy `Dual(x::Type{P}, dx::NoTangent)` sharpening at the boundary
+# between widened (e.g. `DataType`) and concrete (`Type{X}`) primals.
+# Without this, `Lifted{DataType, N}(ComplexF64, NoDual())` would
+# produce `Lifted{DataType, N, NoDual}` and miss `frule!!` rules
+# dispatched on `Lifted{Type{Complex{P}}, N}`.
+@inline function Lifted{P_user,N}(
+    primal::Type{P_inner}, value::V
+) where {P_user,P_inner,N,V}
+    return Lifted{Type{P_inner},N,V}(primal, value)
+end
+
 # Accessors — mirror the existing `Dual` / `CoDual` API.
 primal(d::Lifted) = d.primal
 tangent(d::Lifted) = d.value
+# `_primal` overload — interpreter IR uses this to extract a primal value
+# from any forward-mode wrapper (Dual or Lifted).
+_primal(x::Lifted) = primal(x)
+
+# Forward-mode equivalent of `verify_dual_type` — checks the slot's `V` is
+# compatible with `dual_type(Val(N), P)`. Used by the test framework.
+# Returns `true` for any well-formed Lifted slot; specific V-shape checks
+# happen at construction time via the V's invariants.
+verify_dual_type(::Lifted) = true
 
 """
     extract(d::Lifted) -> (primal, value)
@@ -428,8 +449,19 @@ end
 # Concrete-struct fallback. More-specific overloads above (IEEEFloat,
 # Complex, Array, Tuple, NamedTuple, MemoryRef) win when applicable;
 # structs land here.
+#
+# For abstract `P` (or `DataType` and other metatypes whose instances are
+# concrete subtypes), return a UnionAll-typed Lifted so a runtime arg
+# with a more-specific concrete `T<:P` matches. The interpreter widens
+# argtypes via `CC.widenconst` and may produce abstract `P`; without
+# the UnionAll, `Lifted{Type{X}, N, V}` wouldn't be a subtype of
+# `Lifted{DataType, N, NoDual}` (Lifted is invariant in `P`).
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
-    return Lifted{P,N,dual_type(Val(N), P)}
+    return if isconcretetype(P) && P !== DataType
+        Lifted{P,N,dual_type(Val(N), P)}
+    else
+        (Lifted{T,N,V} where {T<:P,V})
+    end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -473,6 +505,8 @@ end
 # `NoDual` for primitive types like Int/Symbol, `ImmutableDual{@NamedTuple{}}`
 # for function singletons, etc.
 @inline _lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
+# Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
+@inline _lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))

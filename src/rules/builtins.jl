@@ -167,6 +167,13 @@ macro inactive_intrinsic(name)
             args_primal = map(primal, args)
             return zero_dual(f_primal(args_primal...))
         end
+        function frule!!(
+            f::Mooncake.Lifted{typeof($name),Nw}, args::Vararg{Mooncake.Lifted,M}
+        ) where {Nw,M}
+            f_primal = primal(f)
+            args_primal = tuple_map(primal, args)
+            return Mooncake.zero_lifted(Val(Nw), f_primal(args_primal...))
+        end
     end
     return esc(expr)
 end

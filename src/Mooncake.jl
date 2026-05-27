@@ -178,6 +178,13 @@ include(joinpath("tangents", "codual.jl"))
 include("debug_mode.jl")
 include("stack.jl")
 
+# Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
+# seed factories) before the interpreter — `interpreter/forward_mode.jl`
+# now dispatches on `Lifted{P, 1, V}` per the Final-task cutover.
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: NDual
+include("lifted.jl")
+
 @unstable begin
 include(joinpath("interpreter", "bbcode.jl"))
 using .BasicBlockCode
@@ -196,9 +203,6 @@ include("tools_for_rules.jl")
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
-include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual
-include("lifted.jl")
 include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))

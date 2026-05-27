@@ -125,6 +125,8 @@ using Mooncake:
     increment_rdata!!,
     dual_type,
     randn_dual,
+    randn_lifted,
+    _lift,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -521,7 +523,7 @@ function test_frule_correctness(
     end
 
     # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    x_ẋ_rule = map((x, ẋ) -> _lift(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
@@ -1131,7 +1133,9 @@ function test_rule(
         @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
-    x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
+    x_ẋ = map(
+        x -> x isa CoDual ? _lift(primal(x), tangent(x)) : randn_lifted(Val(1), rng, x), x
+    )
 
     x_x̄ = map(x -> if x isa CoDual
         x

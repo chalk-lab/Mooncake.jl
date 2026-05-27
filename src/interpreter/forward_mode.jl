@@ -117,7 +117,7 @@ struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
 end
 
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
-    args::Vararg{Dual,N}
+    args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
     return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
 end
@@ -158,11 +158,8 @@ are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
 function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     isva || return args
     group_primal = map(primal, args[nargs:end])
-    if tangent_type(_typeof(group_primal)) == NoTangent
-        grouped_args = zero_dual(group_primal)
-    else
-        grouped_args = Dual(group_primal, map(tangent, args[nargs:end]))
-    end
+    group_v = map(tangent, args[nargs:end])
+    grouped_args = Lifted{_typeof(group_primal),1}(group_primal, group_v)
     return (args[1:(nargs - 1)]..., grouped_args)
 end
 
@@ -200,9 +197,9 @@ function generate_dual_ir(
 
     # Modify dual argument types:
     # - add one for the captures in the first position, with placeholder type for now
-    # - convert the rest to dual types
+    # - convert the rest to lifted types (width-1 Lifted{P, 1, V} per arg)
     for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
+        dual_ir.argtypes[a] = lifted_type(Val(1), CC.widenconst(P))
     end
     pushfirst!(dual_ir.argtypes, Any)
 
@@ -248,9 +245,9 @@ and its location in `captures` returned.
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+function const_dual!(captures::Vector{Any}, stmt)::Union{Lifted,Int}
     v = get_const_primal_value(stmt)
-    x = uninit_dual(v)
+    x = uninit_lifted(Val(1), v)
     if safe_for_literal(v)
         return x
     else
@@ -292,7 +289,7 @@ function modify_fwd_ad_stmts!(
         end
     else
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
+        zero_dual_call = Expr(:call, Mooncake.zero_lifted, Val(1), new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
     end
 
@@ -329,10 +326,12 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = uninit_lifted(Val(1), get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+    )
     return nothing
 end
 
@@ -342,9 +341,9 @@ function modify_fwd_ad_stmts!(
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = uninit_dual(get_const_primal_value(stmt.val))
+        v = uninit_lifted(Val(1), get_const_primal_value(stmt.val))
     end
-    replace_call!(dual_ir, ssa, PiNode(v, dual_type(CC.widenconst(stmt.typ))))
+    replace_call!(dual_ir, ssa, PiNode(v, lifted_type(Val(1), CC.widenconst(stmt.typ))))
     return nothing
 end
 
@@ -352,10 +351,12 @@ function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
+        stmt = UpsilonNode(uninit_lifted(Val(1), get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+    )
     return nothing
 end
 
@@ -365,10 +366,12 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = uninit_lifted(Val(1), get_const_primal_value(stmt.values[n]))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+    )
     return nothing
 end
 
@@ -382,7 +385,7 @@ end
 
 ## Modification of IR nodes - expressions
 
-__get_primal(x::Dual) = primal(x)
+__get_primal(x::Lifted) = primal(x)
 
 function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
@@ -419,7 +422,7 @@ function modify_fwd_ad_stmts!(
         # Dual-ise arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_dual(get_const_primal_value(arg))
+            return uninit_lifted(Val(1), get_const_primal_value(arg))
         end
 
         interp = info.interp
@@ -441,16 +444,16 @@ function modify_fwd_ad_stmts!(
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
-        # Keep the boundscheck, but put it in a Dual.
+        # Keep the boundscheck, but wrap it in a width-1 Lifted.
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, bc_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(1), bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(1), new_copyast_ssa))
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
@@ -534,7 +537,7 @@ end
 end
 
 function dual_ret_type(primal_ir::IRCode)
-    return dual_type(compute_ir_rettype(primal_ir))
+    return lifted_type(Val(1), compute_ir_rettype(primal_ir))
 end
 
 function frule_type(
@@ -553,7 +556,7 @@ function frule_type(
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
     sig = Tuple{arg_types...}
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
+    dual_args_type = Tuple{map(T -> lifted_type(Val(1), T), arg_types)...}
     closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
     Tderived_rule = DerivedFRule{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
@@ -569,7 +572,7 @@ DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
 # Create new dynamic rule with empty cache and same debug mode  
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
 
-function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
+function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
     # See DynamicDerivedRule for details, the same reasoning applies.
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}

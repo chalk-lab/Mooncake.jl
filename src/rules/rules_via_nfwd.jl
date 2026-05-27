@@ -106,11 +106,15 @@ for f in (
         end
         # Lifted-arg parallel: `$f(::NDual)` has its own overload in Nfwd.jl
         # that propagates partials correctly; the result V's `.value` matches
-        # `f(primal(x))`, preserving the canonical V invariant.
+        # `f(primal(x))`, preserving the canonical V invariant. Use the result
+        # type for P_out so tuple-returning primitives (e.g. `sincos`) work
+        # correctly — for them y::Tuple{P,P}, dy::Tuple{NDual,NDual}.
         function frule!!(
             ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
         ) where {N,P<:IEEEFloat}
-            return Lifted{P,N}($f(primal(x)), $f(tangent(x)))
+            y = $f(primal(x))
+            dy = $f(tangent(x))
+            return Lifted{_typeof(y),N}(y, dy)
         end
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
