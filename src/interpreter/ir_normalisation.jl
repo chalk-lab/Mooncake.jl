@@ -404,7 +404,9 @@ until the pullback that it returns is run.
 
 @is_primitive MinimalCtx Tuple{typeof(gc_preserve),Vararg{Any,N}} where {N}
 
-frule!!(::Dual{typeof(gc_preserve)}, ::Vararg{Dual,N}) where {N} = zero_dual(nothing)
+function frule!!(::Lifted{typeof(gc_preserve),Nw}, ::Vararg{Lifted,M}) where {Nw,M}
+    zero_lifted(Val(Nw), nothing)
+end
 function rrule!!(f::CoDual{typeof(gc_preserve)}, xs::CoDual...)
     pb = NoPullback(f, xs...)
     gc_preserve_pb!!(::NoRData) = GC.@preserve xs pb(NoRData())
