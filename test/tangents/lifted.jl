@@ -450,6 +450,12 @@ end
         copysign_float = Mooncake.IntrinsicsWrappers.copysign_float
         div_float = Mooncake.IntrinsicsWrappers.div_float
         div_float_fast = Mooncake.IntrinsicsWrappers.div_float_fast
+        mul_float = Mooncake.IntrinsicsWrappers.mul_float
+        mul_float_fast = Mooncake.IntrinsicsWrappers.mul_float_fast
+        neg_float = Mooncake.IntrinsicsWrappers.neg_float
+        neg_float_fast = Mooncake.IntrinsicsWrappers.neg_float_fast
+        sub_float = Mooncake.IntrinsicsWrappers.sub_float
+        sub_float_fast = Mooncake.IntrinsicsWrappers.sub_float_fast
         N = 2
         T = Float64
 
@@ -465,6 +471,12 @@ end
             test_rule(MersenneTwister(0), copysign_float, 2.0, -3.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float, 6.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float_fast, 6.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), mul_float, 1.5, 2.5; perf_flag=:none)
+            test_rule(MersenneTwister(0), mul_float_fast, 1.5, 2.5; perf_flag=:none)
+            test_rule(MersenneTwister(0), neg_float, 4.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), neg_float_fast, 4.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), sub_float, 5.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), sub_float_fast, 5.0, 2.0; perf_flag=:none)
         end
 
         # abs_float: y = abs(x); dy = sign(x) * dx.
@@ -518,6 +530,54 @@ end
         r_div_fast = Mooncake.frule!!(dff, a2, b2)
         @test Mooncake.primal(r_div_fast) === 3.0
         @test Mooncake.tangent(r_div_fast).partials === (0.5, -1.5)
+
+        # mul_float: product rule (a*db + b*da).
+        a3 = Mooncake.Lifted{T,N}(1.5, Mooncake.NDual{T,N}(1.5, (1.0, 0.0)))
+        b3 = Mooncake.Lifted{T,N}(2.5, Mooncake.NDual{T,N}(2.5, (0.0, 1.0)))
+        mf = Mooncake.Lifted{typeof(mul_float),N}(mul_float, Mooncake.NoTangent())
+        r_mul = Mooncake.frule!!(mf, a3, b3)
+        @test Mooncake.primal(r_mul) === 3.75  # 1.5 * 2.5
+        # ∂(a*b)/∂a = b = 2.5; ∂(a*b)/∂b = a = 1.5.
+        @test Mooncake.tangent(r_mul).partials === (2.5, 1.5)
+
+        # mul_float_fast: same.
+        mff = Mooncake.Lifted{typeof(mul_float_fast),N}(
+            mul_float_fast, Mooncake.NoTangent()
+        )
+        r_mul_fast = Mooncake.frule!!(mff, a3, b3)
+        @test Mooncake.primal(r_mul_fast) === 3.75
+        @test Mooncake.tangent(r_mul_fast).partials === (2.5, 1.5)
+
+        # neg_float: dy = -dx.
+        x4 = Mooncake.Lifted{T,N}(4.0, Mooncake.NDual{T,N}(4.0, (1.0, -2.0)))
+        nf = Mooncake.Lifted{typeof(neg_float),N}(neg_float, Mooncake.NoTangent())
+        r_neg = Mooncake.frule!!(nf, x4)
+        @test Mooncake.primal(r_neg) === -4.0
+        @test Mooncake.tangent(r_neg).partials === (-1.0, 2.0)
+
+        # neg_float_fast: same.
+        nff = Mooncake.Lifted{typeof(neg_float_fast),N}(
+            neg_float_fast, Mooncake.NoTangent()
+        )
+        r_neg_fast = Mooncake.frule!!(nff, x4)
+        @test Mooncake.primal(r_neg_fast) === -4.0
+        @test Mooncake.tangent(r_neg_fast).partials === (-1.0, 2.0)
+
+        # sub_float: dc = da - db.
+        a5 = Mooncake.Lifted{T,N}(5.0, Mooncake.NDual{T,N}(5.0, (1.0, 0.0)))
+        b5 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (0.0, 1.0)))
+        sf = Mooncake.Lifted{typeof(sub_float),N}(sub_float, Mooncake.NoTangent())
+        r_sub = Mooncake.frule!!(sf, a5, b5)
+        @test Mooncake.primal(r_sub) === 3.0
+        @test Mooncake.tangent(r_sub).partials === (1.0, -1.0)
+
+        # sub_float_fast: same.
+        sff = Mooncake.Lifted{typeof(sub_float_fast),N}(
+            sub_float_fast, Mooncake.NoTangent()
+        )
+        r_sub_fast = Mooncake.frule!!(sff, a5, b5)
+        @test Mooncake.primal(r_sub_fast) === 3.0
+        @test Mooncake.tangent(r_sub_fast).partials === (1.0, -1.0)
     end
 
     @testset "type-stability" begin

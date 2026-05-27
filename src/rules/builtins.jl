@@ -601,6 +601,11 @@ function frule!!(::Dual{typeof(mul_float)}, a, b)
     dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
     return Dual(p, dp)
 end
+function frule!!(
+    ::Lifted{typeof(mul_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(mul_float(primal(a), primal(b)), tangent(a) * tangent(b))
+end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -613,6 +618,11 @@ function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
     c = mul_float_fast(primal(a), primal(b))
     dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
     return Dual(c, dc)
+end
+function frule!!(
+    ::Lifted{typeof(mul_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(mul_float_fast(primal(a), primal(b)), tangent(a) * tangent(b))
 end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
@@ -644,6 +654,11 @@ end
 
 @intrinsic neg_float
 frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
+function frule!!(
+    ::Lifted{typeof(neg_float),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(neg_float(primal(x)), -tangent(x))
+end
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -653,6 +668,11 @@ end
 @intrinsic neg_float_fast
 function frule!!(::Dual{typeof(neg_float_fast)}, x)
     return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
+end
+function frule!!(
+    ::Lifted{typeof(neg_float_fast),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(neg_float_fast(primal(x)), -tangent(x))
 end
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
@@ -762,6 +782,11 @@ function frule!!(::Dual{typeof(sub_float)}, a, b)
     dc = sub_float(tangent(a), tangent(b))
     return Dual(c, dc)
 end
+function frule!!(
+    ::Lifted{typeof(sub_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(sub_float(primal(a), primal(b)), tangent(a) - tangent(b))
+end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -774,6 +799,11 @@ function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
     c = sub_float_fast(primal(a), primal(b))
     dc = sub_float_fast(tangent(a), tangent(b))
     return Dual(c, dc)
+end
+function frule!!(
+    ::Lifted{typeof(sub_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(sub_float_fast(primal(a), primal(b)), tangent(a) - tangent(b))
 end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
