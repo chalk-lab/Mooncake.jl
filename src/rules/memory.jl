@@ -1042,6 +1042,29 @@ end
     setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
     return x
 end
+# Lifted parallel — write the primal field, then per-lane partial field.
+# For :size (non-differentiable metadata) each lane gets the same primal
+# value; other fields (e.g. :ref) get per-lane tangent storage.
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{<:Array,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+    x::Lifted,
+) where {Nw,name}
+    setfield!(primal(value), name, primal(x))
+    V = tangent(value)
+    if name === :size || name === 2
+        for partial in V.partials
+            setfield!(partial, name, primal(x))
+        end
+    else
+        x_partials = tangent(x).partials
+        for lane in 1:Nw
+            setfield!(V.partials[lane], name, x_partials[lane])
+        end
+    end
+    return x
+end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)},
     value::CoDual{<:Array,<:Array},

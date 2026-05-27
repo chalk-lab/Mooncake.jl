@@ -1606,6 +1606,45 @@ function frule!!(
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
     return B_dB
 end
+function frule!!(
+    ::Lifted{typeof(BLAS.trsm!),Nw},
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _t::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw,NDual{P,Nw}},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    B_dB::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+) where {Nw,P<:BlasFloat}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    trans = primal(_t)
+    diag = primal(_diag)
+    α = primal(α_dα)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    α_parts = tangent(α_dα).partials
+    A_partials = tangent(A_dA).partials
+    B_partials = tangent(B_dB).partials
+    @inbounds for lane in 1:Nw
+        dα_lane = α_parts[lane]
+        dA_lane = A_partials[lane]
+        dB_lane = B_partials[lane]
+        BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
+        tmp = copy(B)
+        trsm!(side, uplo, trans, diag, one(P), A, tmp)
+        dB_lane .+= dα_lane .* tmp
+        tmp2 = copy(tmp)
+        BLAS.trmm!(side, uplo, trans, diag, α, dA_lane, tmp)
+        if diag == 'U'
+            tmp .-= α .* tmp2
+        end
+        BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+        dB_lane .-= tmp
+    end
+    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    return B_dB
+end
 
 function rrule!!(
     ::CoDual{typeof(BLAS.trsm!)},
