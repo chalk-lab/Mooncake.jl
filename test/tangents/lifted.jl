@@ -476,6 +476,34 @@ end
         r_fast = Mooncake.frule!!(addf_fast, a_slot, b_slot)
         @test Mooncake.primal(r_fast) === 3.0
         @test Mooncake.tangent(r_fast).partials === (1.0, 1.0)
+
+        # copysign_float: z = copysign(x, y); dz = sign(y) * dx.
+        copysign_float = Mooncake.IntrinsicsWrappers.copysign_float
+        x2 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (1.0, 0.0)))
+        yneg = Mooncake.Lifted{T,N}(-3.0, Mooncake.NDual{T,N}(-3.0, (0.0, 1.0)))
+        cf = Mooncake.Lifted{typeof(copysign_float),N}(copysign_float, Mooncake.NoTangent())
+        r_cs = Mooncake.frule!!(cf, x2, yneg)
+        @test Mooncake.primal(r_cs) === -2.0
+        @test Mooncake.tangent(r_cs).partials == (-1.0, 0.0)  # sign(-3)*(1,0); -0.0 ok
+
+        # div_float: c = a/b; dc = (da*b - a*db)/b^2.
+        div_float = Mooncake.IntrinsicsWrappers.div_float
+        a2 = Mooncake.Lifted{T,N}(6.0, Mooncake.NDual{T,N}(6.0, (1.0, 0.0)))
+        b2 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (0.0, 1.0)))
+        df = Mooncake.Lifted{typeof(div_float),N}(div_float, Mooncake.NoTangent())
+        r_div = Mooncake.frule!!(df, a2, b2)
+        @test Mooncake.primal(r_div) === 3.0  # 6/2
+        # ∂(a/b)/∂a = 1/b = 0.5; ∂(a/b)/∂b = -a/b² = -1.5.
+        @test Mooncake.tangent(r_div).partials === (0.5, -1.5)
+
+        # div_float_fast: same shape.
+        div_float_fast = Mooncake.IntrinsicsWrappers.div_float_fast
+        dff = Mooncake.Lifted{typeof(div_float_fast),N}(
+            div_float_fast, Mooncake.NoTangent()
+        )
+        r_div_fast = Mooncake.frule!!(dff, a2, b2)
+        @test Mooncake.primal(r_div_fast) === 3.0
+        @test Mooncake.tangent(r_div_fast).partials === (0.5, -1.5)
     end
 
     @testset "type-stability" begin

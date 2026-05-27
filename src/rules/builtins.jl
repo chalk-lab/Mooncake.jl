@@ -387,6 +387,13 @@ function frule!!(::Dual{typeof(copysign_float)}, x, y)
     dz = sign(primal(y)) * tangent(x)
     return Dual(z, dz)
 end
+function frule!!(
+    ::Lifted{typeof(copysign_float),N}, x::Lifted{T,N,NDual{T,N}}, y::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    z = copysign_float(primal(x), primal(y))
+    dz = sign(primal(y)) * tangent(x)
+    return Lifted{T,N}(z, dz)
+end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
@@ -407,6 +414,11 @@ function frule!!(::Dual{typeof(div_float)}, a, b)
     dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
     return Dual(c, dc)
 end
+function frule!!(
+    ::Lifted{typeof(div_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(div_float(primal(a), primal(b)), tangent(a) / tangent(b))
+end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -422,6 +434,11 @@ function frule!!(::Dual{typeof(div_float_fast)}, a, b)
     db = tangent(b)
     dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
     return Dual(c, dc)
+end
+function frule!!(
+    ::Lifted{typeof(div_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(div_float_fast(primal(a), primal(b)), tangent(a) / tangent(b))
 end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
