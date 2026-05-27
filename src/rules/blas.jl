@@ -310,20 +310,50 @@ function frule!!(
     end
     return Dual(y, dy / 2y)
 end
-# BLAS Lifted parallels — deferred. `viewify`/`arrayify` for Lifted slots
-# under NDualArray V needs per-lane partial-array dispatch + abstract-array
-# canonical V (currently NDualArray is `Array`-specific). The 6 BLAS frules
-# below all share this dependency; writing them out would require per-lane
-# BLAS call sequences + Ptr V infra. The bare-Dual rules handle the legacy
-# path until both prerequisites land.
-function frule!!(::Lifted{typeof(BLAS.nrm2),Nw}, ::Lifted, ::Lifted, ::Lifted) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.nrm2)}, …) deferred — needs per-lane " *
-            "BLAS call dispatch + Ptr/abstract-array V infra.",
-        ),
-    )
+# BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
+# routine on the per-lane partial array (or Ptr) directly. Supports both
+# `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
+# V); real and complex element types both routed.
+#
+# `_blas_lane_partial` extracts the per-lane partial in the right shape:
+# for NDualArray V it returns `partials[lane]` (a vector); for the Ptr
+# `NTuple{N, Ptr{T}}` V it returns `V[lane]` (a single Ptr).
+@inline _blas_lane_partial(V::NDualArray, lane::Integer) = V.partials[lane]
+@inline _blas_lane_partial(V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
+
+# nrm2 — output is real (real or complex T); per-lane dy is real.
+function frule!!(
+    ::Lifted{typeof(BLAS.nrm2),Nw},
+    n::Lifted,
+    X_dX::Lifted{<:Union{Ptr{T},Array{T,1}}},
+    incx::Lifted,
+) where {Nw,T<:BlasFloat}
+    _n = primal(n)
+    _inc = primal(incx)
+    Xp = primal(X_dX)
+    y = BLAS.nrm2(_n, Xp, _inc)
+    # `viewify`-equivalent on the primal side; per-lane partial view.
+    Xv = _viewify_one(_n, Xp, _inc)
+    R = typeof(y)  # nrm2 returns the real-valued norm.
+    dy_lanes = ntuple(Val(Nw)) do lane
+        dX_lane = _blas_lane_partial(tangent(X_dX), lane)
+        dXv = _viewify_one(_n, dX_lane, _inc)
+        s = zero(R)
+        @inbounds for i in eachindex(Xv)
+            s += real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
+        end
+        s / (2 * y)
+    end
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
 end
+# Shared single-side viewify: handles both Ptr and Array uniformly so the
+# Lifted bodies don't have to branch on input shape.
+@inline _viewify_one(n::Integer, x::AbstractArray, incx::Integer) = view(
+    x, 1:incx:(incx * n)
+)
+@inline _viewify_one(n::Integer, x::Ptr{T}, incx::Integer) where {T} = view(
+    unsafe_wrap(Vector{T}, x, n * incx), 1:incx:(incx * n)
+)
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -368,14 +398,25 @@ function frule!!(
     return X_dX
 end
 function frule!!(
-    ::Lifted{typeof(BLAS.scal!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.scal!)}, …) deferred — needs per-lane " *
-            "BLAS call dispatch + Ptr/abstract-array V infra.",
-        ),
-    )
+    ::Lifted{typeof(BLAS.scal!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw,NDual{P,Nw}},
+    X_dX::Lifted{<:Union{Ptr{P},Array{P,1}}},
+    _incx::Lifted,
+) where {Nw,P<:BlasFloat}
+    n = primal(_n)
+    incx = primal(_incx)
+    a = primal(a_da)
+    X = primal(X_dX)
+    # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
+    for lane in 1:Nw
+        dX_lane = _blas_lane_partial(tangent(X_dX), lane)
+        da_lane = tangent(a_da).partials[lane]
+        BLAS.scal!(n, a, dX_lane, incx)
+        BLAS.axpy!(n, da_lane, X, incx, dX_lane, incx)
+    end
+    BLAS.scal!(n, a, X, incx)
+    return X_dX
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
@@ -426,18 +467,30 @@ end
 
 function frule!!(
     ::Lifted{typeof(BLAS.gemv!),Nw},
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.gemv!)}, …) deferred — needs per-lane BLAS dispatch.",
-        ),
-    )
+    tA::Lifted{Char},
+    alpha::Lifted{P,Nw,NDual{P,Nw}},
+    A_dA::Lifted{<:AbstractVecOrMat{P}},
+    x_dx::Lifted{<:AbstractVector{P}},
+    beta::Lifted{P,Nw,NDual{P,Nw}},
+    y_dy::Lifted{<:AbstractVector{P}},
+) where {Nw,P<:BlasFloat}
+    _tA = primal(tA)
+    α = primal(alpha)
+    β = primal(beta)
+    # Primal arrays come straight from each Lifted slot's `primal`.
+    A = primal(A_dA) isa AbstractVector ? reshape(primal(A_dA), :, 1) : primal(A_dA)
+    x = primal(x_dx)
+    y = primal(y_dy)
+    for lane in 1:Nw
+        dα = tangent(alpha).partials[lane]
+        dβ = tangent(beta).partials[lane]
+        dA_l = _blas_lane_partial(tangent(A_dA), lane)
+        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
+        dx = _blas_lane_partial(tangent(x_dx), lane)
+        dy = _blas_lane_partial(tangent(y_dy), lane)
+        _gemv!_frule_core!(_tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
+    end
+    return y_dy
 end
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
@@ -698,13 +751,30 @@ end
 )
 
 function frule!!(
-    ::Lifted{typeof(BLAS.trmv!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted, ::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.trmv!)}, …) deferred — needs per-lane BLAS dispatch.",
-        ),
-    )
+    ::Lifted{typeof(BLAS.trmv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A = primal(A_dA)
+    x = primal(x_dx)
+    for lane in 1:Nw
+        dA = _blas_lane_partial(tangent(A_dA), lane)
+        dx = _blas_lane_partial(tangent(x_dx), lane)
+        # Frechet: dx := A*dx + dA*x  (+ unit-diag adjustment).
+        BLAS.trmv!(uplo, trans, diag, A, dx)
+        tmp = copy(x)
+        BLAS.trmv!(uplo, trans, diag, dA, tmp)
+        dx .+= tmp
+        diag === 'U' && (dx .-= x)
+    end
+    BLAS.trmv!(uplo, trans, diag, A, x)
+    return x_dx
 end
 function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
@@ -817,13 +887,30 @@ end
     } where {T<:BlasFloat},
 )
 function frule!!(
-    ::Lifted{typeof(BLAS.trsv!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted, ::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.trsv!)}, …) deferred — needs per-lane BLAS dispatch.",
-        ),
-    )
+    ::Lifted{typeof(BLAS.trsv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A = primal(A_dA)
+    x = primal(x_dx)
+    # Primal first — subsequent lane work needs the new `x`.
+    BLAS.trsv!(uplo, trans, diag, A, x)
+    for lane in 1:Nw
+        dA = _blas_lane_partial(tangent(A_dA), lane)
+        dx = _blas_lane_partial(tangent(x_dx), lane)
+        BLAS.trsv!(uplo, trans, diag, A, dx)
+        tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+        diag === 'U' && (tmp .-= x)
+        BLAS.trsv!(uplo, trans, diag, A, tmp)
+        dx .-= tmp
+    end
+    return x_dx
 end
 function frule!!(
     ::Dual{typeof(BLAS.trsv!)},
@@ -932,19 +1019,45 @@ end
 
 function frule!!(
     ::Lifted{typeof(BLAS.gemm!),Nw},
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.gemm!)}, …) deferred — needs per-lane BLAS dispatch.",
-        ),
-    )
+    transA::Lifted{Char},
+    transB::Lifted{Char},
+    alpha::Lifted{T,Nw,NDual{T,Nw}},
+    A_dA::Lifted{<:AbstractVecOrMat{T}},
+    B_dB::Lifted{<:AbstractVecOrMat{T}},
+    beta::Lifted{T,Nw,NDual{T,Nw}},
+    C_dC::Lifted{<:AbstractMatrix{T}},
+) where {Nw,T<:BlasFloat}
+    tA = primal(transA)
+    tB = primal(transB)
+    α = primal(alpha)
+    β = primal(beta)
+    Ap = primal(A_dA)
+    Bp = primal(B_dB)
+    Cp = primal(C_dC)
+    A = Ap isa AbstractVector ? reshape(Ap, :, 1) : Ap
+    B = Bp isa AbstractVector ? reshape(Bp, :, 1) : Bp
+    for lane in 1:Nw
+        dα = tangent(alpha).partials[lane]
+        dβ = tangent(beta).partials[lane]
+        dA_l = _blas_lane_partial(tangent(A_dA), lane)
+        dB_l = _blas_lane_partial(tangent(B_dB), lane)
+        dC = _blas_lane_partial(tangent(C_dC), lane)
+        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
+        dB = dB_l isa AbstractVector ? reshape(dB_l, :, 1) : dB_l
+        # Tangents (product rule), matching the bare-Dual body.
+        BLAS.gemm!(tA, tB, α, dA, B, β, dC)
+        BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
+        if !iszero(dα)
+            BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
+        end
+        if !iszero(dβ)
+            @inbounds for n in eachindex(Cp)
+                dC[n] = ifelse_nan(Cp[n], dC[n], dC[n] + dβ * Cp[n])
+            end
+        end
+    end
+    BLAS.gemm!(tA, tB, α, A, B, β, Cp)
+    return C_dC
 end
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
@@ -1320,19 +1433,34 @@ end
 )
 function frule!!(
     ::Lifted{typeof(BLAS.trmm!),Nw},
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-    ::Lifted,
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(BLAS.trmm!)}, …) deferred — needs per-lane BLAS dispatch.",
-        ),
-    )
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _ta::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw,NDual{P,Nw}},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
+) where {Nw,P<:BlasFloat}
+    side = primal(_side)
+    uplo = primal(_uplo)
+    ta = primal(_ta)
+    diag = primal(_diag)
+    α = primal(α_dα)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    for lane in 1:Nw
+        dα = tangent(α_dα).partials[lane]
+        dA = _blas_lane_partial(tangent(A_dA), lane)
+        dB = _blas_lane_partial(tangent(B_dB), lane)
+        BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
+        dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
+        diag === 'U' && (dB .-= α .* B)
+        if !iszero(dα)
+            dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+        end
+    end
+    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    return B_dB
 end
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},

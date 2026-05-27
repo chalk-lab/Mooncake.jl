@@ -273,20 +273,11 @@ function frule!!(::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}) where {R,A,P}
     t, _ = _function_wrapper_tangent(R, primal(obj), A, tangent(obj))
     return Dual(FunctionWrapper{R,A}(primal(obj)), t)
 end
-# Lifted parallel deferred — `_function_wrapper_tangent` builds a wrapper
-# that holds a bare-Dual frule callable; converting to Lifted needs the
-# Final-task interpreter cutover so the wrapper's frule is Lifted-dispatched.
-function frule!!(
-    ::Mooncake.Lifted{Type{FunctionWrapper{R,A}},Nw}, obj::Mooncake.Lifted
-) where {Nw,R,A}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{Type{FunctionWrapper}}, …) deferred — needs Final-task " *
-            "interpreter cutover so `_function_wrapper_tangent` produces a " *
-            "Lifted-dispatched callable.",
-        ),
-    )
-end
+# Lifted parallel omitted — `_function_wrapper_tangent` returns a wrapper
+# closing over a bare-Dual frule callable; mirroring it for Lifted requires
+# the Final-task interpreter cutover (so `build_frule` produces a
+# Lifted-dispatched callable). Once that lands, add the Lifted parallel
+# here. Until then, a Lifted-arg call falls through to a generic MethodError.
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
 function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
@@ -299,17 +290,9 @@ function frule!!(f::Dual{FunctionWrapper{R,A}}, x::Vararg{Dual}) where {R,A}
     _tangent = tangent(f)
     return _tangent.frule_wrapper(x...)
 end
-# Lifted parallel deferred — `_tangent.frule_wrapper` is a bare-Dual
-# callable; needs Final-task interpreter cutover for Lifted dispatch.
-function frule!!(
-    f::Mooncake.Lifted{FunctionWrapper{R,A},Nw}, x::Vararg{Mooncake.Lifted,M}
-) where {Nw,R,A,M}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{<:FunctionWrapper}, …) deferred — needs Final-task " *
-            "interpreter cutover so `frule_wrapper` is Lifted-dispatched.",
-        ),
-    )
-end
+# Lifted parallel omitted — `frule_wrapper` is a bare-Dual callable; once
+# the interpreter cutover gives us a Lifted-dispatched callable in the
+# wrapper, this Lifted parallel can be added (a simple `_tangent.frule_wrapper(x...)`
+# call on Lifted x will then dispatch correctly).
 
 end

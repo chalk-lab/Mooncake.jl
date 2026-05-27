@@ -302,6 +302,14 @@ end
 @inline function dual_type(::Val{N}, ::Type{NamedTuple{names,T}}) where {N,names,T<:Tuple}
     return NamedTuple{names,dual_type(Val(N), T)}
 end
+# `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
+# entry: N parallel partial pointers, one per lane. Matches reverse-mode
+# `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
+# Restricted to `NDualEltype` (`IEEEFloat | Complex{<:IEEEFloat}`); other
+# element types stay unhandled.
+@inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
+    return NTuple{N,Ptr{T}}
+end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
 # an NDualArray over `Memory{T}` (per dual-types.md §14: "Memory{T}
@@ -377,6 +385,9 @@ end
     ::Val{N}, ::Type{P}
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
     return Lifted{P,N,dual_type(Val(N), P)}
+end
+@inline function lifted_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
+    return Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}
 end
 # MemoryRef + Memory canonical lifts (Julia 1.11+).
 @static if VERSION >= v"1.11-rc4"
