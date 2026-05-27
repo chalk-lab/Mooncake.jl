@@ -100,11 +100,8 @@ stop_gradient(x) = x
 
 @is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
 
-function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
-    return zero_dual(primal(x))
-end
-# Lifted parallel — `stop_gradient` zeros all derivative information, so
-# the result V is `NoTangent` regardless of input shape.
+# `stop_gradient` zeros all derivative information, so the result V is
+# `NoDual` regardless of input shape.
 function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
     p = primal(x)
     return Lifted{typeof(p),Nw}(p, NoDual())
