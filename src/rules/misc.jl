@@ -103,6 +103,12 @@ stop_gradient(x) = x
 function frule!!(::Dual{typeof(stop_gradient)}, x::Dual)
     return zero_dual(primal(x))
 end
+# Lifted parallel — `stop_gradient` zeros all derivative information, so
+# the result V is `NoTangent` regardless of input shape.
+function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
+    p = primal(x)
+    return Lifted{typeof(p),Nw}(p, NoTangent())
+end
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     # Copy fdata so that in-place gradient accumulation into the output does not
@@ -141,6 +147,24 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     else
         Dual(primal_field, _get_tangent_field(tangent(x), f))
     end
+end
+# Lifted-arg parallel — generic field access across all V shapes (Tuple,
+# NamedTuple, ImmutableDual, MutableDual, …) needs a unified
+# `_get_lifted_field` dispatch that doesn't exist yet. Deferred until
+# that helper lands (or until per-V-shape specialized Lifted-arg rules
+# are added alongside the more-specific frules in tasks.jl / complex.jl /
+# memory.jl which already handle their concrete V cases).
+@inline function frule!!(
+    ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}
+) where {Nw,f}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(lgetfield)}, ::Lifted, ::Lifted{Val}) generic " *
+            "fallback deferred — needs per-V-shape field-tangent accessors. Concrete " *
+            "shapes (Memory/MemoryRef/Array, Task, Complex) have their own Lifted " *
+            "lgetfield rules in the relevant rule files.",
+        ),
+    )
 end
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
@@ -209,6 +233,16 @@ end
         return Dual(primal_field, _get_tangent_field(tangent(x), f))
     end
 end
+@inline function frule!!(
+    ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, ::Lifted{Val{order}}
+) where {Nw,f,order}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(lgetfield)}, ::Lifted, ::Lifted{Val}, ::Lifted{Val}) " *
+            "generic fallback deferred — same reason as the 2-arg lgetfield Lifted rule.",
+        ),
+    )
+end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
@@ -234,6 +268,18 @@ end
     ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
 ) where {P,T<:StandardTangentType}
     return lsetfield_frule(value, name, x)
+end
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw}, value::Lifted, name::Lifted, x::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(lsetfield!)}, …) generic fallback deferred — " *
+            "needs per-V-shape field-tangent writers (mirroring lgetfield). The " *
+            "concrete tasks.jl Lifted lsetfield! rule on Task already handles the " *
+            "TaskTangent V case.",
+        ),
+    )
 end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
@@ -284,6 +330,17 @@ end
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
         return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
+    end
+    # Lifted parallel — same Dict copy semantics; deferred because the
+    # `_copy_dict_tangent` helper operates on `MutableTangent` (reverse-mode
+    # shape), and the Lifted forward V for Dict isn't defined yet.
+    function frule!!(::Lifted{typeof(copy),Nw}, a::Lifted{<:Dict}) where {Nw}
+        return throw(
+            ErrorException(
+                "frule!!(::Lifted{typeof(copy)}, ::Lifted{<:Dict}) deferred — " *
+                "needs `dual_type(Val(N), Dict)` plus a `_copy_dict_lifted` helper.",
+            ),
+        )
     end
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)

@@ -5,6 +5,19 @@
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
+# Lifted parallel deferred — needs Ptr canonical V (the bare-Dual rule
+# shifts `tangent(x)::Ptr` alongside the primal; per-lane Ptrs need
+# infrastructure that's not yet built).
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, ::Lifted{<:Ptr}, ::Lifted{<:Integer}
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(Base.:(+))}, ::Lifted{<:Ptr}, …) deferred — " *
+            "needs Ptr canonical V.",
+        ),
+    )
+end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end
