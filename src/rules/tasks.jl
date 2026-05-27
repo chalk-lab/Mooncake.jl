@@ -85,8 +85,21 @@ end
 const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
+# Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.
+# All Task fields are non-differentiable, so the tangent carries no lane
+# data; we keep one shared `TaskTangent` per slot independent of width N.
+@inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
+@inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
+
 function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
     return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+end
+function frule!!(
+    ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
+) where {N,f}
+    y = getfield(primal(x), f)
+    dy = _get_tangent_field(tangent(x), f)  # always NoTangent() for Task fields
+    return Lifted{typeof(y),N}(y, dy)
 end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
@@ -101,12 +114,31 @@ end
 function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
     return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
 end
+function frule!!(
+    ::Lifted{typeof(getfield),N}, x::Lifted{Task,N,TaskTangent}, f::Lifted
+) where {N}
+    y = getfield(primal(x), primal(f))
+    dy = _get_tangent_field(tangent(x), primal(f))
+    return Lifted{typeof(y),N}(y, dy)
+end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
 function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
     return lsetfield_frule(task, name, val)
+end
+function frule!!(
+    ::Lifted{typeof(lsetfield!),N},
+    task::Lifted{Task,N,TaskTangent},
+    ::Lifted{Val{name},N},
+    val::Lifted,
+) where {N,name}
+    # Inline body — `set_tangent_field!(::TaskTangent, ::Symbol, ::NoTangent)` is
+    # a no-op (Task fields are non-differentiable), so we only mutate the
+    # user's Task primal and return the new-value slot unchanged.
+    setfield!(primal(task), name, primal(val))
+    return val
 end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)
