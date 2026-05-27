@@ -16,7 +16,9 @@ import Mooncake:
     zero_fcodual,
     NoRData,
     extract,
-    arrayify
+    arrayify,
+    Lifted,
+    NDualArray
 using Mooncake.Nfwd: NDual
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
@@ -156,6 +158,31 @@ function frule!!(
     dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
     return Dual(y, dy)
 end
+# Lifted parallel — handles both scalar (Colon dims) and array (Int/Tuple
+# dims) result shapes. Per-lane scalar/array reduction.
+function frule!!(
+    ::Lifted{typeof(Core.kwcall),Nw},
+    kwargs::Lifted{<:NamedTuple,Nw},
+    ::Lifted{typeof(logsumexp),Nw},
+    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,D}
+    _x = primal(x)
+    kw = primal(kwargs)
+    y = logsumexp(_x; kw...)
+    if y isa AbstractArray
+        # Array result — each lane's partial is the same shape as y.
+        dy_partials = ntuple(
+            lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y); kw...), Val(Nw)
+        )
+        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
+    else
+        # Scalar result.
+        dy_lanes = ntuple(
+            lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y); kw...), Val(Nw)
+        )
+        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+    end
+end
 function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
@@ -167,6 +194,23 @@ function frule!!(
         @inbounds dy += _dx[i] * exp(_x[i] - y)
     end
     return Dual(y, dy)
+end
+# Lifted parallel — per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
+function frule!!(
+    ::Lifted{typeof(logsumexp),Nw},
+    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,D}
+    _x = primal(x)
+    y = logsumexp(_x)
+    dy_lanes = ntuple(Val(Nw)) do lane
+        _dx = tangent(x).partials[lane]
+        s = zero(P)
+        @inbounds for i in eachindex(_dx)
+            s += _dx[i] * exp(_x[i] - y)
+        end
+        s
+    end
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -220,6 +264,20 @@ function frule!!(
     y, _dy = arrayify(out)
     logsumexp!(y, _x)
     sum!(_dy, _dx .* exp.(_x .- y))
+    return out
+end
+# Lifted parallel — per-lane in-place `sum!` into `tangent(out).partials[lane]`.
+function frule!!(
+    ::Lifted{typeof(logsumexp!),Nw},
+    out::Lifted{Array{P,Do},Nw,NDualArray{P,Nw,Do,Array{P,Do},NDual{P,Nw}}},
+    x::Lifted{Array{P,Dx},Nw,NDualArray{P,Nw,Dx,Array{P,Dx},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,Do,Dx}
+    _x = primal(x)
+    y = primal(out)
+    logsumexp!(y, _x)
+    for lane in 1:Nw
+        sum!(tangent(out).partials[lane], tangent(x).partials[lane] .* exp.(_x .- y))
+    end
     return out
 end
 function rrule!!(
