@@ -447,8 +447,25 @@ end
         abs_float = Mooncake.IntrinsicsWrappers.abs_float
         add_float = Mooncake.IntrinsicsWrappers.add_float
         add_float_fast = Mooncake.IntrinsicsWrappers.add_float_fast
+        copysign_float = Mooncake.IntrinsicsWrappers.copysign_float
+        div_float = Mooncake.IntrinsicsWrappers.div_float
+        div_float_fast = Mooncake.IntrinsicsWrappers.div_float_fast
         N = 2
         T = Float64
+
+        # `test_rule` exercises each rule end-to-end through the framework's
+        # interpreter against finite-difference references. It currently
+        # tests the bare-`Dual` path (the interpreter wraps args as `Dual`);
+        # post-Final-task interpreter cutover it will automatically cover the
+        # `Lifted` parallels below.
+        if isdefined(@__MODULE__, :test_rule)
+            test_rule(MersenneTwister(0), abs_float, -3.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), add_float, 1.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), add_float_fast, 1.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), copysign_float, 2.0, -3.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), div_float, 6.0, 2.0; perf_flag=:none)
+            test_rule(MersenneTwister(0), div_float_fast, 6.0, 2.0; perf_flag=:none)
+        end
 
         # abs_float: y = abs(x); dy = sign(x) * dx.
         x_inner = Mooncake.NDual{T,N}(-3.0, (1.0, -1.0))
@@ -478,7 +495,6 @@ end
         @test Mooncake.tangent(r_fast).partials === (1.0, 1.0)
 
         # copysign_float: z = copysign(x, y); dz = sign(y) * dx.
-        copysign_float = Mooncake.IntrinsicsWrappers.copysign_float
         x2 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (1.0, 0.0)))
         yneg = Mooncake.Lifted{T,N}(-3.0, Mooncake.NDual{T,N}(-3.0, (0.0, 1.0)))
         cf = Mooncake.Lifted{typeof(copysign_float),N}(copysign_float, Mooncake.NoTangent())
@@ -487,7 +503,6 @@ end
         @test Mooncake.tangent(r_cs).partials == (-1.0, 0.0)  # sign(-3)*(1,0); -0.0 ok
 
         # div_float: c = a/b; dc = (da*b - a*db)/b^2.
-        div_float = Mooncake.IntrinsicsWrappers.div_float
         a2 = Mooncake.Lifted{T,N}(6.0, Mooncake.NDual{T,N}(6.0, (1.0, 0.0)))
         b2 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (0.0, 1.0)))
         df = Mooncake.Lifted{typeof(div_float),N}(div_float, Mooncake.NoTangent())
@@ -497,7 +512,6 @@ end
         @test Mooncake.tangent(r_div).partials === (0.5, -1.5)
 
         # div_float_fast: same shape.
-        div_float_fast = Mooncake.IntrinsicsWrappers.div_float_fast
         dff = Mooncake.Lifted{typeof(div_float_fast),N}(
             div_float_fast, Mooncake.NoTangent()
         )
