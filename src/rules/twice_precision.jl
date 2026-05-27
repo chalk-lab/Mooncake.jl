@@ -350,6 +350,20 @@ function frule!!(
     dx = Tx((ref=tangent(a), step=tangent(st), len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(range_start_step_length),N},
+    a::Lifted{T,N,NDual{T,N}},
+    st::Lifted{T,N,NDual{T,N}},
+    len::Lifted{<:Integer},
+) where {N,T<:IEEEFloat}
+    y = range_start_step_length(primal(a), primal(st), primal(len))
+    a_parts = tangent(a).partials
+    st_parts = tangent(st).partials
+    ref_v = ntuple(k -> TWP{T}(a_parts[k], zero(T)), Val(N))
+    step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
+    nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
+    return Lifted{typeof(y),N}(y, ImmutableDual(nt))
+end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
     a::CoDual{T},
@@ -371,6 +385,21 @@ function frule!!(
     dstep = _get_tangent_field(tangent(r), :step)
     dx = eltype(P)(dref + dstep * (primal(i) - primal(r).offset))
     return Dual(x, dx)
+end
+function frule!!(
+    ::Lifted{typeof(unsafe_getindex),N},
+    r::Lifted{P,N,<:ImmutableDual},
+    i::Lifted{<:Integer},
+) where {N,P<:TWPStepRangeLen}
+    _r = primal(r)
+    _i = primal(i)
+    x = unsafe_getindex(_r, _i)
+    Eout = eltype(P)
+    ref_v = tangent(r).value.ref  # NTuple{N, TWP{T}}
+    step_v = tangent(r).value.step  # NTuple{N, TWP{T}}
+    offset = _r.offset
+    dy_lanes = ntuple(k -> Eout(ref_v[k] + step_v[k] * (_i - offset)), Val(N))
+    return Lifted{Eout,N}(x, NDual{Eout,N}(x, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_getindex)}, r::CoDual{P}, i::CoDual{<:Integer}
@@ -399,6 +428,21 @@ function frule!!(
     dx = (primal(i) - offset) * dstep + dref
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(_getindex_hiprec),N},
+    r::Lifted{P,N,<:ImmutableDual},
+    i::Lifted{<:Integer},
+) where {N,P<:TWPStepRangeLen}
+    _r = primal(r)
+    _i = primal(i)
+    x = _getindex_hiprec(_r, _i)
+    Pout = typeof(x)
+    ref_v = tangent(r).value.ref
+    step_v = tangent(r).value.step
+    offset = _r.offset
+    dy_lanes = ntuple(k -> (_i - offset) * step_v[k] + ref_v[k], Val(N))
+    return Lifted{Pout,N}(x, dy_lanes)
+end
 function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
 ) where {P<:TWPStepRangeLen}
@@ -422,6 +466,20 @@ function frule!!(
     dx = T((ref=tangent(start), step=tangent(step), len=NoTangent(), offset=NoTangent()))
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(:),N},
+    start::Lifted{P,N,NDual{P,N}},
+    step::Lifted{P,N,NDual{P,N}},
+    stop::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
+    y = (:)(primal(start), primal(step), primal(stop))
+    start_parts = tangent(start).partials
+    step_parts = tangent(step).partials
+    ref_v = ntuple(k -> TWP{P}(start_parts[k], zero(P)), Val(N))
+    step_v = ntuple(k -> TWP{P}(step_parts[k], zero(P)), Val(N))
+    nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
+    return Lifted{typeof(y),N}(y, ImmutableDual(nt))
+end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
@@ -438,6 +496,21 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{P}) where {P<:TWPStepRangeLen}
     dstep = _get_tangent_field(tangent(x), :step)
     dy = dref * l + dstep * (0.5 * l * (l + 1) - l * offset)
     return Dual(y, typeof(y)(dy))
+end
+function frule!!(
+    ::Lifted{typeof(sum),N}, x::Lifted{P,N,<:ImmutableDual}
+) where {N,P<:TWPStepRangeLen}
+    _x = primal(x)
+    y = sum(_x)
+    l = _x.len
+    offset = _x.offset
+    ref_v = tangent(x).value.ref
+    step_v = tangent(x).value.step
+    Yout = typeof(y)
+    dy_lanes = ntuple(
+        k -> Yout(ref_v[k] * l + step_v[k] * (0.5 * l * (l + 1) - l * offset)), Val(N)
+    )
+    return Lifted{Yout,N}(y, NDual{Yout,N}(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{P}) where {P<:TWPStepRangeLen}
     l = x.x.len
