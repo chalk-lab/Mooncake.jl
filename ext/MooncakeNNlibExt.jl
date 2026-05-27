@@ -28,7 +28,9 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual
+    Dual,
+    Lifted,
+    NDualArray
 
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
@@ -310,6 +312,21 @@ function frule!!(
 ) where {N,M}
     primal(x) .+= primal(b)
     tangent(x) .+= tangent(b)
+    return x
+end
+# Lifted parallel — restricted to plain `Array{P, N/M}` (other SupportedArray
+# shapes — `AbstractGPUArray`, `Adjoint`, `Transpose` — need their own
+# canonical V which isn't yet defined). Per-lane partial broadcast.
+function frule!!(
+    ::Lifted{typeof(bias_act!),Nw},
+    ::Lifted{typeof(identity),Nw},
+    x::Lifted{Array{P,N},Nw,NDualArray{P,Nw,N,Array{P,N},NDual{P,Nw}}},
+    b::Lifted{Array{P,M},Nw,NDualArray{P,Nw,M,Array{P,M},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,N,M}
+    primal(x) .+= primal(b)
+    for lane in 1:Nw
+        tangent(x).partials[lane] .+= tangent(b).partials[lane]
+    end
     return x
 end
 function rrule!!(
