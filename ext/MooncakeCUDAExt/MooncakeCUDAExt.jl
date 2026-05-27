@@ -79,6 +79,11 @@ import Mooncake:
     RData,
     nan_tangent_guard,
     NDual,
+    NDualArray,
+    Lifted,
+    NoDual,
+    dual_type,
+    lifted_type,
     Nfwd
 
 import Mooncake.TestUtils:
@@ -183,6 +188,28 @@ end
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
+
+# Forward-mode canonical V for CUDA primitives — mirrors the host
+# (`Array{T,D}` / `Ptr{T}` / etc.) V shapes:
+#
+#   CuArray{T<:IEEEFloat,D}            → NDualArray{T,N,D,CuArray{T,D},NDual{T,N}}
+#   CuArray{Complex{R<:IEEEFloat},D}   → NDualArray{Complex{R},N,D,…,Complex{NDual{R,N}}}
+#   CuPtr{T}                            → NTuple{N, CuPtr{T}}
+#   CuDataRef (any memory-kind variant) → NoDual (opaque handle)
+#
+# `NDualArray` accepts any `AbstractArray{T,D}` storage by construction;
+# verified to work with CuArray (via the monkey-patch experiment
+# documented in feedback_cuda_cutover_plan.md).
+@inline function dual_type(::Val{N}, ::Type{P}) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
+    return NDualArray{T,N,D,P,NDual{T,N}}
+end
+@inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}}}
+end
+@inline dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T} = NTuple{N,CuPtr{T}}
+@inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
