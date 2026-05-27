@@ -169,6 +169,24 @@ end
     return a
 end
 
+# Extract a width-1 Lifted slot's tangent in the shape of `tangent_type(P)`.
+# Inverse-ish of `lift_from_tangent(primal, ẋ)`: where `lift_from_tangent` packs a tangent_type
+# value into V, `unlift_to_tangent` unpacks it for FD comparison and similar
+# tangent-shape operations in the test framework.
+@inline unlift_to_tangent(x::Lifted{T,1,NDual{T,1}}) where {T<:IEEEFloat} = tangent(x).partials[1]
+@inline unlift_to_tangent(x::Lifted{A,1,<:NDualArray}) where {A<:AbstractArray} = tangent(
+    x
+).partials[1]
+@inline function unlift_to_tangent(
+    x::Lifted{Complex{R},1,Complex{NDual{R,1}}}
+) where {R<:IEEEFloat}
+    v = tangent(x)
+    return Complex(real(v).partials[1], imag(v).partials[1])
+end
+@inline unlift_to_tangent(::Lifted{P,1,NoDual}) where {P} = NoTangent()
+# Function singletons and other empty structural lifts → NoTangent.
+@inline unlift_to_tangent(::Lifted{P,1,ImmutableDual{@NamedTuple{}}}) where {P} = NoTangent()
+
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
@@ -484,18 +502,20 @@ end
 
 # ── Width-1 boundary helper for user-supplied tangents ──────────────────────
 #
-# `_lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
+# `lift_from_tangent(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
 # a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
 # (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
 # direction, and by the upcoming interpreter cutover boundary.
-@inline _lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
-@inline function _lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
+@inline lift_from_tangent(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(
+    x, NDual{T,1}(x, (ẋ,))
+)
+@inline function lift_from_tangent(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
     return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
 end
-@inline function _lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+@inline function lift_from_tangent(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
     return Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
 end
-@inline function _lift(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
+@inline function lift_from_tangent(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
     re = NDual{R,1}(real(x), (real(ẋ),))
     im_ = NDual{R,1}(imag(x), (imag(ẋ),))
     return Lifted{Complex{R},1}(x, Complex{NDual{R,1}}(re, im_))
@@ -504,9 +524,9 @@ end
 # so the V matches `dual_type(Val(1), typeof(x))` for any non-diff primal:
 # `NoDual` for primitive types like Int/Symbol, `ImmutableDual{@NamedTuple{}}`
 # for function singletons, etc.
-@inline _lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
+@inline lift_from_tangent(x, ::NoTangent) = uninit_lifted(Val(1), x)
 # Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
-@inline _lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+@inline lift_from_tangent(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
