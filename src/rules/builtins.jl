@@ -1049,6 +1049,18 @@ function frule!!(
     tv = getindex(tangent(v), ind)
     return Dual(pv, tv)
 end
+# Lifted parallel — `Core.SimpleVector` carries no canonical V (its
+# `tangent_type` is `Vector{Any}` for reverse mode, but Lifted has no
+# single-tangent slot to store that). SimpleVector elements are typically
+# non-differentiable types (DataType, Symbol, Method, …), so the
+# canonical V for the output is `NoDual`. Matches the pointer_from_objref
+# treatment for "informational tangents under forward Lifted".
+function frule!!(
+    ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
+) where {Nw}
+    pv = Core._svec_ref(primal(v), primal(_ind))
+    return Lifted{typeof(pv),Nw}(pv, NoDual())
+end
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
 )
@@ -1080,6 +1092,14 @@ function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     # Tangent type for `SimpleVector` is `Vector{Any}`
     dual_output = collect(Any, map(tangent, args))
     return Dual(primal_output, dual_output)
+end
+# Lifted parallel — output `SimpleVector` is treated as non-differentiable
+# from forward-mode's perspective. The bare-Dual rule packs args' tangents
+# into a `Vector{Any}` for reverse-mode use, but Lifted has no per-lane
+# Vector{Any} V shape — elements typically share `NoDual` V anyway.
+function frule!!(f::Lifted{typeof(svec),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    primal_output = svec(tuple_map(primal, args)...)
+    return Lifted{Core.SimpleVector,Nw}(primal_output, NoDual())
 end
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
