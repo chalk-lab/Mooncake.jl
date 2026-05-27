@@ -59,6 +59,23 @@ zero_rdata(p::TWP) = zero_tangent(p)
 zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 
 #
+# Forward-mode canonical V for `TwicePrecision{P}` — `NTuple{N, TWP{P}}`,
+# i.e. `N` parallel TWP-typed partials, one per lane. Mirrors the
+# reverse-mode `tangent_type(TWP) === TWP` shape at the per-lane level,
+# echoing the Ptr V pattern (a single primitive-leaf type carrying N
+# parallel copies). The structural-lift fallback doesn't apply here
+# because TWP is conceptually a single number, not a struct with
+# differentiable fields.
+#
+
+@inline function dual_type(::Val{N}, ::Type{TwicePrecision{P}}) where {N,P<:IEEEFloat}
+    return NTuple{N,TwicePrecision{P}}
+end
+@inline function lifted_type(::Val{N}, ::Type{TwicePrecision{P}}) where {N,P<:IEEEFloat}
+    return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
+end
+
+#
 # Rules. These are required for a lot of functionality in this case.
 #
 
@@ -69,6 +86,18 @@ function frule!!(
     x = _new_(TWP{P}, primal(hi), primal(lo))
     dx = _new_(TWP{P}, tangent(hi), tangent(lo))
     return Dual(x, dx)
+end
+function frule!!(
+    ::Lifted{typeof(_new_),N},
+    ::Lifted{Type{TWP{P}},N},
+    hi::Lifted{P,N,NDual{P,N}},
+    lo::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
+    x = _new_(TWP{P}, primal(hi), primal(lo))
+    hi_parts = tangent(hi).partials
+    lo_parts = tangent(lo).partials
+    dx = ntuple(k -> _new_(TWP{P}, hi_parts[k], lo_parts[k]), Val(N))
+    return Lifted{TWP{P},N}(x, dx)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{TWP{P}}}, hi::CoDual{P}, lo::CoDual{P}
@@ -85,6 +114,15 @@ function frule!!(
     dx = twiceprecision(tangent(val), primal(nb))
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(twiceprecision),N}, val::Lifted{P,N,NDual{P,N}}, nb::Lifted{<:Integer}
+) where {N,P<:IEEEFloat}
+    _nb = primal(nb)
+    x = twiceprecision(primal(val), _nb)
+    val_parts = tangent(val).partials
+    dx = ntuple(k -> twiceprecision(val_parts[k], _nb), Val(N))
+    return Lifted{TWP{P},N}(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:IEEEFloat}
@@ -100,6 +138,15 @@ function frule!!(
     dx = twiceprecision(tangent(val), primal(nb))
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(twiceprecision),N}, val::Lifted{P,N,NTuple{N,P}}, nb::Lifted{<:Integer}
+) where {N,P<:TWP}
+    _nb = primal(nb)
+    x = twiceprecision(primal(val), _nb)
+    val_parts = tangent(val)
+    dx = ntuple(k -> twiceprecision(val_parts[k], _nb), Val(N))
+    return Lifted{P,N}(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(twiceprecision)}, val::CoDual{P}, nb::CoDual{<:Integer}
 ) where {P<:TWP}
@@ -111,6 +158,14 @@ end
 function frule!!(::Dual{Type{P}}, x::Dual{S}) where {P<:IEEEFloat,S<:TWP}
     return Dual(P(primal(x)), P(tangent(x)))
 end
+function frule!!(
+    ::Lifted{Type{P},N}, x::Lifted{S,N,NTuple{N,S}}
+) where {N,P<:IEEEFloat,S<:TWP}
+    y = P(primal(x))
+    x_parts = tangent(x)
+    dy = ntuple(k -> P(x_parts[k]), Val(N))
+    return Lifted{P,N}(y, NDual{P,N}(y, dy))
+end
 function rrule!!(::CoDual{Type{P}}, x::CoDual{S}) where {P<:IEEEFloat,S<:TWP}
     float_from_twice_precision_pb(dy::P) = NoRData(), S(dy)
     return zero_fcodual(P(x.x)), float_from_twice_precision_pb
@@ -118,6 +173,12 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(-),TWP}
 frule!!(::Dual{typeof(-)}, x::Dual{P}) where {P<:TWP} = Dual(-primal(x), -tangent(x))
+function frule!!(::Lifted{typeof(-),N}, x::Lifted{P,N,NTuple{N,P}}) where {N,P<:TWP}
+    y = -primal(x)
+    x_parts = tangent(x)
+    dy = ntuple(k -> -x_parts[k], Val(N))
+    return Lifted{P,N}(y, dy)
+end
 function rrule!!(::CoDual{typeof(-)}, x::CoDual{P}) where {P<:TWP}
     negate_twice_precision_pb(dy::P) = NoRData(), -dy
     return zero_fcodual(-(x.x)), negate_twice_precision_pb
@@ -126,6 +187,15 @@ end
 @is_primitive MinimalCtx Tuple{typeof(+),TWP,IEEEFloat}
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEEEFloat}
     return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
+end
+function frule!!(
+    ::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
+) where {N,P<:TWP,S<:IEEEFloat}
+    z = primal(x) + primal(y)
+    x_parts = tangent(x)
+    y_parts = tangent(y).partials
+    dz = ntuple(k -> x_parts[k] + y_parts[k], Val(N))
+    return Lifted{P,N}(z, dz)
 end
 function rrule!!(
     ::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{S}
@@ -138,6 +208,15 @@ end
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{P}) where {P<:TWP}
     return Dual(primal(x) + primal(y), tangent(x) + tangent(y))
 end
+function frule!!(
+    ::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{P,N,NTuple{N,P}}
+) where {N,P<:TWP}
+    z = primal(x) + primal(y)
+    x_parts = tangent(x)
+    y_parts = tangent(y)
+    dz = ntuple(k -> x_parts[k] + y_parts[k], Val(N))
+    return Lifted{P,N}(z, dz)
+end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{P}) where {P<:TWP}
     plus_pullback(dz::P) = NoRData(), dz, dz
     return zero_fcodual(x.x + y.x), plus_pullback
@@ -146,6 +225,12 @@ end
 @is_primitive MinimalCtx Tuple{typeof(+),TWP,Integer}
 function frule!!(::Dual{typeof(+)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
     return Dual(primal(x) + primal(y), tangent(x))
+end
+function frule!!(
+    ::Lifted{typeof(+),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
+) where {N,P<:TWP}
+    z = primal(x) + primal(y)
+    return Lifted{P,N}(z, tangent(x))
 end
 function rrule!!(::CoDual{typeof(+)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     plus_twice_precision_integer_pb(dz::P) = NoRData(), dz, NoRData()
@@ -157,6 +242,17 @@ function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEE
     z = primal(x) * primal(y)
     dz = primal(x) * tangent(y) + tangent(x) * primal(y)
     return Dual(z, dz)
+end
+function frule!!(
+    ::Lifted{typeof(*),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
+) where {N,P<:TWP,S<:IEEEFloat}
+    xp = primal(x)
+    yp = primal(y)
+    z = xp * yp
+    x_parts = tangent(x)
+    y_parts = tangent(y).partials
+    dz = ntuple(k -> xp * y_parts[k] + x_parts[k] * yp, Val(N))
+    return Lifted{P,N}(z, dz)
 end
 function rrule!!(
     ::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{S}
@@ -170,6 +266,15 @@ end
 function frule!!(::Dual{typeof(*)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
     return Dual(primal(x) * primal(y), tangent(x) * primal(y))
 end
+function frule!!(
+    ::Lifted{typeof(*),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
+) where {N,P<:TWP}
+    yp = primal(y)
+    z = primal(x) * yp
+    x_parts = tangent(x)
+    dz = ntuple(k -> x_parts[k] * yp, Val(N))
+    return Lifted{P,N}(z, dz)
+end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
     mul_twice_precision_and_int_pb(dz::P) = NoRData(), dz * _y, NoRData()
@@ -182,6 +287,17 @@ function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{S}) where {P<:TWP,S<:IEE
     dz = tangent(x) / primal(y) - tangent(y) * primal(x) / primal(y)^2
     return Dual(z, dz)
 end
+function frule!!(
+    ::Lifted{typeof(/),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{S,N,NDual{S,N}}
+) where {N,P<:TWP,S<:IEEEFloat}
+    xp = primal(x)
+    yp = primal(y)
+    z = xp / yp
+    x_parts = tangent(x)
+    y_parts = tangent(y).partials
+    dz = ntuple(k -> x_parts[k] / yp - y_parts[k] * xp / yp^2, Val(N))
+    return Lifted{P,N}(z, dz)
+end
 function rrule!!(
     ::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{S}
 ) where {P<:TWP,S<:IEEEFloat}
@@ -193,6 +309,15 @@ end
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,Integer}
 function frule!!(::Dual{typeof(/)}, x::Dual{P}, y::Dual{<:Integer}) where {P<:TWP}
     return Dual(primal(x) / primal(y), tangent(x) / primal(y))
+end
+function frule!!(
+    ::Lifted{typeof(/),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
+) where {N,P<:TWP}
+    yp = primal(y)
+    z = primal(x) / yp
+    x_parts = tangent(x)
+    dz = ntuple(k -> x_parts[k] / yp, Val(N))
+    return Lifted{P,N}(z, dz)
 end
 function rrule!!(::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
