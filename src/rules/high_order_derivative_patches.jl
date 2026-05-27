@@ -295,6 +295,18 @@ end
     )
         return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
     end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_genericmemory_owner},Nw},
+        ::Lifted{Val{Any},Nw},
+        ::Lifted{Tuple{Val{Any}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        a::Lifted{<:Memory},
+    ) where {Nw}
+        y = ccall(:jl_genericmemory_owner, Any, (Any,), primal(a))
+        return Lifted{typeof(y),Nw}(y, NoTangent())
+    end
     function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
         ::CoDual{Val{:jl_genericmemory_owner}},
