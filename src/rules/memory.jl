@@ -244,18 +244,8 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{MemoryRef{P}},
-    src::Dual{MemoryRef{P}},
-    n::Dual{Int},
-) where {P}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
-    return dest
-end
-# Lifted parallel — per-lane copy of each `partials[lane]` MemoryRef in
-# sync with the primal copy. Restricted to `P <: IEEEFloat` (NDualMemoryRef V).
+# Per-lane copy of each `partials[lane]` MemoryRef in sync with the primal
+# copy. Restricted to `P <: IEEEFloat` (NDualMemoryRef V).
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -744,10 +734,6 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
-    x = Memory{P}(undef, primal(n))
-    return Dual(x, zero_tangent_internal(x, NoCache()))
-end
 function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P<:IEEEFloat}
@@ -776,16 +762,6 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{Array{P,N}}},
-    ref::Dual{MemoryRef{P}},
-    size::Dual{<:NTuple{N,Int}},
-) where {P,N}
-    y = _new_(Array{P,N}, primal(ref), primal(size))
-    dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
-    return Dual(y, dy)
-end
-function frule!!(
     ::Lifted{typeof(_new_),Nw},
     ::Lifted{Type{Array{P,D}},Nw},
     ref::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -809,17 +785,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_genericmemory_copy}},
-    ::Dual,
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-    x::Dual{<:Memory},
-)
-    return Dual(primal(copy(x)), tangent(copy(x)))
-end
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_genericmemory_copy},Nw},
@@ -856,19 +821,8 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Memory,<:Memory},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
-    return Dual(y, dy)
-end
 # Field tangents from `Memory` (`.length`, `.ptr`) are non-differentiable;
-# Lifted parallel returns `NoTangent` V.
+# Lifted V is `NoDual`.
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
@@ -890,19 +844,8 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:MemoryRef,<:MemoryRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
-    return Dual(y, dy)
-end
-# Same NoTangent V approximation for MemoryRef field access (`.ptr_or_offset`
-# is a Ptr; `.mem` would lose the per-lane Memory partials under Lifted).
+# MemoryRef field access — `NoDual` V (`.ptr_or_offset` is a Ptr; `.mem`
+# would lose the per-lane Memory partials under Lifted).
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -924,17 +867,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Array,<:Array},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :size
-    dy = wants_size ? NoTangent() : tangent(x).ref
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
@@ -958,11 +890,6 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-function frule!!(
-    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
-)
-    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
-end
 function frule!!(f::Lifted{typeof(lgetfield),Nw}, x::Lifted, name::Lifted{<:Val}) where {Nw}
     return frule!!(f, x, name, Lifted{Val{:not_atomic},Nw}(Val(:not_atomic), NoTangent()))
 end
@@ -974,16 +901,6 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-    order::Dual{Symbol},
-)
-    return frule!!(
-        zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
-    )
-end
 function frule!!(
     ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, order::Lifted{Symbol}
 ) where {Nw}
@@ -1013,13 +930,6 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-)
-    return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
-end
 function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
     lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual())
     name_v = Val(primal(name))
@@ -1086,7 +996,6 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -1100,11 +1009,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
-) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    return Dual(fill!(primal(a), primal(x)), tangent(a))
-end
 # UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
 # update needed.
 function frule!!(
