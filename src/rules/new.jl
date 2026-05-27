@@ -1,27 +1,16 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) where {P,N}
-    y = _new_(P, tuple_map(primal, x)...)
-    T = tangent_type(P)
-    dy = if T == NoTangent
-        NoTangent()
-    else
-        build_output_tangent(P, tuple_map(primal, x), tuple_map(tangent, x))
-    end
-    return Dual(y, dy)
-end
-
-# Generic Lifted-arg `_new_` parallel — branches on P shape inside the
-# @generated body and returns a per-shape construction expression. All
-# sub-function calls (`_new_`, `tuple_map`, `Lifted`, `ImmutableDual`,
-# `MutableDual`) live in the returned expression per AGENTS.md; the
-# generator body uses only introspection. Specific overloads in other
-# files (e.g. `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more
-# specific and take precedence.
+# Lifted-arg `_new_` — branches on P shape inside the @generated body and
+# returns a per-shape construction expression. All sub-function calls
+# (`_new_`, `tuple_map`, `Lifted`, `ImmutableDual`, `MutableDual`) live in
+# the returned expression per AGENTS.md; the generator body uses only
+# introspection. Specific overloads in other files (e.g.
+# `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more specific and
+# take precedence.
 #
 # Assumes `M == fieldcount(P)` for the struct-lift case — padding for
-# default-initialized fields via `PossiblyUninitTangent` (as in the
-# bare-Dual `build_output_tangent`) is deferred to a follow-up.
+# default-initialized fields via `PossiblyUninitTangent` (matching
+# `build_output_tangent`'s behaviour) is deferred to a follow-up.
 @generated function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,M}
 ) where {P,Nw,M}
