@@ -267,6 +267,8 @@ Shapes defined so far:
   recursion through the complex real/imag parts.
 - `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
   — the SoA canonical V wrapper (see §14 in dual-types.md).
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}`
+  — complex-eltype SoA variant.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
@@ -284,6 +286,9 @@ Shapes defined so far:
 end
 @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return NDualArray{T,N,D,Array{T,D},NDual{T,N}}
+end
+@inline function dual_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
+    return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
 end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
 # tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
@@ -337,6 +342,7 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}}}`.
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}}`.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `Lifted{MemoryRef{T}, N, NDualMemoryRef{T, N, Memory{T}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
@@ -350,6 +356,13 @@ Shapes defined so far:
 end
 @inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}}
+end
+@inline function lifted_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
+    return Lifted{
+        Array{Complex{R},D},
+        N,
+        NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}},
+    }
 end
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     return Lifted{P,N,dual_type(Val(N), P)}
@@ -419,6 +432,9 @@ end
 @inline function zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
     return NDualArray{T,N,D,A}(x)
 end
+@inline function zero_dual(::Val{N}, x::A) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x)
+end
 
 @inline function uninit_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
     return NDualArray{T,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
@@ -431,6 +447,11 @@ end
 end
 
 @inline function zero_lifted(w::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
+    return Lifted{A,N}(x, zero_dual(w, x))
+end
+@inline function zero_lifted(
+    w::Val{N}, x::A
+) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
     return Lifted{A,N}(x, zero_dual(w, x))
 end
 

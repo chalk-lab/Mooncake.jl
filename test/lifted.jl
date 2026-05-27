@@ -178,6 +178,34 @@ end
         end
     end
 
+    @testset "dual_type / lifted_type (Array{Complex{R}, D})" begin
+        @test Mooncake.dual_type(Val(2), Vector{Complex{Float64}}) === Mooncake.NDualArray{
+            Complex{Float64},2,1,Vector{Complex{Float64}},Complex{Mooncake.NDual{Float64,2}}
+        }
+        @test Mooncake.lifted_type(Val(2), Vector{Complex{Float64}}) === Mooncake.Lifted{
+            Vector{Complex{Float64}},
+            2,
+            Mooncake.NDualArray{
+                Complex{Float64},
+                2,
+                1,
+                Vector{Complex{Float64}},
+                Complex{Mooncake.NDual{Float64,2}},
+            },
+        }
+
+        # Seed factory.
+        x = Complex{Float64}[1.0 + 2.0im, 3.0 - 1.0im]
+        v = Mooncake.zero_dual(Val(2), x)
+        @test typeof(v) === Mooncake.dual_type(Val(2), Vector{Complex{Float64}})
+        @test Mooncake.primal(v) === x
+        @test all(iszero, v.partials[1]) && all(iszero, v.partials[2])
+
+        z = Mooncake.zero_lifted(Val(2), x)
+        @test typeof(z) === Mooncake.lifted_type(Val(2), Vector{Complex{Float64}})
+        @test Mooncake.primal(z) === x
+    end
+
     @testset "dual_type / lifted_type (Complex{<:IEEEFloat})" begin
         @test Mooncake.dual_type(Val(2), Complex{Float64}) ===
             Complex{Mooncake.NDual{Float64,2}}
