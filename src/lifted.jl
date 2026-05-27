@@ -458,18 +458,6 @@ end
     return NDual{T,N}(x, ntuple(_ -> randn(rng, T), Val(N)))
 end
 
-@inline function zero_lifted(w::Val{N}, x::T) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(x, zero_dual(w, x))
-end
-
-@inline function uninit_lifted(w::Val{N}, x::T) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(x, uninit_dual(w, x))
-end
-
-@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::T) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(x, randn_dual(w, rng, x))
-end
-
 # ── Array seed factories (T <: IEEEFloat) ───────────────────────────────────
 #
 # Build an `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}` whose `primal` aliases
@@ -493,25 +481,6 @@ end
     return NDualArray{T,N,D,A}(x, ntuple(_ -> randn(rng, T, size(x)), Val(N)))
 end
 
-@inline function zero_lifted(w::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return Lifted{A,N}(x, zero_dual(w, x))
-end
-@inline function zero_lifted(
-    w::Val{N}, x::A
-) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
-    return Lifted{A,N}(x, zero_dual(w, x))
-end
-
-@inline function uninit_lifted(w::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return Lifted{A,N}(x, uninit_dual(w, x))
-end
-
-@inline function randn_lifted(
-    w::Val{N}, rng::AbstractRNG, x::A
-) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return Lifted{A,N}(x, randn_dual(w, rng, x))
-end
-
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────
 #
 # Element-wise build via Tuple-aware `map`. Each element's dispatch picks
@@ -523,16 +492,6 @@ end
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 
-@inline function zero_lifted(w::Val{N}, x::P) where {N,P<:Tuple}
-    return Lifted{P,N}(x, zero_dual(w, x))
-end
-@inline function uninit_lifted(w::Val{N}, x::P) where {N,P<:Tuple}
-    return Lifted{P,N}(x, uninit_dual(w, x))
-end
-@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:Tuple}
-    return Lifted{P,N}(x, randn_dual(w, rng, x))
-end
-
 # ── NamedTuple seed factories ───────────────────────────────────────────────
 #
 # Julia's `map(f, ::NamedTuple)` preserves the names and returns a
@@ -542,16 +501,6 @@ end
 @inline uninit_dual(w::Val{N}, x::NamedTuple) where {N} = map(xi -> uninit_dual(w, xi), x)
 @inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::NamedTuple) where {N}
     return map(xi -> randn_dual(w, rng, xi), x)
-end
-
-@inline function zero_lifted(w::Val{N}, x::P) where {N,P<:NamedTuple}
-    return Lifted{P,N}(x, zero_dual(w, x))
-end
-@inline function uninit_lifted(w::Val{N}, x::P) where {N,P<:NamedTuple}
-    return Lifted{P,N}(x, uninit_dual(w, x))
-end
-@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P<:NamedTuple}
-    return Lifted{P,N}(x, randn_dual(w, rng, x))
 end
 
 # ── Complex seed factories (R <: IEEEFloat) ─────────────────────────────────
@@ -570,18 +519,6 @@ end
     w::Val{N}, rng::AbstractRNG, z::Complex{R}
 ) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}(randn_dual(w, rng, real(z)), randn_dual(w, rng, imag(z)))
-end
-
-@inline function zero_lifted(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
-    return Lifted{Complex{R},N}(z, zero_dual(w, z))
-end
-@inline function uninit_lifted(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
-    return Lifted{Complex{R},N}(z, uninit_dual(w, z))
-end
-@inline function randn_lifted(
-    w::Val{N}, rng::AbstractRNG, z::Complex{R}
-) where {N,R<:IEEEFloat}
-    return Lifted{Complex{R},N}(z, randn_dual(w, rng, z))
 end
 
 # ── Concrete-struct seed factories (generic @generated fallback) ────────────
@@ -640,17 +577,11 @@ end
     @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}(p)
     end
-    @inline function zero_lifted(w::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
-        return Lifted{MemoryRef{T},N}(p, zero_dual(w, p))
-    end
     # Memory{T} is `<: AbstractArray{T, 1}`, so its canonical V is the
     # standard NDualArray. `zero(::Memory{T})` returns a fresh Memory{T},
     # so the existing `NDualArray{T, N, 1, Memory{T}}(p)` constructor works
     # via `ntuple(_ -> zero(p), Val(N))`.
     @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T}}(m)
-    end
-    @inline function zero_lifted(w::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
-        return Lifted{Memory{T},N}(m, zero_dual(w, m))
     end
 end
