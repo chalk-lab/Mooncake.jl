@@ -22,7 +22,7 @@ function frule!!(
         dA_lane .= L * tril(F, -1) + triu(F) * U
     end
     y = (A, ipiv, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoTangent(), NoTangent()))
+    return Lifted{typeof(y),Nw}(y, (V, NoDual(), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
@@ -77,7 +77,7 @@ function frule!!(
         dA_lane .= L * tril(F, -1) + triu(F) * U
     end
     y = (A, ipiv, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoTangent(), NoTangent()))
+    return Lifted{typeof(y),Nw}(y, (V, NoDual(), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -559,7 +559,7 @@ function frule!!(
         end
     end
     y = (A, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoTangent()))
+    return Lifted{typeof(y),Nw}(y, (V, NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
@@ -927,6 +927,17 @@ function frule!!(
     Sinv = inv(F)
     return Dual(logdet(F), dot(Sinv, d_data))
 end
+function frule!!(
+    ::Lifted{typeof(logdet),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
+    F = bunchkaufman(S)
+    Sinv = inv(F)
+    y = logdet(F)
+    data_partials = tangent(_S).value.data.partials
+    dy_lanes = ntuple(k -> dot(Sinv, data_partials[k]), Val(Nw))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
 ) where {P<:BlasRealFloat}
@@ -968,6 +979,21 @@ function frule!!(
     iszero(d) && return Dual(d, zero(P))
     Sinv = inv(F)
     return Dual(d, d * dot(Sinv, d_data))
+end
+function frule!!(
+    ::Lifted{typeof(det),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
+    F = bunchkaufman(S; check=false)
+    d = det(F)
+    if iszero(d)
+        zero_parts = ntuple(_ -> zero(P), Val(Nw))
+        return Lifted{P,Nw}(d, NDual{P,Nw}(d, zero_parts))
+    end
+    Sinv = inv(F)
+    data_partials = tangent(_S).value.data.partials
+    dy_lanes = ntuple(k -> d * dot(Sinv, data_partials[k]), Val(Nw))
+    return Lifted{P,Nw}(d, NDual{P,Nw}(d, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -1011,6 +1037,26 @@ function frule!!(
     iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
     Sinv = inv(F)
     return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
+end
+function frule!!(
+    ::Lifted{typeof(logabsdet),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
+    F = bunchkaufman(S; check=false)
+    ld, s = logabsdet(F)
+    y = (ld, s)
+    zero_parts = ntuple(_ -> zero(P), Val(Nw))
+    if iszero(s)
+        ld_v = NDual{P,Nw}(ld, zero_parts)
+        s_v = NDual{P,Nw}(s, zero_parts)
+        return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
+    end
+    Sinv = inv(F)
+    data_partials = tangent(_S).value.data.partials
+    ld_lanes = ntuple(k -> dot(Sinv, data_partials[k]), Val(Nw))
+    ld_v = NDual{P,Nw}(ld, ld_lanes)
+    s_v = NDual{P,Nw}(s, zero_parts)
+    return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
