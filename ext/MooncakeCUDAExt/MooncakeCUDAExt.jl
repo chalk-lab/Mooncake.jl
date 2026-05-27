@@ -165,12 +165,9 @@ end
 # the primal copy increments the refcount; the tangent DataRef is also copied so that the
 # new CuArray's .data field holds a separate handle to the same tangent GPU memory.
 @is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
-function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
-    return Dual(copy(primal(x)), copy(tangent(x)))
-end
+# CuDataRef has NoDual V (opaque handle); copy primal only — the V is
+# already a no-derivative sentinel and needs no per-lane work.
 function frule!!(::Lifted{typeof(copy),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}) where {Nw}
-    # CuDataRef has NoDual V (opaque handle); copy primal only — the V is
-    # already a no-derivative sentinel and needs no per-lane work.
     return Lifted{_typeof(primal(x)),Nw}(copy(primal(x)), NoDual())
 end
 function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
@@ -716,9 +713,6 @@ const _SCALAR_IDX_MSG =
     "broadcasting. Add a new rule or open an issue at " *
     "https://github.com/chalk-lab/Mooncake.jl."
 @is_primitive(MinimalCtx, Tuple{typeof(getindex),CuArray,Integer})
-function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
-end
 function frule!!(
     ::Lifted{typeof(getindex),Nw}, x::Lifted{<:CuArray}, i::Lifted{<:Integer}
 ) where {Nw}
@@ -729,9 +723,6 @@ function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:I
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
-function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
-end
 function frule!!(
     ::Lifted{typeof(setindex!),Nw}, x::Lifted{<:CuArray}, v::Lifted, i::Lifted{<:Integer}
 ) where {Nw}
@@ -783,12 +774,6 @@ end
 # dot (real): d(dot(x,y)) = dot(dx,y) + dot(x,dy)
 #             pullback:     dx += dz*y,  dy += dz*x
 @is_primitive(MinimalCtx, Tuple{typeof(norm),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    y = norm(px)
-    dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(norm),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
 ) where {Nw}
@@ -813,11 +798,6 @@ function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(dot),CuFloatArray,CuFloatArray})
-function frule!!(::Dual{typeof(dot)}, x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
-    px, dx = arrayify(x)
-    py, dy = arrayify(y)
-    return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
-end
 function frule!!(
     ::Lifted{typeof(dot),Nw},
     x::Lifted{<:CuFloatArray,Nw,<:NDualArray},
@@ -850,9 +830,6 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
-    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    )
     @eval frule!!(::Lifted{typeof($_fn),Nw}, x::Lifted{<:CuArray}; kwargs...) where {Nw} = _throw_gpu_argument_error(
         "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     )
@@ -869,12 +846,6 @@ end
 #
 # Note: undefined when any element of x is zero (gradient is skipped in that case).
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    y = prod(px)
-    dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
 ) where {Nw}
@@ -928,10 +899,6 @@ end
 #
 # Supports the optional `dims` keyword (passed through to CUDA's cumsum).
 @is_primitive(MinimalCtx, Tuple{typeof(cumsum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumsum)}, x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
-    return Dual(cumsum(px; kw...), cumsum(dx; kw...))
-end
 function frule!!(
     ::Lifted{typeof(cumsum),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
 ) where {Nw}
@@ -966,13 +933,6 @@ end
 # so the Jacobian at that position is zero (the zero annihilates the product).
 # nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
 @is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
-    y = cumprod(px; kw...)
-    inv_px = nan_tangent_guard.(px, inv.(px))
-    dy = y .* cumsum(dx .* inv_px; kw...)
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(cumprod),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
 ) where {Nw}
@@ -1045,12 +1005,6 @@ function rrule!!(
     return CoDual(y, dy_out), accumulate_plus_pb!!
 end
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
-function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
-    _throw_gpu_argument_error(
-        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
-        _UNIMPL_MSG,
-    )
-end
 function frule!!(
     ::Lifted{typeof(accumulate),Nw}, op::Lifted, x::Lifted{<:CuArray}; kwargs...
 ) where {Nw}
@@ -1069,10 +1023,6 @@ end
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    return Dual(sum(px), sum(dx))
-end
 function frule!!(
     ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
 ) where {Nw}
@@ -1226,12 +1176,6 @@ end
 # It is a pure side-effect with no mathematical output — gradient is zero.
 # Both the primal and its fdata (if any) are independent GPU allocations; free both.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
-function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
-    unsafe_free!(primal(x))
-    dx = tangent(x)
-    dx isa NoFData || unsafe_free!(dx)
-    return Dual(nothing, NoTangent())
-end
 function frule!!(
     ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,<:NDualArray}
 ) where {Nw}
@@ -1252,10 +1196,6 @@ end
 # (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
 # The primal registration must happen; the gradient is zero.
 @is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
-function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
-    Core.finalizer(primal(f), primal(x))
-    return Dual(nothing, NoTangent())
-end
 function frule!!(::Lifted{typeof(Core.finalizer),Nw}, f::Lifted, x::Lifted) where {Nw}
     Core.finalizer(primal(f), primal(x))
     return Lifted{Nothing,Nw}(nothing, NoDual())
@@ -1270,9 +1210,6 @@ end
 # It contains a try/catch block which causes Mooncake's IR transformation to produce
 # invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
 @is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
-function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
-    return Dual(hasfieldcount(primal(T)), NoTangent())
-end
 function frule!!(::Lifted{typeof(hasfieldcount),Nw}, T::Lifted{<:Type}) where {Nw}
     return Lifted{Bool,Nw}(hasfieldcount(primal(T)), NoDual())
 end
@@ -1506,12 +1443,12 @@ for _op in (:(+), :(Base.add_sum))
         MinimalCtx, Tuple{typeof(mapreduce),Any,typeof($_op),CuMaybeComplexArray}
     )
     @eval function frule!!(
-        ::Dual{typeof(mapreduce)},
-        f::Dual,
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(Dual(sum, NoTangent()), f, x)
+        ::Lifted{typeof(mapreduce),Nw},
+        f::Lifted,
+        ::Lifted{typeof($_op)},
+        x::Lifted{<:CuMaybeComplexArray},
+    ) where {Nw}
+        return frule!!(zero_lifted(Val(Nw), sum), f, x)
     end
     @eval function rrule!!(
         ::CoDual{typeof(mapreduce)},
@@ -1539,9 +1476,11 @@ end
 for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
     @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
     @eval function frule!!(
-        ::Dual{typeof(reduce)}, ::Dual{typeof($_op)}, x::Dual{<:CuMaybeComplexArray}
-    )
-        return frule!!(Dual($_fn, NoTangent()), x)
+        ::Lifted{typeof(reduce),Nw},
+        ::Lifted{typeof($_op)},
+        x::Lifted{<:CuMaybeComplexArray},
+    ) where {Nw}
+        return frule!!(zero_lifted(Val(Nw), $_fn), x)
     end
     @eval function rrule!!(
         ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
@@ -1558,7 +1497,9 @@ end
 # Catch-all rules for unsupported operators — give a clear error rather than letting
 # Mooncake attempt to trace into an opaque CUDA reduction kernel.
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
-function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
+function frule!!(
+    ::Lifted{typeof(mapreduce),Nw}, f::Lifted, op::Lifted, x::Lifted{<:CuArray}
+) where {Nw}
     _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
         "got op=$(primal(op)). " *
@@ -1574,7 +1515,7 @@ function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
-function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
+function frule!!(::Lifted{typeof(reduce),Nw}, op::Lifted, x::Lifted{<:CuArray}) where {Nw}
     _throw_gpu_argument_error(
         "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
         "got op=$(primal(op)). " *
@@ -1594,14 +1535,14 @@ end
 for (_fn, _supports_kwargs) in ((:vcat, false), (:hcat, false), (:cat, true))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Vararg{Union{CuArray,Number}}})
     if _supports_kwargs
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...; kwargs...) = _throw_gpu_argument_error(
+        @eval frule!!(::Lifted{typeof($_fn),Nw}, args::Lifted...; kwargs...) where {Nw} = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...; kwargs...) = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
     else
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...) = _throw_gpu_argument_error(
+        @eval frule!!(::Lifted{typeof($_fn),Nw}, args::Lifted...) where {Nw} = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...) = _throw_gpu_argument_error(
