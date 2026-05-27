@@ -10,9 +10,12 @@ import Mooncake:
     @zero_derivative,
     @is_primitive,
     Dual,
+    Lifted,
+    NDual,
     frule!!,
     Tangent,
     primal,
+    tangent,
     notimplemented_tangent_guard,
     ForwardMode,
     extract
@@ -158,6 +161,30 @@ function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
     )
 end
 
+# Lifted analogues — per-lane partial extraction and result packing.
+@inline _sf_lane(v::NDual, lane::Integer) = v.partials[lane]
+@inline function _sf_lane(v::Complex{<:NDual}, lane::Integer)
+    return Complex(real(v).partials[lane], imag(v).partials[lane])
+end
+
+# Wrap (y, per-lane dy values) into the canonical Lifted slot for a
+# scalar (real or complex) result.
+@inline function _lifted_scalar_result(
+    y::L, primal_eltype, dy_lanes::NTuple{Nw}, ::Val{Nw}
+) where {L<:IEEEFloat,Nw}
+    parts = ntuple(k -> primal_eltype(dy_lanes[k]), Val(Nw))
+    return Lifted{L,Nw}(y, NDual{L,Nw}(y, parts))
+end
+@inline function _lifted_scalar_result(
+    y::Complex{L}, primal_eltype, dy_lanes::NTuple{Nw}, ::Val{Nw}
+) where {L<:IEEEFloat,Nw}
+    re_parts = ntuple(k -> primal_eltype(real(dy_lanes[k])), Val(Nw))
+    im_parts = ntuple(k -> primal_eltype(imag(dy_lanes[k])), Val(Nw))
+    re_nd = NDual{L,Nw}(real(y), re_parts)
+    im_nd = NDual{L,Nw}(imag(y), im_parts)
+    return Lifted{Complex{L},Nw}(y, Complex{NDual{L,Nw}}(re_nd, im_nd))
+end
+
 # 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
@@ -177,6 +204,32 @@ function frule!!(
     # dot_p = ∂p/∂a * da + ∂p/∂x * dx
     # dot_q = ∂p/∂a * da + (-∂p/∂x) * dx
     return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
+end
+function frule!!(
+    ::Lifted{typeof(gamma_inc),Nw},
+    _a::Lifted{T,Nw,NDual{T,Nw}},
+    _x::Lifted{P,Nw,NDual{P,Nw}},
+    _IND::Lifted{I},
+) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer,Nw}
+    a = primal(_a)
+    x = primal(_x)
+    IND = primal(_IND)
+    y = gamma_inc(a, x, IND)
+    primal_eltype = eltype(y)
+    z = exp((a - 1) * log(x) - x - loggamma(a))
+    a_parts = tangent(_a).partials
+    x_parts = tangent(_x).partials
+    p_lanes = ntuple(Val(Nw)) do k
+        ∂a = notimplemented_tangent_guard(a_parts[k])
+        primal_eltype(∂a + x_parts[k] * z)
+    end
+    q_lanes = ntuple(Val(Nw)) do k
+        ∂a = notimplemented_tangent_guard(a_parts[k])
+        primal_eltype(∂a + x_parts[k] * -z)
+    end
+    p_nd = NDual{primal_eltype,Nw}(y[1], p_lanes)
+    q_nd = NDual{primal_eltype,Nw}(y[2], q_lanes)
+    return Lifted{typeof(y),Nw}(y, (p_nd, q_nd))
 end
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
@@ -200,6 +253,21 @@ function frule!!(
     # Ignore tangent(a) - NotImplemented Gradient
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
+end
+function frule!!(
+    ::Lifted{typeof(gamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
+) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    a = primal(_a)
+    x = primal(_x)
+    y = gamma(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = -exp((a - 1) * log(x) - x)
+    a_v = tangent(_a)
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -225,6 +293,21 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(loggamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
+) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    a = primal(_a)
+    x = primal(_x)
+    y = loggamma(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
+    a_v = tangent(_a)
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(expint),
@@ -248,6 +331,21 @@ function frule!!(
     # Ignore tangent(a) - NotImplemented Gradient
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(expint),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
+) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    a = primal(_a)
+    x = primal(_x)
+    y = expint(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = -expint(a - 1, x)
+    a_v = tangent(_a)
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -273,6 +371,21 @@ function frule!!(
     dy_val = ∂a + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(expintx),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
+) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    a = primal(_a)
+    x = primal(_x)
+    y = expintx(a, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = y - expintx(a - 1, x)
+    a_v = tangent(_a)
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 # 2-arg standard Bessel and Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -296,6 +409,21 @@ function frule!!(
     # All Bessel functions return complex values only for complex inputs.
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(besselj),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besselj(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -316,6 +444,21 @@ function frule!!(
 
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(bessely),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = bessely(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -338,6 +481,21 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(besseli),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besseli(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -358,6 +516,21 @@ function frule!!(
 
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(besselk),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besselk(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -380,6 +553,21 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(hankelh1),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = hankelh1(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -400,6 +588,21 @@ function frule!!(
 
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(hankelh2),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = hankelh2(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 #
@@ -430,6 +633,23 @@ function frule!!(
 
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(besselix),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besselix(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
+    ∂x_2 = -sign(real(x)) * y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        dx_k = _sf_lane(x_v, k)
+        notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * real(dx_k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -450,6 +670,21 @@ function frule!!(
 
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(besselkx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besselkx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -474,6 +709,23 @@ function frule!!(
     dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(besseljx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besseljx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
+    ∂x_2 = -sign(imag(x)) * y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        dx_k = _sf_lane(x_v, k)
+        notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -497,6 +749,23 @@ function frule!!(
     dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(besselyx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = besselyx(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
+    ∂x_2 = -sign(imag(x)) * y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        dx_k = _sf_lane(x_v, k)
+        notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 # Scaled Hankel functions
 @is_primitive DefaultCtx ForwardMode Tuple{
@@ -519,6 +788,21 @@ function frule!!(
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
 end
+function frule!!(
+    ::Lifted{typeof(hankelh1x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = hankelh1x(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
@@ -539,6 +823,21 @@ function frule!!(
 
     dy_val = ∂v + ∂x * dx
     return real_or_complex_valued(y, primal_eltype, dy_val)
+end
+function frule!!(
+    ::Lifted{typeof(hankelh2x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    v = primal(_v)
+    x = primal(_x)
+    y = hankelh2x(v, x)
+    primal_eltype = eltype(y isa Complex ? y.re : y)
+    ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
+    v_parts = tangent(_v).partials
+    x_v = tangent(_x)
+    dy_lanes = ntuple(Val(Nw)) do k
+        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+    end
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 # ── NDual overloads for SpecialFunctions ──────────────────────────────────────
