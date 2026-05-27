@@ -201,20 +201,11 @@ function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
     dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
     return tangent(f).dual_callable(dual_captures, x...)
 end
-# Lifted parallel — `tangent(f).dual_callable` is a bare-Dual rule produced
-# by the legacy `_dual_mc` builder (see above), so calling it with Lifted
-# args would mis-dispatch. Defer until the Final-task interpreter cutover
-# wires `_dual_mc` to produce Lifted-dispatched rules.
-function frule!!(f::Lifted{<:MistyClosure,Nw}, x::Vararg{Lifted,M}) where {Nw,M}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{<:MistyClosure}, …) deferred until the Final-task " *
-            "interpreter cutover wires `_dual_mc` to produce Lifted-dispatched " *
-            "callables. The bare-Dual frule above remains operative for the " *
-            "current legacy path.",
-        ),
-    )
-end
+# Lifted parallel omitted — `tangent(f).dual_callable` is a bare-Dual rule
+# produced by the legacy `_dual_mc` builder; calling it with Lifted args
+# would mis-dispatch. The Final-task interpreter cutover wires `_dual_mc`
+# to produce Lifted-dispatched callables; the Lifted parallel can be
+# added then.
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =
         "Attempted to compute the adjoint associated to a `MistyClosure`. " *

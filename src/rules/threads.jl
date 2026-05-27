@@ -65,20 +65,8 @@ function frule!!(
     end
     return zero_dual(nothing)
 end
-# Lifted parallel — `build_frule(get_interpreter(ForwardMode), …)` returns
-# a bare-`Dual` worker rule on this branch (the interpreter still wraps
-# args as Dual). Calling it with `Lifted` arguments would mis-dispatch,
-# so this Lifted-arg rule is deferred until the Final-task interpreter
-# cutover replaces `build_frule` output with `Lifted`-dispatched rules.
-function frule!!(
-    ::Lifted{typeof(Base.Threads.threading_run),Nw}, ::Lifted{F,Nw}, ::Lifted{Bool,Nw}
-) where {Nw,F}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(Base.Threads.threading_run)}, …) is deferred " *
-            "until the Final-task interpreter cutover wires `build_frule` to produce " *
-            "Lifted-dispatched worker rules. The bare-Dual frule above remains " *
-            "operative for the current legacy path.",
-        ),
-    )
-end
+# Lifted parallel omitted — `build_frule(get_interpreter(ForwardMode), …)`
+# currently returns a bare-`Dual` worker rule (the interpreter still wraps
+# args as Dual). Calling it with Lifted arguments would mis-dispatch.
+# The Final-task interpreter cutover replaces `build_frule`'s output with
+# Lifted-dispatched worker rules; the Lifted parallel can be added then.

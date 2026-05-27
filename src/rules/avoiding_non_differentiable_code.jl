@@ -5,18 +5,18 @@
 function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
     return Dual(primal(x) + primal(y), tangent(x) + primal(y))
 end
-# Lifted parallel deferred — needs Ptr canonical V (the bare-Dual rule
-# shifts `tangent(x)::Ptr` alongside the primal; per-lane Ptrs need
-# infrastructure that's not yet built).
+# Lifted parallel — V for `Ptr{T}` is `NTuple{N, Ptr{T}}` (per-lane
+# partial pointers). The pointer shift `tangent_lane + primal(y)` is
+# applied to each lane.
 function frule!!(
-    ::Lifted{typeof(Base.:(+)),Nw}, ::Lifted{<:Ptr}, ::Lifted{<:Integer}
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(Base.:(+))}, ::Lifted{<:Ptr}, …) deferred — " *
-            "needs Ptr canonical V.",
-        ),
-    )
+    ::Lifted{typeof(Base.:(+)),Nw},
+    x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    y::Lifted{<:Integer},
+) where {Nw,T<:NDualEltype}
+    yp = primal(y)
+    new_primal = primal(x) + yp
+    new_partials = ntuple(lane -> tangent(x)[lane] + yp, Val(Nw))
+    return Lifted{Ptr{T},Nw}(new_primal, new_partials)
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)

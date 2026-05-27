@@ -6,6 +6,24 @@ function frule!!(
     _, ipiv, info = LAPACK.getrf!(primal(A_dA))
     return _getrf_fwd(A_dA, ipiv, info)
 end
+function frule!!(
+    ::Lifted{typeof(LAPACK.getrf!),Nw},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+) where {Nw,P<:BlasFloat}
+    A = primal(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    V = tangent(A_dA)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    @inbounds for lane in 1:Nw
+        dA_lane = V.partials[lane]
+        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
+        dA_lane .= L * tril(F, -1) + triu(F) * U
+    end
+    y = (A, ipiv, info)
+    return Lifted{typeof(y),Nw}(y, (V, NoTangent(), NoTangent()))
+end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasFloat}
@@ -39,6 +57,27 @@ function frule!!(
     check = primal(_kwargs).check
     _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
     return _getrf_fwd(A_dA, ipiv, info)
+end
+function frule!!(
+    ::Lifted{typeof(Core.kwcall),Nw},
+    _kwargs::Lifted{<:NamedTuple},
+    ::Lifted{typeof(getrf!),Nw},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+) where {Nw,P<:BlasFloat}
+    check = primal(_kwargs).check
+    A = primal(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    V = tangent(A_dA)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    @inbounds for lane in 1:Nw
+        dA_lane = V.partials[lane]
+        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
+        dA_lane .= L * tril(F, -1) + triu(F) * U
+    end
+    y = (A, ipiv, info)
+    return Lifted{typeof(y),Nw}(y, (V, NoTangent(), NoTangent()))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -141,6 +180,42 @@ function frule!!(
     LAPACK.trtrs!(uplo, trans, diag, A, B)
     return B_dB
 end
+function frule!!(
+    ::Lifted{typeof(trtrs!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+) where {Nw,P<:BlasRealFloat}
+    uplo = primal(_uplo)
+    trans = primal(_trans)
+    diag = primal(_diag)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    A_partials = tangent(A_dA).partials
+    B_partials = tangent(B_dB).partials
+    @inbounds for lane in 1:Nw
+        dA_lane = A_partials[lane]
+        dB_lane = B_partials[lane]
+        LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
+        tmp = copy(B)
+        LAPACK.trtrs!(uplo, trans, diag, A, tmp)
+        tmp2 = copy(tmp)
+        if diag == 'N'
+            a = uplo == 'L' ? LowerTriangular(dA_lane) : UpperTriangular(dA_lane)
+            lmul!(trans == 'N' ? a : a', tmp)
+        else
+            a = uplo == 'L' ? UnitLowerTriangular(dA_lane) : UnitUpperTriangular(dA_lane)
+            lmul!(trans == 'N' ? a : a', tmp)
+            tmp .-= tmp2
+        end
+        LAPACK.trtrs!(uplo, trans, diag, A, tmp)
+        dB_lane .-= tmp
+    end
+    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(trtrs!)},
     _uplo::CoDual{Char},
@@ -217,6 +292,41 @@ function frule!!(
     end
     LAPACK.getrs!(trans, A, ipiv, dB)
 
+    return B_dB
+end
+function frule!!(
+    ::Lifted{typeof(getrs!),Nw},
+    _trans::Lifted{Char},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    _ipiv::Lifted{<:AbstractVector{Int}},
+    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+) where {Nw,P<:BlasRealFloat}
+    trans = primal(_trans)
+    A = primal(A_dA)
+    ipiv = primal(_ipiv)
+    B = primal(B_dB)
+    LAPACK.getrs!(trans, A, ipiv, B)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    A_partials = tangent(A_dA).partials
+    B_partials = tangent(B_dB).partials
+    p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
+    invp = invperm(p)
+    @inbounds for lane in 1:Nw
+        dA_lane = A_partials[lane]
+        dB_lane = B_partials[lane]
+        dL_plus_I = UnitLowerTriangular(dA_lane)
+        dU = UpperTriangular(dA_lane)
+        tmp = dL_plus_I * U
+        tmp .-= U
+        tmp2 = mul!(tmp, L, dU, one(P), one(P))[invp, :]
+        if trans == 'N'
+            mul!(dB_lane, tmp2, B, -one(P), one(P))
+        else
+            mul!(dB_lane, tmp2', B, -one(P), one(P))
+        end
+        LAPACK.getrs!(trans, A, ipiv, dB_lane)
+    end
     return B_dB
 end
 function rrule!!(
@@ -329,6 +439,32 @@ function frule!!(
 
     return A_dA
 end
+function frule!!(
+    ::Lifted{typeof(getri!),Nw},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    _ipiv::Lifted{<:AbstractVector{Int}},
+) where {Nw,P<:BlasRealFloat}
+    A = primal(A_dA)
+    ipiv = primal(_ipiv)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    A_partials = tangent(A_dA).partials
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
+    invp = invperm(p)
+    tmp2s = ntuple(Val(Nw)) do lane
+        dA_lane = A_partials[lane]
+        dL_plus_I = UnitLowerTriangular(dA_lane)
+        dU = UpperTriangular(dA_lane)
+        tmp = dL_plus_I * U
+        tmp .-= U
+        mul!(tmp, L, dU, one(P), one(P))[invp, :]
+    end
+    LAPACK.getri!(A, ipiv)
+    @inbounds for lane in 1:Nw
+        A_partials[lane] .= (-A * tmp2s[lane] * A)
+    end
+    return A_dA
+end
 function rrule!!(
     ::CoDual{typeof(getri!)},
     _A::CoDual{<:AbstractMatrix{<:BlasRealFloat}},
@@ -394,6 +530,36 @@ function frule!!(
     end
 
     return Dual((A, info), (tangent(A_dA), NoTangent()))
+end
+function frule!!(
+    ::Lifted{typeof(potrf!),Nw},
+    _uplo::Lifted{Char},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+) where {Nw,P<:BlasRealFloat}
+    uplo = primal(_uplo)
+    A = primal(A_dA)
+    V = tangent(A_dA)
+    _, info = LAPACK.potrf!(uplo, A)
+    @inbounds for lane in 1:Nw
+        dA_lane = V.partials[lane]
+        if uplo == 'L'
+            L = LowerTriangular(A)
+            tmp = LowerTriangular(ldiv!(L, Symmetric(dA_lane, :L) / L'))
+            for n in 1:size(A, 1)
+                tmp[n, n] = tmp[n, n] / 2
+            end
+            _copytrito!(dA_lane, lmul!(L, tmp), 'L')
+        else
+            U = UpperTriangular(A)
+            tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA_lane, :U), U))
+            for n in 1:size(A, 1)
+                tmp[n, n] = tmp[n, n] / 2
+            end
+            _copytrito!(dA_lane, rmul!(tmp, U), 'U')
+        end
+    end
+    y = (A, info)
+    return Lifted{typeof(y),Nw}(y, (V, NoTangent()))
 end
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
@@ -494,6 +660,34 @@ function frule!!(
 
     return B_dB
 end
+function frule!!(
+    ::Lifted{typeof(potrs!),Nw},
+    _uplo::Lifted{Char},
+    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+) where {Nw,P<:BlasRealFloat}
+    uplo = primal(_uplo)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    A_partials = tangent(A_dA).partials
+    B_partials = tangent(B_dB).partials
+    LAPACK.potrs!(uplo, A, B)
+    @inbounds for lane in 1:Nw
+        dA_lane = A_partials[lane]
+        dB_lane = B_partials[lane]
+        if uplo == 'L'
+            L = LowerTriangular(A)
+            dL = LowerTriangular(dA_lane)
+            mul!(dB_lane, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
+        else
+            U = UpperTriangular(A)
+            dU = UpperTriangular(dA_lane)
+            mul!(dB_lane, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+        end
+        LAPACK.potrs!(uplo, A, dB_lane)
+    end
+    return B_dB
+end
 function rrule!!(
     ::CoDual{typeof(potrs!)},
     _uplo::CoDual{Char},
@@ -549,6 +743,21 @@ end
 
         LAPACK.lacpy!(B, A, primal(_uplo))
         LAPACK.lacpy!(dB, dA, primal(_uplo))
+        return B_dB
+    end
+    function frule!!(
+        ::Lifted{typeof(LAPACK.lacpy!),Nw},
+        B_dB::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+        A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+        _uplo::Lifted{Char},
+    ) where {Nw,P<:BlasFloat}
+        uplo = primal(_uplo)
+        B_partials = tangent(B_dB).partials
+        A_partials = tangent(A_dA).partials
+        LAPACK.lacpy!(primal(B_dB), primal(A_dA), uplo)
+        @inbounds for lane in 1:Nw
+            LAPACK.lacpy!(B_partials[lane], A_partials[lane], uplo)
+        end
         return B_dB
     end
     function rrule!!(

@@ -94,14 +94,11 @@ function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
     return Dual(y, dy)
 end
-# Lifted parallel deferred — output is a Ptr, needs Ptr canonical V infra.
-function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(pointer_from_objref)}, …) deferred — needs Ptr V."
-        ),
-    )
-end
+# Lifted parallel omitted — `pointer_from_objref` produces a Ptr whose
+# tangent is informational only (used by GC-aware code, not for derivative
+# propagation). Per-lane Ptrs would require per-lane structural-tangent
+# struct addresses, which the Lifted V shape doesn't expose. The bare-Dual
+# rule handles current callers.
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -116,16 +113,11 @@ end
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
     return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
 end
-# Lifted parallel deferred — input slot's V for Ptr is Ptr canonical V (TBD).
-function frule!!(
-    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(Base.unsafe_pointer_to_objref)}, …) deferred — needs Ptr V.",
-        ),
-    )
-end
+# Lifted parallel omitted — output is an Any object deserialized from a
+# tangent Ptr; under Lifted, each lane would need its own deserialized
+# tangent object packaged into a V matching dual_type(Val(N), typeof(y)).
+# That construction depends on the dynamic output type and isn't expressible
+# without more infrastructure. The bare-Dual rule handles current callers.
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
     return y, NoPullback(f, x)
@@ -150,15 +142,23 @@ function frule!!(
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
-# Lifted parallel deferred — Ptr slots, needs Ptr canonical V.
+# Lifted parallel — Ptr V is `NTuple{N, Ptr{T}}` (per-lane partial pointers).
+# Copy the primal data and each lane's tangent data through its own per-lane
+# pair of source/destination pointers.
 function frule!!(
-    ::Lifted{typeof(unsafe_copyto!),Nw}, ::Lifted{Ptr{T}}, ::Lifted{Ptr{T}}, ::Lifted
-) where {Nw,T}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(unsafe_copyto!)}, ::Lifted{Ptr{T}}, …) deferred — needs Ptr V.",
-        ),
-    )
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    src::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    n::Lifted,
+) where {Nw,T<:NDualEltype}
+    _n = primal(n)
+    unsafe_copyto!(primal(dest), primal(src), _n)
+    dest_partials = tangent(dest)
+    src_partials = tangent(src)
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], src_partials[lane], _n)
+    end
+    return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
@@ -378,7 +378,7 @@ function frule!!(
     args::Vararg{Lifted,M},
 ) where {Nw,M}
     y = _foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...)
-    # Returns a `Ptr{UInt8}`; Ptr canonical V is deferred, so NoTangent V.
+    # Returns a `Ptr{UInt8}` — tangent is structurally non-differentiable.
     return Lifted{typeof(y),Nw}(y, NoTangent())
 end
 

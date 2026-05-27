@@ -115,7 +115,9 @@ import ..Mooncake:
     NoTangent,
     Mode,
     extract,
-    nan_tangent_guard
+    nan_tangent_guard,
+    NDualArray,
+    NDualEltype
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -238,18 +240,21 @@ function frule!!(
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     return Dual(primal_arr, tangent_arr)
 end
-# Ptr tangents require canonical V infrastructure that's not yet built;
-# defer this rule with a clear error until Ptr V lands.
+# Lifted parallel — V for `Ptr{T}` is `NTuple{Nw, Ptr{T}}`; wrap each
+# lane's per-lane Ptr into the corresponding lane of the canonical NDualArray V.
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
-    ::Lifted{<:Ptr{T},Nw},
-    ::Lifted,
-) where {Nw,T}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(unsafe_wrap)}, …) deferred — needs Ptr canonical V."
-        ),
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    dims::Lifted,
+) where {Nw,T<:NDualEltype}
+    _dims = primal(dims)
+    primal_arr = unsafe_wrap(Array, primal(p), _dims)
+    p_partials = tangent(p)
+    partials = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
+    D = ndims(primal_arr)
+    return Lifted{Array{T,D},Nw}(
+        primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, partials)
     )
 end
 
@@ -279,14 +284,21 @@ function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
     atomic_pointerset(tangent(p), tangent(x), primal(order))
     return p
 end
+# Lifted parallel — write primal scalar through primal Ptr; for each lane,
+# write that lane's tangent scalar through that lane's partial Ptr.
 function frule!!(
-    ::Lifted{typeof(atomic_pointerset),Nw}, p::Lifted, x::Lifted, order::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(atomic_pointerset)}, …) deferred — needs Ptr canonical V.",
-        ),
-    )
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    x::Lifted{T},
+    order::Lifted,
+) where {Nw,T<:NDualEltype}
+    _order = primal(order)
+    atomic_pointerset(primal(p), primal(x), _order)
+    p_partials = tangent(p)
+    @inbounds for lane in 1:Nw
+        atomic_pointerset(p_partials[lane], tangent(x, lane), _order)
+    end
+    return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
@@ -764,14 +776,20 @@ function frule!!(::Dual{typeof(pointerref)}, x, y, z)
     da = pointerref(tangent(x), primal(y), primal(z))
     return Dual(a, da)
 end
+# Lifted parallel — load scalar via primal Ptr; load each lane's tangent
+# scalar via that lane's partial Ptr; pack into the canonical NDual V.
 function frule!!(
-    ::Lifted{typeof(pointerref),Nw}, x::Lifted, y::Lifted, z::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(pointerref)}, …) deferred — needs Ptr canonical V."
-        ),
-    )
+    ::Lifted{typeof(pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    y::Lifted,
+    z::Lifted,
+) where {Nw,T<:NDualEltype}
+    _y = primal(y)
+    _z = primal(z)
+    a = pointerref(primal(x), _y, _z)
+    x_partials = tangent(x)
+    da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
+    return Lifted{T,Nw}(a, NDual{T,Nw}(a, da_lanes))
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
@@ -791,14 +809,23 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
+# Lifted parallel — store primal scalar through primal Ptr; for each lane,
+# store that lane's tangent scalar through that lane's partial Ptr.
 function frule!!(
-    ::Lifted{typeof(pointerset),Nw}, p::Lifted, x::Lifted, idx::Lifted, z::Lifted
-) where {Nw}
-    return throw(
-        ErrorException(
-            "frule!!(::Lifted{typeof(pointerset)}, …) deferred — needs Ptr canonical V."
-        ),
-    )
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    x::Lifted{T},
+    idx::Lifted,
+    z::Lifted,
+) where {Nw,T<:NDualEltype}
+    _idx = primal(idx)
+    _z = primal(z)
+    pointerset(primal(p), primal(x), _idx, _z)
+    p_partials = tangent(p)
+    @inbounds for lane in 1:Nw
+        pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
+    end
+    return p
 end
 function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
     pointerset(primal(p), primal(x), primal(idx), primal(z))

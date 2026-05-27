@@ -868,7 +868,7 @@ function frule!!(
     return Dual(y, dy)
 end
 # Field tangents from `Memory` (`.length`, `.ptr`) are non-differentiable;
-# Lifted parallel returns `NoTangent` V (Ptr-tangent canonical V deferred).
+# Lifted parallel returns `NoTangent` V.
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
