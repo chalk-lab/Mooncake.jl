@@ -11,6 +11,51 @@ function frule!!(f::Dual{typeof(_new_)}, p::Dual{Type{P}}, x::Vararg{Dual,N}) wh
     return Dual(y, dy)
 end
 
+# Generic Lifted-arg `_new_` parallel — branches on P shape inside the
+# @generated body and returns a per-shape construction expression. All
+# sub-function calls (`_new_`, `tuple_map`, `Lifted`, `ImmutableDual`,
+# `MutableDual`) live in the returned expression per AGENTS.md; the
+# generator body uses only introspection. Specific overloads in other
+# files (e.g. `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more
+# specific and take precedence.
+#
+# Assumes `M == fieldcount(P)` for the struct-lift case — padding for
+# default-initialized fields via `PossiblyUninitTangent` (as in the
+# bare-Dual `build_output_tangent`) is deferred to a follow-up.
+@generated function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,M}
+) where {P,Nw,M}
+    if !isconcretetype(P)
+        msg = "_new_ Lifted: P=$P is not concrete"
+        return :(error($msg))
+    end
+    if P <: Tuple
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            return Lifted{P,Nw}(y, tuple_map(tangent, x))
+        end
+    elseif P <: NamedTuple
+        names = (P.parameters[1])::Tuple
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
+        end
+    elseif isprimitivetype(P) || fieldcount(P) == 0
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            return Lifted{P,Nw}(y, NoTangent())
+        end
+    else
+        names = fieldnames(P)
+        wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        return quote
+            y = _new_(P, tuple_map(primal, x)...)
+            nt = NamedTuple{$names}(tuple_map(tangent, x))
+            return Lifted{P,Nw}(y, $wrapper(nt))
+        end
+    end
+end
+
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
 ) where {P,N}

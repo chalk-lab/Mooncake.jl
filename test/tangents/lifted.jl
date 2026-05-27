@@ -710,6 +710,38 @@ end
         @test Mooncake.tangent(r2) === Mooncake.NoTangent()
     end
 
+    @testset "frule!! one-to-one parallels (new.jl _new_)" begin
+        N = 2
+        T = Float64
+
+        # Concrete struct branch: ImmutableDual{NamedTuple{...}} V.
+        type_slot_imm = Mooncake.Lifted{Type{LiftedTest_Point},N}(
+            LiftedTest_Point, Mooncake.NoTangent()
+        )
+        x_slot = Mooncake.Lifted{T,N}(1.5, Mooncake.NDual{T,N}(1.5, (1.0, 0.0)))
+        y_slot = Mooncake.Lifted{T,N}(2.5, Mooncake.NDual{T,N}(2.5, (0.0, 1.0)))
+        new_slot = Mooncake.Lifted{typeof(Mooncake._new_),N}(
+            Mooncake._new_, Mooncake.NoTangent()
+        )
+        r_imm = Mooncake.frule!!(new_slot, type_slot_imm, x_slot, y_slot)
+        @test typeof(r_imm) === Mooncake.Lifted{
+            LiftedTest_Point,N,Mooncake.dual_type(Val(N), LiftedTest_Point)
+        }
+        @test Mooncake.primal(r_imm) === LiftedTest_Point(1.5, 2.5)
+        @test Mooncake.tangent(r_imm) isa Mooncake.ImmutableDual
+
+        # Mutable struct branch: MutableDual{NamedTuple{...}} V.
+        type_slot_mut = Mooncake.Lifted{Type{LiftedTest_RefF},N}(
+            LiftedTest_RefF, Mooncake.NoTangent()
+        )
+        v_slot = Mooncake.Lifted{T,N}(7.0, Mooncake.NDual{T,N}(7.0, (1.0, -1.0)))
+        r_mut = Mooncake.frule!!(new_slot, type_slot_mut, v_slot)
+        @test typeof(r_mut) ===
+            Mooncake.Lifted{LiftedTest_RefF,N,Mooncake.dual_type(Val(N), LiftedTest_RefF)}
+        @test Mooncake.primal(r_mut).v === 7.0
+        @test Mooncake.tangent(r_mut) isa Mooncake.MutableDual
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}
