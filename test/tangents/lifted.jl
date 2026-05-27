@@ -778,6 +778,50 @@ end
         @test Mooncake.tangent(r_gi).partials === (1.0, -1.0)
     end
 
+    @static if VERSION >= v"1.11-rc4"
+        @testset "frule!! one-to-one parallels (memory.jl)" begin
+            N = 2
+            T = Float64
+
+            # dual_type / lifted_type for Memory{T<:IEEEFloat}.
+            @test Mooncake.dual_type(Val(N), Memory{T}) ===
+                Mooncake.NDualArray{T,N,1,Memory{T},Mooncake.NDual{T,N}}
+            @test Mooncake.lifted_type(Val(N), Memory{T}) === Mooncake.Lifted{
+                Memory{T},N,Mooncake.NDualArray{T,N,1,Memory{T},Mooncake.NDual{T,N}}
+            }
+
+            # Memory{P}(undef, n) constructor.
+            ctor_slot = Mooncake.Lifted{Type{Memory{T}},N}(Memory{T}, Mooncake.NoTangent())
+            undef_slot = Mooncake.Lifted{UndefInitializer,N}(undef, Mooncake.NoTangent())
+            n_slot = Mooncake.Lifted{Int,N}(3, Mooncake.NoTangent())
+            r_mem = Mooncake.frule!!(ctor_slot, undef_slot, n_slot)
+            @test typeof(r_mem) === Mooncake.lifted_type(Val(N), Memory{T})
+            @test length(Mooncake.primal(r_mem)) == 3
+            @test all(iszero, Mooncake.tangent(r_mem).partials[1])
+            @test all(iszero, Mooncake.tangent(r_mem).partials[2])
+
+            # memoryrefnew(::Memory) → MemoryRef slot.
+            mn_slot = Mooncake.Lifted{typeof(Core.memoryrefnew),N}(
+                Core.memoryrefnew, Mooncake.NoTangent()
+            )
+            r_ref = Mooncake.frule!!(mn_slot, r_mem)
+            @test typeof(r_ref) === Mooncake.lifted_type(Val(N), MemoryRef{T})
+            @test Mooncake.primal(r_ref) === Core.memoryref(Mooncake.primal(r_mem))
+
+            # lmemoryrefget — read NDual from a position-1 MemoryRef.
+            lg_slot = Mooncake.Lifted{typeof(Mooncake.lmemoryrefget),N}(
+                Mooncake.lmemoryrefget, Mooncake.NoTangent()
+            )
+            ord_slot = Mooncake.Lifted{Val{:not_atomic},N}(
+                Val(:not_atomic), Mooncake.NoTangent()
+            )
+            bc_slot = Mooncake.Lifted{Val{false},N}(Val(false), Mooncake.NoTangent())
+            r_get = Mooncake.frule!!(lg_slot, r_ref, ord_slot, bc_slot)
+            @test typeof(r_get) === Mooncake.Lifted{T,N,Mooncake.NDual{T,N}}
+            @test Mooncake.primal(r_get) === Mooncake.primal(r_mem)[1]
+        end
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

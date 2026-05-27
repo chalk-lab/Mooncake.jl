@@ -303,9 +303,15 @@ end
     return NamedTuple{names,dual_type(Val(N), T)}
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
+# Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
+# an NDualArray over `Memory{T}` (per dual-types.md §14: "Memory{T}
+# (1.11+) → NDualArray{T, N, 1, Memory{T}}").
 @static if VERSION >= v"1.11-rc4"
     @inline function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}
+    end
+    @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
+        return NDualArray{T,N,1,Memory{T},NDual{T,N}}
     end
 end
 
@@ -372,10 +378,13 @@ end
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
-# MemoryRef canonical lift (Julia 1.11+).
+# MemoryRef + Memory canonical lifts (Julia 1.11+).
 @static if VERSION >= v"1.11-rc4"
     @inline function lifted_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
         return Lifted{MemoryRef{T},N,NDualMemoryRef{T,N,Memory{T}}}
+    end
+    @inline function lifted_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
+        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N}}}
     end
 end
 # Concrete-struct fallback. More-specific overloads above (IEEEFloat,
@@ -595,5 +604,15 @@ end
     end
     @inline function zero_lifted(w::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         return Lifted{MemoryRef{T},N}(p, zero_dual(w, p))
+    end
+    # Memory{T} is `<: AbstractArray{T, 1}`, so its canonical V is the
+    # standard NDualArray. `zero(::Memory{T})` returns a fresh Memory{T},
+    # so the existing `NDualArray{T, N, 1, Memory{T}}(p)` constructor works
+    # via `ntuple(_ -> zero(p), Val(N))`.
+    @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
+        return NDualArray{T,N,1,Memory{T}}(m)
+    end
+    @inline function zero_lifted(w::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
+        return Lifted{Memory{T},N}(m, zero_dual(w, m))
     end
 end

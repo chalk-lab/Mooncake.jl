@@ -254,6 +254,21 @@ function frule!!(
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
+# Lifted parallel — per-lane copy of each `partials[lane]` MemoryRef in
+# sync with the primal copy. Restricted to `P <: IEEEFloat` (NDualMemoryRef V).
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    src::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    n::Lifted,
+) where {Nw,P<:IEEEFloat}
+    _n = primal(n)
+    unsafe_copyto!(primal(dest), primal(src), _n)
+    for lane in 1:Nw
+        unsafe_copyto!(tangent(dest).partials[lane], tangent(src).partials[lane], _n)
+    end
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{MemoryRef{P}},
@@ -416,6 +431,20 @@ end
     dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
     return Dual(y, dy)
 end
+@inline function frule!!(
+    ::Lifted{typeof(lmemoryrefget),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    _ordering::Lifted{<:Val},
+    _boundscheck::Lifted{<:Val},
+) where {Nw,P<:IEEEFloat}
+    ordering = primal(_ordering)
+    bc = primal(_boundscheck)
+    y = memoryrefget(primal(x), _val(ordering), _val(bc))
+    dy_partials = ntuple(
+        k -> memoryrefget(tangent(x).partials[k], _val(ordering), _val(bc)), Val(Nw)
+    )
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_partials))
+end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -447,6 +476,18 @@ end
     dy = memoryrefget(tangent(x), ordering, boundscheck)
     return Dual(y, dy)
 end
+@inline Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(memoryrefget),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    _ordering::Lifted{Symbol},
+    _boundscheck::Lifted{Bool},
+) where {Nw,P<:IEEEFloat}
+    ordering = primal(_ordering)
+    bc = primal(_boundscheck)
+    y = memoryrefget(primal(x), ordering, bc)
+    dy_partials = ntuple(k -> memoryrefget(tangent(x).partials[k], ordering, bc), Val(Nw))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_partials))
+end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
     x::CoDual{<:MemoryRef},
@@ -468,12 +509,30 @@ end
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
     return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
 end
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat}
+    y = memoryrefnew(primal(x))
+    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k]), Val(Nw))
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
+end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
 @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
     return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
+end
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    ii::Lifted,
+) where {Nw,P<:IEEEFloat}
+    _ii = primal(ii)
+    y = memoryrefnew(primal(x), _ii)
+    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], _ii), Val(Nw))
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -490,6 +549,18 @@ end
     y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
     dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
     return Dual(y, dy)
+end
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    ii::Lifted,
+    boundscheck::Lifted{Bool},
+) where {Nw,P<:IEEEFloat}
+    _ii = primal(ii)
+    _bc = primal(boundscheck)
+    y = memoryrefnew(primal(x), _ii, _bc)
+    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], _ii, _bc), Val(Nw))
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
@@ -523,6 +594,21 @@ end
 ) where {P,V,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
     memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
+    return value
+end
+@inline function frule!!(
+    ::Lifted{typeof(lmemoryrefset!),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    value::Lifted{P,Nw,NDual{P,Nw}},
+    ::Lifted{Val{ordering},Nw},
+    ::Lifted{Val{boundscheck},Nw},
+) where {Nw,P<:IEEEFloat,ordering,boundscheck}
+    memoryrefset!(primal(x), primal(value), ordering, boundscheck)
+    for lane in 1:Nw
+        memoryrefset!(
+            tangent(x).partials[lane], tangent(value).partials[lane], ordering, boundscheck
+        )
+    end
     return value
 end
 @inline function rrule!!(
@@ -592,6 +678,21 @@ end
         zero_dual(Val(primal(boundscheck))),
     )
 end
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefset!),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    value::Lifted{P,Nw,NDual{P,Nw}},
+    ordering::Lifted{Symbol},
+    boundscheck::Lifted{Bool},
+) where {Nw,P<:IEEEFloat}
+    ord = primal(ordering)
+    bc = primal(boundscheck)
+    memoryrefset!(primal(x), primal(value), ord, bc)
+    for lane in 1:Nw
+        memoryrefset!(tangent(x).partials[lane], tangent(value).partials[lane], ord, bc)
+    end
+    return value
+end
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
     x::CoDual{<:MemoryRef{P},<:MemoryRef{V}},
@@ -625,6 +726,14 @@ end
         dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
         return Dual(x, dx)
     end
+    function frule!!(
+        ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
+    ) where {Nw,P<:IEEEFloat}
+        _n = primal(n)
+        x = Core.memorynew(Memory{P}, _n)
+        partials = ntuple(_ -> Core.memorynew(Memory{P}, _n), Val(Nw))
+        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
+    end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
@@ -638,6 +747,14 @@ end
 function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
     x = Memory{P}(undef, primal(n))
     return Dual(x, zero_tangent_internal(x, NoCache()))
+end
+function frule!!(
+    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+) where {Nw,P<:IEEEFloat}
+    x = Memory{P}(undef, primal(n))
+    # Per-lane zero-initialized partial Memory objects.
+    partials = ntuple(_ -> (m=Memory{P}(undef, primal(n)); fill!(m, zero(P)); m), Val(Nw))
+    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
 end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
@@ -668,6 +785,19 @@ function frule!!(
     dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(_new_),Nw},
+    ::Lifted{Type{Array{P,D}},Nw},
+    ref::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    sz::Lifted,
+) where {Nw,P<:IEEEFloat,D}
+    _sz = primal(sz)
+    y = _new_(Array{P,D}, primal(ref), _sz)
+    # Each lane's partial Array shares the per-lane partial MemoryRef as its
+    # ref field; per-lane Array shape matches `_sz`.
+    partials = ntuple(k -> _new_(Array{P,D}, tangent(ref).partials[k], _sz), Val(Nw))
+    return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, partials))
+end
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{Array{P,N}}},
@@ -689,6 +819,21 @@ function frule!!(
     x::Dual{<:Memory},
 )
     return Dual(primal(copy(x)), tangent(copy(x)))
+end
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_genericmemory_copy},Nw},
+    ::Lifted,
+    ::Lifted{Tuple{Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat}
+    new_primal = copy(primal(x))
+    new_partials = ntuple(k -> copy(tangent(x).partials[k]), Val(Nw))
+    return Lifted{Memory{P},Nw}(
+        new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_partials)
+    )
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -722,6 +867,17 @@ function frule!!(
     dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
     return Dual(y, dy)
 end
+# Field tangents from `Memory` (`.length`, `.ptr`) are non-differentiable;
+# Lifted parallel returns `NoTangent` V (Ptr-tangent canonical V deferred).
+function frule!!(
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,P<:IEEEFloat,name,order}
+    y = getfield(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -744,6 +900,17 @@ function frule!!(
     wants_offset = name === 1 || name === :ptr_or_offset
     dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
     return Dual(y, dy)
+end
+# Same NoTangent V approximation for MemoryRef field access (`.ptr_or_offset`
+# is a Ptr; `.mem` would lose the per-lane Memory partials under Lifted).
+function frule!!(
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,P<:IEEEFloat,name,order}
+    y = getfield(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -768,6 +935,15 @@ function frule!!(
     dy = wants_size ? NoTangent() : tangent(x).ref
     return Dual(y, dy)
 end
+function frule!!(
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,P<:IEEEFloat,D,name,order}
+    y = getfield(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Array,<:Array},
@@ -787,6 +963,9 @@ function frule!!(
 )
     return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
 end
+function frule!!(f::Lifted{typeof(lgetfield),Nw}, x::Lifted, name::Lifted{<:Val}) where {Nw}
+    return frule!!(f, x, name, Lifted{Val{:not_atomic},Nw}(Val(:not_atomic), NoTangent()))
+end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -803,6 +982,19 @@ function frule!!(
 )
     return frule!!(
         zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
+    )
+end
+function frule!!(
+    ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, order::Lifted{Symbol}
+) where {Nw}
+    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoTangent())
+    name_v = Val(primal(name))
+    ord_v = Val(primal(order))
+    return frule!!(
+        lg,
+        x,
+        Lifted{typeof(name_v),Nw}(name_v, NoTangent()),
+        Lifted{typeof(ord_v),Nw}(ord_v, NoTangent()),
     )
 end
 function rrule!!(
@@ -827,6 +1019,11 @@ function frule!!(
     name::Dual{<:Union{Int,Symbol}},
 )
     return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
+end
+function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
+    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoTangent())
+    name_v = Val(primal(name))
+    return frule!!(lg, x, Lifted{typeof(name_v),Nw}(name_v, NoTangent()))
 end
 function rrule!!(
     f::CoDual{typeof(getfield)},
@@ -884,6 +1081,14 @@ function frule!!(
     ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
 ) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
     return Dual(fill!(primal(a), primal(x)), tangent(a))
+end
+# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
+# update needed.
+function frule!!(
+    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:Union{Array{V},Memory{V}},Nw}, x::Lifted
+) where {Nw,V<:Union{UInt8,Int8}}
+    fill!(primal(a), primal(x))
+    return a
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
