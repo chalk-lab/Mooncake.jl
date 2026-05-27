@@ -310,6 +310,20 @@ function frule!!(
     end
     return Dual(y, dy / 2y)
 end
+# BLAS Lifted parallels — deferred. `viewify`/`arrayify` for Lifted slots
+# under NDualArray V needs per-lane partial-array dispatch + abstract-array
+# canonical V (currently NDualArray is `Array`-specific). The 6 BLAS frules
+# below all share this dependency; writing them out would require per-lane
+# BLAS call sequences + Ptr V infra. The bare-Dual rules handle the legacy
+# path until both prerequisites land.
+function frule!!(::Lifted{typeof(BLAS.nrm2),Nw}, ::Lifted, ::Lifted, ::Lifted) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.nrm2)}, …) deferred — needs per-lane " *
+            "BLAS call dispatch + Ptr/abstract-array V infra.",
+        ),
+    )
+end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -352,6 +366,16 @@ function frule!!(
     # Perform primal computation.
     BLAS.scal!(n, a, X, incx)
     return X_dX
+end
+function frule!!(
+    ::Lifted{typeof(BLAS.scal!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.scal!)}, …) deferred — needs per-lane " *
+            "BLAS call dispatch + Ptr/abstract-array V infra.",
+        ),
+    )
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.scal!)},
@@ -400,6 +424,21 @@ end
     } where {P<:BlasFloat},
 )
 
+function frule!!(
+    ::Lifted{typeof(BLAS.gemv!),Nw},
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.gemv!)}, …) deferred — needs per-lane BLAS dispatch.",
+        ),
+    )
+end
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemv!)},
     tA::Dual{Char},
@@ -659,6 +698,15 @@ end
 )
 
 function frule!!(
+    ::Lifted{typeof(BLAS.trmv!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted, ::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.trmv!)}, …) deferred — needs per-lane BLAS dispatch.",
+        ),
+    )
+end
+function frule!!(
     ::Dual{typeof(BLAS.trmv!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
@@ -769,6 +817,15 @@ end
     } where {T<:BlasFloat},
 )
 function frule!!(
+    ::Lifted{typeof(BLAS.trsv!),Nw}, ::Lifted, ::Lifted, ::Lifted, ::Lifted, ::Lifted
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.trsv!)}, …) deferred — needs per-lane BLAS dispatch.",
+        ),
+    )
+end
+function frule!!(
     ::Dual{typeof(BLAS.trsv!)},
     _uplo::Dual{Char},
     _trans::Dual{Char},
@@ -873,6 +930,22 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
+function frule!!(
+    ::Lifted{typeof(BLAS.gemm!),Nw},
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.gemm!)}, …) deferred — needs per-lane BLAS dispatch.",
+        ),
+    )
+end
 @inline function frule!!(
     ::Dual{typeof(BLAS.gemm!)},
     transA::Dual{Char},
@@ -1245,6 +1318,22 @@ end
         typeof(BLAS.trmm!),Char,Char,Char,Char,P,AbstractMatrix{P},AbstractMatrix{P}
     } where {P<:BlasFloat}
 )
+function frule!!(
+    ::Lifted{typeof(BLAS.trmm!),Nw},
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+    ::Lifted,
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(BLAS.trmm!)}, …) deferred — needs per-lane BLAS dispatch.",
+        ),
+    )
+end
 function frule!!(
     ::Dual{typeof(BLAS.trmm!)},
     _side::Dual{Char},
