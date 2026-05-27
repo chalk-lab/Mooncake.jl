@@ -126,6 +126,24 @@ function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
     Base.rehash!(tangent(d), primal(newsz))
     return d
 end
+
+# Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
+# value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
+# (one dict, K → tangent_type(V)) but with V replaced by `dual_type(Val(N), V)`.
+@inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+    return IdDict{K,dual_type(Val(N), V)}
+end
+@inline function lifted_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+    return Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N), V)}}
+end
+
+function frule!!(
+    ::Lifted{typeof(Base.rehash!),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, newsz::Lifted
+) where {N,K,V,Vdv}
+    Base.rehash!(primal(d), primal(newsz))
+    Base.rehash!(tangent(d), primal(newsz))
+    return d
+end
 function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoDual)
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
@@ -134,6 +152,16 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+    setindex!(primal(d), primal(val), primal(key))
+    setindex!(tangent(d), tangent(val), primal(key))
+    return d
+end
+function frule!!(
+    ::Lifted{typeof(setindex!),N},
+    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
+    val::Lifted,
+    key::Lifted,
+) where {N,K,V,Vdv}
     setindex!(primal(d), primal(val), primal(key))
     setindex!(tangent(d), tangent(val), primal(key))
     return d
@@ -178,6 +206,16 @@ function frule!!(
     dx = get(tangent(d), primal(key), tangent(default))
     return Dual(x, dx)
 end
+function frule!!(
+    ::Lifted{typeof(get),N},
+    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
+    key::Lifted,
+    default::Lifted,
+) where {N,K,V,Vdv}
+    x = get(primal(d), primal(key), primal(default))
+    dx = get(tangent(d), primal(key), tangent(default))
+    return Lifted{V,N}(x, dx)
+end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
 ) where {K,V}
@@ -204,6 +242,11 @@ end
 function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
     return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
 end
+function frule!!(
+    ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, key::Lifted
+) where {N,K,V,Vdv}
+    return Lifted{V,N}(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
 ) where {K,V}
@@ -223,6 +266,11 @@ for name in
     @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
         return unexpected_foreigncall_error($name)
     end
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name},N}, args...
+    ) where {N}
+        return unexpected_foreigncall_error($name)
+    end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
         return unexpected_foreigncall_error($name)
     end
@@ -231,6 +279,9 @@ end
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
 function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
     return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+end
+function frule!!(::Lifted{Type{IdDict{K,V}},N}) where {N,K,V}
+    return Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,dual_type(Val(N), V)}())
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)

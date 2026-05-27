@@ -742,6 +742,42 @@ end
         @test Mooncake.tangent(r_mut) isa Mooncake.MutableDual
     end
 
+    @testset "frule!! one-to-one parallels (iddict.jl)" begin
+        N = 2
+        T = Float64
+
+        # Type-level: dual_type / lifted_type for IdDict{K, V}.
+        @test Mooncake.dual_type(Val(N), IdDict{Symbol,T}) ===
+            IdDict{Symbol,Mooncake.NDual{T,N}}
+        @test Mooncake.lifted_type(Val(N), IdDict{Symbol,T}) ===
+            Mooncake.Lifted{IdDict{Symbol,T},N,IdDict{Symbol,Mooncake.NDual{T,N}}}
+
+        # Constructor: Type{IdDict{K,V}}() → Lifted{IdDict{K,V},N}.
+        ctor_slot = Mooncake.Lifted{Type{IdDict{Symbol,T}},N}(
+            IdDict{Symbol,T}, Mooncake.NoTangent()
+        )
+        r_ctor = Mooncake.frule!!(ctor_slot)
+        @test typeof(r_ctor) === Mooncake.lifted_type(Val(N), IdDict{Symbol,T})
+        @test isempty(Mooncake.primal(r_ctor))
+        @test isempty(Mooncake.tangent(r_ctor))
+
+        # setindex! + getindex round trip.
+        d_primal = IdDict{Symbol,T}()
+        d_tan = IdDict{Symbol,Mooncake.NDual{T,N}}()
+        d_slot = Mooncake.Lifted{IdDict{Symbol,T},N}(d_primal, d_tan)
+        val_slot = Mooncake.Lifted{T,N}(3.0, Mooncake.NDual{T,N}(3.0, (1.0, -1.0)))
+        key_slot = Mooncake.Lifted{Symbol,N}(:a, Mooncake.NoTangent())
+        si_slot = Mooncake.Lifted{typeof(setindex!),N}(setindex!, Mooncake.NoTangent())
+        Mooncake.frule!!(si_slot, d_slot, val_slot, key_slot)
+        @test d_primal[:a] === 3.0
+        @test d_tan[:a].partials === (1.0, -1.0)
+
+        gi_slot = Mooncake.Lifted{typeof(getindex),N}(getindex, Mooncake.NoTangent())
+        r_gi = Mooncake.frule!!(gi_slot, d_slot, key_slot)
+        @test Mooncake.primal(r_gi) === 3.0
+        @test Mooncake.tangent(r_gi).partials === (1.0, -1.0)
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}
