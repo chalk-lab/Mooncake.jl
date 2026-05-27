@@ -13,6 +13,9 @@ end
 function frule!!(::Dual{typeof(_foreigncall_)}, args...)
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
+function frule!!(::Lifted{typeof(_foreigncall_),Nw}, args...) where {Nw}
+    return throw_missing_foreigncall_rule_error(:frule!!, args...)
+end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
     return throw_missing_foreigncall_rule_error(:rrule!!, args...)
 end
@@ -91,6 +94,14 @@ function frule!!(::Dual{typeof(pointer_from_objref)}, x)
     dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
     return Dual(y, dy)
 end
+# Lifted parallel deferred — output is a Ptr, needs Ptr canonical V infra.
+function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(pointer_from_objref)}, …) deferred — needs Ptr V."
+        ),
+    )
+end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
         pointer_from_objref(primal(x)),
@@ -104,6 +115,16 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
 function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
     return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+end
+# Lifted parallel deferred — input slot's V for Ptr is Ptr canonical V (TBD).
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
+) where {Nw}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(Base.unsafe_pointer_to_objref)}, …) deferred — needs Ptr V.",
+        ),
+    )
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
@@ -128,6 +149,16 @@ function frule!!(
     unsafe_copyto!(primal(dest), primal(src), primal(n))
     unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
+end
+# Lifted parallel deferred — Ptr slots, needs Ptr canonical V.
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw}, ::Lifted{Ptr{T}}, ::Lifted{Ptr{T}}, ::Lifted
+) where {Nw,T}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(unsafe_copyto!)}, ::Lifted{Ptr{T}}, …) deferred — needs Ptr V.",
+        ),
+    )
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
@@ -177,6 +208,33 @@ function frule!!(
     dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
     return Dual(y, dy)
 end
+# Lifted parallel — reshape both primal and per-lane partials via ccall.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{P,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{P,M}},Nw},
+    a::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+    dims::Lifted,
+) where {Nw,P<:IEEEFloat,M,D}
+    d = primal(dims)
+    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
+    new_partials = ntuple(
+        k -> ccall(
+            :jl_reshape_array,
+            Array{P,M},
+            (Any, Any, Any),
+            Array{P,M},
+            tangent(a).partials[k],
+            d,
+        ),
+        Val(Nw),
+    )
+    return Lifted{Array{P,M},Nw}(y, NDualArray{P,Nw,M,Array{P,M}}(y, new_partials))
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_reshape_array}},
@@ -212,6 +270,22 @@ function frule!!(
     end
     return zero_dual(y)
 end
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_array_isassigned},Nw},
+    ::Lifted{RT,Nw},
+    ::Lifted{AT,Nw},
+    ::Lifted{nreq,Nw},
+    ::Lifted{calling_convention,Nw},
+    a::Lifted,
+    ii::Lifted,
+    args...,
+) where {Nw,RT,AT,nreq,calling_convention}
+    GC.@preserve args begin
+        y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
+    end
+    return Lifted{Cint,Nw}(y, NoTangent())
+end
 
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -242,6 +316,19 @@ function frule!!(
 )
     return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
 end
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_type_unionall},Nw},
+    ::Lifted{Val{Any},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    a::Lifted,
+    b::Lifted,
+) where {Nw}
+    y = ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_type_unionall}},
@@ -260,6 +347,9 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
 frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
+function frule!!(::Lifted{typeof(deepcopy),Nw}, x::Lifted{P,Nw,V}) where {Nw,P,V}
+    return Lifted{P,Nw}(deepcopy(primal(x)), deepcopy(tangent(x)))
+end
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
     dx = zero_rdata(primal(x))
@@ -282,6 +372,15 @@ function frule!!(
 ) where {N}
     return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
 end
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_string_ptr},Nw},
+    args::Vararg{Lifted,M},
+) where {Nw,M}
+    y = _foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...)
+    # Returns a `Ptr{UInt8}`; Ptr canonical V is deferred, so NoTangent V.
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
 
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{:jl_string_ptr}}, args::Vararg{CoDual,N}
@@ -298,6 +397,14 @@ for name in (:jl_get_world_counter, :jl_matching_methods)
         args::Vararg{Dual,N},
     ) where {N}
         return zero_derivative(f, n, args...)
+    end
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        args::Vararg{Lifted,M},
+    ) where {Nw,M}
+        y = _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
+        return Lifted{typeof(y),Nw}(y, NoTangent())
     end
     @eval function rrule!!(
         f::CoDual{typeof(_foreigncall_)},
