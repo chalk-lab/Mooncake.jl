@@ -441,6 +441,43 @@ end
         @test view2.v === 0.0
     end
 
+    @testset "frule!! one-to-one parallels (builtins.jl abs/add)" begin
+        # Use the local wrappers defined by Mooncake's @intrinsic macro —
+        # rule dispatch is on those, not on `Core.Intrinsics.*`.
+        abs_float = Mooncake.IntrinsicsWrappers.abs_float
+        add_float = Mooncake.IntrinsicsWrappers.add_float
+        add_float_fast = Mooncake.IntrinsicsWrappers.add_float_fast
+        N = 2
+        T = Float64
+
+        # abs_float: y = abs(x); dy = sign(x) * dx.
+        x_inner = Mooncake.NDual{T,N}(-3.0, (1.0, -1.0))
+        x_slot = Mooncake.Lifted{T,N}(-3.0, x_inner)
+        f_slot = Mooncake.Lifted{typeof(abs_float),N}(abs_float, Mooncake.NoTangent())
+        r = Mooncake.frule!!(f_slot, x_slot)
+        @test typeof(r) === Mooncake.Lifted{T,N,Mooncake.NDual{T,N}}
+        @test Mooncake.primal(r) === 3.0
+        @test Mooncake.tangent(r).partials === (-1.0, 1.0)  # sign(-3)*(1,-1)
+
+        # add_float: c = a + b; dc = da + db.
+        a_inner = Mooncake.NDual{T,N}(1.0, (1.0, 0.0))
+        b_inner = Mooncake.NDual{T,N}(2.0, (0.0, 1.0))
+        a_slot = Mooncake.Lifted{T,N}(1.0, a_inner)
+        b_slot = Mooncake.Lifted{T,N}(2.0, b_inner)
+        addf = Mooncake.Lifted{typeof(add_float),N}(add_float, Mooncake.NoTangent())
+        r_add = Mooncake.frule!!(addf, a_slot, b_slot)
+        @test Mooncake.primal(r_add) === 3.0
+        @test Mooncake.tangent(r_add).partials === (1.0, 1.0)
+
+        # add_float_fast: same body shape.
+        addf_fast = Mooncake.Lifted{typeof(add_float_fast),N}(
+            add_float_fast, Mooncake.NoTangent()
+        )
+        r_fast = Mooncake.frule!!(addf_fast, a_slot, b_slot)
+        @test Mooncake.primal(r_fast) === 3.0
+        @test Mooncake.tangent(r_fast).partials === (1.0, 1.0)
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

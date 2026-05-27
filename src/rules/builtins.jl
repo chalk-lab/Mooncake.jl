@@ -91,6 +91,8 @@ import ..Mooncake:
     frule!!,
     CoDual,
     Dual,
+    Lifted,
+    NDual,
     primal,
     tangent,
     zero_tangent,
@@ -171,6 +173,11 @@ end
 function frule!!(::Dual{typeof(abs_float)}, x)
     return Dual(abs_float(primal(x)), sign(primal(x)) * tangent(x))
 end
+function frule!!(
+    ::Lifted{typeof(abs_float),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(abs_float(primal(x)), sign(primal(x)) * tangent(x))
+end
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
     y = abs_float(primal(x))
@@ -180,6 +187,11 @@ end
 @intrinsic add_float
 function frule!!(::Dual{typeof(add_float)}, a, b)
     return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
+end
+function frule!!(
+    ::Lifted{typeof(add_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(add_float(primal(a), primal(b)), tangent(a) + tangent(b))
 end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
@@ -192,6 +204,11 @@ function frule!!(::Dual{typeof(add_float_fast)}, a, b)
     c = add_float_fast(primal(a), primal(b))
     dc = add_float_fast(tangent(a), tangent(b))
     return Dual(c, dc)
+end
+function frule!!(
+    ::Lifted{typeof(add_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(add_float_fast(primal(a), primal(b)), tangent(a) + tangent(b))
 end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
