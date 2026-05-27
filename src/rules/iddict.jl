@@ -121,11 +121,6 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
-function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
-    Base.rehash!(primal(d), primal(newsz))
-    Base.rehash!(tangent(d), primal(newsz))
-    return d
-end
 
 # Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
 # value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
@@ -151,11 +146,6 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
-function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
-    setindex!(primal(d), primal(val), primal(key))
-    setindex!(tangent(d), tangent(val), primal(key))
-    return d
-end
 function frule!!(
     ::Lifted{typeof(setindex!),N},
     d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
@@ -200,13 +190,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 function frule!!(
-    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
-) where {K,V}
-    x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
-    return Dual(x, dx)
-end
-function frule!!(
     ::Lifted{typeof(get),N},
     d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
     key::Lifted,
@@ -239,9 +222,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
-function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
-    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
-end
 function frule!!(
     ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, key::Lifted
 ) where {N,K,V,Vdv}
@@ -263,9 +243,6 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
-        return unexpected_foreigncall_error($name)
-    end
     @eval function frule!!(
         ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name},N}, args...
     ) where {N}
@@ -277,9 +254,6 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
-function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
-    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
-end
 function frule!!(::Lifted{Type{IdDict{K,V}},N}) where {N,K,V}
     return Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,dual_type(Val(N), V)}())
 end
