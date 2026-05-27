@@ -648,6 +648,41 @@ end
         @test Mooncake.tangent(r_tr).partials === (1.0f0, 0.0f0)
     end
 
+    @testset "frule!! one-to-one parallels (rules_via_nfwd.jl)" begin
+        if isdefined(@__MODULE__, :test_rule)
+            rng = MersenneTwister(0)
+            # Representative coverage of each pattern in the file.
+            for f in (exp, log, sin, cos, sqrt, cbrt)
+                test_rule(rng, f, 1.5; perf_flag=:none)
+            end
+            # tanpi at a non-singular point (1.5 = singularity).
+            test_rule(rng, tanpi, 0.1; perf_flag=:none)
+            test_rule(rng, atan, 1.0, 2.0; perf_flag=:none)
+            test_rule(rng, ^, 2.0, 3.0; perf_flag=:none)
+            test_rule(rng, max, 1.5, 0.5; perf_flag=:none)
+            test_rule(rng, Base.FastMath.pow_fast, 2.0, 3; perf_flag=:none)
+            test_rule(rng, clamp, 0.5, 0.0, 1.0; perf_flag=:none)
+            test_rule(rng, sincos, 1.0; perf_flag=:none)
+            test_rule(rng, sincosd, 30.0; perf_flag=:none)
+            test_rule(rng, sincospi, 0.25; perf_flag=:none)
+            test_rule(rng, modf, 1.7; perf_flag=:none)
+            test_rule(rng, hypot, 3.0, 4.0; perf_flag=:none)
+            test_rule(rng, hypot, 1.0, 2.0, 2.0; perf_flag=:none)
+        end
+
+        # Direct Lifted-arg invocation check for one unary representative.
+        N = 2
+        T = Float64
+        x_inner = Mooncake.NDual{T,N}(1.0, (1.0, 0.0))
+        x_slot = Mooncake.Lifted{T,N}(1.0, x_inner)
+        sin_slot = Mooncake.Lifted{typeof(sin),N}(sin, Mooncake.NoTangent())
+        r = Mooncake.frule!!(sin_slot, x_slot)
+        @test typeof(r) === Mooncake.Lifted{T,N,Mooncake.NDual{T,N}}
+        @test Mooncake.primal(r) === sin(1.0)
+        @test Mooncake.tangent(r).partials[1] ≈ cos(1.0)
+        @test Mooncake.tangent(r).partials[2] == 0.0
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

@@ -104,6 +104,14 @@ for f in (
         function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x)
         end
+        # Lifted-arg parallel: `$f(::NDual)` has its own overload in Nfwd.jl
+        # that propagates partials correctly; the result V's `.value` matches
+        # `f(primal(x))`, preserving the canonical V invariant.
+        function frule!!(
+            ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            return Lifted{P,N}($f(primal(x)), $f(tangent(x)))
+        end
         function rrule!!(fcodual::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
         end
@@ -115,6 +123,11 @@ end
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(
+    ::Lifted{typeof(tanpi),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    return Lifted{P,N}(tanpi(primal(x)), tanpi(tangent(x)))
 end
 function rrule!!(f::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
@@ -128,6 +141,11 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
             fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}
         ) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2)
+        end
+        function frule!!(
+            ::Lifted{typeof($f),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            return Lifted{P,N}($f(primal(x1), primal(x2)), $f(tangent(x1), tangent(x2)))
         end
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
@@ -150,6 +168,19 @@ function frule!!(
     y = Base.FastMath.pow_fast(_x, _n)
     return Dual(y, Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dx)
 end
+function frule!!(
+    ::Lifted{typeof(Base.FastMath.pow_fast),N}, x::Lifted{P,N,NDual{P,N}}, n::Lifted{I,N}
+) where {N,P<:IEEEFloat,I<:Integer}
+    _x = primal(x)
+    _n = primal(n)
+    y = Base.FastMath.pow_fast(_x, _n)
+    # `Nfwd._nfwd_pow_grad_x` returns a scalar `P`; scaling NDual's partials
+    # by it and explicitly setting V.value to `y` preserves the invariant
+    # (a naive `grad * tangent(x)` would scale `.value` to `grad * x_p`, not `y`).
+    grad = Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y))
+    new_partials = Nfwd._pt_scale(tangent(x).partials, grad)
+    return Lifted{P,N}(y, NDual{P,N}(y, new_partials))
+end
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.pow_fast)}, x::CoDual{P}, n::CoDual{I}
 ) where {P<:IEEEFloat,I<:Integer}
@@ -170,6 +201,17 @@ for f in (clamp,)
         ) where {P<:IEEEFloat}
             return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2, x3)
         end
+        function frule!!(
+            ::Lifted{typeof($f),N},
+            x1::Lifted{P,N,NDual{P,N}},
+            x2::Lifted{P,N,NDual{P,N}},
+            x3::Lifted{P,N,NDual{P,N}},
+        ) where {N,P<:IEEEFloat}
+            return Lifted{P,N}(
+                $f(primal(x1), primal(x2), primal(x3)),
+                $f(tangent(x1), tangent(x2), tangent(x3)),
+            )
+        end
         function rrule!!(
             fcodual::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
         ) where {P<:IEEEFloat}
@@ -184,6 +226,13 @@ end
 function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
+function frule!!(
+    ::Lifted{typeof(sincosd),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    pv = sincosd(primal(x))
+    tv = sincosd(tangent(x))
+    return Lifted{Tuple{P,P},N}(pv, tv)
+end
 function rrule!!(f::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -193,6 +242,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
 function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+end
+function frule!!(
+    ::Lifted{typeof(sincospi),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    pv = sincospi(primal(x))
+    tv = sincospi(tangent(x))
+    return Lifted{Tuple{P,P},N}(pv, tv)
 end
 function rrule!!(f::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
@@ -208,6 +264,11 @@ end
 function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
 end
+function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
+    pv = modf(primal(x))
+    tv = modf(tangent(x))
+    return Lifted{Tuple{P,P},N}(pv, tv)
+end
 function rrule!!(f::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
 end
@@ -219,6 +280,16 @@ function frule!!(
     f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
 ) where {P<:IEEEFloat,M}
     return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
+end
+function frule!!(
+    ::Lifted{typeof(hypot),N},
+    x::Lifted{P,N,NDual{P,N}},
+    xs::Vararg{Lifted{P,N,NDual{P,N}},M},
+) where {N,P<:IEEEFloat,M}
+    return Lifted{P,N}(
+        hypot(primal(x), tuple_map(primal, xs)...),
+        hypot(tangent(x), tuple_map(tangent, xs)...),
+    )
 end
 function rrule!!(
     f::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
