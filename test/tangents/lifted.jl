@@ -822,6 +822,19 @@ end
         end
     end
 
+    @testset "frule!! one-to-one parallels (threads.jl)" begin
+        # `_foreigncall_` has a strict signature `(Val{name}, Val{RT}, Tuple,
+        # Val{nreq}, Val{calling_convention}, args…)`; constructing a
+        # representative call to exercise the body is fragile. Verify
+        # registration via `methods` lookup instead.
+        ms = methods(Mooncake.frule!!)
+        sigs = [sprint(show, m) for m in ms]
+        has_lifted_threading_rule = any(
+            s -> occursin("jl_in_threaded_region", s) && occursin("Lifted", s), sigs
+        )
+        @test has_lifted_threading_rule
+    end
+
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(Mooncake.zero_dual(Val(2), 1.0)) isa Mooncake.NDual{Float64,2}

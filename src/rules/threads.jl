@@ -2,6 +2,15 @@
     return zero_dual(_foreigncall_(name, tuple_map(primal, args)...))
 end
 
+# Lifted analog — same body shape (run the foreigncall on extracted primals,
+# wrap the result in a Lifted slot with `NoTangent` V since these threading
+# foreigncalls all produce non-differentiable results: Cint, Nothing, Task,
+# Bool, etc.). Width N comes from the per-rule signature below.
+@inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
+    y = _foreigncall_(name, tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoTangent())
+end
+
 function _threading_foreigncall_rrule()
     throw(
         ErrorException(
@@ -31,6 +40,10 @@ for name in [
         Val($(QuoteNode(name))), args...
     )
 
+    @eval frule!!(::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$(QuoteNode(name))},Nw}, args...) where {Nw} = _threading_foreigncall_lifted(
+        Val(Nw), Val($(QuoteNode(name))), args...
+    )
+
     @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
 end
 
@@ -51,4 +64,21 @@ function frule!!(
         nothing
     end
     return zero_dual(nothing)
+end
+# Lifted parallel — `build_frule(get_interpreter(ForwardMode), …)` returns
+# a bare-`Dual` worker rule on this branch (the interpreter still wraps
+# args as Dual). Calling it with `Lifted` arguments would mis-dispatch,
+# so this Lifted-arg rule is deferred until the Final-task interpreter
+# cutover replaces `build_frule` output with `Lifted`-dispatched rules.
+function frule!!(
+    ::Lifted{typeof(Base.Threads.threading_run),Nw}, ::Lifted{F,Nw}, ::Lifted{Bool,Nw}
+) where {Nw,F}
+    return throw(
+        ErrorException(
+            "frule!!(::Lifted{typeof(Base.Threads.threading_run)}, …) is deferred " *
+            "until the Final-task interpreter cutover wires `build_frule` to produce " *
+            "Lifted-dispatched worker rules. The bare-Dual frule above remains " *
+            "operative for the current legacy path.",
+        ),
+    )
 end
