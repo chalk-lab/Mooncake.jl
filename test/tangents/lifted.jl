@@ -260,12 +260,11 @@ end
         P = Float64
         x = [1.0, 2.0, 3.0]
 
-        # Build the slot with a non-trivial tangent so partial computations are tested.
-        x_inner = [
-            Mooncake.NDual{P,N}(1.0, (1.0, 0.5)),
-            Mooncake.NDual{P,N}(2.0, (0.0, 1.0)),
-            Mooncake.NDual{P,N}(3.0, (-0.5, 0.0)),
-        ]
+        # Canonical V for `Vector{Float64}` is `NDualArray` (SoA). Two lane
+        # partial vectors carry the directional derivatives.
+        x_inner = Mooncake.NDualArray{P,N,1,Vector{P}}(
+            x, ([1.0, 0.0, -0.5], [0.5, 1.0, 0.0])
+        )
         x_slot = Mooncake.Lifted{Vector{P},N}(x, x_inner)
 
         # sum(::Array)

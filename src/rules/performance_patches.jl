@@ -21,8 +21,11 @@ function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
     return Dual(sum(primal(x)), sum(tangent(x)))
 end
 function frule!!(
-    ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,Array{NDual{P,N},D}}
+    ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}}
 ) where {N,P<:IEEEFloat,D}
+    # `sum(::NDualArray)` iterates via lazy `getindex` (producing NDual
+    # elements) and sums them — `.value` accumulates the primal, partials
+    # accumulate lane-wise, matching the canonical V invariant.
     return Lifted{P,N}(sum(primal(x)), sum(tangent(x)))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -44,7 +47,7 @@ end
 function frule!!(
     ::Lifted{typeof(sum),N},
     ::Lifted{typeof(abs2),N},
-    x::Lifted{Array{P,D},N,Array{NDual{P,N},D}},
+    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     return Lifted{P,N}(sum(abs2, primal(x)), sum(abs2, tangent(x)))
 end
