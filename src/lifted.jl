@@ -152,6 +152,26 @@ end
     end
     return MutableTangent(NamedTuple{names}(field_tangents))
 end
+# Tuple primal: V is a Tuple of per-element V; recurse element-wise.
+@inline function unlift_to_tangent(x::Lifted{P,1,<:Tuple}) where {P<:Tuple}
+    p = primal(x)
+    v = tangent(x)
+    return ntuple(length(v)) do i
+        return unlift_to_tangent(Lifted{fieldtype(P, i),1}(p[i], v[i]))
+    end
+end
+# NamedTuple primal: V is a NamedTuple of per-element V; recurse element-wise.
+@inline function unlift_to_tangent(x::Lifted{P,1,<:NamedTuple}) where {P<:NamedTuple}
+    p = primal(x)
+    v = tangent(x)
+    names = keys(v)
+    field_tangents = map(names) do name
+        return unlift_to_tangent(
+            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(v, name))
+        )
+    end
+    return NamedTuple{names}(field_tangents)
+end
 
 # `_dot_internal` / `_scale_internal` overloads for forward-mode V
 # shapes that the test framework's tangent-shape arithmetic may see

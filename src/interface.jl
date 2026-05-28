@@ -1640,11 +1640,9 @@ end
             native_tangents = tuple_map(
                 primal_to_tangent!!, cache.input_tangents, lane_tangents
             )
-            cache.rule(tuple_map(Dual, input_primals, native_tangents)...)
+            cache.rule(tuple_map(lift_from_tangent, input_primals, native_tangents)...)
         else
-            lane_duals = tuple_map(Dual, input_primals, lane_tangents)
-            error_if_incorrect_dual_types(lane_duals...)
-            cache.rule(lane_duals...)
+            cache.rule(tuple_map(lift_from_tangent, input_primals, lane_tangents)...)
         end
     end
 
@@ -1653,14 +1651,14 @@ end
     first_tangent = if friendly_tangents
         tangent_to_primal_internal!!(
             _copy_output(y),
-            tangent(first_output),
+            unlift_to_tangent(first_output),
             isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
         )
     else
         # Bug fix note: chunked forward can return `NoTangent()` lanes for
         # nondifferentiable outputs, and the generic `_copy` fallback does not
         # support `NoTangent`.
-        first_output_tangent = tangent(first_output)
+        first_output_tangent = unlift_to_tangent(first_output)
         if first_output_tangent isa NoTangent
             first_output_tangent
         else
@@ -1676,11 +1674,11 @@ end
             return if friendly_tangents
                 tangent_to_primal_internal!!(
                     _copy_output(y),
-                    tangent(lane_output),
+                    unlift_to_tangent(lane_output),
                     isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
                 )
             else
-                lane_output_tangent = tangent(lane_output)
+                lane_output_tangent = unlift_to_tangent(lane_output)
                 if lane_output_tangent isa NoTangent
                     lane_output_tangent
                 else
@@ -2148,10 +2146,9 @@ end
         friendly_tangents=false,
     )
 
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    error_if_incorrect_dual_types(input_duals...)
-    output = __call_rule(cache.rule, input_duals)
-    return primal(output), tangent(output)
+    input_lifted = tuple_map(lift_from_tangent, input_primals, input_tangents)
+    output = __call_rule(cache.rule, input_lifted)
+    return primal(output), unlift_to_tangent(output)
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
