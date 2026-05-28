@@ -197,15 +197,14 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
-function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
-    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(dual_captures, x...)
+# `_dual_mc` builds a Lifted-dispatched callable via `build_frule` (per
+# the interpreter cutover). Wrap captures + supplied tangent into a
+# width-1 Lifted slot and forward.
+function frule!!(f::Lifted{<:MistyClosure,1}, x::Vararg{Lifted,M}) where {M}
+    captures = primal(f).oc.captures
+    lifted_captures = lift_from_tangent(captures, tangent(f).captures_tangent)
+    return tangent(f).dual_callable(lifted_captures, x...)
 end
-# Lifted parallel omitted — `tangent(f).dual_callable` is a bare-Dual rule
-# produced by the legacy `_dual_mc` builder; calling it with Lifted args
-# would mis-dispatch. The Final-task interpreter cutover wires `_dual_mc`
-# to produce Lifted-dispatched callables; the Lifted parallel can be
-# added then.
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =
         "Attempted to compute the adjoint associated to a `MistyClosure`. " *
