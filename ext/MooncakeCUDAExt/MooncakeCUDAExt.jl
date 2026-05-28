@@ -1663,27 +1663,33 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matmatmul!),Nw},
+    C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    tA::Lifted{Char},
+    tB::Lifted{Char},
+    A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+) where {Nw}
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
     _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
-    # primal: C = op_A(A) * op_B(B)
     cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
-    # tangent (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
-    cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
-    cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    C_partials = tangent(C).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dC = C_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
+        cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    end
     return C
 end
 function rrule!!(
@@ -1745,18 +1751,18 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matmatmul!),Nw},
+    C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    tA::Lifted{Char},
+    tB::Lifted{Char},
+    A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    alpha::Lifted{<:Number},
+    beta::Lifted{<:Number},
+) where {Nw}
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
@@ -1764,11 +1770,17 @@ function frule!!(
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
-    # primal: C := α*op_A(A)*op_B(B) + β*C
     cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
-    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
-    cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
-    cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    C_partials = tangent(C).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dC = C_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
+        cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    end
     return C
 end
 function rrule!!(
@@ -1851,17 +1863,17 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matvecmul!)},
-    Y::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    tA::Dual{<:AbstractChar,NoTangent},
-    A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
-    B::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pY, dY = primal(Y), tangent(Y)
-    pA, dA = primal(A), tangent(A)
-    pB, dB = primal(B), tangent(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matvecmul!),Nw},
+    Y::Lifted{<:CuMaybeComplexVec,Nw,<:NDualArray},
+    tA::Lifted{<:AbstractChar},
+    A::Lifted{<:CuMaybeComplexMat,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexVec,Nw,<:NDualArray},
+    alpha::Lifted{<:Number},
+    beta::Lifted{<:Number},
+) where {Nw}
+    pY = primal(Y)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     av = primal(alpha)
     bv = primal(beta)
@@ -1869,9 +1881,17 @@ function frule!!(
     _check_gemv_eltypes(T, eltype(pB))
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
-    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
-    cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
-    cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    Y_partials = tangent(Y).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dY = Y_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+        cuBLAS.gemv!(tAv, av, dA, pB, bv, dY)
+        cuBLAS.gemv!(tAv, av, pA, dB, _1, dY)
+    end
     # primal: pY = av*op(pA)*pB + bv*pY
     cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
     return Y
