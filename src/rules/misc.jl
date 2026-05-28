@@ -135,21 +135,10 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
-@inline function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{P,T}, ::Dual{Val{f}}
-) where {P,T<:StandardTangentType,f}
-    primal_field = getfield(primal(x), f)
-    if tangent_type(P) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        Dual(primal_field, _get_tangent_field(tangent(x), f))
-    end
-end
-# Lifted-arg parallel — extract the field's slot-level V from the parent
-# V via `_get_lifted_field`. The bare-Dual rule's `_get_tangent_field`
-# operates on reverse-mode `(Mutable)Tangent`; this Lifted equivalent
-# operates on forward-mode lift wrappers (`ImmutableDual`/`MutableDual`)
-# and on plain `Tuple`/`NamedTuple` V's.
+# Extract the field's slot-level V from the parent V via `_get_lifted_field`.
+# Forward-mode lift wrappers (`ImmutableDual`/`MutableDual`) and plain
+# `Tuple`/`NamedTuple` V's are handled by the `_get_lifted_field` dispatch
+# table below.
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}
 ) where {Nw,f}
@@ -218,19 +207,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 @inline function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{P,<:StandardTangentType},
-    ::Dual{Val{f}},
-    ::Dual{Val{order}},
-) where {P,f,order}
-    primal_field = getfield(primal(x), f, order)
-    if tangent_type(P) === NoTangent
-        return uninit_dual(primal_field)
-    else
-        return Dual(primal_field, _get_tangent_field(tangent(x), f))
-    end
-end
-@inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, ::Lifted{Val{order}}
 ) where {Nw,f,order}
     primal_field = getfield(primal(x), f, order)
@@ -258,15 +234,9 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{P,T}, name::Dual, x::Dual
-) where {P,T<:StandardTangentType}
-    return lsetfield_frule(value, name, x)
-end
-# Lifted-arg parallel — write the field's per-lane V_i back into the
-# parent's MutableDual via the central writeback helper. Mutable structs
-# only (immutable structs go through reverse-mode rebuild paths and
-# don't reach lsetfield!).
+# Write the field's per-lane V_i back into the parent's MutableDual via the
+# central writeback helper. Mutable structs only (immutable structs go through
+# reverse-mode rebuild paths and don't reach lsetfield!).
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{P,Nw,<:MutableDual},
@@ -283,12 +253,6 @@ end
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
     return lsetfield_rrule(value, name, x)
-end
-
-function lsetfield_frule(value::Dual{P,T}, ::Dual{Val{name}}, x::Dual) where {P,T,name}
-    setfield!(primal(value), name, primal(x))
-    T !== NoTangent && set_tangent_field!(tangent(value), name, tangent(x))
-    return x
 end
 
 function lsetfield_rrule(
