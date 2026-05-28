@@ -1,12 +1,6 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
-) where {P<:BlasFloat}
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA))
-    return _getrf_fwd(A_dA, ipiv, info)
-end
-function frule!!(
     ::Lifted{typeof(LAPACK.getrf!),Nw},
     A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
 ) where {Nw,P<:BlasFloat}
@@ -48,16 +42,6 @@ end
     MinimalCtx,
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}},
 )
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    _kwargs::Dual{<:NamedTuple},
-    ::Dual{typeof(getrf!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
-    check = primal(_kwargs).check
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
-    return _getrf_fwd(A_dA, ipiv, info)
-end
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     _kwargs::Lifted{<:NamedTuple},
@@ -144,43 +128,6 @@ end
     } where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract data.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    LAPACK.trtrs!(uplo, trans, diag, A, dB)
-    tmp = copy(B)
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp now contains inv(A) B.
-
-    tmp2 = copy(tmp)
-    if diag == 'N'
-        a = uplo == 'L' ? LowerTriangular(dA) : UpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
-    else
-        a = uplo == 'L' ? UnitLowerTriangular(dA) : UnitUpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
-        tmp .-= tmp2
-    end
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp is now α inv(A) dA inv(A) B.
-    dB .-= tmp
-
-    # Run primal computation.
-    LAPACK.trtrs!(uplo, trans, diag, A, B)
-    return B_dB
-end
-function frule!!(
     ::Lifted{typeof(trtrs!),Nw},
     _uplo::Lifted{Char},
     _trans::Lifted{Char},
@@ -259,41 +206,6 @@ end
         typeof(getrs!),Char,AbstractMatrix{P},AbstractVector{Int},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat}
 )
-function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract data.
-    trans = primal(_trans)
-    A, dA = arrayify(A_dA)
-    ipiv = primal(_ipiv)
-    B, dB = arrayify(B_dB)
-
-    # Run primal computation.
-    LAPACK.getrs!(trans, A, ipiv, B)
-
-    # Compute Frechet derivative.
-    L = UnitLowerTriangular(A)
-    dL_plus_I = UnitLowerTriangular(dA)
-    U = UpperTriangular(A)
-    dU = UpperTriangular(dA)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(dB, 1))
-    tmp = dL_plus_I * U
-    tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-    if trans == 'N'
-        mul!(dB, tmp2, B, -one(P), one(P))
-    else
-        mul!(dB, tmp2', B, -one(P), one(P))
-    end
-    LAPACK.getrs!(trans, A, ipiv, dB)
-
-    return B_dB
-end
 function frule!!(
     ::Lifted{typeof(getrs!),Nw},
     _trans::Lifted{Char},
@@ -413,33 +325,6 @@ end
     MinimalCtx, Tuple{typeof(getri!),AbstractMatrix{<:BlasRealFloat},AbstractVector{Int}},
 )
 function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-) where {P<:BlasRealFloat}
-    # Extract args.
-    A, dA = arrayify(A_dA)
-    ipiv = primal(_ipiv)
-
-    # Compute part of Frechet derivative.
-    L = UnitLowerTriangular(A)
-    dL_plus_I = UnitLowerTriangular(dA)
-    U = UpperTriangular(A)
-    dU = UpperTriangular(dA)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(dA, 1))
-    tmp = dL_plus_I * U
-    tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-
-    # Perform primal computation.
-    LAPACK.getri!(A, ipiv)
-
-    # Compute Frechet derivative.
-    dA .= (-A * tmp2 * A)
-
-    return A_dA
-end
-function frule!!(
     ::Lifted{typeof(getri!),Nw},
     A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
     _ipiv::Lifted{<:AbstractVector{Int}},
@@ -502,35 +387,6 @@ function __sym!(X::Matrix)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
-function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::Dual{<:AbstractMatrix{<:BlasRealFloat}}
-)
-    # Extract args and take a copy of A.
-    uplo = primal(_uplo)
-    A, dA = arrayify(A_dA)
-
-    # Run primal computation.
-    _, info = LAPACK.potrf!(uplo, A)
-
-    # Compute Frechet derivative.
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, lmul!(L, tmp), 'L')
-    else
-        U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA, :U), U))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, rmul!(tmp, U), 'U')
-    end
-
-    return Dual((A, info), (tangent(A_dA), NoTangent()))
-end
 function frule!!(
     ::Lifted{typeof(potrf!),Nw},
     _uplo::Lifted{Char},
@@ -630,36 +486,6 @@ end
         typeof(potrs!),Char,AbstractMatrix{P},AbstractVecOrMat{P}
     } where {P<:BlasRealFloat},
 )
-function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract args and take a copy of B.
-    uplo = primal(_uplo)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Run primal computation.
-    LAPACK.potrs!(uplo, A, B)
-
-    # Compute Frechet derivative.
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        dL = LowerTriangular(dA)
-        mul!(dB, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
-    else
-        U = UpperTriangular(A)
-        dU = UpperTriangular(dA)
-        mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
-    end
-
-    return B_dB
-end
 function frule!!(
     ::Lifted{typeof(potrs!),Nw},
     _uplo::Lifted{Char},
@@ -920,14 +746,6 @@ w.r.t. the underlying data array `A`.
     Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
-    F = bunchkaufman(S)
-    Sinv = inv(F)
-    return Dual(logdet(F), dot(Sinv, d_data))
-end
-function frule!!(
     ::Lifted{typeof(logdet),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
     S = primal(_S)
@@ -967,19 +785,6 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
 @is_primitive(
     MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-function frule!!(
-    ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
-    F = bunchkaufman(S; check=false)
-    d = det(F)
-    # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
-    # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
-    # measure-zero in practice.
-    iszero(d) && return Dual(d, zero(P))
-    Sinv = inv(F)
-    return Dual(d, d * dot(Sinv, d_data))
-end
 function frule!!(
     ::Lifted{typeof(det),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
@@ -1028,16 +833,6 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     MinimalCtx,
     Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
-function frule!!(
-    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
-    F = bunchkaufman(S; check=false)
-    ld, s = logabsdet(F)
-    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
-    Sinv = inv(F)
-    return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
-end
 function frule!!(
     ::Lifted{typeof(logabsdet),Nw}, _S::Lifted{<:Symmetric{P,Matrix{P}},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
