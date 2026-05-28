@@ -187,13 +187,8 @@ end
                 @test pb!!(1.0) == (Mooncake.NoRData(), y - sin(x), x)
             end
 
-            @testset "direct value_and_derivative!! on Rule" begin
+            @testset "direct value_and_derivative!! on Rule (chunked NTangent)" begin
                 rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=2)
-
-                out_tuple = Mooncake.value_and_derivative!!(
-                    rule, (f, Mooncake.NoTangent()), (x, (dx, 0.0)), (y, (0.0, dy))
-                )
-                @test out_tuple == (z, (dx * y + dx * (-sin(x)), x * dy))
 
                 out_chunk = Mooncake.value_and_derivative!!(
                     rule,
@@ -247,7 +242,7 @@ end
                 @test occursin("nfwd output unsupported.", msg)
                 @test occursin("Supported nfwd inputs:", msg)
                 @test occursin("Supported nfwd outputs:", msg)
-                @test occursin("1. Float64 (scalar)", msg)
+                @test occursin("IEEEFloat scalars", msg)
                 @test occursin("Int64 (not size-bearing)", msg)
             end
 
@@ -485,27 +480,6 @@ end
             )
             @test_throws ArgumentError Mooncake.NfwdMooncake.build_rrule(
                 f, x, y; chunk_size=-1
-            )
-        end
-
-        @testset "function tangent rejection" begin
-            rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=1)
-            @test_throws ArgumentError rule(
-                Mooncake.Dual(f, 1.0), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
-            )
-
-            rrule = Mooncake.NfwdMooncake.build_rrule(f, x, y; chunk_size=1)
-            @test_throws ArgumentError rrule(
-                Mooncake.CoDual(f, 1.0), Mooncake.zero_fcodual(x), Mooncake.zero_fcodual(y)
-            )
-        end
-
-        @testset "array tangent validation" begin
-            g(x) = sin.(x)
-            x_vec = [1.0, 2.0]
-            rule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
-            @test_throws ArgumentError rule(
-                Mooncake.zero_dual(g), Mooncake.Dual(x_vec, [1.0, 2.0, 3.0])
             )
         end
     end

@@ -251,16 +251,16 @@ add chunked `NTangent` support on top of this entrypoint.
     )
 end
 
-@inline function value_and_derivative!!(rule::R, fx::Vararg{Dual,N}) where {R,N}
+@inline function value_and_derivative!!(rule::R, fx::Vararg{Lifted,N}) where {R,N}
     return __call_rule(rule, fx)
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
-    input_duals = tuple_map(Dual, input_primals, input_tangents)
-    output = __call_rule(rule, input_duals)
-    return primal(output), tangent(output)
+    input_lifteds = tuple_map(lift, input_primals, input_tangents)
+    output = __call_rule(rule, input_lifteds)
+    return primal(output), last(unlift(output))
 end
 
 # Cache types in this file:

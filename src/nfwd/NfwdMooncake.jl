@@ -267,24 +267,6 @@ end
 # build a new mutable wrapper per call or hide shared mutable workspace behind a plain
 # rule method. That shared-state hazard is not unique to nfwd, but it matters most here
 # because primitive rules are expected to behave like ordinary stateless methods.
-function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
-    _nfwd_verify_sig(rule, (f, x...))
-    _nfwd_check_function_tangent(tangent(f))
-    primals = map(primal, x)
-    tangents = map(tangent, x)
-    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
-    return Dual(y, dy)
-end
-
-# Scalar-input specializations avoid the generic vararg/map path, which otherwise leaves
-# small cached nfwd rules on an allocating hot path.
-@inline function (rule::Rule{sig,N})(f::Dual, x::Dual{T,D}) where {sig,N,T<:Number,D}
-    _nfwd_verify_sig(rule, (f, x))
-    _nfwd_check_function_tangent(tangent(f))
-    y, dy = _nfwd_eval(primal(f), (primal(x),), (tangent(x),), Val(N))
-    return Dual(y, dy)
-end
-
 # Lifted-arg width-1 scalar overload: scalar IEEEFloat input → routed
 # through `_wrap_lifted_output` so scalar, complex, and tuple outputs all
 # resolve via dispatch.
@@ -294,17 +276,6 @@ end
     _nfwd_verify_sig(rule, (f, x))
     lifted = _nfwd_lift(primal(x), tangent(x).partials[1], Val(1))
     return _wrap_lifted_output(primal(f)(lifted), Val(1))
-end
-
-@inline function (rule::Rule{sig,N})(
-    f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}
-) where {sig,N,T1<:Number,T2<:Number,D1,D2}
-    _nfwd_verify_sig(rule, (f, x1, x2))
-    _nfwd_check_function_tangent(tangent(f))
-    y, dy = _nfwd_eval(
-        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
-    )
-    return Dual(y, dy)
 end
 
 @inline function (rule::Rule{sig,N})(
@@ -324,20 +295,6 @@ end
 end
 
 @inline function (rule::Rule{sig,N})(
-    f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}, x3::Dual{T3,D3}
-) where {sig,N,T1<:Number,T2<:Number,T3<:Number,D1,D2,D3}
-    _nfwd_verify_sig(rule, (f, x1, x2, x3))
-    _nfwd_check_function_tangent(tangent(f))
-    y, dy = _nfwd_eval(
-        primal(f),
-        (primal(x1), primal(x2), primal(x3)),
-        (tangent(x1), tangent(x2), tangent(x3)),
-        Val(N),
-    )
-    return Dual(y, dy)
-end
-
-@inline function (rule::Rule{sig,N})(
     f::Mooncake.Lifted,
     x1::Mooncake.Lifted{T1,N,NDual{T1,N}},
     x2::Mooncake.Lifted{T2,N,NDual{T2,N}},
@@ -352,26 +309,6 @@ end
     )
     partials = dy isa Tuple ? dy : (dy,)
     return Mooncake.Lifted{typeof(y),N}(y, NDual{typeof(y),N}(y, partials))
-end
-
-# Optimised single-array-input frule: reuses a pre-allocated lifted buffer when the tangent
-# is in chunk layout (ndims(dx) == ndims(x) + 1). Falls through to the generic allocating
-# path for the plain layout and for malformed tangent dimensions, where `_nfwd_eval`
-# produces the user-facing validation error.
-function (rule::Rule{sig,N})(
-    f::Dual, x::Dual{Array{T,Nd},Array{T,Nd1}}
-) where {sig,N,T<:IEEEFloat,Nd,Nd1}
-    _nfwd_verify_sig(rule, (f, x))
-    _nfwd_check_function_tangent(tangent(f))
-    px = _nfwd_check_primal(primal(x))
-    dx = tangent(x)
-    if Nd1 == Nd + 1  # chunk layout — use in-place lift with pre-allocated buffer
-        lifted = _nfwd_frule_lifted!(rule.buf, px, dx, Val(N))
-        y, dy = _nfwd_extract(primal(f)(lifted), Val(N))
-    else  # non-chunk layout — fall back to the allocating path
-        y, dy = _nfwd_eval(primal(f), (px,), (dx,), Val(N))
-    end
-    return Dual(y, dy)
 end
 
 # Lifted-arg width-N array overload: input is `Lifted{<:Array{T}, N, NDualArray{...}}`,
@@ -446,6 +383,11 @@ end
         primal_arr, Mooncake.NDualArray{T,N,D,A}(primal_arr, partials)
     )
 end
+
+# Catch-all for output shapes the nfwd engine can't yet wrap (non-IEEEFloat
+# scalars, Bool arrays, etc.) — route through the public diagnostic so the
+# `UnsupportedOutputError` message points the user at supported shapes.
+@inline _wrap_lifted_output(y, ::Val{N}) where {N} = Nfwd._nfwd_output_error(y)
 
 @inline function Mooncake.value_and_derivative!!(
     rule::Rule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
