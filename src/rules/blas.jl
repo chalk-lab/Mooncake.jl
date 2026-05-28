@@ -296,20 +296,6 @@ end
         typeof(BLAS.nrm2),Int,X,Int
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
-function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    incx::Dual{<:Integer},
-) where {T<:BlasFloat}
-    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(primal(n), X_dX, primal(incx))
-    dy = zero(y)
-    @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
-    end
-    return Dual(y, dy / 2y)
-end
 # BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
 # routine on the per-lane partial array (or Ptr) directly. Supports both
 # `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
@@ -375,28 +361,6 @@ end
         typeof(BLAS.scal!),Integer,P,X,Integer
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
-function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Dual{P},
-    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incx::Dual{<:Integer},
-) where {P<:BlasFloat}
-
-    # Extract params.
-    n = primal(_n)
-    incx = primal(_incx)
-    a, da = extract(a_da)
-    X, dX = arrayify(X_dX)
-
-    # Compute Frechet derivative.
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-
-    # Perform primal computation.
-    BLAS.scal!(n, a, X, incx)
-    return X_dX
-end
 function frule!!(
     ::Lifted{typeof(BLAS.scal!),Nw},
     _n::Lifted,
@@ -776,36 +740,6 @@ function frule!!(
     BLAS.trmv!(uplo, trans, diag, A, x)
     return x_dx
 end
-function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    # Extract primals.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Frechet derivative computation.
-    BLAS.trmv!(uplo, trans, diag, A, dx)
-    tmp = copy(x)
-    BLAS.trmv!(uplo, trans, diag, dA, tmp)
-    dx .+= tmp
-    if diag === 'U'
-        dx .-= x
-    end
-
-    # Primal computation.
-    BLAS.trmv!(uplo, trans, diag, A, x)
-
-    return x_dx
-end
-
 function rrule!!(
     ::CoDual{typeof(BLAS.trmv!)},
     _uplo::CoDual{Char},
@@ -910,33 +844,6 @@ function frule!!(
         BLAS.trsv!(uplo, trans, diag, A, tmp)
         dx .-= tmp
     end
-    return x_dx
-end
-function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Primal
-    BLAS.trsv!(uplo, trans, diag, A, x)
-
-    BLAS.trsv!(uplo, trans, diag, A, dx)
-    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if diag == 'U'
-        tmp .-= x
-    end
-    BLAS.trsv!(uplo, trans, diag, A, tmp)
-    dx .-= tmp
-
     return x_dx
 end
 function rrule!!(
@@ -1462,40 +1369,6 @@ function frule!!(
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
     return B_dB
 end
-function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
-
-    # Extract data.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
-        dB .-= α .* B
-    end
-    if !iszero(dα)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
-    end
-
-    # Compute primal.
-    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
-    return B_dB
-end
 function rrule!!(
     ::CoDual{typeof(BLAS.trmm!)},
     _side::CoDual{Char},
@@ -1568,44 +1441,6 @@ end
     } where {P<:BlasFloat},
 )
 
-function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
-
-    # Extract parameters.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
-    tmp = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
-    dB .+= dα .* tmp
-
-    tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
-    if diag == 'U'
-        tmp .-= α .* tmp2
-    end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
-    dB .-= tmp
-
-    # Run primal computation.
-    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
-    return B_dB
-end
 function frule!!(
     ::Lifted{typeof(BLAS.trsm!),Nw},
     _side::Lifted{Char},
