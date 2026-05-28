@@ -86,6 +86,7 @@ import Mooncake:
     lifted_type,
     Nfwd,
     ImmutableDual,
+    MutableDual,
     zero_lifted,
     _typeof
 
@@ -1522,8 +1523,16 @@ function frule!!(
         zero(decoded.primal_out)
     end
     P_out = typeof(decoded.primal_out)
-    return Lifted{P_out,1}(decoded.primal_out, NDual{P_out,1}(decoded.primal_out, (dy,)))
+    return Lifted{P_out,1}(decoded.primal_out, _wrap_scalar_v(decoded.primal_out, dy))
 end
+
+# Wrap a (primal, dy) scalar pair into the canonical width-1 V: NDual for real
+# IEEEFloat outputs, Complex{NDual} for complex outputs.
+@inline _wrap_scalar_v(y::T, dy::T) where {T<:IEEEFloat} = NDual{T,1}(y, (dy,))
+@inline function _wrap_scalar_v(y::Complex{R}, dy::Complex{R}) where {R<:IEEEFloat}
+    return Complex(NDual{R,1}(real(y), (real(dy),)), NDual{R,1}(imag(y), (imag(dy),)))
+end
+
 # Transpose/Adjoint of CuFloatArray — V is ImmutableDual{@NamedTuple{parent::NDualArray}}.
 function frule!!(
     ::Lifted{typeof(sum),1},
@@ -2823,11 +2832,64 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-# Forward-mode `Base.Broadcast.materialize` on a CuArrayStyle Broadcasted
-# is currently unported — the `_prepare_gpu_broadcast` / `_gpu_bcast_leaves`
-# helpers consume a reverse-mode Broadcasted-shaped tangent via
-# `_fields(td).args`, which doesn't match the Lifted V (structural
-# ImmutableDual). The rrule!! below stays as-is for reverse-mode AD.
+# Width-1 lane-1 tangent extraction for the canonical forward V shapes that
+# appear as `Broadcasted.args` entries, used by the `materialize` /
+# `materialize!` frules below to reconstruct a legacy reverse-mode-shaped
+# Broadcasted tangent (which the existing `_prepare_gpu_broadcast` /
+# `_gpu_bcast_leaves` helpers consume).
+@inline _lane1_bc_tangent(::Mooncake.NoDual, _) = NoTangent()
+@inline _lane1_bc_tangent(::Mooncake.NoTangent, _) = NoTangent()
+@inline _lane1_bc_tangent(::Tuple{Mooncake.NoTangent}, _) = NoTangent()
+@inline _lane1_bc_tangent(::Tuple{Mooncake.NoDual}, _) = NoTangent()
+@inline _lane1_bc_tangent(v::Nfwd.NDual{T,1}, _) where {T} = v.partials[1]
+@inline _lane1_bc_tangent(v::Nfwd.NDualArray{T,1}, _) where {T} = v.partials[1]
+@inline function _lane1_bc_tangent(v::Complex{Nfwd.NDual{R,1}}, _) where {R}
+    return Complex(real(v).partials[1], imag(v).partials[1])
+end
+@inline function _lane1_bc_tangent(v::ImmutableDual, p::Broadcasted)
+    nt = v.value
+    targs = ntuple(length(p.args)) do i
+        _lane1_bc_tangent(nt.args[i], p.args[i])
+    end
+    return Tangent((; style=NoTangent(), f=NoTangent(), args=targs, axes=NoTangent()))
+end
+# Wrapper-arg fall-throughs: Transpose/Adjoint primals with parent NDualArray V.
+@inline function _lane1_bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint})
+    parent_tangent = _lane1_bc_tangent(v.value.parent, parent(p))
+    return Tangent((; parent=parent_tangent))
+end
+# Generic Ref/struct primal with ImmutableDual or MutableDual V — the
+# Broadcast `args` may include e.g. `RefValue{F}` (non-diff inner) which the
+# legacy bare-Dual path treated as NoTangent.
+@inline function _lane1_bc_tangent(v::Union{ImmutableDual,MutableDual}, _)
+    # The fall-through reaches here only for V's the more-specific Broadcasted /
+    # wrapper overloads above didn't capture — those should be tangent-free
+    # under the legacy reverse-mode shape.
+    return NoTangent()
+end
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Base.Broadcast.materialize),<:Broadcasted{<:CuArrayStyle}},
+)
+function frule!!(
+    ::Lifted{typeof(Base.Broadcast.materialize),1},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},1,<:ImmutableDual},
+)
+    bc_primal = primal(bc)
+    bc_tangent = _lane1_bc_tangent(tangent(bc), bc_primal)
+    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, bc_tangent)
+
+    out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
+    if !decoded.is_diff
+        return Lifted{typeof(out),1}(out, NoDual())
+    end
+    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
+    A = typeof(decoded.primal_out)
+    T = eltype(A)
+    D = ndims(A)
+    return Lifted{A,1}(decoded.primal_out, NDualArray{T,1,D,A}(decoded.primal_out, (dy,)))
+end
 
 function rrule!!(
     mat_fn::CoDual{typeof(Base.Broadcast.materialize)},
@@ -2890,9 +2952,30 @@ end
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
     } where {P<:CuMaybeComplexArray},
 )
-# Forward-mode `Base.Broadcast.materialize!` on a CuArrayStyle Broadcasted
-# is currently unported (see materialize note above). The rrule!! below
-# stays for reverse-mode AD.
+function frule!!(
+    ::Lifted{typeof(Base.Broadcast.materialize!),1},
+    dest::Lifted{P,1,<:NDualArray},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},1,<:ImmutableDual},
+) where {P<:CuMaybeComplexArray}
+    bc_primal = primal(bc)
+    bc_tangent = _lane1_bc_tangent(tangent(bc), bc_primal)
+    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, bc_tangent)
+
+    dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
+    pout = primal(dest)
+    dout = tangent(dest).partials[1]
+    decoded = _gpu_decode_ndual_output(
+        Val(:broadcast), dual_out, flat_pargs; extract_primal=false
+    )
+    _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
+    if !decoded.is_diff
+        fill!(dout, zero(eltype(dout)))
+        return dest
+    end
+    dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
+    copyto!(dout, dy)
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
     dest::CoDual{P,P},
