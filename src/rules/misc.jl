@@ -290,13 +290,24 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    function frule!!(::Dual{typeof(copy)}, a::Dual{<:Dict})
-        return Dual(copy(primal(a)), _copy_dict_tangent(tangent(a)))
+    function frule!!(
+        ::Lifted{typeof(copy),Nw}, a::Lifted{D,Nw,<:MutableDual}
+    ) where {Nw,D<:Dict}
+        new_primal = copy(primal(a))
+        old_nt = getfield(tangent(a), :value)
+        old_vals = old_nt.vals
+        new_nt = (
+            slots=map(copy, old_nt.slots),
+            keys=map(copy, old_nt.keys),
+            vals=typeof(old_vals)(new_primal.vals, map(copy, old_vals.partials)),
+            ndel=NoDual(),
+            count=NoDual(),
+            age=NoDual(),
+            idxfloor=NoDual(),
+            maxprobe=NoDual(),
+        )
+        return Lifted{D,Nw}(new_primal, MutableDual(new_nt))
     end
-    # Lifted parallel omitted — Dict's forward-mode V isn't defined yet
-    # (would need `dual_type(Val(N), Dict)` plus a `_copy_dict_lifted`
-    # helper to copy the slots/keys/vals SoA arrays per-lane). The
-    # bare-Dual rule handles current callers.
     function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Dict})
         dx = tangent(a)
         t = dx.fields
