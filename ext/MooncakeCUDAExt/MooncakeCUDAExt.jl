@@ -84,7 +84,8 @@ import Mooncake:
     NoDual,
     dual_type,
     lifted_type,
-    Nfwd
+    Nfwd,
+    ImmutableDual
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
