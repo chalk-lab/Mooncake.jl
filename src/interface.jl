@@ -1025,10 +1025,8 @@ Base.length(x::NTangent) = length(x.lanes)
 Base.getindex(x::NTangent, i::Int) = x.lanes[i]
 Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 
-# Width-1 guard for `lift`. Chunked seeds reach this branch when a caller
-# accidentally passes an `NTangent` (the public chunked-tangent shape) into
-# the width-1 boundary helper. Definition lives here because lifted.jl (where
-# `lift` is defined) is loaded before NTangent.
+# Width-1 guard for `lift`. Co-located with `NTangent` since the type isn't
+# defined yet where `lift` lives.
 @noinline function lift(x, ẋ::NTangent)
     throw(
         ArgumentError(

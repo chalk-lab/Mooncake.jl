@@ -163,11 +163,9 @@ macro inactive_intrinsic(name)
             return Mooncake.zero_adjoint(f, args...)
         end
         function frule!!(
-            f::Mooncake.Lifted{typeof($name),Nw}, args::Vararg{Mooncake.Lifted,M}
-        ) where {Nw,M}
-            f_primal = primal(f)
-            args_primal = tuple_map(primal, args)
-            return Mooncake.zero_lifted(Val(Nw), f_primal(args_primal...))
+            f::Mooncake.Lifted{typeof($name)}, args::Vararg{Mooncake.Lifted,M}
+        ) where {M}
+            return Mooncake.zero_derivative(f, args...)
         end
     end
     return esc(expr)
@@ -974,8 +972,8 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
 end
 
 @static if VERSION > v"1.12-"
-    function frule!!(::Lifted{typeof(Core._svec_len),Nw}, v::Lifted) where {Nw}
-        return Mooncake.zero_lifted(Val(Nw), Core._svec_len(primal(v)))
+    function frule!!(f::Lifted{typeof(Core._svec_len)}, v::Lifted)
+        return Mooncake.zero_derivative(f, v)
     end
     function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
         return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)

@@ -183,8 +183,9 @@ Dual{Int64, NoTangent}(5, NoTangent())
 @inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
     return zero_dual(primal(f)(map(primal, x)...))
 end
-@inline function zero_derivative(f::Lifted, x::Vararg{Lifted,N}) where {N}
-    return zero_lifted(Val(1), primal(f)(tuple_map(primal, x)...))
+# Extract width from the function slot so chunked callers don't silently drop to width 1.
+@inline function zero_derivative(f::Lifted{F,W}, x::Vararg{Lifted,N}) where {F,W,N}
+    return zero_lifted(Val(W), primal(f)(tuple_map(primal, x)...))
 end
 
 """

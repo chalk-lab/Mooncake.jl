@@ -75,15 +75,6 @@ end
     return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
 end
 
-# Per-lane accessor: V is `NTuple{N, TwicePrecision{P}}` per the
-# primitive-leaf NTuple convention above; the lane's tangent is the
-# corresponding NTuple element.
-@inline function Mooncake.tangent(
-    x::Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}, lane::Integer
-) where {N,P<:IEEEFloat}
-    return tangent(x)[lane]
-end
-
 #
 # Rules. These are required for a lot of functionality in this case.
 #

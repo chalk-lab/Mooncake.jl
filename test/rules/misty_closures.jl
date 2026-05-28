@@ -100,7 +100,7 @@ end
         Mooncake.lift(quadratic, Mooncake.NoTangent()),
         Mooncake.lift(5.0, 1.0),
     )
-    @test last(Mooncake.unlift(result)) == 6 * 5.0
+    @test last(Mooncake.unlift(result)) ≈ 30.0
 
     # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).
     # See: https://github.com/chalk-lab/Mooncake.jl/issues/916

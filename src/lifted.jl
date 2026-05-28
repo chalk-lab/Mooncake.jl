@@ -112,11 +112,10 @@ end
 @inline tangent(a::NDualArray) = a.partials
 @inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
 
-# Per-lane native-tangent accessor — extracts the lane's tangent in the shape
-# of `tangent_type(typeof(primal(x)))`. Used by `unlift` (width-1) and by
-# rule bodies that loop over lanes to drive per-lane primitive calls. The
-# `Lifted{MutS, N, <:MutableDual}` overload at the bottom of this file
-# returns a `MutableDualTangentView` proxy instead — see its docstring.
+# Per-lane native-tangent accessor. The `Lifted{MutS, N, <:MutableDual}` overload
+# at the bottom of this file returns a `MutableDualTangentView` proxy so rule
+# bodies can write through it; `unlift` has its own MutableDual path that
+# materialises a fresh `MutableTangent` instead.
 @inline tangent(x::Lifted{T,N,NDual{T,N}}, lane::Integer) where {T<:IEEEFloat,N} = tangent(
     x
 ).partials[lane]
@@ -130,8 +129,9 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
-# Ptr — V is `NTuple{N, Ptr{T}}` per the Ptr canonical V convention.
-@inline function tangent(x::Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}, lane::Integer) where {T,N}
+# Primitive-leaf NTuple V convention: when `dual_type(Val(N), P) === NTuple{N, P}`
+# (Ptr, TwicePrecision), the lane's tangent is the corresponding NTuple element.
+@inline function tangent(x::Lifted{P,N,NTuple{N,P}}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
 # Function singletons and other empty structural lifts → NoTangent.
@@ -171,6 +171,19 @@ end
 # carry per-lane derivatives in their V and have no single native-tangent
 # unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
 @inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
+# Mutable-struct slot: `tangent(x, 1)` returns a `MutableDualTangentView` (write proxy
+# for rule bodies), but downstream FD / address-map machinery wants a fresh
+# `MutableTangent` value. Build one by recursive per-field unlift so the structural
+# shape matches what reverse-mode produces.
+@inline function unlift(x::Lifted{P,1,<:MutableDual}) where {P}
+    nt = tangent(x).value
+    p = primal(x)
+    names = keys(nt)
+    field_tangents = map(names) do name
+        return last(unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))))
+    end
+    return (p, MutableTangent(NamedTuple{names}(field_tangents)))
+end
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
     throw(
         ArgumentError(
