@@ -232,6 +232,11 @@ end
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MutableDual}
     return T(_scale_internal(c, a, t.value))
 end
+# Scalar NDual scale — scale `.value` and each lane.
+function _scale_internal(::MaybeCache, a::Float64, t::NDual{T,N}) where {T<:IEEEFloat,N}
+    aT = T(a)
+    return NDual{T,N}(aT * t.value, map(p -> aT * p, t.partials))
+end
 
 _add_to_primal_internal(::MaybeCache, x, ::NoDual, ::Bool) = x
 function _add_to_primal_internal(
