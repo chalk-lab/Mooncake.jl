@@ -90,36 +90,24 @@ end
 # Conversions
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
-function Mooncake.frule!!(::Dual{Type{Float32}}, x::Dual{P})
-    return Dual(Float32(primal(x)), Float32(tangent(x)))
-end
 function Mooncake.rrule!!(::CoDual{Type{Float32}}, x::CoDual{P})
     pb(dy::Float32) = NoRData(), P(dy)
     return zero_fcodual(Float32(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
-function Mooncake.frule!!(::Dual{Type{Float64}}, x::Dual{P})
-    return Dual(Float64(primal(x)), Float64(tangent(x)))
-end
 function Mooncake.rrule!!(::CoDual{Type{Float64}}, x::CoDual{P})
     pb(dy::Float64) = NoRData(), P(Float32(dy))
     return zero_fcodual(Float64(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
-function Mooncake.frule!!(::Dual{Type{P}}, x::Dual{Float32})
-    return Dual(P(primal(x)), P(tangent(x)))
-end
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float32})
     pb(dy::P) = NoRData(), Float32(dy)
     return zero_fcodual(P(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float64}
-function Mooncake.frule!!(::Dual{Type{P}}, x::Dual{Float64})
-    return Dual(P(Float32(primal(x))), P(Float32(tangent(x))))
-end
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
     pb(dy::P) = NoRData(), Float64(Float32(dy))
     return zero_fcodual(P(Float32(primal(x)))), pb
@@ -128,11 +116,6 @@ end
 # Math rules
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sqrt),P}
-function Mooncake.frule!!(::Dual{typeof(sqrt)}, x::Dual{P})
-    _x, dx = extract(x)
-    y = sqrt(_x)
-    return Dual(y, nan_tangent_guard(dx, dx / (2 * y)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P})
     y = sqrt(primal(x))
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (2 * y))
@@ -140,11 +123,6 @@ function Mooncake.rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cbrt),P}
-function Mooncake.frule!!(::Dual{typeof(cbrt)}, x::Dual{P})
-    _x, dx = extract(x)
-    y = cbrt(_x)
-    return Dual(y, nan_tangent_guard(dx, dx / (3 * y^2)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P})
     y = cbrt(primal(x))
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (3 * y^2))
@@ -152,10 +130,6 @@ function Mooncake.rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp),P}
-function Mooncake.frule!!(::Dual{typeof(exp)}, x::Dual{P})
-    y = exp(primal(x))
-    return Dual(y, tangent(x) * y)
-end
 function Mooncake.rrule!!(::CoDual{typeof(exp)}, x::CoDual{P})
     y = exp(primal(x))
     pb(dy::P) = NoRData(), dy * y
@@ -163,10 +137,6 @@ function Mooncake.rrule!!(::CoDual{typeof(exp)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp2),P}
-function Mooncake.frule!!(::Dual{typeof(exp2)}, x::Dual{P})
-    y = exp2(primal(x))
-    return Dual(y, tangent(x) * y * P(log(2.0f0)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(exp2)}, x::CoDual{P})
     y = exp2(primal(x))
     pb(dy::P) = NoRData(), dy * y * P(log(2.0f0))
@@ -174,10 +144,6 @@ function Mooncake.rrule!!(::CoDual{typeof(exp2)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(exp10),P}
-function Mooncake.frule!!(::Dual{typeof(exp10)}, x::Dual{P})
-    y = exp10(primal(x))
-    return Dual(y, tangent(x) * y * P(log(10.0f0)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(exp10)}, x::CoDual{P})
     y = exp10(primal(x))
     pb(dy::P) = NoRData(), dy * y * P(log(10.0f0))
@@ -185,10 +151,6 @@ function Mooncake.rrule!!(::CoDual{typeof(exp10)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(expm1),P}
-function Mooncake.frule!!(::Dual{typeof(expm1)}, x::Dual{P})
-    y = expm1(primal(x))
-    return Dual(y, tangent(x) * (y + one(P)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(expm1)}, x::CoDual{P})
     y = expm1(primal(x))
     pb(dy::P) = NoRData(), dy * (y + one(P))
@@ -196,10 +158,6 @@ function Mooncake.rrule!!(::CoDual{typeof(expm1)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(log),P}
-function Mooncake.frule!!(::Dual{typeof(log)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(log(_x), nan_tangent_guard(dx, dx / _x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(log)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / _x)
@@ -207,10 +165,6 @@ function Mooncake.rrule!!(::CoDual{typeof(log)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(log2),P}
-function Mooncake.frule!!(::Dual{typeof(log2)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(log2(_x), nan_tangent_guard(dx, dx / (_x * P(log(2.0f0)))))
-end
 function Mooncake.rrule!!(::CoDual{typeof(log2)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (_x * P(log(2.0f0))))
@@ -218,10 +172,6 @@ function Mooncake.rrule!!(::CoDual{typeof(log2)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(log10),P}
-function Mooncake.frule!!(::Dual{typeof(log10)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(log10(_x), nan_tangent_guard(dx, dx / (_x * P(log(10.0f0)))))
-end
 function Mooncake.rrule!!(::CoDual{typeof(log10)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (_x * P(log(10.0f0))))
@@ -229,10 +179,6 @@ function Mooncake.rrule!!(::CoDual{typeof(log10)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(log1p),P}
-function Mooncake.frule!!(::Dual{typeof(log1p)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(log1p(_x), nan_tangent_guard(dx, dx / (one(P) + _x)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (one(P) + _x))
@@ -240,13 +186,6 @@ function Mooncake.rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sin),P}
-function Mooncake.frule!!(::Dual{typeof(sin)}, x::Dual{P})
-    # Use separate sin/cos calls: sincos(::BFloat16) is broken (infinitely recursive) in Julia 1.12.
-    _x = primal(x)
-    s = sin(_x)
-    c = cos(_x)
-    return Dual(s, tangent(x) * c)
-end
 function Mooncake.rrule!!(::CoDual{typeof(sin)}, x::CoDual{P})
     _x = primal(x)
     s = sin(_x)
@@ -256,12 +195,6 @@ function Mooncake.rrule!!(::CoDual{typeof(sin)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cos),P}
-function Mooncake.frule!!(::Dual{typeof(cos)}, x::Dual{P})
-    _x = primal(x)
-    s = sin(_x)
-    c = cos(_x)
-    return Dual(c, -tangent(x) * s)
-end
 function Mooncake.rrule!!(::CoDual{typeof(cos)}, x::CoDual{P})
     _x = primal(x)
     s = sin(_x)
@@ -271,10 +204,6 @@ function Mooncake.rrule!!(::CoDual{typeof(cos)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(tan),P}
-function Mooncake.frule!!(::Dual{typeof(tan)}, x::Dual{P})
-    y = tan(primal(x))
-    return Dual(y, tangent(x) * (one(P) + y^2))
-end
 function Mooncake.rrule!!(::CoDual{typeof(tan)}, x::CoDual{P})
     y = tan(primal(x))
     pb(dy::P) = NoRData(), dy * (one(P) + y^2)
@@ -282,10 +211,6 @@ function Mooncake.rrule!!(::CoDual{typeof(tan)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(asin),P}
-function Mooncake.frule!!(::Dual{typeof(asin)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(asin(_x), nan_tangent_guard(dx, dx / sqrt(one(P) - _x^2)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(asin)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / sqrt(one(P) - _x^2))
@@ -293,10 +218,6 @@ function Mooncake.rrule!!(::CoDual{typeof(asin)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(acos),P}
-function Mooncake.frule!!(::Dual{typeof(acos)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(acos(_x), nan_tangent_guard(dx, -dx / sqrt(one(P) - _x^2)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(acos)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, -dy / sqrt(one(P) - _x^2))
@@ -304,10 +225,6 @@ function Mooncake.rrule!!(::CoDual{typeof(acos)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(atan),P}
-function Mooncake.frule!!(::Dual{typeof(atan)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(atan(_x), dx / (one(P) + _x^2))
-end
 function Mooncake.rrule!!(::CoDual{typeof(atan)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy / (one(P) + _x^2)
@@ -315,10 +232,6 @@ function Mooncake.rrule!!(::CoDual{typeof(atan)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(sinh),P}
-function Mooncake.frule!!(::Dual{typeof(sinh)}, x::Dual{P})
-    _x = primal(x)
-    return Dual(sinh(_x), tangent(x) * cosh(_x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(sinh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy * cosh(_x)
@@ -326,10 +239,6 @@ function Mooncake.rrule!!(::CoDual{typeof(sinh)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(cosh),P}
-function Mooncake.frule!!(::Dual{typeof(cosh)}, x::Dual{P})
-    _x = primal(x)
-    return Dual(cosh(_x), tangent(x) * sinh(_x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(cosh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy * sinh(_x)
@@ -337,10 +246,6 @@ function Mooncake.rrule!!(::CoDual{typeof(cosh)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(tanh),P}
-function Mooncake.frule!!(::Dual{typeof(tanh)}, x::Dual{P})
-    y = tanh(primal(x))
-    return Dual(y, tangent(x) * (one(P) - y^2))
-end
 function Mooncake.rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P})
     y = tanh(primal(x))
     pb(dy::P) = NoRData(), dy * (one(P) - y^2)
@@ -348,10 +253,6 @@ function Mooncake.rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(asinh),P}
-function Mooncake.frule!!(::Dual{typeof(asinh)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(asinh(_x), dx / sqrt(one(P) + _x^2))
-end
 function Mooncake.rrule!!(::CoDual{typeof(asinh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), dy / sqrt(one(P) + _x^2)
@@ -359,10 +260,6 @@ function Mooncake.rrule!!(::CoDual{typeof(asinh)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(acosh),P}
-function Mooncake.frule!!(::Dual{typeof(acosh)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(acosh(_x), nan_tangent_guard(dx, dx / sqrt(_x^2 - one(P))))
-end
 function Mooncake.rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / sqrt(_x^2 - one(P)))
@@ -370,10 +267,6 @@ function Mooncake.rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(atanh),P}
-function Mooncake.frule!!(::Dual{typeof(atanh)}, x::Dual{P})
-    _x, dx = extract(x)
-    return Dual(atanh(_x), nan_tangent_guard(dx, dx / (one(P) - _x^2)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), nan_tangent_guard(dy, dy / (one(P) - _x^2))
@@ -382,14 +275,6 @@ end
 
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(hypot),P,P}
-function Mooncake.frule!!(::Dual{typeof(hypot)}, x::Dual{P}, y::Dual{P})
-    _x, _y = primal(x), primal(y)
-    h = hypot(_x, _y)
-    dh =
-        nan_tangent_guard(tangent(x), _x * tangent(x)) +
-        nan_tangent_guard(tangent(y), _y * tangent(y))
-    return Dual(h, dh / h)
-end
 function Mooncake.rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
     h = hypot(_x, _y)
@@ -400,18 +285,6 @@ function Mooncake.rrule!!(::CoDual{typeof(hypot)}, x::CoDual{P}, y::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(^),P,P}
-function Mooncake.frule!!(::Dual{typeof(^)}, x::Dual{P}, y::Dual{P})
-    _x, _y = primal(x), primal(y)
-    z = _x^_y
-    # Note: _x^(_y-1) is computed separately from z to correctly handle _x=0:
-    # z/_x = 0/0 = NaN, whereas _x^(_y-1) gives the correct value at the boundary
-    # (e.g. Inf when 0 < _y < 1, since d/dx(x^y)|_{x=0} diverges).
-    return Dual(z,
-        nan_tangent_guard(tangent(x), _y * _x^(_y - one(P)) * tangent(x)) +
-        # Guard on z (not tangent(y)): when _x=0, z=0 and log(_x)=-Inf, so
-        # z*log(_x)*tangent(y) = 0*(-Inf)*tangent(y) = NaN without this guard.
-        nan_tangent_guard(z, z * log(_x) * tangent(y)))
-end
 function Mooncake.rrule!!(::CoDual{typeof(^)}, x::CoDual{P}, y::CoDual{P})
     _x, _y = primal(x), primal(y)
     z = _x^_y
@@ -427,10 +300,6 @@ end
 
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(max),P,P}
-function Mooncake.frule!!(::Dual{typeof(max)}, x::Dual{P}, y::Dual{P})
-    _x, _y = primal(x), primal(y)
-    return Dual(max(_x, _y), _x >= _y ? tangent(x) : tangent(y))
-end
 function Mooncake.rrule!!(::CoDual{typeof(max)}, x::CoDual{P}, y::CoDual{P})
     _x_wins = primal(x) >= primal(y)
     pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
@@ -438,10 +307,6 @@ function Mooncake.rrule!!(::CoDual{typeof(max)}, x::CoDual{P}, y::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(min),P,P}
-function Mooncake.frule!!(::Dual{typeof(min)}, x::Dual{P}, y::Dual{P})
-    _x, _y = primal(x), primal(y)
-    return Dual(min(_x, _y), _x <= _y ? tangent(x) : tangent(y))
-end
 function Mooncake.rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P})
     _x_wins = primal(x) <= primal(y)
     pb(dz::P) = NoRData(), _x_wins ? dz : zero(P), _x_wins ? zero(P) : dz
@@ -449,10 +314,6 @@ function Mooncake.rrule!!(::CoDual{typeof(min)}, x::CoDual{P}, y::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(abs),P}
-function Mooncake.frule!!(::Dual{typeof(abs)}, x::Dual{P})
-    _x = primal(x)
-    return Dual(abs(_x), _x >= zero(P) ? tangent(x) : -tangent(x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
     _x = primal(x)
     pb(dy::P) = NoRData(), _x >= zero(P) ? dy : -dy
@@ -460,27 +321,18 @@ function Mooncake.rrule!!(::CoDual{typeof(abs)}, x::CoDual{P})
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(Base.eps),P}
-function Mooncake.frule!!(::Dual{typeof(Base.eps)}, x::Dual{P})
-    return Dual(eps(primal(x)), zero(P))
-end
 function Mooncake.rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P})
     pb(::P) = NoRData(), zero(P)
     return zero_fcodual(eps(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(nextfloat),P}
-function Mooncake.frule!!(::Dual{typeof(nextfloat)}, x::Dual{P})
-    return Dual(nextfloat(primal(x)), tangent(x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(nextfloat(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{typeof(prevfloat),P}
-function Mooncake.frule!!(::Dual{typeof(prevfloat)}, x::Dual{P})
-    return Dual(prevfloat(primal(x)), tangent(x))
-end
 function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     pb(dy::P) = NoRData(), dy
     return zero_fcodual(prevfloat(primal(x))), pb
