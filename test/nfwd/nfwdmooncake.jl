@@ -145,18 +145,22 @@ end
     dx, dy = 3.0, 2.0
     z = f(x, y)
     dz = dx * y + x * dy + dx * (-sin(x))
+    NDual = Mooncake.Nfwd.NDual
     scalar_cases = (
         (
             name="chunk_size=1",
             chunk_size=1,
-            dual_inputs=(Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)),
-            expected_tangent=dz,
+            lifted_inputs=(Mooncake.lift(x, dx), Mooncake.lift(y, dy)),
+            expected_partials=(dz,),
         ),
         (
             name="chunk_size=2 scalar lanes",
             chunk_size=2,
-            dual_inputs=(Mooncake.Dual(x, (dx, 0.0)), Mooncake.Dual(y, (0.0, dy))),
-            expected_tangent=(dx * y + dx * (-sin(x)), x * dy),
+            lifted_inputs=(
+                Mooncake.Lifted{Float64,2}(x, NDual{Float64,2}(x, (dx, 0.0))),
+                Mooncake.Lifted{Float64,2}(y, NDual{Float64,2}(y, (0.0, dy))),
+            ),
+            expected_partials=(dx * y + dx * (-sin(x)), x * dy),
         ),
     )
 
@@ -166,10 +170,10 @@ end
                 rule = Mooncake.NfwdMooncake.build_frule(
                     f, x, y; chunk_size=case.chunk_size
                 )
-                out = rule(Mooncake.zero_dual(f), case.dual_inputs...)
-                @test out isa Mooncake.Dual
+                out = rule(Mooncake.lift(f, Mooncake.NoTangent()), case.lifted_inputs...)
+                @test out isa Mooncake.Lifted
                 @test Mooncake.primal(out) == z
-                @test Mooncake.tangent(out) == case.expected_tangent
+                @test Mooncake.tangent(out).partials == case.expected_partials
 
                 rrule = Mooncake.NfwdMooncake.build_rrule(
                     f, x, y; chunk_size=case.chunk_size
@@ -185,15 +189,6 @@ end
 
             @testset "direct value_and_derivative!! on Rule" begin
                 rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=2)
-
-                out_dual = Mooncake.value_and_derivative!!(
-                    rule,
-                    Mooncake.zero_dual(f),
-                    Mooncake.Dual(x, (dx, 0.0)),
-                    Mooncake.Dual(y, (0.0, dy)),
-                )
-                @test Mooncake.primal(out_dual) == z
-                @test Mooncake.tangent(out_dual) == (dx * y + dx * (-sin(x)), x * dy)
 
                 out_tuple = Mooncake.value_and_derivative!!(
                     rule, (f, Mooncake.NoTangent()), (x, (dx, 0.0)), (y, (0.0, dy))
