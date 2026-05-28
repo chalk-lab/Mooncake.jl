@@ -1312,15 +1312,27 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
 @is_primitive(
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
+# `Transpose{T,<:CuArray}` has canonical V `ImmutableDual{@NamedTuple{parent::NDualArray}}`;
+# sum the parent's per-lane partials.
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
+    ::Lifted{typeof(sum),Nw},
+    x::Lifted{<:Transpose{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
+) where {Nw,T<:CuFloatOrComplex}
+    R = real(T)
+    y = sum(primal(x))
+    parent_partials = tangent(x).value.parent.partials
+    dy_lanes = ntuple(k -> sum(parent_partials[k]), Val(Nw))
+    return Lifted{typeof(y),Nw}(y, NDual{typeof(y),Nw}(y, dy_lanes))
 end
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
+    ::Lifted{typeof(sum),Nw},
+    x::Lifted{<:Adjoint{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
+) where {Nw,T<:CuFloatOrComplex}
+    y = sum(primal(x))
+    parent_partials = tangent(x).value.parent.partials
+    # Adjoint applies elementwise conj — sum then conjugate.
+    dy_lanes = ntuple(k -> conj(sum(parent_partials[k])), Val(Nw))
+    return Lifted{typeof(y),Nw}(y, NDual{typeof(y),Nw}(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
