@@ -29,6 +29,7 @@ using Mooncake:
     _add_to_primal,
     _dot,
     Dual,
+    Lifted,
     zero_dual,
     zero_codual,
     codual_type,

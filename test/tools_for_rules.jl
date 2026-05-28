@@ -355,7 +355,7 @@ end
                 mode=ReverseMode,
             )
             frule_sig = Tuple{
-                Dual{typeof(ToolsForRulesResources.rev_only_chainrules)},Dual{Float64}
+                Lifted{typeof(ToolsForRulesResources.rev_only_chainrules)},Lifted{Float64}
             }
             @test !hasmethod(Mooncake.frule!!, frule_sig)
         end
