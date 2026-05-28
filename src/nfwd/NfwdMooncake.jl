@@ -308,6 +308,22 @@ end
 end
 
 @inline function (rule::Rule{sig,N})(
+    f::Mooncake.Lifted,
+    x1::Mooncake.Lifted{T1,N,NDual{T1,N}},
+    x2::Mooncake.Lifted{T2,N,NDual{T2,N}},
+) where {sig,N,T1<:IEEEFloat,T2<:IEEEFloat}
+    _nfwd_verify_sig(rule, (f, x1, x2))
+    y, dy = _nfwd_eval(
+        primal(f),
+        (primal(x1), primal(x2)),
+        (tangent(x1).partials, tangent(x2).partials),
+        Val(N),
+    )
+    partials = dy isa Tuple ? dy : (dy,)
+    return Mooncake.Lifted{typeof(y),N}(y, NDual{typeof(y),N}(y, partials))
+end
+
+@inline function (rule::Rule{sig,N})(
     f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}, x3::Dual{T3,D3}
 ) where {sig,N,T1<:Number,T2<:Number,T3<:Number,D1,D2,D3}
     _nfwd_verify_sig(rule, (f, x1, x2, x3))
@@ -319,6 +335,23 @@ end
         Val(N),
     )
     return Dual(y, dy)
+end
+
+@inline function (rule::Rule{sig,N})(
+    f::Mooncake.Lifted,
+    x1::Mooncake.Lifted{T1,N,NDual{T1,N}},
+    x2::Mooncake.Lifted{T2,N,NDual{T2,N}},
+    x3::Mooncake.Lifted{T3,N,NDual{T3,N}},
+) where {sig,N,T1<:IEEEFloat,T2<:IEEEFloat,T3<:IEEEFloat}
+    _nfwd_verify_sig(rule, (f, x1, x2, x3))
+    y, dy = _nfwd_eval(
+        primal(f),
+        (primal(x1), primal(x2), primal(x3)),
+        (tangent(x1).partials, tangent(x2).partials, tangent(x3).partials),
+        Val(N),
+    )
+    partials = dy isa Tuple ? dy : (dy,)
+    return Mooncake.Lifted{typeof(y),N}(y, NDual{typeof(y),N}(y, partials))
 end
 
 # Optimised single-array-input frule: reuses a pre-allocated lifted buffer when the tangent
