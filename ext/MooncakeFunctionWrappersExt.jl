@@ -39,11 +39,15 @@ import Mooncake:
     Dual,
     ForwardMode,
     IncCache,
+    Lifted,
     MaybeCache,
     MinimalCtx,
     NoRData,
     SetToZeroCache,
-    Stack
+    Stack,
+    lift_from_tangent,
+    lifted_type,
+    unlift_to_tangent
 
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
@@ -77,8 +81,10 @@ function _construct_frule_types(R, A)
     primal_arg_types = (A.parameters...,)
 
     # Signature and OpaqueClosure type for forward pass.
-    fwd_sig = Tuple{map(dual_type, primal_arg_types)...}
-    fwd_ret_type = dual_type(R)
+    # Post-cutover `build_frule` returns a Lifted-dispatched callable, so
+    # the OC signature uses width-1 lifted_type for each arg and return.
+    fwd_sig = Tuple{map(P -> lifted_type(Val(1), P), primal_arg_types)...}
+    fwd_ret_type = lifted_type(Val(1), R)
     fwd_oc_type = Core.OpaqueClosure{fwd_sig,fwd_ret_type}
     return fwd_oc_type, fwd_sig, fwd_ret_type
 end
@@ -154,13 +160,15 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     end
 
     # Construct forward-pass wrapper for frule. Note: this closes over `frule` and `obj_tangent_ref`.
+    # Post-cutover `frule` is Lifted-dispatched; wrap the closure obj +
+    # current obj_tangent into a width-1 Lifted slot via the boundary helper.
     @static if VERSION ≥ v"1.12-"
         run_frule = Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> begin
-            return frule(Dual(obj, obj_tangent_ref[]), x...)
+            return frule(lift_from_tangent(obj, obj_tangent_ref[]), x...)
         end
     else
         run_frule = Base.Experimental.@opaque frule_sig (x...) -> begin
-            return frule(Dual(obj, obj_tangent_ref[]), x...)
+            return frule(lift_from_tangent(obj, obj_tangent_ref[]), x...)
         end
     end
 
@@ -269,15 +277,14 @@ function rrule!!(::CoDual{Type{FunctionWrapper{R,A}}}, obj::CoDual{P}) where {R,
     return CoDual(FunctionWrapper{R,A}(obj.x), t), function_wrapper_pb
 end
 
-function frule!!(::Dual{Type{FunctionWrapper{R,A}}}, obj::Dual{P}) where {R,A,P}
-    t, _ = _function_wrapper_tangent(R, primal(obj), A, tangent(obj))
-    return Dual(FunctionWrapper{R,A}(primal(obj)), t)
+function frule!!(::Lifted{Type{FunctionWrapper{R,A}},1}, obj::Lifted{P}) where {R,A,P}
+    p = primal(obj)
+    # `_function_wrapper_tangent` needs the tangent-shaped value (not
+    # the Lifted V); use the boundary helper inverse.
+    t, _ = _function_wrapper_tangent(R, p, A, unlift_to_tangent(obj))
+    y = FunctionWrapper{R,A}(p)
+    return Lifted{typeof(y),1}(y, t)
 end
-# Lifted parallel omitted — `_function_wrapper_tangent` returns a wrapper
-# closing over a bare-Dual frule callable; mirroring it for Lifted requires
-# the Final-task interpreter cutover (so `build_frule` produces a
-# Lifted-dispatched callable). Once that lands, add the Lifted parallel
-# here. Until then, a Lifted-arg call falls through to a generic MethodError.
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
 function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
@@ -286,13 +293,9 @@ function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
     return y, function_wrapper_eval_pb
 end
 
-function frule!!(f::Dual{FunctionWrapper{R,A}}, x::Vararg{Dual}) where {R,A}
+function frule!!(f::Lifted{FunctionWrapper{R,A},1}, x::Vararg{Lifted,M}) where {R,A,M}
     _tangent = tangent(f)
     return _tangent.frule_wrapper(x...)
 end
-# Lifted parallel omitted — `frule_wrapper` is a bare-Dual callable; once
-# the interpreter cutover gives us a Lifted-dispatched callable in the
-# wrapper, this Lifted parallel can be added (a simple `_tangent.frule_wrapper(x...)`
-# call on Lifted x will then dispatch correctly).
 
 end
