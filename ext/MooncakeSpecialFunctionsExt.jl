@@ -189,23 +189,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
-    ::Dual{typeof(gamma_inc)}, _a::Dual{T}, _x::Dual{P}, _IND::Dual{I}
-) where {T<:IEEEFloat,P<:IEEEFloat,I<:Integer}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-    IND = primal(_IND)
-
-    y = gamma_inc(a, x, IND) # primal is always Real for gamma_inc
-    primal_eltype = eltype(y) # to ensure final Dual Tangent is valid type
-
-    ∂a = Mooncake.notimplemented_tangent_guard(da)     # ∂p/∂a - NotImplemented
-    z = exp((a - 1) * log(x) - x - loggamma(a))    # ∂p/∂x
-
-    # dot_p = ∂p/∂a * da + ∂p/∂x * dx
-    # dot_q = ∂p/∂a * da + (-∂p/∂x) * dx
-    return Dual(y, (primal_eltype(∂a + (dx * z)), primal_eltype(∂a + (dx * -z))))
-end
-function frule!!(
     ::Lifted{typeof(gamma_inc),Nw},
     _a::Lifted{T,Nw,NDual{T,Nw}},
     _x::Lifted{P,Nw,NDual{P,Nw}},
@@ -239,22 +222,6 @@ end
     Union{IEEEFloat,Complex{<:IEEEFloat}},
 }
 function frule!!(
-    ::Dual{typeof(gamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-
-    y = gamma(a, x) # primal is always complex for complex inputs.
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    ∂a = Mooncake.notimplemented_tangent_guard(da)  # ∂f/∂a - NotImplemented Gradient
-    ∂x = -exp((a - 1) * log(x) - x)    # ∂f/∂x
-
-    # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val) # ensure dy and primal y are same types.
-end
-function frule!!(
     ::Lifted{typeof(gamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
 ) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     a = primal(_a)
@@ -275,24 +242,6 @@ end
     Union{IEEEFloat,Complex{<:IEEEFloat}},
     Union{IEEEFloat,Complex{<:IEEEFloat}},
 }
-function frule!!(
-    ::Dual{typeof(loggamma)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-
-    y = loggamma(a, x) # primal is always complex for complex inputs.
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
-    # ∂f/∂x - Derivative of log(Γ(a,x)) is originally -(x^(a-1) * e^-x) / Γ(a,x)
-    ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
-
-    # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(loggamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
 ) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -315,24 +264,6 @@ end
     Union{IEEEFloat,Complex{<:IEEEFloat}},
 }
 function frule!!(
-    ::Dual{typeof(expint)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-
-    y = expint(a, x) # primal is always complex for complex inputs.
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
-    # ∂f/∂x - Derivative of E_n(x) = -E_{n-1}(x)
-    ∂x = -expint(a - 1, x)
-
-    # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(expint),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
 ) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     a = primal(_a)
@@ -354,24 +285,6 @@ end
     Union{IEEEFloat,Complex{<:IEEEFloat}},
 }
 function frule!!(
-    ::Dual{typeof(expintx)}, _a::Dual{T}, _x::Dual{P}
-) where {L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a, da = extract(_a)
-    x, dx = extract(_x)
-
-    y = expintx(a, x) # expintx(a, x) = exp(x) * expint(a, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂a - NotImplemented Gradient
-    ∂a = Mooncake.notimplemented_tangent_guard(da)
-    # ∂f/∂x -  Derivative of e^x * E_a(x) is originally e^x * E_a(x) - e^x * E_{a-1}(x)
-    ∂x = y - expintx(a - 1, x)
-
-    # Ignore tangent(a) - NotImplemented Gradient
-    dy_val = ∂a + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(expintx),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
 ) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     a = primal(_a)
@@ -392,24 +305,6 @@ end
     typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(besselj)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besselj(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    # All Bessel functions return complex values only for complex inputs.
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(besselj),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -428,23 +323,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(bessely)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = bessely(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(bessely),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -465,23 +343,6 @@ end
     typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(besseli)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besseli(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(besseli),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -500,23 +361,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(besselk)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besselk(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(besselk),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -537,23 +381,6 @@ end
     typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(hankelh1)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = hankelh1(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(hankelh1),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -572,23 +399,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(hankelh2)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = hankelh2(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(hankelh2),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -614,26 +424,6 @@ end
     typeof(besselix),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(besselix)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besselix(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)     # to ensure final Dual Tangent type is valid
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
-    ∂x_2 = -sign(real(x)) * y
-
-    # Non Holomorphic scaling
-    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * real(dx)
-
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(besselix),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -655,23 +445,6 @@ end
     typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(besselkx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besselkx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(besselkx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -690,25 +463,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(besseljx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besseljx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # Recurrence relations for derivatives w.r.t. x.
-    ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
-    ∂x_2 = ∂x_2 = -sign(imag(x)) * y
-
-    # ∂f/∂x - Non Holomorphic scaling
-    dy_val = (∂v + ∂x_1 * dx + ∂x_2 * imag(dx))
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(besseljx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -730,25 +484,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(besselyx)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = besselyx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations for derivatives w.r.t. x.
-    ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
-    ∂x_2 = ∂x_2 = -sign(imag(x)) * y
-
-    # Non Holomorphic scaling
-    dy_val = ∂v + ∂x_1 * dx + ∂x_2 * imag(dx)
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(besselyx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
@@ -772,23 +507,6 @@ end
     typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
-    ::Dual{typeof(hankelh1x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = hankelh1x(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations
-    ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
-function frule!!(
     ::Lifted{typeof(hankelh1x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     v = primal(_v)
@@ -807,23 +525,6 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
-function frule!!(
-    ::Dual{typeof(hankelh2x)}, _v::Dual{T}, _x::Dual{P}
-) where {T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v, dv = extract(_v)
-    x, dx = extract(_x)
-
-    y = hankelh2x(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-
-    # ∂f/∂v - NotImplemented Gradient
-    ∂v = Mooncake.notimplemented_tangent_guard(dv)
-    # ∂f/∂x - Recurrence relations
-    ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
-
-    dy_val = ∂v + ∂x * dx
-    return real_or_complex_valued(y, primal_eltype, dy_val)
-end
 function frule!!(
     ::Lifted{typeof(hankelh2x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
 ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
