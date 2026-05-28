@@ -410,18 +410,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
 @inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{<:Val},
-    _boundscheck::Dual{<:Val},
-)
-    ordering = primal(_ordering)
-    bc = primal(_boundscheck)
-    y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
-    return Dual(y, dy)
-end
-@inline function frule!!(
     ::Lifted{typeof(lmemoryrefget),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     _ordering::Lifted{<:Val},
@@ -454,18 +442,6 @@ end
     return CoDual(y, dy), lmemoryrefget_adjoint
 end
 
-@inline Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(memoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{Symbol},
-    _boundscheck::Dual{Bool},
-)
-    ordering = primal(_ordering)
-    boundscheck = primal(_boundscheck)
-    y = memoryrefget(primal(x), ordering, boundscheck)
-    dy = memoryrefget(tangent(x), ordering, boundscheck)
-    return Dual(y, dy)
-end
 @inline Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(memoryrefget),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -560,17 +536,6 @@ end
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
 
 @inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
-    memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
-    return value
-end
-@inline function frule!!(
     ::Lifted{typeof(lmemoryrefset!),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     value::Lifted{P,Nw,NDual{P,Nw}},
@@ -638,21 +603,6 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
 end
 
 @inline function frule!!(
-    ::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-) where {P,V}
-    return frule!!(
-        zero_dual(lmemoryrefset!),
-        x,
-        value,
-        zero_dual(Val(primal(ordering))),
-        zero_dual(Val(primal(boundscheck))),
-    )
-end
-@inline function frule!!(
     ::Lifted{typeof(memoryrefset!),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     value::Lifted{P,Nw,NDual{P,Nw}},
@@ -693,13 +643,6 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
-    function frule!!(
-        ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
-    ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return Dual(x, dx)
-    end
     function frule!!(
         ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
     ) where {Nw,P<:IEEEFloat}
@@ -929,16 +872,9 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-@inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
-) where {name}
-    setfield!(primal(value), name, primal(x))
-    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
-    return x
-end
-# Lifted parallel — write the primal field, then per-lane partial field.
-# For :size (non-differentiable metadata) each lane gets the same primal
-# value; other fields (e.g. :ref) get per-lane tangent storage.
+# Write the primal field, then per-lane partial field. For :size
+# (non-differentiable metadata) each lane gets the same primal value; other
+# fields (e.g. :ref) get per-lane tangent storage.
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Array,Nw,<:NDualArray},

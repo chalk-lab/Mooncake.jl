@@ -285,17 +285,6 @@ end
 # rules, such that the DI test will pass with no inner prep without this workaround.
 @static if VERSION >= v"1.11-"
     function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_genericmemory_owner}},
-        ::Dual{Val{Any}},
-        ::Dual{Tuple{Val{Any}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        a::Dual{<:Memory},
-    )
-        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
-    end
-    function frule!!(
         ::Lifted{typeof(_foreigncall_),Nw},
         ::Lifted{Val{:jl_genericmemory_owner},Nw},
         ::Lifted{Val{Any},Nw},
