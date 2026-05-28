@@ -109,7 +109,7 @@ end
 
 # Whole-array accessors — O(1) by aliasing.
 @inline primal(a::NDualArray) = a.primal
-@inline tangent(a::NDualArray) = NTangent(a.partials)
+@inline tangent(a::NDualArray) = a.partials
 @inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
 
 # Extract a width-1 Lifted slot's tangent in the shape of `tangent_type(P)`.
@@ -233,7 +233,7 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     @inline primal(a::NDualMemoryRef) = a.primal
-    @inline tangent(a::NDualMemoryRef) = NTangent(a.partials)
+    @inline tangent(a::NDualMemoryRef) = a.partials
     @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials)
 
     # Element access via Core.memoryref* — `MemoryRef` is not AbstractArray.

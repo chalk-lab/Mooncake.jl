@@ -124,7 +124,7 @@ end
         @test size(a) == (3,)
         @test length(a) == 3
         @test Mooncake.primal(a) === x
-        @test Mooncake.tangent(a) === Mooncake.NTangent(a.partials)
+        @test Mooncake.tangent(a) === a.partials
         @test Mooncake.unpack_ndual(a) === (a.primal, a.partials)
 
         # Lazy getindex.
@@ -160,7 +160,7 @@ end
             a = Mooncake.zero_dual(Val(N), p)
             @test typeof(a) === Mooncake.NDualMemoryRef{T,N,Memory{T}}
             @test Mooncake.primal(a) === p  # aliases user storage.
-            @test Mooncake.tangent(a) === Mooncake.NTangent(a.partials)
+            @test Mooncake.tangent(a) === a.partials
             @test Mooncake.unpack_ndual(a) === (a.primal, a.partials)
             @test all(iszero, a.partials[1].mem)
             @test all(iszero, a.partials[2].mem)
