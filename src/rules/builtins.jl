@@ -179,9 +179,6 @@ macro inactive_intrinsic(name)
 end
 
 @intrinsic abs_float
-function frule!!(::Dual{typeof(abs_float)}, x)
-    return Dual(abs_float(primal(x)), sign(primal(x)) * tangent(x))
-end
 function frule!!(
     ::Lifted{typeof(abs_float),N}, x::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -194,9 +191,6 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
-function frule!!(::Dual{typeof(add_float)}, a, b)
-    return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
-end
 function frule!!(
     ::Lifted{typeof(add_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -209,11 +203,6 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
-function frule!!(::Dual{typeof(add_float_fast)}, a, b)
-    c = add_float_fast(primal(a), primal(b))
-    dc = add_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(add_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -240,15 +229,8 @@ end
 # computation in the pullback. Downstream rules write directly into 
 # the tangent memory pointed to by tangent_arr.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
-function frule!!(
-    ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
-) where {T}
-    primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
-    return Dual(primal_arr, tangent_arr)
-end
-# Lifted parallel — V for `Ptr{T}` is `NTuple{Nw, Ptr{T}}`; wrap each
-# lane's per-lane Ptr into the corresponding lane of the canonical NDualArray V.
+# V for `Ptr{T}` is `NTuple{Nw, Ptr{T}}`; wrap each lane's per-lane Ptr
+# into the corresponding lane of the canonical NDualArray V.
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
@@ -286,13 +268,8 @@ end
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
-function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
-    atomic_pointerset(primal(p), primal(x), primal(order))
-    atomic_pointerset(tangent(p), tangent(x), primal(order))
-    return p
-end
-# Lifted parallel — write primal scalar through primal Ptr; for each lane,
-# write that lane's tangent scalar through that lane's partial Ptr.
+# Write primal scalar through primal Ptr; for each lane, write that
+# lane's tangent scalar through that lane's partial Ptr.
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),Nw},
     p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
@@ -330,25 +307,6 @@ end
 # atomic_pointerswap
 
 @intrinsic bitcast
-function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
-    if T <: IEEEFloat
-        msg =
-            "It is not permissible to bitcast to a differentiable type during AD, as " *
-            "this risks dropping tangents, and therefore risks silently giving the wrong " *
-            "answer. If this call to bitcast appears as part of the implementation of a " *
-            "differentiable function, you should write a rule for this function, or modify " *
-            "its implementation to avoid the bitcast."
-        throw(ArgumentError(msg))
-    end
-    _x = primal(x)
-    v = bitcast(T, _x)
-    if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
-    else
-        dv = NoTangent()
-    end
-    return Dual(v, dv)
-end
 function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
     if T <: IEEEFloat
         msg =
@@ -425,9 +383,6 @@ function frule!!(::Lifted{typeof(__cglobal),Nw}, args::Vararg{Lifted,M}) where {
     y = __cglobal(tuple_map(primal, args)...)
     return Lifted{typeof(y),Nw}(y, NoDual())
 end
-function frule!!(::Dual{typeof(__cglobal)}, args...)
-    return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
-end
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_fcodual(__cglobal(map(primal, args)...)), NoPullback(f, args...)
 end
@@ -444,11 +399,6 @@ end
 @inactive_intrinsic checked_usub_int
 
 @intrinsic copysign_float
-function frule!!(::Dual{typeof(copysign_float)}, x, y)
-    z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(y)) * tangent(x)
-    return Dual(z, dz)
-end
 function frule!!(
     ::Lifted{typeof(copysign_float),N}, x::Lifted{T,N,NDual{T,N}}, y::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -469,13 +419,6 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
-function frule!!(::Dual{typeof(div_float)}, a, b)
-    c = div_float(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(div_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -490,13 +433,6 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
-function frule!!(::Dual{typeof(div_float_fast)}, a, b)
-    c = div_float_fast(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(div_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -519,11 +455,6 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-function frule!!(::Dual{typeof(fma_float)}, x, y, z)
-    a = fma_float(primal(x), primal(y), primal(z))
-    da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
-    return Dual(a, da)
-end
 function frule!!(
     ::Lifted{typeof(fma_float),N},
     x::Lifted{T,N,NDual{T,N}},
@@ -543,11 +474,6 @@ end
 
 @intrinsic fpext
 function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
-) where {Pext<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
-end
-function frule!!(
     ::Lifted{typeof(fpext),N}, ::Lifted{Type{Pext},N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,Pext<:IEEEFloat,P<:IEEEFloat}
     # NDual{Pext,N}(::NDual{P,N}) is the cross-precision constructor.
@@ -565,11 +491,6 @@ end
 @inactive_intrinsic fptoui
 
 @intrinsic fptrunc
-function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
-) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
-end
 function frule!!(
     ::Lifted{typeof(fptrunc),N}, ::Lifted{Type{Ptrunc},N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,Ptrunc<:IEEEFloat,P<:IEEEFloat}
@@ -679,11 +600,6 @@ end
 end
 
 @intrinsic mul_float
-function frule!!(::Dual{typeof(mul_float)}, a, b)
-    p = mul_float(primal(a), primal(b))
-    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
-    return Dual(p, dp)
-end
 function frule!!(
     ::Lifted{typeof(mul_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -697,11 +613,6 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
-function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
-    c = mul_float_fast(primal(a), primal(b))
-    dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(mul_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -717,12 +628,6 @@ end
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
-function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
-    a = muladd_float(primal(x), primal(y), primal(z))
-    dz = tangent(z)
-    da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
-    return Dual(a, da)
-end
 function frule!!(
     ::Lifted{typeof(muladd_float),N},
     x::Lifted{T,N,NDual{T,N}},
@@ -746,7 +651,6 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
-frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
 function frule!!(
     ::Lifted{typeof(neg_float),N}, x::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -759,9 +663,6 @@ function rrule!!(::CoDual{typeof(neg_float)}, x)
 end
 
 @intrinsic neg_float_fast
-function frule!!(::Dual{typeof(neg_float_fast)}, x)
-    return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
-end
 function frule!!(
     ::Lifted{typeof(neg_float_fast),N}, x::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -778,13 +679,8 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
-function frule!!(::Dual{typeof(pointerref)}, x, y, z)
-    a = pointerref(primal(x), primal(y), primal(z))
-    da = pointerref(tangent(x), primal(y), primal(z))
-    return Dual(a, da)
-end
-# Lifted parallel — load scalar via primal Ptr; load each lane's tangent
-# scalar via that lane's partial Ptr; pack into the canonical NDual V.
+# Load scalar via primal Ptr; load each lane's tangent scalar via that
+# lane's partial Ptr; pack into the canonical NDual V.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
     x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
@@ -834,11 +730,6 @@ function frule!!(
     end
     return p
 end
-function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
-    pointerset(primal(p), primal(x), primal(idx), primal(z))
-    pointerset(tangent(p), tangent(x), primal(idx), primal(z))
-    return p
-end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
@@ -869,12 +760,6 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
-function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
 ) where {Nw,T<:IEEEFloat}
@@ -893,12 +778,6 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm_fast(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
-end
 function frule!!(
     ::Lifted{typeof(sqrt_llvm_fast),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
 ) where {Nw,T<:IEEEFloat}
@@ -916,11 +795,6 @@ end
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
-function frule!!(::Dual{typeof(sub_float)}, a, b)
-    c = sub_float(primal(a), primal(b))
-    dc = sub_float(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(sub_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -934,11 +808,6 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
-function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
-    c = sub_float_fast(primal(a), primal(b))
-    dc = sub_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
-end
 function frule!!(
     ::Lifted{typeof(sub_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
@@ -998,17 +867,9 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
-    x = __vec_to_tuple(primal(v))
-    if tangent_type(_typeof(x)) == NoTangent
-        return zero_dual(x)
-    else
-        return Dual(x, __vec_to_tuple(tangent(v)))
-    end
-end
-# Lifted parallel — for `Vector{T<:IEEEFloat}`, the slot's V is an
-# NDualArray; iterate via `getindex` (which returns NDual elements) and
-# build the tuple V from per-element NDuals.
+# For `Vector{T<:IEEEFloat}`, the slot's V is an NDualArray; iterate
+# via `getindex` (which returns NDual elements) and build the tuple V
+# from per-element NDuals.
 function frule!!(
     ::Lifted{typeof(__vec_to_tuple),Nw},
     v::Lifted{Vector{T},Nw,NDualArray{T,Nw,1,Vector{T},NDual{T,Nw}}},
@@ -1048,20 +909,12 @@ end
 # Core._setsuper!
 # Core._structtype
 
-function frule!!(
-    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
-)
-    ind = primal(_ind)
-    pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
-    return Dual(pv, tv)
-end
-# Lifted parallel — `Core.SimpleVector` carries no canonical V (its
-# `tangent_type` is `Vector{Any}` for reverse mode, but Lifted has no
-# single-tangent slot to store that). SimpleVector elements are typically
-# non-differentiable types (DataType, Symbol, Method, …), so the
-# canonical V for the output is `NoDual`. Matches the pointer_from_objref
-# treatment for "informational tangents under forward Lifted".
+# `Core.SimpleVector` carries no canonical V (its `tangent_type` is
+# `Vector{Any}` for reverse mode, but Lifted has no single-tangent slot
+# for that). SimpleVector elements are typically non-differentiable types
+# (DataType, Symbol, Method, …), so the canonical V for the output is
+# `NoDual`. Matches the pointer_from_objref treatment for
+# "informational tangents under forward Lifted".
 function frule!!(
     ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
 ) where {Nw}
@@ -1094,16 +947,9 @@ function _svec_ref_rrule(f, _v, _ind, pv, tv)
     end
 end
 
-function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
-    primal_output = svec(map(primal, args)...)
-    # Tangent type for `SimpleVector` is `Vector{Any}`
-    dual_output = collect(Any, map(tangent, args))
-    return Dual(primal_output, dual_output)
-end
-# Lifted parallel — output `SimpleVector` is treated as non-differentiable
-# from forward-mode's perspective. The bare-Dual rule packs args' tangents
-# into a `Vector{Any}` for reverse-mode use, but Lifted has no per-lane
-# Vector{Any} V shape — elements typically share `NoDual` V anyway.
+# Output `SimpleVector` is treated as non-differentiable from
+# forward-mode's perspective. Lifted has no per-lane Vector{Any} V
+# shape — elements typically share `NoDual` V anyway.
 function frule!!(f::Lifted{typeof(svec),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     primal_output = svec(tuple_map(primal, args)...)
     return Lifted{Core.SimpleVector,Nw}(primal_output, NoDual())
@@ -1134,9 +980,6 @@ end
 end
 
 # Core._typebody!
-function frule!!(::Dual{typeof(Core._typevar)}, args...)
-    return zero_dual(Core._typevar(map(primal, args)...))
-end
 function frule!!(::Lifted{typeof(Core._typevar),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     y = Core._typevar(tuple_map(primal, args)...)
     return Lifted{typeof(y),Nw}(y, NoDual())
@@ -1145,9 +988,6 @@ function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(Core.apply_type)}, args...)
-    return zero_dual(Core.apply_type(map(primal, args)...))
-end
 function frule!!(::Lifted{typeof(Core.apply_type),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     y = Core.apply_type(tuple_map(primal, args)...)
     return Lifted{typeof(y),Nw}(y, NoDual())
@@ -1157,12 +997,6 @@ function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual)
-    return Dual(
-        compilerbarrier(primal(setting), primal(v)),
-        compilerbarrier(primal(setting), tangent(v)),
-    )
-end
 function frule!!(
     ::Lifted{typeof(compilerbarrier),Nw}, setting::Lifted{Symbol,Nw}, v::Lifted{P,Nw,V}
 ) where {Nw,P,V}
@@ -1178,10 +1012,6 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
-    _cond = primal(cond)
-    return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
-end
 function frule!!(
     ::Lifted{typeof(Core.ifelse),Nw},
     cond::Lifted{Bool,Nw},
@@ -1228,31 +1058,8 @@ end
 const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
-) where {P}
-    _name = primal(name)
-    if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name))
-    else
-        return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
-    end
-end
-# Lifted 2-arg parallel lives in memory.jl (delegates to `lgetfield`, which
-# has the generic Lifted body via `_get_lifted_field` in misc.jl).
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
-) where {P}
-    _name = primal(name)
-    _inbounds = primal(inbounds)
-    if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name, _inbounds))
-    else
-        y = getfield(primal(x), _name, _inbounds)
-        dy = _get_tangent_field(tangent(x), _name, _inbounds)
-        return Dual(y, dy)
-    end
-end
+# The 2-arg Lifted parallel lives in memory.jl (delegates to `lgetfield`,
+# which has the generic Lifted body via `_get_lifted_field` in misc.jl).
 function frule!!(
     ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
 ) where {Nw}
@@ -1358,10 +1165,6 @@ function frule!!(
     end
     return x
 end
-function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
-    literal_name = zero_dual(Val(primal(name)))
-    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
-end
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
     return rrule!!(uninit_fcodual(lsetfield!), value, literal_name, x)
@@ -1369,15 +1172,17 @@ end
 
 # swapfield!
 
-frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
+function frule!!(::Lifted{typeof(throw),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    throw(tuple_map(primal, args)...)
+end
 function rrule!!(::CoDual{typeof(throw)}, args::CoDual...)
     throw(map(primal, args)...), _ -> (NoRData(), map(_ -> NoRData(), args)...)
 end
 
 # Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
-    frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...) = Core.throw_methoderror(
-        map(primal, args)...
+    frule!!(::Lifted{typeof(Core.throw_methoderror),Nw}, args::Vararg{Lifted,M}) where {Nw,M} = Core.throw_methoderror(
+        tuple_map(primal, args)...
     )
     function rrule!!(::CoDual{typeof(Core.throw_methoderror)}, args::CoDual...)
         return (
@@ -1390,11 +1195,7 @@ end
 function frule!!(
     ::Lifted{typeof(Core.throw_inexacterror),Nw}, args::Vararg{Lifted,M}
 ) where {Nw,M}
-    # Throws regardless — replicate via bare-Dual call on primal args.
     return Core.throw_inexacterror(tuple_map(primal, args)...)
-end
-function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
-    Core.throw_inexacterror(map(primal, args)...)
 end
 function rrule!!(::CoDual{typeof(Core.throw_inexacterror)}, args::CoDual...)
     return (
@@ -1415,14 +1216,6 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
-function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
-    primal_output = tuple(map(primal, args)...)
-    if tangent_type(_typeof(primal_output)) == NoTangent
-        return zero_dual(primal_output)
-    else
-        return Dual(primal_output, tuple(map(tangent, args)...))
-    end
-end
 function frule!!(f::Lifted{typeof(tuple),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     primal_output = tuple(tuple_map(primal, args)...)
     P_out = _typeof(primal_output)
@@ -1446,9 +1239,6 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
-function frule!!(::Dual{typeof(typeassert)}, x::Dual, type::Dual)
-    return Dual(typeassert(primal(x), primal(type)), tangent(x))
-end
 function frule!!(
     ::Lifted{typeof(typeassert),Nw}, x::Lifted{P,Nw,V}, type::Lifted
 ) where {Nw,P,V}
