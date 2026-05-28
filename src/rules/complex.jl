@@ -66,13 +66,6 @@ TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
-) where {FieldName}
-    y = getfield(primal(x), FieldName)
-    dy = getfield(tangent(x), FieldName)
-    return Dual(y, dy)
-end
-function frule!!(
     ::Lifted{typeof(lgetfield),N},
     x::Lifted{Complex{P},N,Complex{NDual{P,N}}},
     ::Lifted{Val{FieldName},N},
@@ -113,13 +106,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P}, im::Dual{P}
-) where {P<:IEEEFloat}
-    x = _new_(Complex{P}, primal(re), primal(im))
-    dx = _new_(Complex{P}, tangent(re), tangent(im))
-    return Dual(x, dx)
-end
 function frule!!(
     ::Lifted{typeof(_new_),N},
     ::Lifted{Type{Complex{P}},N},

@@ -147,19 +147,8 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
 }
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    kwargs::Dual{<:NamedTuple},
-    ::Dual{typeof(logsumexp)},
-    x::Dual{<:AbstractArray{P}},
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y = logsumexp(_x; primal(kwargs)...)
-    dy = sum(_dx .* (exp.(_x .- y)); primal(kwargs)...)
-    return Dual(y, dy)
-end
-# Lifted parallel — handles both scalar (Colon dims) and array (Int/Tuple
-# dims) result shapes. Per-lane scalar/array reduction.
+# Handles both scalar (Colon dims) and array (Int/Tuple dims) result
+# shapes. Per-lane scalar/array reduction.
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
@@ -183,19 +172,7 @@ function frule!!(
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
     end
 end
-function frule!!(
-    ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y = logsumexp(_x)
-    dy = zero(P)
-    # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
-    for i in eachindex(_dx)
-        @inbounds dy += _dx[i] * exp(_x[i] - y)
-    end
-    return Dual(y, dy)
-end
-# Lifted parallel — per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
+# Per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw},
     x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
@@ -257,16 +234,7 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
 } where {P<:IEEEFloat}
-function frule!!(
-    ::Dual{typeof(logsumexp!)}, out::Dual{<:AbstractArray{P}}, x::Dual{<:AbstractArray{P}}
-) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
-    y, _dy = arrayify(out)
-    logsumexp!(y, _x)
-    sum!(_dy, _dx .* exp.(_x .- y))
-    return out
-end
-# Lifted parallel — per-lane in-place `sum!` into `tangent(out).partials[lane]`.
+# Per-lane in-place `sum!` into `tangent(out).partials[lane]`.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
     out::Lifted{Array{P,Do},Nw,NDualArray{P,Nw,Do,Array{P,Do},NDual{P,Nw}}},

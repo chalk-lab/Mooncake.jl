@@ -36,10 +36,6 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_frule(
-        Val($(QuoteNode(name))), args...
-    )
-
     @eval frule!!(::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$(QuoteNode(name))},Nw}, args...) where {Nw} = _threading_foreigncall_lifted(
         Val(Nw), Val($(QuoteNode(name))), args...
     )
@@ -52,21 +48,16 @@ end
 } where {F}
 
 function frule!!(
-    ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
-) where {F}
+    ::Lifted{typeof(Base.Threads.threading_run),Nw}, fun::Lifted{F}, static::Lifted{Bool}
+) where {Nw,F}
     worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int})
     worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
     Base.Threads.threading_run(primal(static)) do tid
         # `threading_run` hands worker ids in the default pool's 1-based tid space.
         1 <= tid <= length(worker_rules) ||
             throw(ArgumentError("unexpected thread id $tid"))
-        worker_rules[tid](fun, zero_dual(tid))
+        worker_rules[tid](fun, zero_lifted(Val(Nw), tid))
         nothing
     end
-    return zero_dual(nothing)
+    return zero_lifted(Val(Nw), nothing)
 end
-# Lifted parallel omitted — `build_frule(get_interpreter(ForwardMode), …)`
-# currently returns a bare-`Dual` worker rule (the interpreter still wraps
-# args as Dual). Calling it with Lifted arguments would mis-dispatch.
-# The Final-task interpreter cutover replaces `build_frule`'s output with
-# Lifted-dispatched worker rules; the Lifted parallel can be added then.

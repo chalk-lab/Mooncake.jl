@@ -52,16 +52,6 @@ import DispatchDoctor._Utils:
 }
 #! format: on
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_generating_output}},
-    ::Dual{Val{Cint}},
-    ::Dual{Tuple{}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-)
-    return Dual(ccall(:jl_generating_output, Cint, ()), NoTangent())
-end
-function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_generating_output},Nw},
     ::Lifted{Val{Cint},Nw},

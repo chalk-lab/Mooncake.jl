@@ -91,9 +91,6 @@ const TaskCoDual = CoDual{Task,TaskTangent}
 @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
 @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
 
-function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
-    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
-end
 function frule!!(
     ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
 ) where {N,f}
@@ -111,9 +108,6 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
-function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
-    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
-end
 function frule!!(
     ::Lifted{typeof(getfield),N}, x::Lifted{Task,N,TaskTangent}, f::Lifted
 ) where {N}
@@ -125,9 +119,6 @@ function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
-function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
-    return lsetfield_frule(task, name, val)
-end
 function frule!!(
     ::Lifted{typeof(lsetfield!),N},
     task::Lifted{Task,N,TaskTangent},

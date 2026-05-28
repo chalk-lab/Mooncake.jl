@@ -304,19 +304,9 @@ end
         SupportedArray{<:IEEEFloat,M} where {M},
     },
 )
-function frule!!(
-    ::Dual{typeof(bias_act!)},
-    ::Dual{typeof(identity)},
-    x::Dual{<:SupportedArray{<:IEEEFloat,N}},
-    b::Dual{<:SupportedArray{<:IEEEFloat,M}},
-) where {N,M}
-    primal(x) .+= primal(b)
-    tangent(x) .+= tangent(b)
-    return x
-end
-# Lifted parallel — restricted to plain `Array{P, N/M}` (other SupportedArray
-# shapes — `AbstractGPUArray`, `Adjoint`, `Transpose` — need their own
-# canonical V which isn't yet defined). Per-lane partial broadcast.
+# Restricted to plain `Array{P, N/M}` (other SupportedArray shapes —
+# `AbstractGPUArray`, `Adjoint`, `Transpose` — need their own canonical V
+# which isn't yet defined). Per-lane partial broadcast.
 function frule!!(
     ::Lifted{typeof(bias_act!),Nw},
     ::Lifted{typeof(identity),Nw},
