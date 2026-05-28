@@ -320,9 +320,9 @@ end
                 dzc = ComplexF64(0.5, -0.25)
                 expected_dzc = real((2zc - sin(zc)) * dzc)
                 rule = Mooncake.NfwdMooncake.build_frule(fc, zc; chunk_size=1)
-                out = rule(Mooncake.zero_dual(fc), Mooncake.Dual(zc, dzc))
+                out = rule(Mooncake.lift(fc, Mooncake.NoTangent()), Mooncake.lift(zc, dzc))
                 @test Mooncake.primal(out) == fc(zc)
-                @test Mooncake.tangent(out) ≈ expected_dzc
+                @test only(Mooncake.tangent(out).partials) ≈ expected_dzc
 
                 rrule = Mooncake.NfwdMooncake.build_rrule(fc, zc; chunk_size=2)
                 ȳ, pb!! = rrule(Mooncake.zero_fcodual(fc), Mooncake.zero_fcodual(zc))
@@ -339,9 +339,17 @@ end
                     ComplexF64[1.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 1.0im], 2, 2
                 )
                 frule_vec = Mooncake.NfwdMooncake.build_frule(gc, z_vec; chunk_size=2)
-                out_vec = frule_vec(Mooncake.zero_dual(gc), Mooncake.Dual(z_vec, dz_vec))
+                out_vec = frule_vec(
+                    Mooncake.lift(gc, Mooncake.NoTangent()),
+                    Mooncake.Lifted{Vector{ComplexF64},2}(
+                        z_vec,
+                        Mooncake.NDualArray{ComplexF64,2,1,Vector{ComplexF64}}(
+                            z_vec, (dz_vec[:, 1], dz_vec[:, 2])
+                        ),
+                    ),
+                )
                 @test Mooncake.primal(out_vec) == gc(z_vec)
-                @test Mooncake.tangent(out_vec) == (2.0, 1.0)
+                @test Mooncake.tangent(out_vec).partials == (2.0, 1.0)
 
                 hc(z) = z .* z
                 ȳ_vec = ComplexF64[2.0 - 1.0im, -0.5 + 0.25im]
@@ -408,9 +416,11 @@ end
             @testset "sincos chunk_size=1 frule and rrule" begin
                 x_sc = 1.2
                 frule = Mooncake.NfwdMooncake.build_frule(sincos, x_sc; chunk_size=1)
-                out = frule(Mooncake.zero_dual(sincos), Mooncake.Dual(x_sc, 1.0))
+                out = frule(
+                    Mooncake.lift(sincos, Mooncake.NoTangent()), Mooncake.lift(x_sc, 1.0)
+                )
                 @test Mooncake.primal(out) == sincos(x_sc)
-                s_t, c_t = Mooncake.tangent(out)
+                s_t, c_t = last(Mooncake.unlift(out))
                 @test s_t ≈ cos(x_sc)
                 @test c_t ≈ -sin(x_sc)
 
@@ -427,9 +437,11 @@ end
             @testset "modf derivative: frac=1, int=0" begin
                 x_mf = 3.7
                 frule = Mooncake.NfwdMooncake.build_frule(modf, x_mf; chunk_size=1)
-                out = frule(Mooncake.zero_dual(modf), Mooncake.Dual(x_mf, 1.0))
+                out = frule(
+                    Mooncake.lift(modf, Mooncake.NoTangent()), Mooncake.lift(x_mf, 1.0)
+                )
                 @test Mooncake.primal(out) == modf(x_mf)
-                frac_t, int_t = Mooncake.tangent(out)
+                frac_t, int_t = last(Mooncake.unlift(out))
                 @test frac_t ≈ 1.0
                 @test int_t ≈ 0.0
             end

@@ -285,15 +285,15 @@ end
     return Dual(y, dy)
 end
 
-# Lifted-arg width-1 scalar overload: scalar IEEEFloat input → scalar
-# IEEEFloat output. Extracts the single `NDual.partials[1]` slot as the
-# legacy tangent value, then rewraps the result.
+# Lifted-arg width-1 scalar overload: scalar IEEEFloat input → routed
+# through `_wrap_lifted_output` so scalar, complex, and tuple outputs all
+# resolve via dispatch.
 @inline function (rule::Rule{sig,1})(
     f::Mooncake.Lifted, x::Mooncake.Lifted{T,1,NDual{T,1}}
 ) where {sig,T<:IEEEFloat}
     _nfwd_verify_sig(rule, (f, x))
-    y, dy = _nfwd_eval(primal(f), (primal(x),), (tangent(x).partials[1],), Val(1))
-    return Mooncake.Lifted{typeof(y),1}(y, NDual{typeof(y),1}(y, (dy,)))
+    lifted = _nfwd_lift(primal(x), tangent(x).partials[1], Val(1))
+    return _wrap_lifted_output(primal(f)(lifted), Val(1))
 end
 
 @inline function (rule::Rule{sig,N})(
@@ -405,11 +405,28 @@ function (rule::Rule{sig,N})(
 end
 
 @inline _lifted_partials(x::Mooncake.Lifted) = tangent(x).partials
+@inline function _lifted_partials(
+    x::Mooncake.Lifted{Complex{R},N,Complex{NDual{R,N}}}
+) where {R<:IEEEFloat,N}
+    v = tangent(x)
+    re_partials = real(v).partials
+    im_partials = imag(v).partials
+    return ntuple(k -> Complex(re_partials[k], im_partials[k]), Val(N))
+end
 
 # Scalar NDual output → Lifted{T, N, NDual{T, N}}.
 @inline function _wrap_lifted_output(out_nd::NDual{T,N}, ::Val{N}) where {T,N}
     y = Nfwd._nfwd_dual_value(out_nd)
     return Mooncake.Lifted{T,N}(y, out_nd)
+end
+
+# Tuple-of-V → Lifted{Tuple{P_i...}, N, Tuple{V_i...}}. Recurse into each
+# element so canonical V's compose (scalar NDual, NDualArray, nested tuple).
+@inline function _wrap_lifted_output(out::Tuple, ::Val{N}) where {N}
+    inner = map(o -> _wrap_lifted_output(o, Val(N)), out)
+    primals = map(Mooncake.primal, inner)
+    values = map(Mooncake.tangent, inner)
+    return Mooncake.Lifted{typeof(primals),N}(primals, values)
 end
 
 # AbstractArray of NDual → Lifted{Array{T,D}, N, NDualArray{T, N, D, ...}}.
@@ -1326,6 +1343,20 @@ function _nfwd_lift(
     out = similar(x, NDual{T,N})
     @inbounds for I in CartesianIndices(x)
         out[I] = NDual{T,N}(x[I], ntuple(k -> partials[k][I], Val(N)))
+    end
+    return out
+end
+
+# Complex-element array, NTuple{N, A} partials — interleave real/imag parts.
+function _nfwd_lift(
+    x::A, partials::NTuple{N,V}, ::Val{N}
+) where {R<:IEEEFloat,T<:Complex{R},A<:AbstractArray{T},V<:AbstractArray{T},N}
+    out = similar(x, Complex{NDual{R,N}})
+    @inbounds for I in CartesianIndices(x)
+        out[I] = Complex(
+            NDual{R,N}(real(x[I]), ntuple(k -> real(partials[k][I]), Val(N))),
+            NDual{R,N}(imag(x[I]), ntuple(k -> imag(partials[k][I]), Val(N))),
+        )
     end
     return out
 end
