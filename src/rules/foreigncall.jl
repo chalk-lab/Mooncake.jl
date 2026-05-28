@@ -330,13 +330,6 @@ end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
     @eval function frule!!(
-        f::Dual{typeof(_foreigncall_)},
-        n::Dual{Val{$(QuoteNode(name))}},
-        args::Vararg{Dual,N},
-    ) where {N}
-        return zero_derivative(f, n, args...)
-    end
-    @eval function frule!!(
         ::Lifted{typeof(_foreigncall_),Nw},
         ::Lifted{Val{$(QuoteNode(name))},Nw},
         args::Vararg{Lifted,M},
@@ -356,21 +349,21 @@ end
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(QuoteNode(name))}},
-        ::Dual{Val{$P}},
-        ::Dual{Tuple{Val{$P},Val{Int32}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:llvmcall}},
-        x::Dual{$P},
-        n::Dual{Int32},
-        ::Dual{Int32},
-        ::Dual{$P},
-    )
-        _x, dx = extract(x)
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        ::Lifted{Val{$P},Nw},
+        ::Lifted{Tuple{Val{$P},Val{Int32}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:llvmcall},Nw},
+        x::Lifted{$P,Nw,NDual{$P,Nw}},
+        n::Lifted{Int32,Nw},
+        ::Lifted{Int32,Nw},
+        ::Lifted{$P,Nw,NDual{$P,Nw}},
+    ) where {Nw}
+        _x = primal(x)
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
-        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+        return Lifted{$P,Nw}(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * tangent(x))
     end
 
     @eval function rrule!!(
