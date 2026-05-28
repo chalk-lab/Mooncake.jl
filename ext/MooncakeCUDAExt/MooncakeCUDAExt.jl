@@ -242,9 +242,14 @@ end
     Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
 )
 function frule!!(
-    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
+    ::Lifted{typeof(unsafe_convert),Nw},
+    ::Lifted{Type{CuPtr{T}},Nw},
+    x::Lifted{X,Nw,<:NDualArray},
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T},Nw}
+    y = unsafe_convert(CuPtr{T}, primal(x))
+    x_partials = tangent(x).partials
+    dy = ntuple(k -> unsafe_convert(CuPtr{T}, x_partials[k]), Val(Nw))
+    return Lifted{CuPtr{T},Nw}(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
@@ -259,15 +264,21 @@ end
 # For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
 # is NoTangent and the pointer arithmetic carries no gradient.
 @is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
+# Differentiable T: per-lane CuPtr offset.
 function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), tangent(p) + primal(n))
+    ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NTuple{Nw,CuPtr{T}}}, n::Lifted{<:Integer}
+) where {Nw,T}
+    np = primal(n)
+    new_primal = primal(p) + np
+    p_partials = tangent(p)
+    new_partials = ntuple(k -> p_partials[k] + np, Val(Nw))
+    return Lifted{CuPtr{T},Nw}(new_primal, new_partials)
 end
+# Non-differentiable T: NoDual tangent.
 function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), NoTangent())
+    ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NoDual}, n::Lifted{<:Integer}
+) where {Nw,T}
+    return Lifted{CuPtr{T},Nw}(primal(p) + primal(n), NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
@@ -582,9 +593,17 @@ end
     MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
 )
 function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
-)
-    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
+    ::Lifted{typeof(reshape),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    dims::Lifted{<:NTuple},
+) where {Nw}
+    _dims = primal(dims)
+    y = reshape(primal(x), _dims)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> reshape(x_partials[k], _dims), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -593,21 +612,11 @@ function rrule!!(
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
 end
 
-# `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
+# `_new_` rule for the DataRef-based inner CuArray constructor (used by views and
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
-function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{P}},
-    data::Dual,
-    maxsize::Dual,
-    offset::Dual,
-    dims::Dual,
-) where {P<:CuMaybeComplexArray}
-    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
-    dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
-    return Dual(y, dy)
-end
+# Forward-mode (Lifted) parallel is deferred — porting requires preserving per-lane
+# DataRef info in the lgetfield(`.data`) result, which currently returns NoDual.
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{P}},
