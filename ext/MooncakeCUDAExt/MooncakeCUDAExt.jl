@@ -969,12 +969,6 @@ end
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
 function frule!!(
-    ::Dual{typeof(accumulate)}, ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
-)
-    px, dx = arrayify(x)
-    return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
-end
-function frule!!(
     ::Lifted{typeof(accumulate),Nw},
     ::Lifted{typeof(+),Nw},
     x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray};
@@ -1227,14 +1221,6 @@ end
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
-)
-    fill!(primal(a), primal(x))
-    tx = tangent(x)
-    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
-    return a
-end
 function frule!!(
     ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}, x::Lifted
 ) where {Nw}
