@@ -129,17 +129,9 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
-# NTuple-shaped V: covers the primitive-leaf NTuple convention (when
-# `dual_type(Val(N), P) === NTuple{N, P}` for Ptr / TwicePrecision), and the
-# zero-field-concrete default `dual_type(Val(N), P) === NTuple{N, tangent_type(P)}`
-# (where the element type may differ from `P` — e.g. singletons where
-# tangent_type is `NoTangent`). The Tuple-primal struct lift's
-# `Lifted{P<:Tuple, N, <:Tuple}` overload below is more specific and wins
-# for that case.
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
-# Structural lift — recurse field-by-field into per-field V.
 @inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
     nt = tangent(x).value
     p = primal(x)
@@ -436,10 +428,6 @@ end
         msg = "dual_type(::Val{N}, ::Type{P}) is only defined for concrete P; got P=$P"
         return :(error($msg))
     end
-    # Zero-field concrete primal (primitive types, singletons): per the
-    # design (see ~/notes/mooncake/lifted-types.md §2 row for
-    # `zero_field_concrete_P`), V is N parallel copies of `tangent_type(P)`.
-    # Defer the `tangent_type` call to runtime per AGENTS.md world-age guidance.
     if fieldcount(P) == 0
         return :(NTuple{$N,tangent_type($P)})
     end
@@ -561,14 +549,8 @@ end
     im_ = NDual{R,1}(imag(x), (imag(ẋ),))
     return Lifted{Complex{R},1}(x, Complex{NDual{R,1}}(re, im_))
 end
-# Non-differentiable primal (NoTangent tangent) — delegate to `uninit_lifted`
-# so the V matches `dual_type(Val(1), typeof(x))`: `NoDual` for primitive
-# types covered by the specific table (Int, Symbol, …), `NTuple{1, NoTangent}`
-# for zero-field-concrete primals (function singletons, empty structs).
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
-# Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
-# Structural lift — recurse per field, mirroring `unlift`.
 @inline function lift(x::P, ẋ::Tangent) where {P}
     nt = ẋ.fields
     names = keys(nt)
@@ -695,9 +677,6 @@ end
 # NamedTuple) take precedence, so this fallback only fires for user-defined
 # struct primals.
 
-# Zero-field concrete primal seed helpers. V is `NTuple{N, tangent_type(P)}`,
-# so the seed is N copies of `tangent_seed(x)`. Defined as non-@generated
-# functions so they can use closures (which the @generated bodies cannot).
 @inline _zero_dual_zero_field(::Val{N}, x) where {N} = ntuple(_ -> zero_tangent(x), Val(N))
 @inline _uninit_dual_zero_field(::Val{N}, x) where {N} = ntuple(
     _ -> uninit_tangent(x), Val(N)
