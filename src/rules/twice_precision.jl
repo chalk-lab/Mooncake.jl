@@ -472,10 +472,14 @@ end
         typeof(Base._exp_allowing_twice64),TwicePrecision{Float64}
     }
     function frule!!(
-        ::Dual{typeof(Base._exp_allowing_twice64)}, x::Dual{TwicePrecision{Float64}}
-    )
-        y = Base._exp_allowing_twice64(primal(x))
-        return Dual(y, typeof(y)(y * tangent(x)))
+        ::Lifted{typeof(Base._exp_allowing_twice64),N},
+        x::Lifted{TwicePrecision{Float64},N,NTuple{N,TwicePrecision{Float64}}},
+    ) where {N}
+        _x = primal(x)
+        y = Base._exp_allowing_twice64(_x)
+        x_parts = tangent(x)
+        dy = ntuple(k -> TwicePrecision{Float64}(y * x_parts[k]), Val(N))
+        return Lifted{TwicePrecision{Float64},N}(y, dy)
     end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
