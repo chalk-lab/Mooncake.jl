@@ -239,6 +239,13 @@ function _scale_internal(::MaybeCache, a::Float64, t::NDual{T,N}) where {T<:IEEE
 end
 
 _add_to_primal_internal(::MaybeCache, x, ::NoDual, ::Bool) = x
+# Scalar NDual: add `.value + sum(.partials)` (matches the test-framework's
+# usage where it treats NDual.value as the "primal-side" content).
+function _add_to_primal_internal(
+    ::MaybeCache, x::T, t::NDual{T,N}, ::Bool
+) where {T<:IEEEFloat,N}
+    return x + t.value + sum(t.partials; init=zero(T))
+end
 function _add_to_primal_internal(
     c::MaybeCache, x, t::Union{ImmutableDual,MutableDual}, unsafe::Bool
 )
@@ -622,6 +629,13 @@ end
 @inline lift_from_tangent(x::P, ẋ::NoDual) where {P} = Lifted{P,1}(x, ẋ)
 @inline function lift_from_tangent(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
     return Lifted{P,1}(x, ẋ)
+end
+# Tuple primal + tuple of per-field Vs — the test framework reaches this
+# when its tangent-shape arithmetic recurses through a Tangent's fields
+# tuple and feeds the V-tuple back into `lift_from_tangent`.
+@inline function lift_from_tangent(x::Tuple, ẋ::Tuple)
+    field_Vs = map((xi, vi) -> tangent(lift_from_tangent(xi, vi)), x, ẋ)
+    return Lifted{typeof(x),1}(x, field_Vs)
 end
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
