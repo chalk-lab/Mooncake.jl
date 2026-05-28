@@ -579,36 +579,37 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     )
 
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        x_dx::Dual{<:AbstractVector{T}},
-        beta::Dual{T},
-        y_dy::Dual{<:AbstractVector{T}},
-    ) where {T<:$elty}
-        # Extract primals.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        x_dx::Lifted{<:AbstractVector{T}},
+        beta::Lifted{T,Nw},
+        y_dy::Lifted{<:AbstractVector{T}},
+    ) where {Nw,T<:$elty}
         ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        x, dx = arrayify(x_dx)
-        y, dy = arrayify(y_dy)
-
-        # Compute Frechet derivative.
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(T), dy)
-        BLAS.$fname(ul, α, A, dx, one(T), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        x = primal(x_dx)
+        y = primal(y_dy)
+        for lane in 1:Nw
+            dα = tangent(alpha, lane)
+            dβ = tangent(beta, lane)
+            dA = _blas_lane_partial(tangent(A_dA), lane)
+            dx = _blas_lane_partial(tangent(x_dx), lane)
+            dy = _blas_lane_partial(tangent(y_dy), lane)
+            BLAS.$fname(ul, dα, A, x, β, dy)
+            BLAS.$fname(ul, α, dA, x, one(T), dy)
+            BLAS.$fname(ul, α, A, dx, one(T), dy)
+            if !iszero(dβ)
+                @inbounds for n in eachindex(y)
+                    tmp = dβ * y[n]
+                    dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+                end
             end
         end
-
-        # Run primal computation.
         BLAS.$fname(ul, α, A, x, β, y)
-
         return y_dy
     end
 
@@ -1052,38 +1053,39 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         } where {T<:$elty},
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        side::Dual{Char},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        B_dB::Dual{<:AbstractMatrix{T}},
-        beta::Dual{T},
-        C_dC::Dual{<:AbstractMatrix{T}},
-    ) where {T<:$elty}
-
-        # Extract primals.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        side::Lifted{Char},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        B_dB::Lifted{<:AbstractMatrix{T}},
+        beta::Lifted{T,Nw},
+        C_dC::Lifted{<:AbstractMatrix{T}},
+    ) where {Nw,T<:$elty}
         s = primal(side)
         ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        B, dB = arrayify(B_dB)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative.
-        BLAS.$fname(s, ul, α, A, dB, β, dC)
-        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
-        if !iszero(dα)
-            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
-        end
-        if !iszero(dβ)
-            @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        B = primal(B_dB)
+        C = primal(C_dC)
+        for lane in 1:Nw
+            dα = tangent(alpha, lane)
+            dβ = tangent(beta, lane)
+            dA = _blas_lane_partial(tangent(A_dA), lane)
+            dB = _blas_lane_partial(tangent(B_dB), lane)
+            dC = _blas_lane_partial(tangent(C_dC), lane)
+            BLAS.$fname(s, ul, α, A, dB, β, dC)
+            BLAS.$fname(s, ul, α, dA, B, one(T), dC)
+            if !iszero(dα)
+                BLAS.$fname(s, ul, dα, A, B, one(T), dC)
+            end
+            if !iszero(dβ)
+                @inbounds for n in eachindex(C)
+                    dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+                end
             end
         end
-
-        # Run primal computation.
         BLAS.$fname(s, ul, α, A, B, β, C)
         return C_dC
     end
@@ -1181,36 +1183,33 @@ for (fname, elty, relty) in (
         }
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _uplo::Dual{Char},
-        _t::Dual{Char},
-        α_dα::Dual{$relty},
-        A_dA::Dual{<:AbstractVecOrMat{$elty}},
-        β_dβ::Dual{$relty},
-        C_dC::Dual{<:AbstractMatrix{$elty}},
-    )
-
-        # Extract values from pairs.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        _uplo::Lifted{Char},
+        _t::Lifted{Char},
+        α_dα::Lifted{$relty,Nw},
+        A_dA::Lifted{<:AbstractVecOrMat{$elty}},
+        β_dβ::Lifted{$relty,Nw},
+        C_dC::Lifted{<:AbstractMatrix{$elty}},
+    ) where {Nw}
         uplo = primal(_uplo)
         t = primal(_t)
-        α, dα = extract(α_dα)
-        A, dA = matrixify(A_dA)
-        β, dβ = extract(β_dβ)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative.
-        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
-        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
-        if !iszero(dβ)
-            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        α = primal(α_dα)
+        A = primal(A_dA)
+        β = primal(β_dβ)
+        C = primal(C_dC)
+        for lane in 1:Nw
+            dα = tangent(α_dα, lane)
+            dβ = tangent(β_dβ, lane)
+            dA = _blas_lane_partial(tangent(A_dA), lane)
+            dC = _blas_lane_partial(tangent(C_dC), lane)
+            BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
+            iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+            if !iszero(dβ)
+                dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+            end
+            $(isherm ? :(real_diag!(dC)) : :())
         end
-        # BLAS will zero out the imaginary parts on the diagonal of C,
-        # do the same on the tangent
-        $(isherm ? :(real_diag!(dC)) : :())
-
-        # Run primal computation.
         BLAS.$fname(uplo, t, α, A, β, C)
-
         return C_dC
     end
     @eval function rrule!!(
