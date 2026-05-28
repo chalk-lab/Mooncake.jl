@@ -387,9 +387,47 @@ function (rule::Rule{sig,N})(
     px = _nfwd_check_primal(primal(x))
     partials = tangent(x).partials
     lifted = _nfwd_lift(px, partials, Val(N))
-    out_nd = primal(f)(lifted)
+    return _wrap_lifted_output(primal(f)(lifted), Val(N))
+end
+
+# Multi-input Lifted fallback: lift each input by its V shape (NDual or NDualArray),
+# call the primal function on the lifted args, and wrap the result via
+# `_wrap_lifted_output`. More-specific 1-scalar / 2-scalar / 3-scalar / 1-array
+# overloads win; this catches multi-array and mixed-shape input combinations.
+function (rule::Rule{sig,N})(
+    f::Mooncake.Lifted, args::Vararg{Mooncake.Lifted,M}
+) where {sig,N,M}
+    _nfwd_verify_sig(rule, (f, args...))
+    lifted_args = map(args) do x
+        return _nfwd_lift(_nfwd_check_primal(primal(x)), _lifted_partials(x), Val(N))
+    end
+    return _wrap_lifted_output(primal(f)(lifted_args...), Val(N))
+end
+
+@inline _lifted_partials(x::Mooncake.Lifted) = tangent(x).partials
+
+# Scalar NDual output → Lifted{T, N, NDual{T, N}}.
+@inline function _wrap_lifted_output(out_nd::NDual{T,N}, ::Val{N}) where {T,N}
     y = Nfwd._nfwd_dual_value(out_nd)
-    return Mooncake.Lifted{typeof(y),N,NDual{typeof(y),N}}(y, out_nd)
+    return Mooncake.Lifted{T,N}(y, out_nd)
+end
+
+# AbstractArray of NDual → Lifted{Array{T,D}, N, NDualArray{T, N, D, ...}}.
+@inline function _wrap_lifted_output(
+    out_arr::AbstractArray{NDual{T,N},D}, ::Val{N}
+) where {T<:IEEEFloat,N,D}
+    primal_arr = similar(out_arr, T)
+    partials = ntuple(_ -> similar(out_arr, T), Val(N))
+    @inbounds for I in CartesianIndices(out_arr)
+        primal_arr[I] = Nfwd._nfwd_dual_value(out_arr[I])
+        for k in 1:N
+            partials[k][I] = Nfwd._nfwd_dual_partial(out_arr[I], k)
+        end
+    end
+    A = typeof(primal_arr)
+    return Mooncake.Lifted{A,N}(
+        primal_arr, Mooncake.NDualArray{T,N,D,A}(primal_arr, partials)
+    )
 end
 
 @inline function Mooncake.value_and_derivative!!(
