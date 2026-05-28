@@ -172,45 +172,51 @@ for (fname, jlfname, elty) in (
     isreal = jlfname == :dot
 
     @eval @inline function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(blas_name(fname))}},
-        ::Dual, # return type
-        ::Dual, # argument types
-        ::Dual, # nreq
-        ::Dual, # calling convention
-        _n::Dual{BLAS.BlasInt},
-        _DX::Dual{Ptr{$elty}},
-        _incx::Dual{BLAS.BlasInt},
-        _DY::Dual{Ptr{$elty}},
-        _incy::Dual{BLAS.BlasInt},
-        # For complex numbers the result is stored in an extra pointer
-        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
-        args::Vararg{Any,N},
-    ) where {N}
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(blas_name(fname))}},
+        ::Lifted, # return type
+        ::Lifted, # argument types
+        ::Lifted, # nreq
+        ::Lifted, # calling convention
+        _n::Lifted{BLAS.BlasInt},
+        _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+        _incx::Lifted{BLAS.BlasInt},
+        _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+        _incy::Lifted{BLAS.BlasInt},
+        $((isreal ? () : (:(_presult::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}}),))...),
+        args::Vararg{Any,M},
+    ) where {Nw,M}
         GC.@preserve args begin
-            # Load in values from pointers.
-            n, incx, incy = map(primal, (_n, _incx, _incy))
-            DX, _dDX = arrayify(_DX)
-            DY, _dDY = arrayify(_DY)
+            n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+            DX = primal(_DX)
+            DY = primal(_DY)
+            dDX_partials = tangent(_DX)
+            dDY_partials = tangent(_DY)
 
             result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            _dresult =
-                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
-                BLAS.$jlfname(n, DX, incx, _dDY, incy)
+            dresult_lanes = ntuple(Val(Nw)) do lane
+                return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
+                       BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
+            end
 
-            # For complex numbers the result must be stored in the pointer
             $(
                 if isreal
                     quote
-                        Dual(result, _dresult)
+                        return Lifted{$elty,Nw}(
+                            result, NDual{$elty,Nw}(result, dresult_lanes)
+                        )
                     end
                 else
                     quote
-                        presult, _dpresult = arrayify(_presult)
+                        presult = primal(_presult)
+                        dpresult_partials = tangent(_presult)
                         Base.unsafe_store!(presult, result)
-                        Base.unsafe_store!(_dpresult, _dresult)
-
-                        Dual(nothing, NoTangent())
+                        for lane in 1:Nw
+                            Base.unsafe_store!(
+                                dpresult_partials[lane], dresult_lanes[lane]
+                            )
+                        end
+                        return Lifted{Nothing,Nw}(nothing, NoDual())
                     end
                 end
             )
