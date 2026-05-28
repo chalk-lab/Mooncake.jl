@@ -210,14 +210,47 @@ end
     return MutableTangent(NamedTuple{names}(field_tangents))
 end
 
-# `_dot_internal` overloads for forward-mode V shapes that the test
-# framework's tangent-shape arithmetic may see when it operates on raw
-# Lifted V values (e.g. `tangent(y_ẏ_a)` in `test_frule_reuse`).
+# `_dot_internal` / `_scale_internal` overloads for forward-mode V
+# shapes that the test framework's tangent-shape arithmetic may see
+# when it operates on raw Lifted V values (e.g. `tangent(y_ẏ_a)` in
+# `test_frule_reuse`).
 _dot_internal(::MaybeCache, ::NoDual, ::NoDual) = 0.0
 function _dot_internal(
     c::MaybeCache, t::T, s::T
 ) where {T<:Union{ImmutableDual,MutableDual}}
     return _dot_internal(c, t.value, s.value)::Float64
+end
+# Scalar NDual (forward-mode width-1 V for IEEEFloat) — sum the partials' dot.
+function _dot_internal(::MaybeCache, t::NDual{T,N}, s::NDual{T,N}) where {T<:IEEEFloat,N}
+    return Float64(sum(map(*, t.partials, s.partials); init=zero(T)))
+end
+
+_scale_internal(::MaybeCache, ::Float64, ::NoDual) = NoDual()
+function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:ImmutableDual}
+    return T(_scale_internal(c, a, t.value))
+end
+function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MutableDual}
+    return T(_scale_internal(c, a, t.value))
+end
+
+_add_to_primal_internal(::MaybeCache, x, ::NoDual, ::Bool) = x
+function _add_to_primal_internal(
+    c::MaybeCache, x, t::Union{ImmutableDual,MutableDual}, unsafe::Bool
+)
+    # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding
+    # each field's V back to the corresponding primal field. This mirrors
+    # what `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)`
+    # does for reverse-mode tangents in src/tangents/tangents.jl.
+    return _add_to_primal_internal_struct(c, x, t.value, unsafe)
+end
+@unstable function _add_to_primal_internal_struct(c, x, nt::NamedTuple, unsafe)
+    isempty(propertynames(nt)) && return x
+    names = keys(nt)
+    new_fields = map(names) do name
+        return _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
+    end
+    # Rebuild via _new_ to handle both mutable and immutable structs.
+    return _new_(typeof(x), new_fields...)
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -576,6 +609,14 @@ end
         return tangent(lift_from_tangent(getfield(x, name), getfield(nt, name)))
     end
     return Lifted{P,1}(x, MutableDual(NamedTuple{names}(field_Vs)))
+end
+# V-shape passthrough — the test framework's tangent-shape arithmetic
+# sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
+# back into `lift_from_tangent`. Wrap directly rather than re-deriving V
+# from the (now-V) tangent input.
+@inline lift_from_tangent(x::P, ẋ::NoDual) where {P} = Lifted{P,1}(x, ẋ)
+@inline function lift_from_tangent(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
+    return Lifted{P,1}(x, ẋ)
 end
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
