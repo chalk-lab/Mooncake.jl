@@ -647,13 +647,16 @@ end
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
 )
 
+# CuDataRef field access — fields (`rc`, `freed`, `cached`) are
+# reference-counting internals with no derivative flow; Lifted V is `NoDual`.
 function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuDataRef,<:CuDataRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    return _cudataref_lgetfield_fwd(primal(x), name, order)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuDataRef,Nw,NoDual},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -664,9 +667,10 @@ function rrule!!(
     return _cudataref_lgetfield_rev(primal(x), name, order), _nopb(Val(4))
 end
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
-) where {name}
-    return _cudataref_lgetfield_fwd(primal(x), name)
+    ::Lifted{typeof(lgetfield),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}, ::Lifted{Val{name},Nw}
+) where {Nw,name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
@@ -677,13 +681,17 @@ end
 # lgetfield rules for CuArray.  CuArray has 4 fields:
 #   :data (field 1) — the DataRef handle; tangent flows here
 #   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
+# CuArray field access — `.data` is an opaque DataRef (NoDual V);
+# `.maxsize`/`.offset`/`.dims` are non-differentiable metadata. Result V
+# is `NoDual` in either case.
 function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuArray,<:CuArray},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name, order)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuArray,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -693,11 +701,13 @@ function rrule!!(
 ) where {name,order}
     return _cuarray_lgetfield_rev(primal(x), x.dx, name, order), _nopb(Val(4))
 end
-
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
-) where {name}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuArray,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+) where {Nw,name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
