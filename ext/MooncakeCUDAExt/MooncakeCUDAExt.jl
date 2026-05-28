@@ -2746,25 +2746,11 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize)}, bc::Dual{<:Broadcasted{<:CuArrayStyle}}
-)
-    bc_primal = primal(bc)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
-
-    # One GPU kernel: compute primal AND all partial derivatives simultaneously.
-    # Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
-    out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
-
-    # Non-differentiable output (e.g. Bool from comparisons): zero tangent.
-    if !decoded.is_diff
-        return Dual(out, NoTangent())
-    end
-
-    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
-    return Dual(decoded.primal_out, dy)
-end
+# Forward-mode `Base.Broadcast.materialize` on a CuArrayStyle Broadcasted
+# is currently unported — the `_prepare_gpu_broadcast` / `_gpu_bcast_leaves`
+# helpers consume a reverse-mode Broadcasted-shaped tangent via
+# `_fields(td).args`, which doesn't match the Lifted V (structural
+# ImmutableDual). The rrule!! below stays as-is for reverse-mode AD.
 
 function rrule!!(
     mat_fn::CoDual{typeof(Base.Broadcast.materialize)},
@@ -2827,36 +2813,9 @@ end
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
     } where {P<:CuMaybeComplexArray},
 )
-function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize!)},
-    dest::Dual{P,P},
-    bc::Dual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
-    bc_primal = primal(bc)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
-
-    dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    pout, dout = primal(dest), tangent(dest)
-    decoded = _gpu_decode_ndual_output(
-        Val(:broadcast), dual_out, flat_pargs; extract_primal=false
-    )
-
-    # Write primal result in-place into dest.
-    _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
-
-    # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
-    if !decoded.is_diff
-        fill!(dout, zero(eltype(dout)))
-        return dest
-    end
-
-    # JVP: accumulate into a temporary to handle aliasing (dest may appear in
-    # bc.args, so flat_ts may contain a reference to dout; we must not overwrite
-    # dout until all contributions have been read from the old tangent values).
-    dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
-    copyto!(dout, dy)
-    return dest
-end
+# Forward-mode `Base.Broadcast.materialize!` on a CuArrayStyle Broadcasted
+# is currently unported (see materialize note above). The rrule!! below
+# stays for reverse-mode AD.
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
     dest::CoDual{P,P},
