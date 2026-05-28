@@ -550,6 +550,23 @@ end
 @inline lift_from_tangent(x, ::NoTangent) = uninit_lifted(Val(1), x)
 # Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
 @inline lift_from_tangent(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+# Structural lift — recurse per field, mirroring `unlift_to_tangent`.
+@inline function lift_from_tangent(x::P, ẋ::Tangent) where {P}
+    nt = ẋ.fields
+    names = keys(nt)
+    field_Vs = map(names) do name
+        return tangent(lift_from_tangent(getfield(x, name), getfield(nt, name)))
+    end
+    return Lifted{P,1}(x, ImmutableDual(NamedTuple{names}(field_Vs)))
+end
+@inline function lift_from_tangent(x::P, ẋ::MutableTangent) where {P}
+    nt = ẋ.fields
+    names = keys(nt)
+    field_Vs = map(names) do name
+        return tangent(lift_from_tangent(getfield(x, name), getfield(nt, name)))
+    end
+    return Lifted{P,1}(x, MutableDual(NamedTuple{names}(field_Vs)))
+end
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))

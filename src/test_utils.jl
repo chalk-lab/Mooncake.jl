@@ -803,7 +803,7 @@ function test_frule_interface(x_ẋ...; frule)
     end
 
     # Check that returned fdata type is correct.
-    @test y_ẏ isa Dual
+    @test y_ẏ isa Union{Dual,Lifted}
     @test Mooncake.verify_dual_type(y_ẏ)
 end
 
@@ -1134,14 +1134,11 @@ function test_rule(
         @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
     # Generate random tangents for anything that is not already a CoDual.
-    x_ẋ = map(
-        x -> if x isa CoDual
-            lift_from_tangent(primal(x), tangent(x))
-        else
-            randn_lifted(Val(1), rng, x)
-        end,
-        x,
-    )
+    x_ẋ = map(x -> if x isa CoDual
+        lift_from_tangent(primal(x), tangent(x))
+    else
+        randn_lifted(Val(1), rng, x)
+    end, x)
 
     x_x̄ = map(x -> if x isa CoDual
         x
