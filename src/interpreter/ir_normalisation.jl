@@ -233,7 +233,6 @@ expressions in the same way as a primitive `:call` expression, i.e. via an `rrul
 """
 splatnew_to_call(x) = Meta.isexpr(x, :splatnew) ? Expr(:call, _splat_new_, x.args...) : x
 
-
 """
     intrinsic_to_function(inst)
 
