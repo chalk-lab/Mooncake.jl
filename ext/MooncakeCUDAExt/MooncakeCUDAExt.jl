@@ -764,12 +764,18 @@ end
     MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
 )
 function frule!!(
-    ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
-    idx::Dual{<:AbstractVector{<:Integer}},
-)
-    px, dx = arrayify(x)
-    return Dual(px[primal(idx)], dx[primal(idx)])
+    ::Lifted{typeof(getindex),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    idx::Lifted{<:AbstractVector{<:Integer}},
+) where {Nw}
+    pidx = primal(idx)
+    px = primal(x)
+    y = px[pidx]
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> x_partials[k][pidx], Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
@@ -1092,18 +1098,20 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = arrayify(src)
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    doffs::Lifted{<:Integer},
+    src::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    soffs::Lifted{<:Integer},
+    n::Lifted{<:Integer},
+) where {Nw}
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    dest_partials = tangent(dest).partials
+    src_partials = tangent(src).partials
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], doffs_v, src_partials[lane], soffs_v, n_v)
+    end
     return dest
 end
 function rrule!!(
@@ -1143,18 +1151,20 @@ end
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:Array,<:Array},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = primal(src), tangent(src)
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    doffs::Lifted{<:Integer},
+    src::Lifted{<:Array,Nw,<:NDualArray},
+    soffs::Lifted{<:Integer},
+    n::Lifted{<:Integer},
+) where {Nw}
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    dest_partials = tangent(dest).partials
+    src_partials = tangent(src).partials
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], doffs_v, src_partials[lane], soffs_v, n_v)
+    end
     return dest
 end
 function rrule!!(
@@ -1900,8 +1910,15 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
-    return Dual(cu(primal(x)), cu(tangent(x)))
+function frule!!(
+    ::Lifted{typeof(cu),Nw}, x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:NDualArray}
+) where {Nw}
+    y = cu(primal(x))
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cu(x_partials[k]), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)
@@ -1919,9 +1936,13 @@ end
     MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
 )
 function frule!!(
-    ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
-) where {T<:CuFloatOrComplex,N}
-    return Dual(Array(primal(x)), Array(tangent(x)))
+    ::Lifted{Type{Array{T,D}},Nw}, x::Lifted{<:CuArray{T,D},Nw,<:NDualArray}
+) where {T<:CuFloatOrComplex,D,Nw}
+    y = Array(primal(x))
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> Array(x_partials[k]), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{T,Nw,D,Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
@@ -1940,9 +1961,14 @@ end
 # frule:    d(Diagonal(v)) = Diagonal(dv)
 # pullback: dv += diag(dD)  (i.e. extract the diagonal from the output cotangent)
 @is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexArray})
-function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray})
-    # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
-    return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
+# Diagonal is a non-mutable struct; per the structural lift, its V is
+# `ImmutableDual{@NamedTuple{diag::Vdiag}}` where `Vdiag` is the input's
+# NDualArray V.
+function frule!!(
+    ::Lifted{<:Type{<:Diagonal},Nw}, v::Lifted{<:CuMaybeComplexArray,Nw,Vdiag}
+) where {Nw,Vdiag<:NDualArray}
+    y = Diagonal(primal(v))
+    return Lifted{typeof(y),Nw}(y, ImmutableDual((; diag=tangent(v))))
 end
 function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
     pv, dv = arrayify(v)
