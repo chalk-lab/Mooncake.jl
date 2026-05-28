@@ -155,7 +155,6 @@ using Mooncake:
     NoRData,
     rdata_type,
     rdata,
-    Dual,
     Lifted,
     Mode,
     ForwardMode,
@@ -828,8 +827,7 @@ function test_frule_interface(x_ẋ...; frule)
     end
 
     # Check that returned fdata type is correct.
-    @test y_ẏ isa Union{Dual,Lifted}
-    @test Mooncake.verify_dual_type(y_ẏ)
+    @test y_ẏ isa Lifted
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
@@ -1024,7 +1022,7 @@ function test_rrule_performance(
     end
 end
 
-__get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
+__get_primals(xs) = map(x -> x isa Union{Lifted,CoDual} ? primal(x) : x, xs)
 
 """
     test_rule(

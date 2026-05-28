@@ -18,10 +18,10 @@ function _hessian_column(f, x::Vector{Float64}, i::Int)
         zero_dual(_compute_grad),
         zero_dual(rule),
         zero_dual(f),
-        Dual(x, x_tangent),
-        Dual(x_fdata, zeros(length(x))),
+        Mooncake.lift(x, x_tangent),
+        Mooncake.lift(x_fdata, zeros(length(x))),
     )
-    return primal(result), tangent(result)
+    return primal(result), last(Mooncake.unlift(result))
 end
 
 function _compute_hessian(f, x::Vector{Float64})
@@ -127,7 +127,7 @@ end
             value_and_gradient!!(rvscache, f, y)[2][2]
         end
         fwdcache = prepare_derivative_cache(grad, x; config)
-        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
+        hvp(y) = last(value_and_derivative!!(fwdcache, (grad, NoTangent()), (x, y)))
         n = length(x)
         H = zeros(n, n)
         for i in 1:n

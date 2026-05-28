@@ -1810,7 +1810,7 @@ function _fcache_gradient_chunked!!(cache::ForwardCache, input_primals::Tuple)
     total_dof = _fcache_gradient_input_dof(input_primals)
 
     if total_dof == 0
-        output = cache.rule(tuple_map(Dual, input_primals, native_gradients)...)
+        output = cache.rule(tuple_map(lift, input_primals, native_gradients)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         if isnothing(cache.input_tangents)

@@ -52,9 +52,9 @@ DispatchDoctor.register_macro!(
 function _foreigncall_ end
 
 """
-    frule!!(f::Dual, x::Dual...)
+    frule!!(f::Lifted, x::Lifted...)
 
-Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+Performs AD in forward mode, possibly modifying the inputs, and returns a `Lifted`.
 """
 function frule!! end
 
@@ -186,7 +186,6 @@ using .Nfwd: NDual, NDualArray, NDualEltype
     using .Nfwd: NDualMemoryRef
 end
 include("lifted.jl")
-# debug_mode references both Dual and Lifted — load after lifted.jl.
 include("debug_mode.jl")
 
 @unstable begin
@@ -249,7 +248,7 @@ end
 #! format: on
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
-@public Dual
+@public Lifted
 
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse

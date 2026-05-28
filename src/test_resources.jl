@@ -10,7 +10,6 @@ module TestResources
 using ..Mooncake
 using ..Mooncake:
     CoDual,
-    Dual,
     Tangent,
     MutableTangent,
     NoTangent,

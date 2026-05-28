@@ -28,7 +28,6 @@ using Mooncake:
     _scale,
     _add_to_primal,
     _dot,
-    Dual,
     Lifted,
     zero_dual,
     zero_codual,

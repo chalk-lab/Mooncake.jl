@@ -1,14 +1,32 @@
 # Forward-mode slot wrapper `Lifted{P, N, V}` and its associated width-N
-# `dual_type` / `lifted_type` queries and seed factories.
-#
-# This file is the entry point for the new forward-mode design. The legacy
-# width-1 `Dual{P, T}` path in `src/tangents/dual.jl` is preserved as the
-# backward-compatibility boundary; new forward-mode rules dispatching on
-# `Lifted` use the width-N machinery defined here.
-#
-# Loaded after `nfwd/Nfwd.jl` so the `NDual{T, N}` IEEEFloat carrier is in
-# scope. See AGENTS.md and the design notes
-# (`~/notes/mooncake/{lifted,dual,primal}-types.md`) for the specification.
+# `dual_type` / `lifted_type` queries and seed factories. Loaded after
+# `nfwd/Nfwd.jl` so the `NDual{T, N}` IEEEFloat carrier is in scope.
+
+"""
+    ImmutableDual{T<:NamedTuple}
+
+Single-field immutable wrapper used as the canonical V for *immutable struct*
+primals under the forward-mode structural lift. Its `value::T` field holds
+the recursive `NamedTuple{fieldnames(P), Tuple{V_i...}}` of canonical field
+Vs, where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
+"""
+struct ImmutableDual{T<:NamedTuple}
+    value::T
+end
+
+Base.:(==)(x::ImmutableDual, y::ImmutableDual) = x.value == y.value
+
+"""
+    MutableDual{T<:NamedTuple}
+
+Mutable counterpart to `ImmutableDual`. Mutability is load-bearing for the
+`MutableDualTangentView` proxy that writes back to `value` via `setfield!`.
+"""
+mutable struct MutableDual{T<:NamedTuple}
+    value::T
+end
+
+Base.:(==)(x::MutableDual, y::MutableDual) = x.value == y.value
 
 """
     Lifted{P, N, V}
@@ -726,6 +744,15 @@ end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     return Lifted{P,N}(x, randn_dual(w, rng, x))
 end
+
+# Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a
+# `Lifted{P,1}` slot directly, replacing the legacy `Dual(x, zero_tangent(x))`
+# constructors. Kept under the same `zero_dual` / `uninit_dual` / `randn_dual`
+# names so the many existing callsites (`zero_dual(f)` for function args, etc.)
+# migrate without renames.
+@inline zero_dual(x) = zero_lifted(Val(1), x)
+@inline uninit_dual(x) = uninit_lifted(Val(1), x)
+@inline randn_dual(rng::AbstractRNG, x) = randn_lifted(Val(1), rng, x)
 
 # ── MemoryRef seed factories (Julia 1.11+) ──────────────────────────────────
 #

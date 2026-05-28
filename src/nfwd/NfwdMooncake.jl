@@ -6,7 +6,6 @@ using ..Nfwd
 import ..Mooncake:
     @unstable,
     CoDual,
-    Dual,
     ForwardCache,
     NfwdCache,
     NoFData,
@@ -95,45 +94,12 @@ end
 @inline function _maybe_chunk_frule_nfwd(
     cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
-    # Width-1 derivatives already have a dedicated scalar fast path; keep the chunked
-    # nfwd entrypoint focused on genuine multi-lane calls.
-    N == 1 && return nothing
-    fastpath = cache.chunkcache
-    isnothing(fastpath) && return nothing
-    rule = if N == 2
-        fastpath.frule_2
-    elseif N == 3
-        fastpath.frule_3
-    elseif N == 4
-        fastpath.frule_4
-    elseif N == 5
-        fastpath.frule_5
-    elseif N == 6
-        fastpath.frule_6
-    elseif N == 7
-        fastpath.frule_7
-    elseif N == 8
-        fastpath.frule_8
-    else
-        nothing
-    end
-    isnothing(rule) && return nothing
-    packed_tangents = ntuple(
-        i -> _chunk_pack_tangent(
-            Base.tail(input_primals)[i],
-            Base.tail(input_tangents)[i],
-            fastpath.pack_buffers[i],
-            Val(N),
-        ),
-        Val(fieldcount(typeof(fastpath.pack_buffers))),
-    )
-    fd = Dual(first(input_primals), NoTangent())
-    x_duals = tuple_map(Dual, Base.tail(input_primals), packed_tangents)
-    output = rule(fd, x_duals...)
-    y = primal(output)
-    dy = tangent(output)
-    # Re-express the packed nfwd output at the public chunk boundary as one tangent per lane.
-    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
+    # The legacy packed-tangent chunked fastpath fed bare `Dual` slots whose
+    # tangent carried the NxK chunk layout into the cached `frule_N`. Under
+    # the Lifted cutover those Rule callables now require `Lifted` slots with
+    # NDual / NDualArray V, so the packed-tangent path no longer applies.
+    # Return `nothing` to fall back to the generic per-lane loop.
+    return nothing
 end
 
 @noinline function _fcache_derivative_chunked!!(

@@ -82,7 +82,6 @@ function get_tangent_field(t::TaskTangent, f)
     return NoTangent()
 end
 
-const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
 # Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.

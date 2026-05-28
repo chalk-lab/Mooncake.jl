@@ -90,7 +90,6 @@ import ..Mooncake:
     rrule!!,
     frule!!,
     CoDual,
-    Dual,
     Lifted,
     NDual,
     NoDual,
