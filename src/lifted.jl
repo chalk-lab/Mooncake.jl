@@ -129,13 +129,16 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
-# Primitive-leaf NTuple V convention: when `dual_type(Val(N), P) === NTuple{N, P}`
-# (Ptr, TwicePrecision), the lane's tangent is the corresponding NTuple element.
-@inline function tangent(x::Lifted{P,N,NTuple{N,P}}, lane::Integer) where {P,N}
+# NTuple-shaped V: covers the primitive-leaf NTuple convention (when
+# `dual_type(Val(N), P) === NTuple{N, P}` for Ptr / TwicePrecision), and the
+# zero-field-concrete default `dual_type(Val(N), P) === NTuple{N, tangent_type(P)}`
+# (where the element type may differ from `P` — e.g. singletons where
+# tangent_type is `NoTangent`). The Tuple-primal struct lift's
+# `Lifted{P<:Tuple, N, <:Tuple}` overload below is more specific and wins
+# for that case.
+@inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
-# Function singletons and other empty structural lifts → NoTangent.
-@inline tangent(::Lifted{P,N,ImmutableDual{@NamedTuple{}}}, ::Integer) where {P,N} = NoTangent()
 # Structural lift — recurse field-by-field into per-field V.
 @inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
     nt = tangent(x).value
@@ -433,9 +436,12 @@ end
         msg = "dual_type(::Val{N}, ::Type{P}) is only defined for concrete P; got P=$P"
         return :(error($msg))
     end
-    if isprimitivetype(P)
-        msg = "dual_type(::Val{N}, ::Type{P}) for primitive type P=$P is not supported"
-        return :(error($msg))
+    # Zero-field concrete primal (primitive types, singletons): per the
+    # design (see ~/notes/mooncake/lifted-types.md §2 row for
+    # `zero_field_concrete_P`), V is N parallel copies of `tangent_type(P)`.
+    # Defer the `tangent_type` call to runtime per AGENTS.md world-age guidance.
+    if fieldcount(P) == 0
+        return :(NTuple{$N,tangent_type($P)})
     end
     field_names = fieldnames(P)
     n_fields = fieldcount(P)
@@ -556,9 +562,9 @@ end
     return Lifted{Complex{R},1}(x, Complex{NDual{R,1}}(re, im_))
 end
 # Non-differentiable primal (NoTangent tangent) — delegate to `uninit_lifted`
-# so the V matches `dual_type(Val(1), typeof(x))` for any non-diff primal:
-# `NoDual` for primitive types like Int/Symbol, `ImmutableDual{@NamedTuple{}}`
-# for function singletons, etc.
+# so the V matches `dual_type(Val(1), typeof(x))`: `NoDual` for primitive
+# types covered by the specific table (Int, Symbol, …), `NTuple{1, NoTangent}`
+# for zero-field-concrete primals (function singletons, empty structs).
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 # Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
@@ -689,10 +695,24 @@ end
 # NamedTuple) take precedence, so this fallback only fires for user-defined
 # struct primals.
 
-for f in (:zero_dual, :uninit_dual)
+# Zero-field concrete primal seed helpers. V is `NTuple{N, tangent_type(P)}`,
+# so the seed is N copies of `tangent_seed(x)`. Defined as non-@generated
+# functions so they can use closures (which the @generated bodies cannot).
+@inline _zero_dual_zero_field(::Val{N}, x) where {N} = ntuple(_ -> zero_tangent(x), Val(N))
+@inline _uninit_dual_zero_field(::Val{N}, x) where {N} = ntuple(
+    _ -> uninit_tangent(x), Val(N)
+)
+@inline _randn_dual_zero_field(::Val{N}, rng, x) where {N} = ntuple(
+    _ -> randn_tangent(rng, x), Val(N)
+)
+
+for (f, helper) in
+    ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
-        isprimitivetype(P) && return :(error($("$($f): primitive P=$P unsupported")))
+        if fieldcount(P) == 0
+            return :($($(QuoteNode(helper)))(Val($N), x))
+        end
         names = fieldnames(P)
         seeds = [
             :($($f)(Val($N), getfield(x, $(QuoteNode(names[i]))))) for i in 1:fieldcount(P)
@@ -705,7 +725,9 @@ end
 
 @generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
-    isprimitivetype(P) && return :(error("randn_dual: primitive P=$P unsupported"))
+    if fieldcount(P) == 0
+        return :(_randn_dual_zero_field(Val($N), rng, x))
+    end
     names = fieldnames(P)
     seeds = [
         :(randn_dual(Val($N), rng, getfield(x, $(QuoteNode(names[i]))))) for
