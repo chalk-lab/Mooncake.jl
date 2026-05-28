@@ -57,23 +57,29 @@
         @testset "valid inputs pass" begin
             # Single argument - use Float64, not π which has NoTangent
             rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
-            @test rule(zero_dual(sin), Mooncake.Dual(3.14, 1.0)) isa Mooncake.Dual
+            @test rule(Mooncake.lift(sin, NoTangent()), Mooncake.lift(3.14, 1.0)) isa
+                Mooncake.Lifted
 
             # Multiple arguments
             f_mul(x, y) = x * y
             rule = Mooncake.build_frule(zero_dual(f_mul), 2.0, 3.0; debug_mode=true)
             @test rule(
-                zero_dual(f_mul), Mooncake.Dual(2.0, 1.0), Mooncake.Dual(3.0, 0.5)
-            ) isa Mooncake.Dual
+                Mooncake.lift(f_mul, NoTangent()),
+                Mooncake.lift(2.0, 1.0),
+                Mooncake.lift(3.0, 0.5),
+            ) isa Mooncake.Lifted
 
             # Arrays
             h(x) = sum(x)
             rule = Mooncake.build_frule(zero_dual(h), randn(5); debug_mode=true)
-            @test rule(zero_dual(h), Mooncake.Dual(randn(5), randn(5))) isa Mooncake.Dual
+            @test rule(Mooncake.lift(h, NoTangent()), Mooncake.lift(randn(5), randn(5))) isa
+                Mooncake.Lifted
 
             # NoTangent (non-differentiable)
             rule = Mooncake.build_frule(zero_dual(identity), 5; debug_mode=true)
-            @test rule(zero_dual(identity), Mooncake.Dual(5, NoTangent())) isa Mooncake.Dual
+            @test rule(
+                Mooncake.lift(identity, NoTangent()), Mooncake.lift(5, NoTangent())
+            ) isa Mooncake.Lifted
         end
 
         @testset "size mismatch detected" begin
