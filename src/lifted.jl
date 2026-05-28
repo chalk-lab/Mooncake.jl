@@ -186,6 +186,29 @@ end
 @inline unlift_to_tangent(::Lifted{P,1,NoDual}) where {P} = NoTangent()
 # Function singletons and other empty structural lifts → NoTangent.
 @inline unlift_to_tangent(::Lifted{P,1,ImmutableDual{@NamedTuple{}}}) where {P} = NoTangent()
+# Structural lift — recurse field-by-field into per-field V.
+@inline function unlift_to_tangent(x::Lifted{P,1,<:ImmutableDual}) where {P}
+    nt = tangent(x).value
+    p = primal(x)
+    names = keys(nt)
+    field_tangents = map(names) do name
+        return unlift_to_tangent(
+            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
+        )
+    end
+    return Tangent(NamedTuple{names}(field_tangents))
+end
+@inline function unlift_to_tangent(x::Lifted{P,1,<:MutableDual}) where {P}
+    nt = tangent(x).value
+    p = primal(x)
+    names = keys(nt)
+    field_tangents = map(names) do name
+        return unlift_to_tangent(
+            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
+        )
+    end
+    return MutableTangent(NamedTuple{names}(field_tangents))
+end
 
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
