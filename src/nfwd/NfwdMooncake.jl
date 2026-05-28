@@ -341,6 +341,24 @@ function (rule::Rule{sig,N})(
     return Dual(y, dy)
 end
 
+# Lifted-arg width-N array overload: input is `Lifted{<:Array{T}, N, NDualArray{...}}`,
+# where the partials live as `NTuple{N, Array{T,D}}` inside the V. The scalar
+# output is packed as a width-N `Lifted{T_out, N, NDual{T_out, N}}` whose
+# partials carry the N directional derivatives — coherent with the Lifted
+# canonical V invariant (in contrast to the bare-Dual variant above, which
+# uses an out-of-spec `Dual{T, NTuple{N, T}}` shape for chunked output).
+function (rule::Rule{sig,N})(
+    f::Mooncake.Lifted, x::Mooncake.Lifted{P,N,VV}
+) where {sig,N,T<:IEEEFloat,Nd,P<:Array{T,Nd},VV<:Mooncake.NDualArray}
+    _nfwd_verify_sig(rule, (f, x))
+    px = _nfwd_check_primal(primal(x))
+    partials = tangent(x).partials
+    lifted = _nfwd_lift(px, partials, Val(N))
+    out_nd = primal(f)(lifted)
+    y = Nfwd._nfwd_dual_value(out_nd)
+    return Mooncake.Lifted{typeof(y),N,NDual{typeof(y),N}}(y, out_nd)
+end
+
 @inline _nfwd_rule_pack_buffer(::IEEEFloat) = nothing
 @inline _nfwd_rule_pack_buffer(::Complex{<:IEEEFloat}) = nothing
 @inline function _nfwd_rule_pack_buffer(
@@ -1236,6 +1254,20 @@ function _nfwd_lift(x::A, dx::AbstractArray, ::Val{N}) where {ET,A<:AbstractArra
                 )
             end
         end
+    end
+    return out
+end
+
+# Lifted-mode lift: partials arrive as the NDualArray V's `NTuple{N, A}`
+# field — one Array per seed direction (canonical Lifted V layout) — rather
+# than the legacy chunk-layout Matrix. Build the NDual array element-wise
+# from the per-lane partials.
+function _nfwd_lift(
+    x::A, partials::NTuple{N,V}, ::Val{N}
+) where {T<:IEEEFloat,A<:AbstractArray{T},V<:AbstractArray{T},N}
+    out = similar(x, NDual{T,N})
+    @inbounds for I in CartesianIndices(x)
+        out[I] = NDual{T,N}(x[I], ntuple(k -> partials[k][I], Val(N)))
     end
     return out
 end

@@ -1027,16 +1027,22 @@ Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 
 const _CHUNK_NFWD_MAX_LANES = 8
 
-@inline function _fcache_small_vector_fill_identity!(packed::Matrix{T}) where {T}
-    fill!(packed, zero(T))
-    @inbounds for i in 1:size(packed, 1)
-        packed[i, i] = one(T)
+@inline function _fcache_small_vector_fill_identity!(
+    packed::NTuple{N,Vector{T}}
+) where {N,T}
+    @inbounds for k in 1:N
+        v = packed[k]
+        fill!(v, zero(T))
+        v[k] = one(T)
     end
     return packed
 end
 
 @inline function _fcache_small_vector_identity_seed(x::Vector{T}) where {T}
-    packed = Matrix{T}(undef, length(x), length(x))
+    n = length(x)
+    # NTuple{n, Vector{T}}: one basis-vector partial per seed direction
+    # (canonical NDualArray V layout).
+    packed = ntuple(_ -> Vector{T}(undef, n), Val(n))
     _fcache_small_vector_fill_identity!(packed)
     return packed
 end
@@ -1924,25 +1930,25 @@ end
     if !isnothing(fastpath) && !isnothing(fastpath.small_vector_gradient_frule)
         rule = fastpath.small_vector_gradient_frule
         # `frule!!` may legally mutate its tangent inputs, so restore the cached
-        # exact-width seed matrix before every reuse of the prepared cache.
+        # exact-width identity seed (NTuple of basis vectors) before every reuse.
         _fcache_small_vector_fill_identity!(fastpath.small_vector_gradient_buffer)
-        output = rule(Dual(f, NoTangent()), Dual(x, fastpath.small_vector_gradient_buffer))
+        # Wrap into the canonical Lifted slot whose V is NDualArray with
+        # per-lane Vector partials.
+        N = NfwdMooncake.rule_chunk_size(typeof(rule))
+        nda = NDualArray{T,N,1,Vector{T},Mooncake.Nfwd.NDual{T,N}}(
+            x, fastpath.small_vector_gradient_buffer
+        )
+        x_lifted = Lifted{Vector{T},N,typeof(nda)}(x, nda)
+        f_lifted = lift_from_tangent(f, NoTangent())
+        output = rule(f_lifted, x_lifted)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        output_tangent = tangent(output)
+        # `output::Lifted{T,N,NDual{T,N}}` — the N partials carry the full
+        # gradient (one entry per input direction).
+        output_partials = tangent(output).partials
         native_gradients = fastpath.small_vector_gradient_workspace
-        # The exact-width nfwd rule returns one lane per vector entry, so write those
-        # lanes straight into the cached gradient buffer without going through the
-        # generic chunked seed/accumulate path.  Hoist the `isa Tuple` check out of
-        # the loop so each branch contains a concretely-typed body.
-        if output_tangent isa Tuple
-            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-                native_gradients[2][i] = output_tangent[i]
-            end
-        else
-            @inbounds for i in 1:NfwdMooncake.rule_chunk_size(typeof(rule))
-                native_gradients[2][i] = output_tangent
-            end
+        @inbounds for i in 1:N
+            native_gradients[2][i] = output_partials[i]
         end
         if isnothing(cache.input_tangents)
             return y, native_gradients
