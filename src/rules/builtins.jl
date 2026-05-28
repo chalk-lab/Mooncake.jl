@@ -93,6 +93,7 @@ import ..Mooncake:
     Dual,
     Lifted,
     NDual,
+    NoDual,
     primal,
     tangent,
     zero_tangent,

@@ -397,6 +397,30 @@ end
 
 __get_data_field(t::Union{Tangent,MutableTangent}, n) = getfield(t.fields, n)
 __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, n)
+function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}, n)
+    getfield(t.value, n)
+end
+
+# Forward-mode V's: aliasing contract is asymmetric (primal aliases user storage,
+# tangent storage is slot-local). Reverse-mode mutable-tangent assertions and
+# tangent-side address tracking do not apply.
+populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.NoDual) = m
+populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.Nfwd.NDual) = m
+function populate_address_map_internal(
+    m::AddressMap, ::Any, ::Complex{<:Mooncake.Nfwd.NDual}
+)
+    return m
+end
+populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.Nfwd.NDualArray) = m
+function populate_address_map_internal(
+    m::AddressMap, p, t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
+)
+    nt = t.value
+    foreach(keys(nt)) do n
+        return populate_address_map_internal(m, getfield(p, n), getfield(nt, n))
+    end
+    return m
+end
 
 function populate_address_map_internal(
     m::AddressMap, p::P, t

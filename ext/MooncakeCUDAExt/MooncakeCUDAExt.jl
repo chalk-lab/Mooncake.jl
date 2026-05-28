@@ -85,7 +85,9 @@ import Mooncake:
     dual_type,
     lifted_type,
     Nfwd,
-    ImmutableDual
+    ImmutableDual,
+    zero_lifted,
+    _typeof
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -237,13 +239,13 @@ end
 @inline function Mooncake.randn_dual(
     ::Val{N}, rng::Random.AbstractRNG, x::A
 ) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
-    partials = ntuple(_ -> CUDA.randn(T, size(x)...), Val(N))
+    partials = ntuple(_ -> A(randn(rng, T, size(x)...)), Val(N))
     return NDualArray{T,N,D,A}(x, partials)
 end
 @inline function Mooncake.randn_dual(
     ::Val{N}, rng::Random.AbstractRNG, x::A
 ) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
-    partials = ntuple(_ -> CUDA.randn(Complex{R}, size(x)...), Val(N))
+    partials = ntuple(_ -> A(randn(rng, Complex{R}, size(x)...)), Val(N))
     return NDualArray{Complex{R},N,D,A}(x, partials)
 end
 # Non-differentiable T (`tangent_type(T) === NoTangent`) makes the whole CuPtr a
@@ -279,6 +281,12 @@ end
 end
 @inline function Mooncake.lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
     return Mooncake.Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+end
+# CuDataRef is non-differentiable (V === NoDual). The legacy fixture idiom
+# `Dual(data, copy(data))` passes a same-typed handle as the tangent; here we
+# discard it and produce the canonical NoDual V.
+@inline function Mooncake.lift(x::A, ::A) where {A<:CuDataRef}
+    return Mooncake.Lifted{A,1}(x, NoDual())
 end
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
