@@ -1640,9 +1640,9 @@ end
             native_tangents = tuple_map(
                 primal_to_tangent!!, cache.input_tangents, lane_tangents
             )
-            cache.rule(tuple_map(lift_from_tangent, input_primals, native_tangents)...)
+            cache.rule(tuple_map(lift, input_primals, native_tangents)...)
         else
-            cache.rule(tuple_map(lift_from_tangent, input_primals, lane_tangents)...)
+            cache.rule(tuple_map(lift, input_primals, lane_tangents)...)
         end
     end
 
@@ -1651,14 +1651,14 @@ end
     first_tangent = if friendly_tangents
         tangent_to_primal_internal!!(
             _copy_output(y),
-            unlift_to_tangent(first_output),
+            last(unlift(first_output)),
             isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
         )
     else
         # Bug fix note: chunked forward can return `NoTangent()` lanes for
         # nondifferentiable outputs, and the generic `_copy` fallback does not
         # support `NoTangent`.
-        first_output_tangent = unlift_to_tangent(first_output)
+        first_output_tangent = last(unlift(first_output))
         if first_output_tangent isa NoTangent
             first_output_tangent
         else
@@ -1674,11 +1674,11 @@ end
             return if friendly_tangents
                 tangent_to_primal_internal!!(
                     _copy_output(y),
-                    unlift_to_tangent(lane_output),
+                    last(unlift(lane_output)),
                     isbitstype(typeof(y)) ? NoCache() : IdDict{Any,Any}(),
                 )
             else
-                lane_output_tangent = unlift_to_tangent(lane_output)
+                lane_output_tangent = last(unlift(lane_output))
                 if lane_output_tangent isa NoTangent
                     lane_output_tangent
                 else
@@ -1925,10 +1925,10 @@ end
     else
         fastpath.frule_1
     end
-    output = rule(lift_from_tangent(f, NoTangent()), lift_from_tangent(x, one(x)))
+    output = rule(lift(f, NoTangent()), lift(x, one(x)))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    native_gradients = (NoTangent(), unlift_to_tangent(output))
+    native_gradients = (NoTangent(), last(unlift(output)))
     if isnothing(cache.input_tangents)
         return y, native_gradients
     end
@@ -1962,7 +1962,7 @@ end
             x, fastpath.small_vector_gradient_buffer
         )
         x_lifted = Lifted{Vector{T},N,typeof(nda)}(x, nda)
-        f_lifted = lift_from_tangent(f, NoTangent())
+        f_lifted = lift(f, NoTangent())
         output = rule(f_lifted, x_lifted)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
@@ -2146,9 +2146,9 @@ end
         friendly_tangents=false,
     )
 
-    input_lifted = tuple_map(lift_from_tangent, input_primals, input_tangents)
+    input_lifted = tuple_map(lift, input_primals, input_tangents)
     output = __call_rule(cache.rule, input_lifted)
-    return primal(output), unlift_to_tangent(output)
+    return primal(output), last(unlift(output))
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached

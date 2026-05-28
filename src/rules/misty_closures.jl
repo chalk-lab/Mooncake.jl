@@ -202,7 +202,7 @@ end
 # width-1 Lifted slot and forward.
 function frule!!(f::Lifted{<:MistyClosure,1}, x::Vararg{Lifted,M}) where {M}
     captures = primal(f).oc.captures
-    lifted_captures = lift_from_tangent(captures, tangent(f).captures_tangent)
+    lifted_captures = lift(captures, tangent(f).captures_tangent)
     return tangent(f).dual_callable(lifted_captures, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)

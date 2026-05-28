@@ -126,8 +126,8 @@ using Mooncake:
     dual_type,
     randn_dual,
     randn_lifted,
-    lift_from_tangent,
-    unlift_to_tangent,
+    lift,
+    unlift,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -495,7 +495,7 @@ function test_frule_correctness(
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
-    ẋ = map(normalize_tangent ∘ unlift_to_tangent, x_ẋ)
+    ẋ = map(normalize_tangent ∘ last ∘ unlift, x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -525,13 +525,13 @@ function test_frule_correctness(
     end
 
     # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> lift_from_tangent(_deepcopy(x), ẋ), x, ẋ)
+    x_ẋ_rule = map((x, ẋ) -> lift(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
     y_ẏ_rule = frule(x_ẋ_rule...)
-    ẋ_ad = map(unlift_to_tangent, x_ẋ_rule)
-    ẏ_ad = unlift_to_tangent(y_ẏ_rule)
+    ẋ_ad = map(last ∘ unlift, x_ẋ_rule)
+    ẏ_ad = last(unlift(y_ẏ_rule))
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
@@ -1136,7 +1136,7 @@ function test_rule(
 
     # Generate random tangents for anything that is not already a CoDual.
     x_ẋ = map(x -> if x isa CoDual
-        lift_from_tangent(primal(x), tangent(x))
+        lift(primal(x), tangent(x))
     else
         randn_lifted(Val(1), rng, x)
     end, x)

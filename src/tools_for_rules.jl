@@ -632,19 +632,19 @@ end
 
 # Lifted-arg variants. The interpreter cutover passes Lifted args, so
 # @from_chainrules-emitted Lifted frules dispatch here. Convert each
-# Lifted's V back to a tangent_type-shaped value via `unlift_to_tangent`,
+# Lifted's V back to a tangent_type-shaped value via `last ∘ unlift`,
 # call CRC.frule, then re-lift the result.
 function frule_wrapper(fargs::Vararg{Lifted,N}) where {N}
-    tangents = tuple_map(to_cr_tangent ∘ unlift_to_tangent, fargs)
+    tangents = tuple_map(to_cr_tangent ∘ last ∘ unlift, fargs)
     Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
-    return lift_from_tangent(Ω, mooncake_tangent(Ω, dΩ))
+    return lift(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function frule_wrapper(::Lifted{typeof(Core.kwcall)}, fargs::Vararg{Lifted,N}) where {N}
     primals = map(primal, fargs)
-    tangents = map(to_cr_tangent ∘ unlift_to_tangent, fargs[2:end])
+    tangents = map(to_cr_tangent ∘ last ∘ unlift, fargs[2:end])
     Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
-    return lift_from_tangent(Ω, mooncake_tangent(Ω, dΩ))
+    return lift(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function construct_frule_wrapper_def(arg_names, arg_types, where_params)

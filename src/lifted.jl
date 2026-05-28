@@ -112,66 +112,70 @@ end
 @inline tangent(a::NDualArray) = a.partials
 @inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
 
-# Extract a width-1 Lifted slot's tangent in the shape of `tangent_type(P)`.
-# Inverse-ish of `lift_from_tangent(primal, ẋ)`: where `lift_from_tangent` packs a tangent_type
-# value into V, `unlift_to_tangent` unpacks it for FD comparison and similar
-# tangent-shape operations in the test framework.
-@inline unlift_to_tangent(x::Lifted{T,1,NDual{T,1}}) where {T<:IEEEFloat} = tangent(x).partials[1]
-@inline unlift_to_tangent(x::Lifted{A,1,<:NDualArray}) where {A<:AbstractArray} = tangent(
-    x
-).partials[1]
-@inline function unlift_to_tangent(
+# Unpack a width-1 Lifted slot to `(primal, tangent)`. Inverse of `lift(primal, ẋ)`
+# at the slot boundary: where `lift` packs a tangent-shape value into V, `unlift`
+# returns the primal alongside the recovered tangent in the shape of
+# `tangent_type(typeof(primal(x)))`. Used by FD comparison and tangent-shape
+# operations in the test framework. The internal helper `_unlift_tangent` returns
+# just the tangent part — call it directly from recursive structural-lift code
+# where the primal is already in hand.
+@inline _unlift_tangent(x::Lifted{T,1,NDual{T,1}}) where {T<:IEEEFloat} = tangent(x).partials[1]
+@inline _unlift_tangent(x::Lifted{A,1,<:NDualArray}) where {A<:AbstractArray} = tangent(x).partials[1]
+@inline function _unlift_tangent(
     x::Lifted{Complex{R},1,Complex{NDual{R,1}}}
 ) where {R<:IEEEFloat}
     v = tangent(x)
     return Complex(real(v).partials[1], imag(v).partials[1])
 end
-@inline unlift_to_tangent(::Lifted{P,1,NoDual}) where {P} = NoTangent()
+@inline _unlift_tangent(::Lifted{P,1,NoDual}) where {P} = NoTangent()
 # Function singletons and other empty structural lifts → NoTangent.
-@inline unlift_to_tangent(::Lifted{P,1,ImmutableDual{@NamedTuple{}}}) where {P} = NoTangent()
+@inline _unlift_tangent(::Lifted{P,1,ImmutableDual{@NamedTuple{}}}) where {P} = NoTangent()
 # Structural lift — recurse field-by-field into per-field V.
-@inline function unlift_to_tangent(x::Lifted{P,1,<:ImmutableDual}) where {P}
+@inline function _unlift_tangent(x::Lifted{P,1,<:ImmutableDual}) where {P}
     nt = tangent(x).value
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
-        return unlift_to_tangent(
+        return _unlift_tangent(
             Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
         )
     end
     return Tangent(NamedTuple{names}(field_tangents))
 end
-@inline function unlift_to_tangent(x::Lifted{P,1,<:MutableDual}) where {P}
+@inline function _unlift_tangent(x::Lifted{P,1,<:MutableDual}) where {P}
     nt = tangent(x).value
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
-        return unlift_to_tangent(
+        return _unlift_tangent(
             Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
         )
     end
     return MutableTangent(NamedTuple{names}(field_tangents))
 end
 # Tuple primal: V is a Tuple of per-element V; recurse element-wise.
-@inline function unlift_to_tangent(x::Lifted{P,1,<:Tuple}) where {P<:Tuple}
+@inline function _unlift_tangent(x::Lifted{P,1,<:Tuple}) where {P<:Tuple}
     p = primal(x)
     v = tangent(x)
     return ntuple(length(v)) do i
-        return unlift_to_tangent(Lifted{fieldtype(P, i),1}(p[i], v[i]))
+        return _unlift_tangent(Lifted{fieldtype(P, i),1}(p[i], v[i]))
     end
 end
 # NamedTuple primal: V is a NamedTuple of per-element V; recurse element-wise.
-@inline function unlift_to_tangent(x::Lifted{P,1,<:NamedTuple}) where {P<:NamedTuple}
+@inline function _unlift_tangent(x::Lifted{P,1,<:NamedTuple}) where {P<:NamedTuple}
     p = primal(x)
     v = tangent(x)
     names = keys(v)
     field_tangents = map(names) do name
-        return unlift_to_tangent(
+        return _unlift_tangent(
             Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(v, name))
         )
     end
     return NamedTuple{names}(field_tangents)
 end
+
+# Public 2-tuple unpack at the slot boundary.
+@inline unlift(x::Lifted) = (primal(x), _unlift_tangent(x))
 
 # `_dot_internal` / `_scale_internal` overloads for forward-mode V
 # shapes that the test framework's tangent-shape arithmetic may see
@@ -516,20 +520,18 @@ end
 
 # ── Width-1 boundary helper for user-supplied tangents ──────────────────────
 #
-# `lift_from_tangent(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
+# `lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
 # a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
 # (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
-# direction, and by the upcoming interpreter cutover boundary.
-@inline lift_from_tangent(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(
-    x, NDual{T,1}(x, (ẋ,))
-)
-@inline function lift_from_tangent(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
+# direction, and by the interpreter cutover boundary.
+@inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
+@inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
     return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
 end
-@inline function lift_from_tangent(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+@inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
     return Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
 end
-@inline function lift_from_tangent(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
+@inline function lift(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
     re = NDual{R,1}(real(x), (real(ẋ),))
     im_ = NDual{R,1}(imag(x), (imag(ẋ),))
     return Lifted{Complex{R},1}(x, Complex{NDual{R,1}}(re, im_))
@@ -538,39 +540,39 @@ end
 # so the V matches `dual_type(Val(1), typeof(x))` for any non-diff primal:
 # `NoDual` for primitive types like Int/Symbol, `ImmutableDual{@NamedTuple{}}`
 # for function singletons, etc.
-@inline lift_from_tangent(x, ::NoTangent) = uninit_lifted(Val(1), x)
+@inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 # Ptr — V is `NTuple{1, Ptr{T}}` per the Ptr canonical V convention.
-@inline lift_from_tangent(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
-# Structural lift — recurse per field, mirroring `unlift_to_tangent`.
-@inline function lift_from_tangent(x::P, ẋ::Tangent) where {P}
+@inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+# Structural lift — recurse per field, mirroring `unlift`.
+@inline function lift(x::P, ẋ::Tangent) where {P}
     nt = ẋ.fields
     names = keys(nt)
     field_Vs = map(names) do name
-        return tangent(lift_from_tangent(getfield(x, name), getfield(nt, name)))
+        return tangent(lift(getfield(x, name), getfield(nt, name)))
     end
     return Lifted{P,1}(x, ImmutableDual(NamedTuple{names}(field_Vs)))
 end
-@inline function lift_from_tangent(x::P, ẋ::MutableTangent) where {P}
+@inline function lift(x::P, ẋ::MutableTangent) where {P}
     nt = ẋ.fields
     names = keys(nt)
     field_Vs = map(names) do name
-        return tangent(lift_from_tangent(getfield(x, name), getfield(nt, name)))
+        return tangent(lift(getfield(x, name), getfield(nt, name)))
     end
     return Lifted{P,1}(x, MutableDual(NamedTuple{names}(field_Vs)))
 end
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
-# back into `lift_from_tangent`. Wrap directly rather than re-deriving V
-# from the (now-V) tangent input.
-@inline lift_from_tangent(x::P, ẋ::NoDual) where {P} = Lifted{P,1}(x, ẋ)
-@inline function lift_from_tangent(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
+# back into `lift`. Wrap directly rather than re-deriving V from the (now-V)
+# tangent input.
+@inline lift(x::P, ẋ::NoDual) where {P} = Lifted{P,1}(x, ẋ)
+@inline function lift(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
     return Lifted{P,1}(x, ẋ)
 end
 # Tuple primal + tuple of per-field Vs — the test framework reaches this
 # when its tangent-shape arithmetic recurses through a Tangent's fields
-# tuple and feeds the V-tuple back into `lift_from_tangent`.
-@inline function lift_from_tangent(x::Tuple, ẋ::Tuple)
-    field_Vs = map((xi, vi) -> tangent(lift_from_tangent(xi, vi)), x, ẋ)
+# tuple and feeds the V-tuple back into `lift`.
+@inline function lift(x::Tuple, ẋ::Tuple)
+    field_Vs = map((xi, vi) -> tangent(lift(xi, vi)), x, ẋ)
     return Lifted{typeof(x),1}(x, field_Vs)
 end
 

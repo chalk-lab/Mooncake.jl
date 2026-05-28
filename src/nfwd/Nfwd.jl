@@ -2055,7 +2055,7 @@ end
 # access is lazy (constructs an `NDual` on the fly from SoA storage).
 #
 # Mooncake-namespace method extensions (`primal`/`tangent`/`unpack_ndual`/
-# `unlift_to_tangent`) for `NDualArray` live in `src/lifted.jl`.
+# `unlift`) for `NDualArray` live in `src/lifted.jl`.
 # ──────────────────────────────────────────────────────────────────────────
 
 const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}

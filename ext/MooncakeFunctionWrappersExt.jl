@@ -45,9 +45,9 @@ import Mooncake:
     NoRData,
     SetToZeroCache,
     Stack,
-    lift_from_tangent,
+    lift,
     lifted_type,
-    unlift_to_tangent
+    unlift
 
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
@@ -164,11 +164,11 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     # current obj_tangent into a width-1 Lifted slot via the boundary helper.
     @static if VERSION ≥ v"1.12-"
         run_frule = Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> begin
-            return frule(lift_from_tangent(obj, obj_tangent_ref[]), x...)
+            return frule(lift(obj, obj_tangent_ref[]), x...)
         end
     else
         run_frule = Base.Experimental.@opaque frule_sig (x...) -> begin
-            return frule(lift_from_tangent(obj, obj_tangent_ref[]), x...)
+            return frule(lift(obj, obj_tangent_ref[]), x...)
         end
     end
 
@@ -281,7 +281,7 @@ function frule!!(::Lifted{Type{FunctionWrapper{R,A}},1}, obj::Lifted{P}) where {
     p = primal(obj)
     # `_function_wrapper_tangent` needs the tangent-shaped value (not
     # the Lifted V); use the boundary helper inverse.
-    t, _ = _function_wrapper_tangent(R, p, A, unlift_to_tangent(obj))
+    t, _ = _function_wrapper_tangent(R, p, A, last(unlift(obj)))
     y = FunctionWrapper{R,A}(p)
     return Lifted{typeof(y),1}(y, t)
 end

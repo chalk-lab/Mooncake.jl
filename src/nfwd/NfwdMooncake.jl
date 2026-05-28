@@ -384,7 +384,7 @@ end
     # Build Lifted slots directly from primal + NTangent — the
     # canonical Lifted V (NDual / NDualArray) carries per-lane partials,
     # matching the new Lifted Rule callables' input contract.
-    f_lifted = Mooncake.lift_from_tangent(first(input_primals), first(input_tangents))
+    f_lifted = Mooncake.lift(first(input_primals), first(input_tangents))
     arg_lifted = ntuple(
         i -> Mooncake._chunk_pack_tangent_lifted(
             Base.tail(input_primals)[i], Base.tail(input_tangents)[i], Val(N)
