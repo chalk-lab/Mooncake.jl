@@ -1896,10 +1896,10 @@ end
     else
         fastpath.frule_1
     end
-    output = rule(Dual(f, NoTangent()), Dual(x, one(x)))
+    output = rule(lift_from_tangent(f, NoTangent()), lift_from_tangent(x, one(x)))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    native_gradients = (NoTangent(), tangent(output))
+    native_gradients = (NoTangent(), unlift_to_tangent(output))
     if isnothing(cache.input_tangents)
         return y, native_gradients
     end

@@ -285,6 +285,17 @@ end
     return Dual(y, dy)
 end
 
+# Lifted-arg width-1 scalar overload: scalar IEEEFloat input → scalar
+# IEEEFloat output. Extracts the single `NDual.partials[1]` slot as the
+# legacy tangent value, then rewraps the result.
+@inline function (rule::Rule{sig,1})(
+    f::Mooncake.Lifted, x::Mooncake.Lifted{T,1,NDual{T,1}}
+) where {sig,T<:IEEEFloat}
+    _nfwd_verify_sig(rule, (f, x))
+    y, dy = _nfwd_eval(primal(f), (primal(x),), (tangent(x).partials[1],), Val(1))
+    return Mooncake.Lifted{typeof(y),1}(y, NDual{typeof(y),1}(y, (dy,)))
+end
+
 @inline function (rule::Rule{sig,N})(
     f::Dual, x1::Dual{T1,D1}, x2::Dual{T2,D2}
 ) where {sig,N,T1<:Number,T2<:Number,D1,D2}
