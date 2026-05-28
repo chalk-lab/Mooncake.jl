@@ -64,7 +64,6 @@ using LinearAlgebra
 export NDual,
     NDualArray,
     NDualEltype,
-    NDualMemoryRef,
     NDualUnsupportedError,
     ndual_value,
     ndual_partial,
@@ -2119,6 +2118,8 @@ end
 # ──────────────────────────────────────────────────────────────────────────
 
 @static if VERSION >= v"1.11-rc4"
+    export NDualMemoryRef
+
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
         partials::NTuple{N,MemoryRef{Element}}
