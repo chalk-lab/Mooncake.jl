@@ -515,10 +515,11 @@ end
 
 @static if VERSION >= v"1.12.0-rc2"
     @intrinsic max_float
-    function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(max_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+    ) where {N,T<:IEEEFloat}
         p = max_float(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
@@ -536,10 +537,13 @@ end
     end
 
     @intrinsic max_float_fast
-    function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(max_float_fast),N},
+        a::Lifted{T,N,NDual{T,N}},
+        b::Lifted{T,N,NDual{T,N}},
+    ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -557,10 +561,11 @@ end
     end
 
     @intrinsic min_float
-    function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(min_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+    ) where {N,T<:IEEEFloat}
         p = min_float(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
@@ -578,10 +583,13 @@ end
     end
 
     @intrinsic min_float_fast
-    function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(min_float_fast),N},
+        a::Lifted{T,N,NDual{T,N}},
+        b::Lifted{T,N,NDual{T,N}},
+    ) where {N,T<:IEEEFloat}
         p = min_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
