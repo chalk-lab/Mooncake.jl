@@ -174,8 +174,18 @@ end
     return NamedTuple{names}(field_tangents)
 end
 
-# Public 2-tuple unpack at the slot boundary.
-@inline unlift(x::Lifted) = (primal(x), _unlift_tangent(x))
+# Public 2-tuple unpack at the slot boundary. Width-1 only — chunked slots
+# carry per-lane derivatives in their V and have no single native-tangent
+# unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
+@inline unlift(x::Lifted{P,1}) where {P} = (primal(x), _unlift_tangent(x))
+@noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
+    throw(
+        ArgumentError(
+            "unlift only supports width-1 Lifted slots; got Lifted{$P, $N, $V}. " *
+            "Use `tangent(x, lane)` for per-lane access at width > 1.",
+        ),
+    )
+end
 
 # `_dot_internal` / `_scale_internal` overloads for forward-mode V
 # shapes that the test framework's tangent-shape arithmetic may see
@@ -523,7 +533,10 @@ end
 # `lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
 # a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
 # (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
-# direction, and by the interpreter cutover boundary.
+# direction, and by the interpreter cutover boundary. Width-1 only — chunked
+# seeds (`NTangent`) must be constructed via `Lifted{P, N}(primal, value)`
+# directly with the appropriate width-N V. An `NTangent`-input error overload
+# lives in `src/interface.jl` (NTangent is defined there).
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
 @inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
     return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
