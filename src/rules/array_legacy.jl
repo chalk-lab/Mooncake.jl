@@ -420,17 +420,6 @@ function rrule!!(
 end
 
 Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(Core.arrayref)},
-    inbounds::Dual{Bool},
-    x::Dual{<:Array},
-    inds::Vararg{Dual{Int},N},
-) where {N}
-    _inds = tuple_map(primal, inds)
-    y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = arrayref(primal(inbounds), tangent(x), _inds...)
-    return Dual(y, dy)
-end
-Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
     x::Lifted{Array{T,D},Nw,NDualArray{T,Nw,D,Array{T,D},NDual{T,Nw}}},

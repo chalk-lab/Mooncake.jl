@@ -456,26 +456,6 @@ function frule!!(
     end
     return y_dy
 end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractVecOrMat{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-    A, dA = matrixify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-
-    return y_dy
-end
-
 @inline function _gemv!_frule_core!(
     tA::Char,
     α::P,
@@ -966,45 +946,6 @@ function frule!!(
     BLAS.gemm!(tA, tB, α, A, B, β, Cp)
     return C_dC
 end
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVecOrMat{T}},
-    B_dB::Dual{<:AbstractVecOrMat{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-    A, dA = matrixify(A_dA)
-    B, dB = matrixify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    # Tangents (product rule)
-    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
-    end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
-        end
-    end
-
-    # Primal
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-
-    return C_dC
-end
-
 @inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},

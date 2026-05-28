@@ -559,19 +559,6 @@ end
         } where {P<:BlasFloat},
     )
     function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::Dual{<:AbstractMatrix{P}},
-        A_dA::Dual{<:AbstractMatrix{P}},
-        _uplo::Dual{Char},
-    ) where {P<:BlasFloat}
-        B, dB = arrayify(B_dB)
-        A, dA = arrayify(A_dA)
-
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
-        return B_dB
-    end
-    function frule!!(
         ::Lifted{typeof(LAPACK.lacpy!),Nw},
         B_dB::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
         A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
