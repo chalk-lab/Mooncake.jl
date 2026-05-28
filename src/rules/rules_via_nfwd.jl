@@ -101,14 +101,11 @@ for f in (
     # for primitive rules.
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        function frule!!(fdual::Dual{typeof($f)}, x::Dual{P}) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x)
-        end
-        # Lifted-arg parallel: `$f(::NDual)` has its own overload in Nfwd.jl
-        # that propagates partials correctly; the result V's `.value` matches
-        # `f(primal(x))`, preserving the canonical V invariant. Use the result
-        # type for P_out so tuple-returning primitives (e.g. `sincos`) work
-        # correctly — for them y::Tuple{P,P}, dy::Tuple{NDual,NDual}.
+        # `$f(::NDual)` has its own overload in Nfwd.jl that propagates
+        # partials correctly; the result V's `.value` matches `f(primal(x))`,
+        # preserving the canonical V invariant. Use the result type for P_out
+        # so tuple-returning primitives (e.g. `sincos`) work correctly —
+        # for them y::Tuple{P,P}, dy::Tuple{NDual,NDual}.
         function frule!!(
             ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
         ) where {N,P<:IEEEFloat}
@@ -125,9 +122,6 @@ end
 # ── tanpi ─────────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(tanpi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
 function frule!!(
     ::Lifted{typeof(tanpi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
@@ -141,11 +135,6 @@ end
 for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
-        function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2)
-        end
         function frule!!(
             ::Lifted{typeof($f),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
         ) where {N,P<:IEEEFloat}
@@ -164,14 +153,6 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(Base.FastMath.pow_fast),P,I
 } where {P<:IEEEFloat,I<:Integer}
-function frule!!(
-    ::Dual{typeof(Base.FastMath.pow_fast)}, x::Dual{P}, n::Dual{I}
-) where {P<:IEEEFloat,I<:Integer}
-    _x, dx = extract(x)
-    _n = primal(n)
-    y = Base.FastMath.pow_fast(_x, _n)
-    return Dual(y, Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dx)
-end
 function frule!!(
     ::Lifted{typeof(Base.FastMath.pow_fast),N}, x::Lifted{P,N,NDual{P,N}}, n::Lifted{I,N}
 ) where {N,P<:IEEEFloat,I<:Integer}
@@ -201,11 +182,6 @@ for f in (clamp,)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
         function frule!!(
-            fdual::Dual{typeof($f)}, x1::Dual{P}, x2::Dual{P}, x3::Dual{P}
-        ) where {P<:IEEEFloat}
-            return NfwdMooncake._nfwd_primitive_frule_call(Val(1), fdual, x1, x2, x3)
-        end
-        function frule!!(
             ::Lifted{typeof($f),N},
             x1::Lifted{P,N,NDual{P,N}},
             x2::Lifted{P,N,NDual{P,N}},
@@ -227,9 +203,6 @@ end
 # ── sincosd ───────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincosd),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincosd)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
 function frule!!(
     ::Lifted{typeof(sincosd),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
@@ -244,9 +217,6 @@ end
 # ── sincospi ──────────────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(sincospi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(sincospi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
 function frule!!(
     ::Lifted{typeof(sincospi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
@@ -265,9 +235,6 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(modf)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
-end
 function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
     pv = modf(primal(x))
     tv = modf(tangent(x))
@@ -280,11 +247,6 @@ end
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
 
 @is_primitive MinimalCtx Tuple{typeof(hypot),P,Vararg{P}} where {P<:IEEEFloat}
-function frule!!(
-    f::Dual{typeof(hypot)}, x::Dual{P}, xs::Vararg{Dual{P},M}
-) where {P<:IEEEFloat,M}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x, xs...)
-end
 function frule!!(
     ::Lifted{typeof(hypot),N},
     x::Lifted{P,N,NDual{P,N}},
