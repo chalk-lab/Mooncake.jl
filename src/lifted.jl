@@ -112,64 +112,57 @@ end
 @inline tangent(a::NDualArray) = a.partials
 @inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
 
-# Unpack a width-1 Lifted slot to `(primal, tangent)`. Inverse of `lift(primal, ẋ)`
-# at the slot boundary: where `lift` packs a tangent-shape value into V, `unlift`
-# returns the primal alongside the recovered tangent in the shape of
-# `tangent_type(typeof(primal(x)))`. Used by FD comparison and tangent-shape
-# operations in the test framework. The internal helper `_unlift_tangent` returns
-# just the tangent part — call it directly from recursive structural-lift code
-# where the primal is already in hand.
-@inline _unlift_tangent(x::Lifted{T,1,NDual{T,1}}) where {T<:IEEEFloat} = tangent(x).partials[1]
-@inline _unlift_tangent(x::Lifted{A,1,<:NDualArray}) where {A<:AbstractArray} = tangent(x).partials[1]
-@inline function _unlift_tangent(
-    x::Lifted{Complex{R},1,Complex{NDual{R,1}}}
-) where {R<:IEEEFloat}
+# Per-lane native-tangent accessor — extracts the lane's tangent in the shape
+# of `tangent_type(typeof(primal(x)))`. Used by `unlift` (width-1) and by
+# rule bodies that loop over lanes to drive per-lane primitive calls. The
+# `Lifted{MutS, N, <:MutableDual}` overload at the bottom of this file
+# returns a `MutableDualTangentView` proxy instead — see its docstring.
+@inline tangent(x::Lifted{T,N,NDual{T,N}}, lane::Integer) where {T<:IEEEFloat,N} = tangent(
+    x
+).partials[lane]
+@inline tangent(x::Lifted{A,N,<:NDualArray}, lane::Integer) where {A<:AbstractArray,N} = tangent(
+    x
+).partials[lane]
+@inline function tangent(
+    x::Lifted{Complex{R},N,Complex{NDual{R,N}}}, lane::Integer
+) where {R<:IEEEFloat,N}
     v = tangent(x)
-    return Complex(real(v).partials[1], imag(v).partials[1])
+    return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
-@inline _unlift_tangent(::Lifted{P,1,NoDual}) where {P} = NoTangent()
+@inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
+# Ptr — V is `NTuple{N, Ptr{T}}` per the Ptr canonical V convention.
+@inline function tangent(x::Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}, lane::Integer) where {T,N}
+    return tangent(x)[lane]
+end
 # Function singletons and other empty structural lifts → NoTangent.
-@inline _unlift_tangent(::Lifted{P,1,ImmutableDual{@NamedTuple{}}}) where {P} = NoTangent()
+@inline tangent(::Lifted{P,N,ImmutableDual{@NamedTuple{}}}, ::Integer) where {P,N} = NoTangent()
 # Structural lift — recurse field-by-field into per-field V.
-@inline function _unlift_tangent(x::Lifted{P,1,<:ImmutableDual}) where {P}
+@inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
     nt = tangent(x).value
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
-        return _unlift_tangent(
-            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
+        return tangent(
+            Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(nt, name)), lane
         )
     end
     return Tangent(NamedTuple{names}(field_tangents))
 end
-@inline function _unlift_tangent(x::Lifted{P,1,<:MutableDual}) where {P}
-    nt = tangent(x).value
-    p = primal(x)
-    names = keys(nt)
-    field_tangents = map(names) do name
-        return _unlift_tangent(
-            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))
-        )
-    end
-    return MutableTangent(NamedTuple{names}(field_tangents))
-end
 # Tuple primal: V is a Tuple of per-element V; recurse element-wise.
-@inline function _unlift_tangent(x::Lifted{P,1,<:Tuple}) where {P<:Tuple}
+@inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N}
     p = primal(x)
     v = tangent(x)
     return ntuple(length(v)) do i
-        return _unlift_tangent(Lifted{fieldtype(P, i),1}(p[i], v[i]))
+        return tangent(Lifted{fieldtype(P, i),N}(p[i], v[i]), lane)
     end
 end
 # NamedTuple primal: V is a NamedTuple of per-element V; recurse element-wise.
-@inline function _unlift_tangent(x::Lifted{P,1,<:NamedTuple}) where {P<:NamedTuple}
+@inline function tangent(x::Lifted{P,N,<:NamedTuple}, lane::Integer) where {P<:NamedTuple,N}
     p = primal(x)
     v = tangent(x)
     names = keys(v)
     field_tangents = map(names) do name
-        return _unlift_tangent(
-            Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(v, name))
-        )
+        return tangent(Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(v, name)), lane)
     end
     return NamedTuple{names}(field_tangents)
 end
@@ -177,7 +170,7 @@ end
 # Public 2-tuple unpack at the slot boundary. Width-1 only — chunked slots
 # carry per-lane derivatives in their V and have no single native-tangent
 # unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
-@inline unlift(x::Lifted{P,1}) where {P} = (primal(x), _unlift_tangent(x))
+@inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
     throw(
         ArgumentError(

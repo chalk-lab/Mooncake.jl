@@ -75,6 +75,15 @@ end
     return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
 end
 
+# Per-lane accessor: V is `NTuple{N, TwicePrecision{P}}` per the
+# primitive-leaf NTuple convention above; the lane's tangent is the
+# corresponding NTuple element.
+@inline function Mooncake.tangent(
+    x::Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}, lane::Integer
+) where {N,P<:IEEEFloat}
+    return tangent(x)[lane]
+end
+
 #
 # Rules. These are required for a lot of functionality in this case.
 #
@@ -486,9 +495,15 @@ end
     end
 
     @is_primitive(MinimalCtx, Tuple{typeof(Base._log_twice64_unchecked),Float64})
-    function frule!!(::Dual{typeof(Base._log_twice64_unchecked)}, x::Dual{Float64})
-        y = Base._log_twice64_unchecked(primal(x))
-        return Dual(y, typeof(y)(tangent(x) / primal(x)))
+    function frule!!(
+        ::Lifted{typeof(Base._log_twice64_unchecked),N},
+        x::Lifted{Float64,N,NDual{Float64,N}},
+    ) where {N}
+        _x = primal(x)
+        y = Base._log_twice64_unchecked(_x)
+        x_parts = tangent(x).partials
+        dy = ntuple(k -> TwicePrecision{Float64}(x_parts[k] / _x), Val(N))
+        return Lifted{TwicePrecision{Float64},N}(y, dy)
     end
     function rrule!!(::CoDual{typeof(Base._log_twice64_unchecked)}, x::CoDual{Float64})
         _x = x.x

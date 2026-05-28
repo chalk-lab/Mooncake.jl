@@ -496,9 +496,6 @@ end
 
 # Core.memoryrefmodify!
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
-    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
-end
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
@@ -511,9 +508,6 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
-    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
-end
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -530,16 +524,6 @@ end
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:MemoryRef},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
-    return Dual(y, dy)
-end
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
