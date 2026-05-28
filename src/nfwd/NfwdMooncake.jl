@@ -267,40 +267,6 @@ end
 # build a new mutable wrapper per call or hide shared mutable workspace behind a plain
 # rule method. That shared-state hazard is not unique to nfwd, but it matters most here
 # because primitive rules are expected to behave like ordinary stateless methods.
-@inline function _nfwd_primitive_frule_call(
-    ::Val{N}, f::Dual, x::Vararg{Dual,M}
-) where {M,N}
-    _nfwd_check_function_tangent(tangent(f))
-    primals = map(primal, x)
-    tangents = map(tangent, x)
-    y, dy = _nfwd_eval(primal(f), primals, tangents, Val(N))
-    return Dual(y, dy)
-end
-
-# The generic vararg path can allocate for small scalar primitive wrappers, so keep
-# fixed-arity entry points here for common binary/ternary rules such as `atan`, `log`,
-# and `clamp`.
-@inline function _nfwd_primitive_frule_call(::Val{N}, f::Dual, x1::Dual, x2::Dual) where {N}
-    _nfwd_check_function_tangent(tangent(f))
-    y, dy = _nfwd_eval(
-        primal(f), (primal(x1), primal(x2)), (tangent(x1), tangent(x2)), Val(N)
-    )
-    return Dual(y, dy)
-end
-
-@inline function _nfwd_primitive_frule_call(
-    ::Val{N}, f::Dual, x1::Dual, x2::Dual, x3::Dual
-) where {N}
-    _nfwd_check_function_tangent(tangent(f))
-    y, dy = _nfwd_eval(
-        primal(f),
-        (primal(x1), primal(x2), primal(x3)),
-        (tangent(x1), tangent(x2), tangent(x3)),
-        Val(N),
-    )
-    return Dual(y, dy)
-end
-
 function (rule::Rule{sig,N})(f::Dual, x::Vararg{Dual,M}) where {sig,N,M}
     _nfwd_verify_sig(rule, (f, x...))
     _nfwd_check_function_tangent(tangent(f))
