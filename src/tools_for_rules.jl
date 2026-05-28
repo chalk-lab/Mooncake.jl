@@ -630,6 +630,23 @@ function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
+# Lifted-arg variants. The interpreter cutover passes Lifted args, so
+# @from_chainrules-emitted Lifted frules dispatch here. Convert each
+# Lifted's V back to a tangent_type-shaped value via `unlift_to_tangent`,
+# call CRC.frule, then re-lift the result.
+function frule_wrapper(fargs::Vararg{Lifted,N}) where {N}
+    tangents = tuple_map(to_cr_tangent ∘ unlift_to_tangent, fargs)
+    Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
+    return lift_from_tangent(Ω, mooncake_tangent(Ω, dΩ))
+end
+
+function frule_wrapper(::Lifted{typeof(Core.kwcall)}, fargs::Vararg{Lifted,N}) where {N}
+    primals = map(primal, fargs)
+    tangents = map(to_cr_tangent ∘ unlift_to_tangent, fargs[2:end])
+    Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
+    return lift_from_tangent(Ω, mooncake_tangent(Ω, dΩ))
+end
+
 function construct_frule_wrapper_def(arg_names, arg_types, where_params)
     body = Expr(:call, frule_wrapper, arg_names...)
     return construct_frule_def(arg_names, arg_types, where_params, body)
@@ -855,6 +872,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
     dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
+    lifted_arg_types = map(t -> :(Mooncake.Lifted{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
 
     # Determine which rules to generate based on mode
@@ -863,6 +881,11 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
 
     frule_expr = if include_frule
         construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
+    else
+        nothing
+    end
+    frule_lifted_expr = if include_frule
+        construct_frule_wrapper_def(arg_names, lifted_arg_types, where_params)
     else
         nothing
     end
@@ -896,6 +919,19 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         else
             nothing
         end
+        kwargs_frule_lifted_expr = if include_frule
+            construct_frule_wrapper_def(
+                vcat(:_kwcall, :kwargs, arg_names),
+                vcat(
+                    :(Mooncake.Lifted{typeof(Core.kwcall)}),
+                    :(Mooncake.Lifted{<:NamedTuple}),
+                    lifted_arg_types,
+                ),
+                where_params,
+            )
+        else
+            nothing
+        end
         kwargs_rrule_expr = if include_rrule
             construct_rrule_wrapper_def(
                 vcat(:_kwcall, :kwargs, arg_names),
@@ -912,6 +948,7 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     else
         kw_is_primitive = nothing
         kwargs_frule_expr = nothing
+        kwargs_frule_lifted_expr = nothing
         kwargs_rrule_expr = nothing
     end
 
@@ -928,9 +965,11 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         [
             is_primitive_expr,
             frule_expr,
+            frule_lifted_expr,
             rrule_expr,
             kw_is_primitive,
             kwargs_frule_expr,
+            kwargs_frule_lifted_expr,
             kwargs_rrule_expr,
         ],
     )
