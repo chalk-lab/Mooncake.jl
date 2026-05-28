@@ -211,7 +211,75 @@ end
 ) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
     return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}}}
 end
-@inline dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T} = NTuple{N,CuPtr{T}}
+
+# Seed factories for CuArray (mirror the host `Array{T,D}` overloads in `src/lifted.jl`):
+# the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields
+# and fail; an explicit `NDualArray` seed keeps `zero_dual` / `uninit_dual` / `randn_dual`
+# coherent with `dual_type`.
+@inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return NDualArray{T,N,D,A}(x)
+end
+@inline function Mooncake.zero_dual(
+    ::Val{N}, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x)
+end
+@inline function Mooncake.uninit_dual(
+    ::Val{N}, x::A
+) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return NDualArray{T,N,D,A}(x)
+end
+@inline function Mooncake.uninit_dual(
+    ::Val{N}, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x)
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, rng::Random.AbstractRNG, x::A
+) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    partials = ntuple(_ -> CUDA.randn(T, size(x)...), Val(N))
+    return NDualArray{T,N,D,A}(x, partials)
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, rng::Random.AbstractRNG, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    partials = ntuple(_ -> CUDA.randn(Complex{R}, size(x)...), Val(N))
+    return NDualArray{Complex{R},N,D,A}(x, partials)
+end
+# Non-differentiable T (`tangent_type(T) === NoTangent`) makes the whole CuPtr a
+# `NoDual` slot — coherent with reverse-mode (`tangent_type(CuPtr{Cvoid}) === NoTangent`).
+# Differentiable T keeps the per-lane tangent pointer V.
+@inline function dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T}
+    return tangent_type(T) === NoTangent ? NoDual : NTuple{N,CuPtr{T}}
+end
+
+@inline function Mooncake.zero_dual(::Val{N}, x::CuPtr{T}) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+@inline function Mooncake.uninit_dual(::Val{N}, x::CuPtr{T}) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, ::Random.AbstractRNG, x::CuPtr{T}
+) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+
+# Width-1 `lift` overloads for CuPtr / CuArray — mirror the host `Ptr` / `Array`
+# overloads at `src/lifted.jl:541-553`. Without these, the test-side `lift(p, ẋ)`
+# boundary call MethodErrors for CuPtr / CuArray inputs.
+@inline function Mooncake.lift(x::CuPtr{T}, ẋ::CuPtr{T}) where {T}
+    return Mooncake.Lifted{CuPtr{T},1}(x, (ẋ,))
+end
+@inline function Mooncake.lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return Mooncake.Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
+end
+@inline function Mooncake.lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return Mooncake.Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+end
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
