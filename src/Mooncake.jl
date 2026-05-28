@@ -181,7 +181,7 @@ include("stack.jl")
 # seed factories) before the interpreter — `interpreter/forward_mode.jl`
 # now dispatches on `Lifted{P, 1, V}` per the Final-task cutover.
 include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual
+using .Nfwd: NDual, NDualArray, NDualEltype, NDualMemoryRef
 include("lifted.jl")
 # debug_mode references both Dual and Lifted — load after lifted.jl.
 include("debug_mode.jl")

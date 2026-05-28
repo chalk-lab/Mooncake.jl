@@ -102,72 +102,15 @@ function Base.:(==)(a::Lifted, b::Lifted)
     return primal(a) == primal(b) && tangent(a) == tangent(b)
 end
 
-# ──────────────────────────────────────────────────────────────────────────
-# `NDualArray{Element, N, D, A, Wrapped}` — SoA canonical V for arrays.
-#
-# Per dual-types.md §14: `primal::A` aliases user storage; `partials::NTuple{N, A}`
-# holds slot-local lane tangents. `Wrapped` is determined by `(Element, N)`
-# — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
-# `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
-# element-wise code through the array interface continues to dispatch; element
-# access is lazy (constructs an `NDual` on the fly from SoA storage).
-# ──────────────────────────────────────────────────────────────────────────
-
-const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
-
-struct NDualArray{Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped} <:
-       AbstractArray{Wrapped,D}
-    primal::A
-    partials::NTuple{N,A}
-end
-
-# 4-parameter outer constructors fill in `Wrapped` from `Element`.
-@inline function NDualArray{Element,N,D,A}(
-    p::A, ts::NTuple{N,A}
-) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A,NDual{Element,N}}(p, ts)
-end
-@inline function NDualArray{Element,N,D,A}(
-    p::A, ts::NTuple{N,A}
-) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A,Complex{NDual{T,N}}}(p, ts)
-end
-
-# Zero-init seed: allocate fresh slot-local partials matching the primal.
-@inline function NDualArray{Element,N,D,A}(
-    p::A
-) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
-end
-@inline function NDualArray{Element,N,D,A}(
-    p::A
-) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
-end
+# `NDualArray` / `NDualMemoryRef` (and the `NDualEltype` constant) now
+# live in `src/nfwd/Nfwd.jl` and are re-exported into Mooncake via
+# `using .Nfwd: NDualArray, NDualMemoryRef, NDualEltype` in `src/Mooncake.jl`.
+# The Mooncake-namespace method extensions for these types are below.
 
 # Whole-array accessors — O(1) by aliasing.
 @inline primal(a::NDualArray) = a.primal
 @inline tangent(a::NDualArray) = NTangent(a.partials)
 @inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
-
-# AbstractArray interface.
-Base.size(a::NDualArray) = size(a.primal)
-function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
-    return IndexStyle(A)
-end
-
-@inline function Base.getindex(
-    a::NDualArray{Element,N}, i::Vararg{Int}
-) where {Element<:IEEEFloat,N}
-    return NDual{Element,N}(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
-end
-@inline function Base.setindex!(
-    a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
-) where {Element<:IEEEFloat,N}
-    a.primal[i...] = x.value
-    ntuple(k -> (a.partials[k][i...]=x.partials[k]; nothing), Val(N))
-    return a
-end
 
 # Extract a width-1 Lifted slot's tangent in the shape of `tangent_type(P)`.
 # Inverse-ish of `lift_from_tangent(primal, ẋ)`: where `lift_from_tangent` packs a tangent_type
@@ -265,37 +208,10 @@ end
     return _new_(typeof(x), new_fields...)
 end
 
-# ──────────────────────────────────────────────────────────────────────────
-# `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
-# (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
-# primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
-# cover it. Per dual-types.md §14.2: `partials[k]` is a framework-allocated
-# `MemoryRef` at the same offset as `primal`, into a fresh
-# `Memory{Element}` of the same length.
-# ──────────────────────────────────────────────────────────────────────────
+# `NDualMemoryRef` (and its constructor) now lives in `src/nfwd/Nfwd.jl`.
+# Mooncake-namespace method extensions follow.
 
 @static if VERSION >= v"1.11-rc4"
-    struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
-        primal::MemoryRef{Element}
-        partials::NTuple{N,MemoryRef{Element}}
-    end
-
-    # Zero-init seed: allocate fresh slot-local partials at the same offset
-    # as `primal`. Element types in `NDualEltype` are bits types, so undef
-    # iteration is not needed (§14.2 vs §14.1.2).
-    @inline function NDualMemoryRef{Element,N,M}(
-        p::MemoryRef{Element}
-    ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
-        alloc_partial() = (
-            mem=Memory{Element}(undef, len);
-            fill!(mem, zero(Element));
-            Core.memoryref(mem, offset)
-        )
-        return NDualMemoryRef{Element,N,M}(p, ntuple(_ -> alloc_partial(), Val(N)))
-    end
-
     @inline primal(a::NDualMemoryRef) = a.primal
     @inline tangent(a::NDualMemoryRef) = NTangent(a.partials)
     @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials)
