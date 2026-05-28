@@ -32,7 +32,6 @@
 @zero_derivative MinimalCtx Tuple{typeof(verify_args),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_dual_inputs),Tuple}
 @zero_derivative MinimalCtx Tuple{typeof(verify_dual_output),Any,Any}
-@zero_derivative MinimalCtx Tuple{typeof(verify_dual_value),Dual}
 @zero_derivative MinimalCtx Tuple{typeof(verify_rvs_input),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_rvs_output),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_fwds_inputs),Any,Tuple}

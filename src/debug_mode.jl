@@ -3,9 +3,8 @@
 
 Construct a callable equivalent to `rule` but with additional type checking for forward-mode
 AD. Checks:
-- Each `Dual` argument has tangent type matching `tangent_type(typeof(primal))`
-- The returned `Dual` has a correctly-typed tangent
-- Deep structural validation (array sizes, field types, etc.)
+- Each `Lifted` argument has V matching `dual_type(Val(N), typeof(primal))`
+- The returned `Lifted` has a correctly-typed V (verified at construction)
 
 Forward-mode counterpart to [`DebugRRule`](@ref).
 
@@ -21,11 +20,11 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Union{Dual,Lifted},N}) where {N}
+    (rule::DebugFRule)(x::Vararg{Lifted,N}) where {N}
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Union{Dual,Lifted},N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Lifted,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
@@ -36,8 +35,7 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            _x isa Union{Dual,Lifted} || error("Expected Dual or Lifted, got $(typeof(_x))")
-            verify_dual_value(_x)
+            _x isa Lifted || error("Expected Lifted, got $(typeof(_x))")
         end
     catch e
         error("Error in inputs to rule with input types $(_typeof(x))")
@@ -46,40 +44,10 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        y isa Union{Dual,Lifted} ||
-            error("frule!! must return a Dual or Lifted, got $(typeof(y))")
-        verify_dual_value(y)
+        y isa Lifted || error("frule!! must return a Lifted, got $(typeof(y))")
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
     end
-end
-
-@noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
-    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
-    T_expected = tangent_type(P)
-    if T !== T_expected
-        throw(
-            InvalidFDataException(
-                "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$T_expected, but got $T",
-            ),
-        )
-    end
-
-    # Slow path: deep structural validation
-    p, t = primal(d), tangent(d)
-    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
-    verify_fdata_value(p, fdata(t))
-    verify_rdata_value(p, rdata(t))
-
-    return nothing
-end
-
-# Lifted variant — `verify_dual_type` on Lifted is true by construction
-# (the V invariant is checked at construction). Skip deep structural
-# validation for now; the V-shape check happens at `Lifted{P,N}(...)`.
-@noinline function verify_dual_value(::Lifted)
-    return nothing
 end
 
 """

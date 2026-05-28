@@ -158,7 +158,7 @@ may be required if it is not.
 end
 
 """
-    zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
+    zero_derivative(f::Lifted, x::Vararg{Lifted,N}) where {N}
 
 Utility functionality for constructing `frule!!`s for functions whose derivatives always
 return zero.
@@ -169,21 +169,17 @@ NOTE: you should only make use of this function if you cannot make use of the
 You make use of this functionality by writing a method of `Mooncake.frule!!`, and
 passing all of its arguments (including the function itself) to this function. For example:
 ```jldoctest; setup = :(using Mooncake: NoRData)
-julia> import Mooncake: zero_derivative, DefaultCtx, zero_dual, frule!!, Dual
+julia> import Mooncake: zero_derivative, DefaultCtx, zero_dual, frule!!, Lifted
 
 julia> foo(x::Vararg{Int}) = 5
 foo (generic function with 1 method)
 
-julia> frule!!(f::Dual{typeof(foo)}, x::Vararg{Dual{Int}}) = zero_derivative(f, x...);
+julia> frule!!(f::Lifted{typeof(foo)}, x::Vararg{Lifted{Int}}) = zero_derivative(f, x...);
 
-julia> frule!!(zero_dual(foo), zero_dual(3), zero_dual(2))
-Dual{Int64, NoTangent}(5, NoTangent())
+julia> frule!!(zero_lifted(Val(1), foo), zero_lifted(Val(1), 3), zero_lifted(Val(1), 2))
+Mooncake.Lifted{Int64, 1, NoDual}(5, NoDual())
 ```
 """
-@inline function zero_derivative(f::Dual, x::Vararg{Dual,N}) where {N}
-    return zero_dual(primal(f)(map(primal, x)...))
-end
-# Extract width from the function slot so chunked callers don't silently drop to width 1.
 @inline function zero_derivative(f::Lifted{F,W}, x::Vararg{Lifted,N}) where {F,W,N}
     return zero_lifted(Val(W), primal(f)(tuple_map(primal, x)...))
 end
@@ -218,7 +214,7 @@ julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any}, Base.get_w
 true
 
 julia> frule!!(zero_dual(foo), zero_dual(3.0))
-Mooncake.Dual{Int64, NoTangent}(5, NoTangent())
+Mooncake.Lifted{Int64, 1, NoDual}(5, NoDual())
 
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 (NoRData(), 0.0)
@@ -313,10 +309,6 @@ function _zero_derivative_impl(ctx, sig, mode)
 
     is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
-        arg_types_deriv = vcat(
-            map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols[1:(end - 1)]),
-            _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Dual)),
-        )
         arg_types_lifted = vcat(
             map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols[1:(end - 1)]),
             _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Lifted)),
@@ -330,7 +322,6 @@ function _zero_derivative_impl(ctx, sig, mode)
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
-        arg_types_deriv = map(t -> :(Mooncake.Dual{<:$t}), arg_type_symbols)
         arg_types_lifted = map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols)
         arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
         body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
@@ -354,13 +345,12 @@ function _zero_derivative_impl(ctx, sig, mode)
     # define both the frule and rrule, and rely on the method of `is_primitive` defined
     # above to determine whether or not they do anything. This might inflate the method
     # table a bit for `frule!!` and `rrule!!` unnecessarily, but it will be robust.
-    frule_ex = construct_frule_def(arg_names, arg_types_deriv, where_params, body_deriv)
     frule_lifted_ex = construct_frule_def(
         arg_names, arg_types_lifted, where_params, body_deriv
     )
     rrule_ex = construct_rrule_def(arg_names, arg_types_adjoint, where_params, body_adjoint)
 
-    return Expr(:block, is_primitive_ex, frule_ex, frule_lifted_ex, rrule_ex)
+    return Expr(:block, is_primitive_ex, frule_lifted_ex, rrule_ex)
 end
 
 """
@@ -614,27 +604,12 @@ function notimplemented_tangent_guard(dy)
 end
 
 """
-    frule_wrapper(f::Dual, args::Dual...)
+    frule_wrapper(f::Lifted, args::Lifted...)
 
 Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
+Converts each Lifted's V back to a tangent_type-shaped value via `last ∘ unlift`,
+calls `CRC.frule`, then re-lifts the result.
 """
-function frule_wrapper(fargs::Vararg{Dual,N}) where {N}
-    tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
-    Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
-    return Dual(Ω, mooncake_tangent(Ω, dΩ))
-end
-
-function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where {N}
-    primals = map(primal, fargs)
-    tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
-    Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
-    return Dual(Ω, mooncake_tangent(Ω, dΩ))
-end
-
-# Lifted-arg variants. The interpreter cutover passes Lifted args, so
-# @from_chainrules-emitted Lifted frules dispatch here. Convert each
-# Lifted's V back to a tangent_type-shaped value via `last ∘ unlift`,
-# call CRC.frule, then re-lift the result.
 function frule_wrapper(fargs::Vararg{Lifted,N}) where {N}
     tangents = tuple_map(to_cr_tangent ∘ last ∘ unlift, fargs)
     Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
@@ -755,7 +730,7 @@ Convenience functionality to assist in using `ChainRuleCore.frule`s and
 ## A Basic Example
 
 ```jldoctest; setup = :(using Random: Xoshiro)
-julia> using Mooncake: @from_chainrules, DefaultCtx, frule!!, rrule!!, Dual, zero_dual, zero_fcodual, TestUtils
+julia> using Mooncake: @from_chainrules, DefaultCtx, frule!!, rrule!!, lift, NoTangent, zero_dual, zero_fcodual, TestUtils
 
 julia> import ChainRulesCore
 
@@ -770,8 +745,8 @@ julia> function ChainRulesCore.rrule(::typeof(foo), x::Real)
 
 julia> @from_chainrules DefaultCtx Tuple{typeof(foo), Base.IEEEFloat}
 
-julia> frule!!(zero_dual(foo), Dual(5.0, 2.0))
-Dual{Float64, Float64}(25.0, 10.0)
+julia> frule!!(lift(foo, NoTangent()), lift(5.0, 2.0))
+Mooncake.Lifted{Float64, 1, Mooncake.Nfwd.NDual{Float64, 1}}(25.0, Mooncake.Nfwd.NDual{Float64, 1}(25.0, (10.0,)))
 
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(5.0))[2](1.0)
 (NoRData(), 5.0)
@@ -872,7 +847,6 @@ end
 function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     arg_type_syms, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_syms))
-    dual_arg_types = map(t -> :(Mooncake.Dual{<:$t}), arg_type_syms)
     lifted_arg_types = map(t -> :(Mooncake.Lifted{<:$t}), arg_type_syms)
     codual_arg_types = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_syms)
 
@@ -880,11 +854,6 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
     include_frule = (mode === Mode) || (mode === ForwardMode)
     include_rrule = (mode === Mode) || (mode === ReverseMode)
 
-    frule_expr = if include_frule
-        construct_frule_wrapper_def(arg_names, dual_arg_types, where_params)
-    else
-        nothing
-    end
     frule_lifted_expr = if include_frule
         construct_frule_wrapper_def(arg_names, lifted_arg_types, where_params)
     else
@@ -906,19 +875,6 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
             )
                 return true
             end
-        end
-        kwargs_frule_expr = if include_frule
-            construct_frule_wrapper_def(
-                vcat(:_kwcall, :kwargs, arg_names),
-                vcat(
-                    :(Mooncake.Dual{typeof(Core.kwcall)}),
-                    :(Mooncake.Dual{<:NamedTuple}),
-                    dual_arg_types,
-                ),
-                where_params,
-            )
-        else
-            nothing
         end
         kwargs_frule_lifted_expr = if include_frule
             construct_frule_wrapper_def(
@@ -948,7 +904,6 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         end
     else
         kw_is_primitive = nothing
-        kwargs_frule_expr = nothing
         kwargs_frule_lifted_expr = nothing
         kwargs_rrule_expr = nothing
     end
@@ -965,11 +920,9 @@ function _from_chainrules_impl(ctx, sig::Expr, has_kwargs::Bool, mode)
         !isnothing,
         [
             is_primitive_expr,
-            frule_expr,
             frule_lifted_expr,
             rrule_expr,
             kw_is_primitive,
-            kwargs_frule_expr,
             kwargs_frule_lifted_expr,
             kwargs_rrule_expr,
         ],

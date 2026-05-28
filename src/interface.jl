@@ -905,7 +905,7 @@ struct ForwardCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
 end
 
 @inline _dual_primal_type(::Type) = Any
-@inline _dual_primal_type(::Type{Dual{Y,T}}) where {Y,T} = Y
+@inline _dual_primal_type(::Type{<:Lifted{Y}}) where {Y} = Y
 
 @inline function _forward_cache_output_summary(cache::ForwardCache)
     output_primal = getfield(cache, :output_primal)
@@ -2133,12 +2133,13 @@ Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate t
         friendly_tangents=true,
     )
 
-    output = __call_rule(cache.rule, tuple_map(Dual, input_primals, input_tangents))
+    output = __call_rule(cache.rule, tuple_map(lift, input_primals, input_tangents))
     output_primal = primal(output)
+    _, output_internal_tangent = unlift(output)
     output_friendly_tangent = tangent_to_friendly!!(
         friendly_tangent_cache(output_primal),
         output_primal,
-        tangent(output),
+        output_internal_tangent,
         _friendly_cache((output_primal,)),
     )
     return output_primal, output_friendly_tangent

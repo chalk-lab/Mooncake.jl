@@ -40,7 +40,7 @@ helper should extract the backing store (see `_accum_sym_logdet!`).
 convention.
 """
 function arrayify(
-    x::Union{Dual{A},CoDual{A}}
+    x::CoDual{A}
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
     return arrayify(primal(x), tangent(x))
 end
@@ -109,8 +109,7 @@ function arrayify(x::A, dx::DA) where {A,DA}
 end
 
 """
-    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
-                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+    matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})
 
 Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
 
@@ -118,20 +117,16 @@ If the primal value is a vector, it is reshaped into a column matrix of size `(l
 and the associated tangent is reshaped in the same way. If the primal value is already a
 matrix, both the primal and tangent are returned unchanged.
 """
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
     x, dx = arrayify(x_dx)
     return reshape(x, :, 1), reshape(dx, :, 1)
 end
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
     return arrayify(x_dx)
 end
 
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
     xinds = 1:incx:(incx * n)
@@ -141,7 +136,7 @@ function viewify(
     )
 end
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
     xinds = 1:incx:(incx * n)

@@ -46,14 +46,6 @@
     end
 
     @testset "forward debug mode" begin
-        @testset "argument checking" begin
-            f = x -> 5x
-            rule = Mooncake.build_frule(zero_dual(f), 5.0; debug_mode=true)
-            @test_throws ArgumentError rule(
-                zero_dual(f), Mooncake.Dual(Float32(5.0), Float32(1.0))
-            )
-        end
-
         @testset "valid inputs pass" begin
             # Single argument - use Float64, not π which has NoTangent
             rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
@@ -80,53 +72,6 @@
             @test rule(
                 Mooncake.lift(identity, NoTangent()), Mooncake.lift(5, NoTangent())
             ) isa Mooncake.Lifted
-        end
-
-        @testset "size mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(size), randn(10); debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(size), Mooncake.Dual(randn(11), randn(10))
-            )
-        end
-
-        @testset "element type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), Any[1.0]; debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual(Any[1.0], Any[Float16(1.0)])
-            )
-        end
-
-        @testset "scalar type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), 1.0; debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual(1.0, Float32(1.0))
-            )
-        end
-
-        @testset "container type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), (1.0, 2.0); debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual((1.0, 2.0), [1.0, 2.0])
-            )
-        end
-
-        @testset "output tangent type mismatch detected" begin
-            # Rule that returns wrong tangent type in output
-            bad_rule = Mooncake.DebugFRule((x...,) -> Mooncake.Dual(1.0, Float32(0.0)))
-            @test_throws ErrorException bad_rule(Mooncake.Dual(5.0, 1.0))
-        end
-
-        @testset "error messages include type info" begin
-            rule = Mooncake.build_frule(zero_dual(identity), [1.0]; debug_mode=true)
-
-            try
-                rule(zero_dual(identity), Mooncake.Dual([1.0], [Float32(1.0)]))
-                @test false  # Expected ErrorException but none was thrown
-            catch e
-                msg = sprint(showerror, e)
-                @test occursin("input types", msg)
-                @test occursin("Float", msg)  # Type info present
-            end
         end
 
         @testset "integration with test_rule" begin
