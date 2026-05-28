@@ -315,80 +315,54 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
 @static if VERSION < v"1.11-"
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_1d}},
-        ::Dual{Val{Vector{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Vector{P}}},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _n = primal(n)
-            y = ccall(:jl_alloc_array_1d, Vector{$P}, (Any, Int), Vector{$P}, _n)
-            dy = ccall(:jl_alloc_array_1d, Vector{$T}, (Any, Int), Vector{$T}, _n)
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_1d},Nw},
+        ::Lifted{Val{Vector{P}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Vector{P}},Nw},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _n = primal(n)
+        y = ccall(:jl_alloc_array_1d, Vector{P}, (Any, Int), Vector{P}, _n)
+        return Lifted{Vector{P},Nw}(y, uninit_dual(Val(Nw), y))
     end
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_2d}},
-        ::Dual{Val{Matrix{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Matrix{P}}},
-        m::Dual{Int},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _m, _n = primal(m), primal(n)
-            y = ccall(:jl_alloc_array_2d, Matrix{$P}, (Any, Int, Int), Matrix{$P}, _m, _n)
-            dy = ccall(:jl_alloc_array_2d, Matrix{$T}, (Any, Int, Int), Matrix{$T}, _m, _n)
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_2d},Nw},
+        ::Lifted{Val{Matrix{P}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Matrix{P}},Nw},
+        m::Lifted{Int},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _m, _n = primal(m), primal(n)
+        y = ccall(:jl_alloc_array_2d, Matrix{P}, (Any, Int, Int), Matrix{P}, _m, _n)
+        return Lifted{Matrix{P},Nw}(y, uninit_dual(Val(Nw), y))
     end
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_3d}},
-        ::Dual{Val{Array{P,3}}},
-        ::Dual{Tuple{Val{Any},Val{Int},Val{Int},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Array{P,3}}},
-        l::Dual{Int},
-        m::Dual{Int},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _l, _m, _n = primal(l), primal(m), primal(n)
-            y = ccall(
-                :jl_alloc_array_3d,
-                Array{$P,3},
-                (Any, Int, Int, Int),
-                Array{$P,3},
-                _l,
-                _m,
-                _n,
-            )
-            dy = ccall(
-                :jl_alloc_array_3d,
-                Array{$T,3},
-                (Any, Int, Int, Int),
-                Array{$T,3},
-                _l,
-                _m,
-                _n,
-            )
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_3d},Nw},
+        ::Lifted{Val{Array{P,3}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int},Val{Int},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Array{P,3}},Nw},
+        l::Lifted{Int},
+        m::Lifted{Int},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _l, _m, _n = primal(l), primal(m), primal(n)
+        y = ccall(
+            :jl_alloc_array_3d, Array{P,3}, (Any, Int, Int, Int), Array{P,3}, _l, _m, _n
+        )
+        return Lifted{Array{P,3},Nw}(y, uninit_dual(Val(Nw), y))
     end
 end
