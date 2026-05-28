@@ -21,11 +21,11 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    (rule::DebugFRule)(x::Vararg{Union{Dual,Lifted},N}) where {N}
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Union{Dual,Lifted},N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
@@ -36,7 +36,7 @@ end
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
     try
         for _x in x
-            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
+            _x isa Union{Dual,Lifted} || error("Expected Dual or Lifted, got $(typeof(_x))")
             verify_dual_value(_x)
         end
     catch e
@@ -46,7 +46,8 @@ end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     try
-        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
+        y isa Union{Dual,Lifted} ||
+            error("frule!! must return a Dual or Lifted, got $(typeof(y))")
         verify_dual_value(y)
     catch e
         error("Error in outputs of rule with input types $(_typeof(x))")
@@ -71,6 +72,13 @@ end
     verify_fdata_value(p, fdata(t))
     verify_rdata_value(p, rdata(t))
 
+    return nothing
+end
+
+# Lifted variant — `verify_dual_type` on Lifted is true by construction
+# (the V invariant is checked at construction). Skip deep structural
+# validation for now; the V-shape check happens at `Lifted{P,N}(...)`.
+@noinline function verify_dual_value(::Lifted)
     return nothing
 end
 

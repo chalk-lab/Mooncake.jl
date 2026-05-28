@@ -175,7 +175,6 @@ include(joinpath("tangents", "tangents.jl"))
 include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
-include("debug_mode.jl")
 include("stack.jl")
 
 # Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
@@ -184,6 +183,8 @@ include("stack.jl")
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual
 include("lifted.jl")
+# debug_mode references both Dual and Lifted — load after lifted.jl.
+include("debug_mode.jl")
 
 @unstable begin
 include(joinpath("interpreter", "bbcode.jl"))
