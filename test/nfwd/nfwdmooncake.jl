@@ -299,9 +299,19 @@ end
                     (Mooncake.NoTangent(), [3.0 * cos(x_vec[1]), 4.0 * cos(x_vec[2])])
 
                 frule = Mooncake.NfwdMooncake.build_frule(g, x_vec; chunk_size=2)
-                out = frule(Mooncake.zero_dual(g), Mooncake.Dual(x_vec, dx_vec))
+                NDualArray = Mooncake.NDualArray
+                out = frule(
+                    Mooncake.lift(g, Mooncake.NoTangent()),
+                    Mooncake.Lifted{Vector{Float64},2}(
+                        x_vec,
+                        NDualArray{Float64,2,1,Vector{Float64}}(
+                            x_vec, (dx_vec[:, 1], dx_vec[:, 2])
+                        ),
+                    ),
+                )
                 @test Mooncake.primal(out) == sin.(x_vec)
-                @test Mooncake.tangent(out) ≈ [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
+                @test hcat(Mooncake.tangent(out).partials...) ≈
+                    [cos(x_vec[1]) 0.0; 0.0 cos(x_vec[2])]
             end
 
             @testset "complex inputs" begin
@@ -350,13 +360,24 @@ end
                 dx = reshape([1.0, 0.0, 0.0, 0.0], 2, 2)
                 dy = reshape([0.0, 0.0, 1.0, 0.0], 2, 2)
                 frule = Mooncake.NfwdMooncake.build_frule(h, x_vec, y_vec; chunk_size=2)
+                NDualArray = Mooncake.NDualArray
                 out = frule(
-                    Mooncake.zero_dual(h),
-                    Mooncake.Dual(x_vec, dx),
-                    Mooncake.Dual(y_vec, dy),
+                    Mooncake.lift(h, Mooncake.NoTangent()),
+                    Mooncake.Lifted{Vector{Float64},2}(
+                        x_vec,
+                        NDualArray{Float64,2,1,Vector{Float64}}(
+                            x_vec, (dx[:, 1], dx[:, 2])
+                        ),
+                    ),
+                    Mooncake.Lifted{Vector{Float64},2}(
+                        y_vec,
+                        NDualArray{Float64,2,1,Vector{Float64}}(
+                            y_vec, (dy[:, 1], dy[:, 2])
+                        ),
+                    ),
                 )
                 @test Mooncake.primal(out) == h(x_vec, y_vec)
-                @test Mooncake.tangent(out) == (3.0, 1.0)
+                @test Mooncake.tangent(out).partials == (3.0, 1.0)
 
                 hm(X) = sin.(X)
                 X = reshape([1.0, 2.0, 3.0, 4.0], 2, 2)
@@ -364,12 +385,22 @@ end
                 dX[1, 1, 1] = 1.0
                 dX[2, 2, 2] = 1.0
                 frule_matrix = Mooncake.NfwdMooncake.build_frule(hm, X; chunk_size=2)
-                y_and_dy = frule_matrix(Mooncake.zero_dual(hm), Mooncake.Dual(X, dX))
+                y_and_dy = frule_matrix(
+                    Mooncake.lift(hm, Mooncake.NoTangent()),
+                    Mooncake.Lifted{Matrix{Float64},2}(
+                        X,
+                        NDualArray{Float64,2,2,Matrix{Float64}}(
+                            X, (dX[:, :, 1], dX[:, :, 2])
+                        ),
+                    ),
+                )
                 @test Mooncake.primal(y_and_dy) == sin.(X)
                 expected = zeros(2, 2, 2)
                 expected[1, 1, 1] = cos(X[1, 1])
                 expected[2, 2, 2] = cos(X[2, 2])
-                @test Mooncake.tangent(y_and_dy) ≈ expected
+                partials = Mooncake.tangent(y_and_dy).partials
+                @test partials[1] ≈ expected[:, :, 1]
+                @test partials[2] ≈ expected[:, :, 2]
             end
         end
 
