@@ -1546,6 +1546,31 @@ end
     )
 end
 
+# ── Lifted-mode equivalents of `_chunk_pack_tangent` ─────────────────────
+# Build the canonical Lifted V directly from primal + NTangent (or per-arg
+# tangent) — no chunk-layout Matrix intermediate. Used by the NTangent
+# fast path in `NfwdMooncake.jl:Mooncake.value_and_derivative!!`.
+@inline function _chunk_pack_tangent_lifted(
+    x::T, dx::NTangent, ::Val{N}
+) where {T<:IEEEFloat,N}
+    return Lifted{T,N,Mooncake.Nfwd.NDual{T,N}}(
+        x, Mooncake.Nfwd.NDual{T,N}(x, ntuple(k -> dx[k], Val(N)))
+    )
+end
+@inline function _chunk_pack_tangent_lifted(x::T, dx, ::Val{N}) where {T<:IEEEFloat,N}
+    return Lifted{T,N,Mooncake.Nfwd.NDual{T,N}}(
+        x, Mooncake.Nfwd.NDual{T,N}(x, ntuple(_ -> dx, Val(N)))
+    )
+end
+@inline function _chunk_pack_tangent_lifted(
+    x::Array{T,D}, dx::NTangent, ::Val{N}
+) where {T<:IEEEFloat,D,N}
+    # NTangent.lanes::NTuple{N, Array{T,D}} is exactly NDualArray's partials shape.
+    partials = ntuple(k -> dx[k], Val(N))
+    nda = NDualArray{T,N,D,Array{T,D},Mooncake.Nfwd.NDual{T,N}}(x, partials)
+    return Lifted{Array{T,D},N,typeof(nda)}(x, nda)
+end
+
 # fcache derivative helpers
 @generated function _fcache_derivative_ntangent_lane_count(ts::T) where {T<:Tuple}
     lane_count = nothing

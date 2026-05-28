@@ -359,15 +359,6 @@ function (rule::Rule{sig,N})(
     return Mooncake.Lifted{typeof(y),N,NDual{typeof(y),N}}(y, out_nd)
 end
 
-@inline _nfwd_rule_pack_buffer(::IEEEFloat) = nothing
-@inline _nfwd_rule_pack_buffer(::Complex{<:IEEEFloat}) = nothing
-@inline function _nfwd_rule_pack_buffer(
-    x::Array{T}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    return Ref{Union{Nothing,Array{T}}}(nothing)
-end
-@inline _nfwd_rule_pack_buffer(x::Tuple) = tuple_map(_nfwd_rule_pack_buffer, x)
-
 @inline function Mooncake.value_and_derivative!!(
     rule::Rule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
 ) where {sig,N,M}
@@ -390,26 +381,22 @@ end
             "was built with chunk_size=$N.",
         ),
     )
-    pack_buffers = tuple_map(_nfwd_rule_pack_buffer, Base.tail(input_primals))
-    packed_tangents = ntuple(
-        i -> _chunk_pack_tangent(
-            Base.tail(input_primals)[i],
-            Base.tail(input_tangents)[i],
-            pack_buffers[i],
-            Val(N),
+    # Build Lifted slots directly from primal + NTangent — the
+    # canonical Lifted V (NDual / NDualArray) carries per-lane partials,
+    # matching the new Lifted Rule callables' input contract.
+    f_lifted = Mooncake.lift_from_tangent(first(input_primals), first(input_tangents))
+    arg_lifted = ntuple(
+        i -> Mooncake._chunk_pack_tangent_lifted(
+            Base.tail(input_primals)[i], Base.tail(input_tangents)[i], Val(N)
         ),
-        Val(fieldcount(typeof(pack_buffers))),
+        Val(M - 1),
     )
-    # Keep this at the Rule/Dual boundary: `f` stays on its ordinary width-1 tangent,
-    # while the argument tangents are packed to the rule's native width-N layout and the
-    # rule itself performs the NDual lift internally.
-    output = rule(
-        Dual(first(input_primals), first(input_tangents)),
-        tuple_map(Dual, Base.tail(input_primals), packed_tangents)...,
-    )
+    output = rule(f_lifted, arg_lifted...)
     y = primal(output)
-    dy = tangent(output)
-    return y, NTangent(ntuple(lane -> _nfwd_unpack_output_lane(y, dy, Val(lane)), Val(N)))
+    out_v = tangent(output)
+    # `output::Lifted{T,N,NDual{T,N}}` for scalar outputs — partials carry
+    # the N directional derivatives.
+    return y, NTangent(ntuple(lane -> Nfwd._nfwd_dual_partial(out_v, lane), Val(N)))
 end
 
 """
