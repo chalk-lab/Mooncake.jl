@@ -210,6 +210,16 @@ end
     return MutableTangent(NamedTuple{names}(field_tangents))
 end
 
+# `_dot_internal` overloads for forward-mode V shapes that the test
+# framework's tangent-shape arithmetic may see when it operates on raw
+# Lifted V values (e.g. `tangent(y_ẏ_a)` in `test_frule_reuse`).
+_dot_internal(::MaybeCache, ::NoDual, ::NoDual) = 0.0
+function _dot_internal(
+    c::MaybeCache, t::T, s::T
+) where {T<:Union{ImmutableDual,MutableDual}}
+    return _dot_internal(c, t.value, s.value)::Float64
+end
+
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot

@@ -156,6 +156,7 @@ using Mooncake:
     rdata_type,
     rdata,
     Dual,
+    Lifted,
     Mode,
     ForwardMode,
     ReverseMode,
