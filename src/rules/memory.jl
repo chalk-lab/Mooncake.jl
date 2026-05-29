@@ -635,6 +635,84 @@ end
     return y, memoryrefset_adjoint
 end
 
+# ── AoS (Array-of-Structures) memory ops ────────────────────────────────────
+#
+# For a differentiable non-float-element array, the forward V is the AoS array
+# `Array{dual_type(Val(N), elt), D}` (see `dual_type(Array{T,D})` in lifted.jl).
+# Its `.ref` is a plain `MemoryRef{V_elt}` (a MemoryRef into the V array),
+# parallel to the primal's `MemoryRef{P_elt}`. These memory ops thread both refs
+# in lockstep — `memoryrefget` returns `Lifted{P_elt, Nw, V_elt}` with
+# `V_elt === dual_type(Val(Nw), P_elt)`, so the V chain stays coherent. They
+# dispatch on a *plain* `MemoryRef` V, distinct from the float-SoA
+# `NDualMemoryRef` frules above. Forward-over-reverse exercises this path for the
+# reverse rule's `Vector{Tuple{pullback}}` pullback storage.
+@static if VERSION >= v"1.11-rc4"
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:MemoryRef,Nw,<:MemoryRef}
+    ) where {Nw}
+        yp = memoryrefnew(primal(x))
+        yt = memoryrefnew(tangent(x))
+        return Lifted{typeof(yp),Nw}(yp, yt)
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        args::Vararg{Lifted,K},
+    ) where {Nw,K}
+        a = map(primal, args)
+        return Lifted{typeof(memoryrefnew(primal(x), a...)),Nw}(
+            memoryrefnew(primal(x), a...), memoryrefnew(tangent(x), a...)
+        )
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        ordering::Lifted,
+        boundscheck::Lifted,
+    ) where {Nw}
+        ord = primal(ordering)
+        bc = primal(boundscheck)
+        return Lifted{typeof(memoryrefget(primal(x), ord, bc)),Nw}(
+            memoryrefget(primal(x), ord, bc), memoryrefget(tangent(x), ord, bc)
+        )
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        return Lifted{typeof(lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))),Nw}(
+            lmemoryrefget(primal(x), Val(ordering), Val(boundscheck)),
+            lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck)),
+        )
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        value::Lifted,
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        lmemoryrefset!(primal(x), primal(value), Val(ordering), Val(boundscheck))
+        lmemoryrefset!(tangent(x), tangent(value), Val(ordering), Val(boundscheck))
+        return value
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        value::Lifted,
+        ordering::Lifted{Symbol},
+        boundscheck::Lifted{Bool},
+    ) where {Nw}
+        ord = primal(ordering)
+        bc = primal(boundscheck)
+        memoryrefset!(primal(x), primal(value), ord, bc)
+        memoryrefset!(tangent(x), tangent(value), ord, bc)
+        return value
+    end
+end
+
 # Core.memoryrefsetonce!
 # Core.memoryrefswap!
 # Core.set_binding_type!

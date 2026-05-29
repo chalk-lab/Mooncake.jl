@@ -170,6 +170,11 @@ end
         return NoDual()
     end
     @inline _get_lifted_field(::Mooncake.Nfwd.NDualMemoryRef, _) = NoDual()
+    # AoS array V (a plain `Array` of per-element forward Vs, for differentiable
+    # non-float-element arrays): its `.ref` is a `MemoryRef` into the V array,
+    # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff.
+    @inline _get_lifted_field(V::Array, name::Symbol) =
+        name === :ref ? getfield(V, :ref) : NoDual()
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()

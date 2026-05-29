@@ -407,15 +407,16 @@ end
 @inline function dual_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
     return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
 end
-# Arrays with a non-differentiable element type (e.g. `Vector{Int}`) carry no
-# forward derivative — V is `NoDual`, mirroring `tangent_type`'s all-`NoTangent`
-# array. The IEEEFloat / Complex overloads above are more specific and win for
-# differentiable element types; differentiable non-float/complex element arrays
-# remain unsupported and error at runtime (deferred-error pattern).
+# General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
+#  - non-differentiable element (`tangent_type(T) === NoTangent`, e.g. `Vector{Int}`) → `NoDual`;
+#  - differentiable element → Array-of-Structures V `Array{dual_type(Val(N), T), D}`,
+#    a plain array of per-element forward Vs. The IEEEFloat / Complex overloads above
+#    are more specific and provide the SoA `NDualArray` optimisation for scalar-float
+#    elements; this AoS form covers everything else differentiable (tuples, structs,
+#    closures — e.g. the reverse rule's `Vector{Tuple{pullback}}` under forward-over-reverse).
 @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
     tangent_type(T) === NoTangent && return NoDual
-    msg = "dual_type: Array{$T} (differentiable non-IEEEFloat/Complex element type) is unsupported"
-    return :(error($msg))
+    return :(Array{dual_type(Val($N), $T),$D})
 end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
 # tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
@@ -638,6 +639,19 @@ end
 # Non-differentiable array: reverse tangent is an all-`NoTangent` array, forward
 # V is `NoDual` (coherent with `dual_type`).
 @inline lift(x::Array, ::Array{<:NoTangent}) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+# Differentiable non-float-element array: AoS V `Array{dual_type(Val(1), T), D}`,
+# built element-wise from the per-element lift (coherent with `dual_type` above).
+# The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
+@inline function lift(x::Array{T,D}, ẋ::Array) where {T,D}
+    Vel = dual_type(Val(1), T)
+    v = similar(x, Vel)
+    @inbounds for i in eachindex(x)
+        if isassigned(x, i)
+            v[i] = tangent(lift(x[i], ẋ[i]))
+        end
+    end
+    return Lifted{typeof(x),1,typeof(v)}(x, v)
+end
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
 # back into `lift`. Wrap directly rather than re-deriving V from the (now-V)
