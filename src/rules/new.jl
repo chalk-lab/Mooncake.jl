@@ -35,12 +35,17 @@
             return Lifted{P,Nw}(y, NoDual())
         end
     else
-        names = fieldnames(P)
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            nt = NamedTuple{$names}(tuple_map(tangent, x))
-            return Lifted{P,Nw}(y, $wrapper(nt))
+            # Coerce the field-V tuple into the *declared* backing NamedTuple
+            # `fieldtype(dual_type(Val(Nw), P), 1)` so a field declared abstract
+            # is stored as `Any` (matching `dual_type`), keeping the constructed V
+            # `=== dual_type(Val(Nw), P)`. Without this, an abstract-field struct
+            # built here would get `$wrapper{@NamedTuple{f::NDual}}`, which is not
+            # the invariant `$wrapper{@NamedTuple{f::Any}}` the interpreter annotates.
+            backing = fieldtype(dual_type(Val(Nw), P), 1)
+            return Lifted{P,Nw}(y, $wrapper(backing(tuple_map(tangent, x))))
         end
     end
 end
