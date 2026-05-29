@@ -151,6 +151,25 @@ end
     getfield(V, :value), name
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
+# NDualArray is the SoA wrapper for `Array{T,D}` slots (not a struct lift).
+# Sub-field access into the underlying primal struct happens in inlined
+# `Array` / `Memory` code; project to the matching SoA per-lane V so the
+# downstream rule (`memoryrefnew`, etc.) keeps a coherent V chain.
+@static if VERSION >= v"1.11-rc4"
+    @inline function _get_lifted_field(
+        V::Mooncake.Nfwd.NDualArray{T,N,1,A}, name::Symbol
+    ) where {T<:Mooncake.Nfwd.NDualEltype,N,A<:Vector{T}}
+        if name === :ref
+            primal_ref = getfield(V.primal, :ref)
+            partial_refs = ntuple(k -> getfield(V.partials[k], :ref), Val(N))
+            return Mooncake.Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, partial_refs)
+        end
+        return NoDual()
+    end
+    @inline _get_lifted_field(::Mooncake.Nfwd.NDualMemoryRef, _) = NoDual()
+end
+# Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
+@inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
 
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
 _get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)

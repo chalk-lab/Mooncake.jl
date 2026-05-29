@@ -2868,9 +2868,6 @@ end
     return NoTangent()
 end
 
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Base.Broadcast.materialize),<:Broadcasted{<:CuArrayStyle}},
-)
 function frule!!(
     ::Lifted{typeof(Base.Broadcast.materialize),1},
     bc::Lifted{<:Broadcasted{<:CuArrayStyle},1,<:ImmutableDual},
