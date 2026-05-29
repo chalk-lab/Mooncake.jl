@@ -2159,7 +2159,11 @@ end
         friendly_tangents=false,
     )
 
-    input_lifted = tuple_map(lift, input_primals, input_tangents)
+    # One aliasing cache scoped to this input lift: a reverse rule captured in
+    # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
+    # that shared mutable state must be shared too (see `lift(::MistyClosure)`).
+    c = IdDict()
+    input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     output = __call_rule(cache.rule, input_lifted)
     return primal(output), last(unlift(output))
 end

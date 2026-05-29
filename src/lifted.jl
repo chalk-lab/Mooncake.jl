@@ -154,16 +154,32 @@ end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
+# A `PossiblyUninitTangent` backing field reproduces the reverse `Tangent`'s
+# PUT shape: an undefined primal field maps to an uninit reverse PUT.
+@inline _field_lane_tangent(::Val{N}, ::Type{P}, p, name, vfield, lane) where {N,P} = tangent(
+    Lifted{fieldtype(P, name),N}(getfield(p, name), vfield), lane
+)
+@inline function _field_lane_tangent(
+    ::Val{N}, ::Type{P}, p, name, vfield::PossiblyUninitTangent, lane
+) where {N,P}
+    Rt = tangent_type(fieldtype(P, name))
+    (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
+    return PossiblyUninitTangent{Rt}(
+        tangent(Lifted{fieldtype(P, name),N}(getfield(p, name), val(vfield)), lane)
+    )
+end
 @inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
     nt = tangent(x).value
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
-        return tangent(
-            Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(nt, name)), lane
-        )
+        return _field_lane_tangent(Val(N), P, p, name, getfield(nt, name), lane)
     end
-    return Tangent(NamedTuple{names}(field_tangents))
+    # Coerce into the declared reverse backing `tangent_type(P)`, so an abstract
+    # field is stored at its widened type (e.g. `a::Any`, not the concrete
+    # `a::Float64`) — matching what reverse mode produces.
+    backing = fieldtype(tangent_type(P), :fields)
+    return Tangent(backing(field_tangents))
 end
 # Tuple primal: V is a Tuple of per-element V; recurse element-wise.
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N}
@@ -192,14 +208,29 @@ end
 # for rule bodies), but downstream FD / address-map machinery wants a fresh
 # `MutableTangent` value. Build one by recursive per-field unlift so the structural
 # shape matches what reverse-mode produces.
+@inline _field_unlift_tangent(::Type{P}, p, name, vfield) where {P} = last(
+    unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), vfield))
+)
+@inline function _field_unlift_tangent(
+    ::Type{P}, p, name, vfield::PossiblyUninitTangent
+) where {P}
+    Rt = tangent_type(fieldtype(P, name))
+    (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
+    return PossiblyUninitTangent{Rt}(
+        last(unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), val(vfield))))
+    )
+end
 @inline function unlift(x::Lifted{P,1,<:MutableDual}) where {P}
     nt = tangent(x).value
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
-        return last(unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(nt, name))))
+        return _field_unlift_tangent(P, p, name, getfield(nt, name))
     end
-    return (p, MutableTangent(NamedTuple{names}(field_tangents)))
+    # Coerce into the declared reverse backing `tangent_type(P)` (see the
+    # `ImmutableDual` lane accessor above for why abstract fields must widen).
+    backing = fieldtype(tangent_type(P), :fields)
+    return (p, MutableTangent(backing(field_tangents)))
 end
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
     throw(
@@ -494,7 +525,14 @@ end
     end
     field_names = fieldnames(P)
     n_fields = fieldcount(P)
-    field_dual_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n_fields]
+    inits = always_initialised(P)
+    # Non-always-initialised fields are wrapped in `PossiblyUninitTangent`,
+    # exactly as reverse-mode `tangent_type`, so the two stay coherent (e.g. a
+    # lazily-built field like `LazyDerivedRule.rule`).
+    field_dual_exprs = map(1:n_fields) do i
+        base = :(dual_type(Val($N), $(fieldtype(P, i))))
+        inits[i] ? base : :(PossiblyUninitTangent{$base})
+    end
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
     return :($wrapper{$inner_nt_type})
@@ -613,41 +651,95 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+@static if VERSION >= v"1.11-rc4"
+    # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
+    # derivative storage); its forward V is the SoA `NDualMemoryRef`. Reached in
+    # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted.
+    @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
+        return Lifted{MemoryRef{T},1}(x, NDualMemoryRef{T,1,Memory{T}}(x, (ẋ,)))
+    end
+end
+# ── Aliasing cache for `lift` ───────────────────────────────────────────────
+#
+# `lift` threads an optional aliasing cache `c`, mirroring reverse-mode
+# `zero_tangent`'s `MaybeCache`: a fresh `IdDict`, created once per top-level
+# lift and passed down the structural recursion. The `MistyClosure` overload
+# uses it to build a reverse rule's captures' forward V exactly once and share
+# it (keyed by the primal captures identity) — so `fwds_oc` and `pb_oc`, which
+# share those captures (block stacks), share the forward tangent too; otherwise
+# partials pushed in the forward pass are invisible when popped in the reverse
+# pass (the HVP silently zeroes). Leaf/passthrough overloads ignore `c` via this
+# fallback; only the structural overloads below thread it.
+@inline lift(x, ẋ, ::Union{Nothing,IdDict}) = lift(x, ẋ)
+
 # Coerce the per-field V tuple into the declared backing NamedTuple
 # (`fieldtype(dual_type(Val(1), P), 1)`), mirroring the seed factories so the
 # resulting V matches `dual_type(Val(1), P)` even when a field declared abstract
 # holds a differentiable value (its V stored as `Any`).
-@inline function lift(x::P, ẋ::Tangent) where {P}
-    nt = ẋ.fields
-    names = keys(nt)
-    field_Vs = map(name -> tangent(lift(getfield(x, name), getfield(nt, name))), names)
-    backing = fieldtype(dual_type(Val(1), P), 1)
-    return Lifted{P,1}(x, ImmutableDual(backing(field_Vs)))
+# Build the declared backing NamedTuple from a reverse Tangent's `fields`,
+# field-by-field. A `PossiblyUninitTangent` backing field is `isdefined`-guarded
+# (an undefined primal field — e.g. lazily-built `LazyDerivedRule.rule` — yields
+# an uninit PUT); always-init fields lift directly. Mirrors the seed factories.
+@generated function _lift_backing(x, nt, ::Type{Backing}, c) where {Backing}
+    names = Backing.parameters[1]
+    Vfs = Backing.parameters[2].parameters
+    exprs = map(enumerate(names)) do (i, name)
+        Vf = Vfs[i]
+        qn = QuoteNode(name)
+        if Vf <: PossiblyUninitTangent
+            return :(
+                if isdefined(x, $qn)
+                    $Vf(tangent(lift(getfield(x, $qn), val(getfield(nt, $qn)), c)))
+                else
+                    $Vf()
+                end
+            )
+        else
+            return :(tangent(lift(getfield(x, $qn), getfield(nt, $qn), c)))
+        end
+    end
+    return :(Backing(($(exprs...),)))
 end
-@inline function lift(x::P, ẋ::MutableTangent) where {P}
-    nt = ẋ.fields
-    names = keys(nt)
-    field_Vs = map(name -> tangent(lift(getfield(x, name), getfield(nt, name))), names)
+@inline lift(x::P, ẋ::Tangent) where {P} = lift(x, ẋ, nothing)
+@inline function lift(x::P, ẋ::Tangent, c::Union{Nothing,IdDict}) where {P}
     backing = fieldtype(dual_type(Val(1), P), 1)
-    return Lifted{P,1}(x, MutableDual(backing(field_Vs)))
+    return Lifted{P,1}(x, ImmutableDual(_lift_backing(x, ẋ.fields, backing, c)))
+end
+@inline lift(x::P, ẋ::MutableTangent) where {P} = lift(x, ẋ, nothing)
+@inline function lift(x::P, ẋ::MutableTangent, c::Union{Nothing,IdDict}) where {P}
+    backing = fieldtype(dual_type(Val(1), P), 1)
+    return Lifted{P,1}(x, MutableDual(_lift_backing(x, ẋ.fields, backing, c)))
 end
 # A possibly-uninit reverse-tangent field lifts to the inner V (the forward
 # backing slot is the plain V, not PUT-wrapped). Reached only for defined
 # fields — `lift(::Tangent)`/`lift(::MutableTangent)` recurse via
 # `getfield(x, name)`, which requires the primal field to be defined.
 @inline lift(x, ẋ::PossiblyUninitTangent) = lift(x, val(ẋ))
+@inline lift(x, ẋ::PossiblyUninitTangent, c::Union{Nothing,IdDict}) = lift(x, val(ẋ), c)
 # Non-differentiable array: reverse tangent is an all-`NoTangent` array, forward
-# V is `NoDual` (coherent with `dual_type`).
+# V is `NoDual` (coherent with `dual_type`). The 3-arg passthrough keeps this
+# more-specific behaviour ahead of the AoS overload below when a cache is threaded.
 @inline lift(x::Array, ::Array{<:NoTangent}) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+@inline lift(x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = lift(x, ẋ)
+# Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they
+# match the AoS overload below by element type, so give them cache-threading
+# passthroughs that keep the more-specific terminal behaviour.
+@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {T<:IEEEFloat,D,A<:Array{T,D}} = lift(
+    x, ẋ
+)
+@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}} = lift(
+    x, ẋ
+)
 # Differentiable non-float-element array: AoS V `Array{dual_type(Val(1), T), D}`,
 # built element-wise from the per-element lift (coherent with `dual_type` above).
 # The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
-@inline function lift(x::Array{T,D}, ẋ::Array) where {T,D}
+@inline lift(x::Array{T,D}, ẋ::Array) where {T,D} = lift(x, ẋ, nothing)
+@inline function lift(x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}) where {T,D}
     Vel = dual_type(Val(1), T)
     v = similar(x, Vel)
     @inbounds for i in eachindex(x)
         if isassigned(x, i)
-            v[i] = tangent(lift(x[i], ẋ[i]))
+            v[i] = tangent(lift(x[i], ẋ[i], c))
         end
     end
     return Lifted{typeof(x),1,typeof(v)}(x, v)
@@ -660,12 +752,21 @@ end
 @inline function lift(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
     return Lifted{P,1}(x, ẋ)
 end
-# Tuple primal + tuple of per-field Vs — the test framework reaches this
-# when its tangent-shape arithmetic recurses through a Tangent's fields
-# tuple and feeds the V-tuple back into `lift`.
-@inline function lift(x::Tuple, ẋ::Tuple)
-    field_Vs = map((xi, vi) -> tangent(lift(xi, vi)), x, ẋ)
+# Tuple / NamedTuple primal + per-field reverse tangents → per-field V. Reached
+# in real AD (lifting a tuple/named-tuple primal) and when the test framework's
+# tangent-shape arithmetic recurses through a `Tangent`'s fields and feeds the V
+# values back into `lift`.
+@inline lift(x::Tuple, ẋ::Tuple) = lift(x, ẋ, nothing)
+@inline function lift(x::Tuple, ẋ::Tuple, c::Union{Nothing,IdDict})
+    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, c)), x, ẋ)
     return Lifted{typeof(x),1}(x, field_Vs)
+end
+@inline lift(x::NamedTuple, ẋ::NamedTuple) = lift(x, ẋ, nothing)
+@inline function lift(
+    x::NamedTuple{names}, ẋ::NamedTuple, c::Union{Nothing,IdDict}
+) where {names}
+    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, c)), values(x), values(ẋ))
+    return Lifted{typeof(x),1}(x, NamedTuple{names}(field_Vs))
 end
 
 @inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
@@ -770,11 +871,28 @@ end
     _ -> randn_tangent(rng, x), Val(N)
 )
 
+# Per-field seed expression: an always-initialised field is the bare seed call;
+# a possibly-uninit field is a `PossiblyUninitTangent{Vfield}` guarded by
+# `isdefined`, mirroring reverse-mode `zero_tangent_internal`. `callexpr` is the
+# field's seed call (references the factory's runtime `x`, so it is spliced into
+# the factory body).
+function _seed_field_expr(N, P, i, callexpr)
+    always_initialised(P)[i] && return callexpr
+    name = QuoteNode(fieldnames(P)[i])
+    Vt = :(dual_type(Val($N), $(fieldtype(P, i))))
+    return :(
+        if isdefined(x, $name)
+            PossiblyUninitTangent{$Vt}($callexpr)
+        else
+            PossiblyUninitTangent{$Vt}()
+        end
+    )
+end
+
 # Seed factories coerce the per-field seed tuple into the *declared* backing
-# NamedTuple `fieldtype(dual_type(Val(N), P), 1)` — abstract fields are stored as
-# `Any` there, mirroring reverse-mode's `backing_type(P)(...)` construction. This
-# keeps `typeof(seed) === dual_type(Val(N), P)` even when a field declared
-# abstract holds a differentiable concrete value at runtime.
+# NamedTuple `fieldtype(dual_type(Val(N), P), 1)` — abstract fields stored as
+# `Any`, possibly-uninit fields wrapped in `PossiblyUninitTangent` — mirroring
+# reverse-mode's `backing_type(P)(...)`. Keeps `typeof(seed) === dual_type(Val(N), P)`.
 for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
@@ -784,9 +902,10 @@ for (f, helper) in
         if fieldcount(P) == 0
             return :($($(QuoteNode(helper)))(Val($N), x))
         end
-        seeds = [
-            :($($f)(Val($N), getfield(x, $(QuoteNode(name))))) for name in fieldnames(P)
-        ]
+        seeds = map(1:fieldcount(P)) do i
+            nm = QuoteNode(fieldnames(P)[i])
+            return _seed_field_expr(N, P, i, :($($f)(Val($N), getfield(x, $nm))))
+        end
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
         return quote
             backing = fieldtype(dual_type(Val($N), typeof(x)), 1)
@@ -802,10 +921,10 @@ end
     if fieldcount(P) == 0
         return :(_randn_dual_zero_field(Val($N), rng, x))
     end
-    seeds = [
-        :(randn_dual(Val($N), rng, getfield(x, $(QuoteNode(name))))) for
-        name in fieldnames(P)
-    ]
+    seeds = map(1:fieldcount(P)) do i
+        nm = QuoteNode(fieldnames(P)[i])
+        return _seed_field_expr(N, P, i, :(randn_dual(Val($N), rng, getfield(x, $nm))))
+    end
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
     return quote
         backing = fieldtype(dual_type(Val($N), typeof(x)), 1)

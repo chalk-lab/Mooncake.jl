@@ -711,6 +711,62 @@ end
         memoryrefset!(tangent(x), tangent(value), ord, bc)
         return value
     end
+
+    # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
+    # forward V is `NoDual`, so each op threads only the primal and keeps a
+    # `NoDual` result V. Reached in forward-over-reverse over reverse-rule infra.
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual}
+    ) where {Nw}
+        yp = memoryrefnew(primal(x))
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        args::Vararg{Lifted,K},
+    ) where {Nw,K}
+        yp = memoryrefnew(primal(x), map(primal, args)...)
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        ordering::Lifted,
+        boundscheck::Lifted,
+    ) where {Nw}
+        yp = memoryrefget(primal(x), primal(ordering), primal(boundscheck))
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        yp = lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        value::Lifted,
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        lmemoryrefset!(primal(x), primal(value), Val(ordering), Val(boundscheck))
+        return value
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        value::Lifted,
+        ordering::Lifted{Symbol},
+        boundscheck::Lifted{Bool},
+    ) where {Nw}
+        memoryrefset!(primal(x), primal(value), primal(ordering), primal(boundscheck))
+        return value
+    end
 end
 
 # Core.memoryrefsetonce!
@@ -826,8 +882,12 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# Field tangents from `Memory` (`.length`, `.ptr`) are non-differentiable;
-# Lifted V is `NoDual`.
+# Project the field V via `_get_lifted_field`: non-differentiable metadata
+# (`.length`, `.ptr`, `.size`) yields `NoDual`, while the differentiable storage
+# field (`.ref`) yields the matching `NDualMemoryRef`. A blanket `NoDual` here
+# would drop the per-lane partials of `.ref` — silently zeroing the derivative in
+# forward-over-reverse, where these field accesses are exercised. Mirrors the
+# reverse `rrule!!` below, which returns `x.dx.ref` for the storage field.
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
@@ -835,7 +895,7 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,name,order}
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -849,8 +909,10 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-# MemoryRef field access — `NoDual` V (`.ptr_or_offset` is a Ptr; `.mem`
-# would lose the per-lane Memory partials under Lifted).
+# MemoryRef field access — `.ptr_or_offset` is a non-differentiable Ptr
+# (`NoDual`); `.mem` projects to the matching per-lane `NDualArray` so the
+# storage's partials survive (see the `Memory` overload above for why a blanket
+# `NoDual` is wrong). Mirrors the reverse `rrule!!`, which returns `x.dx.mem`.
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -858,7 +920,7 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,name,order}
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -878,8 +940,10 @@ function frule!!(
     ::Lifted{Val{name},Nw},
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,D,name,order}
+    # `.size` is non-differentiable (`NoDual`); `.ref` projects to the matching
+    # `NDualMemoryRef`. Mirrors the reverse `rrule!!`, which returns `x.dx.ref`.
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},

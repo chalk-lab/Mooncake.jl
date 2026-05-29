@@ -38,16 +38,22 @@
         end
     else
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        inits = always_initialised(P)
+        # Coerce the field-V tuple into the *declared* backing NamedTuple
+        # `fieldtype(dual_type(Val(Nw), P), 1)`: a field declared abstract is
+        # stored as `Any`; a non-always-init field as `PossiblyUninitTangent`,
+        # initialised from its backing field type when the arg is supplied
+        # (`i <= M`) or left uninit when `_new_` omits it (`i > M`, e.g.
+        # `StructFoo(a)` leaving `b` undefined). Keeps V `=== dual_type(Val(Nw), P)`.
+        field_exprs = map(1:fieldcount(P)) do i
+            i > M && return :(fieldtype(backing, $i)())
+            base = :(tangent(x[$i]))
+            inits[i] ? base : :(fieldtype(backing, $i)($base))
+        end
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            # Coerce the field-V tuple into the *declared* backing NamedTuple
-            # `fieldtype(dual_type(Val(Nw), P), 1)` so a field declared abstract
-            # is stored as `Any` (matching `dual_type`), keeping the constructed V
-            # `=== dual_type(Val(Nw), P)`. Without this, an abstract-field struct
-            # built here would get `$wrapper{@NamedTuple{f::NDual}}`, which is not
-            # the invariant `$wrapper{@NamedTuple{f::Any}}` the interpreter annotates.
             backing = fieldtype(dual_type(Val(Nw), P), 1)
-            return Lifted{P,Nw}(y, $wrapper(backing(tuple_map(tangent, x))))
+            return Lifted{P,Nw}(y, $wrapper(backing(($(field_exprs...),))))
         end
     end
 end

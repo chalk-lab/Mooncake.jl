@@ -413,13 +413,19 @@ function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
 end
 
 # Forward-mode structural-lift V's recurse field-wise (tangent storage is
-# slot-local, so no address is tracked at this level).
+# slot-local, so no address is tracked at this level). A `PossiblyUninitTangent`
+# field is unwrapped and skipped when its primal field is undefined, mirroring
+# the reverse `Tangent` path above.
 function populate_address_map_internal(
     m::AddressMap, p, t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
 )
     nt = t.value
     foreach(keys(nt)) do n
-        return populate_address_map_internal(m, getfield(p, n), getfield(nt, n))
+        t_field = getfield(nt, n)
+        if isdefined(p, n) && is_init(t_field)
+            populate_address_map_internal(m, getfield(p, n), val(t_field))
+        end
+        return nothing
     end
     return m
 end

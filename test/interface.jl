@@ -1409,6 +1409,34 @@ end
                     cache, f, reshape([1.0, 0.0], 2, 1), reshape([1.0, 2.0], 2, 1)
                 )
             end
+
+            # Single-direction (width-1) forward-over-reverse value correctness.
+            # Regression guard for the two forward-mode V-drops these exercise:
+            # (1) `lgetfield` `.ref` projection on `NDualArray` slots (array reads
+            # through `getindex`/broadcast must keep their partials); (2) the
+            # reverse rule's `fwds_oc`/`pb_oc` sharing one forward-tangent buffer
+            # for their common capture stacks. Either drop silently zeroes `hvp`.
+            @testset "HVP value correctness" begin
+                # Scalar: hvp = f''(x)·v is distinct from the gradient f'(x).
+                let f = x -> x^4, x = 2.0, v = 1.0
+                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                    @test val ≈ x^4
+                    @test g ≈ 4x^3          # 32
+                    @test hv ≈ 12x^2 * v    # 48 — would be 0 if a partial were dropped
+                end
+                # Array, Hessian 2I: hvp = 2v. Reads x via getindex/broadcast.
+                let f = x -> sum(x .* x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
+                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, (v,), x)
+                    @test val ≈ sum(x .* x)
+                    @test g ≈ 2 .* x
+                    @test hv ≈ 2 .* v
+                end
+                # Fused-primitive path (`sum(abs2, ·)`), same Hessian.
+                let f = x -> sum(abs2, x), x = [2.0, 3.0, 4.0], v = [0.0, 1.0, 0.0]
+                    _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, (v,), x)
+                    @test hv ≈ 2 .* v
+                end
+            end
         end
     end
 

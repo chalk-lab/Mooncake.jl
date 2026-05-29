@@ -47,15 +47,27 @@ end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 
-# Forward-mode V for a MistyClosure is its `MistyClosureTangent` (carrying
-# `captures_tangent` + `dual_callable`), mirroring reverse mode — NOT the
-# generic structural lift of the closure's IR. The `frule!!` above reads
-# `tangent(slot).captures_tangent` / `.dual_callable`, so the slot's V must be
-# the `MistyClosureTangent`. `lift` (width-1) wraps an existing one directly.
+# Forward-mode V for a MistyClosure is its `MistyClosureTangent` — NOT the
+# generic structural lift of the closure's IR. In the *forward* slot the
+# `captures_tangent` field holds the already-lifted forward captures slot
+# (`Lifted{captures, V}`), built here at lift time rather than per `frule!!`
+# call. Building once is required for forward-over-reverse: a reverse rule's
+# `fwds_oc` and `pb_oc` share their captures, so they must share the forward
+# tangent buffer — which they do when both are lifted within one operation that
+# threads the aliasing cache `c` (keyed by the primal captures identity). The
+# `dual_callable` is the forward rule built by `_dual_mc`.
 dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} = MistyClosureTangent
-function lift(x::MistyClosure, ẋ::MistyClosureTangent)
-    return Lifted{typeof(x),1,MistyClosureTangent}(x, ẋ)
+lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
+function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict})
+    lifted_captures = _lift_mc_captures(x.oc.captures, ẋ.captures_tangent, c)
+    return Lifted{typeof(x),1,MistyClosureTangent}(
+        x, MistyClosureTangent(lifted_captures, ẋ.dual_callable)
+    )
 end
+@inline _lift_mc_captures(captures, ct, ::Nothing) = lift(captures, ct)
+@inline _lift_mc_captures(captures, ct, c::IdDict) = get!(
+    () -> lift(captures, ct, c), c, captures
+)
 
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(zero_tangent_internal(p.oc.captures, d), _dual_mc(p))
@@ -207,13 +219,12 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
-# `_dual_mc` builds a Lifted-dispatched callable via `build_frule` (per
-# the interpreter cutover). Wrap captures + supplied tangent into a
-# width-1 Lifted slot and forward.
+# The forward-slot `captures_tangent` already holds the lifted (and, in
+# forward-over-reverse, shared) forward captures slot built at lift time, so
+# forward it directly to the `_dual_mc`-built callable. Re-lifting here would
+# allocate a fresh, unshared buffer and silently zero the HVP.
 function frule!!(f::Lifted{<:MistyClosure,1}, x::Vararg{Lifted,M}) where {M}
-    captures = primal(f).oc.captures
-    lifted_captures = lift(captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(lifted_captures, x...)
+    return tangent(f).dual_callable(tangent(f).captures_tangent, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

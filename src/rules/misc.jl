@@ -147,8 +147,14 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 end
 
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
-@inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = getfield(
-    getfield(V, :value), name
+# A `PossiblyUninitTangent` backing field is unwrapped: the caller has already
+# read the primal field (so it is defined), hence the PUT is initialised.
+@inline _maybe_val(x::PossiblyUninitTangent) = val(x)
+@inline _maybe_val(x) = x
+@inline _coerce_backing_field(::Type{F}, v) where {F<:PossiblyUninitTangent} = F(v)
+@inline _coerce_backing_field(::Type, v) = v
+@inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = _maybe_val(
+    getfield(getfield(V, :value), name)
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
 # NDualArray is the SoA wrapper for `Array{T,D}` slots (not a struct lift).
@@ -272,7 +278,10 @@ end
     setfield!(primal(value), name, primal(x))
     md = tangent(value)
     nt = getfield(md, :value)
-    setfield!(md, :value, merge(nt, NamedTuple{(name,)}((tangent(x),))))
+    # Coerce into the declared backing field type — a `PossiblyUninitTangent`
+    # field (non-always-init) must be re-wrapped, the write makes it initialised.
+    v_i = _coerce_backing_field(fieldtype(typeof(nt), name), tangent(x))
+    setfield!(md, :value, merge(nt, NamedTuple{(name,)}((v_i,))))
     return x
 end
 @inline function rrule!!(
