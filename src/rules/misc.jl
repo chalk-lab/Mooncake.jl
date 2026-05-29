@@ -175,12 +175,32 @@ end
         end
         return NoDual()
     end
-    @inline _get_lifted_field(::Mooncake.Nfwd.NDualMemoryRef, _) = NoDual()
+    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the SoA
+    # memory-ref V to the matching SoA `NDualArray` over those memories (the
+    # `.ptr_or_offset` field is a non-diff Ptr → `NoDual`). Mirrors the reverse
+    # `rrule!!`, which returns `x.dx.mem`.
+    @inline function _get_lifted_field(
+        V::Mooncake.Nfwd.NDualMemoryRef{T,N,M}, name::Symbol
+    ) where {T,N,M}
+        if name === :mem
+            primal_mem = getfield(V.primal, :mem)
+            partial_mems = ntuple(k -> getfield(V.partials[k], :mem), Val(N))
+            return Mooncake.Nfwd.NDualArray{T,N,1,M}(primal_mem, partial_mems)
+        end
+        return NoDual()
+    end
     # AoS array V (a plain `Array` of per-element forward Vs, for differentiable
     # non-float-element arrays): its `.ref` is a `MemoryRef` into the V array,
     # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff.
     @inline _get_lifted_field(V::Array, name::Symbol) =
         name === :ref ? getfield(V, :ref) : NoDual()
+    # AoS memory-ref V (a plain `MemoryRef` into an AoS V `Memory`): `.mem`
+    # projects to the AoS `Memory` V; `.ptr_or_offset` is a non-diff `Ptr`.
+    @inline _get_lifted_field(V::MemoryRef, name::Symbol) =
+        name === :mem ? getfield(V, :mem) : NoDual()
+    # AoS `Memory` V: its only fields (`.length`, `.ptr`) are non-diff metadata;
+    # element access goes through `memoryrefget`/`memoryrefset!`, not here.
+    @inline _get_lifted_field(::Memory, ::Symbol) = NoDual()
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()

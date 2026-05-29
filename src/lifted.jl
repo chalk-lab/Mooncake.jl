@@ -492,6 +492,20 @@ end
     @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T},NDual{T,N}}
     end
+    # General (non-float) `Memory` / `MemoryRef` V, mirroring the AoS `Array` rule
+    # above: non-diff element → `NoDual`; differentiable element → AoS
+    # `Memory{dual_type(elt)}` / `MemoryRef{dual_type(elt)}` (a plain memory/ref
+    # of per-element forward Vs). Covers the reverse rule's `Memory{Tuple{pullback}}`
+    # comms storage under forward-over-reverse. The IEEEFloat overloads above are
+    # more specific and provide the SoA optimisation for scalar-float elements.
+    @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
+        tangent_type(T) === NoTangent && return NoDual
+        return :(Memory{dual_type(Val($N), $T)})
+    end
+    @generated function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T}
+        tangent_type(T) === NoTangent && return NoDual
+        return :(MemoryRef{dual_type(Val($N), $T)})
+    end
 end
 
 # Recursive structural lift for concrete struct primals — the @generated
@@ -572,13 +586,26 @@ end
     }
 end
 @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
+# Abstract tuple/named-tuple `P` (e.g. a grouped-vararg `Tuple{Function,
+# Vararg{Any}}` in the forward IR) must widen to a UnionAll: `Lifted` is invariant
+# in `P`, so a concrete runtime `Lifted{Tuple{f,x},…}` is *not* a subtype of
+# `Lifted{Tuple{Function,Vararg},N,Any}` and the OpaqueClosure arg typeassert
+# would reject it (mirrors the generic struct overload below).
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
-    return Lifted{P,N,dual_type(Val(N), P)}
+    return if isconcretetype(P)
+        Lifted{P,N,dual_type(Val(N), P)}
+    else
+        (Lifted{T,N,V} where {T<:P,V})
+    end
 end
 @inline function lifted_type(
     ::Val{N}, ::Type{P}
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
-    return Lifted{P,N,dual_type(Val(N), P)}
+    return if isconcretetype(P)
+        Lifted{P,N,dual_type(Val(N), P)}
+    else
+        (Lifted{S,N,V} where {S<:P,V})
+    end
 end
 @inline function lifted_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}
@@ -1008,5 +1035,23 @@ end
     # via `ntuple(_ -> zero(p), Val(N))`.
     @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T}}(m)
+    end
+    # AoS (non-float differentiable element) `Memory` / `MemoryRef` seeds,
+    # mirroring the AoS array factory and `dual_type`: a per-element V memory,
+    # built element-wise; a non-diff element gives `NoDual`. The IEEEFloat
+    # overloads above are more specific and provide the SoA optimisation.
+    @generated function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
+        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
+        return quote
+            v = Memory{dual_type(Val($N), T)}(undef, length(m))
+            @inbounds for i in eachindex(m)
+                isassigned(m, i) && (v[i] = zero_dual(Val($N), m[i]))
+            end
+            return v
+        end
+    end
+    @generated function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
+        return :(memoryref(zero_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
     end
 end

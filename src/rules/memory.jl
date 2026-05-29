@@ -654,6 +654,15 @@ end
         yt = memoryrefnew(tangent(x))
         return Lifted{typeof(yp),Nw}(yp, yt)
     end
+    # AoS `memoryrefnew(::Memory)`: the V is the AoS `Memory`; project it to the
+    # matching AoS `MemoryRef` V (1-arg `memoryrefnew` makes a ref to the start).
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Memory,Nw,<:Memory}
+    ) where {Nw}
+        yp = memoryrefnew(primal(x))
+        yt = memoryrefnew(tangent(x))
+        return Lifted{typeof(yp),Nw}(yp, yt)
+    end
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
         x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
@@ -711,6 +720,43 @@ end
         memoryrefset!(tangent(x), tangent(value), ord, bc)
         return value
     end
+    # AoS `unsafe_copyto!(dest, src, n)`: copy the primal and the AoS-V memrefs in
+    # lockstep (used by `Memory`/`Array` growth over `Vector{Tuple{pullback}}`).
+    @inline function frule!!(
+        ::Lifted{typeof(unsafe_copyto!),Nw},
+        dest::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        src::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        n::Lifted,
+    ) where {Nw}
+        _n = primal(n)
+        unsafe_copyto!(primal(dest), primal(src), _n)
+        unsafe_copyto!(tangent(dest), tangent(src), _n)
+        return dest
+    end
+    # AoS array field write (`Array` growth sets `.ref` / `.size`): set the field
+    # on the primal array and the parallel AoS-V array. `.ref` is the differentiable
+    # storage (take the AoS-V ref); `.size` is metadata shared with the primal.
+    @inline function frule!!(
+        ::Lifted{typeof(lsetfield!),Nw},
+        value::Lifted{<:Array,Nw,<:Array},
+        ::Lifted{Val{name}},
+        x::Lifted,
+    ) where {Nw,name}
+        lsetfield!(primal(value), Val(name), primal(x))
+        lsetfield!(tangent(value), Val(name), name === :ref ? tangent(x) : primal(x))
+        return x
+    end
+    # Non-differentiable array (`NoDual` V, e.g. an `Int32` stack): write the
+    # primal field only.
+    @inline function frule!!(
+        ::Lifted{typeof(lsetfield!),Nw},
+        value::Lifted{<:Array,Nw,NoDual},
+        ::Lifted{Val{name}},
+        x::Lifted,
+    ) where {Nw,name}
+        lsetfield!(primal(value), Val(name), primal(x))
+        return x
+    end
 
     # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
     # forward V is `NoDual`, so each op threads only the primal and keeps a
@@ -767,6 +813,15 @@ end
         memoryrefset!(primal(x), primal(value), primal(ordering), primal(boundscheck))
         return value
     end
+    @inline function frule!!(
+        ::Lifted{typeof(unsafe_copyto!),Nw},
+        dest::Lifted{<:MemoryRef,Nw,NoDual},
+        src::Lifted{<:MemoryRef,Nw,NoDual},
+        n::Lifted,
+    ) where {Nw}
+        unsafe_copyto!(primal(dest), primal(src), primal(n))
+        return dest
+    end
 end
 
 # Core.memoryrefsetonce!
@@ -811,6 +866,34 @@ function rrule!!(
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
+# AoS `Memory{P}(undef, n)` for non-float differentiable elements: the V is the
+# AoS `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
+# AoS `memoryrefset!`). Non-diff element → `NoDual`. The IEEEFloat overload above
+# (SoA `NDualArray`) is more specific and wins for scalar-float elements.
+@generated function frule!!(
+    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+) where {Nw,P}
+    MemV = dual_type(Val(Nw), Memory{P})
+    MemV === NoDual && return :(Lifted{Memory{P},Nw}(Memory{P}(undef, primal(n)), NoDual()))
+    return quote
+        x = Memory{P}(undef, primal(n))
+        return Lifted{Memory{P},Nw}(x, $MemV(undef, primal(n)))
+    end
+end
+@static if VERSION >= v"1.12-"
+    @generated function frule!!(
+        ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
+    ) where {Nw,P}
+        MemV = dual_type(Val(Nw), Memory{P})
+        MemV === NoDual &&
+            return :(Lifted{Memory{P},Nw}(Core.memorynew(Memory{P}, primal(n)), NoDual()))
+        return quote
+            x = Core.memorynew(Memory{P}, primal(n))
+            return Lifted{Memory{P},Nw}(x, $MemV(undef, primal(n)))
+        end
+    end
+end
+
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{MemoryRef{P}}},
@@ -834,6 +917,21 @@ function frule!!(
     # ref field; per-lane Array shape matches `_sz`.
     partials = ntuple(k -> _new_(Array{P,D}, tangent(ref).partials[k], _sz), Val(Nw))
     return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, partials))
+end
+# AoS `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
+# is the AoS `Array{dual_type(P),D}` built from the AoS-V ref (a plain
+# `MemoryRef`) and the same size. Mirrors the reverse `rrule!!` below
+# (`_new_(Array{tangent_type(P),N}, ref.dx, size)`).
+@inline function frule!!(
+    ::Lifted{typeof(_new_),Nw},
+    ::Lifted{Type{Array{P,D}},Nw},
+    ref::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+    sz::Lifted,
+) where {Nw,P,D}
+    _sz = primal(sz)
+    y = _new_(Array{P,D}, primal(ref), _sz)
+    yv = _new_(Array{dual_type(Val(Nw), P),D}, tangent(ref), _sz)
+    return Lifted{Array{P,D},Nw}(y, yv)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)},
@@ -1067,6 +1165,22 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
         return NoRData(), NoRData()
     end
     return y, copy_pullback!!
+end
+# Forward `copy(::Array)`: copy primal and V together. SoA float array → copy each
+# lane's partial; AoS array → copy the (immutable-element) V array; non-diff → NoDual.
+function frule!!(
+    ::Lifted{typeof(copy),N},
+    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+) where {N,T<:IEEEFloat,D}
+    yp = copy(primal(a))
+    parts = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
+    return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, parts))
+end
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
+end
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,NoDual}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), NoDual())
 end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}

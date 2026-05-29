@@ -107,6 +107,18 @@ end
     return tangent(lift(x, zero_tangent(x), IdDict()))
 end
 
+# A `MooncakeInterpreter` is compiler state used to *build* rules (its caches map
+# `MethodInstance`s to compiled code); no user derivative flows through it. Its
+# reverse `tangent_type` is nonetheless a deep struct over `IdDict`/`Memory{Any}`
+# caches. In forward mode it is non-differentiable: its V is `NoDual`. This lets
+# `_build_rule!` (lazy rule construction inside a forward pass, forward-over-
+# reverse) seed the interpreter slot without lifting the entire compiler-cache
+# structure.
+@inline dual_type(::Val{N}, ::Type{<:MooncakeInterpreter}) where {N} = NoDual
+@inline zero_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
+@inline uninit_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
+@inline lift(x::MooncakeInterpreter, _) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+
 # LazyFoRRule / DynamicFoRRule are frules for build_derived_rrule:
 #
 #   build_derived_rrule : (interp, sig_or_mi, sig, debug_mode) → rrule
@@ -140,7 +152,10 @@ function _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode::Bool)
         nargs=NoTangent(),
     ))
     rule_tangent = debug_mode ? Tangent((; rule=inner_tangent)) : inner_tangent
-    return Dual(new_rule, rule_tangent)
+    # Lift the (reverse-shaped) rule_tangent into the canonical forward V: `lift`
+    # carries each `MistyClosureTangent`'s dual-callable and, via its aliasing
+    # cache, gives the rule's `fwds_oc` / `pb_oc` one shared forward captures slot.
+    return lift(new_rule, rule_tangent, IdDict())
 end
 
 # First-call compilation helper: build a DerivedRule (+ dual callables + tangent) for
@@ -201,11 +216,11 @@ function _compile_for_rule(
 end
 
 function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
+    ::Lifted{typeof(build_derived_rrule)},
+    _interp::Lifted{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
 ) where {Trule,Tfwd,Trvs,C}
     @nospecialize _sig_or_mi _sig
 
@@ -235,15 +250,15 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
     cache.rule = rule
     cache.fwd_dual_callable = fwd_dc
     cache.rvs_dual_callable = rvs_dc
-    return Dual(rule, rule_tangent)
+    return lift(rule, rule_tangent, IdDict())
 end
 
 function (cache::DynamicFoRRule)(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
+    ::Lifted{typeof(build_derived_rrule)},
+    _interp::Lifted{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
 ) where {C}
     @nospecialize _sig_or_mi _sig
 
@@ -268,7 +283,7 @@ function (cache::DynamicFoRRule)(
         primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
     )
     cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
-    return Dual(rule, rule_tangent)
+    return lift(rule, rule_tangent, IdDict())
 end
 
 function rrule!!(

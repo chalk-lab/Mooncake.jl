@@ -913,9 +913,12 @@ end
 # `Core.SimpleVector` carries no canonical V (its `tangent_type` is
 # `Vector{Any}` for reverse mode, but Lifted has no single-tangent slot
 # for that). SimpleVector elements are typically non-differentiable types
-# (DataType, Symbol, Method, …), so the canonical V for the output is
-# `NoDual`. Matches the pointer_from_objref treatment for
-# "informational tangents under forward Lifted".
+# (DataType, Symbol, Method, …), so the canonical V is `NoDual` — the frules
+# below (`svec`, `_svec_ref`) already produce `NoDual`, so `dual_type` must
+# agree, else an OpaqueClosure compiled to the generic `NTuple{N, Vector{Any}}`
+# fallback would typeassert-reject the `NoDual` value (seen in forward-over-
+# reverse, where `svec` sparams flow through rule construction).
+@inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = NoDual
 function frule!!(
     ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
 ) where {Nw}
@@ -1154,18 +1157,24 @@ is_homogeneous_and_immutable(::Any) = false
 function frule!!(
     ::Lifted{typeof(setfield!),Nw}, value::Lifted, name::Lifted, x::Lifted
 ) where {Nw}
-    # Mirrors the bare-Dual `lsetfield_frule` body via `setfield!` + tangent
-    # write. `setproperty!` on a MutableDualTangentView routes through the
-    # slot's parent — needed when `value` is a mutable struct slot.
     nm = primal(name)
     setfield!(primal(value), nm, primal(x))
-    # If `value`'s V isn't `NoTangent`, propagate the tangent into its lane.
-    tv = tangent(value)
-    if !(tv === NoTangent())
-        setproperty!(tv, nm, tangent(x))
-    end
+    _setfield_tangent!(tangent(value), nm, tangent(x))
     return x
 end
+# A `MutableDual` struct V stores fields in its backing `value` NamedTuple (the
+# same path `lsetfield!` takes), so merge there — `setproperty!` on the
+# `MutableDual` itself would hit its single `value` field. A non-diff V (`NoDual`)
+# has nothing to write; any other V (e.g. a `MutableDualTangentView`) routes
+# through `setproperty!`, which delegates to the parent.
+@inline _setfield_tangent!(::Union{NoDual,NoTangent}, _, _) = nothing
+@inline function _setfield_tangent!(tv::MutableDual, nm, vx)
+    nt = getfield(tv, :value)
+    v_i = _coerce_backing_field(fieldtype(typeof(nt), nm), vx)
+    setfield!(tv, :value, merge(nt, NamedTuple{(nm,)}((v_i,))))
+    return nothing
+end
+@inline _setfield_tangent!(tv, nm, vx) = (setproperty!(tv, nm, vx); nothing)
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
     return rrule!!(uninit_fcodual(lsetfield!), value, literal_name, x)
