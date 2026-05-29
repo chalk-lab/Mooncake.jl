@@ -361,10 +361,22 @@ Fills `m` with pairs mapping from memory addresses in `primal` to corresponding 
 addresses in `tangent`. If the same memory address appears multiple times in `primal`,
 throws an `AssertionError` if the same address is not mapped to in `tangent` each time.
 """
+# Forward-mode V's with no slot-local address to track. The aliasing contract is
+# asymmetric (primal aliases user storage; tangent storage is slot-local), so the
+# reverse-mode address-map machinery does not apply — return `m` unchanged.
+# `ImmutableDual` / `MutableDual` recurse (handled by their own method below).
+const _NoDerivativeV = Union{
+    Mooncake.NoDual,
+    Mooncake.Nfwd.NDual,
+    Complex{<:Mooncake.Nfwd.NDual},
+    Mooncake.Nfwd.NDualArray,
+}
+
 function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) where {P,T}
     isprimitivetype(P) && return m
     T === NoTangent && return m
     T === NoFData && return m
+    tangent isa _NoDerivativeV && return m
     if ismutabletype(P)
         @assert T <: MutableTangent "Expected tangent type to be a MutableTangent for mutable primal type $(P), but got $(T)."
         k = pointer_from_objref(primal)
@@ -400,17 +412,8 @@ function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
     getfield(t.value, n)
 end
 
-# Forward-mode V's: aliasing contract is asymmetric (primal aliases user storage,
-# tangent storage is slot-local). Reverse-mode mutable-tangent assertions and
-# tangent-side address tracking do not apply.
-populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.NoDual) = m
-populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.Nfwd.NDual) = m
-function populate_address_map_internal(
-    m::AddressMap, ::Any, ::Complex{<:Mooncake.Nfwd.NDual}
-)
-    return m
-end
-populate_address_map_internal(m::AddressMap, ::Any, ::Mooncake.Nfwd.NDualArray) = m
+# Forward-mode structural-lift V's recurse field-wise (tangent storage is
+# slot-local, so no address is tracked at this level).
 function populate_address_map_internal(
     m::AddressMap, p, t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
 )
@@ -426,16 +429,10 @@ function populate_address_map_internal(
 ) where {P<:Union{Tuple,NamedTuple}}
     t isa NoFData && return m
     t isa NoTangent && return m
+    t isa _NoDerivativeV && return m
     foreach(
         n -> populate_address_map_internal(m, getfield(p, n), getfield(t, n)), fieldnames(P)
     )
-    return m
-end
-# Disambiguate a Tuple/NamedTuple primal carrying a forward-mode no-derivative
-# sentinel V against the `(::Any, ::NoDual)` method above — both match.
-function populate_address_map_internal(
-    m::AddressMap, ::Union{Tuple,NamedTuple}, ::Mooncake.NoDual
-)
     return m
 end
 

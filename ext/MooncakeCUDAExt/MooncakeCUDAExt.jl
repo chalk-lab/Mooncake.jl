@@ -1522,25 +1522,17 @@ function frule!!(
         zero(decoded.primal_out)
     end
     P_out = typeof(decoded.primal_out)
-    return Lifted{P_out,1}(decoded.primal_out, _wrap_scalar_v(decoded.primal_out, dy))
+    return Lifted{P_out,1}(
+        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, (dy,))
+    )
 end
 
-# Wrap a (primal, dy) scalar pair into the canonical width-1 V: NDual for real
-# IEEEFloat outputs, Complex{NDual} for complex outputs.
-@inline _wrap_scalar_v(y::T, dy::T) where {T<:IEEEFloat} = NDual{T,1}(y, (dy,))
-@inline function _wrap_scalar_v(y::Complex{R}, dy::Complex{R}) where {R<:IEEEFloat}
-    return Complex(NDual{R,1}(real(y), (real(dy),)), NDual{R,1}(imag(y), (imag(dy),)))
+# Wrap a scalar primal `y` with per-lane partials `dy_lanes` into the canonical
+# V, picking by scalar shape: `NDual` for real, `Complex{NDual}` for complex —
+# so the invalid `NDual{Complex{R},N}` (NDual.T must be IEEEFloat) is never built.
+@inline function _wrap_scalar_v_lanes(y::T, dy_lanes::NTuple{N,T}) where {T<:IEEEFloat,N}
+    return NDual{T,N}(y, dy_lanes)
 end
-
-# Width-N variant: a scalar primal `y` with per-lane partials `dy_lanes`. Picks
-# the canonical V by scalar shape (NDual for real, Complex{NDual} for complex),
-# so `NDual{Complex{R},N}` — invalid since NDual.T must be IEEEFloat — is never
-# constructed.
-@inline _wrap_scalar_v_lanes(y::T, dy_lanes::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{
-    T,N
-}(
-    y, dy_lanes
-)
 @inline function _wrap_scalar_v_lanes(
     y::Complex{R}, dy_lanes::NTuple{N,Complex{R}}
 ) where {R<:IEEEFloat,N}
