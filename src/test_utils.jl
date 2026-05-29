@@ -431,6 +431,13 @@ function populate_address_map_internal(
     )
     return m
 end
+# Disambiguate a Tuple/NamedTuple primal carrying a forward-mode no-derivative
+# sentinel V against the `(::Any, ::NoDual)` method above — both match.
+function populate_address_map_internal(
+    m::AddressMap, ::Union{Tuple,NamedTuple}, ::Mooncake.NoDual
+)
+    return m
+end
 
 function populate_address_map_internal(m::AddressMap, p::Array, t::Array)
     k = pointer_from_objref(p)

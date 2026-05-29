@@ -1396,11 +1396,10 @@ function frule!!(
     ::Lifted{typeof(sum),Nw},
     x::Lifted{<:Transpose{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
 ) where {Nw,T<:CuFloatOrComplex}
-    R = real(T)
     y = sum(primal(x))
     parent_partials = tangent(x).value.parent.partials
     dy_lanes = ntuple(k -> sum(parent_partials[k]), Val(Nw))
-    return Lifted{typeof(y),Nw}(y, NDual{typeof(y),Nw}(y, dy_lanes))
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function frule!!(
     ::Lifted{typeof(sum),Nw},
@@ -1410,7 +1409,7 @@ function frule!!(
     parent_partials = tangent(x).value.parent.partials
     # Adjoint applies elementwise conj — sum then conjugate.
     dy_lanes = ntuple(k -> conj(sum(parent_partials[k])), Val(Nw))
-    return Lifted{typeof(y),Nw}(y, NDual{typeof(y),Nw}(y, dy_lanes))
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
@@ -1531,6 +1530,23 @@ end
 @inline _wrap_scalar_v(y::T, dy::T) where {T<:IEEEFloat} = NDual{T,1}(y, (dy,))
 @inline function _wrap_scalar_v(y::Complex{R}, dy::Complex{R}) where {R<:IEEEFloat}
     return Complex(NDual{R,1}(real(y), (real(dy),)), NDual{R,1}(imag(y), (imag(dy),)))
+end
+
+# Width-N variant: a scalar primal `y` with per-lane partials `dy_lanes`. Picks
+# the canonical V by scalar shape (NDual for real, Complex{NDual} for complex),
+# so `NDual{Complex{R},N}` — invalid since NDual.T must be IEEEFloat — is never
+# constructed.
+@inline _wrap_scalar_v_lanes(y::T, dy_lanes::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{
+    T,N
+}(
+    y, dy_lanes
+)
+@inline function _wrap_scalar_v_lanes(
+    y::Complex{R}, dy_lanes::NTuple{N,Complex{R}}
+) where {R<:IEEEFloat,N}
+    re = NDual{R,N}(real(y), ntuple(k -> real(dy_lanes[k]), Val(N)))
+    im = NDual{R,N}(imag(y), ntuple(k -> imag(dy_lanes[k]), Val(N)))
+    return Complex(re, im)
 end
 
 # Transpose/Adjoint of CuFloatArray — V is ImmutableDual{@NamedTuple{parent::NDualArray}}.
