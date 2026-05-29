@@ -272,7 +272,7 @@ end
 end
 
 # Width-1 `lift` overloads for CuPtr / CuArray — mirror the host `Ptr` / `Array`
-# overloads at `src/lifted.jl:541-553`. Without these, the test-side `lift(p, ẋ)`
+# `lift` overloads in `src/lifted.jl`. Without these, the test-side `lift(p, ẋ)`
 # boundary call MethodErrors for CuPtr / CuArray inputs.
 @inline function Mooncake.lift(x::CuPtr{T}, ẋ::CuPtr{T}) where {T}
     return Mooncake.Lifted{CuPtr{T},1}(x, (ẋ,))

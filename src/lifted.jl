@@ -134,15 +134,19 @@ end
 # at the bottom of this file returns a `MutableDualTangentView` proxy so rule
 # bodies can write through it; `unlift` has its own MutableDual path that
 # materialises a fresh `MutableTangent` instead.
-@inline tangent(x::Lifted{T,N,NDual{T,N}}, lane::Integer) where {T<:IEEEFloat,N} = tangent(
-    x
-).partials[lane]
-@inline tangent(x::Lifted{A,N,<:NDualArray}, lane::Integer) where {A<:AbstractArray,N} = tangent(
-    x
-).partials[lane]
+# Leaf V accessors key on the V shape and leave `P` free: the inner V uniquely
+# determines extraction, and an abstract slot (e.g. `Lifted{Real, N, NDual{Float64, N}}`,
+# where the static primal type is abstract but the runtime V is concrete) must
+# still resolve here.
+@inline function tangent(x::Lifted{P,N,NDual{T,N}}, lane::Integer) where {P,T<:IEEEFloat,N}
+    return tangent(x).partials[lane]
+end
+@inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
+    return tangent(x).partials[lane]
+end
 @inline function tangent(
-    x::Lifted{Complex{R},N,Complex{NDual{R,N}}}, lane::Integer
-) where {R<:IEEEFloat,N}
+    x::Lifted{P,N,Complex{NDual{R,N}}}, lane::Integer
+) where {P,R<:IEEEFloat,N}
     v = tangent(x)
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
@@ -408,6 +412,10 @@ end
 # time without an @generated function.
 @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
 @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    # Non-concrete tuples (e.g. `Tuple{Vararg{T}}`, abstract element types) widen
+    # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
+    # never terminates on a `Vararg` tail (`tuple_type_tail` is a fixed point).
+    isconcretetype(P) || return Any
     H = Base.tuple_type_head(P)
     Tail = Base.tuple_type_tail(P)
     return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
@@ -437,28 +445,37 @@ end
 end
 
 # Recursive structural lift for concrete struct primals — the @generated
-# fallback. Mirrors `tangent_type` (src/tangents/tangents.jl:470): for
-# non-concrete P return the broad inner `NoDual` per dual-types.md, and
-# emit `NoDual` for fields whose declared fieldtype is non-concrete so the
-# structural lift through a concrete parent with abstractly-typed fields
-# does not bake a deferred error into the parent's V (design note: "abstract
-# or insufficiently concrete P: a deliberately broad static inner annotation").
+# fallback. The two terminal answers mirror reverse-mode `tangent_type`'s two
+# distinct answers, and the distinction matters:
+#  - non-concrete `P` widens to `Any` — "the derivative could be anything"
+#    (`tangent_type` returns `Any` here too). This is an upper bound, not a
+#    claim of no-derivative; abstract slot primals are sharpened to concrete V
+#    at runtime via `lifted_type`'s UnionAll, and an abstract *field* of a
+#    concrete struct keeps its derivative because a concrete runtime V is a
+#    subtype of the `Any`-typed backing slot.
+#  - `tangent_type(P) === NoTangent` (non-differentiable concrete types: `Int`,
+#    `Symbol`, recursive Core internals like `CodeInstance`, …) maps to the
+#    `NoDual` sentinel — the forward analogue of `NoTangent`, a specific
+#    "no derivative here", which also terminates the field recursion.
+# Fields are lifted uniformly via `dual_type(Val(N), fieldtype)`: concrete
+# differentiable fields recurse, abstract fields hit the `Any` rule, and
+# non-differentiable fields hit the `NoDual` rule. The seed factories below
+# coerce field storage into the declared backing NamedTuple so a differentiable
+# value flowing into an `Any`-typed field still yields `V === dual_type(Val(N), P)`.
 @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
-    isconcretetype(P) || return NoDual
-    # Mirror reverse-mode: if `tangent_type(P) === NoTangent`, the primal carries
-    # no tangent and the canonical V is the `NoDual` sentinel. Catches recursive
-    # Core internals (`Method`, `CodeInstance`, `MethodInstance`, `Binding`, …)
-    # for which `tangent_type` is already declared `NoTangent`.
+    isconcretetype(P) || return Any
+    # `tangent_type` runs in the generator body, deciding the return type
+    # structure (NoDual vs struct lift), so it cannot be deferred to the
+    # returned expression. Mild world-age caveat: a later `tangent_type(P) =
+    # NoTangent` override would not invalidate an already-generated `dual_type`
+    # for `P`. Accepted — it inherits `tangent_type`'s own caching semantics.
     tangent_type(P) === NoTangent && return NoDual
     if fieldcount(P) == 0
         return :(NTuple{$N,tangent_type($P)})
     end
     field_names = fieldnames(P)
     n_fields = fieldcount(P)
-    field_dual_exprs = map(1:n_fields) do i
-        ft = fieldtype(P, i)
-        isconcretetype(ft) ? :(dual_type(Val($N), $ft)) : :NoDual
-    end
+    field_dual_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n_fields]
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
     return :($wrapper{$inner_nt_type})
@@ -577,21 +594,23 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+# Coerce the per-field V tuple into the declared backing NamedTuple
+# (`fieldtype(dual_type(Val(1), P), 1)`), mirroring the seed factories so the
+# resulting V matches `dual_type(Val(1), P)` even when a field declared abstract
+# holds a differentiable value (its V stored as `Any`).
 @inline function lift(x::P, ẋ::Tangent) where {P}
     nt = ẋ.fields
     names = keys(nt)
-    field_Vs = map(names) do name
-        return tangent(lift(getfield(x, name), getfield(nt, name)))
-    end
-    return Lifted{P,1}(x, ImmutableDual(NamedTuple{names}(field_Vs)))
+    field_Vs = map(name -> tangent(lift(getfield(x, name), getfield(nt, name))), names)
+    backing = fieldtype(dual_type(Val(1), P), 1)
+    return Lifted{P,1}(x, ImmutableDual(backing(field_Vs)))
 end
 @inline function lift(x::P, ẋ::MutableTangent) where {P}
     nt = ẋ.fields
     names = keys(nt)
-    field_Vs = map(names) do name
-        return tangent(lift(getfield(x, name), getfield(nt, name)))
-    end
-    return Lifted{P,1}(x, MutableDual(NamedTuple{names}(field_Vs)))
+    field_Vs = map(name -> tangent(lift(getfield(x, name), getfield(nt, name))), names)
+    backing = fieldtype(dual_type(Val(1), P), 1)
+    return Lifted{P,1}(x, MutableDual(backing(field_Vs)))
 end
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
@@ -711,6 +730,11 @@ end
     _ -> randn_tangent(rng, x), Val(N)
 )
 
+# Seed factories coerce the per-field seed tuple into the *declared* backing
+# NamedTuple `fieldtype(dual_type(Val(N), P), 1)` — abstract fields are stored as
+# `Any` there, mirroring reverse-mode's `backing_type(P)(...)` construction. This
+# keeps `typeof(seed) === dual_type(Val(N), P)` even when a field declared
+# abstract holds a differentiable concrete value at runtime.
 for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
@@ -720,13 +744,14 @@ for (f, helper) in
         if fieldcount(P) == 0
             return :($($(QuoteNode(helper)))(Val($N), x))
         end
-        names = fieldnames(P)
         seeds = [
-            :($($f)(Val($N), getfield(x, $(QuoteNode(names[i]))))) for i in 1:fieldcount(P)
+            :($($f)(Val($N), getfield(x, $(QuoteNode(name))))) for name in fieldnames(P)
         ]
-        inner = :(NamedTuple{$names}(($(seeds...),)))
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-        return :($wrapper($inner))
+        return quote
+            backing = fieldtype(dual_type(Val($N), typeof(x)), 1)
+            $wrapper(backing(($(seeds...),)))
+        end
     end
 end
 
@@ -737,14 +762,15 @@ end
     if fieldcount(P) == 0
         return :(_randn_dual_zero_field(Val($N), rng, x))
     end
-    names = fieldnames(P)
     seeds = [
-        :(randn_dual(Val($N), rng, getfield(x, $(QuoteNode(names[i]))))) for
-        i in 1:fieldcount(P)
+        :(randn_dual(Val($N), rng, getfield(x, $(QuoteNode(name))))) for
+        name in fieldnames(P)
     ]
-    inner = :(NamedTuple{$names}(($(seeds...),)))
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-    return :($wrapper($inner))
+    return quote
+        backing = fieldtype(dual_type(Val($N), typeof(x)), 1)
+        $wrapper(backing(($(seeds...),)))
+    end
 end
 
 @inline function zero_lifted(w::Val{N}, x::P) where {N,P}
