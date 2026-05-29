@@ -95,6 +95,18 @@ function build_primitive_frule(
     return __build_primitive_frule(sig)
 end
 
+# Forward-over-reverse seed for a reverse rule (or one of its closures). The
+# forward V must carry the forward dual-callables — which only `_dual_mc` /
+# `zero_tangent` can build — and its `fwds_oc` / `pb_oc` must share their comms
+# captures. Both fall out of lifting the reverse zero tangent: `zero_tangent`
+# already builds the dual-callables into its `MistyClosureTangent`s, and `lift`'s
+# aliasing cache shares the captures. The generic structural seed factory cannot
+# do either (it would try to construct the `Any`-typed `MistyClosureTangent`
+# backing from scratch), so route these types through `lift`.
+@inline function zero_dual(::Val{1}, x::Union{DerivedRule,MistyClosure})
+    return tangent(lift(x, zero_tangent(x), IdDict()))
+end
+
 # LazyFoRRule / DynamicFoRRule are frules for build_derived_rrule:
 #
 #   build_derived_rrule : (interp, sig_or_mi, sig, debug_mode) → rrule

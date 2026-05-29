@@ -813,6 +813,44 @@ end
     return NDualArray{T,N,D,A}(x, ntuple(_ -> randn(rng, T, size(x)), Val(N)))
 end
 
+# ── Array seed factories (differentiable non-float elements: AoS) ────────────
+#
+# Mirrors `dual_type(Val(N), Array{T,D}) === Array{dual_type(Val(N), T), D}` and
+# the AoS `lift(::Array, ::Array)` path: a per-element V array, built element-wise
+# (skipping undefined slots). `@generated` so the `NoDual` short-circuit for a
+# non-differentiable element type is resolved at compile time (type-stable).
+# Float / Complex-float elements use the more-specific `NDualArray` methods above.
+@generated function zero_dual(::Val{N}, x::Array{T,D}) where {N,T,D}
+    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
+    return quote
+        v = similar(x, dual_type(Val($N), T))
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = zero_dual(Val($N), x[i]))
+        end
+        return v
+    end
+end
+@generated function uninit_dual(::Val{N}, x::Array{T,D}) where {N,T,D}
+    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
+    return quote
+        v = similar(x, dual_type(Val($N), T))
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = uninit_dual(Val($N), x[i]))
+        end
+        return v
+    end
+end
+@generated function randn_dual(::Val{N}, rng::AbstractRNG, x::Array{T,D}) where {N,T,D}
+    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
+    return quote
+        v = similar(x, dual_type(Val($N), T))
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = randn_dual(Val($N), rng, x[i]))
+        end
+        return v
+    end
+end
+
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────
 #
 # Element-wise build via Tuple-aware `map`. Each element's dispatch picks
@@ -897,8 +935,11 @@ for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
-        # Coherence with `dual_type`: when `tangent_type(P) === NoTangent`, V is `NoDual`.
-        tangent_type(P) === NoTangent && return :(NoDual())
+        # Coherence with `dual_type`: a `NoDual` V has no backing to seed. This
+        # covers `tangent_type(P) === NoTangent` and non-differentiable-element
+        # arrays/`Ptr` (where `tangent_type(P) !== NoTangent` but the element is
+        # non-diff, e.g. a reverse rule's `Vector{Int32}` block-stack storage).
+        dual_type(Val(N), P) === NoDual && return :(NoDual())
         if fieldcount(P) == 0
             return :($($(QuoteNode(helper)))(Val($N), x))
         end
@@ -916,8 +957,9 @@ end
 
 @generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
-    # Coherence with `dual_type`: when `tangent_type(P) === NoTangent`, V is `NoDual`.
-    tangent_type(P) === NoTangent && return :(NoDual())
+    # Coherence with `dual_type`: a `NoDual` V has no backing to seed (see the
+    # `zero_dual` / `uninit_dual` factories above for the non-diff-array case).
+    dual_type(Val(N), P) === NoDual && return :(NoDual())
     if fieldcount(P) == 0
         return :(_randn_dual_zero_field(Val($N), rng, x))
     end
