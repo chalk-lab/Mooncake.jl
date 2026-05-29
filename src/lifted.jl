@@ -437,21 +437,28 @@ end
 end
 
 # Recursive structural lift for concrete struct primals — the @generated
-# fallback. Per AGENTS.md, all sub-function calls (`dual_type` on field types)
-# live in the *returned expression*, not the generator body; primitive and
-# non-concrete cases use the deferred-error pattern so a later more-specific
-# overload can override without world-age trouble.
+# fallback. Mirrors `tangent_type` (src/tangents/tangents.jl:470): for
+# non-concrete P return the broad inner `NoDual` per dual-types.md, and
+# emit `NoDual` for fields whose declared fieldtype is non-concrete so the
+# structural lift through a concrete parent with abstractly-typed fields
+# does not bake a deferred error into the parent's V (design note: "abstract
+# or insufficiently concrete P: a deliberately broad static inner annotation").
 @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
-    if !isconcretetype(P)
-        msg = "dual_type(::Val{N}, ::Type{P}) is only defined for concrete P; got P=$P"
-        return :(error($msg))
-    end
+    isconcretetype(P) || return NoDual
+    # Mirror reverse-mode: if `tangent_type(P) === NoTangent`, the primal carries
+    # no tangent and the canonical V is the `NoDual` sentinel. Catches recursive
+    # Core internals (`Method`, `CodeInstance`, `MethodInstance`, `Binding`, …)
+    # for which `tangent_type` is already declared `NoTangent`.
+    tangent_type(P) === NoTangent && return NoDual
     if fieldcount(P) == 0
         return :(NTuple{$N,tangent_type($P)})
     end
     field_names = fieldnames(P)
     n_fields = fieldcount(P)
-    field_dual_exprs = [:(dual_type(Val($N), $(fieldtype(P, i)))) for i in 1:n_fields]
+    field_dual_exprs = map(1:n_fields) do i
+        ft = fieldtype(P, i)
+        isconcretetype(ft) ? :(dual_type(Val($N), $ft)) : :NoDual
+    end
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
     return :($wrapper{$inner_nt_type})
@@ -490,6 +497,7 @@ end
         NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}},
     }
 end
+@inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     return Lifted{P,N,dual_type(Val(N), P)}
 end
@@ -707,6 +715,8 @@ for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
+        # Coherence with `dual_type`: when `tangent_type(P) === NoTangent`, V is `NoDual`.
+        tangent_type(P) === NoTangent && return :(NoDual())
         if fieldcount(P) == 0
             return :($($(QuoteNode(helper)))(Val($N), x))
         end
@@ -722,6 +732,8 @@ end
 
 @generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
+    # Coherence with `dual_type`: when `tangent_type(P) === NoTangent`, V is `NoDual`.
+    tangent_type(P) === NoTangent && return :(NoDual())
     if fieldcount(P) == 0
         return :(_randn_dual_zero_field(Val($N), rng, x))
     end
