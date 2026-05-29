@@ -47,6 +47,16 @@ end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 
+# Forward-mode V for a MistyClosure is its `MistyClosureTangent` (carrying
+# `captures_tangent` + `dual_callable`), mirroring reverse mode — NOT the
+# generic structural lift of the closure's IR. The `frule!!` above reads
+# `tangent(slot).captures_tangent` / `.dual_callable`, so the slot's V must be
+# the `MistyClosureTangent`. `lift` (width-1) wraps an existing one directly.
+dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} = MistyClosureTangent
+function lift(x::MistyClosure, ẋ::MistyClosureTangent)
+    return Lifted{typeof(x),1,MistyClosureTangent}(x, ẋ)
+end
+
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(zero_tangent_internal(p.oc.captures, d), _dual_mc(p))
 end

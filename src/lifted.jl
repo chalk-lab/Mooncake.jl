@@ -407,6 +407,16 @@ end
 @inline function dual_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
     return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
 end
+# Arrays with a non-differentiable element type (e.g. `Vector{Int}`) carry no
+# forward derivative — V is `NoDual`, mirroring `tangent_type`'s all-`NoTangent`
+# array. The IEEEFloat / Complex overloads above are more specific and win for
+# differentiable element types; differentiable non-float/complex element arrays
+# remain unsupported and error at runtime (deferred-error pattern).
+@generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
+    tangent_type(T) === NoTangent && return NoDual
+    msg = "dual_type: Array{$T} (differentiable non-IEEEFloat/Complex element type) is unsupported"
+    return :(error($msg))
+end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
 # tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
 # time without an @generated function.
@@ -612,6 +622,14 @@ end
     backing = fieldtype(dual_type(Val(1), P), 1)
     return Lifted{P,1}(x, MutableDual(backing(field_Vs)))
 end
+# A possibly-uninit reverse-tangent field lifts to the inner V (the forward
+# backing slot is the plain V, not PUT-wrapped). Reached only for defined
+# fields — `lift(::Tangent)`/`lift(::MutableTangent)` recurse via
+# `getfield(x, name)`, which requires the primal field to be defined.
+@inline lift(x, ẋ::PossiblyUninitTangent) = lift(x, val(ẋ))
+# Non-differentiable array: reverse tangent is an all-`NoTangent` array, forward
+# V is `NoDual` (coherent with `dual_type`).
+@inline lift(x::Array, ::Array{<:NoTangent}) = Lifted{typeof(x),1,NoDual}(x, NoDual())
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
 # back into `lift`. Wrap directly rather than re-deriving V from the (now-V)

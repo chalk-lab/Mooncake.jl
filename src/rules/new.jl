@@ -29,7 +29,9 @@
             y = _new_(P, tuple_map(primal, x)...)
             return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
         end
-    elseif isprimitivetype(P) || fieldcount(P) == 0
+    elseif isprimitivetype(P) || fieldcount(P) == 0 || tangent_type(P) === NoTangent
+        # Non-differentiable structs (e.g. `Base.OneTo`, all-Int fields) have
+        # `dual_type(P) === NoDual`, mirroring `tangent_type(P) === NoTangent`.
         return quote
             y = _new_(P, tuple_map(primal, x)...)
             return Lifted{P,Nw}(y, NoDual())
