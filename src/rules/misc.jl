@@ -156,9 +156,12 @@ end
 # `Array` / `Memory` code; project to the matching SoA per-lane V so the
 # downstream rule (`memoryrefnew`, etc.) keeps a coherent V chain.
 @static if VERSION >= v"1.11-rc4"
+    # An `Array{T,D}` (any rank D) has a `.ref::MemoryRef{T}` field over flat
+    # `Memory{T}` storage. Project the SoA array V to the matching memory-ref V
+    # so the downstream `memoryrefnew`/`memoryrefget` chain stays coherent.
     @inline function _get_lifted_field(
-        V::Mooncake.Nfwd.NDualArray{T,N,1,A}, name::Symbol
-    ) where {T<:Mooncake.Nfwd.NDualEltype,N,A<:Vector{T}}
+        V::Mooncake.Nfwd.NDualArray{T,N,D,A}, name::Symbol
+    ) where {T<:Mooncake.Nfwd.NDualEltype,N,D,A<:Array{T,D}}
         if name === :ref
             primal_ref = getfield(V.primal, :ref)
             partial_refs = ntuple(k -> getfield(V.partials[k], :ref), Val(N))

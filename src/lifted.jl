@@ -436,10 +436,18 @@ end
 # `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
 # entry: N parallel partial pointers, one per lane. Matches reverse-mode
 # `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
-# Restricted to `NDualEltype` (`IEEEFloat | Complex{<:IEEEFloat}`); other
-# element types stay unhandled.
 @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
+end
+# Non-differentiable-element pointers (e.g. `Ptr{UInt8}`) carry no forward
+# derivative — V is `NoDual`, mirroring `tangent_type(T) === NoTangent`. Without
+# this the zero-field generic fallback returns `NTuple{N, Ptr{NoTangent}}`, which
+# doesn't match the structurally-NoDual `frule!!` outputs for such pointers (e.g.
+# the `jl_string_ptr` foreigncall). The `NDualEltype` overload above is more
+# specific and wins for differentiable element types.
+@generated function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual
+    return :(NTuple{$N,Ptr{tangent_type($T)}})
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
