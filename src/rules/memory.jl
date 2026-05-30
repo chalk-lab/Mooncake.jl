@@ -1038,10 +1038,17 @@ function frule!!(
     ::Lifted{Val{name},Nw},
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,D,name,order}
-    # `.size` is non-differentiable (`NoDual`); `.ref` projects to the matching
-    # `NDualMemoryRef`. Mirrors the reverse `rrule!!`, which returns `x.dx.ref`.
+    # `.ref` projects to the matching `NDualMemoryRef` (mirrors the reverse
+    # `rrule!!`, which returns `x.dx.ref`). `.size` is non-differentiable, but
+    # its canonical V is the element-wise zero dual of the size tuple
+    # (`dual_type(NTuple{D,Int}) === NTuple{D,NoDual}`), not whole `NoDual`.
     y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
+    dy = if name === :size || name === 2
+        zero_dual(Val(Nw), y)
+    else
+        _get_lifted_field(tangent(x), name)
+    end
+    return Lifted{typeof(y),Nw}(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
