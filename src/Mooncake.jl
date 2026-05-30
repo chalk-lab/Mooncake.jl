@@ -71,9 +71,9 @@ forward-mode gradient cache. Conceptually:
   calls `_fcache_derivative_chunked!!` and accumulates the lane
   contributions into gradient buffers.
 
-The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
+A full-width chunk runs the cache's native width-`W` chunk `frule!!` in a single pass; a
+short trailing chunk, friendly tangents, or non-packable inputs evaluate one lane at a
+time via `frule!!` (aka ir-based forward) / derived forward rules.
 """
 function _fcache_derivative_chunked!! end
 

@@ -270,9 +270,6 @@ end
 #   `value_and_gradient!!` calls.
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
-# Internal helper cache types in this file:
-# - `NfwdCache`: internal nfwd helper cache stored inside `FCache` when the
-#   prepared forward cache can use packed NDual execution.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
 # across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
@@ -870,28 +867,6 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-# Internal nfwd chunk cache stored inside `FCache`.
-# This bundle is only the optional chunked nfwd backend used to accelerate Mooncake's
-# public `FCache` path.
-# It stores one forward rule per supported chunk width (1 through 8). Keeping those rules
-# in separate fields lets the code pick, for example, the width-3 rule directly, instead
-# of indexing into a tuple of mixed rule types.
-struct NfwdCache{R1,R2,R3,R4,R5,R6,R7,R8,PB,GR,SG,SB,SW}
-    frule_1::R1
-    frule_2::R2
-    frule_3::R3
-    frule_4::R4
-    frule_5::R5
-    frule_6::R6
-    frule_7::R7
-    frule_8::R8
-    pack_buffers::PB
-    gradient_rrule::GR
-    small_vector_gradient_frule::SG
-    small_vector_gradient_buffer::SB
-    small_vector_gradient_workspace::SW
-end
-
 struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     rule::R
     input_tangents::IT
@@ -1039,26 +1014,6 @@ Base.iterate(x::NTangent, st...) = iterate(x.lanes, st...)
 end
 
 const _CHUNK_NFWD_MAX_LANES = 8
-
-@inline function _fcache_small_vector_fill_identity!(
-    packed::NTuple{N,Vector{T}}
-) where {N,T}
-    @inbounds for k in 1:N
-        v = packed[k]
-        fill!(v, zero(T))
-        v[k] = one(T)
-    end
-    return packed
-end
-
-@inline function _fcache_small_vector_identity_seed(x::Vector{T}) where {T}
-    n = length(x)
-    # NTuple{n, Vector{T}}: one basis-vector partial per seed direction
-    # (canonical NDualArray V layout).
-    packed = ntuple(_ -> Vector{T}(undef, n), Val(n))
-    _fcache_small_vector_fill_identity!(packed)
-    return packed
-end
 
 struct PreparedCacheError <: Exception
     msg::String
@@ -1348,80 +1303,9 @@ function _make_seed_tangent(
     return build_tangent(P, fields...)
 end
 
-@inline function _chunk_pack_tangent(::IEEEFloat, dx::NTangent, _buf, ::Val{N}) where {N}
-    return ntuple(k -> dx[k], Val(N))
-end
-@inline function _chunk_pack_tangent(::IEEEFloat, dx, _buf, ::Val{N}) where {N}
-    return ntuple(_ -> dx, Val(N))
-end
-
-@inline function _chunk_pack_tangent(
-    ::Complex{<:IEEEFloat}, dx::NTangent, _buf, ::Val{N}
-) where {N}
-    return ntuple(k -> dx[k], Val(N))
-end
-@inline function _chunk_pack_tangent(::Complex{<:IEEEFloat}, dx, _buf, ::Val{N}) where {N}
-    return ntuple(_ -> dx, Val(N))
-end
-
-function _chunk_pack_tangent(
-    x::Array{T,N}, dx::NTangent, buf_ref::Base.RefValue{Union{Nothing,Array{T}}}, ::Val{C}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,C}
-    buf = buf_ref[]
-    wanted = (size(x)..., C)
-    if !(buf isa Array{T} && size(buf) == wanted)
-        buf = Array{T}(undef, wanted)
-        buf_ref[] = buf
-    end
-    @inbounds for I in CartesianIndices(x)
-        idx = Tuple(I)
-        for lane in 1:C
-            buf[idx..., lane] = dx[lane][I]
-        end
-    end
-    return buf
-end
-
-function _chunk_pack_tangent(
-    x::Array{T,N}, dx::Array{T,N}, buf_ref::Base.RefValue{Union{Nothing,Array{T}}}, ::Val{C}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},N,C}
-    buf = buf_ref[]
-    wanted = (size(x)..., C)
-    if !(buf isa Array{T} && size(buf) == wanted)
-        buf = Array{T}(undef, wanted)
-        buf_ref[] = buf
-    end
-    @inbounds for I in CartesianIndices(x)
-        idx = Tuple(I)
-        value = dx[I]
-        for lane in 1:C
-            buf[idx..., lane] = value
-        end
-    end
-    return buf
-end
-
-@inline function _chunk_pack_tangent(
-    x::Tuple, dx::NTangent, bufs::Tuple, ::Val{N}
-) where {N}
-    return ntuple(
-        i -> _chunk_pack_tangent(
-            x[i], NTangent(ntuple(lane -> dx[lane][i], Val(N))), bufs[i], Val(N)
-        ),
-        Val(fieldcount(typeof(x))),
-    )
-end
-
-@inline function _chunk_pack_tangent(x::Tuple, dx::Tuple, bufs::Tuple, ::Val{N}) where {N}
-    return ntuple(
-        i -> _chunk_pack_tangent(x[i], dx[i], bufs[i], Val(N)), Val(fieldcount(typeof(x)))
-    )
-end
-
-# ── Lifted-mode equivalents of `_chunk_pack_tangent` ─────────────────────
-# Build the canonical Lifted V directly from primal + NTangent (or per-arg
-# tangent) — no chunk-layout Matrix intermediate. Used by the NTangent
-# fast path in `NfwdMooncake.jl:Mooncake.value_and_derivative!!`.
+# Build the canonical width-`N` Lifted V directly from a primal + its `NTangent`
+# lanes (`NDual` / `NDualArray` partials). Used by `_native_chunk_pass` and by the
+# `NfwdMooncake.Rule` `value_and_derivative!!` overload.
 @inline function _chunk_pack_tangent_lifted(
     x::T, dx::NTangent, ::Val{N}
 ) where {T<:IEEEFloat,N}

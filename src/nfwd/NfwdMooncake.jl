@@ -6,18 +6,13 @@ using ..Nfwd
 import ..Mooncake:
     @unstable,
     CoDual,
-    FCache,
-    NfwdCache,
     NoFData,
     NoRData,
     NoTangent,
     NTangent,
     __value_and_gradient!!,
     __verify_sig,
-    _chunk_pack_tangent,
-    _fcache_derivative_chunked!!,
     _typeof,
-    _fcache_derivative_chunked_loop!!,
     fdata,
     primal,
     rdata,
@@ -89,34 +84,6 @@ import ..Mooncake:
 )
 @inline function _nfwd_unpack_output_lane(yi::Tuple, dyi::Tuple, ::Val{lane}) where {lane}
     return tuple_map((yij, dyij) -> _nfwd_unpack_output_lane(yij, dyij, Val(lane)), yi, dyi)
-end
-
-@inline function _maybe_chunk_frule_nfwd(
-    cache::FCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
-) where {N}
-    # The legacy packed-tangent chunked fastpath fed bare `Dual` slots whose
-    # tangent carried the NxK chunk layout into the cached `frule_N`. Under
-    # the Lifted cutover those Rule callables now require `Lifted` slots with
-    # NDual / NDualArray V, so the packed-tangent path no longer applies.
-    # Return `nothing` to fall back to the generic per-lane loop.
-    return nothing
-end
-
-@noinline function _fcache_derivative_chunked!!(
-    cache::FCache{R,IT,OP,FG,GW,CF},
-    ::Val{N},
-    x_dx::Vararg{Tuple,M};
-    friendly_tangents::Bool=false,
-) where {R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF<:NfwdCache,N,M}
-    N < 1 && throw(ArgumentError("NTangent inputs must contain at least one lane."))
-    input_primals = map(first, x_dx)
-    input_tangents = map(last, x_dx)
-    # NDual-backed batched backend: attempt a packed multi-lane forward pass. Falls back
-    # to the generic lane loop only when no fastpath applies (N == 1, N > 8, or no
-    # NfwdCache built for this cache).
-    nfwd_output = _maybe_chunk_frule_nfwd(cache, input_primals, input_tangents, Val(N))
-    !isnothing(nfwd_output) && return nfwd_output
-    return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...; friendly_tangents)
 end
 
 """
