@@ -24,6 +24,15 @@
             return Lifted{P,Nw}(y, tuple_map(tangent, x))
         end
     elseif P <: NamedTuple
+        # An all-non-differentiable NamedTuple has `dual_type(P) === NoDual`, so
+        # build whole `NoDual` rather than an element-wise V (which the generic
+        # `tangent_type === NoTangent` branch below would also do for structs).
+        if tangent_type(P) === NoTangent
+            return quote
+                y = _new_(P, tuple_map(primal, x)...)
+                return Lifted{P,Nw}(y, NoDual())
+            end
+        end
         names = (P.parameters[1])::Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)

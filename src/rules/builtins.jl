@@ -881,6 +881,20 @@ function frule!!(
     tv = __vec_to_tuple(tangent(v))
     return Lifted{typeof(x),Nw}(x, tv)
 end
+# AoS vector (plain `Vector` of per-element Vs): the tuple V is the elements' Vs.
+@inline function frule!!(
+    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,<:Vector}
+) where {Nw}
+    x = __vec_to_tuple(primal(v))
+    return Lifted{typeof(x),Nw}(x, __vec_to_tuple(tangent(v)))
+end
+# Non-differentiable vector → non-diff tuple V.
+@inline function frule!!(
+    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,NoDual}
+) where {Nw}
+    x = __vec_to_tuple(primal(v))
+    return Lifted{typeof(x),Nw}(x, NoDual())
+end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)
@@ -1228,8 +1242,12 @@ end
 
 function frule!!(f::Lifted{typeof(tuple),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     primal_output = tuple(tuple_map(primal, args)...)
-    P_out = _typeof(primal_output)
-    if dual_type(Val(Nw), P_out) === NoDual
+    # Derive the slot `P` from the value's own type, not `_typeof`: `_typeof`
+    # sharpens a `Type`-valued element to `Type{X}`, but a tuple *value* always
+    # types that slot as `DataType` — so the sharpened tuple type is unsatisfiable
+    # by any value. Mirrors reverse-mode `tuple`'s `zero_fcodual(primal_output)`.
+    P_out = typeof(primal_output)
+    if dual_type(Val(Nw), _typeof(primal_output)) === NoDual
         return Lifted{P_out,Nw}(primal_output, NoDual())
     else
         return Lifted{P_out,Nw}(primal_output, tuple_map(tangent, args))

@@ -463,6 +463,13 @@ end
     return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
 end
 @inline function dual_type(::Val{N}, ::Type{NamedTuple{names,T}}) where {N,names,T<:Tuple}
+    # An all-non-differentiable NamedTuple collapses to whole `NoDual`, mirroring
+    # the generic struct / Array / Memory / Ptr rules. (Tuple stays element-wise:
+    # its head/tail `dual_type` recursion needs a Tuple tail to cons onto.) A
+    # NamedTuple `V` is not consed into a parent, so whole-`NoDual` is safe here,
+    # and it matches the value the forward machinery actually produces for
+    # non-differentiable kwargs/config flowing through rule construction.
+    tangent_type(NamedTuple{names,T}) === NoTangent && return NoDual
     return NamedTuple{names,dual_type(Val(N), T)}
 end
 # `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
@@ -894,9 +901,18 @@ end
 # Julia's `map(f, ::NamedTuple)` preserves the names and returns a
 # NamedTuple, so element-wise seed building works the same as for Tuple.
 
-@inline zero_dual(w::Val{N}, x::NamedTuple) where {N} = map(xi -> zero_dual(w, xi), x)
-@inline uninit_dual(w::Val{N}, x::NamedTuple) where {N} = map(xi -> uninit_dual(w, xi), x)
+# All-non-differentiable NamedTuples seed to whole `NoDual`, matching their
+# `dual_type`; otherwise build element-wise.
+@inline function zero_dual(w::Val{N}, x::NamedTuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    return map(xi -> zero_dual(w, xi), x)
+end
+@inline function uninit_dual(w::Val{N}, x::NamedTuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    return map(xi -> uninit_dual(w, xi), x)
+end
 @inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::NamedTuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 
