@@ -186,18 +186,6 @@ end
                 @test Mooncake.primal(ȳ) == z
                 @test pb!!(1.0) == (Mooncake.NoRData(), y - sin(x), x)
             end
-
-            @testset "direct value_and_derivative!! on Rule (chunked NTangent)" begin
-                rule = Mooncake.NfwdMooncake.build_frule(f, x, y; chunk_size=2)
-
-                out_chunk = Mooncake.value_and_derivative!!(
-                    rule,
-                    (f, Mooncake.NoTangent()),
-                    (x, Mooncake.NTangent((dx, 0.0))),
-                    (y, Mooncake.NTangent((0.0, dy))),
-                )
-                @test out_chunk == (z, Mooncake.NTangent((dx * y + dx * (-sin(x)), x * dy)))
-            end
         end
 
         @testset "scalar rule edge cases" begin

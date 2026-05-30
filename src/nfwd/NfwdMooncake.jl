@@ -9,7 +9,6 @@ import ..Mooncake:
     NoFData,
     NoRData,
     NoTangent,
-    NTangent,
     __value_and_gradient!!,
     __verify_sig,
     _typeof,
@@ -321,46 +320,6 @@ end
 # scalars, Bool arrays, etc.) — route through the public diagnostic so the
 # `UnsupportedOutputError` message points the user at supported shapes.
 @inline _wrap_lifted_output(y, ::Val{N}) where {N} = Nfwd._nfwd_output_error(y)
-
-@inline function Mooncake.value_and_derivative!!(
-    rule::Rule{sig,N}, fx::Vararg{Tuple{Any,Any},M}
-) where {sig,N,M}
-    # The generic `value_and_derivative!!(rule, ...)` entrypoint in `interface.jl` dispatches
-    # here for `NfwdMooncake.Rule`. This path detects `NTangent`, packs it once into nfwd's
-    # native width-N tangent layout, calls the rule once, and unpacks the result back to
-    # `NTangent`; it is not the lane-loop fallback used by the generic cached chunk path.
-    input_primals = tuple_map(first, fx)
-    input_tangents = tuple_map(last, fx)
-    lane_count = Mooncake._tangent_width(input_tangents)
-    isnothing(lane_count) && return invoke(
-        Mooncake.value_and_derivative!!,
-        Tuple{Any,Vararg{Tuple{Any,Any},M}},
-        rule,
-        fx...,
-    )
-    lane_count isa Val{N} || throw(
-        ArgumentError(
-            "NTangent inputs have $(typeof(lane_count).parameters[1]) lanes, but this nfwd rule " *
-            "was built with chunk_size=$N.",
-        ),
-    )
-    # Build Lifted slots directly from primal + NTangent — the
-    # canonical Lifted V (NDual / NDualArray) carries per-lane partials,
-    # matching the new Lifted Rule callables' input contract.
-    f_lifted = Mooncake.lift(first(input_primals), first(input_tangents))
-    arg_lifted = ntuple(
-        i -> Mooncake._chunk_pack_tangent_lifted(
-            Base.tail(input_primals)[i], Base.tail(input_tangents)[i], Val(N)
-        ),
-        Val(M - 1),
-    )
-    output = rule(f_lifted, arg_lifted...)
-    y = primal(output)
-    out_v = tangent(output)
-    # `output::Lifted{T,N,NDual{T,N}}` for scalar outputs — partials carry
-    # the N directional derivatives.
-    return y, NTangent(ntuple(lane -> Nfwd._nfwd_dual_partial(out_v, lane), Val(N)))
-end
 
 """
     build_rrule(f, x...; chunk_size=nothing)

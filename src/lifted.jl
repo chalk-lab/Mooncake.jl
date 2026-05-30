@@ -667,10 +667,9 @@ end
 # `lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
 # a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
 # (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
-# direction, and by the interpreter cutover boundary. Width-1 only — chunked
-# seeds (`NTangent`) must be constructed via `Lifted{P, N}(primal, value)`
-# directly with the appropriate width-N V. An `NTangent`-input error overload
-# lives in `src/interface.jl` (NTangent is defined there).
+# direction, and by the interpreter cutover boundary. Width-1 only — width-N
+# chunk seeds are built internally via `_chunk_pack_tangent_lifted` /
+# `Lifted{P, N}(primal, value)` with the appropriate width-N V.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
 @inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
     return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))

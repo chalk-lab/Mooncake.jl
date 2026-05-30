@@ -59,25 +59,6 @@ Performs AD in forward mode, possibly modifying the inputs, and returns a `Lifte
 function frule!! end
 
 """
-    _fcache_derivative_chunked!!(
-        cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
-    )
-
-Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
-forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
-  user provides chunk tangents.
-- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `_fcache_derivative_chunked!!` and accumulates the lane
-  contributions into gradient buffers.
-
-A full-width chunk runs the cache's native width-`W` chunk `frule!!` in a single pass; a
-short trailing chunk, friendly tangents, or non-packable inputs evaluate one lane at a
-time via `frule!!` (aka ir-based forward) / derived forward rules.
-"""
-function _fcache_derivative_chunked!! end
-
-"""
     build_primitive_frule(sig::Type{<:Tuple})
 
 Construct an frule for signature `sig`. For this function to be called in `build_frule`, you
