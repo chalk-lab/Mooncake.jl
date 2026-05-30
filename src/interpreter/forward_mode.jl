@@ -26,10 +26,10 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(args...; debug_mode=false, silence_debug_messages=true, chunk_size=1)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size)
 end
 
 struct DualRuleInfo
@@ -59,6 +59,7 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    chunk_size::Int=1,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -90,12 +91,16 @@ function build_frule(
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(
+            interp.world, (sig_or_mi, debug_mode, :forward, chunk_size)
+        )
         if haskey(interp.oc_cache, oc_cache_key)
             return interp.oc_cache[oc_cache_key]
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
+            dual_ir, captures, info = generate_dual_ir(
+                interp, sig_or_mi; debug_mode, chunk_width=chunk_size
+            )
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
@@ -168,6 +173,9 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    # Chunk width of the forward rule: every lifted slot / constant in the dual IR is
+    # `Lifted{P, width, V}`. `width == 1` is the ordinary single-direction rule.
+    width::Int
 end
 
 function generate_dual_ir(
@@ -176,6 +184,7 @@ function generate_dual_ir(
     debug_mode=false,
     do_inline=true,
     do_optimize=true,
+    chunk_width::Int=1,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -197,9 +206,9 @@ function generate_dual_ir(
 
     # Modify dual argument types:
     # - add one for the captures in the first position, with placeholder type for now
-    # - convert the rest to lifted types (width-1 Lifted{P, 1, V} per arg)
+    # - convert the rest to lifted types (`Lifted{P, chunk_width, V}` per arg)
     for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = lifted_type(Val(1), CC.widenconst(P))
+        dual_ir.argtypes[a] = lifted_type(Val(chunk_width), CC.widenconst(P))
     end
     pushfirst!(dual_ir.argtypes, Any)
 
@@ -211,7 +220,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, chunk_width)
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -230,7 +239,9 @@ function generate_dual_ir(
     # Inspection tools need the pre-optimization dual IR, while the AD pipeline still
     # wants the optimized form by default.
     dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
-    return dual_ir, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    return dual_ir,
+    captures_tuple,
+    DualRuleInfo(isva, nargs, dual_ret_type(primal_ir, Val(chunk_width)))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
@@ -245,9 +256,11 @@ and its location in `captures` returned.
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt)::Union{Lifted,Int}
+function const_dual!(
+    captures::Vector{Any}, stmt, (::Val{N})=Val(1)
+)::Union{Lifted,Int} where {N}
     v = get_const_primal_value(stmt)
-    x = uninit_lifted(Val(1), v)
+    x = uninit_lifted(Val(N), v)
     if safe_for_literal(v)
         return x
     else
@@ -278,10 +291,10 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isconst(stmt)
-        d = const_dual!(captures, stmt)
+        d = const_dual!(captures, stmt, Val(info.width))
         if d isa Int
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, get_capture, Argument(1), d))
         else
@@ -289,7 +302,7 @@ function modify_fwd_ad_stmts!(
         end
     else
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        zero_dual_call = Expr(:call, Mooncake.zero_lifted, Val(1), new_ssa)
+        zero_dual_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
     end
 
@@ -297,7 +310,7 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
@@ -309,7 +322,7 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    d = const_dual!(captures, stmt.val)
+    d = const_dual!(captures, stmt.val, Val(info.width))
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
         get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
@@ -321,56 +334,71 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_lifted(Val(1), get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = uninit_lifted(
+            Val(info.width), get_const_primal_value(stmt.values[n])
+        )
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
-        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
     )
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo
+    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, info::DualInfo
 )
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = uninit_lifted(Val(1), get_const_primal_value(stmt.val))
+        v = uninit_lifted(Val(info.width), get_const_primal_value(stmt.val))
     end
-    replace_call!(dual_ir, ssa, PiNode(v, lifted_type(Val(1), CC.widenconst(stmt.typ))))
-    return nothing
-end
-
-function modify_fwd_ad_stmts!(
-    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
-)
-    if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(uninit_lifted(Val(1), get_const_primal_value(stmt.val)))
-    end
-    set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(
-        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+    replace_call!(
+        dual_ir, ssa, PiNode(v, lifted_type(Val(info.width), CC.widenconst(stmt.typ)))
     )
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
+)
+    if !(stmt.val isa Union{Argument,SSAValue})
+        stmt = UpsilonNode(uninit_lifted(Val(info.width), get_const_primal_value(stmt.val)))
+    end
+    set_stmt!(dual_ir, ssa, inc_args(stmt))
+    set_ir!(
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
+    )
+    return nothing
+end
+
+function modify_fwd_ad_stmts!(
+    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_lifted(Val(1), get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = uninit_lifted(
+            Val(info.width), get_const_primal_value(stmt.values[n])
+        )
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
-        dual_ir, ssa, :type, lifted_type(Val(1), CC.widenconst(get_ir(dual_ir, ssa, :type)))
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
     )
     return nothing
 end
@@ -422,7 +450,7 @@ function modify_fwd_ad_stmts!(
         # Dual-ise arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_lifted(Val(1), get_const_primal_value(arg))
+            return uninit_lifted(Val(info.width), get_const_primal_value(arg))
         end
 
         interp = info.interp
@@ -444,16 +472,18 @@ function modify_fwd_ad_stmts!(
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
-        # Keep the boundscheck, but wrap it in a width-1 Lifted.
+        # Keep the boundscheck, but wrap it in a width-`info.width` Lifted.
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(1), bc_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(info.width), bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(1), new_copyast_ssa))
+        replace_call!(
+            dual_ir, ssa, Expr(:call, zero_lifted, Val(info.width), new_copyast_ssa)
+        )
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
@@ -536,8 +566,8 @@ end
     return __call_rule(rule.rule, args)
 end
 
-function dual_ret_type(primal_ir::IRCode)
-    return lifted_type(Val(1), compute_ir_rettype(primal_ir))
+function dual_ret_type(primal_ir::IRCode, (::Val{N})=Val(1)) where {N}
+    return lifted_type(Val(N), compute_ir_rettype(primal_ir))
 end
 
 function frule_type(

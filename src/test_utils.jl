@@ -1234,7 +1234,9 @@ function test_rule(
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, debug_mode, :forward)
+                        # `:forward` rules are keyed by chunk width too; `test_rule` builds
+                        # the default width-1 rule.
+                        cache_key = (sig, debug_mode, :forward, 1)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
