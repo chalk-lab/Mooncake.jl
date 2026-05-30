@@ -160,11 +160,16 @@ end
 If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
 are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
 """
+@inline _lifted_width(::Lifted{P,N}) where {P,N} = N
+
 function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     isva || return args
+    # The grouped vararg slot must carry the same chunk width as the incoming slots
+    # (read from any arg's type parameter — all slots share the rule's build width).
+    W = _lifted_width(first(args))
     group_primal = map(primal, args[nargs:end])
     group_v = map(tangent, args[nargs:end])
-    grouped_args = Lifted{_typeof(group_primal),1}(group_primal, group_v)
+    grouped_args = Lifted{_typeof(group_primal),W}(group_primal, group_v)
     return (args[1:(nargs - 1)]..., grouped_args)
 end
 
@@ -466,7 +471,14 @@ function modify_fwd_ad_stmts!(
             end
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
+            push!(
+                captures,
+                if isexpr(stmt, :invoke)
+                    LazyFRule(mi, dm, info.width)
+                else
+                    DynamicFRule(dm, info.width)
+                end,
+            )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
@@ -520,20 +532,23 @@ end
 mutable struct LazyFRule{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
+    width::Int
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, width::Int=1)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode,chunk_size=width)}(
+            debug_mode, mi, width
+        )
     end
     function LazyFRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, width::Int=1
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, width)
     end
 end
 
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
+# Create new lazy rule with same method instance, debug mode, and chunk width
+_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.width)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -562,7 +577,9 @@ end
 
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
+    rule.rule = build_frule(
+        interp, rule.mi; debug_mode=rule.debug_mode, chunk_size=rule.width
+    )
     return __call_rule(rule.rule, args)
 end
 
@@ -571,7 +588,7 @@ function dual_ret_type(primal_ir::IRCode, (::Val{N})=Val(1)) where {N}
 end
 
 function frule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
+    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode, chunk_size::Int=1
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
@@ -586,8 +603,8 @@ function frule_type(
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
     sig = Tuple{arg_types...}
-    dual_args_type = Tuple{map(T -> lifted_type(Val(1), T), arg_types)...}
-    closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
+    dual_args_type = Tuple{map(T -> lifted_type(Val(chunk_size), T), arg_types)...}
+    closure_type = RuleMC{dual_args_type,dual_ret_type(ir, Val(chunk_size))}
     Tderived_rule = DerivedFRule{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
@@ -595,12 +612,15 @@ end
 struct DynamicFRule{V}
     cache::V
     debug_mode::Bool
+    width::Int
 end
 
-DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
+function DynamicFRule(debug_mode::Bool, width::Int=1)
+    DynamicFRule(Dict{Any,Any}(), debug_mode, width)
+end
 
-# Create new dynamic rule with empty cache and same debug mode  
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
+# Create new dynamic rule with empty cache, same debug mode, and chunk width
+_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.width)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
@@ -609,7 +629,9 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         interp = get_interpreter(ForwardMode)
-        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        rule = build_frule(
+            interp, sig; debug_mode=dynamic_rule.debug_mode, chunk_size=dynamic_rule.width
+        )
         dynamic_rule.cache[sig] = rule
     end
     return __call_rule(rule, args)
