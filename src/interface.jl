@@ -2631,8 +2631,17 @@ end
 end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,ForwardCache}, f::F, x) where {F}
+    # Reached only for inputs the methods above reject (`x` is not a dense
+    # `AbstractVector{<:IEEEFloat}`). `_validate_jacobian_argument` always throws
+    # a specific message here; the explicit throw documents that this fallback
+    # never returns a value (previously a dead `_validate_prepared_cache_inputs`
+    # call left the nominal return as `nothing`).
     _validate_jacobian_argument(x)
-    _validate_prepared_cache_inputs(getfield(cache, :input_specs), (f, x))
+    return throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports dense AbstractVector{<:IEEEFloat} inputs; got $(typeof(x))",
+        ),
+    )
 end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}
