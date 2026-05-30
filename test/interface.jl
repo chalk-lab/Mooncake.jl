@@ -160,14 +160,14 @@ end
                 ),
             )
             forward_show = sprint(show, forward_cache)
-            @test occursin("Mooncake.ForwardCache(", forward_show)
+            @test occursin("Mooncake.FCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
             @test occursin("nfwd=false", forward_show)
             @test occursin("chunk_size=1", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
-            @test occursin("Mooncake.ForwardCache", forward_plain)
+            @test occursin("Mooncake.FCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
             @test occursin("friendly_tangents: true", forward_plain)
             @test occursin("nfwd: false", forward_plain)
@@ -790,7 +790,7 @@ end
             end
         end
 
-        @testset "value_and_gradient!! via ForwardCache" begin
+        @testset "value_and_gradient!! via FCache" begin
             cache_grad_fwd = Mooncake.prepare_derivative_cache(
                 f, x, y; config=Mooncake.Config(; kwargs...)
             )
@@ -1001,7 +1001,7 @@ end
                 ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 1
 
-                # Regression: _validate_prepared_cache_inputs must not allocate.
+                # Regression: _validate_prepared_cache must not allocate.
                 # length-5 vector: small_vector_gradient_frule path (chunk_size=5),
                 # output_tangent is NTuple{5,Float64} (isa Tuple branch in extraction loop).
                 x5 = collect(1.0:5.0)
@@ -1244,7 +1244,7 @@ end
                 (f_jac(x_jac), expected_jac)
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
-            @test_throws "value_and_jacobian!! only supports cache types Cache and ForwardCache" Mooncake.value_and_jacobian!!(
+            @test_throws "value_and_jacobian!! only supports cache types Cache and FCache" Mooncake.value_and_jacobian!!(
                 hvp_cache, sin, 1.0
             )
 

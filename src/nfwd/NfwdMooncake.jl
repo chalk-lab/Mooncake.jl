@@ -6,7 +6,7 @@ using ..Nfwd
 import ..Mooncake:
     @unstable,
     CoDual,
-    ForwardCache,
+    FCache,
     NfwdCache,
     NoFData,
     NoRData,
@@ -92,7 +92,7 @@ import ..Mooncake:
 end
 
 @inline function _maybe_chunk_frule_nfwd(
-    cache::ForwardCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
+    cache::FCache, input_primals::Tuple, input_tangents::Tuple, ::Val{N}
 ) where {N}
     # The legacy packed-tangent chunked fastpath fed bare `Dual` slots whose
     # tangent carried the NxK chunk layout into the cached `frule_N`. Under
@@ -103,7 +103,7 @@ end
 end
 
 @noinline function _fcache_derivative_chunked!!(
-    cache::ForwardCache{R,IT,OP,FG,GW,CF},
+    cache::FCache{R,IT,OP,FG,GW,CF},
     ::Val{N},
     x_dx::Vararg{Tuple,M};
     friendly_tangents::Bool=false,
@@ -364,7 +364,7 @@ end
     # `NTangent`; it is not the lane-loop fallback used by the generic cached chunk path.
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
-    lane_count = Mooncake._fcache_derivative_ntangent_lane_count(input_tangents)
+    lane_count = Mooncake._tangent_width(input_tangents)
     isnothing(lane_count) && return invoke(
         Mooncake.value_and_derivative!!,
         Tuple{Any,Vararg{Tuple{Any,Any},M}},
