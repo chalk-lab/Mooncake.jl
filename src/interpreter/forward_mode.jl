@@ -157,8 +157,8 @@ end
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
-If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
-are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
+If isva and nargs=2, then inputs `(lift(5.0, 0.0), lift(4.0, 0.0), lift(3.0, 0.0))`
+are transformed into `(lift(5.0, 0.0), lift((5.0, 4.0), (0.0, 0.0)))` (each a `Lifted`).
 """
 @inline _lifted_width(::Lifted{P,N}) where {P,N} = N
 
@@ -252,10 +252,10 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+    const_dual!(captures::Vector{Any}, stmt, ::Val{N}=Val(1))::Union{Lifted,Int}
 
-Build a `Dual` from `stmt`, with zero / uninitialised tangent. If the resulting `Dual` is
-a bits type, then it is returned. If it is not, then the `Dual` is put into captures,
+Build a `Lifted` from `stmt`, with zero / uninitialised tangent. If the resulting `Lifted`
+is a bits type, then it is returned. If it is not, then the `Lifted` is put into captures,
 and its location in `captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from

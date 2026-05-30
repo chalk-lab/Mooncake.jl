@@ -153,7 +153,6 @@ build_primitive_rrule(::Type{<:Tuple}) = rrule!!
 @stable default_mode = "disable" default_union_limit = 2 begin
 include("utils.jl")
 include(joinpath("tangents", "tangents.jl"))
-include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
 include("stack.jl")

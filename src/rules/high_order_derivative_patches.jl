@@ -122,13 +122,13 @@ end
 # LazyFoRRule / DynamicFoRRule are frules for build_derived_rrule:
 #
 #   build_derived_rrule : (interp, sig_or_mi, sig, debug_mode) → rrule
-#   LazyFoRRule         : (Dual(build_derived_rrule, ·), Dual(interp, ·), ...) → Dual(rrule, t_rule)
+#   LazyFoRRule         : (Lifted(build_derived_rrule, ·), Lifted(interp, ·), ...) → Lifted(rrule, t_rule)
 #                         where t_rule = J_{build_derived_rrule} · (t_interp, ...)
 #
 # _for_rule_cached_dual and _compile_for_rule are shared helpers used by both.
 
-# Cache-hit helper: given a previously compiled (rule, fwd_dc, rvs_dc), return
-# Dual(rule, rule_tangent) with fresh empty Stacks for this call.
+# Cache-hit helper: given a previously compiled (rule, fwd_dc, rvs_dc), return a
+# Lifted(rule, rule_tangent) with fresh empty Stacks for this call.
 #
 # Stack aliasing invariant: fwd_oc and rvs_oc share the same comms Stack objects from
 # shared_data (fwd_oc.captures[i] === rvs_oc.captures[i]).  Their tangent Stacks must

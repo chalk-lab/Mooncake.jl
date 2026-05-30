@@ -9,7 +9,6 @@ import ..@is_primitive
 import ..DefaultCtx
 import .._foreigncall_
 import ..CoDual
-import ..Dual
 import ..Lifted
 import ..primal
 import ..NoTangent

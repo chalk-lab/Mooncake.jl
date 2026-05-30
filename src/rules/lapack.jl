@@ -87,19 +87,6 @@ function rrule!!(
     return CoDual((_A.x, ipiv, code), (_A.dx, dipiv, NoFData())), getrf_pb!!
 end
 
-function _getrf_fwd(A_dA, ipiv, info)
-    A, dA = arrayify(A_dA)
-
-    # Compute Frechet derivative.
-    L = UnitLowerTriangular(A)
-    U = UpperTriangular(A)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
-    F = rdiv!(ldiv!(L, dA[p, :]), U)
-    dA .= L * tril(F, -1) + triu(F) * U
-
-    return Dual((A, ipiv, info), (tangent(A_dA), zero_tangent(ipiv), NoTangent()))
-end
-
 function _getrf_pb!(A, dA, ipiv, A_copy)
 
     # Run reverse-pass.

@@ -600,15 +600,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 fx...; config=Mooncake.Config(; kwargs...)
             )
 
-            # legacy Dual interface
-            z_and_dz_dual = Mooncake.value_and_derivative!!(
-                cache, map(Mooncake.Dual, fx, dfx)...
-            )
-            @test z_and_dz_dual isa Mooncake.Dual
-            @test Mooncake.primal(z_and_dz_dual) == z
-            @test Mooncake.tangent(z_and_dz_dual) == dz
-
-            # new tuple interface
+            # tuple interface
             z_and_dz_tup = Mooncake.value_and_derivative!!(cache, zip(fx, dfx)...)
             @test z_and_dz_tup isa Tuple{Float64,Float64}
             @test first(z_and_dz_tup) == z

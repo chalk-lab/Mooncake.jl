@@ -87,11 +87,13 @@ end
     return Lifted{Type{P_inner},N,V}(primal, value)
 end
 
-# Accessors — mirror the existing `Dual` / `CoDual` API.
+# Accessors — mirror the `CoDual` API.
 primal(d::Lifted) = d.primal
 tangent(d::Lifted) = d.value
-# `_primal` overload — interpreter IR uses this to extract a primal value
-# from any forward-mode wrapper (Dual or Lifted).
+# `_primal` extracts a primal value from a forward-mode slot; the generic fallback returns
+# the value unchanged. The interpreter's dual IR calls `_primal` on each operand, which is
+# either a `Lifted` slot or a lifted constant.
+_primal(x) = x
 _primal(x::Lifted) = primal(x)
 
 # Forward-mode equivalent of `verify_dual_type` — checks the slot's `V` is

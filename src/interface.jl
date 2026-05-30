@@ -233,13 +233,13 @@ function __create_coduals(args)
 end
 
 """
-    value_and_derivative!!(rule, f::Dual, x::Dual...)
+    value_and_derivative!!(rule, f::Lifted, x::Lifted...)
     value_and_derivative!!(rule, (f, df), (x, dx), ...)
 
 Run a forward rule directly, without first constructing a `FCache`.
 
-The `Dual` interface returns the rule output directly. The tuple interface returns
-`(y, dy)` using the rule's native tangent representation. Both compute a single
+The `Lifted` interface returns the rule output (a `Lifted`) directly. The tuple interface
+returns `(y, dy)` using the rule's native tangent representation. Both compute a single
 directional derivative (one tangent per input).
 """
 @inline function value_and_derivative!!(rule::R) where {R}
@@ -1608,9 +1608,9 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
 end
 
 """
-    value_and_derivative!!(cache::FCache, f::Dual, x::Vararg{Dual,N})
+    value_and_derivative!!(cache::FCache, f::Lifted, x::Vararg{Lifted,N})
 
-Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
+Returns a `Lifted` containing the result of applying forward-mode AD to compute the (Frechet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
