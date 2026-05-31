@@ -1104,11 +1104,8 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
-    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual())
-    name_v = Val(primal(name))
-    return frule!!(lg, x, Lifted{typeof(name_v),Nw}(name_v, NoDual()))
-end
+# The 2-arg `getfield(x, name)` frule is version-agnostic and lives in builtins.jl
+# (so it is also available on Julia 1.10, which does not load this file).
 function rrule!!(
     f::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},

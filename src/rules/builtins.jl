@@ -1076,8 +1076,18 @@ end
 const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
-# The 2-arg Lifted parallel lives in memory.jl (delegates to `lgetfield`,
-# which has the generic Lifted body via `_get_lifted_field` in misc.jl).
+# 2-arg `getfield(x, name)`: delegate to `lgetfield`, whose generic Lifted body
+# (`_get_lifted_field` in misc.jl) covers tuples, named-tuples, and structs. Kept
+# here rather than memory.jl so it is available on Julia 1.10 (array_legacy path),
+# where the forward-over-reverse HVP public interface needs it.
+function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
+    name_v = Val(primal(name))
+    return frule!!(
+        Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual()),
+        x,
+        Lifted{typeof(name_v),Nw}(name_v, NoDual()),
+    )
+end
 function frule!!(
     ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
 ) where {Nw}

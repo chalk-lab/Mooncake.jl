@@ -244,6 +244,24 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
+# Array-of-Structures V: vectors of differentiable non-float elements (e.g. the
+# `Vector{Tuple{pullback}}` grown by reverse rules under forward-over-reverse on
+# Julia 1.10). The tangent is a plain `Array` of per-element Vs, grown in lockstep.
+function frule!!(
+    ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+) where {N}
+    d_p = primal(d)
+    Base._growend!(primal(a), d_p)
+    Base._growend!(tangent(a), d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Non-differentiable element vectors (V === NoDual): only the primal grows.
+function frule!!(
+    ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,NoDual}, d::Lifted
+) where {N}
+    Base._growend!(primal(a), primal(d))
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -372,6 +390,23 @@ function frule!!(
     end
     return dest
 end
+# AoS V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
+# pullback buffers in the public forward-over-reverse HVP interface on 1.10).
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{<:Array,N,<:Array},
+    doffs::Lifted,
+    src::Lifted{<:Array,N,<:Array},
+    soffs::Lifted,
+    n::Lifted,
+) where {N}
+    _n = primal(n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    Base.unsafe_copyto!(tangent(dest), _doffs, tangent(src), _soffs, _n)
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{<:Array{T}},
@@ -431,6 +466,28 @@ Base.@propagate_inbounds function frule!!(
     dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
     return Lifted{T,Nw}(y, NDual{T,Nw}(y, dy_partials))
 end
+# AoS V: read the element primal and its per-element V from the parallel arrays.
+Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{<:Array,Nw,<:Array},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    return Lifted{typeof(y),Nw}(y, arrayref(_inb, tangent(x), _inds...))
+end
+# Non-differentiable element array (V === NoDual): no tangent to read.
+Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{<:Array,Nw,NoDual},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    y = arrayref(primal(inbounds), primal(x), tuple_map(primal, inds)...)
+    return Lifted{typeof(y),Nw}(y, NoDual())
+end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
     checkbounds::CoDual{Bool},
@@ -467,6 +524,31 @@ function frule!!(
     for lane in 1:Nw
         Core.arrayset(_inb, tangent(A).partials[lane], tangent(v).partials[lane], _inds...)
     end
+    return A
+end
+# AoS V: set the element primal and its per-element V into the parallel arrays.
+function frule!!(
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{<:Array,Nw,<:Array},
+    v::Lifted,
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    Core.arrayset(_inb, tangent(A), tangent(v), _inds...)
+    return A
+end
+# Non-differentiable element array (V === NoDual): only the primal is written.
+function frule!!(
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{<:Array,Nw,NoDual},
+    v::Lifted,
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    Core.arrayset(primal(inbounds), primal(A), primal(v), tuple_map(primal, inds)...)
     return A
 end
 function rrule!!(
