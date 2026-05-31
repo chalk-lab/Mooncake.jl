@@ -54,7 +54,7 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 For Mooncake-interface rule construction on concrete signatures, see
 `Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
 `Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into Mooncake's `Dual` / `CoDual` rule interface.
+packages that machinery into Mooncake's `Lifted` / `CoDual` rule interface.
 """
 module Nfwd
 
@@ -139,7 +139,7 @@ the same idea, stripped of the tag parameter and defined entirely within Mooncak
 
 | Type                         | Tangent width | Tag parameter | Use case                        |
 |------------------------------|---------------|---------------|---------------------------------|
-| `Dual{P,T}`                  | 1             | n/a           | Standard `frule!!` dispatch     |
+| `NDual{T,1}`                 | 1             | n/a           | Standard width-1 `frule!!`      |
 | `ForwardDiff.Dual{Tag,T,N}`  | N             | yes           | ForwardDiff chunk mode          |
 | `NDual{T,N}`                 | N             | no            | GPU kernel widening (this type) |
 
@@ -148,10 +148,11 @@ Removing the tag simplifies the type signature and eliminates the ForwardDiff
 dependency from GPU AD.  The arithmetic rules are identical: each operation applies
 the chain rule to all N slots at once.
 
-## NDual vs Dual: scalar leaves and flattening
+## NDual vs the canonical Lifted V: scalar leaves and flattening
 
-`Dual{P,T}` wraps any differentiable value `P` — it threads through Mooncake's
-tangent system and handles arbitrary structs transparently.
+The canonical forward representation `Lifted{P, N, V}` wraps any differentiable value `P` —
+it threads through Mooncake's tangent system and handles arbitrary structs transparently
+(its `V` recurses structurally).
 
 `NDual{T,N}` only wraps **scalar IEEEFloat (or Complex{IEEEFloat}) leaves**.
 For a complex input type (e.g. a struct with several float fields), you must
@@ -212,12 +213,12 @@ reverse mode is preferred for many-input scalar-output functions, and why NDual'
 trick — packing N directions into one kernel launch — is only worthwhile at GPU kernel
 boundaries where each pass would otherwise incur a full launch overhead.
 
-### Why standard `frule!!` cannot carry NDual tangents
+### Why standard width-1 forward mode cannot carry NDual tangents
 
-`Dual{P,T}` enforces `T = tangent_type(P)`.  For `P = Float64`, `tangent_type` returns
-`Float64` (width-1).  Stuffing `NDual{Float64,N}` into the tangent slot would require
-`tangent_type(Float64) = NDual{Float64,N}` globally, infecting every `frule!!` in the
-call graph and breaking type coherence throughout.
+The width-1 canonical V ties `V = dual_type(Val(1), P)`; for `P = Float64` that is
+`NDual{Float64,1}` (one partial slot).  Widening to `NDual{Float64,N}` everywhere would
+require `dual_type(Val(1), Float64) = NDual{Float64,N}` globally, infecting every `frule!!`
+in the call graph and breaking width coherence throughout.
 
 ### NfwdMode{N}: NDual as the tangent type
 
@@ -248,9 +249,9 @@ Rules written generically in the tangent require no changes:
 
 ```julia
 # Existing frule!! for sin — tangent(x)::NDual{T,N} in NfwdMode
-frule!!(::Dual{typeof(sin)}, x::Dual{T}) where {T<:IEEEFloat} =
-    Dual(sin(primal(x)), cos(primal(x)) * tangent(x))
-#                        ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
+frule!!(::Lifted{typeof(sin),N}, x::Lifted{T,N}) where {T<:IEEEFloat,N} =
+    Lifted{T,N}(sin(primal(x)), cos(primal(x)) * tangent(x))
+#                               ^^^^^^^^^^^^^^^^ T (scalar) * NDual{T,N} → NDual{T,N}  ✓
 ```
 
 `cos(x) * NDual` scales the partials — already defined on NDual.  All chain rules
@@ -286,9 +287,9 @@ NDual kernel input is built by a trivial merge — no `flatten_to_ndual` needed:
 
 ```julia
 function frule!!(
-    ::Dual{typeof(my_kernel!)},
-    _out::Dual{<:CuArray{T}, <:CuArray{NDual{T,N}}},
-    _x  ::Dual{<:CuArray{T}, <:CuArray{NDual{T,N}}},
+    ::Lifted{typeof(my_kernel!)},
+    _out::Lifted{<:CuArray{T}, N},
+    _x  ::Lifted{<:CuArray{T}, N},
 ) where {T<:IEEEFloat, N}
     out, ∂out = primal(_out), tangent(_out)   # ∂out updated in-place
     x,   ∂x  = primal(_x),   tangent(_x)
@@ -314,7 +315,7 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
     ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
 
     rule = build_frule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
-    rule(Dual(f!, NoTangent()), Dual(out, ∂out), Dual(x, ∂x))
+    rule(lift(f!, NoTangent()), lift(out, ∂out), lift(x, ∂x))
 
     # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
     J = [ndual_partial.(∂out, k) for k in 1:N]
@@ -770,7 +771,7 @@ end
 end
 
 # ── Math functions ─────────────────────────────────────────────────────────────────
-# Each follows: f(Dual(v,p)) = Dual(f(v), f'(v)*p)
+# Each follows: f(NDual(v,p)) = NDual(f(v), f'(v)*p)
 
 # Trig
 # Use sincos / sincosd to share the cordic/libm computation between sin and cos.
@@ -1425,11 +1426,11 @@ end
 # functions with cross-element data reuse (reductions, softmax, layer norm),
 # *tiled* kernels offer further gains:
 #
-# ── Conceptual note: tiling applied to the Dual itself ──────────────────────
+# ── Conceptual note: tiling applied to the NDual itself ─────────────────────
 # An NDual{T,N} is a tile in the partial-derivative dimension.  Just as spatial
 # tiling partitions an M-element array into ceil(M/K) tiles of width K — each
 # processed in one pass with data reuse in shared memory — slot-tiling partitions
-# the N-wide Dual into ceil(N/K) tiles of width K, each processed in one kernel
+# the N-wide NDual into ceil(N/K) tiles of width K, each processed in one kernel
 # launch:
 #
 #   Jf = [∂f/∂x₁  ∂f/∂x₂  …  ∂f/∂xₙ]          (1×N Jacobian row per element)

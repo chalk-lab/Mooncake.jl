@@ -312,7 +312,7 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
     end
     v = bitcast(T, primal(x))
     # Ptr-cast tangent path needs Ptr canonical V — return NoTangent for now;
-    # the bare-Dual rule preserves the bitcast pointer when both T and primal
+    # the reference rule preserves the bitcast pointer when both T and primal
     # are Ptr, which can be wired up after Ptr V lands.
     return Lifted{typeof(v),Nw}(v, NoDual())
 end

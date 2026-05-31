@@ -269,7 +269,7 @@ function _is_vararg_expr(ex)
            ex.args[1].args[1] == :Vararg
 end
 
-# Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.Dual)),
+# Given an escaped Vararg expression and a wrapper type symbol (e.g. :(Mooncake.CoDual)),
 # produce the appropriate Vararg type for the rule signature:
 #   Vararg        -> Vararg{wrapper}
 #   Vararg{T}     -> Vararg{wrapper{<:T}}

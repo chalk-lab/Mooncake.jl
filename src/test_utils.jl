@@ -969,7 +969,7 @@ function test_frule_performance(
 
         # Test allocations in forwards-mode.
         # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
-        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
+        # crash (julia#61368). This boxes isbits values (e.g. NDual{Float64,1}) at every
         # nested rule callsite inside the compiled OC, producing non-zero alloc counts
         # even for correct rules. Skip this check on Julia < 1.11.
         @static if VERSION >= v"1.11-"

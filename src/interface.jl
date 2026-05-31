@@ -246,7 +246,7 @@ directional derivative (one tangent per input).
     throw(
         ArgumentError(
             "`value_and_derivative!!(rule, ...)` expects at least the function input, " *
-            "either as `f::Dual` or `(f, df)`.",
+            "either as `f::Lifted` or `(f, df)`.",
         ),
     )
 end
@@ -1632,7 +1632,7 @@ end
 
 Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
 
-Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
@@ -2287,7 +2287,7 @@ end
     return value, grads, H_blocks
 end
 
-# IT=Nothing specialisation: disambiguates against the Dual-vararg and Tuple-vararg
+# IT=Nothing specialisation: disambiguates against the Lifted-vararg and Tuple-vararg
 # zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
 function value_and_derivative!!(
     cache::FCache{R,Nothing,OP,FG,GW,CF,S}

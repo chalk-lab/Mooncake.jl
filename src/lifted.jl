@@ -75,8 +75,7 @@ struct NoDual end
     return Lifted{P,N,V}(primal, value)
 end
 
-# Sharpen `P` when constructing with a `Type{X}` primal — mirrors the
-# legacy `Dual(x::Type{P}, dx::NoTangent)` sharpening at the boundary
+# Sharpen `P` when constructing with a `Type{X}` primal, at the boundary
 # between widened (e.g. `DataType`) and concrete (`Type{X}`) primals.
 # Without this, `Lifted{DataType, N}(ComplexF64, NoDual())` would
 # produce `Lifted{DataType, N, NoDual}` and miss `frule!!` rules
@@ -382,13 +381,8 @@ end
 # For concrete `P`, `lifted_type(Val(N), P) === Lifted{P, N, dual_type(Val(N), P)}`.
 #
 # This file defines the IEEEFloat scalar case; container shapes (Array,
-# Complex, Tuple, NamedTuple, struct lifts) are added in follow-up
-# commits.
-#
-# Note: the legacy width-1 `dual_type(::Type{P})` defined in
-# `src/tangents/dual.jl` remains untouched and continues to drive the
-# bare-`Dual{P,T}` forward-mode path. The width-N variant below is a
-# distinct function (different arity), so the two do not interfere.
+# Complex, Tuple, NamedTuple, struct lifts) are handled by the further
+# `dual_type(::Val{N}, ...)` methods below.
 # ──────────────────────────────────────────────────────────────────────────
 
 """
@@ -1029,10 +1023,9 @@ end
 end
 
 # Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a
-# `Lifted{P,1}` slot directly, replacing the legacy `Dual(x, zero_tangent(x))`
-# constructors. Kept under the same `zero_dual` / `uninit_dual` / `randn_dual`
-# names so the many existing callsites (`zero_dual(f)` for function args, etc.)
-# migrate without renames.
+# `Lifted{P,1}` slot directly. Kept under the same `zero_dual` / `uninit_dual` /
+# `randn_dual` names so the many existing callsites (`zero_dual(f)` for function
+# args, etc.) work without renames.
 @inline zero_dual(x) = zero_lifted(Val(1), x)
 @inline uninit_dual(x) = uninit_lifted(Val(1), x)
 @inline randn_dual(rng::AbstractRNG, x) = randn_lifted(Val(1), rng, x)

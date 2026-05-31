@@ -933,7 +933,7 @@ function frule!!(
         dC = _blas_lane_partial(tangent(C_dC), lane)
         dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
         dB = dB_l isa AbstractVector ? reshape(dB_l, :, 1) : dB_l
-        # Tangents (product rule), matching the bare-Dual body.
+        # Tangents (product rule).
         BLAS.gemm!(tA, tB, α, dA, B, β, dC)
         BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
         if !iszero(dα)

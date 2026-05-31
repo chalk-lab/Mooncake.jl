@@ -41,7 +41,7 @@ import ..Mooncake:
 # ── High-level interfaces ──────────────────────────────────────────────────────────
 #   build_frule(f, x...; chunk_size)
 #     returns `Rule`
-#     consumed via `rule(f::Dual, x::Dual...)`
+#     consumed via `rule(f::Lifted, x::Lifted...)`
 #     obeys the standard `frule!!` interface
 #     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
@@ -171,8 +171,10 @@ julia> frule = Mooncake.NfwdMooncake.build_frule(
 
 julia> x = [1.0, 2.0, 3.0];
 
-julia> frule(Mooncake.Dual(sum, Mooncake.NoTangent()), Mooncake.Dual(x, ones(3)))
-Mooncake.Dual(6.0, 3.0)
+julia> out = frule(Mooncake.lift(sum, Mooncake.NoTangent()), Mooncake.lift(x, ones(3)));
+
+julia> Mooncake.primal(out), Mooncake.tangent(out)   # primal sum, directional derivative
+(6.0, 3.0)
 ```
 """
 function build_frule(
@@ -247,8 +249,7 @@ end
 # where the partials live as `NTuple{N, Array{T,D}}` inside the V. The scalar
 # output is packed as a width-N `Lifted{T_out, N, NDual{T_out, N}}` whose
 # partials carry the N directional derivatives — coherent with the Lifted
-# canonical V invariant (in contrast to the bare-Dual variant above, which
-# uses an out-of-spec `Dual{T, NTuple{N, T}}` shape for chunked output).
+# canonical V invariant.
 function (rule::Rule{sig,N})(
     f::Mooncake.Lifted, x::Mooncake.Lifted{P,N,VV}
 ) where {sig,N,T<:IEEEFloat,Nd,P<:Array{T,Nd},VV<:Mooncake.NDualArray}

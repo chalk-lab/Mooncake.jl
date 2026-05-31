@@ -452,7 +452,7 @@ function modify_fwd_ad_stmts!(
             return nothing
         end
 
-        # Dual-ise arguments.
+        # Lift arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
             return uninit_lifted(Val(info.width), get_const_primal_value(arg))
