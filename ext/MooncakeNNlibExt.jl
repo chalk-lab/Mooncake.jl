@@ -28,7 +28,6 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual,
     Lifted,
     NDualArray
 

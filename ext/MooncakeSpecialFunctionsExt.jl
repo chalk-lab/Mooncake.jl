@@ -9,7 +9,6 @@ import Mooncake:
     @from_rrule,
     @zero_derivative,
     @is_primitive,
-    Dual,
     Lifted,
     NDual,
     frule!!,
@@ -145,21 +144,6 @@ an unimplemented partial is mathematically required.
 }
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
-
-# Ensure the frule return type matches the primal type.
-function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:IEEEFloat}
-    return Dual(y, primal_eltype(dy_val))
-end
-function real_or_complex_valued(y::Complex{L}, primal_eltype, dy_val) where {L<:IEEEFloat}
-    return Dual(y, Complex(primal_eltype(real(dy_val)), primal_eltype(imag(dy_val))))
-end
-
-function real_or_complex_valued(y::L, primal_eltype, dy_val) where {L<:Complex}
-    return Dual(
-        y,
-        Mooncake.Tangent((re=primal_eltype(real(dy_val)), im=primal_eltype(imag(dy_val)))),
-    )
-end
 
 # Lifted analogues — per-lane partial extraction and result packing.
 @inline _sf_lane(v::NDual, lane::Integer) = v.partials[lane]

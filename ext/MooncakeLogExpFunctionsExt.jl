@@ -8,7 +8,6 @@ import Mooncake:
     @from_chainrules,
     frule!!,
     rrule!!,
-    Dual,
     CoDual,
     primal,
     tangent,

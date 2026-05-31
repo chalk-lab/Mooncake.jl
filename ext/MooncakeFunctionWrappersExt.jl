@@ -36,7 +36,6 @@ import Mooncake:
     @foldable,
     @is_primitive,
     CoDual,
-    Dual,
     ForwardMode,
     IncCache,
     Lifted,

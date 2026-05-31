@@ -8,7 +8,6 @@ import Mooncake:
     @is_primitive,
     CoDual,
     DefaultCtx,
-    Dual,
     Lifted,
     NDual,
     NDualArray,

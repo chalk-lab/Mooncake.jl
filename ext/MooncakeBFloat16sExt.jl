@@ -28,7 +28,6 @@ import Mooncake:
     NoFData,
     NoRData,
     CoDual,
-    Dual,
     Lifted,
     primal,
     tangent,

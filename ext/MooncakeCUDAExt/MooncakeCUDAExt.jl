@@ -59,7 +59,6 @@ import Mooncake:
     _scale_internal,
     _new_,
     TestUtils,
-    Dual,
     CoDual,
     NoTangent,
     NoPullback,
@@ -721,14 +720,8 @@ end
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
-@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), NoTangent()
-)
 @inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), NoFData()
-)
-@inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
 )
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
