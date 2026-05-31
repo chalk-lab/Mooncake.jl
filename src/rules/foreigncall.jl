@@ -305,7 +305,13 @@ function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     return y, deepcopy_pb!!
 end
 
-@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),DataType,Integer}
+# `Type`, not `DataType`: the type-value arg lifts to `Lifted{Type{T}}`, and `@zero_derivative`
+# emits the forward sig `Lifted{<:Type}`. Under `@nospecialize` (e.g. in `test_frule_correctness`)
+# inference widens that slot to the existential `Lifted{Type{S}} where S`, which is `<: Lifted{<:Type}`
+# but NOT `<: Lifted{<:DataType}` (`Lifted` is invariant; `Type{S} <: DataType` only for concrete `S`).
+# With `DataType` the existential matched no method, so the call inferred `Union{}` → `unreachable` →
+# SIGILL once the concrete arg dispatched at runtime.
+@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),Type,Integer}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Any}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
