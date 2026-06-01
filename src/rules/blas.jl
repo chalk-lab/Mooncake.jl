@@ -407,7 +407,7 @@ end
 function frule!!(
     ::Lifted{typeof(BLAS.scal!),Nw},
     _n::Lifted,
-    a_da::Lifted{P,Nw,NDual{P,Nw}},
+    a_da::Lifted{P,Nw},
     X_dX::Lifted{<:Union{Ptr{P},Array{P,1}}},
     _incx::Lifted,
 ) where {Nw,P<:BlasFloat}
@@ -418,7 +418,7 @@ function frule!!(
     # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
     for lane in 1:Nw
         dX_lane = _blas_lane_partial(tangent(X_dX), lane)
-        da_lane = tangent(a_da).partials[lane]
+        da_lane = tangent(a_da, lane)
         BLAS.scal!(n, a, dX_lane, incx)
         BLAS.axpy!(n, da_lane, X, incx, dX_lane, incx)
     end
@@ -475,10 +475,10 @@ end
 function frule!!(
     ::Lifted{typeof(BLAS.gemv!),Nw},
     tA::Lifted{Char},
-    alpha::Lifted{P,Nw,NDual{P,Nw}},
+    alpha::Lifted{P,Nw},
     A_dA::Lifted{<:AbstractVecOrMat{P}},
     x_dx::Lifted{<:AbstractVector{P}},
-    beta::Lifted{P,Nw,NDual{P,Nw}},
+    beta::Lifted{P,Nw},
     y_dy::Lifted{<:AbstractVector{P}},
 ) where {Nw,P<:BlasFloat}
     _tA = primal(tA)
@@ -489,8 +489,8 @@ function frule!!(
     x = primal(x_dx)
     y = primal(y_dy)
     for lane in 1:Nw
-        dα = tangent(alpha).partials[lane]
-        dβ = tangent(beta).partials[lane]
+        dα = tangent(alpha, lane)
+        dβ = tangent(beta, lane)
         dA_l = _blas_lane_partial(tangent(A_dA), lane)
         dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
         dx = _blas_lane_partial(tangent(x_dx), lane)
@@ -952,10 +952,10 @@ function frule!!(
     ::Lifted{typeof(BLAS.gemm!),Nw},
     transA::Lifted{Char},
     transB::Lifted{Char},
-    alpha::Lifted{T,Nw,NDual{T,Nw}},
+    alpha::Lifted{T,Nw},
     A_dA::Lifted{<:AbstractVecOrMat{T}},
     B_dB::Lifted{<:AbstractVecOrMat{T}},
-    beta::Lifted{T,Nw,NDual{T,Nw}},
+    beta::Lifted{T,Nw},
     C_dC::Lifted{<:AbstractMatrix{T}},
 ) where {Nw,T<:BlasFloat}
     tA = primal(transA)
@@ -968,8 +968,8 @@ function frule!!(
     A = Ap isa AbstractVector ? reshape(Ap, :, 1) : Ap
     B = Bp isa AbstractVector ? reshape(Bp, :, 1) : Bp
     for lane in 1:Nw
-        dα = tangent(alpha).partials[lane]
-        dβ = tangent(beta).partials[lane]
+        dα = tangent(alpha, lane)
+        dβ = tangent(beta, lane)
         dA_l = _blas_lane_partial(tangent(A_dA), lane)
         dB_l = _blas_lane_partial(tangent(B_dB), lane)
         dC = _blas_lane_partial(tangent(C_dC), lane)
@@ -1327,7 +1327,7 @@ function frule!!(
     _uplo::Lifted{Char},
     _ta::Lifted{Char},
     _diag::Lifted{Char},
-    α_dα::Lifted{P,Nw,NDual{P,Nw}},
+    α_dα::Lifted{P,Nw},
     A_dA::Lifted{<:AbstractMatrix{P}},
     B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
@@ -1339,7 +1339,7 @@ function frule!!(
     A = primal(A_dA)
     B = primal(B_dB)
     for lane in 1:Nw
-        dα = tangent(α_dα).partials[lane]
+        dα = tangent(α_dα, lane)
         dA = _blas_lane_partial(tangent(A_dA), lane)
         dB = _blas_lane_partial(tangent(B_dB), lane)
         BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
@@ -1430,7 +1430,7 @@ function frule!!(
     _uplo::Lifted{Char},
     _t::Lifted{Char},
     _diag::Lifted{Char},
-    α_dα::Lifted{P,Nw,NDual{P,Nw}},
+    α_dα::Lifted{P,Nw},
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
     B_dB::Lifted{<:AbstractMatrix{P},Nw},
 ) where {Nw,P<:BlasFloat}
@@ -1441,9 +1441,8 @@ function frule!!(
     α = primal(α_dα)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
-    α_parts = tangent(α_dα).partials
     @inbounds for lane in 1:Nw
-        dα_lane = α_parts[lane]
+        dα_lane = tangent(α_dα, lane)
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
