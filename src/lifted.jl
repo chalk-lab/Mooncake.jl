@@ -1,6 +1,19 @@
 # Forward-mode slot wrapper `Lifted{P, N, V}` and its associated width-N
 # `dual_type` / `lifted_type` queries and seed factories. Loaded after
 # `nfwd/Nfwd.jl` so the `NDual{T, N}` IEEEFloat carrier is in scope.
+#
+# Design note (forward vs reverse). The forward V is *type-precise*: `V ===
+# dual_type(P)` mirrors the primal, so differentiability (`NDual` vs `NoDual`),
+# wrapper nesting, and array layout (SoA `NDualArray` vs AoS) are each distinct
+# *types*. Reverse (`CoDual`) is *runtime-uniform* — non-differentiability is the
+# value `NoFData`, and wrappers are flattened by a runtime `arrayify` — so one
+# `rrule!!` subsumes shapes that a `frule!!` must enumerate as separate methods
+# (e.g. a `NoDual`-V overload beside the `NDual`-V one; one signature per wrapper
+# backing). Reverse is therefore both the TEMPLATE (broaden a forward frule to its
+# rrule sibling's breadth) and the ORACLE (a forward-fail / reverse-pass on the
+# same input flags a real bug — including convention slips the type system cannot
+# catch, e.g. a dropped `Symmetric` factor-of-2). When porting a frule from an
+# rrule, replicate the *convention*, not just the formula.
 
 """
     ImmutableDual{T<:NamedTuple}
