@@ -519,6 +519,9 @@ end
     @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T},NDual{T,N}}
     end
+    @inline function dual_type(::Val{N}, ::Type{Memory{Complex{R}}}) where {N,R<:IEEEFloat}
+        return NDualArray{Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}}}
+    end
     # General (non-float) `Memory` / `MemoryRef` V, mirroring the AoS `Array` rule
     # above: non-diff element → `NoDual`; differentiable element → AoS
     # `Memory{dual_type(elt)}` / `MemoryRef{dual_type(elt)}` (a plain memory/ref
@@ -710,6 +713,15 @@ end
     # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted.
     @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
         return Lifted{MemoryRef{T},1}(x, NDualMemoryRef{T,1,Memory{T}}(x, (ẋ,)))
+    end
+    # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the SoA NDualArray,
+    # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
+    # field is lifted under forward-over-reverse, or a Memory primal is seeded.
+    @inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,A<:Memory{T}}
+        return Lifted{A,1}(x, NDualArray{T,1,1,A}(x, (ẋ,)))
+    end
+    @inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,A<:Memory{Complex{R}}}
+        return Lifted{A,1}(x, NDualArray{Complex{R},1,1,A}(x, (ẋ,)))
     end
 end
 # ── Aliasing cache for `lift` ───────────────────────────────────────────────
@@ -1093,6 +1105,36 @@ end
     @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T}}(m)
     end
+    @inline function zero_dual(::Val{N}, m::Memory{Complex{R}}) where {N,R<:IEEEFloat}
+        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(m)
+    end
+    # `uninit_dual` / `randn_dual` mirror `zero_dual` above (SoA for scalar-float
+    # elements). `similar(::Memory)` is a fresh same-eltype Memory; `randn` content
+    # comes via the `Memory{T}(::Vector)` constructor (`randn` itself returns an
+    # Array). Without these, a `Memory{T}` slot falls through to the generic-struct
+    # seed and tries to build `Memory`/`Int` from a tuple of field seeds.
+    @inline function uninit_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
+        return NDualArray{T,N,1,Memory{T}}(m, ntuple(_ -> similar(m), Val(N)))
+    end
+    @inline function uninit_dual(::Val{N}, m::Memory{Complex{R}}) where {N,R<:IEEEFloat}
+        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(
+            m, ntuple(_ -> similar(m), Val(N))
+        )
+    end
+    @inline function randn_dual(
+        ::Val{N}, rng::AbstractRNG, m::Memory{T}
+    ) where {N,T<:IEEEFloat}
+        return NDualArray{T,N,1,Memory{T}}(
+            m, ntuple(_ -> Memory{T}(randn(rng, T, length(m))), Val(N))
+        )
+    end
+    @inline function randn_dual(
+        ::Val{N}, rng::AbstractRNG, m::Memory{Complex{R}}
+    ) where {N,R<:IEEEFloat}
+        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(
+            m, ntuple(_ -> Memory{Complex{R}}(randn(rng, Complex{R}, length(m))), Val(N))
+        )
+    end
     # AoS (non-float differentiable element) `Memory` / `MemoryRef` seeds,
     # mirroring the AoS array factory and `dual_type`: a per-element V memory,
     # built element-wise; a non-diff element gives `NoDual`. The IEEEFloat
@@ -1103,6 +1145,26 @@ end
             v = Memory{dual_type(Val($N), T)}(undef, length(m))
             @inbounds for i in eachindex(m)
                 isassigned(m, i) && (v[i] = zero_dual(Val($N), m[i]))
+            end
+            return v
+        end
+    end
+    @generated function uninit_dual(::Val{N}, m::Memory{T}) where {N,T}
+        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
+        return quote
+            v = Memory{dual_type(Val($N), T)}(undef, length(m))
+            @inbounds for i in eachindex(m)
+                isassigned(m, i) && (v[i] = uninit_dual(Val($N), m[i]))
+            end
+            return v
+        end
+    end
+    @generated function randn_dual(::Val{N}, rng::AbstractRNG, m::Memory{T}) where {N,T}
+        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
+        return quote
+            v = Memory{dual_type(Val($N), T)}(undef, length(m))
+            @inbounds for i in eachindex(m)
+                isassigned(m, i) && (v[i] = randn_dual(Val($N), rng, m[i]))
             end
             return v
         end

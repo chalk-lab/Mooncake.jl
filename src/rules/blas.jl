@@ -123,6 +123,9 @@ end
 # `NDualArray`'s lane partial.
 @inline _arrayify_lane(::Array, V::NDualArray, lane::Integer) = V.partials[lane]
 @inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
+@static if VERSION >= v"1.11-rc4"
+    @inline _arrayify_lane(::Memory, V::NDualArray, lane::Integer) = V.partials[lane]
+end
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
 ) where {P,B,C,D,E}
@@ -357,7 +360,7 @@ end
 function frule!!(
     ::Lifted{typeof(BLAS.nrm2),Nw},
     n::Lifted,
-    X_dX::Lifted{<:Union{Ptr{T},Array{T,1}}},
+    X_dX::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
     incx::Lifted,
 ) where {Nw,T<:BlasFloat}
     _n = primal(n)
@@ -411,7 +414,7 @@ function frule!!(
     ::Lifted{typeof(BLAS.scal!),Nw},
     _n::Lifted,
     a_da::Lifted{P,Nw},
-    X_dX::Lifted{<:Union{Ptr{P},Array{P,1}}},
+    X_dX::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::Lifted,
 ) where {Nw,P<:BlasFloat}
     n = primal(_n)
