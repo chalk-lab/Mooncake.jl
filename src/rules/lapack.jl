@@ -44,22 +44,21 @@ function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     _kwargs::Lifted{<:NamedTuple},
     ::Lifted{typeof(getrf!),Nw},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
 ) where {Nw,P<:BlasFloat}
     check = primal(_kwargs).check
-    A = primal(A_dA)
+    A, dA_lanes = arrayify(A_dA)
     _, ipiv, info = LAPACK.getrf!(A; check)
-    V = tangent(A_dA)
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
     @inbounds for lane in 1:Nw
-        dA_lane = V.partials[lane]
+        dA_lane = dA_lanes[lane]
         F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
         dA_lane .= L * tril(F, -1) + triu(F) * U
     end
     y = (A, ipiv, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoDual(), NoDual()))
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -545,16 +544,16 @@ end
     )
     function frule!!(
         ::Lifted{typeof(LAPACK.lacpy!),Nw},
-        B_dB::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
-        A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+        B_dB::Lifted{<:AbstractMatrix{P},Nw},
+        A_dA::Lifted{<:AbstractMatrix{P},Nw},
         _uplo::Lifted{Char},
     ) where {Nw,P<:BlasFloat}
         uplo = primal(_uplo)
-        B_partials = tangent(B_dB).partials
-        A_partials = tangent(A_dA).partials
-        LAPACK.lacpy!(primal(B_dB), primal(A_dA), uplo)
+        B, dB_lanes = arrayify(B_dB)
+        A, dA_lanes = arrayify(A_dA)
+        LAPACK.lacpy!(B, A, uplo)
         @inbounds for lane in 1:Nw
-            LAPACK.lacpy!(B_partials[lane], A_partials[lane], uplo)
+            LAPACK.lacpy!(dB_lanes[lane], dA_lanes[lane], uplo)
         end
         return B_dB
     end
