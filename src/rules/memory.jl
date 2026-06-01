@@ -414,14 +414,14 @@ end
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     _ordering::Lifted{<:Val},
     _boundscheck::Lifted{<:Val},
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
     dy_partials = ntuple(
         k -> memoryrefget(tangent(x).partials[k], _val(ordering), _val(bc)), Val(Nw)
     )
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_partials))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
@@ -447,12 +447,12 @@ end
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     _ordering::Lifted{Symbol},
     _boundscheck::Lifted{Bool},
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, bc)
     dy_partials = ntuple(k -> memoryrefget(tangent(x).partials[k], ordering, bc), Val(Nw))
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_partials))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
@@ -474,8 +474,8 @@ end
 
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
-    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
-) where {Nw,P<:IEEEFloat}
+    x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
+) where {Nw,P<:NDualEltype}
     y = memoryrefnew(primal(x))
     dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k]), Val(Nw))
     return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
@@ -488,7 +488,7 @@ end
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     ii::Lifted,
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     _ii = primal(ii)
     y = memoryrefnew(primal(x), _ii)
     dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], _ii), Val(Nw))
@@ -505,7 +505,7 @@ end
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     ii::Lifted,
     boundscheck::Lifted{Bool},
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     _ii = primal(ii)
     _bc = primal(boundscheck)
     y = memoryrefnew(primal(x), _ii, _bc)

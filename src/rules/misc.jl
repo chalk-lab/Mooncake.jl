@@ -186,6 +186,10 @@ end
             primal_mem = getfield(V.primal, :mem)
             partial_mems = ntuple(k -> getfield(V.partials[k], :mem), Val(N))
             return Mooncake.Nfwd.NDualArray{T,N,1,M}(primal_mem, partial_mems)
+        elseif name === :ptr_or_offset
+            # Per-lane raw pointers (one into each partial memory); the downstream
+            # `bitcast` re-types them, landing an `NTuple{N,Ptr{T}}` for a foreigncall.
+            return ntuple(k -> getfield(V.partials[k], :ptr_or_offset), Val(N))
         end
         return NoDual()
     end

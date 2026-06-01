@@ -311,10 +311,19 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
         throw(ArgumentError(msg))
     end
     v = bitcast(T, primal(x))
-    # Ptr-cast tangent path needs Ptr canonical V — return NoTangent for now;
-    # the reference rule preserves the bitcast pointer when both T and primal
-    # are Ptr, which can be wired up after Ptr V lands.
+    # Non-Ptr or NoDual-V bitcast: no forward derivative to carry.
     return Lifted{typeof(v),Nw}(v, NoDual())
+end
+# Ptr→Ptr bitcast of a per-lane `NTuple{Nw,Ptr}` V: re-type each lane's pointer.
+# (`T` is already the full target `Ptr` type, e.g. `Ptr{ComplexF64}` — not wrapped
+# again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
+# the generic frule above, which throws (it must not be silently bypassed here).
+@inline function frule!!(
+    ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
+) where {Nw,T<:Ptr,P<:Ptr}
+    return Lifted{T,Nw}(
+        bitcast(T, primal(x)), ntuple(k -> bitcast(T, tangent(x)[k]), Val(Nw))
+    )
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat

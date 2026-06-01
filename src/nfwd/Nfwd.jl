@@ -384,6 +384,21 @@ end
 @inline _nfwd_dual_has_partials(::Type{<:Complex{<:NDual}}) = true
 @inline _nfwd_dual_has_partials(::Type) = false
 
+# Scalar analog of `_nfwd_lift`: assemble one value's canonical forward V from its
+# primal and per-lane primal-typed partials — `NDual` for real, `Complex{NDual}`
+# (interleaving real/imag) for complex. Shared by the element-read frules.
+@inline _scalar_ndual(y::T, parts::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{T,N}(
+    y, parts
+)
+@inline function _scalar_ndual(
+    y::Complex{R}, parts::NTuple{N,Complex{R}}
+) where {R<:IEEEFloat,N}
+    return Complex(
+        NDual{R,N}(real(y), ntuple(k -> real(parts[k]), Val(N))),
+        NDual{R,N}(imag(y), ntuple(k -> imag(parts[k]), Val(N))),
+    )
+end
+
 # ── NTuple arithmetic helpers ─────────────────────────────────────────────────────
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 

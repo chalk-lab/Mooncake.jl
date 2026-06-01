@@ -86,11 +86,13 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-# Output is a Ptr; per-lane Ptrs aren't expressible in the Lifted V shape
-# (no single tangent address), so the canonical V is `NoDual`.
+# Output is a `Ptr{Nothing}`, whose canonical V is `NTuple{Nw,Ptr{Nothing}}`. An
+# object address carries no meaningful per-lane derivative (there is no single
+# tangent address), so each lane is the primal address — coherent with the V
+# shape, and a no-op for the non-differentiable identity/hashing uses this serves.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, ntuple(_ -> y, Val(Nw)))
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(

@@ -212,55 +212,39 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    @eval @inline function frule!!(
-        ::Lifted{typeof(_foreigncall_),Nw},
-        ::Lifted{Val{$(blas_name(fname))}},
-        ::Lifted, # return type
-        ::Lifted, # argument types
-        ::Lifted, # nreq
-        ::Lifted, # calling convention
-        _n::Lifted{BLAS.BlasInt},
-        _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
-        _incx::Lifted{BLAS.BlasInt},
-        _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
-        _incy::Lifted{BLAS.BlasInt},
-        $((isreal ? () : (:(_presult::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}}),))...),
-        args::Vararg{Any,M},
-    ) where {Nw,M}
-        GC.@preserve args begin
-            n, incx, incy = primal(_n), primal(_incx), primal(_incy)
-            DX = primal(_DX)
-            DY = primal(_DY)
-            dDX_partials = tangent(_DX)
-            dDY_partials = tangent(_DY)
+    # Forward mode: only real `dot` (cblas returns the result by value) is handled at
+    # the foreigncall boundary. Complex `dotc`/`dotu` (which write into a scalar
+    # result `Ref`) are forward primitives at the `BLAS.dotc`/`dotu` level instead —
+    # see below. Reverse mode handles all three here.
+    if isreal
+        @eval @inline function frule!!(
+            ::Lifted{typeof(_foreigncall_),Nw},
+            ::Lifted{Val{$(blas_name(fname))}},
+            ::Lifted, # return type
+            ::Lifted, # argument types
+            ::Lifted, # nreq
+            ::Lifted, # calling convention
+            _n::Lifted{BLAS.BlasInt},
+            _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incx::Lifted{BLAS.BlasInt},
+            _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incy::Lifted{BLAS.BlasInt},
+            args::Vararg{Any,M},
+        ) where {Nw,M}
+            GC.@preserve args begin
+                n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+                DX = primal(_DX)
+                DY = primal(_DY)
+                dDX_partials = tangent(_DX)
+                dDY_partials = tangent(_DY)
 
-            result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            dresult_lanes = ntuple(Val(Nw)) do lane
-                return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
-                       BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
-            end
-
-            $(
-                if isreal
-                    quote
-                        return Lifted{$elty,Nw}(
-                            result, NDual{$elty,Nw}(result, dresult_lanes)
-                        )
-                    end
-                else
-                    quote
-                        presult = primal(_presult)
-                        dpresult_partials = tangent(_presult)
-                        Base.unsafe_store!(presult, result)
-                        for lane in 1:Nw
-                            Base.unsafe_store!(
-                                dpresult_partials[lane], dresult_lanes[lane]
-                            )
-                        end
-                        return Lifted{Nothing,Nw}(nothing, NoDual())
-                    end
+                result = BLAS.$jlfname(n, DX, incx, DY, incy)
+                dresult_lanes = ntuple(Val(Nw)) do lane
+                    return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
+                           BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
                 end
-            )
+                return Lifted{$elty,Nw}(result, NDual{$elty,Nw}(result, dresult_lanes))
+            end
         end
     end
     @eval @inline function rrule!!(
@@ -379,7 +363,7 @@ function frule!!(
         end
         s / (2 * y)
     end
-    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+    return Lifted{R,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
 # Shared single-side viewify: handles both Ptr and Array uniformly so the
 # Lifted bodies don't have to branch on input shape.
@@ -402,6 +386,46 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
+end
+
+# dotc/dotu (complex) — forward mode only. Unlike real `dot` (which the cblas
+# routine returns by value), the complex routines write into a scalar `result =
+# Ref{T}()` passed to the ccall. The canonical SoA dual of that Ref stores a
+# `Complex{NDual{R,Nw}}`, which is not layout-compatible with the `Nw` contiguous
+# `T`-cells the foreigncall needs, so the `_foreigncall_` frule cannot land the
+# per-lane partials there. Instead we make `BLAS.dotc`/`dotu` themselves forward
+# primitives and assemble the result directly, bypassing the Ref roundtrip. The
+# JVP is linear: d(⟨x,y⟩) = ⟨dx,y⟩ + ⟨x,dy⟩ (with conjugation folded into the same
+# routine). Reverse mode is unaffected — it still descends to the `_foreigncall_`
+# rrule above.
+for (jlfname, elty) in
+    ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
+    @eval @is_primitive(
+        MinimalCtx,
+        ForwardMode,
+        Tuple{
+            typeof(BLAS.$jlfname),Integer,X,Integer,X,Integer
+        } where {X<:Union{Ptr{$elty},AbstractArray{$elty}}}
+    )
+    @eval @inline function frule!!(
+        ::Lifted{typeof(BLAS.$jlfname),Nw},
+        _n::Lifted{<:Integer},
+        _DX::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incx::Lifted{<:Integer},
+        _DY::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incy::Lifted{<:Integer},
+    ) where {Nw}
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        DX, DY = primal(_DX), primal(_DY)
+        result = BLAS.$jlfname(n, DX, incx, DY, incy)
+        lanes = ntuple(Val(Nw)) do lane
+            dX = _blas_lane_partial(_DX, lane)
+            dY = _blas_lane_partial(_DY, lane)
+            return BLAS.$jlfname(n, dX, incx, DY, incy) +
+                   BLAS.$jlfname(n, DX, incx, dY, incy)
+        end
+        return Lifted{$elty,Nw}(result, _scalar_ndual(result, lanes))
+    end
 end
 
 @is_primitive(

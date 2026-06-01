@@ -337,9 +337,11 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
-# Non-canonical V: returns `NTuple{N, Ptr{T}}` since the proper
-# `dual_type(Val(N), Ptr{T})` infrastructure is not yet defined. Once Ptr V
-# lands, swap this to the canonical wrapper.
+# `Lifted{Ptr{T},N}(y, dy_partials)` is the canonical Ptr V — `dy_partials` is the
+# `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects. Real and complex
+# element types share one body: the SoA `NDualArray` stores per-lane partials as
+# `NTuple{N,Array{T,D}}` in both cases, so each lane's pointer is just
+# `jl_array_ptr` of `partials[k]`.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -347,8 +349,8 @@ function frule!!(
     ::Lifted{Tuple{Val{Any}},N},
     ::Lifted, # nreq
     ::Lifted, # calling convention
-    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
-) where {N,T<:IEEEFloat,D}
+    a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}},
+) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
     dy_partials = ntuple(
         k -> ccall(:jl_array_ptr, Ptr{T}, (Any,), tangent(a).partials[k]), Val(N)
@@ -479,14 +481,14 @@ end
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
-    x::Lifted{Array{T,D},Nw,NDualArray{T,Nw,D,Array{T,D},NDual{T,Nw}}},
+    x::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
     inds::Vararg{Lifted{Int,Nw},M},
-) where {Nw,T<:IEEEFloat,D,M}
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     y = arrayref(_inb, primal(x), _inds...)
     dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
-    return Lifted{T,Nw}(y, NDual{T,Nw}(y, dy_partials))
+    return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 # AoS V: read the element primal and its per-element V from the parallel arrays.
 Base.@propagate_inbounds function frule!!(

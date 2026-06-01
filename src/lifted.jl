@@ -533,6 +533,13 @@ end
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
 end
+# A raw `Ptr{Nothing}` carries `N` per-lane pointers: the `pointer(::Array)` chain
+# `getfield(:ref) → getfield(:ptr_or_offset) → bitcast` passes through a
+# `Ptr{Nothing}` intermediate, whose V must survive so the re-typed `Ptr{T}` after
+# the bitcast lands the per-lane partial pointers a foreigncall consumes.
+@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{Nothing}}) where {N}
+    return NTuple{N,Ptr{Nothing}}
+end
 # Non-differentiable-element pointers (e.g. `Ptr{UInt8}`) carry no forward
 # derivative — V is `NoDual`, mirroring `tangent_type(T) === NoTangent`. Without
 # this the zero-field generic fallback returns `NTuple{N, Ptr{NoTangent}}`, which
@@ -740,6 +747,10 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
+# `Ptr{Nothing}`'s reverse tangent is `Ptr{NoTangent}`; its forward V is the
+# `NTuple{1,Ptr{Nothing}}` per-lane shape. A raw address has no per-lane derivative
+# (cf. `pointer_from_objref`), so the lane is the primal address.
+@inline lift(x::Ptr{Nothing}, ::Ptr{<:NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
     # derivative storage); its forward V is the SoA `NDualMemoryRef`. Reached in
