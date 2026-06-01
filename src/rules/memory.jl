@@ -538,14 +538,17 @@ end
 @inline function frule!!(
     ::Lifted{typeof(lmemoryrefset!),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
-    value::Lifted{P,Nw,NDual{P,Nw}},
+    value::Lifted{P,Nw},
     ::Lifted{Val{ordering},Nw},
     ::Lifted{Val{boundscheck},Nw},
-) where {Nw,P<:IEEEFloat,ordering,boundscheck}
+) where {Nw,P<:NDualEltype,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
     for lane in 1:Nw
         memoryrefset!(
-            tangent(x).partials[lane], tangent(value).partials[lane], ordering, boundscheck
+            tangent(x).partials[lane],
+            _nfwd_dual_partial(tangent(value), lane),
+            ordering,
+            boundscheck,
         )
     end
     return value
@@ -605,15 +608,17 @@ end
 @inline function frule!!(
     ::Lifted{typeof(memoryrefset!),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
-    value::Lifted{P,Nw,NDual{P,Nw}},
+    value::Lifted{P,Nw},
     ordering::Lifted{Symbol},
     boundscheck::Lifted{Bool},
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     ord = primal(ordering)
     bc = primal(boundscheck)
     memoryrefset!(primal(x), primal(value), ord, bc)
     for lane in 1:Nw
-        memoryrefset!(tangent(x).partials[lane], tangent(value).partials[lane], ord, bc)
+        memoryrefset!(
+            tangent(x).partials[lane], _nfwd_dual_partial(tangent(value), lane), ord, bc
+        )
     end
     return value
 end
@@ -837,7 +842,7 @@ end
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
     function frule!!(
         ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
-    ) where {Nw,P<:IEEEFloat}
+    ) where {Nw,P<:NDualEltype}
         _n = primal(n)
         x = Core.memorynew(Memory{P}, _n)
         partials = ntuple(_ -> Core.memorynew(Memory{P}, _n), Val(Nw))
@@ -855,7 +860,7 @@ end
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
 function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
     # Per-lane zero-initialized partial Memory objects.
     partials = ntuple(_ -> (m=Memory{P}(undef, primal(n)); fill!(m, zero(P)); m), Val(Nw))
@@ -869,10 +874,10 @@ function rrule!!(
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
-# AoS `Memory{P}(undef, n)` for non-float differentiable elements: the V is the
-# AoS `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
-# AoS `memoryrefset!`). Non-diff element → `NoDual`. The IEEEFloat overload above
-# (SoA `NDualArray`) is more specific and wins for scalar-float elements.
+# AoS `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
+# the AoS `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
+# AoS `memoryrefset!`). Non-diff element → `NoDual`. The `NDualEltype` overload above
+# (SoA `NDualArray`) is more specific and wins for scalar IEEEFloat/Complex elements.
 @generated function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P}
@@ -913,7 +918,7 @@ function frule!!(
     ::Lifted{Type{Array{P,D}},Nw},
     ref::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     sz::Lifted,
-) where {Nw,P<:IEEEFloat,D}
+) where {Nw,P<:NDualEltype,D}
     _sz = primal(sz)
     y = _new_(Array{P,D}, primal(ref), _sz)
     # Each lane's partial Array shares the per-lane partial MemoryRef as its

@@ -539,15 +539,17 @@ end
 function frule!!(
     ::Lifted{typeof(Core.arrayset),Nw},
     inbounds::Lifted{Bool,Nw},
-    A::Lifted{Array{T,D},Nw,NDualArray{T,Nw,D,Array{T,D},NDual{T,Nw}}},
-    v::Lifted{T,Nw,NDual{T,Nw}},
+    A::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
+    v::Lifted{T,Nw},
     inds::Vararg{Lifted{Int,Nw},M},
-) where {Nw,T<:IEEEFloat,D,M}
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     Core.arrayset(_inb, primal(A), primal(v), _inds...)
     for lane in 1:Nw
-        Core.arrayset(_inb, tangent(A).partials[lane], tangent(v).partials[lane], _inds...)
+        Core.arrayset(
+            _inb, tangent(A).partials[lane], _nfwd_dual_partial(tangent(v), lane), _inds...
+        )
     end
     return A
 end

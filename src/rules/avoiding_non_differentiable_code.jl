@@ -14,6 +14,15 @@ function frule!!(
     new_partials = ntuple(lane -> tangent(x)[lane] + yp, Val(Nw))
     return Lifted{Ptr{T},Nw}(new_primal, new_partials)
 end
+# Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
+# reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
+# breadth (a `NoDual`-V pointer arises e.g. from the generic `bitcast` fallback).
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted{<:Integer}
+) where {Nw}
+    p = primal(x) + primal(y)
+    return Lifted{typeof(p),Nw}(p, NoDual())
+end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
 end
