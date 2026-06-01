@@ -116,19 +116,17 @@ function frule!!(
     _uplo::Lifted{Char},
     _trans::Lifted{Char},
     _diag::Lifted{Char},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
-    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
-    A = primal(A_dA)
-    B = primal(B_dB)
-    A_partials = tangent(A_dA).partials
-    B_partials = tangent(B_dB).partials
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     @inbounds for lane in 1:Nw
-        dA_lane = A_partials[lane]
-        dB_lane = B_partials[lane]
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
         LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
         tmp = copy(B)
         LAPACK.trtrs!(uplo, trans, diag, A, tmp)
@@ -193,24 +191,22 @@ end
 function frule!!(
     ::Lifted{typeof(getrs!),Nw},
     _trans::Lifted{Char},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
     _ipiv::Lifted{<:AbstractVector{Int}},
-    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     trans = primal(_trans)
-    A = primal(A_dA)
     ipiv = primal(_ipiv)
-    B = primal(B_dB)
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     LAPACK.getrs!(trans, A, ipiv, B)
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
-    A_partials = tangent(A_dA).partials
-    B_partials = tangent(B_dB).partials
     p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
     invp = invperm(p)
     @inbounds for lane in 1:Nw
-        dA_lane = A_partials[lane]
-        dB_lane = B_partials[lane]
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
         dL_plus_I = UnitLowerTriangular(dA_lane)
         dU = UpperTriangular(dA_lane)
         tmp = dL_plus_I * U
@@ -469,18 +465,16 @@ end
 function frule!!(
     ::Lifted{typeof(potrs!),Nw},
     _uplo::Lifted{Char},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
-    B_dB::Lifted{<:Array{P},Nw,<:NDualArray},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A = primal(A_dA)
-    B = primal(B_dB)
-    A_partials = tangent(A_dA).partials
-    B_partials = tangent(B_dB).partials
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     LAPACK.potrs!(uplo, A, B)
     @inbounds for lane in 1:Nw
-        dA_lane = A_partials[lane]
-        dB_lane = B_partials[lane]
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
         if uplo == 'L'
             L = LowerTriangular(A)
             dL = LowerTriangular(dA_lane)

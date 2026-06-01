@@ -1406,23 +1406,21 @@ function frule!!(
     _t::Lifted{Char},
     _diag::Lifted{Char},
     α_dα::Lifted{P,Nw,NDual{P,Nw}},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
-    B_dB::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    B_dB::Lifted{<:AbstractMatrix{P},Nw},
 ) where {Nw,P<:BlasFloat}
     side = primal(_side)
     uplo = primal(_uplo)
     trans = primal(_t)
     diag = primal(_diag)
     α = primal(α_dα)
-    A = primal(A_dA)
-    B = primal(B_dB)
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     α_parts = tangent(α_dα).partials
-    A_partials = tangent(A_dA).partials
-    B_partials = tangent(B_dB).partials
     @inbounds for lane in 1:Nw
         dα_lane = α_parts[lane]
-        dA_lane = A_partials[lane]
-        dB_lane = B_partials[lane]
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
         BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
         tmp = copy(B)
         trsm!(side, uplo, trans, diag, one(P), A, tmp)
