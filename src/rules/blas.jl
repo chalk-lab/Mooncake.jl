@@ -117,13 +117,38 @@ function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
     A = primal(x)
     return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
 end
+# `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method, applied per lane: it
+# recurses through the wrapper's V (`ImmutableDual` whose NamedTuple mirrors the wrapper's fields)
+# and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
+# `NDualArray`'s lane partial.
 @inline _arrayify_lane(::Array, V::NDualArray, lane::Integer) = V.partials[lane]
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
-) where {P<:BlasFloat,B,C,D,E}
-    pp = V.value.parent.partials[lane]
+) where {P,B,C,D,E}
+    pp = _arrayify_lane(x.parent, V.value.parent, lane)
     return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
 end
+@inline function _arrayify_lane(
+    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer
+) where {P,B,C,D}
+    pp = _arrayify_lane(x.parent, V.value.parent, lane)
+    return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
+end
+@inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer) = adjoint(
+    _arrayify_lane(x.parent, V.value.parent, lane)
+)
+@inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer) = transpose(
+    _arrayify_lane(x.parent, V.value.parent, lane)
+)
+@inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer) = Diagonal(
+    _arrayify_lane(x.diag, V.value.diag, lane)
+)
+@inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer) = Symmetric(
+    _arrayify_lane(x.data, V.value.data, lane), Symbol(x.uplo)
+)
+@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer) where {T} = reinterpret(
+    T, _arrayify_lane(x.parent, V.value.parent, lane)
+)
 
 """
     matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})

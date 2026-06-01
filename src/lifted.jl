@@ -453,10 +453,12 @@ end
 @foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
     return :(Array{dual_type(Val($N), $T),$D})
 end
-# Tuple recursion: empty base case + head/tail cons. Specialized per concrete
-# tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
-# time without an @generated function.
-@foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
+# Tuple recursion: head/tail cons (via `_dual_tuple_v`). Specialized per concrete tuple type by
+# Julia's normal dispatch, so concrete tuples resolve at compile time without an @generated function.
+# A *standalone* empty tuple is non-differentiable (`tangent_type(Tuple{}) === NoTangent`), so its V
+# is `NoDual` — coherent with reverse. (The cons *base case* `Tuple{}` lives in `_dual_tuple_v`
+# below, which must keep it `Tuple{}` to terminate the recursion.)
+@foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = NoDual
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     # Non-concrete tuples (e.g. `Tuple{Vararg{T}}`, abstract element types) widen
     # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
@@ -908,19 +910,21 @@ end
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────
 #
 # Element-wise build via Tuple-aware `map`. Each element's dispatch picks its own seed factory
-# recursively. A wholly-non-differentiable tuple collapses to whole `NoDual`, matching its
-# `dual_type` (mirrors the NamedTuple seeds above).
+# recursively. Gate on `dual_type === NoDual` (NOT `tangent_type === NoTangent`): a wholly-non-diff
+# tuple collapses to `NoDual`, but the EMPTY tuple has `dual_type(Tuple{}) === Tuple{}` (not NoDual)
+# even though `tangent_type(Tuple{}) === NoTangent` — so it must seed to `()`, not `NoDual()` (e.g.
+# a `ReshapedArray`'s empty `mi::Tuple{}` field).
 
 @inline function zero_dual(w::Val{N}, x::Tuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    dual_type(w, typeof(x)) === NoDual && return NoDual()
     return map(xi -> zero_dual(w, xi), x)
 end
 @inline function uninit_dual(w::Val{N}, x::Tuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    dual_type(w, typeof(x)) === NoDual && return NoDual()
     return map(xi -> uninit_dual(w, xi), x)
 end
 @inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    dual_type(w, typeof(x)) === NoDual && return NoDual()
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 
