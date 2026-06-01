@@ -152,6 +152,12 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
+# Element-wise non-differentiable array V (`Array{NoDual}`, e.g. `Vector{Int}`): the lane tangent
+# mirrors reverse `tangent_type(Array{T,D}) === Array{NoTangent,D}` — a same-shape `NoTangent`
+# array, the element-wise analogue of the whole-`NoDual` case above.
+@inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
+    return map(_ -> NoTangent(), tangent(x))
+end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
@@ -437,14 +443,14 @@ end
     return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
 end
 # General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
-#  - non-differentiable element (`tangent_type(T) === NoTangent`, e.g. `Vector{Int}`) → `NoDual`;
-#  - differentiable element → Array-of-Structures V `Array{dual_type(Val(N), T), D}`,
-#    a plain array of per-element forward Vs. The IEEEFloat / Complex overloads above
-#    are more specific and provide the SoA `NDualArray` optimisation for scalar-float
-#    elements; this AoS form covers everything else differentiable (tuples, structs,
-#    closures — e.g. the reverse rule's `Vector{Tuple{pullback}}` under forward-over-reverse).
+# always the element-wise Array-of-Structures V `Array{dual_type(Val(N), T), D}`, including
+# `Array{NoDual, D}` for a non-differentiable element (e.g. `Vector{Int}` → `Vector{NoDual}`,
+# mirroring reverse's `Vector{NoTangent}`). `tangent_type(Array{T,D})` is never `NoTangent`, so an
+# array is never collapsed to whole `NoDual` — coherence requires `dual_type(P) === NoDual` only
+# when `tangent_type(P) === NoTangent`. The IEEEFloat / Complex overloads above are more specific
+# and provide the SoA `NDualArray` optimisation for scalar-float elements; this AoS form covers
+# everything else (non-diff elements, tuples, structs, closures).
 @foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
-    tangent_type(T) === NoTangent && return NoDual
     return :(Array{dual_type(Val($N), $T),$D})
 end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
@@ -456,6 +462,10 @@ end
     # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
     # never terminates on a `Vararg` tail (`tuple_type_tail` is a fixed point).
     isconcretetype(P) || return Any
+    # Wholly-non-differentiable tuples collapse to whole `NoDual`, mirroring reverse
+    # `tangent_type(P) === NoTangent` (the invariant: `dual_type(P) === NoDual` iff
+    # `tangent_type(P) === NoTangent`). Otherwise build element-wise via head/tail cons.
+    tangent_type(P) === NoTangent && return NoDual
     H = Base.tuple_type_head(P)
     Tail = Base.tuple_type_tail(P)
     return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
@@ -749,10 +759,13 @@ end
 # `getfield(x, name)`, which requires the primal field to be defined.
 @inline lift(x, ẋ::PossiblyUninitTangent) = lift(x, val(ẋ))
 @inline lift(x, ẋ::PossiblyUninitTangent, c::Union{Nothing,IdDict}) = lift(x, val(ẋ), c)
-# Non-differentiable array: reverse tangent is an all-`NoTangent` array, forward
-# V is `NoDual` (coherent with `dual_type`). The 3-arg passthrough keeps this
-# more-specific behaviour ahead of the AoS overload below when a cache is threaded.
-@inline lift(x::Array, ::Array{<:NoTangent}) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+# Non-differentiable element array: the reverse tangent is an all-`NoTangent` array; the forward V
+# mirrors it element-wise as an `Array{NoDual}` (coherent with `dual_type(Array{T,D}) =
+# Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the AoS
+# overload below when a cache is threaded.
+@inline lift(x::Array, ẋ::Array{<:NoTangent}) = Lifted{typeof(x),1}(
+    x, map(_ -> NoDual(), ẋ)
+)
 @inline lift(x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = lift(x, ẋ)
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they
 # match the AoS overload below by element type, so give them cache-threading
@@ -886,12 +899,20 @@ end
 
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────
 #
-# Element-wise build via Tuple-aware `map`. Each element's dispatch picks
-# its own seed factory recursively.
+# Element-wise build via Tuple-aware `map`. Each element's dispatch picks its own seed factory
+# recursively. A wholly-non-differentiable tuple collapses to whole `NoDual`, matching its
+# `dual_type` (mirrors the NamedTuple seeds above).
 
-@inline zero_dual(w::Val{N}, x::Tuple) where {N} = map(xi -> zero_dual(w, xi), x)
-@inline uninit_dual(w::Val{N}, x::Tuple) where {N} = map(xi -> uninit_dual(w, xi), x)
+@inline function zero_dual(w::Val{N}, x::Tuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    return map(xi -> zero_dual(w, xi), x)
+end
+@inline function uninit_dual(w::Val{N}, x::Tuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    return map(xi -> uninit_dual(w, xi), x)
+end
 @inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 

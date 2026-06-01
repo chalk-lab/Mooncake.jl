@@ -1,22 +1,20 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(
-    ::Lifted{typeof(LAPACK.getrf!),Nw},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasFloat}
-    A = primal(A_dA)
+    A, dA_lanes = arrayify(A_dA)
     _, ipiv, info = LAPACK.getrf!(A)
-    V = tangent(A_dA)
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
     @inbounds for lane in 1:Nw
-        dA_lane = V.partials[lane]
+        dA_lane = dA_lanes[lane]
         F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
         dA_lane .= L * tril(F, -1) + triu(F) * U
     end
     y = (A, ipiv, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoDual(), NoDual()))
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}

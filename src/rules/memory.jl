@@ -746,11 +746,14 @@ end
         lsetfield!(tangent(value), Val(name), name === :ref ? tangent(x) : primal(x))
         return x
     end
-    # Non-differentiable array (`NoDual` V, e.g. an `Int32` stack): write the
-    # primal field only.
+    # Non-differentiable element array (element-wise `Array{NoDual}` V, e.g. an `Int32` stack):
+    # write the primal field only. The V's `.ref`/`.size` are not tracked here — non-diff array
+    # growth V-tracking is entangled with the deferred Memory/MemoryRef element-wise coherence (a
+    # `MemoryRef`'s dual is still whole `NoDual`, so the AoS `.ref` write above cannot apply). See
+    # temp/f1-fix-plan.md Phase 1b.
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
-        value::Lifted{<:Array,Nw,NoDual},
+        value::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
         ::Lifted{Val{name}},
         x::Lifted,
     ) where {Nw,name}
@@ -1182,9 +1185,6 @@ function frule!!(
 end
 @inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
     return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
-end
-@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,NoDual}) where {N}
-    return Lifted{typeof(primal(a)),N}(copy(primal(a)), NoDual())
 end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}

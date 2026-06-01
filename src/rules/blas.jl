@@ -108,6 +108,23 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
+# Forward-mode analogue of `arrayify(::CoDual)`. Returns the primal array and an N-tuple of
+# per-lane tangent arrays, each canonicalised to the primal's wrapper. This mirrors the reverse
+# `arrayify` wrapper methods, applied across the SoA partials: no copy — BLAS/LAPACK run on the
+# (possibly strided) views directly, and in-place writes flow back through the view into the
+# parent's partials. `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method.
+function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
+    A = primal(x)
+    return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
+end
+@inline _arrayify_lane(::Array, V::NDualArray, lane::Integer) = V.partials[lane]
+@inline function _arrayify_lane(
+    x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
+) where {P<:BlasFloat,B,C,D,E}
+    pp = V.value.parent.partials[lane]
+    return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
+end
+
 """
     matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})
 

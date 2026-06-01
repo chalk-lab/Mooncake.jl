@@ -888,13 +888,6 @@ end
     x = __vec_to_tuple(primal(v))
     return Lifted{typeof(x),Nw}(x, __vec_to_tuple(tangent(v)))
 end
-# Non-differentiable vector → non-diff tuple V.
-@inline function frule!!(
-    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,NoDual}
-) where {Nw}
-    x = __vec_to_tuple(primal(v))
-    return Lifted{typeof(x),Nw}(x, NoDual())
-end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
     dv = tangent(v)

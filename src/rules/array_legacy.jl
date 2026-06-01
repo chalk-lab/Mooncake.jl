@@ -255,11 +255,14 @@ function frule!!(
     Base._growend!(tangent(a), d_p)
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Non-differentiable element vectors (V === NoDual): only the primal grows.
+# Non-differentiable element vectors (element-wise `Array{NoDual}` V): grow primal and V together.
 function frule!!(
-    ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,NoDual}, d::Lifted
+    ::Lifted{typeof(Base._growend!),N},
+    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
+    d::Lifted,
 ) where {N}
     Base._growend!(primal(a), primal(d))
+    Base._growend!(tangent(a), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -497,11 +500,12 @@ Base.@propagate_inbounds function frule!!(
     y = arrayref(_inb, primal(x), _inds...)
     return Lifted{typeof(y),Nw}(y, arrayref(_inb, tangent(x), _inds...))
 end
-# Non-differentiable element array (V === NoDual): no tangent to read.
+# Non-differentiable element array (element-wise `Array{NoDual}` V): the read yields a non-diff
+# scalar (V === NoDual).
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
-    x::Lifted{<:Array,Nw,NoDual},
+    x::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
     inds::Vararg{Lifted{Int,Nw},M},
 ) where {Nw,M}
     y = arrayref(primal(inbounds), primal(x), tuple_map(primal, inds)...)
@@ -559,11 +563,12 @@ function frule!!(
     Core.arrayset(_inb, tangent(A), tangent(v), _inds...)
     return A
 end
-# Non-differentiable element array (V === NoDual): only the primal is written.
+# Non-differentiable element array (element-wise `Array{NoDual}` V): only the primal is written;
+# the V's elements stay `NoDual` (writing a non-diff scalar's `NoDual` is a no-op).
 function frule!!(
     ::Lifted{typeof(Core.arrayset),Nw},
     inbounds::Lifted{Bool,Nw},
-    A::Lifted{<:Array,Nw,NoDual},
+    A::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
     v::Lifted,
     inds::Vararg{Lifted{Int,Nw},M},
 ) where {Nw,M}
