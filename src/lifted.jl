@@ -145,6 +145,28 @@ end
 @inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
     return tangent(x).partials[lane]
 end
+# `NDualMemoryRef` / `MemoryRef` / `Core.memoryref` are 1.11+; gate to avoid an
+# `UndefVarError` at precompile on 1.10.
+@static if VERSION >= v"1.11-rc4"
+    @inline function tangent(x::Lifted{P,N,<:NDualMemoryRef}, lane::Integer) where {P,N}
+        return tangent(x).partials[lane]
+    end
+    # `Core.memoryref(mem, offset)` is out-of-bounds for an empty `mem` (length 0); the 1-arg
+    # `Core.memoryref(mem)` gives the canonical empty ref. Empty `Memory` is a valid primal
+    # (empty arrays/vectors), so re-build a `MemoryRef` V through this guard.
+    @inline _memoryref_at(mem, offset) =
+        length(mem) == 0 ? Core.memoryref(mem) : Core.memoryref(mem, offset)
+    # AoS `MemoryRef` V (a plain `MemoryRef` into an AoS V `Memory`, e.g. `MemoryRef{NoDual}`
+    # for `MemoryRef{Int}`, or `MemoryRef{NDualArray}` for `MemoryRef{Vector}` comms). Project
+    # the lane through the `.mem`'s AoS-array lane accessor, then re-`memoryref` at the offset.
+    @inline function tangent(
+        x::Lifted{P,N,V}, lane::Integer
+    ) where {P<:MemoryRef,N,V<:MemoryRef}
+        p = primal(x)
+        lane_mem = tangent(Lifted{Memory{eltype(P)},N}(p.mem, tangent(x).mem), lane)
+        return _memoryref_at(lane_mem, Core.memoryrefoffset(p))
+    end
+end
 @inline function tangent(
     x::Lifted{P,N,Complex{NDual{R,N}}}, lane::Integer
 ) where {P,R<:IEEEFloat,N}
@@ -157,6 +179,19 @@ end
 # array, the element-wise analogue of the whole-`NoDual` case above.
 @inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
     return map(_ -> NoTangent(), tangent(x))
+end
+# General AoS container V — a plain `Array`/`Memory` of per-element forward Vs (e.g.
+# `Array{NDualArray}` from a nested array, or `Memory{…}` forward-over-reverse comms).
+# Project lane `k` element-wise to the same-shape array of each element's lane-`k`
+# tangent, mirroring reverse `tangent_type(Array{T}) === Array{tangent_type(T)}`. The SoA
+# `NDualArray` (also `<:AbstractArray`) and the `AbstractArray{NoDual}` case have more
+# specific overloads above; undefined slots stay undefined (reverse-PUT semantics).
+@inline function tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray}
+    p = primal(x)
+    v = tangent(x)
+    t = similar(p, tangent_type(eltype(P)))
+    _map_if_assigned!((pe, ve) -> tangent(Lifted{eltype(P),N}(pe, ve), lane), t, p, v)
+    return t
 end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
@@ -529,11 +564,9 @@ end
     # comms storage under forward-over-reverse. The IEEEFloat overloads above are
     # more specific and provide the SoA optimisation for scalar-float elements.
     @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
-        tangent_type(T) === NoTangent && return NoDual
         return :(Memory{dual_type(Val($N), $T)})
     end
     @generated function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T}
-        tangent_type(T) === NoTangent && return NoDual
         return :(MemoryRef{dual_type(Val($N), $T)})
     end
 end
@@ -722,6 +755,31 @@ end
     end
     @inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,A<:Memory{Complex{R}}}
         return Lifted{A,1}(x, NDualArray{Complex{R},1,1,A}(x, (ẋ,)))
+    end
+    # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
+    # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{<:NoTangent}`
+    # overload and `dual_type(Memory{T}) = Memory{NoDual}`.
+    @inline lift(x::Memory, ẋ::Memory{<:NoTangent}) = Lifted{typeof(x),1}(
+        x, map(_ -> NoDual(), ẋ)
+    )
+    # General AoS `Memory` (differentiable non-float / nested / `Any` element):
+    # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
+    @inline lift(x::Memory, ẋ::Memory) = lift(x, ẋ, nothing)
+    @inline function lift(x::Memory, ẋ::Memory, c::Union{Nothing,IdDict})
+        v = similar(x, dual_type(Val(1), eltype(x)))
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], c)))
+        end
+        return Lifted{typeof(x),1,typeof(v)}(x, v)
+    end
+    # General AoS `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
+    # element): lift the `.mem` via the Memory lift, then `memoryref` at the
+    # offset. The `MemoryRef{IEEEFloat}` SoA overload above is more specific.
+    @inline lift(x::MemoryRef, ẋ::MemoryRef) = lift(x, ẋ, nothing)
+    @inline function lift(x::MemoryRef, ẋ::MemoryRef, c::Union{Nothing,IdDict})
+        mem_v = tangent(lift(x.mem, ẋ.mem, c))
+        ref_v = _memoryref_at(mem_v, Core.memoryrefoffset(x))
+        return Lifted{typeof(x),1,typeof(ref_v)}(x, ref_v)
     end
 end
 # ── Aliasing cache for `lift` ───────────────────────────────────────────────
@@ -1098,6 +1156,28 @@ end
     @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}(p)
     end
+    # SoA `MemoryRef{IEEEFloat}` uninit/randn: per-lane partial MemoryRefs into
+    # fresh `Memory{T}` at `p`'s offset (mirrors the `NDualMemoryRef` zero-init
+    # constructor + `zero_dual` above). The general `@generated` below is for
+    # non-float elements; it `memoryref`s an AoS Memory V, which would fail on the
+    # SoA `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
+    # (Open: `MemoryRef{Complex}` lacks the analogous SoA overload — see plan note.)
+    @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
+        offset = Core.memoryrefoffset(p)
+        len = length(p.mem)
+        return NDualMemoryRef{T,N,Memory{T}}(
+            p, ntuple(_ -> _memoryref_at(Memory{T}(undef, len), offset), Val(N))
+        )
+    end
+    @inline function randn_dual(
+        ::Val{N}, rng::AbstractRNG, p::MemoryRef{T}
+    ) where {N,T<:IEEEFloat}
+        offset = Core.memoryrefoffset(p)
+        len = length(p.mem)
+        return NDualMemoryRef{T,N,Memory{T}}(
+            p, ntuple(_ -> _memoryref_at(Memory{T}(randn(rng, T, len)), offset), Val(N))
+        )
+    end
     # Memory{T} is `<: AbstractArray{T, 1}`, so its canonical V is the
     # standard NDualArray. `zero(::Memory{T})` returns a fresh Memory{T},
     # so the existing `NDualArray{T, N, 1, Memory{T}}(p)` constructor works
@@ -1171,6 +1251,17 @@ end
     end
     @generated function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
         dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
-        return :(memoryref(zero_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
+        return :(_memoryref_at(zero_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
+    end
+    # `MemoryRef`'s V is built via `memoryref` over the `.mem`'s V (a plain
+    # `MemoryRef` can't be constructed field-wise from a raw `Ptr`), so mirror
+    # `zero_dual` rather than fall through to the generic struct seed.
+    @generated function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
+        return :(_memoryref_at(uninit_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
+    end
+    @generated function randn_dual(::Val{N}, rng::AbstractRNG, p::MemoryRef{T}) where {N,T}
+        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
+        return :(_memoryref_at(randn_dual(Val($N), rng, p.mem), Core.memoryrefoffset(p)))
     end
 end

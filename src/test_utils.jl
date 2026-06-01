@@ -411,6 +411,12 @@ __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, 
 function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}, n)
     getfield(t.value, n)
 end
+# SoA `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
+# `_get_lifted_field` (`:mem` → the `NDualArray` over the partials' memories;
+# `.ptr_or_offset` is a non-diff `Ptr` → `NoDual`).
+@static if VERSION >= v"1.11-rc4"
+    __get_data_field(t::Mooncake.Nfwd.NDualMemoryRef, n) = Mooncake._get_lifted_field(t, n)
+end
 
 # Forward-mode structural-lift V's recurse field-wise (tangent storage is
 # slot-local, so no address is tracked at this level). A `PossiblyUninitTangent`

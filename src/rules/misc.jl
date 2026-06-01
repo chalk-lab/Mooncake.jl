@@ -198,9 +198,9 @@ end
     # projects to the AoS `Memory` V; `.ptr_or_offset` is a non-diff `Ptr`.
     @inline _get_lifted_field(V::MemoryRef, name::Symbol) =
         name === :mem ? getfield(V, :mem) : NoDual()
-    # AoS `Memory` V: its only fields (`.length`, `.ptr`) are non-diff metadata;
-    # element access goes through `memoryrefget`/`memoryrefset!`, not here.
-    @inline _get_lifted_field(::Memory, ::Symbol) = NoDual()
+    # AoS `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
+    # non-diff metadata; element access goes through `memoryrefget`, not here.
+    @inline _get_lifted_field(::Memory, _) = NoDual()
 end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()

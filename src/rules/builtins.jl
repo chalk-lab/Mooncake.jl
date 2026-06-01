@@ -1179,6 +1179,19 @@ function frule!!(
     _setfield_tangent!(tangent(value), nm, tangent(x))
     return x
 end
+# Array `.ref`/`.size` mutation (e.g. resize) via the runtime-name `setfield!` can't use
+# the `_setfield_tangent!` path — the SoA `NDualArray` V is immutable. Delegate to the
+# `lsetfield!` array frule (which updates the V via the partials/memref-aliasing), with the
+# positional field index normalised to the symbol it dispatches on (`1`→`:ref`, `2`→`:size`).
+@inline function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Array}, name::Lifted, x::Lifted
+) where {Nw}
+    nm = primal(name)
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    return frule!!(
+        zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
+    )
+end
 # A `MutableDual` struct V stores fields in its backing `value` NamedTuple (the
 # same path `lsetfield!` takes), so merge there — `setproperty!` on the
 # `MutableDual` itself would hit its single `value` field. A non-diff V (`NoDual`)
