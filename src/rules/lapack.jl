@@ -310,18 +310,17 @@ end
 )
 function frule!!(
     ::Lifted{typeof(getri!),Nw},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
     _ipiv::Lifted{<:AbstractVector{Int}},
 ) where {Nw,P<:BlasRealFloat}
-    A = primal(A_dA)
+    A, dA_lanes = arrayify(A_dA)
     ipiv = primal(_ipiv)
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
-    A_partials = tangent(A_dA).partials
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     invp = invperm(p)
     tmp2s = ntuple(Val(Nw)) do lane
-        dA_lane = A_partials[lane]
+        dA_lane = dA_lanes[lane]
         dL_plus_I = UnitLowerTriangular(dA_lane)
         dU = UpperTriangular(dA_lane)
         tmp = dL_plus_I * U
@@ -330,7 +329,7 @@ function frule!!(
     end
     LAPACK.getri!(A, ipiv)
     @inbounds for lane in 1:Nw
-        A_partials[lane] .= (-A * tmp2s[lane] * A)
+        dA_lanes[lane] .= (-A * tmp2s[lane] * A)
     end
     return A_dA
 end
@@ -372,16 +371,13 @@ end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
 function frule!!(
-    ::Lifted{typeof(potrf!),Nw},
-    _uplo::Lifted{Char},
-    A_dA::Lifted{Array{P,2},Nw,NDualArray{P,Nw,2,Array{P,2},NDual{P,Nw}}},
+    ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A = primal(A_dA)
-    V = tangent(A_dA)
+    A, dA_lanes = arrayify(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
     @inbounds for lane in 1:Nw
-        dA_lane = V.partials[lane]
+        dA_lane = dA_lanes[lane]
         if uplo == 'L'
             L = LowerTriangular(A)
             tmp = LowerTriangular(ldiv!(L, Symmetric(dA_lane, :L) / L'))
@@ -399,7 +395,7 @@ function frule!!(
         end
     end
     y = (A, info)
-    return Lifted{typeof(y),Nw}(y, (V, NoDual()))
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
