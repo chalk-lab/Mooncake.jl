@@ -121,19 +121,23 @@ struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
 end
 
+# Invoke the forward OpaqueClosure through `__call_rule`: on Julia 1.10 the `OpaqueClosure` method
+# routes the call via `jl_apply_generic` (no specsig OC call, avoiding the julia#51016/#61368
+# codegen segfaults) behind an argument-type guard; on Julia 1.11+ it is a direct specsig call.
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
     args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
-    return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+    return __call_rule(fwd.fwd_oc.oc, __unflatten_dual_varargs(isva, args, Val(nargs)))
 end
 
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type, which is encoded in the MistyClosure type parameter.
+# On Julia 1.10 the call above goes through the dynamic `__call_rule` barrier and is inferred as
+# `Any`; assert the rule's return type `R` (encoded in the MistyClosure type parameter) to
+# restore type stability for callers.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
     ) where {P,A,R,isva,nargs}
-        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
+        return rule(args...)::R
     end
 end
 

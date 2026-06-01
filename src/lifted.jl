@@ -412,26 +412,28 @@ Shapes defined so far:
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (§14.2).
 """
-@inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
+@foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
 # in reverse mode, returning the forward-mode V sentinel `NoDual`.
-@inline dual_type(::Val{N}, ::Type{<:Integer}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Char}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Symbol}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Nothing}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{<:Type}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{<:TypeVar}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Module}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Expr}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Cstring}) where {N} = NoDual
-@inline dual_type(::Val{N}, ::Type{Cwstring}) where {N} = NoDual
-@inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
+@foldable @inline dual_type(::Val{N}, ::Type{<:Integer}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Char}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Symbol}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Nothing}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{<:Type}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{<:TypeVar}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Module}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Expr}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Cstring}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{Cwstring}) where {N} = NoDual
+@foldable @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}
 end
-@inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
+@foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return NDualArray{T,N,D,Array{T,D},NDual{T,N}}
 end
-@inline function dual_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{Array{Complex{R},D}}
+) where {N,R<:IEEEFloat,D}
     return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
 end
 # General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
@@ -441,15 +443,15 @@ end
 #    are more specific and provide the SoA `NDualArray` optimisation for scalar-float
 #    elements; this AoS form covers everything else differentiable (tuples, structs,
 #    closures — e.g. the reverse rule's `Vector{Tuple{pullback}}` under forward-over-reverse).
-@generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
+@foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
     tangent_type(T) === NoTangent && return NoDual
     return :(Array{dual_type(Val($N), $T),$D})
 end
 # Tuple recursion: empty base case + head/tail cons. Specialized per concrete
 # tuple type by Julia's normal dispatch, so concrete tuples resolve at compile
 # time without an @generated function.
-@inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
-@inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+@foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
+@foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     # Non-concrete tuples (e.g. `Tuple{Vararg{T}}`, abstract element types) widen
     # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
     # never terminates on a `Vararg` tail (`tuple_type_tail` is a fixed point).
@@ -458,7 +460,9 @@ end
     Tail = Base.tuple_type_tail(P)
     return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
 end
-@inline function dual_type(::Val{N}, ::Type{NamedTuple{names,T}}) where {N,names,T<:Tuple}
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{NamedTuple{names,T}}
+) where {N,names,T<:Tuple}
     # An all-non-differentiable NamedTuple collapses to whole `NoDual`, mirroring
     # the generic struct / Array / Memory / Ptr rules. (Tuple stays element-wise:
     # its head/tail `dual_type` recursion needs a Tuple tail to cons onto.) A
@@ -471,7 +475,7 @@ end
 # `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
 # entry: N parallel partial pointers, one per lane. Matches reverse-mode
 # `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
-@inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
+@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
 end
 # Non-differentiable-element pointers (e.g. `Ptr{UInt8}`) carry no forward
@@ -480,7 +484,7 @@ end
 # doesn't match the structurally-NoDual `frule!!` outputs for such pointers (e.g.
 # the `jl_string_ptr` foreigncall). The `NDualEltype` overload above is more
 # specific and wins for differentiable element types.
-@generated function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
+@foldable @generated function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
     tangent_type(T) === NoTangent && return NoDual
     return :(NTuple{$N,Ptr{tangent_type($T)}})
 end
@@ -529,7 +533,7 @@ end
 # non-differentiable fields hit the `NoDual` rule. The seed factories below
 # coerce field storage into the declared backing NamedTuple so a differentiable
 # value flowing into an `Any`-typed field still yields `V === dual_type(Val(N), P)`.
-@generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
+@foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
     isconcretetype(P) || return Any
     # `tangent_type` runs in the generator body, deciding the return type
     # structure (NoDual vs struct lift), so it cannot be deferred to the

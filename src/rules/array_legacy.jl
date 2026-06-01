@@ -454,6 +454,25 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
+# Primitive forward rule for `complex(::Array{<:IEEEFloat})`. Its derived copy chain
+# (`Vector{Complex}` constructor → `_copyto_impl!` → `_unsafe_copyto!`) reaches the `jl_array_ptr`
+# foreigncall and element-wise `Core.arrayset`, which are uncovered for complex `NDualArray` on
+# legacy-array Julia (1.11-rc4+ lowers array copies through the covered `MemoryRef` path); a
+# primitive short-circuits the chain. ForwardMode-scoped so reverse mode keeps its derived rule;
+# the JVP is exact (complex(x) = x + 0im, so d(complex(x)) = complex(dx)). No version guard — this
+# file is only included on `VERSION < 1.11-rc4` (see `Mooncake.jl`).
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(complex),Array{P,D}
+} where {P<:IEEEFloat,D}
+function frule!!(
+    ::Lifted{typeof(complex),N},
+    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
+) where {N,P<:IEEEFloat,D}
+    y = complex(primal(x))  # y = x + 0im
+    parts = ntuple(k -> complex(tangent(x).partials[k]), Val(N))  # d(complex(x)) = complex(dx)
+    return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, parts))
+end
+
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},

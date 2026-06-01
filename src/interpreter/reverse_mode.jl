@@ -990,16 +990,15 @@ end
     return fwds.fwds_oc(uf_args...)::CoDual, pb
 end
 
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
-# type parameters; the Pullback's nargs comes from the number of args at the call site.
+# On Julia 1.10, route the call through the dynamic `__call_rule` barrier (the `(rule::Any)` cast
+# in a `@noinline` body avoids the specsig OC-call codegen crash) and assert the return type to
+# restore type stability. Both the CoDual and Pullback types are encoded in DerivedRule's type
+# parameters; the Pullback's nargs comes from the number of args at the call site.
 @static if VERSION < v"1.11-"
-    @inline function __call_rule(
+    @noinline function __call_rule(
         rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
     ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return __call_rule_erased!(
-            Base.inferencebarrier(rule), args
-        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+        return ((rule::Any)(args...))::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
     end
 end
 
