@@ -122,6 +122,7 @@ end
 # and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
 # `NDualArray`'s lane partial.
 @inline _arrayify_lane(::Array, V::NDualArray, lane::Integer) = V.partials[lane]
+@inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
 ) where {P,B,C,D,E}
@@ -344,11 +345,13 @@ end
 # `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
 # V); real and complex element types both routed.
 #
-# `_blas_lane_partial` extracts the per-lane partial in the right shape:
-# for NDualArray V it returns `partials[lane]` (a vector); for the Ptr
-# `NTuple{N, Ptr{T}}` V it returns `V[lane]` (a single Ptr).
-@inline _blas_lane_partial(V::NDualArray, lane::Integer) = V.partials[lane]
-@inline _blas_lane_partial(V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
+# `_blas_lane_partial` extracts a Lifted matrix/vector/Ptr slot's per-lane partial
+# in the right shape, via the wrapper-aware `_arrayify_lane`. This covers dense
+# `NDualArray`, the `NTuple{N, Ptr}` V, and the wrapper structural-lift V's
+# (SubArray/ReshapedArray/Adjoint/…), so the slot may be any `AbstractVecOrMat`.
+@inline _blas_lane_partial(x::Lifted, lane::Integer) = _arrayify_lane(
+    primal(x), tangent(x), lane
+)
 
 # nrm2 — output is real (real or complex T); per-lane dy is real.
 function frule!!(
@@ -365,7 +368,7 @@ function frule!!(
     Xv = _viewify_one(_n, Xp, _inc)
     R = typeof(y)  # nrm2 returns the real-valued norm.
     dy_lanes = ntuple(Val(Nw)) do lane
-        dX_lane = _blas_lane_partial(tangent(X_dX), lane)
+        dX_lane = _blas_lane_partial(X_dX, lane)
         dXv = _viewify_one(_n, dX_lane, _inc)
         s = zero(R)
         @inbounds for i in eachindex(Xv)
@@ -417,7 +420,7 @@ function frule!!(
     X = primal(X_dX)
     # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
     for lane in 1:Nw
-        dX_lane = _blas_lane_partial(tangent(X_dX), lane)
+        dX_lane = _blas_lane_partial(X_dX, lane)
         da_lane = tangent(a_da, lane)
         BLAS.scal!(n, a, dX_lane, incx)
         BLAS.axpy!(n, da_lane, X, incx, dX_lane, incx)
@@ -491,10 +494,10 @@ function frule!!(
     for lane in 1:Nw
         dα = tangent(alpha, lane)
         dβ = tangent(beta, lane)
-        dA_l = _blas_lane_partial(tangent(A_dA), lane)
+        dA_l = _blas_lane_partial(A_dA, lane)
         dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
-        dx = _blas_lane_partial(tangent(x_dx), lane)
-        dy = _blas_lane_partial(tangent(y_dy), lane)
+        dx = _blas_lane_partial(x_dx, lane)
+        dy = _blas_lane_partial(y_dy, lane)
         _gemv!_frule_core!(_tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
     end
     return y_dy
@@ -639,9 +642,9 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         for lane in 1:Nw
             dα = tangent(alpha, lane)
             dβ = tangent(beta, lane)
-            dA = _blas_lane_partial(tangent(A_dA), lane)
-            dx = _blas_lane_partial(tangent(x_dx), lane)
-            dy = _blas_lane_partial(tangent(y_dy), lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dx = _blas_lane_partial(x_dx, lane)
+            dy = _blas_lane_partial(y_dy, lane)
             BLAS.$fname(ul, dα, A, x, β, dy)
             BLAS.$fname(ul, α, dA, x, one(T), dy)
             BLAS.$fname(ul, α, A, dx, one(T), dy)
@@ -752,8 +755,8 @@ function frule!!(
     A = primal(A_dA)
     x = primal(x_dx)
     for lane in 1:Nw
-        dA = _blas_lane_partial(tangent(A_dA), lane)
-        dx = _blas_lane_partial(tangent(x_dx), lane)
+        dA = _blas_lane_partial(A_dA, lane)
+        dx = _blas_lane_partial(x_dx, lane)
         # Frechet: dx := A*dx + dA*x  (+ unit-diag adjustment).
         BLAS.trmv!(uplo, trans, diag, A, dx)
         tmp = copy(x)
@@ -860,8 +863,8 @@ function frule!!(
     # Primal first — subsequent lane work needs the new `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
     for lane in 1:Nw
-        dA = _blas_lane_partial(tangent(A_dA), lane)
-        dx = _blas_lane_partial(tangent(x_dx), lane)
+        dA = _blas_lane_partial(A_dA, lane)
+        dx = _blas_lane_partial(x_dx, lane)
         BLAS.trsv!(uplo, trans, diag, A, dx)
         tmp = BLAS.trmv(uplo, trans, diag, dA, x)
         diag === 'U' && (tmp .-= x)
@@ -970,9 +973,9 @@ function frule!!(
     for lane in 1:Nw
         dα = tangent(alpha, lane)
         dβ = tangent(beta, lane)
-        dA_l = _blas_lane_partial(tangent(A_dA), lane)
-        dB_l = _blas_lane_partial(tangent(B_dB), lane)
-        dC = _blas_lane_partial(tangent(C_dC), lane)
+        dA_l = _blas_lane_partial(A_dA, lane)
+        dB_l = _blas_lane_partial(B_dB, lane)
+        dC = _blas_lane_partial(C_dC, lane)
         dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
         dB = dB_l isa AbstractVector ? reshape(dB_l, :, 1) : dB_l
         # Tangents (product rule).
@@ -1115,9 +1118,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         for lane in 1:Nw
             dα = tangent(alpha, lane)
             dβ = tangent(beta, lane)
-            dA = _blas_lane_partial(tangent(A_dA), lane)
-            dB = _blas_lane_partial(tangent(B_dB), lane)
-            dC = _blas_lane_partial(tangent(C_dC), lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dB = _blas_lane_partial(B_dB, lane)
+            dC = _blas_lane_partial(C_dC, lane)
             BLAS.$fname(s, ul, α, A, dB, β, dC)
             BLAS.$fname(s, ul, α, dA, B, one(T), dC)
             if !iszero(dα)
@@ -1243,8 +1246,8 @@ for (fname, elty, relty) in (
         for lane in 1:Nw
             dα = tangent(α_dα, lane)
             dβ = tangent(β_dβ, lane)
-            dA = _blas_lane_partial(tangent(A_dA), lane)
-            dC = _blas_lane_partial(tangent(C_dC), lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dC = _blas_lane_partial(C_dC, lane)
             BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
             iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
             if !iszero(dβ)
@@ -1340,8 +1343,8 @@ function frule!!(
     B = primal(B_dB)
     for lane in 1:Nw
         dα = tangent(α_dα, lane)
-        dA = _blas_lane_partial(tangent(A_dA), lane)
-        dB = _blas_lane_partial(tangent(B_dB), lane)
+        dA = _blas_lane_partial(A_dA, lane)
+        dB = _blas_lane_partial(B_dB, lane)
         BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
         dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
         diag === 'U' && (dB .-= α .* B)
