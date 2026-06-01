@@ -462,13 +462,21 @@ end
     # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
     # never terminates on a `Vararg` tail (`tuple_type_tail` is a fixed point).
     isconcretetype(P) || return Any
-    # Wholly-non-differentiable tuples collapse to whole `NoDual`, mirroring reverse
-    # `tangent_type(P) === NoTangent` (the invariant: `dual_type(P) === NoDual` iff
-    # `tangent_type(P) === NoTangent`). Otherwise build element-wise via head/tail cons.
+    # Whole-tuple collapse (mirror reverse `tangent_type(P) === NoTangent`; the invariant
+    # `dual_type(P) === NoDual` iff `tangent_type(P) === NoTangent`) happens ONLY here at the top.
+    # The element-wise build (`_dual_tuple_v`) must keep tails as `Tuple` so they can be
+    # `tuple_type_cons`'d — a collapsed `NoDual` tail cannot. A non-differentiable *element* still
+    # collapses to `NoDual` via its own `dual_type` (consing `NoDual` as a head element is fine).
     tangent_type(P) === NoTangent && return NoDual
+    return _dual_tuple_v(Val(N), P)
+end
+# Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
+# `Tuple`. Concrete tails only (the top `dual_type(Tuple)` guards `isconcretetype`).
+@foldable @inline _dual_tuple_v(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
+@foldable @inline function _dual_tuple_v(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     H = Base.tuple_type_head(P)
     Tail = Base.tuple_type_tail(P)
-    return Base.tuple_type_cons(dual_type(Val(N), H), dual_type(Val(N), Tail))
+    return Base.tuple_type_cons(dual_type(Val(N), H), _dual_tuple_v(Val(N), Tail))
 end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{NamedTuple{names,T}}
