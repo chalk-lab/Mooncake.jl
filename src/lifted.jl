@@ -862,11 +862,21 @@ end
 @inline function uninit_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
     return NDualArray{T,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
 end
+@inline function uninit_dual(::Val{N}, x::A) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
+end
 
 @inline function randn_dual(
     ::Val{N}, rng::AbstractRNG, x::A
 ) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
     return NDualArray{T,N,D,A}(x, ntuple(_ -> randn(rng, T, size(x)), Val(N)))
+end
+@inline function randn_dual(
+    ::Val{N}, rng::AbstractRNG, x::A
+) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(
+        x, ntuple(_ -> randn(rng, Complex{R}, size(x)), Val(N))
+    )
 end
 
 # ── Array seed factories (differentiable non-float elements: AoS) ────────────
