@@ -714,7 +714,11 @@ function frule!!(
     Sinv = inv(F)
     y = logdet(F)
     data_partials = tangent(_S).value.data.partials
-    dy_lanes = ntuple(k -> dot(Sinv, data_partials[k]), Val(Nw))
+    # The stored `.data` partial is a full matrix, but only the `uplo` triangle is
+    # the symmetric perturbation. `Symmetric(·, uplo)` applies the storage weighting
+    # (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse `rrule!!`
+    # encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix is wrong.
+    dy_lanes = ntuple(k -> dot(Sinv, Symmetric(data_partials[k], Symbol(S.uplo))), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 function rrule!!(
@@ -758,7 +762,10 @@ function frule!!(
     end
     Sinv = inv(F)
     data_partials = tangent(_S).value.data.partials
-    dy_lanes = ntuple(k -> d * dot(Sinv, data_partials[k]), Val(Nw))
+    # See `logdet` frule: `Symmetric(·, uplo)` applies the symmetric-storage weighting.
+    dy_lanes = ntuple(
+        k -> d * dot(Sinv, Symmetric(data_partials[k], Symbol(S.uplo))), Val(Nw)
+    )
     return Lifted{P,Nw}(d, NDual{P,Nw}(d, dy_lanes))
 end
 function rrule!!(
@@ -809,7 +816,8 @@ function frule!!(
     end
     Sinv = inv(F)
     data_partials = tangent(_S).value.data.partials
-    ld_lanes = ntuple(k -> dot(Sinv, data_partials[k]), Val(Nw))
+    # See `logdet` frule: `Symmetric(·, uplo)` applies the symmetric-storage weighting.
+    ld_lanes = ntuple(k -> dot(Sinv, Symmetric(data_partials[k], Symbol(S.uplo))), Val(Nw))
     ld_v = NDual{P,Nw}(ld, ld_lanes)
     s_v = NDual{P,Nw}(s, zero_parts)
     return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
