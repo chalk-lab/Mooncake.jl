@@ -308,6 +308,17 @@ end
     setfield!(md, :value, merge(nt, NamedTuple{(name,)}((v_i,))))
     return x
 end
+# Non-differentiable struct (V === NoDual): set the primal field; there is no
+# tangent to update. Mirrors the reverse `F == NoFData` branch of `lsetfield_rrule`.
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{P,Nw,NoDual},
+    ::Lifted{Val{name}},
+    x::Lifted,
+) where {Nw,P,name}
+    setfield!(primal(value), name, primal(x))
+    return x
+end
 @inline function rrule!!(
     ::CoDual{typeof(lsetfield!)}, value::CoDual{P,F}, name::CoDual, x::CoDual
 ) where {P,F<:StandardFDataType}
