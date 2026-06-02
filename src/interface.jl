@@ -1164,44 +1164,30 @@ end
 # identity cache, otherwise aliased mutable subobjects are over-counted and cycles recurse
 # forever.
 @inline _fcache_gradient_input_dof(x) = _fcache_gradient_input_dof(x, IdDict{Any,Any}())
-# Mark mutable/shared nodes as seen before descending so aliasing contributes once and
-# cycles terminate locally instead of recursing forever.
-@inline _fcache_mark_seen!(seen::IdDict{Any,Any}, x) = (seen[x] = nothing)
+# Mutable/shared nodes are marked seen (`seen[x] = nothing`) before descending, so aliasing
+# contributes once and cycles terminate locally instead of recursing forever.
 @inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
-@inline _fcache_gradient_input_dof(x::IEEEFloat, _seen::IdDict{Any,Any}) = 1
-@inline _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, _seen::IdDict{Any,Any}) = 2
-@inline function _fcache_gradient_input_dof(
-    x::AbstractArray{<:IEEEFloat}, seen::IdDict{Any,Any}
-)
-    haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 1)
-        end
-        return total
-    end
-    return length(x)
+# Packable leaf counts reuse the nfwd engine's slot vocabulary (`_nfwd_input_dof`), the
+# single source of truth for scalar-slot counts; the dedup wrapper around array leaves is
+# the gradient-specific extension (nfwd never dedups). IEEEFloat/Complex arrays have isbits
+# elements, which are always assigned, so the slot count equals `length`/`2length`.
+@inline function _fcache_gradient_input_dof(x::IEEEFloat, ::IdDict{Any,Any})
+    return Nfwd._nfwd_input_dof(x)
+end
+@inline function _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, ::IdDict{Any,Any})
+    return Nfwd._nfwd_input_dof(x)
 end
 @inline function _fcache_gradient_input_dof(
-    x::AbstractArray{Complex{<:IEEEFloat}}, seen::IdDict{Any,Any}
+    x::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
 )
     haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
-    if x isa _BuiltinArrays
-        total = 0
-        for i in eachindex(x)
-            isassigned(x, i) && (total += 2)
-        end
-        return total
-    end
-    return 2 * length(x)
+    seen[x] = nothing
+    return Nfwd._nfwd_input_dof(x)
 end
 @inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
     tangent_type(typeof(x)) == NoTangent && return 0
     haskey(seen, x) && return 0
-    _fcache_mark_seen!(seen, x)
+    seen[x] = nothing
     total = 0
     if x isa _BuiltinArrays
         for i in eachindex(x)
@@ -1233,7 +1219,7 @@ end
     tangent_type(P) == NoTangent && return 0
     if x isa AbstractArray || Base.ismutabletype(P)
         haskey(seen, x) && return 0
-        _fcache_mark_seen!(seen, x)
+        seen[x] = nothing
     end
     total = 0
     inits = always_initialised(P)
@@ -1251,7 +1237,6 @@ end
 @inline _make_seed_tangent(x, slot::Int) = _make_seed_tangent(
     x, slot, Ref(0), IdDict{Any,Any}()
 )
-@inline _make_seed_tangent(::NoTangent, _slot::Int, _cursor, _dict) = NoTangent()
 @inline function _make_seed_tangent(
     ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
 )
@@ -1323,15 +1308,7 @@ end
 
 @inline function _make_seed_tangent(
     x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:Tuple}
-    tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P)))
-    return build_tangent(P, fields...)
-end
-
-@inline function _make_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:NamedTuple}
+) where {P<:Union{Tuple,NamedTuple}}
     tangent_type(P) == NoTangent && return NoTangent()
     fields = ntuple(n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P)))
     return build_tangent(P, fields...)
