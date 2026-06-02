@@ -1028,7 +1028,7 @@ Should be defined for all standard tangent types.
 Inner product between tangents `t` and `s`. Must return a `Float64`.
 Always available because all tangent types correspond to finite-dimensional vector spaces.
 """
-_dot(t::T, s::T) where {T} = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
+_dot(t, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 
 """
     _dot_internal(c::MaybeCache, t::T, s::T) where {T}
@@ -1038,6 +1038,13 @@ If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular r
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
+# A `NoTangent` is the zero element of its (zero-dimensional) space, so its inner
+# product with any tangent is 0. This cross-type pairing arises in the test harness
+# when forward and reverse mode disagree on whether a value is differentiable — e.g.
+# `lgetfield(::Array, Val(1))` yields a forward `MemoryRef` tangent (carried for HVP)
+# but a reverse `NoTangent` rdata; the consistency check then dots the two.
+_dot_internal(::MaybeCache, ::NoTangent, ::Any) = 0.0
+_dot_internal(::MaybeCache, ::Any, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tuple,NamedTuple}}
     return sum(map((t, s) -> _dot_internal(c, t, s)::Float64, t, s); init=0.0)::Float64
