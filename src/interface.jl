@@ -867,7 +867,7 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
+struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS}
     rule::R
     input_tangents::IT
     output_primal::OP
@@ -877,6 +877,12 @@ struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple}
     gradient_chunk_size_auto::Bool
     chunkcache::CF
     input_specs::S
+    # Reusable buffer holding a copy of the input args `x...` (not `f`, which is never
+    # mutated and may be uncopyable, e.g. the HVP `grad_f` closure), allocated once at cache
+    # construction. The public API snapshots into it and restores from it (in place, via
+    # `_copy_to_output!!`) around every call, so the inputs are never mutated even though
+    # the forward rule aliases (and an in-place `f` mutates) the user's storage.
+    input_snapshot::IS
 end
 
 @inline _dual_primal_type(::Type) = Any
@@ -1310,6 +1316,15 @@ end
 #     chunk, and falls back to _fcache_derivative_chunked_loop!! otherwise (no chunk rule,
 #     a short trailing chunk, or non-packable inputs).
 #
+# Snapshot/restore for the chunked forward drivers. Forward slots alias the user's input
+# (`primal(slot) === x`), and the chunked gradient/Jacobian re-run `f` once per chunk (and
+# the per-lane fallback once per lane) on that shared storage. An in-place-mutating `f`
+# would otherwise compound its mutation across re-runs and corrupt later chunks'/lanes'
+# derivatives. The sweeps snapshot the input args into the prepared `cache.input_snapshot`
+# buffer (args only — `f` is never mutated and may be uncopyable) and restore from it (in
+# place, via `_copy_to_output!!`) before each re-run and once at the end, leaving the
+# inputs unchanged, consistent with reverse mode. (The non-packable per-lane fallback keeps
+# a local snapshot, as it runs nested inside a chunk whose sweep already owns the buffer.)
 # fcache derivative chunk execution
 @noinline function _fcache_derivative_chunked_loop!!(
     cache::FCache, ::Val{N}, x_dx::Vararg{Tuple,M}
@@ -1320,9 +1335,17 @@ end
     # `_fcache_derivative_chunked!!` handles full-width packable chunks in a single pass.
     input_primals = map(first, x_dx)
     input_tangents = map(last, x_dx)
-    compute_lane_output(::Val{lane}) where {lane} = cache.rule(
-        tuple_map((p, t) -> lift(p, t[lane]), input_primals, input_tangents)...
-    )
+    # Only multi-lane chunks re-run `f`, so only they need a snapshot to restore between
+    # lanes; a single lane allocates nothing. Snapshot the args only (`Base.tail`), never
+    # `f` — it is not mutated and may be uncopyable (e.g. the HVP `grad_f` closure).
+    input_args = Base.tail(input_primals)
+    snap = N > 1 ? tuple_map(_copy_output, input_args) : input_args
+    compute_lane_output(::Val{lane}) where {lane} = begin
+        # Restore the shared input before every lane except the first, so each lane's
+        # derivative is computed from the original input (not one a prior lane mutated).
+        lane > 1 && tuple_map(_copy_to_output!!, input_args, snap)
+        cache.rule(tuple_map((p, t) -> lift(p, t[lane]), input_primals, input_tangents)...)
+    end
 
     first_output = compute_lane_output(Val(1))
     y = primal(first_output)
@@ -1336,6 +1359,8 @@ end
     # Bug fix note: keep the lane count in dispatch so chunked tuple evaluation does not
     # depend on `Val` internals, which broke ordinary interface calls during refactoring.
     rest_tangents = ntuple(n -> copy_lane(compute_lane_output(Val(n + 1))), Val(N - 1))
+    # Final restore so the input is left unchanged (each lane already ran on the original).
+    N > 1 && tuple_map(_copy_to_output!!, input_args, snap)
     return y, (first_tangent, rest_tangents...)
 end
 
@@ -1442,6 +1467,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             gradient_chunk_size_auto,
             chunkcache,
             input_specs,
+            _copy_output(Base.tail(fx)),
         )
     end
     return FCache(
@@ -1454,6 +1480,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         gradient_chunk_size_auto,
         chunkcache,
         input_specs,
+        _copy_output(Base.tail(fx)),
     )
 end
 
@@ -1512,6 +1539,9 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
     chunk_size = cache.gradient_chunk_size
     nfields = Val(fieldcount(typeof(input_primals)))
     first_width = min(chunk_size, total_dof)
+    # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
+    # before each subsequent chunk (so an in-place `f` does not compound) and once at the end.
+    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     first_lanes = ntuple(lane -> _make_seed_tangent(input_primals, lane), first_width)
     first_tangents = ntuple(i -> ntuple(lane -> first_lanes[lane][i], first_width), nfields)
     y, first_dy = _fcache_derivative_chunked!!(
@@ -1531,6 +1561,7 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
         )
     end
     for start_slot in (1 + chunk_size):chunk_size:total_dof
+        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
         width = min(chunk_size, total_dof - start_slot + 1)
         lanes = ntuple(
             lane -> _make_seed_tangent(input_primals, start_slot + lane - 1), width
@@ -1552,6 +1583,8 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
             )
         end
     end
+    # Final restore so the inputs are left unchanged (each chunk ran on the original).
+    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
 
     if isnothing(cache.input_tangents)
         return y, native_gradients
@@ -1634,6 +1667,8 @@ Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to c
 
 Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 
+As with all functionality in Mooncake, `f` and `x` are returned to their original state: if `f` mutates itself or `x` in place, they are restored, so the inputs are not mutated.
+
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
 
@@ -1650,6 +1685,9 @@ Tuples are used as inputs and outputs instead of a combined value/tangent wrappe
         primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
     )
 
+    # Snapshot the inputs into the cache buffer and restore from it after the rule runs, so
+    # an in-place-mutating `f` does not mutate the user's inputs.
+    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     output = __call_rule(cache.rule, tuple_map(lift, input_primals, input_tangents))
     output_primal = primal(output)
     _, output_internal_tangent = unlift(output)
@@ -1659,6 +1697,7 @@ Tuples are used as inputs and outputs instead of a combined value/tangent wrappe
         output_internal_tangent,
         _friendly_cache((output_primal,)),
     )
+    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
     return output_primal, output_friendly_tangent
 end
 
@@ -1674,8 +1713,12 @@ end
     # that shared mutable state must be shared too (see `lift(::MistyClosure)`).
     c = IdDict()
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
+    # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs.
+    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     output = __call_rule(cache.rule, input_lifted)
-    return primal(output), last(unlift(output))
+    result = (primal(output), last(unlift(output)))
+    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+    return result
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
@@ -1850,6 +1893,9 @@ Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `
 **Multiple arguments:** `v` must be a tuple of tangent directions (one per argument);
 returns `(f(x...), (∇f_x1, ∇f_x2, ...), (h1, h2, ...))` where
 `hk = ∑_j (∂²f/∂xk∂xj) v[j]` is the joint Hessian-vector product for argument `xk`.
+
+As with all functionality in Mooncake, `x` is returned to its original state: if `f`
+mutates `x` in place, it is restored, so the input is not mutated.
 
 !!! warning
     `cache` must be the output of [`prepare_hvp_cache`](@ref), and `f` must be the same
@@ -2045,6 +2091,9 @@ The current implementation supports a single dense vector input and an
 `AbstractVector` output, both with the same `IEEEFloat` element type. The returned
 Jacobian is a dense matrix whose columns correspond to input coordinates.
 
+As with all functionality in Mooncake, `x` is returned to its original state: if `f`
+mutates `x` in place, it is restored, so the input is not mutated.
+
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref) or
     [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
@@ -2071,6 +2120,10 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
         end,
         chunk_size,
     )
+    # Snapshot `x` into the cache buffer (the args copy, so `x` is element 1) before any
+    # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
+    # compound) and once at the end, leaving `x` unchanged.
+    x_snapshot = _copy_to_output!!(cache.input_snapshot[1], x)
     y, chunk_dy = _fcache_derivative_chunked!!(
         cache, Val(chunk_size), (f, f_seed), (x, seed_cols(1))
     )
@@ -2080,6 +2133,7 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
         J[:, lane] .= chunk_dy[lane]
     end
     for start_col in (chunk_size + 1):chunk_size:total_dof
+        _copy_to_output!!(x, x_snapshot)
         _, chunk_dy = _fcache_derivative_chunked!!(
             cache, Val(chunk_size), (f, f_seed), (x, seed_cols(start_col))
         )
@@ -2089,6 +2143,8 @@ Jacobian is a dense matrix whose columns correspond to input coordinates.
             J[:, col] .= chunk_dy[lane]
         end
     end
+    # Final restore so the input is left unchanged (each chunk ran on the original).
+    _copy_to_output!!(x, x_snapshot)
     return y, J
 end
 

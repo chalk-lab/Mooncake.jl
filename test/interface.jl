@@ -1127,6 +1127,28 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test val_mut_jac_chunked == 4 .* x_mut_jac_chunked .^ 2
             @test jac_mut_jac_chunked ≈ Diagonal(8 .* x_mut_jac_chunked)
 
+            # The forward gradient and derivative must likewise leave a mutating `f`'s
+            # input unchanged and give correct results across chunk sizes (the chunked
+            # sweeps re-run `f` on shared input storage; without snapshot/restore an
+            # in-place `f` compounds across chunks — see the FCache `input_snapshot` buffer).
+            x_mut0 = [1.0, 2.0, 3.0]
+            g_mut(x) = sum((x .*= 2; x .^ 2))   # true grad 8x
+            for cs in (1, 2, 3)
+                gc = Mooncake.prepare_gradient_cache(
+                    g_mut, copy(x_mut0); config=Mooncake.Config(; chunk_size=cs)
+                )
+                xg = copy(x_mut0)
+                _, (_, grad_mut) = Mooncake.value_and_gradient!!(gc, g_mut, xg)
+                @test grad_mut ≈ 8 .* x_mut0
+                @test xg == x_mut0
+            end
+            dc = Mooncake.prepare_derivative_cache(f_mut_jac, copy(x_mut0))
+            xd = copy(x_mut0)
+            Mooncake.value_and_derivative!!(
+                dc, (f_mut_jac, Mooncake.NoTangent()), (xd, [1.0, 0.0, 0.0])
+            )
+            @test xd == x_mut0
+
             x_jac_parent = [x, y, 0.0]
             x_jac_view = @view x_jac_parent[1:2]
             f_view_jac = x -> [x[1]^2, x[1] + x[2]]
