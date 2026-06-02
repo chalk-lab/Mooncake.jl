@@ -704,6 +704,14 @@ function frule!!(
     da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
     return Lifted{T,Nw}(a, NDual{T,Nw}(a, da_lanes))
 end
+# Non-differentiable pointer (V === NoDual): the element type is not an `NDualEltype`
+# (e.g. `Ptr{UInt64}`, `Ptr{Ptr{Float64}}`), so the loaded value carries no derivative.
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted, z::Lifted
+) where {Nw}
+    a = pointerref(primal(x), primal(y), primal(z))
+    return Lifted{typeof(a),Nw}(a, NoDual())
+end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -738,6 +746,17 @@ function frule!!(
     @inbounds for lane in 1:Nw
         pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
     end
+    return p
+end
+# Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {Nw}
+    pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
