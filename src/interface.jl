@@ -1729,10 +1729,19 @@ in `f` and `x`.
 #   calls the cached `frule` directly
 # - `value_and_derivative!!(cache, (f, df), (x, dx), ...)`: tuple interface; lifts each
 #   width-1 tangent and runs the cached `frule`
-function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
+# Width dispatch on the `Lifted{P,N,V}` width parameter: all-width-1 slots are a single
+# directional derivative through `single_rule`; width-`W` slots are a `W`-lane chunk through
+# `chunk_rule` (built at that width). `Lifted{<:Any,1}` is strictly more specific, so the
+# first method serves single directions and the second serves chunks.
+function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     return __call_rule(cache.single_rule, fx)
+end
+function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
+    input_primals = map(primal, fx)
+    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    return __call_rule(cache.chunk_rule, fx)
 end
 
 """
