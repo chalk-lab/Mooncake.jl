@@ -288,12 +288,34 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     return :(Vararg{$wrapper{<:$T},$N})
 end
 
+# Forward-mode argument bound for `@zero_derivative`. A *kind*-typed argument — `DataType`,
+# `UnionAll`, `Union`, `Core.TypeofBottom`, whose values are themselves types — has a
+# forward slot `Lifted{Type{X}}` that inference can widen to the existential
+# `Lifted{Type{_A}} where _A`. The naive bound `Lifted{<:DataType}` does not cover that
+# (`Type{_A} <: DataType` fails for some `_A`), and `Lifted` is invariant, so inference
+# infers a MethodError and bakes an `unreachable` that runtime — dispatching on a concrete
+# `Type{X} <: DataType` — reaches, crashing. Widening to `Type` (`Type{_A} <: Type` always
+# holds) covers it. A specific `Type{X}`, bare `Type`, and ordinary types stay as declared;
+# the reverse `CoDual` bounds are left untouched. Mirrors `lifted_type`'s kind set.
+@inline _fwd_zd_arg_bound(::Type{T}) where {T} =
+    (T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) ? Type : T
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
     # then the last argument requires special treatment.
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
+
+    # Forward per-arg Lifted bound. For a non-parametric signature, widen type-of-types
+    # args to `Type` via `_fwd_zd_arg_bound` (see its docstring for why). Signatures with
+    # `where` params keep the direct bound: wrapping a static parameter in a function call
+    # would break static-parameter matching.
+    _lifted_bound = if where_params === nothing
+        (t -> :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)}))
+    else
+        (t -> :(Mooncake.Lifted{<:$t}))
+    end
 
     # Detect Vararg in a non-last position, which is invalid Julia and would silently
     # produce a broken rule. Return a throw expression (rather than throwing here) so that
@@ -310,7 +332,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     is_vararg = _is_vararg_expr(arg_type_symbols[end])
     if is_vararg
         arg_types_lifted = vcat(
-            map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols[1:(end - 1)]),
+            map(_lifted_bound, arg_type_symbols[1:(end - 1)]),
             _vararg_wrapped_type(arg_type_symbols[end], :(Mooncake.Lifted)),
         )
         arg_types_adjoint = vcat(
@@ -322,7 +344,7 @@ function _zero_derivative_impl(ctx, sig, mode)
         body_deriv = Expr(:call, Mooncake.zero_derivative, tmp..., splat_symbol)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, tmp..., splat_symbol)
     else
-        arg_types_lifted = map(t -> :(Mooncake.Lifted{<:$t}), arg_type_symbols)
+        arg_types_lifted = map(_lifted_bound, arg_type_symbols)
         arg_types_adjoint = map(t -> :(Mooncake.CoDual{<:$t}), arg_type_symbols)
         body_deriv = Expr(:call, Mooncake.zero_derivative, arg_names...)
         body_adjoint = Expr(:call, Mooncake.zero_adjoint, arg_names...)

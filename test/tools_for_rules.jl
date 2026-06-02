@@ -53,6 +53,10 @@ zero_tester_forward_only(x) = 0
 zero_tester_reverse_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_reverse_only),Float64} ReverseMode
 
+# A primitive with a type-valued (DataType) argument; see the regression test below.
+datatype_arg_zero_tester(::DataType) = 0
+@zero_derivative MinimalCtx Tuple{typeof(datatype_arg_zero_tester),DataType}
+
 # Test case with isbits data.
 
 bleh(x::Float64, y::Int) = x * y
@@ -247,6 +251,19 @@ end
             is_primitive=true,
             perf_flag=:stability_and_allocs,
         )
+
+        @testset "type-valued (DataType) argument" begin
+            # Regression: a DataType-valued argument's forward slot can be inferred as the
+            # existential `Lifted{Type{_A}} where _A`, which a naive `Lifted{<:DataType}`
+            # frule bound does not cover (`Lifted` is invariant) — inference then bakes an
+            # `unreachable` that crashes at runtime. `@zero_derivative` widens kind-typed
+            # bounds to `Type`. Was: `Base.padding` forward on Julia 1.12.
+            f_slot = Mooncake.Lifted{
+                typeof(ToolsForRulesResources.datatype_arg_zero_tester),1,Mooncake.NoDual
+            }
+            existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
+            @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
+        end
 
         @test_throws(
             r"@zero_derivative: `Vararg` may only appear as the last element of",
