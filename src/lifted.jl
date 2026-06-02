@@ -771,6 +771,13 @@ end
     @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
         return Lifted{MemoryRef{T},1}(x, NDualMemoryRef{T,1,Memory{T}}(x, (ẋ,)))
     end
+    # `_lift_backing` always calls the 3-arg form; without these SoA-specific 3-arg
+    # passthroughs a lifted reverse rule's float `dx::MemoryRef`/`Memory` field falls
+    # to the generic AoS lift below, producing a `MemoryRef{NDual}` that cannot convert
+    # to the declared SoA V. Mirrors the float `Array` passthroughs.
+    @inline lift(x::MemoryRef{T}, ẋ::MemoryRef{T}, ::Union{Nothing,IdDict}) where {T<:IEEEFloat} = lift(
+        x, ẋ
+    )
     # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the SoA NDualArray,
     # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
     # field is lifted under forward-over-reverse, or a Memory primal is seeded.
@@ -780,6 +787,12 @@ end
     @inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,A<:Memory{Complex{R}}}
         return Lifted{A,1}(x, NDualArray{Complex{R},1,1,A}(x, (ẋ,)))
     end
+    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {T<:IEEEFloat,A<:Memory{T}} = lift(
+        x, ẋ
+    )
+    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {R<:IEEEFloat,A<:Memory{Complex{R}}} = lift(
+        x, ẋ
+    )
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
     # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{<:NoTangent}`
     # overload and `dual_type(Memory{T}) = Memory{NoDual}`.

@@ -176,6 +176,23 @@ end
             @test typeof(z) === Mooncake.lifted_type(Val(N), MemoryRef{T})
             @test Mooncake.primal(z) === p
         end
+
+        @testset "cache-threaded float Memory/MemoryRef lift is SoA" begin
+            # Under forward-over-reverse, a reverse rule's float `dx::MemoryRef`/`Memory`
+            # field is lifted via the 3-arg cache form (`_lift_backing`). It must reach
+            # the SoA overload, not the generic AoS path (which yields `MemoryRef{NDual}`).
+            T = Float64
+            mem = Memory{T}(undef, 3)
+            ẋmem = Memory{T}(undef, 3)
+            p = Core.memoryref(mem, 1)
+            ẋ = Core.memoryref(ẋmem, 1)
+            for c in (nothing, IdDict())
+                @test typeof(Mooncake.tangent(Mooncake.lift(p, ẋ, c))) ===
+                    Mooncake.dual_type(Val(1), MemoryRef{T})
+                @test typeof(Mooncake.tangent(Mooncake.lift(mem, ẋmem, c))) ===
+                    Mooncake.dual_type(Val(1), Memory{T})
+            end
+        end
     end
 
     @testset "dual_type / lifted_type (Array{Complex{R}, D})" begin
