@@ -1508,12 +1508,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             InputSpec(typeof(x), ())
         end
     end
+    # Chunking only batches packable inputs (a non-differentiable `f` plus IEEEFloat
+    # scalar/array args); other inputs (structs, tuples, complex, …) have no native chunk
+    # rule and run width-1, so pin their chunk width to 1 here instead of re-deciding
+    # packability per chunk at runtime.
     gradient_chunk_size = let total_dof = dof(fx)
-        if gradient_chunk_size_auto
-            min(total_dof, _MAX_CHUNK_WIDTH)
-        else
-            min(total_dof, requested_chunk_size)
-        end
+        requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
+        _chunk_packable(fx) ? min(total_dof, requested) : 1
     end
     # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
     # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
