@@ -412,6 +412,14 @@ Copy the contents of `src` to `dst`, with zero or minimal new memory allocation.
 Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
 For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
+# The two-argument methods are the allocation-free hot path (input restore on every
+# autodiff pass); they recurse two-argument and stay byte-identical to the original
+# acyclic implementation. Only at a cycle-capable node — a mutable struct or a
+# reference-element array, which can be self-referential — do they re-dispatch to
+# the three-argument family below, which threads an `IdDict` aliasing cache: each
+# mutable `dst` is registered (keyed by its `src`) before its fields are restored,
+# so a cycle returns the in-progress `dst` instead of recursing forever. Mirrors
+# reverse-mode's `MaybeCache`.
 _copy_to_output!!(dst::Number, src::Number) = src
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
@@ -425,7 +433,10 @@ function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
     return Core.svec(map(_copy_to_output!!, dst, src)...)
 end
 
-# copy for Array, Memory
+# copy for Array, Memory. This acyclic method recurses two-argument; an array only
+# participates in a cycle as a field of a cyclic mutable struct, which enters the
+# three-argument family first (whose array method threads the cache), so this
+# method never needs the cache itself and stays identical to the original.
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
@@ -456,40 +467,25 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     # Overload _copy_to_output!! to customise.
     nf == 0 && return src
 
-    if ismutable(src)
-        for src_sub in 1:nf
-            if isdefined(src, src_sub)
-                # using ccall as setfield! fails for const fields of a mutable struct.
-                ccall(
-                    :jl_set_nth_field,
-                    Cvoid,
-                    (Any, Csize_t, Any),
-                    dst,
-                    src_sub - 1,
-                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub)),
-                )
-            end
-        end
+    # Mutable structs can be self-referential — handle them via the cyclic family.
+    ismutable(src) && return _copy_to_output!!(dst, src, IdDict{Any,Any}())
 
-        return dst
-    else
-        # this allocation is needed for handling undef fields in immutable structs.
-        flds = Vector{Any}(undef, nf)
-        for src_sub in 1:nf
-            if isdefined(src, src_sub)
-                flds[src_sub] = _copy_to_output!!(
-                    getfield(dst, src_sub), getfield(src, src_sub)
-                )
-            else
-                nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
-                break
-            end
+    # this allocation is needed for handling undef fields in immutable structs.
+    flds = Vector{Any}(undef, nf)
+    for src_sub in 1:nf
+        if isdefined(src, src_sub)
+            flds[src_sub] = _copy_to_output!!(
+                getfield(dst, src_sub), getfield(src, src_sub)
+            )
+        else
+            nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
+            break
         end
-
-        # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
-        !isassigned(flds, 1) && return src
-        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
     end
+
+    # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
+    !isassigned(flds, 1) && return src
+    return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
 end
 
 # fallback for invalid type combinations
@@ -505,6 +501,72 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
     )
 end
 
+# ── Cyclic family: threads the `IdDict` aliasing cache `c` ─────────────────────
+_copy_to_output!!(dst::Number, src::Number, ::IdDict) = src
+_copy_to_output!!(::Type, src::Type, ::IdDict) = src
+_copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict) = src
+_copy_to_output!!(::Module, src::Module, ::IdDict) = src
+function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict)
+    return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c), dst, src)...)
+end
+function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
+    if !isbitstype(eltype(P))
+        haskey(c, src) && return c[src]::P
+        c[src] = dst
+    end
+    @inbounds for i in eachindex(src)
+        if isassigned(src, i)
+            dst[i] = if isassigned(dst, i)
+                _copy_to_output!!(dst[i], src[i], c)
+            else
+                _copy_output(src[i], c)
+            end
+        end
+    end
+    return dst
+end
+function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:Union{Tuple,NamedTuple}}
+    isbitstype(P) && return src
+    return map((d, s) -> _copy_to_output!!(d, s, c), dst, src)
+end
+function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
+    isbitstype(P) && return src
+    nf = nfields(src)
+    nf == 0 && return src
+    if ismutable(src)
+        haskey(c, src) && return c[src]::P
+        c[src] = dst
+        for src_sub in 1:nf
+            if isdefined(src, src_sub)
+                # using ccall as setfield! fails for const fields of a mutable struct.
+                ccall(
+                    :jl_set_nth_field,
+                    Cvoid,
+                    (Any, Csize_t, Any),
+                    dst,
+                    src_sub - 1,
+                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c),
+                )
+            end
+        end
+        return dst
+    else
+        flds = Vector{Any}(undef, nf)
+        for src_sub in 1:nf
+            if isdefined(src, src_sub)
+                flds[src_sub] = _copy_to_output!!(
+                    getfield(dst, src_sub), getfield(src, src_sub), c
+                )
+            else
+                nf = src_sub - 1
+                break
+            end
+        end
+        !isassigned(flds, 1) && return src
+        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
+    end
+end
+
 """
     _copy_output(x::T)
 
@@ -512,31 +574,53 @@ Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
 Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
 For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
+# The optional aliasing cache `c::C` supports self-referential and aliased inputs:
+# each cycle-capable node is registered before its fields are copied, so a cycle
+# returns the in-progress copy rather than recursing forever. The cache is
+# allocated lazily — only on first reaching a mutable struct or reference-element
+# array, by re-dispatching with a fresh `IdDict`. `C` is a concrete type parameter
+# (`Nothing` or `IdDict`) per call rather than a `Union`, which would force dynamic
+# dispatch. Unlike the in-place `_copy_to_output!!` restore, `_copy_output` always
+# allocates fresh copies and runs only at cache preparation, so it does not need
+# `_copy_to_output!!`'s allocation-free two-family split. Mirrors `MaybeCache`.
+
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return x as-is.
-@unstable _copy_output(x::Type) = x
-_copy_output(x::Core.TypeName) = x
-_copy_output(x::Module) = x
+@unstable _copy_output(x::Type, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+_copy_output(x::Core.TypeName, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+_copy_output(x::Module, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
-_copy_output(x::SimpleVector) = Core.svec([map(_copy_output, x_sub) for x_sub in x]...)
+function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    return Core.svec([map(s -> _copy_output(s, c), x_sub) for x_sub in x]...)
+end
 
-# Array, Memory
-function _copy_output(x::P) where {P<:_BuiltinArrays}
-    temp = similar(x)
+# Array, Memory. Only reference-element arrays can participate in a cycle, so the
+# isbits-element case skips the cache entirely.
+function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Nothing,IdDict}}
     Tx = eltype(P)
+    if !isbitstype(Tx)
+        c === nothing && return _copy_output(x, IdDict{Any,Any}())
+        haskey(c, x) && return c[x]::P
+    end
+    temp = similar(x)
+    isbitstype(Tx) || (c[x] = temp)
     @inbounds for i in eachindex(temp)
         if isassigned(x, i)
-            temp[i] = _copy_output(x[i])::Tx
+            temp[i] = _copy_output(x[i], c)::Tx
         end
     end
     return temp::P
 end
 
 # Tuple, NamedTuple
-_copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)::typeof(x)
+function _copy_output(
+    x::Union{Tuple,NamedTuple}, c::C=nothing
+) where {C<:Union{Nothing,IdDict}}
+    return map(s -> _copy_output(s, c), x)::typeof(x)
+end
 
 # mutable composite types, bitstype
-function _copy_output(x::P) where {P}
+function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
     isbitstype(P) && return x
     # nfields(x) not nfields(P): the latter counts fields of the
     # DataType object itself.
@@ -547,15 +631,19 @@ function _copy_output(x::P) where {P}
     nf == 0 && return x
 
     if ismutable(x)
-        _copy_output_mutable_cartesian(x, Val(nf))
+        c === nothing && return _copy_output(x, IdDict{Any,Any}())
+        haskey(c, x) && return c[x]::P
+        _copy_output_mutable_cartesian(x, Val(nf), c)
     else
-        _copy_output_immutable_cartesian(x, Val(nf))
+        _copy_output_immutable_cartesian(x, Val(nf), c)
     end
 end
 
-@generated function _copy_output_mutable_cartesian(x::P, ::Val{nf}) where {P,nf}
+@generated function _copy_output_mutable_cartesian(x::P, ::Val{nf}, c::IdDict) where {P,nf}
     quote
         temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)::P
+        # Register before copying fields so a self-reference resolves to `temp`.
+        c[x] = temp
         Base.Cartesian.@nexprs(
             $nf,
             i -> if isdefined(x, i)
@@ -565,7 +653,7 @@ end
                     (Any, Csize_t, Any),
                     temp,
                     i - 1,
-                    _copy_output(getfield(x, i)),
+                    _copy_output(getfield(x, i), c),
                 )
             end
         )
@@ -573,20 +661,26 @@ end
     end
 end
 
-@generated function _copy_output_immutable_cartesian(x::P, ::Val{nf}) where {P,nf}
+@generated function _copy_output_immutable_cartesian(
+    x::P, ::Val{nf}, c::C
+) where {P,nf,C<:Union{Nothing,IdDict}}
     quote
         Base.Cartesian.@nif(
             $(nf + 1),
             # Assumes if a undefined field is found, all subsequent fields are undefined.
             i -> !isdefined(x, i),
-            i -> _copy_output_immutable_cartesian_upto(x, Val(i - 1)),
+            i -> _copy_output_immutable_cartesian_upto(x, Val(i - 1), c),
         )
     end
 end
-@generated function _copy_output_immutable_cartesian_upto(x::P, ::Val{idx}) where {P,idx}
+@generated function _copy_output_immutable_cartesian_upto(
+    x::P, ::Val{idx}, c::C
+) where {P,idx,C<:Union{Nothing,IdDict}}
     idx == 0 && return :(x)
     return quote
-        flds = collect(Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i))))
+        flds = collect(
+            Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i), c))
+        )
         # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
         return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, $idx)::P
     end

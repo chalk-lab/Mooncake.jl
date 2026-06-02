@@ -37,7 +37,13 @@ Mutable counterpart to `ImmutableDual`. Mutability is load-bearing for the
 """
 mutable struct MutableDual{T<:NamedTuple}
     value::T
+    # Uninitialised form, used by the cyclic-struct `lift` to register a shell
+    # in the aliasing cache before its fields (which may reference back to it)
+    # are built. Mirrors reverse-mode `MutableTangent()`.
+    MutableDual{T}() where {T<:NamedTuple} = new{T}()
+    MutableDual{T}(value) where {T<:NamedTuple} = new{T}(value)
 end
+@inline MutableDual(value::T) where {T<:NamedTuple} = MutableDual{T}(value)
 
 Base.:(==)(x::MutableDual, y::MutableDual) = x.value == y.value
 
@@ -301,9 +307,15 @@ end
 # when it operates on raw Lifted V values (e.g. `tangent(y_ẏ_a)` in
 # `test_frule_reuse`).
 _dot_internal(::MaybeCache, ::NoDual, ::NoDual) = 0.0
-function _dot_internal(
-    c::MaybeCache, t::T, s::T
-) where {T<:Union{ImmutableDual,MutableDual}}
+function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:ImmutableDual}
+    return _dot_internal(c, t.value, s.value)::Float64
+end
+# A `MutableDual` may be self-referential; cache the pair to break the cycle
+# (mirrors reverse-mode `_dot_internal(::MaybeCache, ::MutableTangent, …)`).
+function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MutableDual}
+    key = (t, s)
+    haskey(c, key) && return c[key]::Float64
+    c[key] = 0.0
     return _dot_internal(c, t.value, s.value)::Float64
 end
 # Scalar NDual (forward-mode width-1 V for IEEEFloat) — sum the partials' dot.
@@ -315,8 +327,14 @@ _scale_internal(::MaybeCache, ::Float64, ::NoDual) = NoDual()
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:ImmutableDual}
     return T(_scale_internal(c, a, t.value))
 end
+# Register an uninitialised result before recursing so a self-referential
+# `MutableDual` terminates (mirrors reverse-mode `_scale_internal` for `MutableTangent`).
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MutableDual}
-    return T(_scale_internal(c, a, t.value))
+    haskey(c, t) && return c[t]::T
+    y = T()
+    c[t] = y
+    y.value = _scale_internal(c, a, t.value)
+    return y
 end
 # Scalar NDual scale — scale `.value` and each lane.
 function _scale_internal(::MaybeCache, a::Float64, t::NDual{T,N}) where {T<:IEEEFloat,N}
@@ -332,14 +350,40 @@ function _add_to_primal_internal(
 ) where {T<:IEEEFloat,N}
     return x + t.value + sum(t.partials; init=zero(T))
 end
-function _add_to_primal_internal(
-    c::MaybeCache, x, t::Union{ImmutableDual,MutableDual}, unsafe::Bool
-)
+function _add_to_primal_internal(c::MaybeCache, x, t::ImmutableDual, unsafe::Bool)
     # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding
     # each field's V back to the corresponding primal field. This mirrors
     # what `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)`
     # does for reverse-mode tangents in src/tangents/tangents.jl.
     return _add_to_primal_internal_struct(c, x, t.value, unsafe)
+end
+# Mutable structs may be self-referential, so use the two-pass scheme of the
+# reverse-mode `MutableTangent` overload: const fields (which cannot cycle back)
+# are perturbed up front, the placeholder is registered, then non-const fields are
+# perturbed in place so a cycle resolves to the registered result.
+function _add_to_primal_internal(
+    c::MaybeCache, x::P, t::MutableDual, unsafe::Bool
+) where {P}
+    key = (x, t, unsafe)
+    haskey(c, key) && return c[key]::P
+    nt = t.value
+    init_fields = map(fieldnames(P)) do name
+        return if isconst(P, name)
+            _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
+        else
+            getfield(x, name)
+        end
+    end
+    p′ = _new_(P, init_fields...)::P
+    c[key] = p′
+    for name in fieldnames(P)
+        isconst(P, name) || setfield!(
+            p′,
+            name,
+            _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe),
+        )
+    end
+    return p′
 end
 @unstable function _add_to_primal_internal_struct(c, x, nt::NamedTuple, unsafe)
     isempty(propertynames(nt)) && return x
@@ -868,7 +912,17 @@ end
 @inline lift(x::P, ẋ::MutableTangent) where {P} = lift(x, ẋ, nothing)
 @inline function lift(x::P, ẋ::MutableTangent, c::Union{Nothing,IdDict}) where {P}
     backing = fieldtype(dual_type(Val(1), P), 1)
-    return Lifted{P,1}(x, MutableDual(_lift_backing(x, ẋ.fields, backing, c)))
+    LT = Lifted{P,1,MutableDual{backing}}
+    # A mutable struct may reference itself (directly or through a cycle), so
+    # register an uninitialised `MutableDual` shell in the aliasing cache before
+    # building its fields: the recursive `_lift_backing` then finds and returns
+    # this shell when the cycle reaches `x` again. Mirrors `zero_tangent_internal`.
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::LT
+    lifted = LT(x, MutableDual{backing}())
+    d[x] = lifted
+    lifted.value.value = _lift_backing(x, ẋ.fields, backing, d)
+    return lifted
 end
 # A possibly-uninit reverse-tangent field lifts to the inner V (the forward
 # backing slot is the plain V, not PUT-wrapped). Reached only for defined

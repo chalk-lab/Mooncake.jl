@@ -5,8 +5,26 @@ end
 mutable struct LiftedTest_RefF
     v::Float64
 end
+mutable struct LiftedTest_Cycle
+    next::Any
+    w::Float64
+end
 
 @testset "lifted" begin
+    @testset "cyclic MutableDual tangent arithmetic" begin
+        # A self-referential mutable struct lifts to a cyclic `MutableDual` V; the
+        # tangent-arithmetic helpers must terminate via their aliasing caches.
+        n = LiftedTest_Cycle(nothing, 2.0)
+        n.next = n
+        v = Mooncake.tangent(Mooncake.lift(n, Mooncake.zero_tangent(n)))
+        @test v.value.next === v                      # cyclic V built, no overflow
+        @test Mooncake._dot(v, v) == 0.0
+        s = Mooncake._scale(2.0, v)
+        @test s.value.next === s                      # scale preserves the cycle
+        p = Mooncake._add_to_primal(n, v)
+        @test p isa LiftedTest_Cycle && p.next === p  # add_to_primal preserves the cycle
+    end
+
     @testset "Lifted struct + accessors" begin
         inner = Mooncake.NDual{Float64,2}(3.0, (1.0, -1.0))
         slot = Mooncake.Lifted{Float64,2}(3.0, inner)
