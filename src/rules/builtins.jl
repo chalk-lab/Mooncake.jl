@@ -1051,16 +1051,14 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-function frule!!(
-    ::Lifted{typeof(Core.ifelse),Nw},
-    cond::Lifted{Bool,Nw},
-    a::Lifted{P,Nw,V},
-    b::Lifted{P,Nw,V},
-) where {Nw,P,V}
-    _c = primal(cond)
-    return Lifted{P,Nw}(
-        ifelse(_c, primal(a), primal(b)), ifelse(_c, tangent(a), tangent(b))
-    )
+# `Core.ifelse` is a non-short-circuiting scalar select; both branches arrive as
+# already-evaluated slots, so the JVP is just the selected slot. This covers any
+# branch types (matching the reverse rrule's `a::A, b::B` breadth) and stays
+# type-stable when the branches share a type.
+@inline function frule!!(
+    ::Lifted{typeof(Core.ifelse),Nw}, cond::Lifted{Bool,Nw}, a::Lifted, b::Lifted
+) where {Nw}
+    return primal(cond) ? a : b
 end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
