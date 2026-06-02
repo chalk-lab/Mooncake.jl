@@ -1006,7 +1006,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 y;
                 config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
             )
-            @test !isnothing(getfield(cache_supported, :chunkcache))
+            @test !isnothing(getfield(cache_supported, :chunk_rule))
 
             # One width-2 native chunk pass covers both directions, so the primal runs once.
             @testset "$(label)" for (label, f, args, counter) in (

@@ -962,14 +962,14 @@ value_and_gradient!!(cache, f, x, y)
 end
 
 struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS}
-    rule::R
+    single_rule::R
     input_tangents::IT
     output_primal::OP
     friendly_gradients::FG
     gradient_workspace::GW
     gradient_chunk_size::Int
     gradient_chunk_size_auto::Bool
-    chunkcache::CF
+    chunk_rule::CF
     input_specs::S
     # Reusable buffer holding a copy of the input args `x...` (not `f`, which is never
     # mutated and may be uncopyable, e.g. the HVP `grad_f` closure), allocated once at cache
@@ -999,7 +999,9 @@ end
                 getfield(cache, :input_specs),
             )...,
         }
-        output_type = Core.Compiler.return_type(getfield(cache, :rule), lifted_arg_types)
+        output_type = Core.Compiler.return_type(
+            getfield(cache, :single_rule), lifted_arg_types
+        )
         _cache_type_summary(_dual_primal_type(output_type))
     end
 end
@@ -1013,7 +1015,7 @@ function Base.show(io::IO, cache::FCache)
         "friendly_tangents=",
         !isnothing(getfield(cache, :input_tangents)),
         ", chunk=",
-        !isnothing(getfield(cache, :chunkcache)),
+        !isnothing(getfield(cache, :chunk_rule)),
         ", chunk_size=",
         getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
         ", inputs=",
@@ -1032,7 +1034,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
         !isnothing(getfield(cache, :input_tangents)),
         "\n",
         "  chunk: ",
-        !isnothing(getfield(cache, :chunkcache)),
+        !isnothing(getfield(cache, :chunk_rule)),
         "\n",
         "  chunk_size: ",
         getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
@@ -1383,7 +1385,7 @@ end
 #
 #   native chunk machinery:
 #     _fcache_derivative_chunked!! runs the native width-`W` chunk `frule!!`
-#     (`cache.chunkcache`, built at `W = gradient_chunk_size`) for a full-width packable
+#     (`cache.chunk_rule`, built at `W = gradient_chunk_size`) for a full-width packable
 #     chunk, and falls back to _fcache_derivative_chunked_loop!! otherwise (no chunk rule,
 #     a short trailing chunk, or non-packable inputs).
 #
@@ -1415,7 +1417,9 @@ end
         # Restore the shared input before every lane except the first, so each lane's
         # derivative is computed from the original input (not one a prior lane mutated).
         lane > 1 && tuple_map(_copy_to_output!!, input_args, snap)
-        cache.rule(tuple_map((p, t) -> lift(p, t[lane]), input_primals, input_tangents)...)
+        cache.single_rule(
+            tuple_map((p, t) -> lift(p, t[lane]), input_primals, input_tangents)...
+        )
     end
 
     first_output = compute_lane_output(Val(1))
@@ -1450,7 +1454,7 @@ end
     cache::FCache, ::Val{N}, x_dx::Vararg{Tuple,M}
 ) where {N,M}
     N < 1 && throw(ArgumentError("chunked forward needs at least one lane."))
-    chunkrule = cache.chunkcache
+    chunkrule = cache.chunk_rule
     input_primals = map(first, x_dx)
     # The native chunk rule is built for exactly `gradient_chunk_size` lanes, so it only
     # serves full-width packable chunks; a short trailing chunk (or non-packable inputs)
@@ -1513,8 +1517,8 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     end
     # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
     # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
-    # benefit over `cache.rule`, so leave it unbuilt.
-    chunkcache = if gradient_chunk_size > 1
+    # benefit over `cache.single_rule`, so leave it unbuilt.
+    chunk_rule = if gradient_chunk_size > 1
         build_frule(
             fx...;
             chunk_size=gradient_chunk_size,
@@ -1536,7 +1540,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             gradient_workspace,
             gradient_chunk_size,
             gradient_chunk_size_auto,
-            chunkcache,
+            chunk_rule,
             input_specs,
             _copy_output(Base.tail(fx)),
         )
@@ -1549,7 +1553,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         _fcache_gradient_lazy_workspace_ref(typeof(fx)),
         gradient_chunk_size,
         gradient_chunk_size_auto,
-        chunkcache,
+        chunk_rule,
         input_specs,
         _copy_output(Base.tail(fx)),
     )
@@ -1586,7 +1590,7 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
     total_dof = _fcache_gradient_input_dof(input_primals)
 
     if total_dof == 0
-        output = cache.rule(tuple_map(lift, input_primals, native_gradients)...)
+        output = cache.single_rule(tuple_map(lift, input_primals, native_gradients)...)
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         if isnothing(cache.input_tangents)
@@ -1685,11 +1689,11 @@ end
 #   `gradient_chunk_size` directions per pass)
 
 # Scalar `value_and_gradient!!` fast path: a single width-1 forward evaluation through
-# `cache.rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
+# `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
 # this avoids the generic path's standard-basis seeding and lane accumulation.
 @inline function value_and_gradient!!(cache::FCache, f::F, x::T) where {F,T<:IEEEFloat}
     _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
-    output = cache.rule(lift(f, NoTangent()), lift(x, one(x)))
+    output = cache.single_rule(lift(f, NoTangent()), lift(x, one(x)))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = (NoTangent(), last(unlift(output)))
@@ -1728,7 +1732,7 @@ in `f` and `x`.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    return __call_rule(cache.rule, fx)
+    return __call_rule(cache.single_rule, fx)
 end
 
 """
@@ -1759,7 +1763,7 @@ As with all functionality in Mooncake, `f` and `x` are returned to their origina
     # Snapshot the inputs into the cache buffer and restore from it after the rule runs, so
     # an in-place-mutating `f` does not mutate the user's inputs.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    output = __call_rule(cache.rule, tuple_map(lift, input_primals, input_tangents))
+    output = __call_rule(cache.single_rule, tuple_map(lift, input_primals, input_tangents))
     output_primal = primal(output)
     _, output_internal_tangent = unlift(output)
     output_friendly_tangent = tangent_to_friendly!!(
@@ -1786,7 +1790,7 @@ end
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    output = __call_rule(cache.rule, input_lifted)
+    output = __call_rule(cache.single_rule, input_lifted)
     result = (primal(output), last(unlift(output)))
     _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
     return result
@@ -1823,7 +1827,7 @@ function Base.show(io::IO, cache::HVPCache)
         "Mooncake.HVPCache(",
         "mode=:forward_over_reverse, ",
         "chunk=",
-        !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
+        !isnothing(getfield(getfield(cache, :fwd_cache), :chunk_rule)),
         ", ",
         "inputs=",
         _cache_input_count(getfield(cache, :fwd_cache)),
@@ -1837,7 +1841,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         "Mooncake.HVPCache\n",
         "  mode: forward_over_reverse\n",
         "  chunk: ",
-        !isnothing(getfield(getfield(cache, :fwd_cache), :chunkcache)),
+        !isnothing(getfield(getfield(cache, :fwd_cache), :chunk_rule)),
         "\n",
         "  inputs: ",
         _cache_input_count(getfield(cache, :fwd_cache)),
