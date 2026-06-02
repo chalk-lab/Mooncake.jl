@@ -1190,7 +1190,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @testset "fcache dof skips undefined builtin-array slots" begin
                 x = Vector{Any}(undef, 2)
                 x[1] = 1.0
-                @test Mooncake._fcache_gradient_input_dof(x) == 1
+                @test Mooncake.dof(x) == 1
             end
 
             @testset "multi-argument HVP validates direction arity" begin

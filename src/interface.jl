@@ -1165,28 +1165,28 @@ end
 # Bug fix note: forward-cache gradient seeding must walk the whole input tuple with an
 # identity cache, otherwise aliased mutable subobjects are over-counted and cycles recurse
 # forever.
-@inline _fcache_gradient_input_dof(x) = _fcache_gradient_input_dof(x, IdDict{Any,Any}())
+@inline dof(x) = dof(x, IdDict{Any,Any}())
 # Mutable/shared nodes are marked seen (`seen[x] = nothing`) before descending, so aliasing
 # contributes once and cycles terminate locally instead of recursing forever.
-@inline _fcache_gradient_input_dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
+@inline dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
 # Packable leaf counts reuse the nfwd engine's slot vocabulary (`_nfwd_input_dof`), the
 # single source of truth for scalar-slot counts; the dedup wrapper around array leaves is
 # the gradient-specific extension (nfwd never dedups). IEEEFloat/Complex arrays have isbits
 # elements, which are always assigned, so the slot count equals `length`/`2length`.
-@inline function _fcache_gradient_input_dof(x::IEEEFloat, ::IdDict{Any,Any})
+@inline function dof(x::IEEEFloat, ::IdDict{Any,Any})
     return Nfwd._nfwd_input_dof(x)
 end
-@inline function _fcache_gradient_input_dof(x::Complex{<:IEEEFloat}, ::IdDict{Any,Any})
+@inline function dof(x::Complex{<:IEEEFloat}, ::IdDict{Any,Any})
     return Nfwd._nfwd_input_dof(x)
 end
-@inline function _fcache_gradient_input_dof(
+@inline function dof(
     x::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
 )
     haskey(seen, x) && return 0
     seen[x] = nothing
     return Nfwd._nfwd_input_dof(x)
 end
-@inline function _fcache_gradient_input_dof(x::AbstractArray, seen::IdDict{Any,Any})
+@inline function dof(x::AbstractArray, seen::IdDict{Any,Any})
     tangent_type(typeof(x)) == NoTangent && return 0
     haskey(seen, x) && return 0
     seen[x] = nothing
@@ -1194,30 +1194,30 @@ end
     if x isa _BuiltinArrays
         for i in eachindex(x)
             isassigned(x, i) || continue
-            total += _fcache_gradient_input_dof(x[i], seen)
+            total += dof(x[i], seen)
         end
     else
         for xi in x
-            total += _fcache_gradient_input_dof(xi, seen)
+            total += dof(xi, seen)
         end
     end
     return total
 end
-@inline function _fcache_gradient_input_dof(x::Tuple, seen::IdDict{Any,Any})
+@inline function dof(x::Tuple, seen::IdDict{Any,Any})
     total = 0
     for xi in x
-        total += _fcache_gradient_input_dof(xi, seen)
+        total += dof(xi, seen)
     end
     return total
 end
-@inline function _fcache_gradient_input_dof(x::NamedTuple, seen::IdDict{Any,Any})
+@inline function dof(x::NamedTuple, seen::IdDict{Any,Any})
     total = 0
     for xi in values(x)
-        total += _fcache_gradient_input_dof(xi, seen)
+        total += dof(xi, seen)
     end
     return total
 end
-@inline function _fcache_gradient_input_dof(x::P, seen::IdDict{Any,Any}) where {P}
+@inline function dof(x::P, seen::IdDict{Any,Any}) where {P}
     tangent_type(P) == NoTangent && return 0
     if x isa AbstractArray || Base.ismutabletype(P)
         haskey(seen, x) && return 0
@@ -1227,7 +1227,7 @@ end
     inits = always_initialised(P)
     for n in 1:fieldcount(P)
         if isdefined(x, n)
-            total += _fcache_gradient_input_dof(getfield(x, n), seen)
+            total += dof(getfield(x, n), seen)
         elseif inits[n]
             _throw_uninit_field_error(P, n)
         end
@@ -1508,7 +1508,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             InputSpec(typeof(x), ())
         end
     end
-    gradient_chunk_size = let total_dof = _fcache_gradient_input_dof(fx)
+    gradient_chunk_size = let total_dof = dof(fx)
         if gradient_chunk_size_auto
             min(total_dof, _MAX_CHUNK_WIDTH)
         else
@@ -1587,7 +1587,7 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
             zeroed
         end
     end
-    total_dof = _fcache_gradient_input_dof(input_primals)
+    total_dof = dof(input_primals)
 
     if total_dof == 0
         output = cache.single_rule(tuple_map(lift, input_primals, native_gradients)...)
