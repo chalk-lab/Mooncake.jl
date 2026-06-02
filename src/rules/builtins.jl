@@ -896,25 +896,16 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-# For `Vector{T<:IEEEFloat}`, the slot's V is an NDualArray; iterate
-# via `getindex` (which returns NDual elements) and build the tuple V
-# from per-element NDuals.
-function frule!!(
-    ::Lifted{typeof(__vec_to_tuple),Nw},
-    v::Lifted{Vector{T},Nw,NDualArray{T,Nw,1,Vector{T},NDual{T,Nw}}},
-) where {Nw,T<:IEEEFloat}
-    x = __vec_to_tuple(primal(v))
-    # __vec_to_tuple on NDualArray iterates the AbstractArray interface
-    # producing NDual elements — yields a Tuple{NDual{T,Nw}, …}.
-    tv = __vec_to_tuple(tangent(v))
-    return Lifted{typeof(x),Nw}(x, tv)
-end
-# AoS vector (plain `Vector` of per-element Vs): the tuple V is the elements' Vs.
+# The tangent V is either the SoA `NDualArray` (for `Vector{<:IEEEFloat}`) or a
+# plain `Vector` of per-element Vs (AoS); both are `AbstractVector`, so `Tuple`
+# iterates either into the per-element tangent tuple. (`__vec_to_tuple` itself is
+# the `::Vector`-only primal helper and does not accept an NDualArray.) The
+# `<:AbstractVector` V bound also excludes non-differentiable (`NoDual`) vectors.
 @inline function frule!!(
-    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,<:Vector}
+    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,<:AbstractVector}
 ) where {Nw}
     x = __vec_to_tuple(primal(v))
-    return Lifted{typeof(x),Nw}(x, __vec_to_tuple(tangent(v)))
+    return Lifted{typeof(x),Nw}(x, Tuple(tangent(v)))
 end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
