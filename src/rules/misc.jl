@@ -165,13 +165,17 @@ end
     # An `Array{T,D}` (any rank D) has a `.ref::MemoryRef{T}` field over flat
     # `Memory{T}` storage. Project the SoA array V to the matching memory-ref V
     # so the downstream `memoryrefnew`/`memoryrefget` chain stays coherent.
+    # Accept the integer field index too: `getfield(arr, 1)` is `.ref` — without
+    # this the integer form silently fell through to a `NoDual`, zeroing the
+    # forward derivative of `.ref` in forward-over-reverse.
     @inline function _get_lifted_field(
-        V::Mooncake.Nfwd.NDualArray{T,N,D,A}, name::Symbol
-    ) where {T<:Mooncake.Nfwd.NDualEltype,N,D,A<:Array{T,D}}
+        V::Nfwd.NDualArray{T,N,D,A}, name::Union{Symbol,Int}
+    ) where {T<:Nfwd.NDualEltype,N,D,A<:Array{T,D}}
+        name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
             primal_ref = getfield(V.primal, :ref)
             partial_refs = ntuple(k -> getfield(V.partials[k], :ref), Val(N))
-            return Mooncake.Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, partial_refs)
+            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, partial_refs)
         end
         return NoDual()
     end
@@ -180,12 +184,13 @@ end
     # `.ptr_or_offset` field is a non-diff Ptr → `NoDual`). Mirrors the reverse
     # `rrule!!`, which returns `x.dx.mem`.
     @inline function _get_lifted_field(
-        V::Mooncake.Nfwd.NDualMemoryRef{T,N,M}, name::Symbol
+        V::Nfwd.NDualMemoryRef{T,N,M}, name::Union{Symbol,Int}
     ) where {T,N,M}
+        name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :mem
             primal_mem = getfield(V.primal, :mem)
             partial_mems = ntuple(k -> getfield(V.partials[k], :mem), Val(N))
-            return Mooncake.Nfwd.NDualArray{T,N,1,M}(primal_mem, partial_mems)
+            return Nfwd.NDualArray{T,N,1,M}(primal_mem, partial_mems)
         elseif name === :ptr_or_offset
             # Per-lane raw pointers (one into each partial memory); the downstream
             # `bitcast` re-types them, landing an `NTuple{N,Ptr{T}}` for a foreigncall.
