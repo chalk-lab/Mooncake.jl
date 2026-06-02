@@ -85,7 +85,6 @@ for f in (
     deg2rad,
     rad2deg,
     mod2pi,
-    Base.eps,
     nextfloat,
     prevfloat,
     Base.FastMath.exp_fast,
@@ -117,6 +116,21 @@ for f in (
             return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
         end
     end
+end
+
+# `eps` is piecewise-constant (zero derivative). Unlike `nextfloat`/`prevfloat` it has no
+# `NDual` overload, so the generic `dy = eps(tangent(x))` path above would return a bare
+# `Float64`, giving a non-canonical `Lifted{Float64,N,Float64}` V. Emit a canonical
+# zero-derivative `NDual` instead.
+@is_primitive MinimalCtx Tuple{typeof(Base.eps),P} where {P<:IEEEFloat}
+@inline function frule!!(
+    ::Lifted{typeof(Base.eps),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    y = eps(primal(x))
+    return Lifted{P,N}(y, NDual{P,N}(y, ntuple(_ -> zero(P), Val(N))))
+end
+function rrule!!(fcodual::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
+    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), fcodual, x)
 end
 
 # ── tanpi ─────────────────────────────────────────────────────────────────────
