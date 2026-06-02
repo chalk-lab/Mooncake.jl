@@ -150,6 +150,17 @@ function frule!!(
     end
     return dest
 end
+# Non-differentiable pointers (V === NoDual, e.g. `Ptr{Vector{Float64}}` — the
+# element type is not an `NDualEltype`): copy the primal data; no tangent to copy.
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{Ptr{T},Nw,NoDual},
+    src::Lifted{Ptr{T},Nw,NoDual},
+    n::Lifted,
+) where {Nw,T}
+    unsafe_copyto!(primal(dest), primal(src), primal(n))
+    return dest
+end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
