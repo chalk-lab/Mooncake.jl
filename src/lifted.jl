@@ -842,10 +842,15 @@ end
 end
 @inline lift(x, ::NoTangent) = uninit_lifted(Val(1), x)
 @inline lift(x::Ptr{T}, ẋ::Ptr{T}) where {T} = Lifted{Ptr{T},1}(x, (ẋ,))
-# `Ptr{Nothing}`'s reverse tangent is `Ptr{NoTangent}`; its forward V is the
-# `NTuple{1,Ptr{Nothing}}` per-lane shape. A raw address has no per-lane derivative
-# (cf. `pointer_from_objref`), so the lane is the primal address.
-@inline lift(x::Ptr{Nothing}, ::Ptr{<:NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
+# A `Ptr` to a non-differentiable element (`Ptr{Int}`, `Ptr{UInt8}`, …) has reverse tangent
+# `Ptr{NoTangent}` and canonical forward V `NoDual` (`dual_type(Ptr{T}) === NoDual`). The
+# generic method above only matches a matching `Ptr{T}` tangent, so this covers the non-diff
+# case (e.g. lifting a hand-written `CoDual{Ptr{Int},Ptr{NoTangent}}` test input).
+@inline lift(x::Ptr{T}, ::Ptr{NoTangent}) where {T} = Lifted{Ptr{T},1}(x, NoDual())
+# `Ptr{Nothing}` is the exception: its forward V is the `NTuple{1,Ptr{Nothing}}` per-lane
+# shape (cf. `pointer_from_objref`), the primal address (a raw address has no derivative).
+# More specific than the `Ptr{T}` method above (same `Ptr{NoTangent}` tangent) so it wins.
+@inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
     # derivative storage); its forward V is the SoA `NDualMemoryRef`. Reached in
