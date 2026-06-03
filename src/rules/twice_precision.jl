@@ -21,9 +21,7 @@ function randn_tangent_internal(rng::AbstractRNG, p::TWP{F}, ::MaybeCache) where
 end
 
 import .TestUtils: has_equal_data_internal
-function has_equal_data_internal(
-    p::P, q::P, ::Bool, ::IdDict{Any,Bool}
-) where {P<:TWP}
+function has_equal_data_internal(p::P, q::P, ::Bool, ::IdDict{Any,Bool}) where {P<:TWP}
     return Float64(p) ≈ Float64(q)
 end
 

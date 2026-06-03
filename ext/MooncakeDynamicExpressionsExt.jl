@@ -814,19 +814,13 @@ function Mooncake.TestUtils.has_equal_data_internal(
 end
 
 function Mooncake.TestUtils.has_equal_data_internal(
-    t::TangentNode{Tv,D},
-    s::TangentNode{Tv,D},
-    equndef::Bool,
-    d::IdDict{Any,Bool},
+    t::TangentNode{Tv,D}, s::TangentNode{Tv,D}, equndef::Bool, d::IdDict{Any,Bool}
 ) where {Tv,D}
     idp = (t, s)
     return get!(() -> _has_equal_data_internal_helper(t, s, equndef, d), d, idp)
 end
 function _has_equal_data_internal_helper(
-    t::TangentNode{Tv,D},
-    s::TangentNode{Tv,D},
-    equndef::Bool,
-    d::IdDict{Any,Bool},
+    t::TangentNode{Tv,D}, s::TangentNode{Tv,D}, equndef::Bool, d::IdDict{Any,Bool}
 ) where {Tv,D}
     deg = t.degree
     return deg == s.degree && if t.degree == 0

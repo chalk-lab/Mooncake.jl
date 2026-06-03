@@ -204,9 +204,7 @@ function has_equal_data(x, y; equal_undefs=true)
     return has_equal_data_internal(x, y, equal_undefs, IdDict{Any,Bool}())
 end
 
-function has_equal_data_internal(
-    x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool}
-)
+function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
     return x == y
 end
 function has_equal_data_internal(
