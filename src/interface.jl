@@ -2175,40 +2175,40 @@ mutates `x` in place, it is restored, so the input is not mutated.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    chunk_size = min(cache.gradient_chunk_size, total_dof)
-    dz = zero_tangent(f)
-    # Each column chunk seeds `chunk_size` standard-basis directions of `x` starting at
-    # `start_col` (zero-padding any slot past `total_dof` in the final short chunk) and
-    # reads one Jacobian column per returned lane. `f` carries a per-lane zero tangent so
-    # every input is an `NTuple{chunk_size}` lane bundle.
-    f_seed = ntuple(_ -> dz, chunk_size)
-    seed_cols(start_col) = ntuple(
-        lane -> let slot = start_col + lane - 1
-            slot <= total_dof ? _make_seed_tangent(x, slot) : zero_tangent(x)
-        end,
-        chunk_size,
-    )
+    # `f` non-differentiable and `x::Vector{<:IEEEFloat}` are always `_chunk_packable`, so
+    # `gradient_chunk_size == min(total_dof, requested)` and the per-chunk width `W` always
+    # equals the built `chunk_rule` width — width-dispatched `value_and_derivative!!` routes
+    # to `chunk_rule` (W > 1) or `single_rule` (W == 1, no chunk rule). Each chunk seeds `W`
+    # standard-basis columns starting at `start_col` via `basis_lifted!!` (slots past
+    # `total_dof` map to `0`, an all-zero lane) and reads one Jacobian column per lane.
+    W = cache.gradient_chunk_size
+    f_seed = zero_lifted(Val(W), f)
+    x_seed = zero_lifted(Val(W), x)        # `NDualArray` partials reseeded in place per chunk
+    cols(start_col) = ntuple(lane -> let slot = start_col + lane - 1
+        slot <= total_dof ? slot : 0
+    end, W)
     # Snapshot `x` into the cache buffer (the args copy, so `x` is element 1) before any
     # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
     # compound) and once at the end, leaving `x` unchanged.
     x_snapshot = _copy_to_output!!(cache.input_snapshot[1], x)
-    y, chunk_dy = _fcache_derivative_chunked!!(
-        cache, Val(chunk_size), (f, f_seed), (x, seed_cols(1))
-    )
+    output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
+    y = primal(output)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
-    @inbounds for lane in 1:chunk_size
-        J[:, lane] .= chunk_dy[lane]
+    # First chunk is never short (`W == gradient_chunk_size ≤ total_dof`); only trailing
+    # chunks can run past `total_dof` and need the per-lane bound below.
+    @inbounds for lane in 1:W
+        J[:, lane] .= tangent(output, lane)
     end
-    for start_col in (chunk_size + 1):chunk_size:total_dof
+    for start_col in (W + 1):W:total_dof
         _copy_to_output!!(x, x_snapshot)
-        _, chunk_dy = _fcache_derivative_chunked!!(
-            cache, Val(chunk_size), (f, f_seed), (x, seed_cols(start_col))
+        output = value_and_derivative!!(
+            cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
         )
-        @inbounds for lane in 1:chunk_size
+        @inbounds for lane in 1:W
             col = start_col + lane - 1
             col <= total_dof || break
-            J[:, col] .= chunk_dy[lane]
+            J[:, col] .= tangent(output, lane)
         end
     end
     # Final restore so the input is left unchanged (each chunk ran on the original).
