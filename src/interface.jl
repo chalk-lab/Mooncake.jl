@@ -1248,15 +1248,6 @@ end
 # restores from it (in place, via `_copy_to_output!!`) before each re-run and once at the end,
 # leaving the inputs unchanged, consistent with reverse mode.
 
-# Chunking batches `W > 1` directions per pass only when `f` is non-differentiable and every
-# other input is a float scalar or float array; other shapes (differentiable closures, structs,
-# tuples) pin the chunk width to 1. `prepare_derivative_cache` uses this to set
-# `gradient_chunk_size` and decide whether to build the width-`W` `chunk_rule`.
-@inline function _chunk_packable(input_primals::Tuple)
-    tangent_type(typeof(first(input_primals))) === NoTangent || return false
-    return all(p -> p isa IEEEFloat || p isa Array{<:IEEEFloat}, Base.tail(input_primals))
-end
-
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
@@ -1290,9 +1281,12 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # scalar/array args); other inputs (structs, tuples, complex, …) have no native chunk
     # rule and run width-1, so pin their chunk width to 1 here instead of re-deciding
     # packability per chunk at runtime.
+    packable =
+        tangent_type(typeof(first(fx))) === NoTangent &&
+        all(p -> p isa IEEEFloat || p isa Array{<:IEEEFloat}, Base.tail(fx))
     gradient_chunk_size = let total_dof = dof(tuple_map(zero_tangent, fx))
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
-        _chunk_packable(fx) ? min(total_dof, requested) : 1
+        packable ? min(total_dof, requested) : 1
     end
     # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
     # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
@@ -1315,7 +1309,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         if gradient_chunk_size >= 1 &&
             !isempty(args) &&
             all(a -> a isa AbstractVector{<:IEEEFloat}, args) &&
-            _chunk_packable(fx)
+            packable
             W = gradient_chunk_size
             (
                 zero_lifted(Val(W), fx[1]),
@@ -2092,7 +2086,7 @@ mutates `x` in place, it is restored, so the input is not mutated.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    # `f` non-differentiable and `x::Vector{<:IEEEFloat}` are always `_chunk_packable`, so
+    # `f` non-differentiable and `x::Vector{<:IEEEFloat}` are always packable, so
     # `gradient_chunk_size == min(total_dof, requested)` and the per-chunk width `W` always
     # equals the built `chunk_rule` width — width-dispatched `value_and_derivative!!` routes
     # to `chunk_rule` (W > 1) or `single_rule` (W == 1, no chunk rule). Each chunk seeds `W`
