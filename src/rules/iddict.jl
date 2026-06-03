@@ -132,6 +132,56 @@ end
     return Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N), V)}}
 end
 
+# Forward seed / lift / lane-accessor for the custom V `IdDict{K, dual_type(V)}`. Without these the
+# generic struct-lift fallback fires on `IdDict`'s `ht::Memory{Any}` field and builds an invalid
+# `MutableDual{Memory{Any}}`. Mirror the reverse `*_tangent_internal` per-value recursion (with the
+# same aliasing/cycle cache), the `lift` boundary, and the AbstractArray lane accessor.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $f(w::Val{N}, x::IdDict{K,V}, c::MaybeCache) where {N,K,V}
+        DV = dual_type(Val(N), V)
+        haskey(c, x) && return c[x]::IdDict{K,DV}
+        out = IdDict{K,DV}()
+        c[x] = out
+        for (k, v) in x
+            out[k] = $f(w, v, c)
+        end
+        return out
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::IdDict{K,V}, c::MaybeCache
+) where {N,K,V}
+    DV = dual_type(Val(N), V)
+    haskey(c, x) && return c[x]::IdDict{K,DV}
+    out = IdDict{K,DV}()
+    c[x] = out
+    for (k, v) in x
+        out[k] = _randn_dual_internal(w, rng, v, c)
+    end
+    return out
+end
+# Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
+function lift(x::IdDict{K,V}, ẋ::IdDict{K,Vt}) where {K,V,Vt}
+    DV = dual_type(Val(1), V)
+    out = IdDict{K,DV}()
+    for (k, v) in x
+        out[k] = lift(v, ẋ[k]).value
+    end
+    return Lifted{IdDict{K,V},1}(x, out)
+end
+# Lane accessor: extract lane `l` from each value's V, producing the reverse `tangent_type` dict.
+@inline function tangent(
+    x::Lifted{IdDict{K,V},N,IdDict{K,DV}}, lane::Integer
+) where {K,V,N,DV}
+    p = primal(x)
+    v = tangent(x)
+    out = IdDict{K,tangent_type(V)}()
+    for (k, pe) in p
+        out[k] = tangent(Lifted{V,N}(pe, v[k]), lane)
+    end
+    return out
+end
+
 function frule!!(
     ::Lifted{typeof(Base.rehash!),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, newsz::Lifted
 ) where {N,K,V,Vdv}
