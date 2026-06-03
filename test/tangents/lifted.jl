@@ -353,7 +353,9 @@ end
     end
 
     @testset "dual_type / lifted_type (Tuple)" begin
-        @test Mooncake.dual_type(Val(2), Tuple{}) === Tuple{}
+        # Empty tuple is non-differentiable: its dual_type collapses to NoDual (coherent with
+        # the all-non-diff vararg-group V), not an empty `Tuple{}`.
+        @test Mooncake.dual_type(Val(2), Tuple{}) === Mooncake.NoDual
         @test Mooncake.dual_type(Val(2), Tuple{Float64}) ===
             Tuple{Mooncake.NDual{Float64,2}}
         @test Mooncake.dual_type(Val(2), Tuple{Float64,Float32}) ===
