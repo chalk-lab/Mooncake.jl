@@ -110,6 +110,7 @@ function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:P
     return y, NoPullback(f, x)
 end
 
+@zero_derivative MinimalCtx Tuple{typeof(time)}
 @zero_derivative MinimalCtx Tuple{typeof(Threads.threadid)}
 @zero_derivative MinimalCtx Tuple{typeof(typeintersect),Any,Any}
 
