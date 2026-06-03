@@ -107,7 +107,7 @@ function has_equal_data_internal(
     x::MistyClosureTangent,
     y::MistyClosureTangent,
     equal_undefs::Bool,
-    d::Dict{Tuple{UInt,UInt},Bool},
+    d::IdDict{Any,Bool},
 )
     # Only compare captures_tangent. The dual_callable field is a forward-mode rule
     # built on-demand by _dual_mc, which creates a new interpreter each time. Different
