@@ -1220,14 +1220,138 @@ end
     end
 end
 
+# ── Cache-aware seed construction (cycle/alias-aware) ───────────────────────
+#
+# The `zero_dual` / `uninit_dual` / `randn_dual` factories above are cache-free
+# type-recursion — fine for flat/packable seeds, but they neither dedup aliased
+# array fields (two struct fields pointing at one array would get two independent
+# `NDualArray`s) nor terminate on cyclic mutable structs. The `*_internal`
+# functions thread a `MaybeCache` (mirroring reverse `zero_tangent_internal` and
+# the cyclic `lift`): arrays register by primal identity so aliased fields share
+# one V, and a mutable struct registers a `MutableDual` shell BEFORE recursing
+# its fields so a cycle reaching `x` again returns the shell. Leaf / non-struct
+# types delegate to the cache-free factory. `zero_lifted` / `uninit_lifted` /
+# `randn_lifted` enter through these, so the public forward gradient/derivative
+# seeds (which may hold structs, aliasing, or cycles) are correct; the cache-free
+# factories remain the fast path for direct callers and packable chunk seeds.
+for (factory, internal) in
+    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
+    @eval begin
+        @generated function $internal(w::Val{N}, x::P, d::MaybeCache) where {N,P}
+            (fieldcount(P) == 0 || dual_type(Val(N), P) === NoDual) &&
+                return :($$(QuoteNode(factory))(w, x))
+            seeds = map(1:fieldcount(P)) do i
+                nm = QuoteNode(fieldnames(P)[i])
+                _seed_field_expr(
+                    N, P, i, :($$(QuoteNode(internal))(w, getfield(x, $nm), d))
+                )
+            end
+            if ismutabletype(P)
+                return quote
+                    backing = fieldtype(dual_type(Val(N), P), 1)
+                    haskey(d, x) && return d[x]::MutableDual{backing}
+                    shell = MutableDual{backing}()
+                    d[x] = shell
+                    shell.value = backing(($(seeds...),))
+                    return shell
+                end
+            else
+                return :(ImmutableDual(fieldtype(dual_type(Val(N), P), 1)(($(seeds...),))))
+            end
+        end
+        # Array: register by identity so aliased struct fields share one V.
+        function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
+            haskey(d, x) && return d[x]
+            v = $factory(w, x)
+            d[x] = v
+            return v
+        end
+        function $internal(w::Val{N}, x::Tuple, d::MaybeCache) where {N}
+            dual_type(w, typeof(x)) === NoDual && return NoDual()
+            return map(xi -> $internal(w, xi, d), x)
+        end
+        function $internal(w::Val{N}, x::NamedTuple{names}, d::MaybeCache) where {N,names}
+            tangent_type(typeof(x)) === NoTangent && return NoDual()
+            return NamedTuple{names}(map(xi -> $internal(w, xi, d), values(x)))
+        end
+        # Complex / Memory / MemoryRef have fields but their own canonical V (not a
+        # structural lift), so delegate to the cache-free factory.
+        $internal(w::Val{N}, z::Complex, ::MaybeCache) where {N} = $factory(w, z)
+    end
+    @static if VERSION >= v"1.11-rc4"
+        @eval $internal(w::Val{N}, x::Union{Memory,MemoryRef}, ::MaybeCache) where {N} = $factory(
+            w, x
+        )
+    end
+end
+
+@generated function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::P, d::MaybeCache
+) where {N,P}
+    (fieldcount(P) == 0 || dual_type(Val(N), P) === NoDual) &&
+        return :(randn_dual(w, rng, x))
+    seeds = map(1:fieldcount(P)) do i
+        nm = QuoteNode(fieldnames(P)[i])
+        _seed_field_expr(N, P, i, :(_randn_dual_internal(w, rng, getfield(x, $nm), d)))
+    end
+    if ismutabletype(P)
+        return quote
+            backing = fieldtype(dual_type(Val(N), P), 1)
+            haskey(d, x) && return d[x]::MutableDual{backing}
+            shell = MutableDual{backing}()
+            d[x] = shell
+            shell.value = backing(($(seeds...),))
+            return shell
+        end
+    else
+        return :(ImmutableDual(fieldtype(dual_type(Val(N), P), 1)(($(seeds...),))))
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::Array, d::MaybeCache
+) where {N}
+    haskey(d, x) && return d[x]
+    v = randn_dual(w, rng, x)
+    d[x] = v
+    return v
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::Tuple, d::MaybeCache
+) where {N}
+    dual_type(w, typeof(x)) === NoDual && return NoDual()
+    return map(xi -> _randn_dual_internal(w, rng, xi, d), x)
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::NamedTuple{names}, d::MaybeCache
+) where {N,names}
+    tangent_type(typeof(x)) === NoTangent && return NoDual()
+    return NamedTuple{names}(map(xi -> _randn_dual_internal(w, rng, xi, d), values(x)))
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, z::Complex, ::MaybeCache
+) where {N}
+    randn_dual(w, rng, z)
+end
+@static if VERSION >= v"1.11-rc4"
+    _randn_dual_internal(w::Val{N}, rng::AbstractRNG, x::Union{Memory,MemoryRef}, ::MaybeCache) where {N} = randn_dual(
+        w, rng, x
+    )
+end
+
 @inline function zero_lifted(w::Val{N}, x::P) where {N,P}
-    return Lifted{P,N}(x, zero_dual(w, x))
+    return Lifted{P,N}(
+        x, _zero_dual_internal(w, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
+    )
 end
 @inline function uninit_lifted(w::Val{N}, x::P) where {N,P}
-    return Lifted{P,N}(x, uninit_dual(w, x))
+    return Lifted{P,N}(
+        x, _uninit_dual_internal(w, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
+    )
 end
 @inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P}
-    return Lifted{P,N}(x, randn_dual(w, rng, x))
+    return Lifted{P,N}(
+        x, _randn_dual_internal(w, rng, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
+    )
 end
 
 # Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a
