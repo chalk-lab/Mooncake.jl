@@ -91,6 +91,7 @@ using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
+    NoDual,
     PossiblyUninitTangent,
     Tangent,
     MutableTangent,
@@ -742,15 +743,25 @@ function test_frule_reuse(x_ẋ...; frule)
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
     # only one side would compare different temporal points if a rule mutates inputs.
-    # Skip the deepcopy when tangent is NoTangent: such primals (e.g. Module-containing
-    # types like Core.TypeName) can't safely be deepcopied and can't be mutated either.
+    # Skip the deepcopy for a non-differentiable output: such primals (e.g.
+    # Module-containing types like Core.TypeName) can't safely be deepcopied and can't
+    # be mutated either. Reverse mode marks these `NoTangent`; forward mode marks them
+    # `NoDual` (`tangent(::Lifted)` returns the `NoDual` V), so guard on both.
     y_ẏ_a = frule(x_ẋ_a...)
-    y_primal_a = tangent(y_ẏ_a) isa NoTangent ? primal(y_ẏ_a) : _deepcopy(primal(y_ẏ_a))
+    y_primal_a = if tangent(y_ẏ_a) isa Union{NoTangent,NoDual}
+        primal(y_ẏ_a)
+    else
+        _deepcopy(primal(y_ẏ_a))
+    end
     ẏ_a = _deepcopy(tangent(y_ẏ_a))
     ẋ_a = map(_deepcopy ∘ tangent, x_ẋ_a)
 
     y_ẏ_b = frule(x_ẋ_b...)
-    y_primal_b = tangent(y_ẏ_b) isa NoTangent ? primal(y_ẏ_b) : _deepcopy(primal(y_ẏ_b))
+    y_primal_b = if tangent(y_ẏ_b) isa Union{NoTangent,NoDual}
+        primal(y_ẏ_b)
+    else
+        _deepcopy(primal(y_ẏ_b))
+    end
     ẏ_b = _deepcopy(tangent(y_ẏ_b))
     ẋ_b = map(_deepcopy ∘ tangent, x_ẋ_b)
 

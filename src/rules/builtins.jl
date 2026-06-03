@@ -1748,10 +1748,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, (lb=1e-3, ub=250), getfield, (Float64, Float64), 2, false),
         (false, :none, _range, getfield, (a=5.0, b=4), 1),
         (false, :none, _range, getfield, (a=5.0, b=4), 2),
-        # `getfield(UInt8, :name)` returns a `Core.TypeName` whose `.module` field is a `Module`,
-        # which `test_rule`'s output deepcopy cannot handle ("deepcopy of Modules not supported").
-        # The derivative is trivially non-differentiable; `:super`/`:hash`/`:flags` cover the
-        # getfield-on-`DataType` path with deepcopyable outputs.
+        (false, :none, _range, getfield, UInt8, :name),
         (false, :none, _range, getfield, UInt8, :super),
         (true, :none, _range, getfield, UInt8, :layout),
         (false, :none, _range, getfield, UInt8, :hash),
