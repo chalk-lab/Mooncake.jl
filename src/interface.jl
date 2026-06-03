@@ -977,10 +977,12 @@ struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS,GS}
     # `_copy_to_output!!`) around every call, so the inputs are never mutated even though
     # the forward rule aliases (and an in-place `f` mutates) the user's storage.
     input_snapshot::IS
-    # Preallocated width-`W` seed `Lifted`s `(f_seed, x_seed)` for the zero-allocation
-    # single-float-vector gradient path (`gradient_chunk_size`-wide `x_seed` over a
-    # cache-owned primal buffer whose partials are mutated in place per chunk); `nothing`
-    # for every other input shape, which uses the generic chunked gradient path.
+    # Preallocated seeds for the zero-allocation packable gradient over one or more same-eltype
+    # float vectors: `(f_seed, arg_seeds, grad_bufs)` — a `gradient_chunk_size`-wide width-`W`
+    # `Lifted` per arg (over a cache-owned primal buffer whose partials are mutated in place per
+    # chunk) plus a preallocated per-arg gradient buffer. `nothing` for every other input shape
+    # (differentiable `f`, structs, tuples, complex, mixed eltypes, …), which uses the generic
+    # chunked gradient path.
     gradient_seed::GS
 end
 
@@ -1527,19 +1529,21 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # Preallocated seed for the zero-allocation single-float-vector gradient path: a width-W
     # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus the
     # inert `f_seed`. `nothing` for every other shape, which uses the generic gradient path.
-    gradient_seed =
+    gradient_seed = let args = Base.tail(fx)
         if gradient_chunk_size >= 1 &&
-            length(fx) == 2 &&
-            fx[2] isa AbstractVector{<:IEEEFloat} &&
+            !isempty(args) &&
+            all(a -> a isa AbstractVector{<:IEEEFloat}, args) &&
             _chunk_packable(fx)
+            W = gradient_chunk_size
             (
-                zero_lifted(Val(gradient_chunk_size), fx[1]),
-                zero_lifted(Val(gradient_chunk_size), similar(fx[2])),
-                similar(fx[2]),
+                zero_lifted(Val(W), fx[1]),
+                map(a -> zero_lifted(Val(W), similar(a)), args),
+                map(similar, args),
             )
         else
             nothing
         end
+    end
     if config.friendly_tangents
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
@@ -1726,45 +1730,66 @@ end
     )
 end
 
-# Zero-allocation single-float-vector gradient: reuse the preallocated width-`W` seed
-# (`cache.gradient_seed`), mutating its partials in place to set standard-basis directions per
-# chunk, run the width-dispatched `value_and_derivative!!`, and scatter each lane's directional
-# derivative straight into the preallocated gradient buffer. A short trailing chunk leaves its
-# extra lanes' partials zero (free padding). A differentiable `f` has no preallocated seed
-# (`gradient_seed === nothing`), so it falls back to the generic chunked path.
-function value_and_gradient!!(cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}) where {F}
-    input_primals = (f, x)
+# Zero-allocation packable gradient for one or more same-eltype float vectors. Reuse the
+# preallocated width-`W` seeds (`cache.gradient_seed = (f_seed, arg_seeds, grad_bufs)`):
+# per chunk, mutate each arg seed's `NDualArray` partials in place to set standard-basis
+# directions (mapping the global slot to the owning arg via running offsets), run the
+# width-dispatched `value_and_derivative!!`, and scatter each lane's directional derivative
+# straight into the preallocated per-arg gradient buffer. A short trailing chunk leaves its
+# extra lanes' partials zero (free padding); `xs` are snapshotted into cache-owned buffers via
+# `copyto!` so an in-place `f` never touches the user's arrays. A differentiable `f`, mixed
+# element types, or any other shape has no preallocated seed (`gradient_seed === nothing`) and
+# falls back to the generic chunked path.
+function value_and_gradient!!(
+    cache::FCache, f::F, xs::Vararg{AbstractVector{T},N}
+) where {F,T<:IEEEFloat,N}
+    input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     seed = cache.gradient_seed
     seed === nothing && return _fcache_gradient_chunked!!(cache, input_primals)
-    f_seed, x_seed, g = seed
-    fill!(g, zero(eltype(x)))
-    native_gradients = (NoTangent(), g)
-    nda = x_seed.value
-    copyto!(nda.primal, x)
-    dof = length(x)
-    W = _lifted_width(x_seed)
-    z = zero(eltype(x))
+    f_seed, arg_seeds, grad_bufs = seed
+    z = zero(T)
+    for i in 1:N
+        fill!(grad_bufs[i], z)
+        copyto!(arg_seeds[i].value.primal, xs[i])
+    end
+    dof = sum(length, xs)
+    W = _lifted_width(f_seed)
     y = z
     s = 1
     while s <= dof
-        @inbounds for lane in 1:W
-            slot = s + lane - 1
-            slot <= dof && (nda.partials[lane][slot] = one(eltype(x)))
+        off = 0
+        @inbounds for i in 1:N
+            nda = arg_seeds[i].value
+            len = length(xs[i])
+            for lane in 1:W
+                slot = s + lane - 1
+                (slot <= dof && off < slot <= off + len) &&
+                    (nda.partials[lane][slot - off] = one(T))
+            end
+            off += len
         end
-        output = value_and_derivative!!(cache, f_seed, x_seed)
+        output = value_and_derivative!!(cache, f_seed, arg_seeds...)
         yv = primal(output)
         yv isa IEEEFloat || throw_val_and_grad_ret_type_error(yv)
         y = yv
-        @inbounds for lane in 1:W
-            slot = s + lane - 1
-            if slot <= dof
-                g[slot] += tangent(output, lane)
-                nda.partials[lane][slot] = z
+        off = 0
+        @inbounds for i in 1:N
+            nda = arg_seeds[i].value
+            gb = grad_bufs[i]
+            len = length(xs[i])
+            for lane in 1:W
+                slot = s + lane - 1
+                if slot <= dof && off < slot <= off + len
+                    gb[slot - off] += tangent(output, lane)
+                    nda.partials[lane][slot - off] = z
+                end
             end
+            off += len
         end
         s += W
     end
+    native_gradients = (NoTangent(), grad_bufs...)
     if isnothing(cache.input_tangents)
         return y, native_gradients
     end
