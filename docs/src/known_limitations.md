@@ -258,6 +258,25 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+### Forward mode: pointers into a tangent are array-of-structs, not struct-of-arrays
+
+Reverse mode stores the tangent of a value as a separate object with the *same memory layout* as the
+primal (array-of-structs). Forward mode interleaves each lane's partial alongside the primal inside an
+`NDual` / `NDualArray` (struct-of-arrays). This makes two contrived pointer patterns behave differently
+between the modes:
+
+- Round-tripping a value through its own address, e.g.
+  `pointerref(Base.bitcast(Ptr{Float64}, pointer_from_objref(Ref(x))), 1, 1)`. Reverse mode points the
+  tangent pointer at the standalone tangent object, so reading it back recovers the derivative. Forward
+  mode has no standalone tangent scalar to address (the partial lives at a non-zero offset inside the
+  `NDual`), so the reconstructed pointer reads the primal slot — the derivative is **not** propagated.
+- `pointerset` into the pointer of an array of differentiable pointers, e.g.
+  `pointerset(pointer(::Vector{Ptr{Float64}}), pointer(::Vector{Float64}), i, 1)`. Forward mode raises a
+  clear `ArgumentError` (the array-of-structs tangent stride does not match a bare element pointer)
+  rather than producing a wrong result.
+
+Both patterns work in reverse mode. If you need them, use reverse mode.
+
 ```@meta
 DocTestSetup = nothing
 ```
