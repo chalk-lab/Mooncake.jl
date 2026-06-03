@@ -72,22 +72,17 @@
         @test TestUtils.check_allocs(Mooncake.fcodual_type, P) == F
     end
 
-    # Skip when DispatchDoctor is wrapping Mooncake (dispatch_doctor integration env):
-    # the wrapper itself throws `UndefVarError: T` on free-TypeVar inputs, independent
-    # of Mooncake's logic. Detected via the synthetic method emitted at `file=:none`.
-    if all(m -> m.file !== Symbol("none"), methods(Mooncake.fcodual_type, (Type,)))
-        @testset "(f)codual_type with phantom TypeVar (#1191)" begin
-            # `UnionAll(A, AbstractArray{T, A})` normalises to a DataType whose body
-            # still references the free `T`; the generic `(f)codual_type(::Type{P})`
-            # binder can't bind `P` for such shapes and throws `UndefVarError`. The
-            # Tuple variant blocks a future fix that only special-cases AbstractArray.
-            phantom = UnionAll(TypeVar(:A), AbstractArray{TypeVar(:T),TypeVar(:A)})
-            phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
-            @test codual_type(phantom) === CoDual
-            @test Mooncake.fcodual_type(phantom) === CoDual
-            @test codual_type(phantom_tuple) === CoDual
-            @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        end
+    @testset "(f)codual_type with phantom TypeVar (#1191)" begin
+        # `UnionAll(A, AbstractArray{T, A})` normalises to a DataType whose body
+        # still references the free `T`; the generic `(f)codual_type(::Type{P})`
+        # binder can't bind `P` for such shapes and throws `UndefVarError`. The
+        # Tuple variant blocks a future fix that only special-cases AbstractArray.
+        phantom = UnionAll(TypeVar(:A), AbstractArray{TypeVar(:T),TypeVar(:A)})
+        phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
+        @test codual_type(phantom) === CoDual
+        @test Mooncake.fcodual_type(phantom) === CoDual
+        @test codual_type(phantom_tuple) === CoDual
+        @test Mooncake.fcodual_type(phantom_tuple) === CoDual
     end
 
     @testset "NoPullback" begin
