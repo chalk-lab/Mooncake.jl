@@ -9,6 +9,15 @@ mutable struct LiftedTest_Cycle
     next::Any
     w::Float64
 end
+mutable struct LiftedTest_Aliased
+    a::Vector{Float64}
+    b::Vector{Float64}
+end
+mutable struct LiftedTest_MaybeInit
+    x::Float64
+    y::Float64
+    LiftedTest_MaybeInit(x::Float64) = new(x)
+end
 
 @testset "lifted" begin
     @testset "cyclic MutableDual tangent arithmetic" begin
@@ -880,5 +889,48 @@ end
         @test @inferred(Mooncake.dual_type(Val(2), Float64)) === Mooncake.NDual{Float64,2}
         @test @inferred(Mooncake.lifted_type(Val(2), Float64)) ===
             Mooncake.Lifted{Float64,2,Mooncake.NDual{Float64,2}}
+    end
+
+    @testset "basis_lifted!!" begin
+        # `basis_lifted!!(zero_lifted(...), slots)` sets lane k hot at the
+        # slots[k]-th scalar dof, mutating mutable V in place and rebuilding
+        # immutable V. dofs are counted in `dof`/`zero_tangent` order.
+        bl(x, slots) = Mooncake.basis_lifted!!(
+            Mooncake.zero_lifted(Val(length(slots)), x), slots
+        )
+
+        @test Mooncake.tangent(bl(3.0, (1,)), 1) == 1.0
+        @test Mooncake.tangent(bl([5.0, 6.0, 7.0], (2,)), 1) == [0.0, 1.0, 0.0]
+        @test Mooncake.tangent(bl(1.0 + 2.0im, (2,)), 1) == 0.0 + 1.0im  # imag dof
+        let t = Mooncake.tangent(bl(([1.0, 2.0], 9.0), (3,)), 1)
+            @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is dof 3
+        end
+
+        # width-2: two basis directions in one seed.
+        let b = bl([5.0, 6.0, 7.0], (1, 3))
+            @test Mooncake.tangent(b, 1) == [1.0, 0.0, 0.0]
+            @test Mooncake.tangent(b, 2) == [0.0, 0.0, 1.0]
+        end
+
+        # Aliased fields: `dof` dedups the shared array, so the seed visits it
+        # once and both fields share the (single, mutated) V.
+        shared = [10.0, 20.0]
+        let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).value.value
+            @test nt.a === nt.b
+            @test nt.a.partials[1] == [1.0, 0.0]
+        end
+
+        # Self-cyclic mutable struct: terminates; `.next` V is the node's own V.
+        c = LiftedTest_Cycle(nothing, 5.0)
+        c.next = c
+        let b = bl(c, (1,))
+            @test b.value.value.next === b.value
+            @test b.value.value.w.partials[1] == 1.0  # `w` is the only dof
+        end
+
+        # Uninit field stays uninit/zero; the defined field gets the basis.
+        let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).value.value
+            @test nt.x.partials[1] == 1.0
+        end
     end
 end

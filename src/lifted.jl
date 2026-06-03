@@ -1354,6 +1354,102 @@ end
     )
 end
 
+# ── Standard-basis seed (`basis_lifted!!`) ──────────────────────────────────
+#
+# `basis_lifted!!(seed, slots)` resets `seed` (built by `zero_lifted`) to the
+# standard-basis direction(s): lane `k` is hot at the `slots[k]`-th scalar dof of
+# the input, where dofs are counted in the same order as `dof` / `zero_tangent`
+# (a `Complex` element occupies two consecutive real dofs). It mutates the V in
+# place where mutable (`NDualArray` / `MutableDual` — so a preallocated seed can
+# be reseeded per chunk with no allocation) and rebuilds where immutable (`NDual`
+# / `ImmutableDual` / tuples); the caller always uses the return value (the `!!`
+# convention). A `cursor` threads the global scalar-dof index and an `IdDict`
+# visits aliased arrays / cyclic mutable structs once, matching the dedup in
+# `dof` and the cycle/alias-aware `zero_lifted` the seed must come from.
+@inline function basis_lifted!!(seed::Lifted{P,N}, slots::NTuple{N,Int}) where {P,N}
+    v = _basis_seed!!(seed.value, slots, Ref(0), IdDict{Any,Any}())
+    return Lifted{P,N}(primal(seed), v)
+end
+
+_basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
+function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}
+    cursor[] += 1
+    c = cursor[]
+    return NDual{T,N}(v.value, ntuple(k -> c == slots[k] ? one(T) : zero(T), Val(N)))
+end
+function _basis_seed!!(
+    v::Complex{NDual{T,N}}, slots::NTuple{N,Int}, cursor, dict
+) where {T,N}
+    re = _basis_seed!!(real(v), slots, cursor, dict)
+    im = _basis_seed!!(imag(v), slots, cursor, dict)
+    return Complex(re, im)
+end
+function _basis_seed!!(
+    v::NDualArray{T,N}, slots::NTuple{N,Int}, cursor, dict
+) where {T<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    @inbounds for idx in eachindex(v.primal)
+        cursor[] += 1
+        c = cursor[]
+        for k in 1:N
+            v.partials[k][idx] = c == slots[k] ? one(T) : zero(T)
+        end
+    end
+    return v
+end
+function _basis_seed!!(
+    v::NDualArray{Complex{R},N}, slots::NTuple{N,Int}, cursor, dict
+) where {R<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    @inbounds for idx in eachindex(v.primal)
+        cursor[] += 1
+        cr = cursor[]
+        cursor[] += 1
+        ci = cursor[]
+        for k in 1:N
+            v.partials[k][idx] = Complex(
+                cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
+            )
+        end
+    end
+    return v
+end
+# AoS V (element-wise `Array` of inner duals, e.g. an abstract-element array):
+# rebuild each element in place.
+function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    @inbounds for i in eachindex(v)
+        isassigned(v, i) && (v[i] = _basis_seed!!(v[i], slots, cursor, dict))
+    end
+    return v
+end
+function _basis_seed!!(v::Tuple, slots::NTuple{N,Int}, cursor, dict) where {N}
+    return map(e -> _basis_seed!!(e, slots, cursor, dict), v)
+end
+function _basis_seed!!(
+    v::NamedTuple{names}, slots::NTuple{N,Int}, cursor, dict
+) where {names,N}
+    return NamedTuple{names}(map(e -> _basis_seed!!(e, slots, cursor, dict), values(v)))
+end
+function _basis_seed!!(
+    v::PossiblyUninitTangent, slots::NTuple{N,Int}, cursor, dict
+) where {N}
+    is_init(v) || return v
+    return typeof(v)(_basis_seed!!(val(v), slots, cursor, dict))
+end
+function _basis_seed!!(v::ImmutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
+    return ImmutableDual(_basis_seed!!(v.value, slots, cursor, dict))
+end
+function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    v.value = _basis_seed!!(v.value, slots, cursor, dict)
+    return v
+end
+
 # Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a
 # `Lifted{P,1}` slot directly. Kept under the same `zero_dual` / `uninit_dual` /
 # `randn_dual` names so the many existing callsites (`zero_dual(f)` for function
