@@ -320,10 +320,14 @@ end
     setfield!(primal(value), name, primal(x))
     md = tangent(value)
     nt = getfield(md, :value)
+    # Normalise an integer field index to its symbol name: the V's backing `NamedTuple` is
+    # symbol-keyed, so `NamedTuple{(name,)}` with an `Int` `name` would throw (mirrors the
+    # integer-index normalisation in `_get_lifted_field`).
+    nm = name isa Int ? fieldname(P, name) : name
     # Coerce into the declared backing field type — a `PossiblyUninitTangent`
     # field (non-always-init) must be re-wrapped, the write makes it initialised.
-    v_i = _coerce_backing_field(fieldtype(typeof(nt), name), tangent(x))
-    setfield!(md, :value, merge(nt, NamedTuple{(name,)}((v_i,))))
+    v_i = _coerce_backing_field(fieldtype(typeof(nt), nm), tangent(x))
+    setfield!(md, :value, merge(nt, NamedTuple{(nm,)}((v_i,))))
     return x
 end
 # Non-differentiable struct (V === NoDual): set the primal field; there is no

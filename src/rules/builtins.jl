@@ -1269,7 +1269,10 @@ function frule!!(
 ) where {Nw}
     nm = primal(name)
     setfield!(primal(value), nm, primal(x))
-    _setfield_tangent!(tangent(value), nm, tangent(x))
+    # Normalise an integer field index to its symbol name for the symbol-keyed `MutableDual` V
+    # backing `NamedTuple` (the primal `setfield!` above already accepts the integer index).
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    _setfield_tangent!(tangent(value), sym, tangent(x))
     return x
 end
 # Array `.ref`/`.size` mutation (e.g. resize) via the runtime-name `setfield!` can't use
