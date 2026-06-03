@@ -3,6 +3,7 @@ module MooncakeLogExpFunctionsExt
 using LinearAlgebra: dot
 using LogExpFunctions
 using Base: IEEEFloat
+using LinearAlgebra.BLAS: BlasFloat
 import Mooncake:
     DefaultCtx,
     @from_chainrules,
@@ -17,6 +18,7 @@ import Mooncake:
     extract,
     arrayify,
     Lifted,
+    ImmutableDual,
     NDualArray
 using Mooncake.Nfwd: NDual
 
@@ -187,6 +189,61 @@ function frule!!(
         s
     end
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+end
+# Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
+# each lane to a dense tangent via `arrayify` (mirroring the reverse rrules, which also use `arrayify`),
+# then reuse the same per-lane reductions as the dense methods above. The dense `Array`/`NDualArray`
+# methods are strictly more specific. Restricted to `BlasFloat` (what `arrayify` supports).
+function frule!!(
+    ::Lifted{typeof(Core.kwcall),Nw},
+    kwargs::Lifted{<:NamedTuple,Nw},
+    ::Lifted{typeof(logsumexp),Nw},
+    x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual},
+) where {Nw,P<:BlasFloat}
+    kw = primal(kwargs)
+    px, dxs = arrayify(x)
+    y = logsumexp(px; kw...)
+    if y isa AbstractArray
+        dy_partials = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
+        return Lifted{typeof(y),Nw}(
+            y, NDualArray{P,Nw,ndims(y),typeof(y),NDual{P,Nw}}(y, dy_partials)
+        )
+    else
+        dy_lanes = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
+        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+    end
+end
+# Plain scalar logsumexp on a wrapped input: 0-alloc manual loop (mirrors the dense scalar method).
+function frule!!(
+    ::Lifted{typeof(logsumexp),Nw}, x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual}
+) where {Nw,P<:BlasFloat}
+    px, dxs = arrayify(x)
+    y = logsumexp(px)
+    dy_lanes = ntuple(Val(Nw)) do lane
+        _dx = dxs[lane]
+        s = zero(P)
+        @inbounds for i in eachindex(_dx)
+            s += _dx[i] * exp(px[i] - y)
+        end
+        s
+    end
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+end
+# In-place logsumexp! where either argument is wrapped (or they differ in wrapper): arrayify both,
+# mirroring the dense frule + reverse rrule. The dense `Array`/`NDualArray` (both args) frule above is
+# strictly more specific and wins for the dense/dense case; this covers the mixed/wrapped combinations.
+function frule!!(
+    ::Lifted{typeof(logsumexp!),Nw},
+    out::Lifted{<:AbstractArray{P},Nw},
+    x::Lifted{<:AbstractArray{P},Nw},
+) where {Nw,P<:BlasFloat}
+    px, dxs = arrayify(x)
+    y, dys = arrayify(out)
+    logsumexp!(y, px)
+    for lane in 1:Nw
+        sum!(dys[lane], dxs[lane] .* exp.(px .- y))
+    end
+    return out
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
