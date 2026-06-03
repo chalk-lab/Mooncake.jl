@@ -712,6 +712,28 @@ function frule!!(
     a = pointerref(primal(x), primal(y), primal(z))
     return Lifted{typeof(a),Nw}(a, NoDual())
 end
+# A non-differentiable `Ptr` can carry an incoherent per-lane `NTuple{Nw,Ptr}` V (its canonical
+# V is `NoDual`) when it is produced by an upstream `unsafe_convert`/`bitcast` chain — e.g.
+# `_getindex_ra` reading a byte out of a reinterpreted integer array does `Ptr{UInt8}(unsafe_convert(
+# Ref{UInt32}, …))`. The load of a non-differentiable element carries no derivative, so collapse
+# to `NoDual`. The `T <: NDualEltype` SoA frule above is strictly more specific and serves the
+# differentiable case; a differentiable element reaching here is a genuine coherence bug, so fail
+# loudly rather than silently zero its derivative.
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    y::Lifted,
+    z::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "pointerref of a differentiable `Ptr{$T}` with an incoherent per-lane V; expected " *
+            "the canonical `NTuple{$Nw,Ptr{$T}}` SoA shape.",
+        ),
+    )
+    a = pointerref(primal(x), primal(y), primal(z))
+    return Lifted{typeof(a),Nw}(a, NoDual())
+end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
     _y = primal(y)
@@ -756,6 +778,24 @@ function frule!!(
     idx::Lifted,
     z::Lifted,
 ) where {Nw}
+    pointerset(primal(p), primal(x), primal(idx), primal(z))
+    return p
+end
+# Incoherent per-lane V for a non-differentiable `Ptr` (see the matching `pointerref` overload):
+# store the primal, no tangent to write. Fail loudly for a differentiable element.
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "pointerset of a differentiable `Ptr{$T}` with an incoherent per-lane V; expected " *
+            "the canonical `NTuple{$Nw,Ptr{$T}}` SoA shape.",
+        ),
+    )
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
