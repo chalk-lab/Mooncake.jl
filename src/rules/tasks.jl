@@ -50,16 +50,6 @@ rdata_type(::Type{TaskTangent}) = NoRData
 
 tangent(t::TaskTangent, ::NoRData) = t
 
-@inline function _get_tangent_field(t::TaskTangent, f)
-    f === :rngState0 && return NoTangent()
-    f === :rngState1 && return NoTangent()
-    f === :rngState2 && return NoTangent()
-    f === :rngState3 && return NoTangent()
-    f === :rngState4 && return NoTangent()
-    # All other Task fields (:storage, :code, :donenotify, :result, :logstate, :next,
-    # :queue, :sticky, etc.) are non-differentiable runtime infrastructure.
-    return NoTangent()
-end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
@@ -90,12 +80,25 @@ const TaskCoDual = CoDual{Task,TaskTangent}
 @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
 @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
 
+# Forward seed factories: a `Task`'s V is the singleton `TaskTangent` (= its reverse tangent),
+# not a structural lift, so the generic `@generated` seed factory cannot build it (a `Task`
+# has 16 fields but no NamedTuple-backed dual). Seed it directly, mirroring reverse
+# `zero_tangent_internal` / `randn_tangent_internal`. `zero_lifted` / `randn_lifted` enter via
+# the `*_internal` family.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval @inline $f(::Val{N}, ::Task, ::MaybeCache) where {N} = TaskTangent()
+end
+@inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
+# Per-lane tangent accessor and the width-1 lift boundary for the singleton V.
+@inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
+@inline lift(x::Task, ::TaskTangent) = Lifted{Task,1}(x, TaskTangent())
+
 function frule!!(
     ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
 ) where {N,f}
+    # All Task fields are non-differentiable, so the read carries no forward derivative.
     y = getfield(primal(x), f)
-    dy = _get_tangent_field(tangent(x), f)  # always NoTangent() for Task fields
-    return Lifted{typeof(y),N}(y, dy)
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
@@ -111,8 +114,7 @@ function frule!!(
     ::Lifted{typeof(getfield),N}, x::Lifted{Task,N,TaskTangent}, f::Lifted
 ) where {N}
     y = getfield(primal(x), primal(f))
-    dy = _get_tangent_field(tangent(x), primal(f))
-    return Lifted{typeof(y),N}(y, dy)
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
