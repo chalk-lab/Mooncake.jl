@@ -75,7 +75,10 @@ end
 
 The type of the `CoDual` which contains instances of `P` and associated tangents.
 """
-codual_type(::Type{P}) where {P} = _codual_internal(P, codual_type, tangent_type)
+function codual_type(::Type{P}) where {P}
+    @isdefined(P) || return CoDual
+    return _codual_internal(P, codual_type, tangent_type)
+end
 
 @unstable function codual_type(p::Type{Type{P}}) where {P}
     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
@@ -87,6 +90,7 @@ end
 The type of the `CoDual` which contains instances of `P` and its fdata.
 """
 function fcodual_type(::Type{P}) where {P}
+    @isdefined(P) || return CoDual
     return _codual_internal(P, fcodual_type, P -> fdata_type(tangent_type(P)))
 end
 
