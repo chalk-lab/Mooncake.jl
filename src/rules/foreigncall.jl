@@ -132,15 +132,18 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
-# Ptr V is `NTuple{N, Ptr{T}}` (per-lane partial pointers). Copy the primal
-# data and each lane's tangent data through its own per-lane pair of
-# source/destination pointers.
+# A differentiable Ptr's V is `NTuple{N, Ptr}` (per-lane partial pointers). Copy the primal
+# data and each lane's tangent data through its own per-lane pair of source/destination
+# pointers. The partial-pointer element type is element-type-agnostic, so this covers both
+# the scalar SoA case (`Ptr{T<:NDualEltype}`, V `NTuple{N,Ptr{T}}`) and the nested-array case
+# (`Ptr{Vector{Float64}}` from `pointer(::Vector{Vector{Float64}})`, V `NTuple{N,Ptr{NDualArray}}`),
+# matching the `rrule!!`'s `Ptr{T}` breadth below.
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
-    dest::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
-    src::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    dest::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
+    src::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
     n::Lifted,
-) where {Nw,T<:NDualEltype}
+) where {Nw,P<:Ptr}
     _n = primal(n)
     unsafe_copyto!(primal(dest), primal(src), _n)
     dest_partials = tangent(dest)
