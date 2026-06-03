@@ -801,6 +801,16 @@ end
         (Lifted{T,N,V} where {T<:P,V})
     end
 end
+# A precise `Type{X}` slot (e.g. a Type-valued callable like the `Pt2{Float64}` constructor) is
+# monomorphic — its sole inhabitant is `X` — so the concrete `Lifted{Type{X}, N, …}` is exact and
+# carries no impossible type fact. `isconcretetype(Type{X})` is `false`, so the generic method above
+# would route it to the UnionAll-widened branch, forcing the runtime slot to box at the OC argument
+# boundary. The kind-widening (34782f41b) is needed only for the genuinely abstract metatypes
+# (`DataType`, `Type`, `Type{<:T}` — which stay on the generic method); it explicitly excludes these
+# well-behaved `Type{X}` singletons, so narrow them here to keep the slot box-free.
+@inline function lifted_type(::Val{N}, ::Type{Type{X}}) where {N,X}
+    return Lifted{Type{X},N,dual_type(Val(N), Type{X})}
+end
 
 # ──────────────────────────────────────────────────────────────────────────
 # Seed factories.
