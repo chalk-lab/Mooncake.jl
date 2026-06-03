@@ -365,16 +365,23 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
+    # Copy a Dict-field forward V to alias the copied primal array. A float-element field
+    # (e.g. `Vector{Float64}` vals → SoA `NDualArray`) rebuilds over the new primal array with
+    # copied partials; an AoS field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
+    # keys/vals) is a shallow array copy whose elements alias the shallow-shared key/value
+    # objects, matching `Base.copy(::Dict)`. The old `map(copy, …)` form errored on
+    # `Vector{NoDual}` (`copy(::NoDual)`) and assumed every field was an `NDualArray`.
+    _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(new_arr, map(copy, v.partials))
+    _copy_dict_field_v(::Any, v::AbstractArray) = copy(v)
     function frule!!(
         ::Lifted{typeof(copy),Nw}, a::Lifted{D,Nw,<:MutableDual}
     ) where {Nw,D<:Dict}
         new_primal = copy(primal(a))
         old_nt = getfield(tangent(a), :value)
-        old_vals = old_nt.vals
         new_nt = (
-            slots=map(copy, old_nt.slots),
-            keys=map(copy, old_nt.keys),
-            vals=typeof(old_vals)(new_primal.vals, map(copy, old_vals.partials)),
+            slots=_copy_dict_field_v(new_primal.slots, old_nt.slots),
+            keys=_copy_dict_field_v(new_primal.keys, old_nt.keys),
+            vals=_copy_dict_field_v(new_primal.vals, old_nt.vals),
             ndel=NoDual(),
             count=NoDual(),
             age=NoDual(),

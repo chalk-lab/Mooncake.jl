@@ -677,6 +677,13 @@ function frule!!(
         new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_partials)
     )
 end
+# AoS V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`
+# reached via `copy(::Set)`/`copy(::Dict)` internals): copy the primal and the element-wise V
+# array. Mirrors the 1.11+ `Memory` path's general overload and the `rrule!!`'s `<:Array`
+# breadth; the more-specific `NDualArray` overload above wins for float SoA arrays.
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
