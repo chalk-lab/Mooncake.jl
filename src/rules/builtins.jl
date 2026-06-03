@@ -1167,12 +1167,18 @@ const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 # here rather than memory.jl so it is available on Julia 1.10 (array_legacy path),
 # where the forward-over-reverse HVP public interface needs it.
 function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
-    name_v = Val(primal(name))
-    return frule!!(
-        Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual()),
-        x,
-        Lifted{typeof(name_v),Nw}(name_v, NoDual()),
-    )
+    # Extract the field directly rather than routing through `lgetfield(x, Val(primal(name)))`:
+    # `Val(runtime_name)` is type-unstable (the parameter is a runtime value), so the routed
+    # form constructed an abstract-`P` `Lifted{Val{...}}` and ran the `lgetfield` frule via
+    # runtime dispatch. Mirrors the 3-arg `getfield` frule below.
+    _name = primal(name)
+    y = getfield(primal(x), _name)
+    P = _typeof(primal(x))
+    if tangent_type(P) == NoTangent
+        return Lifted{_typeof(y),Nw}(y, NoDual())
+    else
+        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
+    end
 end
 function frule!!(
     ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
