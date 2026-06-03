@@ -2,17 +2,18 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-# V for `Ptr{T}` is `NTuple{N, Ptr{T}}` (per-lane partial pointers); the
-# pointer shift `tangent_lane + primal(y)` is applied to each lane.
+# V for a differentiable `Ptr` is `NTuple{N, Ptr{E}}` (per-lane partial pointers,
+# E = SoA element type or the AoS dual element); the pointer shift
+# `tangent_lane + primal(y)` is applied to each lane. Covers both the SoA float
+# case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the AoS abstract-element case
+# (`Ptr{Real}`, V `NTuple{1,Ptr{Any}}`), matching the `rrule!!` breadth below.
 function frule!!(
-    ::Lifted{typeof(Base.:(+)),Nw},
-    x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
-    y::Lifted{<:Integer},
-) where {Nw,T<:NDualEltype}
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
+) where {Nw,P<:Ptr}
     yp = primal(y)
     new_primal = primal(x) + yp
     new_partials = ntuple(lane -> tangent(x)[lane] + yp, Val(Nw))
-    return Lifted{Ptr{T},Nw}(new_primal, new_partials)
+    return Lifted{P,Nw}(new_primal, new_partials)
 end
 # Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
 # reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its

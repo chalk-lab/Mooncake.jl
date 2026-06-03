@@ -357,6 +357,25 @@ function frule!!(
     )
     return Lifted{Ptr{T},N}(y, dy_partials)
 end
+# AoS V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
+# `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
+# not the SoA `NDualArray`'s per-lane partials. Its pointer is the single AoS partial
+# pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = AoS dual element),
+# coherent with `dual_type(Val(1), Ptr{P})`. Width-1 only: width-N over an abstract
+# element type would need N distinct pointers from one interleaved AoS array.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),1},
+    ::Lifted{Val{:jl_array_ptr},1},
+    ::Lifted{Val{Ptr{P}},1},
+    ::Lifted{Tuple{Val{Any}},1},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{<:Array,1,<:Array{E}},
+) where {P,E}
+    y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
+    dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
+    return Lifted{Ptr{P},1}(y, (dy,))
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_ptr}},
