@@ -261,20 +261,36 @@ end
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
-# Write primal scalar through primal Ptr; for each lane, write that
-# lane's tangent scalar through that lane's partial Ptr.
+# The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
+# is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
+# `atomic_pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a
+# coherent `Ptr{Ptr{Float64}}` alike — and the AoS `Ptr{S≠T}` shape is excluded. A
+# non-differentiable element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the
+# primal; `tangent_type(T)` folds at specialisation so the branch is compile-time.
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),Nw},
     p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
-    x::Lifted{T},
+    x::Lifted,
     order::Lifted,
-) where {Nw,T<:NDualEltype}
+) where {Nw,T}
     _order = primal(order)
     atomic_pointerset(primal(p), primal(x), _order)
-    p_partials = tangent(p)
-    @inbounds for lane in 1:Nw
-        atomic_pointerset(p_partials[lane], tangent(x, lane), _order)
+    if tangent_type(T) !== NoTangent
+        p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            atomic_pointerset(p_partials[lane], tangent(x, lane), _order)
+        end
     end
+    return p
+end
+# Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    x::Lifted,
+    order::Lifted,
+) where {Nw}
+    atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -722,9 +738,10 @@ end
 # V is `NoDual`) when it is produced by an upstream `unsafe_convert`/`bitcast` chain — e.g.
 # `_getindex_ra` reading a byte out of a reinterpreted integer array does `Ptr{UInt8}(unsafe_convert(
 # Ref{UInt32}, …))`. The load of a non-differentiable element carries no derivative, so collapse
-# to `NoDual`. The `T <: NDualEltype` SoA frule above is strictly more specific and serves the
-# differentiable case; a differentiable element reaching here is a genuine coherence bug, so fail
-# loudly rather than silently zero its derivative.
+# to `NoDual`. The `T <: NDualEltype` SoA frule above serves the scalar differentiable case (it
+# packs an `NDual`). A differentiable non-scalar element (e.g. `Ptr{Ptr{Float64}}`, whose load is a
+# `Ptr{Float64}` with a per-lane-pointer V, not an `NDual`) is unsupported here — `pointerset`
+# propagates it, but the corresponding read shape is not implemented — so fail loudly.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
     x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
@@ -758,21 +775,27 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
-# Lifted parallel — store primal scalar through primal Ptr; for each lane,
-# store that lane's tangent scalar through that lane's partial Ptr.
+# The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
+# is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
+# `pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a coherent
+# `Ptr{Ptr{Float64}}` alike — and the AoS `Ptr{S≠T}` shape is excluded. A non-differentiable
+# element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the primal; `tangent_type(T)`
+# folds at specialisation so the branch is compile-time.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
     p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
-    x::Lifted{T},
+    x::Lifted,
     idx::Lifted,
     z::Lifted,
-) where {Nw,T<:NDualEltype}
+) where {Nw,T}
     _idx = primal(idx)
     _z = primal(z)
     pointerset(primal(p), primal(x), _idx, _z)
-    p_partials = tangent(p)
-    @inbounds for lane in 1:Nw
-        pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
+    if tangent_type(T) !== NoTangent
+        p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
+        end
     end
     return p
 end
@@ -787,8 +810,12 @@ function frule!!(
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
-# Incoherent per-lane V for a non-differentiable `Ptr` (see the matching `pointerref` overload):
-# store the primal, no tangent to write. Fail loudly for a differentiable element.
+# An AoS per-lane V (`NTuple{Nw,Ptr{S}}` with partial element `S !== Ptr{T}`) reaches
+# here when the destination is an array of differentiable pointers (e.g.
+# `pointer(::Vector{Ptr{Float64}})`, whose tangent buffer holds `Tuple{Ptr{Float64}}`
+# elements, not bare `Ptr{Float64}`). Writing a bare lane tangent through that pointer
+# would corrupt the AoS stride, so fail loudly — the AoS-array-of-pointers store is
+# unsupported. The SoA `NTuple{Nw,Ptr{T}}` frule above is strictly more specific.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
     p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
@@ -798,8 +825,8 @@ function frule!!(
 ) where {Nw,T}
     tangent_type(T) === NoTangent || throw(
         ArgumentError(
-            "pointerset of a differentiable `Ptr{$T}` with an incoherent per-lane V; expected " *
-            "the canonical `NTuple{$Nw,Ptr{$T}}` SoA shape.",
+            "pointerset into a differentiable `Ptr{$T}` with an array-of-structs per-lane V; " *
+            "the AoS array-of-pointers store is unsupported.",
         ),
     )
     pointerset(primal(p), primal(x), primal(idx), primal(z))
