@@ -936,20 +936,20 @@ end
 # Core._setsuper!
 # Core._structtype
 
-# `Core.SimpleVector` carries no canonical V (its `tangent_type` is
-# `Vector{Any}` for reverse mode, but Lifted has no single-tangent slot
-# for that). SimpleVector elements are typically non-differentiable types
-# (DataType, Symbol, Method, …), so the canonical V is `NoDual` — the frules
-# below (`svec`, `_svec_ref`) already produce `NoDual`, so `dual_type` must
-# agree, else an OpaqueClosure compiled to the generic `NTuple{N, Vector{Any}}`
-# fallback would typeassert-reject the `NoDual` value (seen in forward-over-
-# reverse, where `svec` sparams flow through rule construction).
-@inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = NoDual
+# `Core.SimpleVector`'s forward V is an array-of-structures `Vector{Any}` holding each
+# element's forward V (`NoDual` for the usual non-differentiable elements — DataType, Symbol,
+# … — or a real inner V like `NDual`/`NDualArray` for a differentiable element), mirroring the
+# reverse `tangent_type(SimpleVector) === Vector{Any}`. Keeping the V coherent with what the
+# `svec` / `_svec_ref` frules build avoids the OpaqueClosure return typeassert-reject in
+# forward-over-reverse, where `svec` sparams (all non-differentiable) flow through rule
+# construction as an all-`NoDual` `Vector{Any}`.
+@inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = Vector{Any}
 function frule!!(
     ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
 ) where {Nw}
-    pv = Core._svec_ref(primal(v), primal(_ind))
-    return Lifted{typeof(pv),Nw}(pv, NoDual())
+    ind = primal(_ind)
+    pv = Core._svec_ref(primal(v), ind)
+    return Lifted{typeof(pv),Nw}(pv, tangent(v)[ind])
 end
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
@@ -977,13 +977,43 @@ function _svec_ref_rrule(f, _v, _ind, pv, tv)
     end
 end
 
-# Output `SimpleVector` is treated as non-differentiable from
-# forward-mode's perspective. Lifted has no per-lane Vector{Any} V
-# shape — elements typically share `NoDual` V anyway.
+# The output `SimpleVector`'s forward V is the per-element `Vector{Any}` of each arg's V, so a
+# differentiable element (e.g. a float read back out by `_svec_ref`) keeps its derivative.
 function frule!!(f::Lifted{typeof(svec),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
     primal_output = svec(tuple_map(primal, args)...)
-    return Lifted{Core.SimpleVector,Nw}(primal_output, NoDual())
+    return Lifted{Core.SimpleVector,Nw}(primal_output, Any[tangent(a) for a in args])
 end
+
+# Forward seed/lift/accessor/unlift for the `Vector{Any}` V (per-element forward V), mirroring
+# the reverse `Vector{Any}` machinery. Each element recurses through its own V.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $f(::Val{N}, v::Core.SimpleVector, c::MaybeCache) where {N}
+        return Any[$f(Val(N), v[i], c) for i in 1:length(v)]
+    end
+end
+function _randn_dual_internal(
+    ::Val{N}, rng::AbstractRNG, v::Core.SimpleVector, c::MaybeCache
+) where {N}
+    return Any[_randn_dual_internal(Val(N), rng, v[i], c) for i in 1:length(v)]
+end
+function tangent(x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer) where {N}
+    p = primal(x)
+    v = tangent(x)
+    return Any[tangent(Lifted{typeof(p[i]),N}(p[i], v[i]), lane) for i in 1:length(p)]
+end
+function lift(v::Core.SimpleVector, ẋ::Vector{Any})
+    return Lifted{Core.SimpleVector,1}(
+        v, Any[tangent(lift(v[i], ẋ[i])) for i in 1:length(v)]
+    )
+end
+function _unlift_seed(x::Lifted{Core.SimpleVector,1,Vector{Any}}, cache::IdDict)
+    p = primal(x)
+    v = tangent(x)
+    return Any[_unlift_seed(Lifted{typeof(p[i]),1}(p[i], v[i]), cache) for i in 1:length(p)]
+end
+@inline unlift(x::Lifted{Core.SimpleVector,1,Vector{Any}}) = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+)
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
