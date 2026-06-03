@@ -265,33 +265,71 @@ end
 # carry per-lane derivatives in their V and have no single native-tangent
 # unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
 @inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
-# Mutable-struct slot: `tangent(x, 1)` returns a `MutableDualTangentView` (write proxy
-# for rule bodies), but downstream FD / address-map machinery wants a fresh
-# `MutableTangent` value. Build one by recursive per-field unlift so the structural
-# shape matches what reverse-mode produces.
-@inline _field_unlift_tangent(::Type{P}, p, name, vfield) where {P} = last(
-    unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), vfield))
+# Aggregate slots (struct / tuple / named-tuple) need a fresh reverse tangent (not the
+# `MutableDualTangentView` write proxy `tangent(x, 1)` returns for mutable structs), and
+# may be self-referential (`node.next === node`) or hold aliased mutables. `_unlift_seed`
+# threads an aliasing cache (keyed on the primal) and registers a `MutableTangent` shell
+# before recursing, so a cycle reaching the same primal returns the shell — mirroring
+# reverse `zero_tangent_internal`. Leaf slots (scalar / array / complex) have no cycle and
+# convert via the lane accessor (aliased arrays already share one `partials` array).
+@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple}}) where {P} = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
 )
-@inline function _field_unlift_tangent(
-    ::Type{P}, p, name, vfield::PossiblyUninitTangent
+
+@inline _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P} = tangent(x, 1)
+function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    Tt = tangent_type(P)
+    shell = Tt()
+    cache[p] = shell
+    nt = tangent(x).value
+    field_tangents = map(keys(nt)) do name
+        return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
+    end
+    # Coerce into the declared reverse backing `tangent_type(P)` (an abstract field is
+    # stored widened, e.g. `a::Any`, matching reverse mode).
+    shell.fields = fieldtype(Tt, :fields)(field_tangents)
+    return shell
+end
+function _unlift_seed(x::Lifted{P,1,<:ImmutableDual}, cache::IdDict) where {P}
+    nt = tangent(x).value
+    p = primal(x)
+    field_tangents = map(keys(nt)) do name
+        return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
+    end
+    return Tangent(fieldtype(tangent_type(P), :fields)(field_tangents))
+end
+function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P}
+    p = primal(x)
+    v = tangent(x)
+    return ntuple(length(v)) do i
+        return _unlift_seed(Lifted{fieldtype(P, i),1}(p[i], v[i]), cache)
+    end
+end
+function _unlift_seed(x::Lifted{P,1,<:NamedTuple}, cache::IdDict) where {P}
+    p = primal(x)
+    v = tangent(x)
+    names = keys(v)
+    return NamedTuple{names}(
+        map(names) do name
+            return _unlift_seed(
+                Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(v, name)), cache
+            )
+        end,
+    )
+end
+@inline _field_unlift_seed(::Type{P}, p, name, vfield, cache::IdDict) where {P} = _unlift_seed(
+    Lifted{fieldtype(P, name),1}(getfield(p, name), vfield), cache
+)
+@inline function _field_unlift_seed(
+    ::Type{P}, p, name, vfield::PossiblyUninitTangent, cache::IdDict
 ) where {P}
     Rt = tangent_type(fieldtype(P, name))
     (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
     return PossiblyUninitTangent{Rt}(
-        last(unlift(Lifted{fieldtype(P, name),1}(getfield(p, name), val(vfield))))
+        _unlift_seed(Lifted{fieldtype(P, name),1}(getfield(p, name), val(vfield)), cache)
     )
-end
-@inline function unlift(x::Lifted{P,1,<:MutableDual}) where {P}
-    nt = tangent(x).value
-    p = primal(x)
-    names = keys(nt)
-    field_tangents = map(names) do name
-        return _field_unlift_tangent(P, p, name, getfield(nt, name))
-    end
-    # Coerce into the declared reverse backing `tangent_type(P)` (see the
-    # `ImmutableDual` lane accessor above for why abstract fields must widen).
-    backing = fieldtype(tangent_type(P), :fields)
-    return (p, MutableTangent(backing(field_tangents)))
 end
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
     throw(

@@ -1231,123 +1231,14 @@ end
     return total
 end
 
-# fcache gradient seeding
-@inline _make_seed_tangent(x, slot::Int) = _make_seed_tangent(
-    x, slot, Ref(0), IdDict{Any,Any}()
+# fcache gradient seeding: the `slot`-th standard-basis reverse tangent. Built from the
+# cycle/alias-aware forward seed — `basis_lifted!!` over `zero_lifted` sets the standard
+# basis at `slot`, then `unlift` converts back to the reverse tangent the chunked-derivative
+# lift and gradient scatter consume. `basis_lifted!!` is the single seed walk (shared with
+# forward mode); this is its width-1 reverse-tangent adapter.
+@inline _make_seed_tangent(x, slot::Int) = last(
+    unlift(basis_lifted!!(zero_lifted(Val(1), x), (slot,)))
 )
-@inline function _make_seed_tangent(
-    ::NoTangent, _slot::Int, _cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    return NoTangent()
-end
-@inline function _make_seed_tangent(
-    x::IEEEFloat, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-)
-    cursor[] += 1
-    return cursor[] == slot ? one(x) : zero(x)
-end
-@inline function _make_seed_tangent(
-    x::Complex{T}, slot::Int, cursor::Base.RefValue{Int}, _dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    cursor[] += 1
-    real_part = cursor[] == slot ? one(T) : zero(T)
-    cursor[] += 1
-    imag_part = cursor[] == slot ? one(T) : zero(T)
-    return complex(real_part, imag_part)
-end
-
-function _make_seed_tangent(
-    x::AbstractArray{T}, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        dx[I] = cursor[] == slot ? one(T) : zero(T)
-    end
-    return dx
-end
-
-function _make_seed_tangent(
-    x::AbstractArray{Complex{T}},
-    slot::Int,
-    cursor::Base.RefValue{Int},
-    dict::IdDict{Any,Any},
-) where {T<:IEEEFloat}
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    @inbounds for I in eachindex(x)
-        cursor[] += 1
-        real_part = cursor[] == slot ? one(T) : zero(T)
-        cursor[] += 1
-        imag_part = cursor[] == slot ? one(T) : zero(T)
-        dx[I] = complex(real_part, imag_part)
-    end
-    return dx
-end
-
-function _make_seed_tangent(
-    x::AbstractArray, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-)
-    tangent_type(typeof(x)) == NoTangent && return NoTangent()
-    existing = get(dict, x, nothing)
-    !isnothing(existing) && return existing
-    dx = zero_tangent(x)
-    dict[x] = dx
-    for I in eachindex(x)
-        dx[I] = _make_seed_tangent(x[I], slot, cursor, dict)
-    end
-    return dx
-end
-
-@inline function _make_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P<:Union{Tuple,NamedTuple}}
-    tangent_type(P) == NoTangent && return NoTangent()
-    fields = ntuple(n -> _make_seed_tangent(x[n], slot, cursor, dict), Val(fieldcount(P)))
-    return build_tangent(P, fields...)
-end
-
-function _make_seed_tangent(
-    x::P, slot::Int, cursor::Base.RefValue{Int}, dict::IdDict{Any,Any}
-) where {P}
-    tangent_type(P) == NoTangent && return NoTangent()
-    if x isa AbstractArray || Base.ismutabletype(P)
-        existing = get(dict, x, nothing)
-        !isnothing(existing) && return existing
-        tx = zero_tangent(x)
-        dict[x] = tx
-        if tx isa MutableTangent
-            inits = always_initialised(P)
-            for n in 1:fieldcount(P)
-                if isdefined(x, n)
-                    set_tangent_field!(
-                        tx, n, _make_seed_tangent(getfield(x, n), slot, cursor, dict)
-                    )
-                elseif inits[n]
-                    _throw_uninit_field_error(P, n)
-                end
-            end
-        end
-        return tx
-    end
-
-    inits = always_initialised(P)
-    fields = ntuple(Val(fieldcount(P))) do n
-        if isdefined(x, n)
-            return _make_seed_tangent(getfield(x, n), slot, cursor, dict)
-        elseif inits[n]
-            _throw_uninit_field_error(P, n)
-        else
-            return PossiblyUninitTangent{tangent_type(fieldtype(P, n))}()
-        end
-    end
-    return build_tangent(P, fields...)
-end
 
 # Build the canonical width-`N` Lifted V directly from a primal and its `N` lane tangents
 # (the `NTuple` is exactly the `NDual` / `NDualArray` partials). Used by the native chunk
