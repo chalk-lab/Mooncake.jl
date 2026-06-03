@@ -1397,11 +1397,12 @@ end
 # `basis_lifted!!(seed, slots)` resets `seed` (built by `zero_lifted`) to the
 # standard-basis direction(s): lane `k` is hot at the `slots[k]`-th scalar dof of
 # the input, where dofs are counted in the same order as `dof` / `zero_tangent`
-# (a `Complex` element occupies two consecutive real dofs). It mutates the V in
-# place where mutable (`NDualArray` / `MutableDual` — so a preallocated seed can
-# be reseeded per chunk with no allocation) and rebuilds where immutable (`NDual`
-# / `ImmutableDual` / tuples); the caller always uses the return value (the `!!`
-# convention). A `cursor` threads the global scalar-dof index and an `IdDict`
+# (a `Complex` element occupies two consecutive real dofs). It writes the partials
+# in place for an `NDualArray` (so a preallocated array seed can be reseeded per
+# chunk allocation-free) and rebuilds the immutable inner V otherwise (`NDual`,
+# tuples, `ImmutableDual`, and the `MutableDual` NamedTuple); the caller always
+# uses the return value (the `!!` convention). A `cursor` threads the global
+# scalar-dof index and an `IdDict`
 # visits aliased arrays / cyclic mutable structs once, matching the dedup in
 # `dof` and the cycle/alias-aware `zero_lifted` the seed must come from.
 @inline function basis_lifted!!(seed::Lifted{P,N}, slots::NTuple{N,Int}) where {P,N}
