@@ -10,7 +10,7 @@ sr(n::Int) = StableRNG(n)
 @testset "logexpfunctions" begin
     @testset for (perf_flag, is_primitive, f, x...) in vcat(
         map([Float64, Float32]) do P
-            return Any[
+            cases = Any[
                 (:allocs, false, xlogx, P(1.1)),
                 (:allocs, false, xlogy, P(0.3), P(1.2)),
                 (:allocs, false, xlog1py, P(0.3), -P(0.5)),
@@ -19,7 +19,9 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, true, logistic, P(0.5)),
                 (:allocs, true, logistic, P(1000.0)),
                 (:allocs, false, logit, P(0.3)),
+                (:allocs, false, logit, P(0.1)),
                 (:allocs, false, logcosh, P(1.5)),
+                (:allocs, false, logcosh, P(0.3)),
                 (:allocs, false, logabssinh, P(0.3)),
                 (:allocs, false, log1psq, P(0.3)),
                 (:allocs, false, log1pexp, P(0.1)),
@@ -27,6 +29,7 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log2mexp, P(0.1)),
                 (:allocs, false, logexpm1, P(0.1)),
                 (:allocs, false, log1pmx, -P(0.95)),
+                (:allocs, false, log1pmx, P(0.1)),
                 (:allocs, false, logmxp1, P(0.02)),
                 (:allocs, true, logaddexp, -P(0.5), P(0.4)),
                 # edge case with two equal inputs: see #881 for discussion
@@ -75,6 +78,11 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log1mlogistic, -P(0.9)),
                 (:allocs, false, logit1mexp, -P(0.6)),
             ]
+            @static if isdefined(LogExpFunctions, :logabstanh)
+                push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(0.3)))
+                push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(1.5)))
+            end
+            return cases
         end...,
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
