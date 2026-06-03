@@ -1240,130 +1240,21 @@ end
     unlift(basis_lifted!!(zero_lifted(Val(1), x), (slot,)))
 )
 
-# Build the canonical width-`N` Lifted V directly from a primal and its `N` lane tangents
-# (the `NTuple` is exactly the `NDual` / `NDualArray` partials). Used by the native chunk
-# pass in `_fcache_derivative_chunked!!`.
-@inline function _chunk_pack_tangent_lifted(
-    x::T, dx::NTuple{N}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    return Lifted{T,N,Nfwd.NDual{T,N}}(x, Nfwd.NDual{T,N}(x, dx))
-end
-@inline function _chunk_pack_tangent_lifted(
-    x::Array{T,D}, dx::NTuple{N}, ::Val{N}
-) where {T<:IEEEFloat,D,N}
-    nda = NDualArray{T,N,D,Array{T,D},Nfwd.NDual{T,N}}(x, dx)
-    return Lifted{Array{T,D},N,typeof(nda)}(x, nda)
-end
+# Snapshot/restore for the chunked gradient/Jacobian sweeps. Forward slots alias the user's
+# input (`primal(slot) === x`), and a sweep re-runs `f` once per chunk on that shared storage.
+# An in-place-mutating `f` would otherwise compound its mutation across chunks and corrupt
+# later chunks' derivatives. Each sweep snapshots the input args into the prepared
+# `cache.input_snapshot` buffer (args only — `f` is never mutated and may be uncopyable) and
+# restores from it (in place, via `_copy_to_output!!`) before each re-run and once at the end,
+# leaving the inputs unchanged, consistent with reverse mode.
 
-# fcache forward architecture:
-#
-#   derivative machinery:
-#     _fcache_derivative_chunked!! is the internal batched forward extension point. Each
-#     per-input tangent is an `NTuple{N}` of width-1 lane tangents, and the result is an
-#     `NTuple{N}` of width-1 output lane tangents. The generic backend is
-#     _fcache_derivative_chunked_loop!!, which evaluates one lane at a time through the
-#     cached frule.
-#
-#   gradient machinery:
-#     _fcache_gradient_chunked!! seeds standard-basis lane tuples, calls
-#     _fcache_derivative_chunked!! repeatedly, and accumulates the returned lane
-#     contributions into gradient storage.
-#     The scalar gradient fast path bypasses that generic chunked gradient assembly path.
-#
-#   native chunk machinery:
-#     _fcache_derivative_chunked!! runs the native width-`W` chunk `frule!!`
-#     (`cache.chunk_rule`, built at `W = gradient_chunk_size`) for a full-width packable
-#     chunk, and falls back to _fcache_derivative_chunked_loop!! otherwise (no chunk rule,
-#     a short trailing chunk, or non-packable inputs).
-#
-# Snapshot/restore for the chunked forward drivers. Forward slots alias the user's input
-# (`primal(slot) === x`), and the chunked gradient/Jacobian re-run `f` once per chunk (and
-# the per-lane fallback once per lane) on that shared storage. An in-place-mutating `f`
-# would otherwise compound its mutation across re-runs and corrupt later chunks'/lanes'
-# derivatives. The sweeps snapshot the input args into the prepared `cache.input_snapshot`
-# buffer (args only — `f` is never mutated and may be uncopyable) and restore from it (in
-# place, via `_copy_to_output!!`) before each re-run and once at the end, leaving the
-# inputs unchanged, consistent with reverse mode. (The non-packable per-lane fallback keeps
-# a local snapshot, as it runs nested inside a chunk whose sweep already owns the buffer.)
-# fcache derivative chunk execution
-@noinline function _fcache_derivative_chunked_loop!!(
-    cache::FCache, ::Val{N}, x_dx::Vararg{Tuple,M}
-) where {N,M}
-    # Canonical fallback backend: evaluate one lane at a time through the cached `frule!!`
-    # (aka ir-based forward) rule. Each `x_dx[i]` is `(primal_i, lane_tuple_i)` with
-    # `lane_tuple_i::NTuple{N}`. The native chunk `frule!!` path in
-    # `_fcache_derivative_chunked!!` handles full-width packable chunks in a single pass.
-    input_primals = map(first, x_dx)
-    input_tangents = map(last, x_dx)
-    # Only multi-lane chunks re-run `f`, so only they need a snapshot to restore between
-    # lanes; a single lane allocates nothing. Snapshot the args only (`Base.tail`), never
-    # `f` — it is not mutated and may be uncopyable (e.g. the HVP `grad_f` closure).
-    input_args = Base.tail(input_primals)
-    snap = N > 1 ? tuple_map(_copy_output, input_args) : input_args
-    compute_lane_output(::Val{lane}) where {lane} = begin
-        # Restore the shared input before every lane except the first, so each lane's
-        # derivative is computed from the original input (not one a prior lane mutated).
-        lane > 1 && tuple_map(_copy_to_output!!, input_args, snap)
-        cache.single_rule(
-            tuple_map((p, t) -> lift(p, t[lane]), input_primals, input_tangents)...
-        )
-    end
-
-    first_output = compute_lane_output(Val(1))
-    y = primal(first_output)
-    # Bug fix note: chunked forward can return `NoTangent()` lanes for nondifferentiable
-    # outputs, and the generic `_copy` fallback does not support `NoTangent`.
-    copy_lane(out) =
-        let t = last(unlift(out))
-            t isa NoTangent ? t : _copy(t)
-        end
-    first_tangent = copy_lane(first_output)
-    # Bug fix note: keep the lane count in dispatch so chunked tuple evaluation does not
-    # depend on `Val` internals, which broke ordinary interface calls during refactoring.
-    rest_tangents = ntuple(n -> copy_lane(compute_lane_output(Val(n + 1))), Val(N - 1))
-    # Final restore so the input is left unchanged (each lane already ran on the original).
-    N > 1 && tuple_map(_copy_to_output!!, input_args, snap)
-    return y, (first_tangent, rest_tangents...)
-end
-
-# The native chunk pass applies when `f` is non-differentiable and every other input is a
-# float scalar or float array — exactly the shapes `_chunk_pack_tangent_lifted` packs.
-# Other shapes (differentiable closures, structs, tuples) use the generic loop.
+# Chunking batches `W > 1` directions per pass only when `f` is non-differentiable and every
+# other input is a float scalar or float array; other shapes (differentiable closures, structs,
+# tuples) pin the chunk width to 1. `prepare_derivative_cache` uses this to set
+# `gradient_chunk_size` and decide whether to build the width-`W` `chunk_rule`.
 @inline function _chunk_packable(input_primals::Tuple)
     tangent_type(typeof(first(input_primals))) === NoTangent || return false
     return all(p -> p isa IEEEFloat || p isa Array{<:IEEEFloat}, Base.tail(input_primals))
-end
-
-# Internal batched forward driver. Each `x_dx[i]` is `(primal_i, lane_tuple_i)` with
-# `lane_tuple_i::NTuple{N}`; returns `(y, NTuple{N})` of output lane tangents. Called only
-# by the gradient sweep and the forward jacobian, which supply the width `N`.
-@noinline function _fcache_derivative_chunked!!(
-    cache::FCache, ::Val{N}, x_dx::Vararg{Tuple,M}
-) where {N,M}
-    N < 1 && throw(ArgumentError("chunked forward needs at least one lane."))
-    chunkrule = cache.chunk_rule
-    input_primals = map(first, x_dx)
-    # The native chunk rule is built for exactly `gradient_chunk_size` lanes, so it only
-    # serves full-width packable chunks; a short trailing chunk (or non-packable inputs)
-    # falls back to the generic per-lane loop. The native pass packs each input's
-    # `NTuple{N}` lanes into the canonical width-`N` Lifted V, runs the rule once, and reads
-    # the `N` directional-derivative lanes back via `tangent(output, lane)`; `f` is
-    # non-differentiable so its slot is a zero (`NoDual`) Lifted.
-    if !isnothing(chunkrule) &&
-        N == cache.gradient_chunk_size &&
-        _chunk_packable(input_primals)
-        input_tangents = map(last, x_dx)
-        f_lifted = zero_lifted(Val(N), first(input_primals))
-        arg_lifted = ntuple(
-            i -> _chunk_pack_tangent_lifted(
-                input_primals[i + 1], input_tangents[i + 1], Val(N)
-            ),
-            Val(M - 1),
-        )
-        output = chunkrule(f_lifted, arg_lifted...)
-        return primal(output), ntuple(lane -> tangent(output, lane), Val(N))
-    end
-    return _fcache_derivative_chunked_loop!!(cache, Val(N), x_dx...)
 end
 
 """
@@ -1471,22 +1362,23 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
 end
 
 #
-# `value_and_gradient!!` generic `_fcache_derivative_chunked!!` path
+# `value_and_gradient!!` generic chunked path
 #
 """
     value_and_gradient!!(cache::FCache, f, x...)
 
-Compute the value and gradient of a scalar-returning function via the internal
-`_fcache_derivative_chunked!!` path: seed standard-basis directions as per-input
-`NTuple` lane bundles, run the batched forward interface (native width-`W` chunk
-`frule!!` for a full chunk, generic lane loop otherwise), then accumulate the returned
-lane contributions into gradient storage.
+Compute the value and gradient of a scalar-returning function via the generic chunked path:
+per chunk, seed `W = gradient_chunk_size` standard-basis directions, run the width-dispatched
+[`value_and_derivative!!`](@ref) (chunk rule for `W > 1`, single rule for `W == 1`), then
+accumulate each lane's directional derivative into gradient storage.
 
 This overload exists so callers can prepare a forward cache once, then use it either for
 directional derivatives via [`value_and_derivative!!`](@ref) or full gradients via chunked
 forward mode.
 """
-function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
+function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
+    input_primals = (f, x...)
+    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
             workspace = tuple_map(zero_tangent, input_primals)
@@ -1517,26 +1409,36 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
         )
     end
 
-    # `value_and_gradient!!` is a client of the batched forward interface: per chunk it
-    # seeds standard-basis directions, transposes them from lane-major to the input-major
-    # `NTuple` of lane tangents, calls `_fcache_derivative_chunked!!`, then accumulates
-    # `coeff * lane_tangent` into the full gradient (a scalar output makes each lane's
-    # derivative one coefficient for its seeded basis direction). The first chunk is peeled
-    # out so the scalar `y` stays concretely typed.
-    chunk_size = cache.gradient_chunk_size
+    # Per chunk of `W` standard-basis directions starting at `start_slot`:
+    #  - seed the forward direction by basis-seeding the whole input tuple's `zero_lifted` V
+    #    (`basis_lifted!!` walks all inputs' dofs with one global cursor; slots past
+    #    `total_dof` give zero lanes), then split that tuple V into per-input width-`W` slots;
+    #  - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single rule
+    #    for `W == 1`) and read lane `k`'s directional derivative as `coeff = tangent(out, k)`;
+    #  - scatter `coeff * reverse_tangent` into the gradient, where the reverse basis tangent
+    #    per lane comes from `_make_seed_tangent` (a scalar output makes each lane's derivative
+    #    the coefficient for its seeded basis direction).
+    # `W == gradient_chunk_size ≤ total_dof`, so the first chunk is always full width; it is
+    # peeled out to keep the scalar `y` concretely typed.
+    W = cache.gradient_chunk_size
     nfields = Val(fieldcount(typeof(input_primals)))
-    first_width = min(chunk_size, total_dof)
+    P = typeof(input_primals)
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the end.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    first_lanes = ntuple(lane -> _make_seed_tangent(input_primals, lane), first_width)
-    first_tangents = ntuple(i -> ntuple(lane -> first_lanes[lane][i], first_width), nfields)
-    y, first_dy = _fcache_derivative_chunked!!(
-        cache, Val(first_width), map(tuple, input_primals, first_tangents)...
+    first_lanes = ntuple(lane -> _make_seed_tangent(input_primals, lane), W)
+    first_tangents = ntuple(i -> ntuple(lane -> first_lanes[lane][i], W), nfields)
+    first_vs = tangent(
+        basis_lifted!!(zero_lifted(Val(W), input_primals), ntuple(identity, W))
     )
+    first_lifted = ntuple(
+        i -> Lifted{fieldtype(P, i),W}(input_primals[i], first_vs[i]), nfields
+    )
+    first_out = value_and_derivative!!(cache, first_lifted...)
+    y = primal(first_out)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    for lane in 1:first_width
-        coeff = Float64(first_dy[lane])
+    for lane in 1:W
+        coeff = Float64(tangent(first_out, lane))
         native_gradients = tuple_map(
             (g, dx) -> begin
                 lt = dx[lane]
@@ -1547,18 +1449,18 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
             first_tangents,
         )
     end
-    for start_slot in (1 + chunk_size):chunk_size:total_dof
+    for start_slot in (1 + W):W:total_dof
         _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-        width = min(chunk_size, total_dof - start_slot + 1)
-        lanes = ntuple(
-            lane -> _make_seed_tangent(input_primals, start_slot + lane - 1), width
-        )
-        input_tangents = ntuple(i -> ntuple(lane -> lanes[lane][i], width), nfields)
-        _, chunk_dy = _fcache_derivative_chunked!!(
-            cache, Val(width), map(tuple, input_primals, input_tangents)...
-        )
-        for lane in 1:width
-            coeff = Float64(chunk_dy[lane])
+        lanes = ntuple(lane -> _make_seed_tangent(input_primals, start_slot + lane - 1), W)
+        input_tangents = ntuple(i -> ntuple(lane -> lanes[lane][i], W), nfields)
+        slots = ntuple(lane -> start_slot + lane - 1, W)
+        vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
+        lifted = ntuple(i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields)
+        output = value_and_derivative!!(cache, lifted...)
+        for lane in 1:W
+            slot = start_slot + lane - 1
+            slot <= total_dof || break
+            coeff = Float64(tangent(output, lane))
             native_gradients = tuple_map(
                 (g, dx) -> begin
                     lt = dx[lane]
@@ -1589,16 +1491,14 @@ end
 # `value_and_gradient!!` fast paths
 #
 # FCache path overview:
-# - derivative machinery:
-#   `value_and_derivative!!`, `_fcache_derivative_chunked!!`.
-# - gradient machinery:
-#   `value_and_gradient!!`, `_fcache_gradient_chunked!!`.
+# - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
+# - gradient machinery: `value_and_gradient!!` (scalar / packable-vector / generic chunked).
 #
 # Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)`:
 # - `x::IEEEFloat`: scalar width-1 path
-# - otherwise: generic vararg path, which seeds standard-basis `NTuple` lane chunks and
-#   repeatedly calls `_fcache_derivative_chunked!!` (the native chunk `frule!!` runs
-#   `gradient_chunk_size` directions per pass)
+# - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
+# - otherwise: generic chunked path, which per chunk seeds `gradient_chunk_size` standard-basis
+#   directions and runs the width-dispatched `value_and_derivative!!`
 
 # Scalar `value_and_gradient!!` fast path: a single width-1 forward evaluation through
 # `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
@@ -1637,7 +1537,11 @@ function value_and_gradient!!(
     input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     seed = cache.gradient_seed
-    seed === nothing && return _fcache_gradient_chunked!!(cache, input_primals)
+    # A differentiable `f` (or any non-packable shape) has no preallocated seed; fall back to
+    # the generic chunked method via `invoke` (the args are float vectors, so a plain call
+    # would re-dispatch here).
+    seed === nothing &&
+        return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
     f_seed, arg_seeds, grad_bufs = seed
     z = zero(T)
     for i in 1:N
@@ -1691,12 +1595,6 @@ function value_and_gradient!!(
         native_gradients,
         isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
     )
-end
-
-function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
-    input_primals = (f, x...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    return _fcache_gradient_chunked!!(cache, input_primals)
 end
 
 """
