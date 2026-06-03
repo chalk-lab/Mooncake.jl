@@ -41,6 +41,9 @@ _dot_internal(::MaybeCache, t::P, s::P) where {P<:TWP} = Float64(t) * Float64(s)
 _scale_internal(::MaybeCache, a::Float64, t::TWP) = a * t
 
 populate_address_map_internal(m::AddressMap, ::P, ::P) where {P<:TWP} = m
+# Forward V `NTuple{N,TWP}` carries no mutable aliasing (TWP is immutable) — no-op, like the
+# reverse `(::P, ::P)` above.
+populate_address_map_internal(m::AddressMap, ::TWP, ::Tuple{Vararg{TWP}}) = m
 
 fdata_type(::Type{<:TWP}) = NoFData
 
@@ -74,6 +77,30 @@ end
 @inline function lifted_type(::Val{N}, ::Type{TwicePrecision{P}}) where {N,P<:IEEEFloat}
     return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
 end
+
+# Forward seed/lift/unlift for the custom V `NTuple{N, TWP{P}}` (one TWP partial per lane),
+# mirroring reverse `zero_tangent_internal` / `randn_tangent_internal`. The generic
+# `@generated` struct-lift factory would build `TWP((NDual, NDual))` and hit the TWP
+# constructor's `Float64(::NDual)` (NDual has no `Float64` conversion), so seed the per-lane
+# tuple directly.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval @inline function $f(::Val{N}, ::TWP{F}, ::MaybeCache) where {N,F}
+        return ntuple(_ -> TWP{F}(zero(F), zero(F)), Val(N))
+    end
+end
+@inline function _randn_dual_internal(
+    ::Val{N}, rng::AbstractRNG, ::TWP{F}, ::MaybeCache
+) where {N,F}
+    return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
+end
+@inline lift(x::TWP{F}, ẋ::TWP{F}) where {F} = Lifted{TWP{F},1}(x, (ẋ,))
+# A TWP is conceptually a single number, so its width-1 V `Tuple{TWP}` is a leaf, not a
+# structural tuple. Override `_unlift_seed` (which both the top-level `unlift` and nested
+# fields — e.g. a `StepRangeLen`'s `ref`/`step` — route through) to read the lane directly,
+# bypassing the per-field tuple path that would index the scalar primal.
+@inline _unlift_seed(x::Lifted{P,1,Tuple{S}}, ::IdDict) where {P<:TWP,S<:TWP} = tangent(
+    x, 1
+)
 
 #
 # Rules. These are required for a lot of functionality in this case.
@@ -476,10 +503,13 @@ end
         x::Lifted{TwicePrecision{Float64},N,NTuple{N,TwicePrecision{Float64}}},
     ) where {N}
         _x = primal(x)
+        # `_exp_allowing_twice64` returns a `Float64` (not a `TwicePrecision`), so the output
+        # slot is a scalar `NDual`; the per-lane JVP `y * dx` (a `TwicePrecision`) projects to
+        # the `Float64` output tangent. Mirrors the reverse rule's `Float64` output cotangent.
         y = Base._exp_allowing_twice64(_x)
         x_parts = tangent(x)
-        dy = ntuple(k -> TwicePrecision{Float64}(y * x_parts[k]), Val(N))
-        return Lifted{TwicePrecision{Float64},N}(y, dy)
+        dy = ntuple(k -> Float64(y * x_parts[k]), Val(N))
+        return Lifted{Float64,N}(y, NDual{Float64,N}(y, dy))
     end
     function rrule!!(
         ::CoDual{typeof(Base._exp_allowing_twice64)}, x::CoDual{TwicePrecision{Float64}}
