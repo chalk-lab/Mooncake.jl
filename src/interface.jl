@@ -1769,12 +1769,31 @@ As with all functionality in Mooncake, `f` and `x` are returned to their origina
     return output_primal, output_friendly_tangent
 end
 
+# Guard the unfriendly tuple interface: a supplied tangent must be the internal tangent type
+# of its primal. The `typeof(t) <: tangent_type(typeof(p))` check folds away when it holds.
+@inline function _validate_internal_tangent(p, t)
+    typeof(t) <: tangent_type(typeof(p)) || throw(
+        ArgumentError(
+            "Tangent types do not match primal types: tangent $(typeof(t)) is not a " *
+            "$(tangent_type(typeof(p))) for primal $(typeof(p)). With " *
+            "`friendly_tangents=false`, supply internal tangents (e.g. " *
+            "`Mooncake.zero_tangent(x)`) or rebuild the cache with `friendly_tangents=true`.",
+        ),
+    )
+    return nothing
+end
+
 @inline function value_and_derivative!!(
     cache::FCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     input_tangents = tuple_map(last, fx)
+
+    # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
+    # primal-shaped tangents, so each supplied tangent must already be the internal tangent
+    # for its primal; otherwise `lift` below would fail with an opaque `MethodError`.
+    tuple_map(_validate_internal_tangent, input_primals, input_tangents)
 
     # One aliasing cache scoped to this input lift: a reverse rule captured in
     # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
