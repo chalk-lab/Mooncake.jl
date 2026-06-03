@@ -1052,15 +1052,6 @@ function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
     )
 end
 
-@generated function _fcache_gradient_lazy_workspace_ref(::Type{T}) where {T<:Tuple}
-    tangent_types = map(P -> :(tangent_type($P)), T.parameters)
-    workspace_type = Expr(:curly, :Tuple, tangent_types...)
-    # Keep the lazy gradient workspace concretely typed even before first use; otherwise
-    # `Ref{Any}` makes cached forward gradients inference-opaque. Do this without
-    # evaluating `zero_tangent` on the actual runtime inputs at cache-construction time.
-    return :(Ref{Union{Nothing,$workspace_type}}(nothing))
-end
-
 # Cache specs are compared again when a prepared cache is reused. The input type `T` is
 # encoded as a type parameter so that `_validate_prepared_cache` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
@@ -1167,75 +1158,73 @@ end
     )
 end
 
-# Bug fix note: forward-cache gradient seeding must walk the whole input tuple with an
-# identity cache, otherwise aliased mutable subobjects are over-counted and cycles recurse
-# forever.
-@inline dof(x) = dof(x, IdDict{Any,Any}())
-# Mutable/shared nodes are marked seen (`seen[x] = nothing`) before descending, so aliasing
-# contributes once and cycles terminate locally instead of recursing forever.
-@inline dof(::NoTangent, _seen::IdDict{Any,Any}) = 0
-# Packable leaf counts reuse the nfwd engine's slot vocabulary (`_nfwd_input_dof`), the
-# single source of truth for scalar-slot counts; the dedup wrapper around array leaves is
-# the gradient-specific extension (nfwd never dedups). IEEEFloat/Complex arrays have isbits
-# elements, which are always assigned, so the slot count equals `length`/`2length`.
-@inline function dof(x::IEEEFloat, ::IdDict{Any,Any})
-    return Nfwd._nfwd_input_dof(x)
-end
-@inline function dof(x::Complex{<:IEEEFloat}, ::IdDict{Any,Any})
-    return Nfwd._nfwd_input_dof(x)
-end
+# `dof(t)` counts the differentiable scalar degrees of freedom of a TANGENT `t`, so the
+# canonical non-differentiable `NoTangent` is 0 directly. Walk with an identity cache so
+# aliased mutable tangents contribute once and cyclic tangents terminate locally. Dense leaf
+# counts reuse the nfwd engine's slot vocabulary (`_nfwd_input_dof`, the single source of
+# truth); the dedup wrapper around array/mutable nodes is the gradient-specific extension
+# (nfwd never dedups). IEEEFloat/Complex array tangents are isbits and always assigned, so
+# the count equals `length`/`2length`.
+@inline dof(t) = dof(t, IdDict{Any,Any}())
+@inline dof(::NoTangent, ::IdDict{Any,Any}) = 0
+@inline dof(t::IEEEFloat, ::IdDict{Any,Any}) = Nfwd._nfwd_input_dof(t)
+@inline dof(t::Complex{<:IEEEFloat}, ::IdDict{Any,Any}) = Nfwd._nfwd_input_dof(t)
+# `Union{}`-eltype arrays (e.g. an empty `Memory{Union{}}` reached while walking a closure
+# tangent like the HVP `grad_f`'s `MistyClosureTangent`) carry no differentiable content; 0.
+# More specific than the float/complex-array and generic-array methods, so no ambiguity.
+@inline dof(::AbstractArray{Union{}}, ::IdDict{Any,Any}) = 0
 @inline function dof(
-    x::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
+    t::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
 )
-    haskey(seen, x) && return 0
-    seen[x] = nothing
-    return Nfwd._nfwd_input_dof(x)
+    haskey(seen, t) && return 0
+    seen[t] = nothing
+    return Nfwd._nfwd_input_dof(t)
 end
-@inline function dof(x::AbstractArray, seen::IdDict{Any,Any})
-    tangent_type(typeof(x)) == NoTangent && return 0
-    haskey(seen, x) && return 0
-    seen[x] = nothing
+@inline function dof(t::AbstractArray, seen::IdDict{Any,Any})
+    haskey(seen, t) && return 0
+    seen[t] = nothing
     total = 0
-    if x isa _BuiltinArrays
-        for i in eachindex(x)
-            isassigned(x, i) || continue
-            total += dof(x[i], seen)
+    if t isa _BuiltinArrays
+        for i in eachindex(t)
+            isassigned(t, i) || continue
+            total += dof(t[i], seen)
         end
     else
-        for xi in x
-            total += dof(xi, seen)
+        for ti in t
+            total += dof(ti, seen)
         end
     end
     return total
 end
-@inline function dof(x::Tuple, seen::IdDict{Any,Any})
+@inline function dof(t::Tuple, seen::IdDict{Any,Any})
     total = 0
-    for xi in x
-        total += dof(xi, seen)
+    for ti in t
+        total += dof(ti, seen)
     end
     return total
 end
-@inline function dof(x::NamedTuple, seen::IdDict{Any,Any})
+@inline function dof(t::NamedTuple, seen::IdDict{Any,Any})
     total = 0
-    for xi in values(x)
-        total += dof(xi, seen)
+    for ti in values(t)
+        total += dof(ti, seen)
     end
     return total
 end
-@inline function dof(x::P, seen::IdDict{Any,Any}) where {P}
-    tangent_type(P) == NoTangent && return 0
-    if x isa AbstractArray || Base.ismutabletype(P)
-        haskey(seen, x) && return 0
-        seen[x] = nothing
+@inline function dof(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
+    return is_init(t) ? dof(val(t), seen) : 0
+end
+# Generic fallback for any other tangent struct — `Tangent`/`MutableTangent` (whose single
+# `fields` NamedTuple recurses), but also `MistyClosureTangent` and other custom/closure
+# tangents from e.g. the HVP `grad_f`. Walk its fields with mutable-node dedup so aliased and
+# cyclic tangents are handled uniformly.
+@inline function dof(t::P, seen::IdDict{Any,Any}) where {P}
+    if Base.ismutabletype(P)
+        haskey(seen, t) && return 0
+        seen[t] = nothing
     end
     total = 0
-    inits = always_initialised(P)
     for n in 1:fieldcount(P)
-        if isdefined(x, n)
-            total += dof(getfield(x, n), seen)
-        elseif inits[n]
-            _throw_uninit_field_error(P, n)
-        end
+        isdefined(t, n) && (total += dof(getfield(t, n), seen))
     end
     return total
 end
@@ -1517,7 +1506,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # scalar/array args); other inputs (structs, tuples, complex, …) have no native chunk
     # rule and run width-1, so pin their chunk width to 1 here instead of re-deciding
     # packability per chunk at runtime.
-    gradient_chunk_size = let total_dof = dof(fx)
+    gradient_chunk_size = let total_dof = dof(tuple_map(zero_tangent, fx))
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         _chunk_packable(fx) ? min(total_dof, requested) : 1
     end
@@ -1573,7 +1562,10 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         nothing,
         output_primal,
         nothing,
-        _fcache_gradient_lazy_workspace_ref(typeof(fx)),
+        # Lazy gradient workspace, kept concretely typed (not `Ref{Any}`, which would make
+        # cached forward gradients inference-opaque) without evaluating `zero_tangent` on the
+        # runtime inputs here.
+        Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(nothing),
         gradient_chunk_size,
         gradient_chunk_size_auto,
         chunk_rule,
@@ -1611,7 +1603,8 @@ function _fcache_gradient_chunked!!(cache::FCache, input_primals::Tuple)
             zeroed
         end
     end
-    total_dof = dof(input_primals)
+    # `dof` walks the tangent; reuse the freshly-built/zeroed workspace tangent.
+    total_dof = dof(native_gradients)
 
     if total_dof == 0
         output = cache.single_rule(tuple_map(lift, input_primals, native_gradients)...)
