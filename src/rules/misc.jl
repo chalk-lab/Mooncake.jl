@@ -551,7 +551,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # mutable structs
         (true, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0), Val(:a)),
         (false, :none, (lb=1e-3, ub=350), lgetfield, MutableFoo(5.0, randn(5)), Val(:b)),
-        (false, :none, nothing, lgetfield, UInt8, Val(:name)),
+        # `lgetfield(UInt8, Val(:name))` returns a `Core.TypeName` whose `.module` is a `Module`,
+        # which `test_rule`'s output deepcopy cannot handle; the derivative is trivially
+        # non-differentiable and `:super`/`:hash`/`:flags` cover the `DataType` path.
         (false, :none, nothing, lgetfield, UInt8, Val(:super)),
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
         (false, :none, nothing, lgetfield, UInt8, Val(:hash)),
