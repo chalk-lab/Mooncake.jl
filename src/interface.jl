@@ -1231,15 +1231,6 @@ end
     return total
 end
 
-# fcache gradient seeding: the `slot`-th standard-basis reverse tangent. Built from the
-# cycle/alias-aware forward seed — `basis_lifted!!` over `zero_lifted` sets the standard
-# basis at `slot`, then `unlift` converts back to the reverse tangent the chunked-derivative
-# lift and gradient scatter consume. `basis_lifted!!` is the single seed walk (shared with
-# forward mode); this is its width-1 reverse-tangent adapter.
-@inline _make_seed_tangent(x, slot::Int) = last(
-    unlift(basis_lifted!!(zero_lifted(Val(1), x), (slot,)))
-)
-
 # Snapshot/restore for the chunked gradient/Jacobian sweeps. Forward slots alias the user's
 # input (`primal(slot) === x`), and a sweep re-runs `f` once per chunk on that shared storage.
 # An in-place-mutating `f` would otherwise compound its mutation across chunks and corrupt
@@ -1410,8 +1401,9 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     #  - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single rule
     #    for `W == 1`) and read lane `k`'s directional derivative as `coeff = tangent(out, k)`;
     #  - scatter `coeff * reverse_tangent` into the gradient, where the reverse basis tangent
-    #    per lane comes from `_make_seed_tangent` (a scalar output makes each lane's derivative
-    #    the coefficient for its seeded basis direction).
+    #    per lane is the width-1 `basis_lifted!!` seed at that scalar dof, `unlift`ed back to a
+    #    reverse tangent (a scalar output makes each lane's derivative the coefficient for its
+    #    seeded basis direction).
     # `W == gradient_chunk_size ≤ total_dof`, so the first chunk is always full width; it is
     # peeled out to keep the scalar `y` concretely typed.
     W = cache.gradient_chunk_size
@@ -1420,7 +1412,9 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the end.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    first_lanes = ntuple(lane -> _make_seed_tangent(input_primals, lane), W)
+    first_lanes = ntuple(
+        lane -> last(unlift(basis_lifted!!(zero_lifted(Val(1), input_primals), (lane,)))), W
+    )
     first_tangents = ntuple(i -> ntuple(lane -> first_lanes[lane][i], W), nfields)
     first_vs = tangent(
         basis_lifted!!(zero_lifted(Val(W), input_primals), ntuple(identity, W))
@@ -1445,9 +1439,14 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     end
     for start_slot in (1 + W):W:total_dof
         _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-        lanes = ntuple(lane -> _make_seed_tangent(input_primals, start_slot + lane - 1), W)
-        input_tangents = ntuple(i -> ntuple(lane -> lanes[lane][i], W), nfields)
         slots = ntuple(lane -> start_slot + lane - 1, W)
+        lanes = ntuple(
+            lane -> last(
+                unlift(basis_lifted!!(zero_lifted(Val(1), input_primals), (slots[lane],))),
+            ),
+            W,
+        )
+        input_tangents = ntuple(i -> ntuple(lane -> lanes[lane][i], W), nfields)
         vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
         lifted = ntuple(i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields)
         output = value_and_derivative!!(cache, lifted...)
@@ -1661,20 +1660,6 @@ As with all functionality in Mooncake, `f` and `x` are returned to their origina
     return output_primal, output_friendly_tangent
 end
 
-# Guard the unfriendly tuple interface: a supplied tangent must be the internal tangent type
-# of its primal. The `typeof(t) <: tangent_type(typeof(p))` check folds away when it holds.
-@inline function _validate_internal_tangent(p, t)
-    typeof(t) <: tangent_type(typeof(p)) || throw(
-        ArgumentError(
-            "Tangent types do not match primal types: tangent $(typeof(t)) is not a " *
-            "$(tangent_type(typeof(p))) for primal $(typeof(p)). With " *
-            "`friendly_tangents=false`, supply internal tangents (e.g. " *
-            "`Mooncake.zero_tangent(x)`) or rebuild the cache with `friendly_tangents=true`.",
-        ),
-    )
-    return nothing
-end
-
 @inline function value_and_derivative!!(
     cache::FCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,OP,FG,GW,CF,S<:Tuple,M}
@@ -1684,8 +1669,19 @@ end
 
     # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
     # primal-shaped tangents, so each supplied tangent must already be the internal tangent
-    # for its primal; otherwise `lift` below would fail with an opaque `MethodError`.
-    tuple_map(_validate_internal_tangent, input_primals, input_tangents)
+    # for its primal; otherwise `lift` below would fail with an opaque `MethodError`. The
+    # `typeof(t) <: tangent_type(typeof(p))` check folds away when it holds.
+    tuple_map(input_primals, input_tangents) do p, t
+        typeof(t) <: tangent_type(typeof(p)) || throw(
+            ArgumentError(
+                "Tangent types do not match primal types: tangent $(typeof(t)) is not a " *
+                "$(tangent_type(typeof(p))) for primal $(typeof(p)). With " *
+                "`friendly_tangents=false`, supply internal tangents (e.g. " *
+                "`Mooncake.zero_tangent(x)`) or rebuild the cache with `friendly_tangents=true`.",
+            ),
+        )
+        nothing
+    end
 
     # One aliasing cache scoped to this input lift: a reverse rule captured in
     # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
