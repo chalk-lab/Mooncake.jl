@@ -1293,8 +1293,7 @@ function generate_ir(
     # Grab code associated to the primal.
     ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
-        # Pins valid_worlds to a single world so verify_ir's GlobalRef const-binding
-        # check passes for all currently-defined bindings without patching the IR.
+        # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         ir = set_valid_world!(ir, interp.world)
     end
     Treturn = compute_ir_rettype(ir)
