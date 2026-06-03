@@ -318,12 +318,18 @@ end
 # (`T` is already the full target `Ptr` type, e.g. `Ptr{ComplexF64}` — not wrapped
 # again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
 # the generic frule above, which throws (it must not be silently bypassed here).
+# Exception: an AoS dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose
+# element stride differs from the re-typed primal pointer's, so keep its type — a downstream
+# `unsafe_copyto!` must copy that stride. Only raw/scalar lanes (`Ptr{Nothing}`,
+# `Ptr{<:IEEEFloat}`) re-type to the target.
 @inline function frule!!(
     ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
 ) where {Nw,T<:Ptr,P<:Ptr}
-    return Lifted{T,Nw}(
-        bitcast(T, primal(x)), ntuple(k -> bitcast(T, tangent(x)[k]), Val(Nw))
-    )
+    lanes = ntuple(Val(Nw)) do k
+        p = tangent(x)[k]
+        eltype(typeof(p)) <: NDualArray ? p : bitcast(T, p)
+    end
+    return Lifted{T,Nw}(bitcast(T, primal(x)), lanes)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat

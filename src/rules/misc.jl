@@ -203,10 +203,23 @@ end
     # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff.
     @inline _get_lifted_field(V::Array, name::Symbol) =
         name === :ref ? getfield(V, :ref) : NoDual()
-    # AoS memory-ref V (a plain `MemoryRef` into an AoS V `Memory`): `.mem`
-    # projects to the AoS `Memory` V; `.ptr_or_offset` is a non-diff `Ptr`.
-    @inline _get_lifted_field(V::MemoryRef, name::Symbol) =
-        name === :mem ? getfield(V, :mem) : NoDual()
+    # AoS memory-ref V (a plain `MemoryRef` into an AoS V `Memory`): `.mem` projects to the AoS
+    # `Memory` V; `.ptr_or_offset` is the raw data pointer into that V `Memory`, typed as its AoS
+    # dual element (e.g. `Ptr{NDualArray}`) so a downstream `unsafe_copyto!` copies the correct
+    # per-element stride. Wrapped in a 1-tuple — the canonical per-lane `Ptr` V (width-1 AoS).
+    # Mirrors the 1.10 `jl_array_ptr` AoS frule, which emits `Ptr{NDualArray}` directly; without
+    # this the 1.12 `pointer(::Vector{<diff non-float>})` path drops the tangent (`NoDual`).
+    @inline function _get_lifted_field(V::MemoryRef, name::Symbol)
+        name === :mem && return getfield(V, :mem)
+        # Only a differentiable element (AoS dual `Memory`, not `Memory{NoDual}`) carries a
+        # tangent pointer; a non-differentiable element's pointer stays `NoDual`.
+        if name === :ptr_or_offset
+            E = eltype(getfield(V, :mem))
+            E === NoDual && return NoDual()
+            return (Base.bitcast(Ptr{E}, getfield(V, :ptr_or_offset)),)
+        end
+        return NoDual()
+    end
     # AoS `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
     # non-diff metadata; element access goes through `memoryrefget`, not here.
     @inline _get_lifted_field(::Memory, _) = NoDual()
