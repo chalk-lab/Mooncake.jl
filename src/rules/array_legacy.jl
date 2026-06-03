@@ -395,14 +395,16 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(unsafe_copyto!),Array{T},Any,Array{T},Any,Any
 } where {T}
+# `unsafe_copyto!` copies `n` elements linearly, so dest and src dimensionalities need not
+# match (e.g. copying a 0-dim `Array{T,0}` into a `Vector{T}`); bind them separately.
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),N},
-    dest::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+    dest::Lifted{Array{T,Dd},N,NDualArray{T,N,Dd,Array{T,Dd},NDual{T,N}}},
     doffs::Lifted,
-    src::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
+    src::Lifted{Array{T,Ds},N,NDualArray{T,N,Ds,Array{T,Ds},NDual{T,N}}},
     soffs::Lifted,
     n::Lifted,
-) where {N,T<:IEEEFloat,D}
+) where {N,T<:IEEEFloat,Dd,Ds}
     _n = primal(n)
     _doffs = primal(doffs)
     _soffs = primal(soffs)
@@ -761,6 +763,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
         (false, :stability, nothing, sizehint!, randn(5), 10),
         (false, :stability, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
+        # Mismatched dest/src dimensionality (0-dim source into a Vector).
+        (false, :none, nothing, unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
         (
             false,
             :stability,
