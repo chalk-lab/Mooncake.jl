@@ -172,8 +172,13 @@ function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     # (read from any arg's type parameter — all slots share the rule's build width).
     W = _lifted_width(first(args))
     group_primal = map(primal, args[nargs:end])
-    group_v = map(tangent, args[nargs:end])
-    grouped_args = Lifted{_typeof(group_primal),W}(group_primal, group_v)
+    GP = _typeof(group_primal)
+    # An all-non-differentiable (or empty) vararg group has `dual_type === NoDual`; its slot
+    # carries a single `NoDual`, not the element-wise `Tuple{NoDual,…}`. Collapse to match the
+    # canonical V (otherwise the grouped `Lifted`'s V mismatches the rule's slot typeassert,
+    # e.g. in debug-mode forward-over-reverse where the reverse args are non-diff CoDuals).
+    group_v = dual_type(Val(W), GP) === NoDual ? NoDual() : map(tangent, args[nargs:end])
+    grouped_args = Lifted{GP,W}(group_primal, group_v)
     return (args[1:(nargs - 1)]..., grouped_args)
 end
 
