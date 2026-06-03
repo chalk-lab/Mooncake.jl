@@ -148,6 +148,28 @@ function Mooncake.rrule!!(
     return CoDual(y, dy), kron_pb!!
 end
 
+# Forward analogue of the `kron` rrule above: make `kron` a forward primitive too (mirrors the
+# reverse one declared for `ReverseMode`). `arrayify` canonicalises each lane's tangent through the
+# input wrapper (Matrix/SubArray/Triangular/…) to a dense partial, then the bilinear product rule
+# gives the JVP per lane: `d(kron(x1,x2))ₖ = kron(dx1ₖ, x2) + kron(x1, dx2ₖ)`. Restricted to real
+# `BlasFloat` (what `arrayify` and the real `NDualArray{…,NDual{T,N}}` packing support; the tested
+# precisions). Float16 / complex `kron` stay derived in forward mode.
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+} where {T<:Union{Float32,Float64}}
+function Mooncake.frule!!(
+    ::Lifted{typeof(kron),N},
+    x1::Lifted{<:AbstractVecOrMat{T}},
+    x2::Lifted{<:AbstractVecOrMat{T}},
+) where {N,T<:Union{Float32,Float64}}
+    px1, dx1s = arrayify(x1)
+    px2, dx2s = arrayify(x2)
+    y = kron(px1, px2)
+    partials = ntuple(k -> kron(dx1s[k], px2) + kron(px1, dx2s[k]), Val(N))
+    A = typeof(y)
+    return Lifted{A,N}(y, NDualArray{T,N,2,A,NDual{T,N}}(y, partials))
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sum_sizes = [(11,), (11, 3)]

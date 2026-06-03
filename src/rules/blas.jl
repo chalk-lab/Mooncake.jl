@@ -150,6 +150,12 @@ end
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer) = Symmetric(
     _arrayify_lane(x.data, V.value.data, lane), Symbol(x.uplo)
 )
+@inline _arrayify_lane(x::UpperTriangular, V::ImmutableDual, lane::Integer) = UpperTriangular(
+    _arrayify_lane(x.data, V.value.data, lane)
+)
+@inline _arrayify_lane(x::LowerTriangular, V::ImmutableDual, lane::Integer) = LowerTriangular(
+    _arrayify_lane(x.data, V.value.data, lane)
+)
 @inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer) where {T} = reinterpret(
     T, _arrayify_lane(x.parent, V.value.parent, lane)
 )
