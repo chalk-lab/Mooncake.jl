@@ -19,12 +19,8 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, true, logistic, P(0.5)),
                 (:allocs, true, logistic, P(1000.0)),
                 (:allocs, false, logit, P(0.3)),
-                # 4x < 1 selects logit's `-log(inv(x) - 1)` branch (logit rewritten in
-                # LogExpFunctions v1); the case above covers the `2*atanh(2x - 1)` branch
                 (:allocs, false, logit, P(0.1)),
                 (:allocs, false, logcosh, P(1.5)),
-                # small |x| (< 0.7373) hits the `logcosh` polynomial kernel added in
-                # LogExpFunctions v1, and checks it against Mooncake's NDual `logcosh`
                 (:allocs, false, logcosh, P(0.3)),
                 (:allocs, false, logabssinh, P(0.3)),
                 (:allocs, false, log1psq, P(0.3)),
@@ -33,8 +29,6 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log2mexp, P(0.1)),
                 (:allocs, false, logexpm1, P(0.1)),
                 (:allocs, false, log1pmx, -P(0.95)),
-                # -0.425 < x < 0.4 hits the `log1pmx` polynomial kernel; `_log1pmx_ker`
-                # was rewritten in LogExpFunctions v1 and gained a Float32 path
                 (:allocs, false, log1pmx, P(0.1)),
                 (:allocs, false, logmxp1, P(0.02)),
                 (:allocs, true, logaddexp, -P(0.5), P(0.4)),
@@ -84,9 +78,6 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, false, log1mlogistic, -P(0.9)),
                 (:allocs, false, logit1mexp, -P(0.6)),
             ]
-            # `logabstanh` is new in LogExpFunctions v1; test it only when available, since
-            # the [compat] entry still permits 0.3, which does not define this function.
-            # 8|x| < 3 selects the `log(tanh(|x|))` branch, otherwise the `log1p` branch.
             @static if isdefined(LogExpFunctions, :logabstanh)
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(0.3)))
                 push!(cases, (:allocs, false, LogExpFunctions.logabstanh, P(1.5)))
