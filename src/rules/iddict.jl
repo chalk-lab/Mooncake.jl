@@ -236,6 +236,30 @@ function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end
 
+# `_new_(IdDict{K,V}, ht, count, ndel)` shows up when an `IdDict{K,V}()` construction is
+# inlined and then forward-differentiated (forward-over-reverse, e.g.
+# `value_gradient_and_hessian!!`). The inlined `:new` bypasses the `Type{IdDict}()`
+# constructor rule above and falls through to the generic `_new_` rules, which build the
+# tangent field-wise as `tangent_type(P)(NamedTuple(...))`; for `IdDict` that reduces to
+# `IdDict(itr)` over the uninitialised `ht` `Memory`, throwing `UndefRefError`. Such a
+# `_new_` always builds an empty `IdDict` (`count == 0`; entries arrive later via
+# `setindex!`), so the tangent is an empty `IdDict{K,tangent_type(V)}()`, matching the
+# constructor rule above.
+function frule!!(
+    ::Dual{typeof(_new_)}, ::Dual{Type{P}}, x::Vararg{Dual,N}
+) where {K,V,P<:IdDict{K,V},N}
+    y = _new_(P, tuple_map(primal, x)...)
+    @assert getfield(y, :count) == 0 "_new_ rule for IdDict assumes an empty dict"
+    return Dual(y, IdDict{K,tangent_type(V)}())
+end
+function rrule!!(
+    f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
+) where {K,V,P<:IdDict{K,V},N}
+    y = _new_(P, tuple_map(primal, x)...)
+    @assert getfield(y, :count) == 0 "_new_ rule for IdDict assumes an empty dict"
+    return CoDual(y, IdDict{K,tangent_type(V)}()), NoPullback(f, p, x...)
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
     test_cases = Any[
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
@@ -245,6 +269,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
         (false, :none, nothing, IdDict{Any,Any}),
+        # `_new_` on the empty `IdDict` shell (covers the forward-over-reverse path that
+        # inlines `IdDict()` construction to `:new`). `interface_only` since the `ht`
+        # `Memory` arg has no meaningful finite-difference perturbation.
+        (
+            true,
+            :none,
+            nothing,
+            _new_,
+            IdDict{Any,Any},
+            getfield(IdDict{Any,Any}(), :ht),
+            0,
+            0,
+        ),
     ]
     memory = Any[]
     return test_cases, memory

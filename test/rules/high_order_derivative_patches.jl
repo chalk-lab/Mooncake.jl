@@ -117,6 +117,15 @@ end
     end
 end
 
+# Wrapper whose `tangent_type` is `NoTangent`. Differentiating a closure that captures a
+# `Base.RefValue` through such a wrapper used to trip the `_new_`/`IdDict`
+# forward-over-reverse bug.
+struct NoTangentWrap{F}
+    f::F
+end
+(w::NoTangentWrap)(x) = w.f(x)
+Mooncake.tangent_type(::Type{<:NoTangentWrap}) = Mooncake.NoTangent
+
 # Previous tests use build_f/rrule,
 # here we use the public interface directly.
 @testset "forward over reverse (public interface)" begin
@@ -152,6 +161,21 @@ end
         H = compute_hessian(rosen, z; debug_mode=true)
         expected_H = [1250.0 -480.0; -480.0 200.0]
         @test H ≈ expected_H rtol = 1e-10
+    end
+
+    @testset "captured Ref under NoTangent-typed wrapper (regression)" begin
+        # Used to throw `UndefRefError`: forward-differentiating the reverse rule reached
+        # an inlined internal `IdDict()` cache as a `_new_` node and built a tangent from
+        # an uninitialised `Memory`. Only these prepared-cache APIs on the default
+        # (non-debug) path hit it; the `compute_hessian` helper above does not.
+        # `f(x) = 3 * sum(abs2, x)`, so `∇²f = 6 * I`.
+        mkclosure(r) = x -> r[] * sum(abs2, x)
+        f = NoTangentWrap(mkclosure(Ref(3.0)))
+        x = [1.0, 2.0]
+        _, _, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
+        @test H ≈ [6.0 0.0; 0.0 6.0] rtol = 1e-10
+        _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, x, [1.0, 0.0])
+        @test hvp ≈ [6.0, 0.0] rtol = 1e-10
     end
 end
 

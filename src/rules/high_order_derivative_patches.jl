@@ -309,6 +309,39 @@ end
     end
 end
 
+# `jl_alloc_genericmemory` is the `Memory` allocation foreigncall. Like
+# `jl_genericmemory_owner` above, it gets exposed when a reverse-mode primitive is inlined
+# while the forward rule is built -- e.g. the internal `IdDict()` cache on the
+# `zero_tangent_internal` path allocates a `Memory{Any}` -- so forward-over-reverse needs
+# an `frule!!` for it. On v1.12+ `Memory` allocation lowers to `Core.memorynew` (handled
+# in `memory.jl`), so this foreigncall only appears on v1.11.
+#
+# Unlike `jl_genericmemory_owner`, no `rrule!!` is needed: in reverse mode `Memory` is
+# allocated through the `Memory{P}(undef, n)` constructor, which is itself a primitive
+# (see `memory.jl`) and so is never inlined down to this `ccall`. The raw foreigncall is
+# therefore only ever reached when a forward rule is built over a reverse rule.
+@static if VERSION >= v"1.11-"
+    @generated function frule!!(
+        ::Dual{typeof(_foreigncall_)},
+        ::Dual{Val{:jl_alloc_genericmemory}},
+        ::Dual{Val{Ref{Memory{P}}}},
+        ::Dual{Tuple{Val{Any},Val{Int}}},
+        ::Dual{Val{0}},
+        ::Dual{Val{:ccall}},
+        ::Dual{Type{Memory{P}}},
+        n::Dual{Int},
+        args::Vararg{Dual},
+    ) where {P}
+        T = tangent_type(P)
+        return quote
+            m = primal(n)
+            y = ccall(:jl_alloc_genericmemory, Ref{Memory{$P}}, (Any, Int), Memory{$P}, m)
+            dy = ccall(:jl_alloc_genericmemory, Ref{Memory{$T}}, (Any, Int), Memory{$T}, m)
+            return Dual(y, dy)
+        end
+    end
+end
+
 # This rule is potentially unnecessary if fixes are made elsewhere,
 # but currently fixes differentiating through zero_tangent_internal for Arrays.
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
