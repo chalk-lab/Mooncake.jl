@@ -741,11 +741,11 @@ function rrule!!(
     return CoDual(view(primal(x), _inds...), view(x.dx, _inds...)), _nopb(Val(M + 2))
 end
 
-# `_new_` rule for the DataRef-based inner CuArray constructor (used by views and
-# similar operations). The tangent reuses the DataRef from the input tangent so that
-# gradient accumulation propagates automatically.
-# Forward-mode (Lifted) parallel is deferred — porting requires preserving per-lane
-# DataRef info in the lgetfield(`.data`) result, which currently returns NoDual.
+# Reverse `_new_` rule for the DataRef-based inner CuArray constructor. The tangent reuses the
+# DataRef from the input tangent so gradient accumulation propagates automatically. Forward views
+# go through the dedicated `view` frule above (not this constructor), so no forward parallel is
+# needed for them; a forward `_new_(CuArray, DataRef, …)` would require the DataRef to carry a
+# per-lane forward tangent (`lgetfield(.data)` returns NoDual) and is not implemented.
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{P}},
