@@ -172,7 +172,7 @@ Mooncake.tangent_type(::Type{<:NoTangentWrap}) = Mooncake.NoTangent
         x = [1.0, 2.0]
         _, _, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
         @test H ≈ [6.0 0.0; 0.0 6.0] rtol = 1e-10
-        _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, x, [1.0, 0.0])
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0, 0.0], x)
         @test hvp ≈ [6.0, 0.0] rtol = 1e-10
     end
 end
