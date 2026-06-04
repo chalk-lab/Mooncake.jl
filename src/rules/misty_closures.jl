@@ -77,12 +77,47 @@ end
     () -> lift(captures, ct, c), c, captures
 )
 
+# Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
+# DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged.
+@inline function tangent(
+    x::Lifted{P,N,MistyClosureTangent}, lane::Integer
+) where {P<:MistyClosure,N}
+    v = x.value
+    return MistyClosureTangent(tangent(v.captures_tangent, lane), v.dual_callable)
+end
+
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(zero_tangent_internal(p.oc.captures, d), _dual_mc(p))
 end
 
 function randn_tangent_internal(rng::AbstractRNG, p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(randn_tangent_internal(rng, p.oc.captures, d), _dual_mc(p))
+end
+
+# Forward-mode cache-aware seed factories. Like Complex/Memory, a MistyClosure has
+# fields but its own canonical V (`MistyClosureTangent`), not the generic structural
+# lift — so the cache-aware `_*_dual_internal` must build the tangent here rather than
+# recurse into the closure's internals (the `OpaqueClosure`'s `Ptr` and `captures::Any`
+# fields, which have no coherent V). Mirrors the reverse factories above; the forward
+# `captures_tangent` is a `Lifted` slot (as built by `lift`), cached by captures identity
+# so a reverse rule's shared `fwds_oc`/`pb_oc` captures get one tangent buffer.
+for internal in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $internal(w::Val{N}, p::MistyClosure, d::MaybeCache) where {N}
+        cap = p.oc.captures
+        haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p))
+        lc = Lifted{typeof(cap),N}(cap, $internal(w, cap, d))
+        d[cap] = lc
+        return MistyClosureTangent(lc, _dual_mc(p))
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, p::MistyClosure, d::MaybeCache
+) where {N}
+    cap = p.oc.captures
+    haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p))
+    lc = Lifted{typeof(cap),N}(cap, _randn_dual_internal(w, rng, cap, d))
+    d[cap] = lc
+    return MistyClosureTangent(lc, _dual_mc(p))
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:MistyClosureTangent}
