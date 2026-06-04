@@ -590,16 +590,16 @@ end
 # below, which must keep it `Tuple{}` to terminate the recursion.)
 @foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = NoDual
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
-    # Non-concrete tuples (e.g. `Tuple{Vararg{T}}`, abstract element types) widen
-    # to `Any`, mirroring `tangent_type`. Without this the head/tail recursion
-    # never terminates on a `Vararg` tail (`tuple_type_tail` is a fixed point).
-    isconcretetype(P) || return Any
     # Whole-tuple collapse (mirror reverse `tangent_type(P) === NoTangent`; the invariant
-    # `dual_type(P) === NoDual` iff `tangent_type(P) === NoTangent`) happens ONLY here at the top.
-    # The element-wise build (`_dual_tuple_v`) must keep tails as `Tuple` so they can be
-    # `tuple_type_cons`'d — a collapsed `NoDual` tail cannot. A non-differentiable *element* still
-    # collapses to `NoDual` via its own `dual_type` (consing `NoDual` as a head element is fine).
+    # `dual_type(P) === NoDual` iff `tangent_type(P) === NoTangent`). Checked FIRST so a
+    # non-concrete-but-non-differentiable tuple — e.g. `Tuple{Type{Float64},Type{Float64}}`,
+    # whose elements are non-diff `Type`s — collapses to `NoDual`, matching `tangent_type`.
     tangent_type(P) === NoTangent && return NoDual
+    # Only a `Vararg` tuple must widen to `Any`: its `tuple_type_tail` is a fixed point, so the
+    # head/tail `_dual_tuple_v` recursion would not terminate. A fixed-length tuple — even one
+    # with abstract elements — recurses finitely and builds a per-element V (each element's own
+    # `dual_type` collapses non-diff elements to `NoDual`, which conses fine as a head element).
+    Base.isvatuple(P) && return Any
     return _dual_tuple_v(Val(N), P)
 end
 # Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
