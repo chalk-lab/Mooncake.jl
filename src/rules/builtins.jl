@@ -978,6 +978,10 @@ __vec_to_tuple(v::Vector) = Tuple(v)
     ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,<:AbstractVector}
 ) where {Nw}
     x = __vec_to_tuple(primal(v))
+    # An all-non-differentiable splat (e.g. a permutation `Vector{Int}`, whose V is
+    # `Vector{NoDual}`) yields a tuple with `dual_type === NoDual`; build whole `NoDual`
+    # to match, not the element-wise `Tuple{NoDual,…}` the consumer slot would reject.
+    dual_type(Val(Nw), typeof(x)) === NoDual && return Lifted{typeof(x),Nw}(x, NoDual())
     return Lifted{typeof(x),Nw}(x, Tuple(tangent(v)))
 end
 
