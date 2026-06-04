@@ -29,6 +29,7 @@ zero_dual(x) = Dual(x, zero_tangent(x))
 randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 
 @unstable function dual_type(::Type{P}) where {P}
+    @isdefined(P) || return Dual
     P == Union{} && return Union{}
     P == DataType && return Dual
     P isa Union && return Union{dual_type(P.a),dual_type(P.b)}
