@@ -620,7 +620,12 @@ end
     # and it matches the value the forward machinery actually produces for
     # non-differentiable kwargs/config flowing through rule construction.
     tangent_type(NamedTuple{names,T}) === NoTangent && return NoDual
-    return NamedTuple{names,dual_type(Val(N), T)}
+    # Mirror `tangent_type(NamedTuple)`: an abstract field (e.g. `parts::Any` in a reverse
+    # `MutableTangent` NamedTuple flowing through the forward-over-reverse HVP path) makes
+    # `dual_type(Val(N), T)` non-concrete (`Any`), and `NamedTuple{names, Any}` is invalid
+    # (the 2nd param must be `<:Tuple`). Widen to `Any` in that case, matching `tangent_type`.
+    DT = dual_type(Val(N), T)
+    return isconcretetype(DT) ? NamedTuple{names,DT} : Any
 end
 # `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
 # entry: N parallel partial pointers, one per lane. Matches reverse-mode
