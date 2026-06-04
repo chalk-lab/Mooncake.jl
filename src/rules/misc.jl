@@ -142,6 +142,11 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}
 ) where {Nw,f}
     primal_field = getfield(primal(x), f)
+    # A non-differentiable parent (`tangent(x) === NoDual()`) yields a non-differentiable field,
+    # but its forward V is the field's *canonical* zero V — `NoDual` for the usual scalars, yet
+    # `Vector{Any}` for a `SimpleVector` field (e.g. `lgetfield(::DataType, Val(:parameters))`).
+    # `uninit_lifted` builds that canonical slot (mirrors the reverse non-diff `getfield` path).
+    tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
@@ -284,6 +289,8 @@ end
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, ::Lifted{Val{order}}
 ) where {Nw,f,order}
     primal_field = getfield(primal(x), f, order)
+    # See the 2-arg `lgetfield` frule: canonical zero V for a non-differentiable parent.
+    tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end

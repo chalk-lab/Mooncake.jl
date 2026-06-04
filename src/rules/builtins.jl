@@ -1206,7 +1206,13 @@ function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {
     y = getfield(primal(x), _name)
     P = _typeof(primal(x))
     if tangent_type(P) == NoTangent
-        return Lifted{_typeof(y),Nw}(y, NoDual())
+        # A non-differentiable parent yields a non-differentiable field, but its forward V is
+        # the field's *canonical* zero V — `NoDual` for the usual scalars, yet `Vector{Any}`
+        # for a `SimpleVector` field (e.g. `getfield(::DataType, :parameters)`). Blanket
+        # `NoDual()` here produced a non-canonical `Lifted{SimpleVector,…,NoDual}` that the svec
+        # consumers reject. `uninit_lifted` builds the canonical slot (mirrors the reverse
+        # `uninit_fcodual` used by the corresponding `rrule!!`).
+        return uninit_lifted(Val(Nw), y)
     else
         return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
@@ -1219,7 +1225,9 @@ function frule!!(
     y = getfield(primal(x), _name, _inbounds)
     P = _typeof(primal(x))
     if tangent_type(P) == NoTangent
-        return Lifted{_typeof(y),Nw}(y, NoDual())
+        # See the 2-arg `getfield` frule: canonical zero V (handles a `SimpleVector` field
+        # whose V is `Vector{Any}`, not `NoDual`).
+        return uninit_lifted(Val(Nw), y)
     else
         return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
