@@ -87,6 +87,10 @@ import Mooncake:
     ImmutableDual,
     MutableDual,
     zero_lifted,
+    _zero_dual_internal,
+    _uninit_dual_internal,
+    _randn_dual_internal,
+    MaybeCache,
     _typeof
 
 import Mooncake.TestUtils:
@@ -247,6 +251,29 @@ end
 ) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
     partials = ntuple(_ -> A(randn(rng, Complex{R}, size(x)...)), Val(N))
     return NDualArray{Complex{R},N,D,A}(x, partials)
+end
+# Cache-aware seed delegations: a `CuArray` has a custom `NDualArray` V, so the cache-aware
+# `_*_dual_internal` must delegate to the cache-free factory above (like core's `Array`
+# delegation) rather than fall to the generic struct-lift @generated, which would recurse into
+# CuArray's internal `DataRef`/`Ptr` fields. Register by primal identity so aliased CuArrays
+# (e.g. from `reshape`/`view`) share one V.
+const _CuDualArray = Union{CuArray{<:IEEEFloat},CuArray{<:Complex{<:IEEEFloat}}}
+for (factory, internal) in
+    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
+    @eval function Mooncake.$internal(w::Val{N}, x::_CuDualArray, d::MaybeCache) where {N}
+        haskey(d, x) && return d[x]
+        v = Mooncake.$factory(w, x)
+        d[x] = v
+        return v
+    end
+end
+function Mooncake._randn_dual_internal(
+    w::Val{N}, rng::Random.AbstractRNG, x::_CuDualArray, d::MaybeCache
+) where {N}
+    haskey(d, x) && return d[x]
+    v = Mooncake.randn_dual(w, rng, x)
+    d[x] = v
+    return v
 end
 # Non-differentiable T (`tangent_type(T) === NoTangent`) makes the whole CuPtr a
 # `NoDual` slot — coherent with reverse-mode (`tangent_type(CuPtr{Cvoid}) === NoTangent`).

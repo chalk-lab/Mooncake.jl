@@ -647,8 +647,9 @@ end
 # the `jl_string_ptr` foreigncall). The `NDualEltype` overload above is more
 # specific and wins for differentiable element types.
 @foldable @generated function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T}
-    tangent_type(T) === NoTangent && return NoDual
-    return :(NTuple{$N,Ptr{tangent_type($T)}})
+    # `tangent_type($T)` resolves in the RETURNED expression (at the call world, where an
+    # extension's element-type overload is visible), never the generator body.
+    return :(tangent_type($T) === NoTangent ? NoDual : NTuple{$N,Ptr{tangent_type($T)}})
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
@@ -698,14 +699,15 @@ end
 # value flowing into an `Any`-typed field still yields `V === dual_type(Val(N), P)`.
 @foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
     isconcretetype(P) || return Any
-    # `tangent_type` runs in the generator body, deciding the return type
-    # structure (NoDual vs struct lift), so it cannot be deferred to the
-    # returned expression. Mild world-age caveat: a later `tangent_type(P) =
-    # NoTangent` override would not invalidate an already-generated `dual_type`
-    # for `P`. Accepted — it inherits `tangent_type`'s own caching semantics.
-    tangent_type(P) === NoTangent && return NoDual
+    # The `NoDual` (non-differentiable) decision keys off `tangent_type(P)`, which an
+    # extension may override (e.g. CUDA's `CuPtr`/`CuArray`). Emit that call in the RETURNED
+    # expression — never the generator body — so it resolves at the `dual_type` call's world,
+    # where extension overloads are visible, instead of the generator's (core) definition
+    # world: a generator-body call bakes its resolution at definition time and a later
+    # overload cannot dislodge it. The structural skeleton below (field names, mutability,
+    # field count) is world-independent, so it stays in the generator body.
     if fieldcount(P) == 0
-        return :(NTuple{$N,tangent_type($P)})
+        return :(tangent_type($P) === NoTangent ? NoDual : NTuple{$N,tangent_type($P)})
     end
     field_names = fieldnames(P)
     n_fields = fieldcount(P)
@@ -719,7 +721,7 @@ end
     end
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-    return :($wrapper{$inner_nt_type})
+    return :(tangent_type($P) === NoTangent ? NoDual : $wrapper{$inner_nt_type})
 end
 
 """
@@ -1239,13 +1241,20 @@ for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
-        # Coherence with `dual_type`: a `NoDual` V has no backing to seed. This
-        # covers `tangent_type(P) === NoTangent` and non-differentiable-element
-        # arrays/`Ptr` (where `tangent_type(P) !== NoTangent` but the element is
-        # non-diff, e.g. a reverse rule's `Vector{Int32}` block-stack storage).
-        dual_type(Val(N), P) === NoDual && return :(NoDual())
+        # Coherence with `dual_type`: a `NoDual` V has no backing to seed. This covers
+        # `tangent_type(P) === NoTangent` and non-differentiable-element arrays/`Ptr`
+        # (where `tangent_type(P) !== NoTangent` but the element is non-diff, e.g. a
+        # reverse rule's `Vector{Int32}` block-stack storage). The `dual_type(...) ===
+        # NoDual` test goes in the returned expression (call world), not the generator
+        # body — see `dual_type(::Type{P})` above for why.
         if fieldcount(P) == 0
-            return :($($(QuoteNode(helper)))(Val($N), x))
+            return :(
+                if dual_type(Val($N), typeof(x)) === NoDual
+                    NoDual()
+                else
+                    $($(QuoteNode(helper)))(Val($N), x)
+                end
+            )
         end
         seeds = map(1:fieldcount(P)) do i
             nm = QuoteNode(fieldnames(P)[i])
@@ -1253,19 +1262,25 @@ for (f, helper) in
         end
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
         return quote
-            backing = fieldtype(dual_type(Val($N), typeof(x)), 1)
-            $wrapper(backing(($(seeds...),)))
+            V = dual_type(Val($N), typeof(x))
+            V === NoDual && return NoDual()
+            $wrapper(fieldtype(V, 1)(($(seeds...),)))
         end
     end
 end
 
 @generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
     isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
-    # Coherence with `dual_type`: a `NoDual` V has no backing to seed (see the
-    # `zero_dual` / `uninit_dual` factories above for the non-diff-array case).
-    dual_type(Val(N), P) === NoDual && return :(NoDual())
+    # As `zero_dual` / `uninit_dual` above: `NoDual` V has no backing; the
+    # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
     if fieldcount(P) == 0
-        return :(_randn_dual_zero_field(Val($N), rng, x))
+        return :(
+            if dual_type(Val($N), typeof(x)) === NoDual
+                NoDual()
+            else
+                _randn_dual_zero_field(Val($N), rng, x)
+            end
+        )
     end
     seeds = map(1:fieldcount(P)) do i
         nm = QuoteNode(fieldnames(P)[i])
@@ -1273,8 +1288,9 @@ end
     end
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
     return quote
-        backing = fieldtype(dual_type(Val($N), typeof(x)), 1)
-        $wrapper(backing(($(seeds...),)))
+        V = dual_type(Val($N), typeof(x))
+        V === NoDual && return NoDual()
+        $wrapper(fieldtype(V, 1)(($(seeds...),)))
     end
 end
 
@@ -1296,8 +1312,9 @@ for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval begin
         @generated function $internal(w::Val{N}, x::P, d::MaybeCache) where {N,P}
-            (fieldcount(P) == 0 || dual_type(Val(N), P) === NoDual) &&
-                return :($$(QuoteNode(factory))(w, x))
+            # `fieldcount(P) == 0` is world-independent (gen-time); the
+            # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
+            fieldcount(P) == 0 && return :($$(QuoteNode(factory))(w, x))
             seeds = map(1:fieldcount(P)) do i
                 nm = QuoteNode(fieldnames(P)[i])
                 _seed_field_expr(
@@ -1306,7 +1323,9 @@ for (factory, internal) in
             end
             if ismutabletype(P)
                 return quote
-                    backing = fieldtype(dual_type(Val(N), P), 1)
+                    V = dual_type(Val(N), P)
+                    V === NoDual && return NoDual()
+                    backing = fieldtype(V, 1)
                     haskey(d, x) && return d[x]::MutableDual{backing}
                     shell = MutableDual{backing}()
                     d[x] = shell
@@ -1314,7 +1333,11 @@ for (factory, internal) in
                     return shell
                 end
             else
-                return :(ImmutableDual(fieldtype(dual_type(Val(N), P), 1)(($(seeds...),))))
+                return quote
+                    V = dual_type(Val(N), P)
+                    V === NoDual && return NoDual()
+                    ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
+                end
             end
         end
         # Array: register by identity so aliased struct fields share one V.
@@ -1346,15 +1369,18 @@ end
 @generated function _randn_dual_internal(
     w::Val{N}, rng::AbstractRNG, x::P, d::MaybeCache
 ) where {N,P}
-    (fieldcount(P) == 0 || dual_type(Val(N), P) === NoDual) &&
-        return :(randn_dual(w, rng, x))
+    # `fieldcount(P) == 0` is world-independent (gen-time); the `dual_type(...) === NoDual`
+    # test goes in the returned expression, not the body.
+    fieldcount(P) == 0 && return :(randn_dual(w, rng, x))
     seeds = map(1:fieldcount(P)) do i
         nm = QuoteNode(fieldnames(P)[i])
         _seed_field_expr(N, P, i, :(_randn_dual_internal(w, rng, getfield(x, $nm), d)))
     end
     if ismutabletype(P)
         return quote
-            backing = fieldtype(dual_type(Val(N), P), 1)
+            V = dual_type(Val(N), P)
+            V === NoDual && return NoDual()
+            backing = fieldtype(V, 1)
             haskey(d, x) && return d[x]::MutableDual{backing}
             shell = MutableDual{backing}()
             d[x] = shell
@@ -1362,7 +1388,11 @@ end
             return shell
         end
     else
-        return :(ImmutableDual(fieldtype(dual_type(Val(N), P), 1)(($(seeds...),))))
+        return quote
+            V = dual_type(Val(N), P)
+            V === NoDual && return NoDual()
+            ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
+        end
     end
 end
 function _randn_dual_internal(
