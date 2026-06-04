@@ -117,9 +117,9 @@ end
     end
 end
 
-# Wrapper whose `tangent_type` is `NoTangent`. Differentiating a closure that captures a
-# `Base.RefValue` through such a wrapper used to trip the `_new_`/`IdDict`
-# forward-over-reverse bug.
+# Wrapper with `NoTangent` `tangent_type`. Differentiating a closure that captures a
+# `Base.RefValue` through it reproduces the forward-over-reverse `_new_`/IdDict bug.
+# See https://github.com/chalk-lab/Mooncake.jl/issues/1193.
 struct NoTangentWrap{F}
     f::F
 end
@@ -164,11 +164,9 @@ Mooncake.tangent_type(::Type{<:NoTangentWrap}) = Mooncake.NoTangent
     end
 
     @testset "captured Ref under NoTangent-typed wrapper (regression)" begin
-        # Used to throw `UndefRefError`: forward-differentiating the reverse rule reached
-        # an inlined internal `IdDict()` cache as a `_new_` node and built a tangent from
-        # an uninitialised `Memory`. Only these prepared-cache APIs on the default
-        # (non-debug) path hit it; the `compute_hessian` helper above does not.
-        # `f(x) = 3 * sum(abs2, x)`, so `∇²f = 6 * I`.
+        # Without the `_new_`/IdDict frule, this throws `UndefRefError`. Only the public
+        # prepared-cache APIs on the default (non-debug) path hit it, not the
+        # `compute_hessian` helper above. `f(x) = 3 * sum(abs2, x)`, so `∇²f = 6 * I`.
         mkclosure(r) = x -> r[] * sum(abs2, x)
         f = NoTangentWrap(mkclosure(Ref(3.0)))
         x = [1.0, 2.0]
