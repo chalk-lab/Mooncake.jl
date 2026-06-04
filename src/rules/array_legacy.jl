@@ -399,12 +399,12 @@ end
 # match (e.g. copying a 0-dim `Array{T,0}` into a `Vector{T}`); bind them separately.
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),N},
-    dest::Lifted{Array{T,Dd},N,NDualArray{T,N,Dd,Array{T,Dd},NDual{T,N}}},
+    dest::Lifted{Array{T,Dd},N,<:NDualArray{T,N,Dd,Array{T,Dd}}},
     doffs::Lifted,
-    src::Lifted{Array{T,Ds},N,NDualArray{T,N,Ds,Array{T,Ds},NDual{T,N}}},
+    src::Lifted{Array{T,Ds},N,<:NDualArray{T,N,Ds,Array{T,Ds}}},
     soffs::Lifted,
     n::Lifted,
-) where {N,T<:IEEEFloat,Dd,Ds}
+) where {N,T<:NDualEltype,Dd,Ds}
     _n = primal(n)
     _doffs = primal(doffs)
     _soffs = primal(soffs)

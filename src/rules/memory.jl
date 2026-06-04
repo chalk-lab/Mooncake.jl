@@ -244,14 +244,16 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-# Per-lane copy of each `partials[lane]` MemoryRef in sync with the primal
-# copy. Restricted to `P <: IEEEFloat` (NDualMemoryRef V).
+# Per-lane copy of each `partials[lane]` MemoryRef in sync with the primal copy. `P <: NDualEltype`
+# (float or complex), matching the sibling MemoryRef frules — the per-lane copy is element-agnostic, and
+# the complex SoA V is the same `NDualMemoryRef{P,Nw,Memory{P}}` shape (e.g. the `copy_similar` /
+# `copyto_axcheck!` path of complex `logdet`/`logabsdet`).
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     src::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     n::Lifted,
-) where {Nw,P<:IEEEFloat}
+) where {Nw,P<:NDualEltype}
     _n = primal(n)
     unsafe_copyto!(primal(dest), primal(src), _n)
     for lane in 1:Nw
