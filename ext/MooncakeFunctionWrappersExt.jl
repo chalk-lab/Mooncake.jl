@@ -5,6 +5,9 @@ using FunctionWrappers: FunctionWrapper
 import Mooncake:
     TestUtils,
     _add_to_primal_internal,
+    _zero_dual_internal,
+    _uninit_dual_internal,
+    _randn_dual_internal,
     tangent_to_primal_internal!!,
     primal_to_tangent_internal!!,
     _dot_internal,
@@ -92,6 +95,23 @@ end
     rrule_oc_type = _construct_rrule_types(R, A)[1]
     frule_oc_type = _construct_frule_types(R, A)[1]
     return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
+end
+
+# Forward-mode canonical V is the same `FunctionWrapperTangent` as the reverse tangent
+# (it serves as its own fdata, holds both the `fwds_wrapper` and the `frule_wrapper`, and
+# is width-1 only). So `dual_type === tangent_type`, the forward seed IS the reverse seed
+# (carved out below so the generic structural lift does not recurse into the wrapper's
+# `Ptr` fields), and `lift` just wraps the tangent — its `frule_wrapper` already closes
+# over `dobj_ref`, so the lane direction propagates through `frule!!`.
+dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} = tangent_type(P)
+lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
+function lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent, ::Union{Nothing,IdDict})
+    return Lifted{typeof(x),1,typeof(ẋ)}(x, ẋ)
+end
+@inline function tangent(
+    x::Lifted{P,N,<:FunctionWrapperTangent}, ::Integer
+) where {P<:FunctionWrapper,N}
+    return x.value
 end
 
 import .TestUtils: has_equal_data_internal
@@ -199,6 +219,19 @@ function randn_tangent_internal(
     t, _ = _function_wrapper_tangent(R, p.obj[], A, obj_tangent)
     dict === nothing || setindex!(dict, t, p)
     return t
+end
+
+# Forward seed factories: V === tangent_type, so delegate to the reverse factories above.
+function _zero_dual_internal(::Val{N}, p::FunctionWrapper, d::MaybeCache) where {N}
+    return zero_tangent_internal(p, d)
+end
+function _uninit_dual_internal(::Val{N}, p::FunctionWrapper, d::MaybeCache) where {N}
+    return zero_tangent_internal(p, d)
+end
+function _randn_dual_internal(
+    ::Val{N}, rng::AbstractRNG, p::FunctionWrapper, d::MaybeCache
+) where {N}
+    return randn_tangent_internal(rng, p, d)
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:FunctionWrapperTangent}
