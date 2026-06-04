@@ -1183,12 +1183,19 @@ function test_rule(
         !ismissing(rvs_interp) &&
         @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
-    # Generate random tangents for anything that is not already a CoDual.
-    x_ẋ = map(x -> if x isa CoDual
-        lift(primal(x), tangent(x))
+    # Forward lifted args, built only when forward mode is under test: `randn_lifted` calls
+    # `dual_type`, which recurses on a self-referential primal (e.g. a `DynamicExpressions.Node`
+    # tree), so building these for a reverse-only test would needlessly trigger that recursion.
+    # Every use of `x_ẋ` below is already `test_fwd`-gated.
+    x_ẋ = if test_fwd
+        map(x -> if x isa CoDual
+                lift(primal(x), tangent(x))
+            else
+                randn_lifted(Val(1), rng, x)
+            end, x)
     else
-        randn_lifted(Val(1), rng, x)
-    end, x)
+        ()
+    end
 
     x_x̄ = map(x -> if x isa CoDual
         x
