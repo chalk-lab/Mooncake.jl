@@ -305,6 +305,11 @@ end
     defined, `g` was not available yet. If we restrict the IR to a world where `g` is
     available then `g` can be inlined.
 
+    Pinning to a single world is also a precondition for `normalise!`: it lets
+    `CC.verify_ir`'s partitioned-binding const check accept the IR's GlobalRefs without
+    rewriting them. This is why every rule-build entry point calls `set_valid_world!`
+    immediately after `lookup_ir`, before `normalise!`.
+
     Will error if `world` is not in the existing `valid_worlds` of `ir`.
     """
     function set_valid_world!(ir::IRCode, world::UInt)
