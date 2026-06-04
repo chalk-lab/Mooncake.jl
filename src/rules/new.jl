@@ -21,6 +21,10 @@
     if P <: Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
+            # An all-non-differentiable tuple (incl. the empty `Tuple{}`) has
+            # `dual_type(P) === NoDual`; build whole `NoDual`, not an element-wise V.
+            # Test resolves in the returned expression (call world), not the body.
+            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             return Lifted{P,Nw}(y, tuple_map(tangent, x))
         end
     elseif P <: NamedTuple
