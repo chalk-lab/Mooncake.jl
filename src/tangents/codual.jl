@@ -75,7 +75,15 @@ end
 
 The type of the `CoDual` which contains instances of `P` and associated tangents.
 """
-codual_type(::Type{P}) where {P} = _codual_internal(P, codual_type, tangent_type)
+@unstable function codual_type(::Type{P}) where {P}
+    # `@isdefined(P)` is false when the static parameter couldn't be bound at
+    # dispatch — e.g. for `UnionAll(A, AbstractArray{T, A})` whose body has a
+    # free `TypeVar` `T`. Without this check, touching `P` would throw
+    # `UndefVarError(:P, :static_parameter)`. Same check guards the overloads
+    # below and `dual_type` in `src/tangents/dual.jl`.
+    @isdefined(P) || return CoDual
+    return _codual_internal(P, codual_type, tangent_type)
+end
 
 @unstable function codual_type(p::Type{Type{P}}) where {P}
     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
@@ -86,7 +94,8 @@ end
 
 The type of the `CoDual` which contains instances of `P` and its fdata.
 """
-function fcodual_type(::Type{P}) where {P}
+@unstable function fcodual_type(::Type{P}) where {P}
+    @isdefined(P) || return CoDual
     return _codual_internal(P, fcodual_type, P -> fdata_type(tangent_type(P)))
 end
 
