@@ -1379,14 +1379,15 @@ function frule!!(
     fill!(primal(a), primal(x))
     a_partials = tangent(a).partials
     Eout = eltype(a_partials[1])
-    x_v = tangent(x)
-    if x_v isa NoDual
+    if tangent(x) isa NoDual
         for partial in a_partials
             fill!(partial, zero(Eout))
         end
     else
+        # Per-lane scalar tangent via the canonical accessor, which handles a real `NDual`
+        # and a complex `Complex{NDual}` alike — the raw `.partials` field exists only on `NDual`.
         @inbounds for lane in 1:Nw
-            fill!(a_partials[lane], Eout(x_v.partials[lane]))
+            fill!(a_partials[lane], Eout(tangent(x, lane)))
         end
     end
     return a
