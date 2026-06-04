@@ -716,6 +716,31 @@ function rrule!!(
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
 end
 
+# `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
+# arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made primitive so the
+# forward transform does not trace into that primal-only reconstruction and drop the SoA partials:
+# view the primal and each partial alike, mirroring `reshape` above. The reverse tangent is a view of
+# `x.dx`, so accumulation into it propagates (NoPullback).
+@is_primitive(MinimalCtx, Tuple{typeof(view),CuMaybeComplexArray,Vararg})
+function frule!!(
+    ::Lifted{typeof(view),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    inds::Vararg{Lifted,M},
+) where {Nw,M}
+    _inds = map(primal, inds)
+    y = view(primal(x), _inds...)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+end
+function rrule!!(
+    ::CoDual{typeof(view)}, x::CoDual{<:CuMaybeComplexArray}, inds::Vararg{CoDual,M}
+) where {M}
+    _inds = map(primal, inds)
+    return CoDual(view(primal(x), _inds...), view(x.dx, _inds...)), _nopb(Val(M + 2))
+end
+
 # `_new_` rule for the DataRef-based inner CuArray constructor (used by views and
 # similar operations). The tangent reuses the DataRef from the input tangent so that
 # gradient accumulation propagates automatically.
