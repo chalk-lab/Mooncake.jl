@@ -743,7 +743,13 @@ Shapes defined so far:
 - Concrete struct `P`: `Lifted{P, N, dual_type(Val(N), P)}` where the inner
   V is `ImmutableDual` (immutable) or `MutableDual` (mutable).
 """
-@inline lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = Lifted{P,N,NDual{P,N}}
+# A non-concrete `P <: IEEEFloat` (e.g. a type-unstable closure inferred to
+# `Union{Float32,Float64}`) must widen to a UnionAll: `Lifted` is invariant in `P`, so the
+# invariant `Lifted{Union{…},N,NDual{Union{…},N}}` would reject the concrete runtime
+# `Lifted{Float32,…}` at the OpaqueClosure arg typeassert (mirrors the Tuple/struct overloads).
+@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
+    return isconcretetype(P) ? Lifted{P,N,NDual{P,N}} : (Lifted{T,N,V} where {T<:P,V})
+end
 @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Lifted{Complex{R},N,Complex{NDual{R,N}}}
 end
