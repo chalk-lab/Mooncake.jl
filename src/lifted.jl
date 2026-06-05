@@ -94,15 +94,40 @@ struct NoDual end
     return Lifted{P,N,V}(primal, value)
 end
 
-# Sharpen `P` when constructing with a `Type{X}` primal, at the boundary
-# between widened (e.g. `DataType`) and concrete (`Type{X}`) primals.
-# Without this, `Lifted{DataType, N}(ComplexF64, NoDual())` would
-# produce `Lifted{DataType, N, NoDual}` and miss `frule!!` rules
-# dispatched on `Lifted{Type{Complex{P}}, N}`.
-@inline function Lifted{P_user,N}(
-    primal::Type{P_inner}, value::V
-) where {P_user,P_inner,N,V}
-    return Lifted{Type{P_inner},N,V}(primal, value)
+# Sharpen `P` when constructing with a `Type{X}` primal. WHY sharpen: the type-constructor frules
+# (`_new_`, `Complex`, `TwicePrecision`) dispatch on the *type slot* — `::Lifted{Type{Complex{P}}, N}`,
+# `::Lifted{Type{P}, N}`, etc. — to know which struct to build. A `Type{X}`-valued primal whose runtime
+# metatype is plain `DataType`/`UnionAll` would otherwise land in the wide `Lifted{DataType, N}` slot,
+# which carries the value but is opaque to that dispatch (`Lifted{DataType} ⊄ Lifted{Type{P}}`, `Lifted`
+# invariant), so the rule misses. This is the single chokepoint: the interpreter and rule bodies build
+# such slots in many places (const-lifted constants, `_new_` type args, rules that *return* a type),
+# not just the seed factories — so a centralized ctor is needed rather than per-site sharpening.
+#
+# Reverse mode solves the identical problem with `CoDual(x::Type{P}, dx)` (see `src/tangents/codual.jl`),
+# which sharpens to `CoDual{Type{P}}` so the `_new_` *rrule* can dispatch. Reverse needs only a SINGLE
+# param `P` there because its outer ctor is `CoDual(x, dx)` — the caller never type-applies a slot, so
+# there is no wide annotation to reconcile. Forward must take the slot (`Lifted{·,N}`) because the width
+# `N` lives in the type application, which is exactly what forces the wide `P_wide` below. If `N` were
+# carried out-of-band (e.g. a `lifted(Val(N), x, v)` outer ctor computing the type like `CoDual`), the
+# forward slot could collapse to one param and forward/reverse sharpening could share one mechanism —
+# a worthwhile future unification, out of scope here.
+#
+# The two type params name the SAME type from two angles, so neither can be dropped:
+#   • `P_wide`  — the wide slot the *caller* type-applied, `Lifted{P_wide,N}(...)`. From a type-valued
+#                 primal this is the broad metatype (`DataType`/`UnionAll`), since callers compute it as
+#                 `typeof(x)`. It is the thing we are *correcting*, so the body ignores it.
+#   • `P_sharp` — the sharp identity, dispatch-bound from `primal::Type{P_sharp}` (e.g. `ComplexF64`).
+# They are redundant at runtime (`P_wide === typeof(P_sharp)` always), but a single param can't serve
+# both jobs: `Lifted{P,N}(primal::Type{P})` would require `ComplexF64 isa Type{DataType}` (false), so the
+# wide-slot call wouldn't dispatch here at all. We thus take the wide `P_wide` for matching and rebuild
+# the slot from the sharp `P_sharp`.
+@inline function Lifted{P_wide,N}(
+    primal::Type{P_sharp}, value::V
+) where {P_wide,P_sharp,N,V}
+    # Fall back to the broad `typeof(primal)` when `P_sharp` can't bind — a phantom `TypeVar` (e.g. an
+    # over-sharpened `UnionAll`), where touching `Type{P_sharp}` throws `UndefVarError`. Identical to the
+    # `CoDual(::Type{P})` ctor's `@isdefined(P) ? Type{P} : typeof(x)` fallback (chalk-lab/Mooncake.jl#1191).
+    return Lifted{(@isdefined(P_sharp) ? Type{P_sharp} : typeof(primal)),N,V}(primal, value)
 end
 
 # Accessors — mirror the `CoDual` API.
@@ -808,6 +833,11 @@ end
 # the UnionAll, `Lifted{Type{X}, N, V}` wouldn't be a subtype of
 # `Lifted{DataType, N, NoDual}` (Lifted is invariant in `P`).
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
+    # `@isdefined(P)` is false when the static parameter couldn't be bound — e.g. a `UnionAll`
+    # with a free `TypeVar` in its body. Touching `P` would then throw `UndefVarError`; return the
+    # broad `Lifted` instead — the same `@isdefined` fallback the `CoDual` ctors and
+    # `codual_type(::Type{Type{P}})` use for this phantom-`TypeVar` case (chalk-lab/Mooncake.jl#1191).
+    @isdefined(P) || return Lifted
     return if isconcretetype(P) && P !== DataType
         Lifted{P,N,dual_type(Val(N), P)}
     else
