@@ -1140,38 +1140,39 @@ end
 #
 # Mirrors `dual_type(Val(N), Array{T,D}) === Array{dual_type(Val(N), T), D}` and
 # the AoS `lift(::Array, ::Array)` path: a per-element V array, built element-wise
-# (skipping undefined slots). `@generated` so the `NoDual` short-circuit for a
-# non-differentiable element type is resolved at compile time (type-stable).
-# Float / Complex-float elements use the more-specific `NDualArray` methods above.
-@generated function zero_dual(::Val{N}, x::Array{T,D}) where {N,T,D}
-    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
-    return quote
-        v = similar(x, dual_type(Val($N), T))
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = zero_dual(Val($N), x[i]))
-        end
-        return v
+# (skipping undefined slots). Float / Complex-float elements use the more-specific
+# `NDualArray` methods above.
+#
+# NOT `@generated`: the `NoDual` short-circuit calls `dual_type`, which extensions overload
+# (e.g. `CuArray -> NDualArray`, `CuPtr -> NoDual`). A `@generated` generator evaluates
+# `dual_type` at generation time, pinned to the generator's definition world — which predates
+# any extension — so it would descend structurally into a `CuArray`'s opaque fields instead of
+# stopping at the extension's V, and trip the primitive `tangent_type` fallback. As a plain
+# function the `dual_type` calls run in the caller's world (extension methods visible); `@foldable
+# dual_type` keeps the `=== NoDual` branch a compile-time constant, so this stays type-stable.
+@inline function zero_dual(w::Val{N}, x::Array{T,D}) where {N,T,D}
+    dual_type(w, Array{T,D}) === NoDual && return NoDual()
+    v = similar(x, dual_type(w, T))
+    @inbounds for i in eachindex(x)
+        isassigned(x, i) && (v[i] = zero_dual(w, x[i]))
     end
+    return v
 end
-@generated function uninit_dual(::Val{N}, x::Array{T,D}) where {N,T,D}
-    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
-    return quote
-        v = similar(x, dual_type(Val($N), T))
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = uninit_dual(Val($N), x[i]))
-        end
-        return v
+@inline function uninit_dual(w::Val{N}, x::Array{T,D}) where {N,T,D}
+    dual_type(w, Array{T,D}) === NoDual && return NoDual()
+    v = similar(x, dual_type(w, T))
+    @inbounds for i in eachindex(x)
+        isassigned(x, i) && (v[i] = uninit_dual(w, x[i]))
     end
+    return v
 end
-@generated function randn_dual(::Val{N}, rng::AbstractRNG, x::Array{T,D}) where {N,T,D}
-    dual_type(Val(N), Array{T,D}) === NoDual && return :(NoDual())
-    return quote
-        v = similar(x, dual_type(Val($N), T))
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = randn_dual(Val($N), rng, x[i]))
-        end
-        return v
+@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Array{T,D}) where {N,T,D}
+    dual_type(w, Array{T,D}) === NoDual && return NoDual()
+    v = similar(x, dual_type(w, T))
+    @inbounds for i in eachindex(x)
+        isassigned(x, i) && (v[i] = randn_dual(w, rng, x[i]))
     end
+    return v
 end
 
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────

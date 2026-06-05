@@ -226,6 +226,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # Non-differentiable args therefore take NoTangent() here — NOT NoFData().
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
+                # The forward counterpart is intentionally NOT run (no forward `_new_` rule by
+                # design, per above). Kept commented as the canonical call shape, should a forward
+                # `_new_` ever be added — re-enabling it also needs the `test_frule_interface` import.
+                # test_frule_interface(
+                #     Mooncake.lift(Mooncake._new_, Mooncake.NoTangent()),
+                #     Mooncake.lift(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
+                #     Mooncake.lift(data, copy(data)),
+                #     Mooncake.lift(2048, Mooncake.NoTangent()),
+                #     Mooncake.lift(0, Mooncake.NoTangent()),
+                #     Mooncake.lift((64, 32), Mooncake.NoTangent());
+                #     frule=Mooncake.frule!!,
+                # )
                 test_rrule_interface(
                     Mooncake.CoDual(Mooncake._new_, Mooncake.NoTangent()),
                     Mooncake.CoDual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
