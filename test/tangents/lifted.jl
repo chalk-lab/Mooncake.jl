@@ -738,7 +738,8 @@ end
         @test Mooncake.lifted_type(Val(N), Task) ===
             Mooncake.Lifted{Task,N,Mooncake.TaskTangent}
 
-        # Lifted-arg lgetfield: tangent of any Task field is NoTangent.
+        # Lifted-arg lgetfield: a Task field is non-differentiable, so its forward V is `NoDual`
+        # (the forward-mode non-diff sentinel — reverse mode would use `NoTangent`).
         task_slot = Mooncake.Lifted{Task,N}(task, Mooncake.TaskTangent())
         f_slot = Mooncake.Lifted{typeof(Mooncake.lgetfield),N}(
             Mooncake.lgetfield, Mooncake.NoTangent()
@@ -746,14 +747,14 @@ end
         v_slot = Mooncake.Lifted{Val{:rngState1},N}(Val(:rngState1), Mooncake.NoTangent())
         r = Mooncake.frule!!(f_slot, task_slot, v_slot)
         @test Mooncake.primal(r) === getfield(task, :rngState1)
-        @test Mooncake.tangent(r) === Mooncake.NoTangent()
+        @test Mooncake.tangent(r) === Mooncake.NoDual()
 
         # Lifted-arg getfield.
         gf_slot = Mooncake.Lifted{typeof(getfield),N}(getfield, Mooncake.NoTangent())
         sym_slot = Mooncake.Lifted{Symbol,N}(:rngState1, Mooncake.NoTangent())
         r2 = Mooncake.frule!!(gf_slot, task_slot, sym_slot)
         @test Mooncake.primal(r2) === getfield(task, :rngState1)
-        @test Mooncake.tangent(r2) === Mooncake.NoTangent()
+        @test Mooncake.tangent(r2) === Mooncake.NoDual()
     end
 
     @testset "frule!! one-to-one parallels (new.jl _new_)" begin
