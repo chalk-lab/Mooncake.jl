@@ -1342,7 +1342,12 @@ end
 @inline function _setfield_tangent!(tv::MutableDual, nm, vx)
     nt = getfield(tv, :value)
     v_i = _coerce_backing_field(fieldtype(typeof(nt), nm), vx)
-    setfield!(tv, :value, merge(nt, NamedTuple{(nm,)}((v_i,))))
+    # `convert` to the stored NamedTuple type: `setfield!` is strict (no implicit convert) and
+    # `NamedTuple` is invariant in its `Tuple` parameter, so for a struct with an abstract field
+    # (e.g. `Foo.x::Real` -> dual field `@NamedTuple{x}`, x::Any) the `merge` narrows to
+    # `@NamedTuple{x::NDual}`, which is NOT `isa @NamedTuple{x}` — a bare `setfield!` would throw.
+    # `convert` rebuilds it at the field's (possibly abstract) element type.
+    setfield!(tv, :value, convert(typeof(nt), merge(nt, NamedTuple{(nm,)}((v_i,)))))
     return nothing
 end
 @inline _setfield_tangent!(tv, nm, vx) = (setproperty!(tv, nm, vx); nothing)
