@@ -14,6 +14,12 @@ import ..primal
 import ..NoTangent
 import ..NoPullback
 import ..zero_fcodual
+# `frule!!` / `rrule!!` must be imported so the definitions below add methods to
+# `Mooncake.frule!!` / `Mooncake.rrule!!` rather than creating dead module-local functions;
+# `NoDual` is the forward non-diff sentinel used by the frule body.
+import ..frule!!
+import ..rrule!!
+import ..NoDual
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
 import DispatchDoctor._Stabilization: _show_warning, _construct_pairs
