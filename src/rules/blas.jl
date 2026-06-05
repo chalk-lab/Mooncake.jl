@@ -533,6 +533,10 @@ function frule!!(
         dy = _blas_lane_partial(y_dy, lane)
         _gemv!_frule_core!(_tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
     end
+    # Single primal update AFTER the lane loop (mirrors symv!/gemm/etc.). Running it once per
+    # lane would, for Nw>1, both nest the primal and let later lanes' `dβ * y[n]` term read an
+    # already-overwritten `y`. Post-loop placement guarantees every lane saw the original `y`.
+    BLAS.gemv!(_tA, α, A, x, β, y)
     return y_dy
 end
 @inline function _gemv!_frule_core!(
@@ -553,16 +557,14 @@ end
     BLAS.gemv!(tA, α, dA, x, one(P), dy)
     BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
-    # Strong zero is essential here, in case `y` has undefined element values.
+    # Strong zero is essential here, in case `y` has undefined element values. Reads the ORIGINAL
+    # `y`; the primal update is hoisted to run once after the lane loop (see the frule above).
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
             tmp = dβ * y[n]
             dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
         end
     end
-
-    # Primal computation.
-    BLAS.gemv!(tA, α, A, x, β, y)
     return nothing
 end
 
