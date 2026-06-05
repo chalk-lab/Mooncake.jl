@@ -427,13 +427,17 @@ function frule!!(
     ::Lifted{typeof(copysign_float),N}, x::Lifted{T,N,NDual{T,N}}, y::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
     z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(y)) * tangent(x)
-    return Lifted{T,N}(z, dz)
+    # d copysign(x,y)/dx = sign(x) * sign(y). Scale only the partials and set V.value to `z`.
+    # A naive `sign(y) * tangent(x)` both drops the sign(x) factor (wrong derivative for x<0)
+    # and scales the inner NDual's `.value` to `sign(y) * x_p` (≠ z), breaking V.value === primal.
+    s = sign(primal(x)) * sign(primal(y))
+    return Lifted{T,N}(z, NDual{T,N}(z, s .* tangent(x).partials))
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
-    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_y), zero_rdata(_y)
+    # d copysign(x,y)/dx = sign(x) * sign(y); the derivative w.r.t. y is zero.
+    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_x) * sign(_y), zero_rdata(_y)
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
 end
@@ -1550,6 +1554,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0, -3.0),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, 4.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, -3.0f0),
+        # x<0: derivative is sign(x)*sign(y), so the sign(x) factor matters (regression).
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, 3.0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, -3.0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0f0, 3.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.ctlz_int, 5),
         (false, :stability, nothing, IntrinsicsWrappers.ctpop_int, 5),
         (false, :stability, nothing, IntrinsicsWrappers.cttz_int, 5),

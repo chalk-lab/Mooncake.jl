@@ -31,6 +31,28 @@ foo_throws(e) = throw(e)
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
+    # Regression: the copysign_float frule must set the inner NDual's `.value` to the primal
+    # result `z` and scale the partials by `sign(x)*sign(y)`. A naive `sign(y) * tangent(x)`
+    # scaled `.value` to `sign(y)*x_p` (≠ z for signbit(x)≠signbit(y)) — a latent invariant
+    # violation width-1 `test_rule` cannot see (it checks only the outer primal + partials).
+    # The x<0 derivative itself (sign(x) factor) is covered for both modes by the x<0 rule
+    # test cases above.
+    @testset "copysign_float forward NDual.value coherence" begin
+        cs = Mooncake.IntrinsicsWrappers.copysign_float
+        fL(N) = Mooncake.Lifted{typeof(cs),N}(cs, Mooncake.NoDual())
+        nd(N, v, parts) = Mooncake.Lifted{Float64,N}(
+            v, Mooncake.Nfwd.NDual{Float64,N}(v, parts)
+        )
+        @testset "width $N" for N in (1, 2, 3)
+            parts = ntuple(k -> Float64(k), N)
+            # x<0, y>0 ⇒ z = +5, derivative sign(x)*sign(y) = -1.
+            r = Mooncake.frule!!(fL(N), nd(N, -5.0, parts), nd(N, 3.0, ntuple(_ -> 0.0, N)))
+            iv = Mooncake.tangent(r)
+            @test iv.value == 5.0
+            @test all(iv.partials .≈ ntuple(k -> -1.0 * parts[k], N))
+        end
+    end
+
     # Unhandled built-in throws an intelligible error.
     @test_throws(
         Mooncake.MissingRuleForBuiltinException,
