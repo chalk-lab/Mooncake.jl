@@ -315,6 +315,11 @@ end
 @inline function Mooncake.lift(x::A, ::A) where {A<:CuDataRef}
     return Mooncake.Lifted{A,1}(x, NoDual())
 end
+# Forward uses NoDual; reverse uses `tangent_type === P` (above). The difference is the aliasing model:
+# reverse reuses the handle as *shared* cotangent storage so aliased CuArrays/views accumulate gradient
+# into one place (the reverse aliasing invariant). Forward tangents are slot-local — nothing is shared —
+# and a CuArray's JVP lives at the array level in the result's `NDualArray` partials (views build that
+# via the `view` frule, never through a tangent on the DataRef). So the handle carries no forward derivative.
 @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)

@@ -8,11 +8,7 @@ using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
-    test_tangent_interface,
-    test_tangent_splitting,
-    test_rule,
-    test_frule_interface,
-    test_rrule_interface
+    test_tangent_interface, test_tangent_splitting, test_rule, test_rrule_interface
 using LinearAlgebra
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
@@ -215,26 +211,21 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _vcat_cu_sum(x, y) = sum(vcat(x, y))
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
-            # Test the `_new_` frule!!/rrule!! interfaces directly.
+            # Reverse-only: `_new_(CuArray, DataRef, …)` is the reconstruction path for the
+            # reverse rule, where the DataRef carries the cotangent. There is no forward
+            # counterpart by design — `dual_type(CuDataRef) === NoDual` (the handle is forward
+            # bookkeeping; the JVP lives in the result's `NDualArray` partials), and forward
+            # views/reshapes build that `NDualArray` directly via the `view` frule, never `_new_`.
+            #
             # `test_rule` would create `randn_dual` inputs for `CuDataRef`, which would
             # require custom `randn_tangent_internal`/`zero_tangent_internal` methods.
             # We avoid that because those methods would mainly exist to satisfy the test helper.
             #
-            # NOTE: test_frule_interface and test_rrule_interface both take full tangents
-            # (tangent_type) in the second Dual/CoDual slot, then extract fdata internally
-            # via to_fwds before calling the rule.  Non-differentiable args therefore take
-            # NoTangent() here — NOT NoFData(), even for the rrule interface test.
+            # NOTE: test_rrule_interface takes full tangents (tangent_type) in the second CoDual
+            # slot, then extracts fdata internally via to_fwds before calling the rule.
+            # Non-differentiable args therefore take NoTangent() here — NOT NoFData().
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
-                test_frule_interface(
-                    Mooncake.lift(Mooncake._new_, Mooncake.NoTangent()),
-                    Mooncake.lift(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
-                    Mooncake.lift(data, copy(data)),
-                    Mooncake.lift(2048, Mooncake.NoTangent()),
-                    Mooncake.lift(0, Mooncake.NoTangent()),
-                    Mooncake.lift((64, 32), Mooncake.NoTangent());
-                    frule=Mooncake.frule!!,
-                )
                 test_rrule_interface(
                     Mooncake.CoDual(Mooncake._new_, Mooncake.NoTangent()),
                     Mooncake.CoDual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
