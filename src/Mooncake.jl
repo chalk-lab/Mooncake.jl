@@ -165,7 +165,7 @@ using .Nfwd: NDual, NDualArray, NDualEltype, _scalar_ndual, _nfwd_dual_partial
 @static if VERSION >= v"1.11-rc4"
     using .Nfwd: NDualMemoryRef
 end
-include("lifted.jl")
+include(joinpath("tangents", "lifted.jl"))
 include("debug_mode.jl")
 
 @unstable begin
