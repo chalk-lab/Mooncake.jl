@@ -469,9 +469,13 @@ end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
 
-    # This method can only handle struct types. Something has gone wrong if P is primitive.
+    # DEFERRED (runtime) error, not a gen-time `error(...)`: a gen-time throw bakes into the
+    # `@foldable`-cached IR of callers and isn't invalidated when a later, more-specific overload
+    # (e.g. an extension's `CuPtr`) is added — the world-age trap. `:(error(...))` fires only if
+    # dispatch actually reaches this fallback at runtime. (Mirrors `fdata_type`; see AGENTS.md.)
     if isprimitivetype(P)
-        return error("$P is a primitive type. Implement a method of `tangent_type` for it.")
+        msg = "$P is a primitive type. Implement a method of `tangent_type` for it."
+        return :(error($msg))
     end
 
     # If the type is a Union, then take the union type of its arguments.
