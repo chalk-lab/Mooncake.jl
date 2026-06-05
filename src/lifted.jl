@@ -840,6 +840,12 @@ end
     @isdefined(P) || return Lifted
     return if isconcretetype(P) && P !== DataType
         Lifted{P,N,dual_type(Val(N), P)}
+    elseif P <: Type
+        # Metatype kind (e.g. `DataType`): a type-unstable type-valued result is inferred as `P`,
+        # but the runtime value is sharpened to `Lifted{Type{X}}`. A *bounded* `Lifted{T<:P}` slot
+        # trips an OpaqueClosure return-type-assertion quirk (the bound + `Lifted` invariance) and
+        # rejects the value even though `Type{X} <: P` holds statically. Drop the bound entirely.
+        Lifted{T,N,V} where {T,V}
     else
         (Lifted{T,N,V} where {T<:P,V})
     end
