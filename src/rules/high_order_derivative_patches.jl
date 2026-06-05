@@ -117,7 +117,11 @@ end
 @inline dual_type(::Val{N}, ::Type{<:MooncakeInterpreter}) where {N} = NoDual
 @inline zero_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
 @inline uninit_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
-@inline lift(x::MooncakeInterpreter, _) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+# A `MooncakeInterpreter` is non-diff, so its only tangent kinds are `NoTangent`/`NoDual`. Match those
+# two *specifically* (not `::Any`) so we dominate the generic `lift(x, ::NoTangent)`/`lift(x::P, ::NoDual)`
+# in the 1st arg rather than being ambiguous (an `::Any` 2nd arg ties with those 2nd-arg-specific generics).
+@inline lift(x::MooncakeInterpreter, ::NoTangent) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+@inline lift(x::MooncakeInterpreter, ::NoDual) = Lifted{typeof(x),1,NoDual}(x, NoDual())
 
 # LazyFoRRule / DynamicFoRRule are frules for build_derived_rrule:
 #

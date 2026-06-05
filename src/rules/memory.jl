@@ -780,9 +780,12 @@ end
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
         x::Lifted{<:MemoryRef,Nw,NoDual},
+        i::Lifted,
         args::Vararg{Lifted,K},
     ) where {Nw,K}
-        yp = memoryrefnew(primal(x), map(primal, args)...)
+        # `i` (the index) makes this the >=1-trailing-arg `memoryrefnew(ref, i, …)` form, disjoint from
+        # the 1-arg method above (which overlapped at the zero-vararg `MemoryRef` case -> ambiguity).
+        yp = memoryrefnew(primal(x), primal(i), map(primal, args)...)
         return Lifted{typeof(yp),Nw}(yp, NoDual())
     end
     @inline function frule!!(

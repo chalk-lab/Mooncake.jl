@@ -1173,8 +1173,8 @@ end
 # than the legacy chunk-layout Matrix. Build the NDual array element-wise
 # from the per-lane partials.
 function _nfwd_lift(
-    x::A, partials::NTuple{N,V}, ::Val{N}
-) where {T<:IEEEFloat,A<:AbstractArray{T},V<:AbstractArray{T},N}
+    x::AbstractArray{T}, partials::NTuple{N,AbstractArray{T}}, ::Val{N}
+) where {T<:IEEEFloat,N}
     out = similar(x, NDual{T,N})
     @inbounds for I in CartesianIndices(x)
         out[I] = NDual{T,N}(x[I], ntuple(k -> partials[k][I], Val(N)))
@@ -1182,10 +1182,10 @@ function _nfwd_lift(
     return out
 end
 
-# Complex-element array, NTuple{N, A} partials — interleave real/imag parts.
+# Complex-element array, per-lane array partials — interleave real/imag parts.
 function _nfwd_lift(
-    x::A, partials::NTuple{N,V}, ::Val{N}
-) where {R<:IEEEFloat,T<:Complex{R},A<:AbstractArray{T},V<:AbstractArray{T},N}
+    x::AbstractArray{Complex{R}}, partials::NTuple{N,AbstractArray{Complex{R}}}, ::Val{N}
+) where {R<:IEEEFloat,N}
     out = similar(x, Complex{NDual{R,N}})
     @inbounds for I in CartesianIndices(x)
         out[I] = Complex(

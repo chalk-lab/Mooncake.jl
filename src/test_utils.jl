@@ -437,6 +437,24 @@ function populate_address_map_internal(
     return m
 end
 
+# Disambiguators only (never fire — a Tuple/non-diff primal never pairs with a struct-dual V): resolve the
+# ambiguity between the `t::Dual` method above (p untyped) and the p-specific methods below (t untyped).
+# Each matches one p-specific method's exact `p`-set with `Dual` `t`. No address to track: return `m`.
+function populate_address_map_internal(
+    m::AddressMap,
+    ::Union{Tuple,NamedTuple},
+    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
+)
+    return m
+end
+function populate_address_map_internal(
+    m::AddressMap,
+    ::Union{Core.TypeName,Type,Symbol,String},
+    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
+)
+    return m
+end
+
 function populate_address_map_internal(
     m::AddressMap, p::P, t
 ) where {P<:Union{Tuple,NamedTuple}}
@@ -1189,10 +1207,10 @@ function test_rule(
     # Every use of `x_ẋ` below is already `test_fwd`-gated.
     x_ẋ = if test_fwd
         map(x -> if x isa CoDual
-                lift(primal(x), tangent(x))
-            else
-                randn_lifted(Val(1), rng, x)
-            end, x)
+            lift(primal(x), tangent(x))
+        else
+            randn_lifted(Val(1), rng, x)
+        end, x)
     else
         ()
     end

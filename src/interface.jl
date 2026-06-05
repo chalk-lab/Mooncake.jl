@@ -1525,8 +1525,12 @@ end
 # element types, or any other shape has no preallocated seed (`gradient_seed === nothing`) and
 # falls back to the generic chunked path.
 function value_and_gradient!!(
-    cache::FCache, f::F, xs::Vararg{AbstractVector{T},N}
-) where {F,T<:IEEEFloat,N}
+    cache::FCache, f::F, x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T},Nm1}
+) where {F,T<:IEEEFloat,Nm1}
+    # Leading `x1` binds `T` directly (a bare `Vararg{AbstractVector{T},N}` leaves `T` unbound at N=0;
+    # Aqua). Gradient always has >=1 input. Reconstruct `xs`/`N` to leave the body below unchanged.
+    xs = (x1, xs_rest...)
+    N = Nm1 + 1
     input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     seed = cache.gradient_seed
