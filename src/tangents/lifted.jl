@@ -1383,9 +1383,13 @@ for (factory, internal) in
                 end
             end
         end
-        # Array: register by identity so aliased struct fields share one V.
+        # Array: register by identity so aliased struct fields share one V. The cache lookup
+        # is asserted to the concrete `dual_type` — `d` is an `IdDict{Any,Any}`, so an
+        # un-asserted `d[x]` infers `Any` and poisons `zero_lifted`/`uninit_lifted` to an
+        # abstract `Lifted{P,N}` (runtime dispatch + allocs at the slot ctor). Mirrors the
+        # assert the mutable-struct branch above already does on `d[x]`.
         function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
-            haskey(d, x) && return d[x]
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = $factory(w, x)
             d[x] = v
             return v
@@ -1441,7 +1445,9 @@ end
 function _randn_dual_internal(
     w::Val{N}, rng::AbstractRNG, x::Array, d::MaybeCache
 ) where {N}
-    haskey(d, x) && return d[x]
+    # Assert the cache lookup to the concrete `dual_type`; see the `_zero_dual_internal`
+    # Array overload for why an un-asserted `IdDict{Any,Any}` lookup poisons inference.
+    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
     v = randn_dual(w, rng, x)
     d[x] = v
     return v
