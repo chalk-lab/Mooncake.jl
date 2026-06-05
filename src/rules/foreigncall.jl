@@ -385,7 +385,11 @@ for (name, P) in
         _x = primal(x)
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
-        return Lifted{$P,Nw}(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * tangent(x))
+        # Scale only the partials and set V.value to `y`. A naive `grad * tangent(x)` multiplies
+        # the inner NDual, scaling `.value` to `grad * x_p` and breaking the V.value === primal
+        # invariant (mirrors the `pow_fast` frule in rules_via_nfwd.jl).
+        grad = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y))
+        return Lifted{$P,Nw}(y, NDual{$P,Nw}(y, Nfwd._pt_scale(tangent(x).partials, grad)))
     end
 
     @eval function rrule!!(
