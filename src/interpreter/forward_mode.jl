@@ -267,8 +267,9 @@ end
 """
     const_dual!(captures::Vector{Any}, stmt, ::Val{N}=Val(1))::Union{Lifted,Int}
 
-Build a `Lifted` from `stmt`, with zero / uninitialised tangent. If the resulting `Lifted`
-is a bits type, then it is returned. If it is not, then the `Lifted` is put into captures,
+Build a `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose derivative is
+zero, so its tangent must be zeroed (an uninitialised array tangent would leak garbage into any
+op that reads the constant's tangent). If the resulting `Lifted` is a bits type, then it is returned. If it is not, then the `Lifted` is put into captures,
 and its location in `captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from
@@ -278,7 +279,7 @@ function const_dual!(
     captures::Vector{Any}, stmt, (::Val{N})=Val(1)
 )::Union{Lifted,Int} where {N}
     v = get_const_primal_value(stmt)
-    x = uninit_lifted(Val(N), v)
+    x = zero_lifted(Val(N), v)
     if safe_for_literal(v)
         return x
     else
@@ -357,7 +358,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_lifted(
+        stmt.values[n] = zero_lifted(
             Val(info.width), get_const_primal_value(stmt.values[n])
         )
     end
@@ -377,7 +378,7 @@ function modify_fwd_ad_stmts!(
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = uninit_lifted(Val(info.width), get_const_primal_value(stmt.val))
+        v = zero_lifted(Val(info.width), get_const_primal_value(stmt.val))
     end
     replace_call!(
         dual_ir, ssa, PiNode(v, lifted_type(Val(info.width), CC.widenconst(stmt.typ)))
@@ -389,7 +390,7 @@ function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(uninit_lifted(Val(info.width), get_const_primal_value(stmt.val)))
+        stmt = UpsilonNode(zero_lifted(Val(info.width), get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -407,7 +408,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_lifted(
+        stmt.values[n] = zero_lifted(
             Val(info.width), get_const_primal_value(stmt.values[n])
         )
     end
@@ -468,7 +469,7 @@ function modify_fwd_ad_stmts!(
         # Lift arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_lifted(Val(info.width), get_const_primal_value(arg))
+            return zero_lifted(Val(info.width), get_const_primal_value(arg))
         end
 
         interp = info.interp
