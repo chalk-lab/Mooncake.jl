@@ -586,6 +586,10 @@ Shapes defined so far:
 @foldable @inline dual_type(::Val{N}, ::Type{Expr}) where {N} = NoDual
 @foldable @inline dual_type(::Val{N}, ::Type{Cstring}) where {N} = NoDual
 @foldable @inline dual_type(::Val{N}, ::Type{Cwstring}) where {N} = NoDual
+# Bottom type, mirroring `tangent_type(Union{}) === Union{}` and
+# `lifted_type(Val(N), Union{}) === Union{}` (e.g. a Bottom-typed IR node after a
+# guaranteed-throw call). Without this, `dual_type(Val(N), Union{})` MethodErrors.
+@foldable @inline dual_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 @foldable @inline function dual_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}
 end

@@ -245,9 +245,12 @@ function frule!!(
     key::Lifted,
     default::Lifted,
 ) where {N,K,V,Vdv}
-    x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
-    return Lifted{V,N}(x, dx)
+    _key = primal(key)
+    # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
+    # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
+    # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
+    in(_key, keys(primal(d))) || return default
+    return Lifted{V,N}(primal(d)[_key], tangent(d)[_key])
 end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
@@ -318,6 +321,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
+        # Absent key with a default whose type differs from the dict value type V:
+        # the frule must return the `default` slot, not force `Lifted{V}` (regression).
+        (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0f0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
         (false, :none, nothing, IdDict{Any,Any}),
     ]

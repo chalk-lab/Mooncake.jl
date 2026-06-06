@@ -60,6 +60,20 @@ end
             Mooncake.Lifted{Float64,4,Mooncake.NDual{Float64,4}}
     end
 
+    @testset "dual_type base-case coherence" begin
+        # Bottom type: must mirror tangent_type(Union{}) === Union{} and
+        # lifted_type(Val(N), Union{}) === Union{} (previously MethodError'd).
+        @test Mooncake.dual_type(Val(1), Union{}) === Union{}
+        @test Mooncake.dual_type(Val(3), Union{}) === Union{}
+        # SimpleVector cache-free seed factories must match dual_type === Vector{Any}
+        # (previously the fieldcount-0 fallback returned NTuple{N, Vector{Any}}).
+        sv = Core.svec(1.0, 2.0)
+        @test Mooncake.dual_type(Val(2), Core.SimpleVector) === Vector{Any}
+        @test Mooncake.zero_dual(Val(2), sv) isa Vector{Any}
+        @test Mooncake.uninit_dual(Val(2), sv) isa Vector{Any}
+        @test Mooncake.randn_dual(Val(2), StableRNG(1), sv) isa Vector{Any}
+    end
+
     @testset "seed factories (IEEEFloat scalars)" begin
         # Layer-2 bare inner V.
         v = Mooncake.zero_dual(Val(2), 7.0)

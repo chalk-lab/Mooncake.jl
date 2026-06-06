@@ -1077,6 +1077,16 @@ function _randn_dual_internal(
 ) where {N}
     return Any[_randn_dual_internal(Val(N), rng, v[i], c) for i in 1:length(v)]
 end
+# Cache-free factories: without these, the generic fieldcount-0 fallback returns
+# `NTuple{N, Vector{Any}}` for a `SimpleVector`, mismatching `dual_type === Vector{Any}`.
+for f in (:zero_dual, :uninit_dual)
+    @eval function $f(::Val{N}, v::Core.SimpleVector) where {N}
+        return Any[$f(Val(N), v[i]) for i in 1:length(v)]
+    end
+end
+function randn_dual(::Val{N}, rng::AbstractRNG, v::Core.SimpleVector) where {N}
+    return Any[randn_dual(Val(N), rng, v[i]) for i in 1:length(v)]
+end
 function tangent(x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer) where {N}
     p = primal(x)
     v = tangent(x)

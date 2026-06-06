@@ -88,7 +88,7 @@ function rrule!!(
     elseif FieldName === :im
         a_tangent.im
     else
-        throw(ArgumentError(lazy"lgetfield: Unknown field '$FieldName' for type Complex{$T}."))
+        throw(ArgumentError(lazy"lgetfield: Unknown field '$FieldName' for type $(typeof(a))."))
     end
 
     value_output_fdata = fdata(actual_field_tangent_value)
