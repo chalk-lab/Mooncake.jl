@@ -153,8 +153,10 @@ function frule!!(
     end
     return dest
 end
-# Non-differentiable pointers (V === NoDual, e.g. `Ptr{Vector{Float64}}` — the
-# element type is not an `NDualEltype`): copy the primal data; no tangent to copy.
+# Non-differentiable pointers (V === NoDual, e.g. `Ptr{UInt8}` / `Ptr{Int}` — the
+# element type is non-differentiable, `tangent_type(T) === NoTangent`): copy the primal
+# data; no tangent to copy. (A `Ptr{Vector{Float64}}` is differentiable — its V is
+# `NTuple{Nw, Ptr}`, handled by the V<:NTuple frule above, not this NoDual overload.)
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{Ptr{T},Nw,NoDual},
