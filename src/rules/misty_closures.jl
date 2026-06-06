@@ -268,7 +268,8 @@ end
 # forward it directly to the `_dual_mc`-built callable. Re-lifting here would
 # allocate a fresh, unshared buffer and silently zero the HVP.
 function frule!!(f::Lifted{<:MistyClosure,1}, x::Vararg{Lifted,M}) where {M}
-    return tangent(f).dual_callable(tangent(f).captures_tangent, x...)
+    t = tangent(f)
+    return t.dual_callable(t.captures_tangent, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

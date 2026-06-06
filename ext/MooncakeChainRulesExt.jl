@@ -42,9 +42,9 @@ function frule!!(
     Xp = primal(X_dX)
     Y_partials = ntuple(_ -> similar(Xp), Val(Nw))
     Y_primal = similar(Xp)
-    fill!(Y_primal, zero(P))
     # Per-lane ChainRules call, using a fresh primal copy each time
-    # (LinearAlgebra.exp! mutates).
+    # (LinearAlgebra.exp! mutates). `Y_primal` is fully written by lane 1's `copyto!`
+    # below (Nw ≥ 1), so it needs no pre-fill.
     @inbounds for lane in 1:Nw
         Xc = copy(Xp)
         dXc = copy(tangent(X_dX).partials[lane])
