@@ -1136,6 +1136,12 @@ end
     return NDualArray{Complex{R},N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
 end
 
+# A `Ptr` has no numeric partials to zero (its V is `NTuple{N,Ptr}` of pointers, never a float
+# tangent that could be read as garbage), so its zero forward seed is the uninitialised one — and
+# critically the generic struct fallback would route a `Ptr` field through the 1-arg
+# `zero_tangent(::Ptr)`, which throws. (Constants are now `zero_lifted`, so this path is live.)
+@inline zero_dual(w::Val{N}, x::Ptr) where {N} = uninit_dual(w, x)
+
 @inline function randn_dual(
     ::Val{N}, rng::AbstractRNG, x::A
 ) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
