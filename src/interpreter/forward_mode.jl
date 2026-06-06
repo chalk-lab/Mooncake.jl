@@ -172,11 +172,10 @@ function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     # (read from any arg's type parameter — all slots share the rule's build width).
     W = _lifted_width(first(args))
     group_primal = map(primal, args[nargs:end])
-    # Plain `typeof`, not `_typeof`: `_typeof` per-element-sharpens, so a tuple of Type values
-    # becomes `Tuple{Type{Type{X}},…}` — an impossible type the value is not an instance of
-    # (tuple `isa` is `typeof <: T`), which no `Lifted` ctor can build. `typeof` is always
-    # instance-valid and agrees with `_typeof` for non-Type-valued tuples. (Mirrors reverse,
-    # whose tuple rule also uses plain `typeof`.)
+    # Plain `typeof`, not `_typeof`: `_typeof` per-element-sharpens, so a tuple of `Type` values
+    # becomes `Tuple{Type{X},…}`, but the value's runtime type is `Tuple{DataType,…}` — not a
+    # subtype (`isa` is `typeof <: T`), so that sharpened slot type is one no `Lifted` ctor can
+    # build. `typeof` is always instance-valid and agrees with `_typeof` for non-Type-valued tuples.
     GP = typeof(group_primal)
     # An all-non-differentiable (or empty) vararg group has `dual_type === NoDual`; its slot
     # carries a single `NoDual`, not the element-wise `Tuple{NoDual,…}`. Collapse to match the
