@@ -1078,7 +1078,7 @@ end
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
 function frule!!(f::Lifted{typeof(lgetfield),Nw}, x::Lifted, name::Lifted{<:Val}) where {Nw}
-    return frule!!(f, x, name, Lifted{Val{:not_atomic},Nw}(Val(:not_atomic), NoTangent()))
+    return frule!!(f, x, name, Lifted{Val{:not_atomic},Nw}(Val(:not_atomic), NoDual()))
 end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}

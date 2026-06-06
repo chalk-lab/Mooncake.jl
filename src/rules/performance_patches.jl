@@ -159,8 +159,8 @@ end
 } where {T<:Union{Float32,Float64}}
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
-    x1::Lifted{<:AbstractVecOrMat{T}},
-    x2::Lifted{<:AbstractVecOrMat{T}},
+    x1::Lifted{<:AbstractVecOrMat{T},N},
+    x2::Lifted{<:AbstractVecOrMat{T},N},
 ) where {N,T<:Union{Float32,Float64}}
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
