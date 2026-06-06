@@ -234,7 +234,11 @@ end
     p = primal(x)
     v = tangent(x)
     t = similar(p, tangent_type(eltype(P)))
-    _map_if_assigned!((pe, ve) -> tangent(Lifted{eltype(P),N}(pe, ve), lane), t, p, v)
+    # Build each element's slot from the CONCRETE `typeof(pe)`, not the static
+    # `eltype(P)`: for an abstract-eltype array (e.g. `Vector{Distribution}` holding
+    # `Normal`s) the abstract type has no fields, so `eltype(P)` would make the
+    # struct-lift do `fieldtype(Distribution, :μ)` and throw.
+    _map_if_assigned!((pe, ve) -> tangent(Lifted{typeof(pe),N}(pe, ve), lane), t, p, v)
     return t
 end
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}

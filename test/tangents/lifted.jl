@@ -18,6 +18,11 @@ mutable struct LiftedTest_MaybeInit
     y::Float64
     LiftedTest_MaybeInit(x::Float64) = new(x)
 end
+abstract type LiftedTest_AbsScalar end
+struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
+    μ::Float64
+    σ::Float64
+end
 
 @testset "lifted" begin
     @testset "cyclic MutableDual tangent arithmetic" begin
@@ -525,6 +530,33 @@ end
         # Other lane unchanged.
         view2 = Mooncake.tangent(slot, 2)
         @test view2.v === 0.0
+    end
+
+    @testset "AoS Vector with abstract eltype (concrete struct elements)" begin
+        # Regression: a `Vector{<:abstract}` holding concrete structs (e.g.
+        # `Vector{Distribution}` of `Normal`s) must extract each element's lane
+        # tangent via the CONCRETE `typeof(pe)`. The abstract static `eltype(P)`
+        # has no fields, so the struct-lift previously did `fieldtype(<abstract>, :μ)`
+        # and threw "type ... has no field μ" (the distributions-1.10 failure).
+        N = 2
+        v = LiftedTest_AbsScalar[
+            LiftedTest_ConcScalar(1.0, 2.0), LiftedTest_ConcScalar(3.0, 4.0)
+        ]
+        slot = Mooncake.zero_lifted(Val(N), v)
+        @test slot isa Mooncake.Lifted{Vector{LiftedTest_AbsScalar},N}
+
+        for lane in 1:N
+            t = Mooncake.tangent(slot, lane)
+            @test t isa AbstractVector && length(t) == 2
+            @test t[1] isa Mooncake.Tangent
+            nt = getfield(t[1], :fields)
+            @test nt.μ === 0.0 && nt.σ === 0.0
+        end
+
+        # Width-1 boundary unpack (the `unlift` path used by `test_frule_correctness`).
+        _, ts = Mooncake.unlift(Mooncake.zero_lifted(Val(1), v))
+        @test ts isa AbstractVector && length(ts) == 2
+        @test ts[1] isa Mooncake.Tangent
     end
 
     @testset "frule!! one-to-one parallels (builtins.jl abs/add)" begin
