@@ -2907,36 +2907,37 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-# Width-1 lane-1 tangent extraction for the canonical forward V shapes that
-# appear as `Broadcasted.args` entries, used by the `materialize` /
-# `materialize!` frules below to reconstruct a legacy reverse-mode-shaped
-# Broadcasted tangent (which the existing `_prepare_gpu_broadcast` /
-# `_gpu_bcast_leaves` helpers consume).
-@inline _lane1_bc_tangent(::Mooncake.NoDual, _) = NoTangent()
-@inline _lane1_bc_tangent(::Mooncake.NoTangent, _) = NoTangent()
-@inline _lane1_bc_tangent(::Tuple{Mooncake.NoTangent}, _) = NoTangent()
-@inline _lane1_bc_tangent(::Tuple{Mooncake.NoDual}, _) = NoTangent()
-@inline _lane1_bc_tangent(v::Nfwd.NDual{T,1}, _) where {T} = v.partials[1]
-@inline _lane1_bc_tangent(v::Nfwd.NDualArray{T,1}, _) where {T} = v.partials[1]
-@inline function _lane1_bc_tangent(v::Complex{Nfwd.NDual{R,1}}, _) where {R}
-    return Complex(real(v).partials[1], imag(v).partials[1])
+# Per-lane tangent extraction for the canonical forward V shapes that appear as
+# `Broadcasted.args` entries, used by the `materialize` / `materialize!` frules
+# below to reconstruct a legacy reverse-mode-shaped Broadcasted tangent (which
+# the existing `_prepare_gpu_broadcast` / `_gpu_bcast_leaves` helpers consume).
+# `lane` selects the chunk slot, so each lane reuses the single dual-broadcast
+# kernel for an independent JVP.
+@inline _bc_tangent(::Mooncake.NoDual, _, _) = NoTangent()
+@inline _bc_tangent(::Mooncake.NoTangent, _, _) = NoTangent()
+@inline _bc_tangent(::Tuple{Mooncake.NoTangent}, _, _) = NoTangent()
+@inline _bc_tangent(::Tuple{Mooncake.NoDual}, _, _) = NoTangent()
+@inline _bc_tangent(v::Nfwd.NDual{T,N}, _, lane) where {T,N} = v.partials[lane]
+@inline _bc_tangent(v::Nfwd.NDualArray{T,N}, _, lane) where {T,N} = v.partials[lane]
+@inline function _bc_tangent(v::Complex{Nfwd.NDual{R,N}}, _, lane) where {R,N}
+    return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
-@inline function _lane1_bc_tangent(v::ImmutableDual, p::Broadcasted)
+@inline function _bc_tangent(v::ImmutableDual, p::Broadcasted, lane)
     nt = v.value
     targs = ntuple(length(p.args)) do i
-        _lane1_bc_tangent(nt.args[i], p.args[i])
+        _bc_tangent(nt.args[i], p.args[i], lane)
     end
     return Tangent((; style=NoTangent(), f=NoTangent(), args=targs, axes=NoTangent()))
 end
 # Wrapper-arg fall-throughs: Transpose/Adjoint primals with parent NDualArray V.
-@inline function _lane1_bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint})
-    parent_tangent = _lane1_bc_tangent(v.value.parent, parent(p))
+@inline function _bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint}, lane)
+    parent_tangent = _bc_tangent(v.value.parent, parent(p), lane)
     return Tangent((; parent=parent_tangent))
 end
 # Generic Ref/struct primal with ImmutableDual or MutableDual V — the
 # Broadcast `args` may include e.g. `RefValue{F}` (non-diff inner) which the
 # legacy bare-Dual path treated as NoTangent.
-@inline function _lane1_bc_tangent(v::Union{ImmutableDual,MutableDual}, _)
+@inline function _bc_tangent(v::Union{ImmutableDual,MutableDual}, _, _)
     # The fall-through reaches here only for V's the more-specific Broadcasted /
     # wrapper overloads above didn't capture — those should be tangent-free
     # under the legacy reverse-mode shape.
@@ -2944,23 +2945,31 @@ end
 end
 
 function frule!!(
-    ::Lifted{typeof(Base.Broadcast.materialize),1},
-    bc::Lifted{<:Broadcasted{<:CuArrayStyle},1,<:ImmutableDual},
-)
+    ::Lifted{typeof(Base.Broadcast.materialize),Nw},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},Nw,<:ImmutableDual},
+) where {Nw}
     bc_primal = primal(bc)
-    bc_tangent = _lane1_bc_tangent(tangent(bc), bc_primal)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, bc_tangent)
-
+    bc_V = tangent(bc)
+    # `out`, `decoded`, `flat_bc`, and `flat_pargs` are primal-only (lane-independent),
+    # so run the single dual-broadcast kernel once and reuse it for every lane's JVP.
+    _, flat_bc, flat_pargs, _ = _prepare_gpu_broadcast(
+        bc_primal, _bc_tangent(bc_V, bc_primal, 1)
+    )
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
     if !decoded.is_diff
-        return Lifted{typeof(out),1}(out, NoDual())
+        return Lifted{typeof(out),Nw}(out, NoDual())
     end
-    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
+    dy_lanes = ntuple(Val(Nw)) do k
+        flat_ts_k = _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, k))[4]
+        _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts_k, out)
+    end
     A = typeof(decoded.primal_out)
     T = eltype(A)
     D = ndims(A)
-    return Lifted{A,1}(decoded.primal_out, NDualArray{T,1,D,A}(decoded.primal_out, (dy,)))
+    return Lifted{A,Nw}(
+        decoded.primal_out, NDualArray{T,Nw,D,A}(decoded.primal_out, dy_lanes)
+    )
 end
 
 function rrule!!(
@@ -3025,27 +3034,34 @@ end
     } where {P<:CuMaybeComplexArray},
 )
 function frule!!(
-    ::Lifted{typeof(Base.Broadcast.materialize!),1},
-    dest::Lifted{P,1,<:NDualArray},
-    bc::Lifted{<:Broadcasted{<:CuArrayStyle},1,<:ImmutableDual},
-) where {P<:CuMaybeComplexArray}
+    ::Lifted{typeof(Base.Broadcast.materialize!),Nw},
+    dest::Lifted{P,Nw,<:NDualArray},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},Nw,<:ImmutableDual},
+) where {P<:CuMaybeComplexArray,Nw}
     bc_primal = primal(bc)
-    bc_tangent = _lane1_bc_tangent(tangent(bc), bc_primal)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, bc_tangent)
-
+    bc_V = tangent(bc)
+    # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
+    _, flat_bc, flat_pargs, _ = _prepare_gpu_broadcast(
+        bc_primal, _bc_tangent(bc_V, bc_primal, 1)
+    )
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     pout = primal(dest)
-    dout = tangent(dest).partials[1]
+    dest_partials = tangent(dest).partials
     decoded = _gpu_decode_ndual_output(
         Val(:broadcast), dual_out, flat_pargs; extract_primal=false
     )
     _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
     if !decoded.is_diff
-        fill!(dout, zero(eltype(dout)))
+        for lane in 1:Nw
+            fill!(dest_partials[lane], zero(eltype(dest_partials[lane])))
+        end
         return dest
     end
-    dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
-    copyto!(dout, dy)
+    for lane in 1:Nw
+        flat_ts = _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
+        dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
+        copyto!(dest_partials[lane], dy)
+    end
     return dest
 end
 function rrule!!(
