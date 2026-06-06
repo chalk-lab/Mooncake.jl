@@ -258,7 +258,7 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
-### Forward mode: pointers into a tangent are array-of-structs, not struct-of-arrays
+### Forward mode: pointers into a tangent are struct-of-arrays, not array-of-structs
 
 Reverse mode stores the tangent of a value as a separate object with the *same memory layout* as the
 primal (array-of-structs). Forward mode interleaves each lane's partial alongside the primal inside an
