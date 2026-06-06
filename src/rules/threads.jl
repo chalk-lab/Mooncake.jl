@@ -3,7 +3,7 @@
 end
 
 # Lifted analog — same body shape (run the foreigncall on extracted primals,
-# wrap the result in a Lifted slot with `NoTangent` V since these threading
+# wrap the result in a Lifted slot with `NoDual` V since these threading
 # foreigncalls all produce non-differentiable results: Cint, Nothing, Task,
 # Bool, etc.). Width N comes from the per-rule signature below.
 @inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
