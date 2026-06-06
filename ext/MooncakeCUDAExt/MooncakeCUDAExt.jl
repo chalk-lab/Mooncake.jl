@@ -1562,21 +1562,28 @@ end
 # a bare Dual{<:CuGpuSumFArray}; we replicate its body inline using the
 # Lifted-shaped tangent access path.
 function frule!!(
-    ::Lifted{typeof(sum),1}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,1,<:NDualArray}
-)
+    ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
+) where {Nw}
     _check_gpu_sum_f(primal(f))
     flat_px = primal(x)
-    flat_dx = tangent(x).partials[1]
+    x_partials = tangent(x).partials
+    # One dual broadcast computes f and df/dx for every element; each lane then reuses
+    # `out` for a cheap reduction against that lane's input tangent.
     out = _gpu_broadcast_dual(primal(f), flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
-    dy = if decoded.is_diff
-        _gpu_accumulate_reduced_jvp(out, (flat_px,), (flat_dx,), decoded.primal_out)
+    dy_lanes = if decoded.is_diff
+        ntuple(
+            k -> _gpu_accumulate_reduced_jvp(
+                out, (flat_px,), (x_partials[k],), decoded.primal_out
+            ),
+            Val(Nw),
+        )
     else
-        zero(decoded.primal_out)
+        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
     end
     P_out = typeof(decoded.primal_out)
-    return Lifted{P_out,1}(
-        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, (dy,))
+    return Lifted{P_out,Nw}(
+        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
     )
 end
 
@@ -1596,26 +1603,33 @@ end
 
 # Transpose/Adjoint of CuFloatArray — V is ImmutableDual{@NamedTuple{parent::NDualArray}}.
 function frule!!(
-    ::Lifted{typeof(sum),1},
+    ::Lifted{typeof(sum),Nw},
     f::Lifted,
     x::Lifted{
         <:Union{Adjoint{<:IEEEFloat,<:CuFloatArray},Transpose{<:IEEEFloat,<:CuFloatArray}},
-        1,
+        Nw,
         <:ImmutableDual,
     },
-)
+) where {Nw}
     _check_gpu_sum_f(primal(f))
     flat_px = parent(primal(x))
-    flat_dx = tangent(x).value.parent.partials[1]
+    x_partials = tangent(x).value.parent.partials
     out = _gpu_broadcast_dual(primal(f), flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
-    dy = if decoded.is_diff
-        _gpu_accumulate_reduced_jvp(out, (flat_px,), (flat_dx,), decoded.primal_out)
+    dy_lanes = if decoded.is_diff
+        ntuple(
+            k -> _gpu_accumulate_reduced_jvp(
+                out, (flat_px,), (x_partials[k],), decoded.primal_out
+            ),
+            Val(Nw),
+        )
     else
-        zero(decoded.primal_out)
+        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
     end
     P_out = typeof(decoded.primal_out)
-    return Lifted{P_out,1}(decoded.primal_out, NDual{P_out,1}(decoded.primal_out, (dy,)))
+    return Lifted{P_out,Nw}(
+        decoded.primal_out, NDual{P_out,Nw}(decoded.primal_out, dy_lanes)
+    )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
