@@ -629,20 +629,76 @@ end
     frule_wrapper(f::Lifted, args::Lifted...)
 
 Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
-Converts each Lifted's V back to a tangent_type-shaped value via `last ∘ unlift`,
-calls `CRC.frule`, then re-lifts the result.
+
+`ChainRulesCore.frule` computes one JVP per call, so a chunked slot of width `Nw`
+is handled by calling it once per lane: lane `k`'s arg tangents come from
+`tangent(arg, k)`, and the `Nw` resulting output tangents are packed back into a
+single width-`Nw` output slot.
 """
-function frule_wrapper(fargs::Vararg{Lifted,N}) where {N}
+function frule_wrapper(fargs::Vararg{Lifted,Nargs}) where {Nargs}
+    return _frule_wrapper(Val(_lifted_width(fargs[1])), fargs)
+end
+
+function frule_wrapper(
+    fkw::Lifted{typeof(Core.kwcall)}, fargs::Vararg{Lifted,Nargs}
+) where {Nargs}
+    return _frule_wrapper_kw(Val(_lifted_width(fkw)), fargs)
+end
+
+@inline function _frule_wrapper(::Val{1}, fargs)
     tangents = tuple_map(to_cr_tangent ∘ last ∘ unlift, fargs)
     Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
     return lift(Ω, mooncake_tangent(Ω, dΩ))
 end
 
-function frule_wrapper(::Lifted{typeof(Core.kwcall)}, fargs::Vararg{Lifted,N}) where {N}
+@inline function _frule_wrapper(::Val{Nw}, fargs) where {Nw}
+    primals = tuple_map(primal, fargs)
+    lanes = ntuple(Val(Nw)) do k
+        CRC.frule(tuple_map(s -> to_cr_tangent(tangent(s, k)), fargs), primals...)
+    end
+    Ω = lanes[1][1]
+    return _lift_from_lanes(Ω, ntuple(k -> mooncake_tangent(Ω, lanes[k][2]), Val(Nw)))
+end
+
+@inline function _frule_wrapper_kw(::Val{1}, fargs)
     primals = map(primal, fargs)
     tangents = map(to_cr_tangent ∘ last ∘ unlift, fargs[2:end])
     Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
     return lift(Ω, mooncake_tangent(Ω, dΩ))
+end
+
+@inline function _frule_wrapper_kw(::Val{Nw}, fargs) where {Nw}
+    primals = map(primal, fargs)
+    rest = fargs[2:end]
+    lanes = ntuple(Val(Nw)) do k
+        tangents = map(s -> to_cr_tangent(tangent(s, k)), rest)
+        Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
+    end
+    Ω = lanes[1][1]
+    return _lift_from_lanes(Ω, ntuple(k -> mooncake_tangent(Ω, lanes[k][2]), Val(Nw)))
+end
+
+# Pack a primal result `y` and its `Nw` per-lane mooncake tangents into the
+# canonical width-`Nw` output slot. Covers the `@from_chainrules`-supported
+# result surface — real/complex scalars and dense arrays of those; a fully
+# non-differentiable result yields `NoDual`.
+@inline function _lift_from_lanes(y::T, dys::NTuple{Nw,T}) where {T<:IEEEFloat,Nw}
+    return Lifted{T,Nw}(y, NDual{T,Nw}(y, dys))
+end
+@inline function _lift_from_lanes(
+    y::Complex{R}, dys::NTuple{Nw,Complex{R}}
+) where {R<:IEEEFloat,Nw}
+    re_nd = NDual{R,Nw}(real(y), map(real, dys))
+    im_nd = NDual{R,Nw}(imag(y), map(imag, dys))
+    return Lifted{Complex{R},Nw}(y, Complex{NDual{R,Nw}}(re_nd, im_nd))
+end
+@inline function _lift_from_lanes(
+    y::A, dys::NTuple{Nw,A}
+) where {E<:NDualEltype,D,A<:Array{E,D},Nw}
+    return Lifted{A,Nw}(y, NDualArray{E,Nw,D,A}(y, dys))
+end
+@inline function _lift_from_lanes(y::P, ::NTuple{Nw,NoTangent}) where {P,Nw}
+    return Lifted{P,Nw}(y, NoDual())
 end
 
 function construct_frule_wrapper_def(arg_names, arg_types, where_params)
