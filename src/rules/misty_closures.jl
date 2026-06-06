@@ -39,7 +39,7 @@ end
 # We pass skip_world_age_check=true since build_frule's safety check would incorrectly
 # reject our intentionally-older interpreter.
 #
-function _dual_mc(p::MistyClosure)
+function _dual_mc(p::MistyClosure, chunk_size::Int=1)
     @static if VERSION > v"1.12-"
         # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
         # The oc.world can be slightly newer than valid_worlds.max_world if methods were
@@ -50,7 +50,7 @@ function _dual_mc(p::MistyClosure)
         mc_world = UInt(p.oc.world)
     end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true)
+    return build_frule(interp, p; skip_world_age_check=true, chunk_size)
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
@@ -105,20 +105,20 @@ end
 for internal in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval function $internal(w::Val{N}, p::MistyClosure, d::MaybeCache) where {N}
         cap = p.oc.captures
-        haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p))
+        haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p, N))
         lc = Lifted{typeof(cap),N}(cap, $internal(w, cap, d))
         d[cap] = lc
-        return MistyClosureTangent(lc, _dual_mc(p))
+        return MistyClosureTangent(lc, _dual_mc(p, N))
     end
 end
 function _randn_dual_internal(
     w::Val{N}, rng::AbstractRNG, p::MistyClosure, d::MaybeCache
 ) where {N}
     cap = p.oc.captures
-    haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p))
+    haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p, N))
     lc = Lifted{typeof(cap),N}(cap, _randn_dual_internal(w, rng, cap, d))
     d[cap] = lc
-    return MistyClosureTangent(lc, _dual_mc(p))
+    return MistyClosureTangent(lc, _dual_mc(p, N))
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:MistyClosureTangent}
@@ -267,7 +267,7 @@ end
 # forward-over-reverse, shared) forward captures slot built at lift time, so
 # forward it directly to the `_dual_mc`-built callable. Re-lifting here would
 # allocate a fresh, unshared buffer and silently zero the HVP.
-function frule!!(f::Lifted{<:MistyClosure,1}, x::Vararg{Lifted,M}) where {M}
+function frule!!(f::Lifted{<:MistyClosure,N}, x::Vararg{Lifted,M}) where {N,M}
     t = tangent(f)
     return t.dual_callable(t.captures_tangent, x...)
 end
