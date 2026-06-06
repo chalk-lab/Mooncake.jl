@@ -125,10 +125,10 @@ tangent(f::IdDict, ::NoRData) = f
 # Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
 # value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
 # (one dict, K → tangent_type(V)) but with V replaced by `dual_type(Val(N), V)`.
-@inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+@foldable @inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
     return IdDict{K,dual_type(Val(N), V)}
 end
-@inline function lifted_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+@foldable @inline function lifted_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
     return Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N), V)}}
 end
 

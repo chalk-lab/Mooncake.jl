@@ -1024,7 +1024,7 @@ end
 # `svec` / `_svec_ref` frules build avoids the OpaqueClosure return typeassert-reject in
 # forward-over-reverse, where `svec` sparams (all non-differentiable) flow through rule
 # construction as an all-`NoDual` `Vector{Any}`.
-@inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = Vector{Any}
+@foldable @inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = Vector{Any}
 function frule!!(
     ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
 ) where {Nw}

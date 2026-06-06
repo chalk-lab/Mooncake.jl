@@ -77,8 +77,8 @@ const TaskCoDual = CoDual{Task,TaskTangent}
 # Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.
 # All Task fields are non-differentiable, so the tangent carries no lane
 # data; we keep one shared `TaskTangent` per slot independent of width N.
-@inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
-@inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
+@foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
+@foldable @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
 
 # Forward seed factories: a `Task`'s V is the singleton `TaskTangent` (= its reverse tangent),
 # not a structural lift, so the generic `@generated` seed factory cannot build it (a `Task`

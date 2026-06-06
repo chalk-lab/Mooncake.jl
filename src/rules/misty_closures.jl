@@ -64,7 +64,8 @@ tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 # tangent buffer — which they do when both are lifted within one operation that
 # threads the aliasing cache `c` (keyed by the primal captures identity). The
 # `dual_callable` is the forward rule built by `_dual_mc`.
-dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} = MistyClosureTangent
+@foldable @inline dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} =
+    MistyClosureTangent
 lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
 function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict})
     lifted_captures = _lift_mc_captures(x.oc.captures, ẋ.captures_tangent, c)

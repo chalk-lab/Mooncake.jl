@@ -103,7 +103,7 @@ end
 # (carved out below so the generic structural lift does not recurse into the wrapper's
 # `Ptr` fields), and `lift` just wraps the tangent — its `frule_wrapper` already closes
 # over `dobj_ref`, so the lane direction propagates through `frule!!`.
-dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} = tangent_type(P)
+@foldable dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} = tangent_type(P)
 lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
 function lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent, ::Union{Nothing,IdDict})
     return Lifted{typeof(x),1,typeof(ẋ)}(x, ẋ)

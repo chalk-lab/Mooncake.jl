@@ -71,10 +71,14 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 # differentiable fields.
 #
 
-@inline function dual_type(::Val{N}, ::Type{TwicePrecision{P}}) where {N,P<:IEEEFloat}
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{TwicePrecision{P}}
+) where {N,P<:IEEEFloat}
     return NTuple{N,TwicePrecision{P}}
 end
-@inline function lifted_type(::Val{N}, ::Type{TwicePrecision{P}}) where {N,P<:IEEEFloat}
+@foldable @inline function lifted_type(
+    ::Val{N}, ::Type{TwicePrecision{P}}
+) where {N,P<:IEEEFloat}
     return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
 end
 

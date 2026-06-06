@@ -114,7 +114,7 @@ end
 # `_build_rule!` (lazy rule construction inside a forward pass, forward-over-
 # reverse) seed the interpreter slot without lifting the entire compiler-cache
 # structure.
-@inline dual_type(::Val{N}, ::Type{<:MooncakeInterpreter}) where {N} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{<:MooncakeInterpreter}) where {N} = NoDual
 @inline zero_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
 @inline uninit_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
 # A `MooncakeInterpreter` is non-diff, so its only tangent kinds are `NoTangent`/`NoDual`. Match those
