@@ -20,7 +20,8 @@ using AbstractGPs,
     Zygote
 
 using Mooncake:
-    Dual,
+    Lifted,
+    lift,
     CoDual,
     hand_written_rule_test_cases,
     derived_rule_test_cases,
@@ -28,12 +29,12 @@ using Mooncake:
     _typeof,
     primal,
     tangent,
-    zero_dual,
+    zero_lifted,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
 
-to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
+to_benchmark(__frule!!::R, dx::Vararg{Lifted,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -222,20 +223,36 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Benchmark AD via Mooncake.
+            # Benchmark forward-mode AD via Mooncake. Forward mode has documented gaps
+            # (e.g. some raw-pointer foreigncalls), so tolerate a per-case failure and
+            # leave `mooncake_fwd` unset for that case rather than aborting the sweep.
             @info "Mooncake (Forward)"
-            rule = Mooncake.build_frule(args...)
-            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-            to_benchmark(rule, copy_coduals(duals...)...)
-            include_other_frameworks && GC.gc(true)
-            suite["mooncake_fwd"] = Chairmarks.benchmark(
-                () -> (rule, duals),
-                ((rule, duals),) -> (rule, copy_coduals(duals...)),
-                a -> to_benchmark(a[1], a[2]...),
-                _ -> GC.gc(false);
-                evals=1,
-                seconds=seconds,
-            )
+            try
+                rule = Mooncake.build_frule(args...)
+                # Forward inputs are width-1 `Lifted` slots. CoDual args (e.g. `Ptr`/array
+                # cases that can't be zero-seeded from the primal alone) are lifted from
+                # their existing primal+tangent; other args get a zero seed (fine for
+                # timing — the frule does the same work regardless of tangent values).
+                lifts = map(
+                    x ->
+                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
+                    args,
+                )
+                to_benchmark(rule, copy_coduals(lifts...)...)
+                include_other_frameworks && GC.gc(true)
+                suite["mooncake_fwd"] = Chairmarks.benchmark(
+                    () -> (rule, lifts),
+                    ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
+                    a -> to_benchmark(a[1], a[2]...),
+                    _ -> GC.gc(false);
+                    evals=1,
+                    seconds=seconds,
+                )
+            catch err
+                @warn "Mooncake forward-mode benchmark skipped for this case" exception = (
+                    err, catch_backtrace()
+                )
+            end
 
             if include_other_frameworks
                 if should_run_benchmark(Val(:zygote), args...)
@@ -293,7 +310,8 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = median(d["primal"]).time
     mooncake_time = median(d["mooncake"]).time
-    mooncake_fwd_time = median(d["mooncake_fwd"]).time
+    mooncake_fwd_time =
+        in("mooncake_fwd", keys(d)) ? median(d["mooncake_fwd"]).time : missing
     zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
