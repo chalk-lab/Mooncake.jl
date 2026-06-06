@@ -8,9 +8,9 @@
 # `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more specific and
 # take precedence.
 #
-# Assumes `M == fieldcount(P)` for the struct-lift case — padding for
-# default-initialized fields via `PossiblyUninitTangent` (matching
-# `build_output_tangent`'s behaviour) is deferred to a follow-up.
+# For the struct-lift case, constructor-omitted fields (`i > M` of `fieldcount(P)`)
+# are padded with uninitialised backing (`fieldtype(backing, i)()`), matching
+# `build_output_tangent`'s `PossiblyUninitTangent` behaviour.
 @generated function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,M}
 ) where {P,Nw,M}

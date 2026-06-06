@@ -149,7 +149,7 @@ verify_dual_type(::Lifted) = true
     extract(d::Lifted) -> (primal, value)
 
 Helper that returns the `(primal(d), tangent(d))` tuple. Mirrors
-`extract(::Dual)` and `extract(::CoDual)` for symmetric ergonomics.
+`extract(::CoDual)` for symmetric ergonomics.
 """
 extract(d::Lifted) = (primal(d), tangent(d))
 
@@ -1187,10 +1187,11 @@ end
 # ── Tuple seed factories (concrete tuple) ───────────────────────────────────
 #
 # Element-wise build via Tuple-aware `map`. Each element's dispatch picks its own seed factory
-# recursively. Gate on `dual_type === NoDual` (NOT `tangent_type === NoTangent`): a wholly-non-diff
-# tuple collapses to `NoDual`, but the EMPTY tuple has `dual_type(Tuple{}) === Tuple{}` (not NoDual)
-# even though `tangent_type(Tuple{}) === NoTangent` — so it must seed to `()`, not `NoDual()` (e.g.
-# a `ReshapedArray`'s empty `mi::Tuple{}` field).
+# recursively. Gate on `dual_type === NoDual` (the forward query) for consistency with the other
+# forward factories. An empty tuple has `dual_type(Tuple{}) === NoDual` (matching
+# `tangent_type(Tuple{}) === NoTangent`), so it seeds to `NoDual()` — e.g. a `ReshapedArray`'s empty
+# `mi::Tuple{}` field. (The private cons helper `_dual_tuple_v(Tuple{})` returns `Tuple{}` as its
+# recursion base case — an implementation detail distinct from the public `dual_type`.)
 
 @inline function zero_dual(w::Val{N}, x::Tuple) where {N}
     dual_type(w, typeof(x)) === NoDual && return NoDual()

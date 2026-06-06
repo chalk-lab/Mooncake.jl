@@ -438,8 +438,9 @@ function populate_address_map_internal(
 end
 
 # Disambiguators only (never fire — a Tuple/non-diff primal never pairs with a struct-dual V): resolve the
-# ambiguity between the `t::Dual` method above (p untyped) and the p-specific methods below (t untyped).
-# Each matches one p-specific method's exact `p`-set with `Dual` `t`. No address to track: return `m`.
+# ambiguity between the `t::Union{ImmutableDual,MutableDual}` method above (p untyped) and the p-specific
+# methods below (t untyped). Each matches one p-specific method's exact `p`-set with that dual `t`. No
+# address to track: return `m`.
 function populate_address_map_internal(
     m::AddressMap,
     ::Union{Tuple,NamedTuple},

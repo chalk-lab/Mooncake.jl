@@ -344,10 +344,10 @@ function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# Lifted-arg parallels for every bare-Dual frule above.
+# Forward `frule!!`s for the BFloat16 primitives (the matching `rrule!!`s are above).
 #
 # V for BFloat16 is `NTuple{Nw, BFloat16}` (defined at the top of this
-# module). Bodies mirror the bare-Dual derivative formulas with a per-lane
+# module). Each body applies the primitive's derivative with a per-lane
 # `ntuple` over the partials tuple. For BFloat16 → Float32/Float64
 # conversion rules, the output V is `NDual{F, Nw}` because the output
 # primal is in `IEEEFloat`.
