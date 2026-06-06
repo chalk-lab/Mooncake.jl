@@ -478,8 +478,8 @@ end
 
 # ──────────────────────────────────────────────────────────────────────────
 # `MutableDualTangentView{SD, P}` — per-lane proxy view for mutable struct
-# slots (dual-types.md §13.6). The view is an immutable struct with three
-# fields:
+# slots (an immutable view that delegates `setproperty!` to the parent
+# `MutableDual`). The view is an immutable struct with three fields:
 #
 #   parent::SD  — the underlying `MutableDual` (writeback target).
 #   primal::P   — back-reference to the slot's primal struct.
@@ -559,7 +559,7 @@ Shapes defined so far:
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
 - `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
-  — the SoA canonical V wrapper (see §14 in dual-types.md).
+  — the SoA canonical V wrapper (`primal` aliases user storage; `partials` are slot-local).
 - `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}`
   — complex-eltype SoA variant.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
@@ -571,7 +571,7 @@ Shapes defined so far:
 - Concrete struct `P` (mutable): `MutableDual{NamedTuple{...}}` — mutable
   counterpart for in-place tangent updates.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
-  `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (§14.2).
+  `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (per-lane `MemoryRef` partials).
 """
 @foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
@@ -682,8 +682,7 @@ end
 end
 # MemoryRef canonical V (Julia 1.11+); paired with NDualMemoryRef above.
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
-# an NDualArray over `Memory{T}` (per dual-types.md §14: "Memory{T}
-# (1.11+) → NDualArray{T, N, 1, Memory{T}}").
+# an NDualArray over `Memory{T}`: `Memory{T} → NDualArray{T, N, 1, Memory{T}}`.
 @static if VERSION >= v"1.11-rc4"
     @inline function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}
@@ -1603,7 +1602,7 @@ end
 # ── MemoryRef seed factories (Julia 1.11+) ──────────────────────────────────
 #
 # `uninit_dual` / `randn_dual` for MemoryRef are deferred — `zero_dual` is
-# the canonical entry point per §14.2 (bits-element dense zero-init).
+# the canonical entry point (bits-element dense zero-init).
 
 @static if VERSION >= v"1.11-rc4"
     @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}

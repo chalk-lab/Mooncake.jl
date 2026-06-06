@@ -2062,8 +2062,8 @@ end
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualArray{Element, N, D, A, Wrapped}` — SoA canonical V for arrays.
 #
-# Per dual-types.md §14: `primal::A` aliases user storage; `partials::NTuple{N, A}`
-# holds slot-local lane tangents. `Wrapped` is determined by `(Element, N)`
+# `primal::A` aliases user storage; `partials::NTuple{N, A}` holds slot-local
+# lane tangents (separately allocated, same shape). `Wrapped` is determined by `(Element, N)`
 # — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
 # `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
 # element-wise code through the array interface continues to dispatch; element
@@ -2128,9 +2128,8 @@ end
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
 # primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
-# cover it. Per dual-types.md §14.2: `partials[k]` is a framework-allocated
-# `MemoryRef` at the same offset as `primal`, into a fresh
-# `Memory{Element}` of the same length.
+# cover it. `partials[k]` is a framework-allocated `MemoryRef` at the same
+# offset as `primal`, into a fresh `Memory{Element}` of the same length.
 # ──────────────────────────────────────────────────────────────────────────
 
 @static if VERSION >= v"1.11-rc4"
@@ -2143,7 +2142,7 @@ end
 
     # Zero-init seed: allocate fresh slot-local partials at the same offset
     # as `primal`. Element types in `NDualEltype` are bits types, so undef
-    # iteration is not needed (§14.2 vs §14.1.2).
+    # iteration is not needed.
     @inline function NDualMemoryRef{Element,N,M}(
         p::MemoryRef{Element}
     ) where {Element<:NDualEltype,N,M<:Memory{Element}}
