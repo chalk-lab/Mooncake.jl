@@ -49,7 +49,9 @@ import Mooncake:
     Stack,
     lift,
     lifted_type,
-    unlift
+    randn_lifted,
+    uninit_lifted,
+    zero_lifted
 
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
@@ -78,15 +80,16 @@ function _construct_rrule_types(R, A)
     return fwd_oc_type, rvs_oc_type, fwd_sig, rvs_sig
 end
 
-function _construct_frule_types(R, A)
+function _construct_frule_types(R, A, (::Val{N})=Val(1)) where {N}
     # Convert signature into a tuple of types.
     primal_arg_types = (A.parameters...,)
 
-    # Signature and OpaqueClosure type for forward pass.
-    # Post-cutover `build_frule` returns a Lifted-dispatched callable, so
-    # the OC signature uses width-1 lifted_type for each arg and return.
-    fwd_sig = Tuple{map(P -> lifted_type(Val(1), P), primal_arg_types)...}
-    fwd_ret_type = lifted_type(Val(1), R)
+    # Signature and OpaqueClosure type for the forward pass. `build_frule` returns a
+    # Lifted-dispatched callable, so the OC signature uses width-`N` lifted_type for each arg
+    # and return. The reverse tangent uses N = 1 (its `frule_wrapper` field is never run);
+    # the forward V (`dual_type(Val(N), ...)`) uses the chunk width N.
+    fwd_sig = Tuple{map(P -> lifted_type(Val(N), P), primal_arg_types)...}
+    fwd_ret_type = lifted_type(Val(N), R)
     fwd_oc_type = Core.OpaqueClosure{fwd_sig,fwd_ret_type}
     return fwd_oc_type, fwd_sig, fwd_ret_type
 end
@@ -97,13 +100,20 @@ end
     return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
 end
 
-# Forward-mode canonical V is the same `FunctionWrapperTangent` as the reverse tangent
-# (it serves as its own fdata, holds both the `fwds_wrapper` and the `frule_wrapper`, and
-# is width-1 only). So `dual_type === tangent_type`, the forward seed IS the reverse seed
-# (carved out below so the generic structural lift does not recurse into the wrapper's
-# `Ptr` fields), and `lift` just wraps the tangent — its `frule_wrapper` already closes
-# over `dobj_ref`, so the lane direction propagates through `frule!!`.
-@foldable dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} = tangent_type(P)
+# Forward-mode canonical V reuses the `FunctionWrapperTangent` struct (it serves as its own
+# fdata and abstracts the wrapper's `Ptr`/`captures::Any` fields behind OpaqueClosures), but at
+# chunk width N its `frule_wrapper` OpaqueClosure is built at `chunk_size = N`. So the forward V
+# `dual_type(Val(N), …)` is `FunctionWrapperTangent{rrule_oc, frule_oc_N}` — a distinct concrete
+# type from the width-1 reverse `tangent_type` (whose `frule_wrapper` field is never run). The
+# forward seed factories build it (carved out below so the generic structural lift does not recurse
+# into the wrapper's `Ptr` fields); its `frule_wrapper` closes over the obj's width-N forward slot.
+@foldable function dual_type(::Val{N}, ::Type{FunctionWrapper{R,A}}) where {N,R,A<:Tuple}
+    rrule_oc_type = _construct_rrule_types(R, A)[1]
+    frule_oc_type = _construct_frule_types(R, A, Val(N))[1]
+    return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
+end
+@foldable dual_type(::Val{N}, ::Type{P}) where {N,P<:FunctionWrapper} =
+    FunctionWrapperTangent
 lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
 function lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent, ::Union{Nothing,IdDict})
     return Lifted{typeof(x),1,typeof(ẋ)}(x, ẋ)
@@ -195,6 +205,30 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     return t, obj_tangent_ref
 end
 
+# Forward-mode V builder for chunk width N. `obj_fwd_slot` is the wrapped object's width-N forward
+# slot — supplied with N independent lane directions either by a forward seed factory
+# (`zero/uninit/randn_lifted(Val(N), obj)`) or by the FunctionWrapper-construction `frule!!` (where it
+# is the lifted constructor argument). The frule OpaqueClosure is built at `chunk_size = N` and closes
+# over `obj_fwd_slot`. The reverse fields (`fwds_wrapper`, `dobj_ref`) are reused from the width-1
+# builder so the V type matches `dual_type`; `dobj_ref` is the slot's lane-1 direction, keeping width-1
+# FD consistent with AD (at width 1 the slot has exactly that one direction).
+function _function_wrapper_forward_tangent(
+    R, A, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}
+) where {Tobj,N}
+    obj = primal(obj_fwd_slot)
+    revt, obj_tangent_ref = _function_wrapper_tangent(R, obj, A, tangent(obj_fwd_slot, 1))
+    _, frule_sig, frule_ret = _construct_frule_types(R, A, Val(N))
+    frule = build_frule(
+        get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...}; chunk_size=N
+    )
+    run_frule = @static if VERSION ≥ v"1.12-"
+        Base.Experimental.@opaque frule_sig -> frule_ret (x...) -> frule(obj_fwd_slot, x...)
+    else
+        Base.Experimental.@opaque frule_sig (x...) -> frule(obj_fwd_slot, x...)
+    end
+    return FunctionWrapperTangent(revt.fwds_wrapper, run_frule, obj_tangent_ref)
+end
+
 function zero_tangent_internal(p::FunctionWrapper{R,A}, dict::MaybeCache) where {R,A}
 
     # If we've seen this primal before, then we must return that tangent.
@@ -221,17 +255,29 @@ function randn_tangent_internal(
     return t
 end
 
-# Forward seed factories: V === tangent_type, so delegate to the reverse factories above.
-function _zero_dual_internal(::Val{N}, p::FunctionWrapper, d::MaybeCache) where {N}
-    return zero_tangent_internal(p, d)
+# Forward seed factories: build the width-N forward V. The wrapped object's width-N forward slot
+# (with N independent lane directions) comes from the matching lifted seed factory on `obj`.
+function _zero_dual_internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
+    haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
+    t = _function_wrapper_forward_tangent(R, A, zero_lifted(Val(N), p.obj[]), Val(N))
+    d === nothing || setindex!(d, t, p)
+    return t
 end
-function _uninit_dual_internal(::Val{N}, p::FunctionWrapper, d::MaybeCache) where {N}
-    return zero_tangent_internal(p, d)
+function _uninit_dual_internal(
+    ::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache
+) where {N,R,A}
+    haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
+    t = _function_wrapper_forward_tangent(R, A, uninit_lifted(Val(N), p.obj[]), Val(N))
+    d === nothing || setindex!(d, t, p)
+    return t
 end
 function _randn_dual_internal(
-    ::Val{N}, rng::AbstractRNG, p::FunctionWrapper, d::MaybeCache
-) where {N}
-    return randn_tangent_internal(rng, p, d)
+    ::Val{N}, rng::AbstractRNG, p::FunctionWrapper{R,A}, d::MaybeCache
+) where {N,R,A}
+    haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
+    t = _function_wrapper_forward_tangent(R, A, randn_lifted(Val(N), rng, p.obj[]), Val(N))
+    d === nothing || setindex!(d, t, p)
+    return t
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:FunctionWrapperTangent}
@@ -309,13 +355,11 @@ function rrule!!(::CoDual{Type{FunctionWrapper{R,A}}}, obj::CoDual{P}) where {R,
     return CoDual(FunctionWrapper{R,A}(obj.x), t), function_wrapper_pb
 end
 
-function frule!!(::Lifted{Type{FunctionWrapper{R,A}},1}, obj::Lifted{P}) where {R,A,P}
-    p = primal(obj)
-    # `_function_wrapper_tangent` needs the tangent-shaped value (not
-    # the Lifted V); use the boundary helper inverse.
-    t, _ = _function_wrapper_tangent(R, p, A, last(unlift(obj)))
-    y = FunctionWrapper{R,A}(p)
-    return Lifted{typeof(y),1}(y, t)
+function frule!!(::Lifted{Type{FunctionWrapper{R,A}},N}, obj::Lifted{P,N}) where {R,A,P,N}
+    # `obj` is already the wrapped object's width-N forward slot, so the constructed
+    # FunctionWrapper's forward V closes its frule over it directly.
+    y = FunctionWrapper{R,A}(primal(obj))
+    return Lifted{typeof(y),N}(y, _function_wrapper_forward_tangent(R, A, obj, Val(N)))
 end
 
 @is_primitive MinimalCtx Tuple{<:FunctionWrapper,Vararg}
@@ -325,9 +369,8 @@ function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
     return y, function_wrapper_eval_pb
 end
 
-function frule!!(f::Lifted{FunctionWrapper{R,A},1}, x::Vararg{Lifted,M}) where {R,A,M}
-    _tangent = tangent(f)
-    return _tangent.frule_wrapper(x...)
+function frule!!(f::Lifted{FunctionWrapper{R,A},N}, x::Vararg{Lifted,M}) where {R,A,N,M}
+    return tangent(f).frule_wrapper(x...)
 end
 
 end
