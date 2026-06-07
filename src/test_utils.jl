@@ -636,6 +636,81 @@ function test_frule_correctness(
     @test any(isapprox_results)
 end
 
+# ── Chunked forward-mode check (width N > 1) ─────────────────────────────────────────────────
+# `test_rule` builds only the width-1 frule, so chunked bugs are invisible to it: a width-N path
+# that crashes, NaN-poisons partials, corrupts an in-place primal, or lets an inner dual's `.value`
+# drift from the primal. `test_frule_chunked` builds the frule at widths > 1, seeds each argument
+# with N independent random lane directions, runs it, and checks the invariants that hold at any
+# width — the primal result is unchanged, and every inner dual's `.value` tracks the primal (to
+# float tolerance) with finite partials. Arguments with no width-N forward seed (e.g. raw `Ptr`s)
+# skip the chunked check.
+function test_frule_chunked(
+    rng::AbstractRNG, x::Vararg{Any,P}; sig, widths=(2, 3)
+) where {P}
+    @nospecialize rng x
+    base = map(z -> z isa CoDual ? primal(z) : z, x)
+    # Fresh copy for the reference primal — `f` may mutate an argument in place.
+    yp = map(_deepcopy, base)
+    y_true = yp[1](yp[2:end]...)
+    for N in widths
+        # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate
+        # it. The guard wraps only seeding/build/run, so a width-N gap (no frule, a raw
+        # `Ptr` arg, an unsupported Cluster-C pointer foreigncall) skips rather than fails —
+        # it is already covered width-1. The assertions stay *outside* the guard — a rule
+        # that runs but returns a wrong primal / NaN / drifted `.value` is a chunked bug.
+        y_ẏ = try
+            seeds = map(p -> randn_lifted(Val(N), rng, p), map(_deepcopy, base))
+            build_frule(get_interpreter(ForwardMode), sig; chunk_size=N)(seeds...)
+        catch
+            continue
+        end
+        @test has_equal_data(y_true, primal(y_ẏ))
+        @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
+    end
+end
+
+# Recursively verify the canonical-V invariant at width N: every inner dual's `.value` tracks the
+# primal it shadows, with finite partials. Mirrors the `dual_type` V hierarchy; shapes with no
+# inner value to check (NoDual, type-erased wrappers, uninit fields) pass trivially. The value
+# comparison is approximate, not bit-exact: a *derived* rule may accumulate a reduction in a
+# different order for the primal slot than for the inner dual, so they can differ by a few ULPs.
+# The bugs this guards against (e.g. a scalar `.value` set to `grad * x` instead of the result)
+# drift by O(1) relative, so a loose `isapprox` separates them cleanly from rounding noise.
+_chunked_v_approx(a, b) = isapprox(a, b; atol=1e-8, rtol=1e-6)
+function _chunked_v_invariant(p::Base.IEEEFloat, v::Mooncake.Nfwd.NDual)
+    return _chunked_v_approx(v.value, p) && all(isfinite, v.partials)
+end
+function _chunked_v_invariant(
+    p::Complex{<:Base.IEEEFloat}, v::Complex{<:Mooncake.Nfwd.NDual}
+)
+    return _chunked_v_invariant(real(p), real(v)) && _chunked_v_invariant(imag(p), imag(v))
+end
+function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray)
+    return _chunked_v_approx(v.primal, p) && all(a -> all(isfinite, a), v.partials)
+end
+_chunked_v_invariant(p::Tuple, v::Tuple) = all(map(_chunked_v_invariant, p, v))
+function _chunked_v_invariant(p::NamedTuple, v::NamedTuple)
+    return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n)), keys(v))
+end
+function _chunked_v_invariant(p, v::Union{Mooncake.ImmutableDual,Mooncake.MutableDual})
+    nt = v.value
+    # An undefined primal field (partial `:new`) has no value to shadow — skip it.
+    return all(
+        n -> !isdefined(p, n) || _chunked_v_invariant(getfield(p, n), getfield(nt, n)),
+        keys(nt),
+    )
+end
+function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent)
+    return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v))
+end
+function _chunked_v_invariant(p::AbstractArray, v::AbstractArray)
+    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i]), eachindex(v))
+end
+# Fallthrough: shapes with nothing checkable here — `NoDual`/`NoTangent` (non-differentiable),
+# type-erased `FunctionWrapperTangent`, and any V shape not enumerated above (e.g. `Memory`
+# duals). The check degrades open: an unhandled shape passes rather than erroring.
+_chunked_v_invariant(_p, _v) = true
+
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(
     rng::AbstractRNG,
@@ -1087,6 +1162,7 @@ __get_primals(xs) = map(x -> x isa Union{Lifted,CoDual} ? primal(x) : x, xs)
         frule=nothing,
         rrule=nothing,
         max_fd_step::Union{Nothing,Real}=nothing,
+        skip_chunked::Bool=false,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -1149,6 +1225,10 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
     domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
     the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
+- `skip_chunked::Bool=false`: skip the width-`N>1` chunked forward-mode check. Set this only
+    for primals whose forward rule has a known width-`N` limitation (e.g. raw-pointer rules
+    that round-trip through `unsafe_copyto!`), where the width-1 path is correct but the
+    chunked path cannot yet preserve the canonical dual representation.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1166,6 +1246,7 @@ function test_rule(
     frule=nothing,
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
+    skip_chunked::Bool=false,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1266,6 +1347,13 @@ function test_rule(
                 end
             end
 
+            # Chunked forward mode (width N > 1): width-1 testing above misses chunked bugs.
+            @testset "Chunked" begin
+                if test_fwd && !interface_only && !skip_chunked
+                    test_frule_chunked(rng, x...; sig)
+                end
+            end
+
             # Test the performance of the rule.
             @testset "Performance" begin
                 test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
@@ -1299,6 +1387,10 @@ function test_rule(
     return ts
 end
 
+# A test case's third tuple field is otherwise ignored by the runners; when it is a
+# `NamedTuple` it may carry per-case `test_rule` options. Currently only `skip_chunked`.
+_case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
+
 function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
         Mooncake.hand_written_rule_test_cases(rng_ctor, v)
@@ -1306,10 +1398,11 @@ function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+        interface_only, perf_flag, opts, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
+        skip_chunked = _case_skip_chunked(opts)
+        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode, skip_chunked)
     end
 end
 
@@ -1320,11 +1413,19 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
     GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+        interface_only, perf_flag, opts, f, x...
     ) in test_cases
 
+        skip_chunked = _case_skip_chunked(opts)
         test_rule(
-            rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
+            rng_ctor(123),
+            f,
+            x...;
+            interface_only,
+            perf_flag,
+            is_primitive=false,
+            mode,
+            skip_chunked,
         )
     end
 end

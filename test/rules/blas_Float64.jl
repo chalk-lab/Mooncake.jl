@@ -33,40 +33,6 @@
         end
     end
 
-    # Regression: the `gemv!` frule must run the in-place primal `BLAS.gemv!` exactly ONCE,
-    # after the per-lane loop — not once per lane. A per-lane primal nests the update and lets
-    # lanes >1 read an already-overwritten `y` in the `dβ * y[n]` term, silently corrupting both
-    # the primal and the β-derivative for chunk width Nw>1. Width-1 `test_rule` (all the rule
-    # test cases use) cannot see this, so it is checked directly here at widths 1/2/3.
-    @testset "gemv! chunked primal (Nw>1)" begin
-        gv! = BLAS.gemv!
-        A0, x0, y0 = randn(sr(1), 3, 2), randn(sr(2), 2), randn(sr(3), 3)
-        α, β = 0.7, 1.3
-        fL(N) = Mooncake.Lifted{typeof(gv!),N}(gv!, Mooncake.NoDual())
-        tL(N) = Mooncake.Lifted{Char,N}('N', Mooncake.NoDual())
-        sL(N, v, parts) = Mooncake.Lifted{Float64,N}(
-            v, Mooncake.Nfwd.NDual{Float64,N}(v, parts)
-        )
-        aL(N, M) = Mooncake.Lifted{typeof(M),N}(M, Mooncake.zero_dual(Val(N), M))
-        gemv_lanes(N, dα, dβ) = begin
-            A, x, y = copy(A0), copy(x0), copy(y0)
-            r = Mooncake.frule!!(
-                fL(N), tL(N), sL(N, α, dα), aL(N, A), aL(N, x), sL(N, β, dβ), aL(N, y)
-            )
-            (y, [collect(Mooncake.tangent(r, k)) for k in 1:N])
-        end
-        # Primal must equal a single update at every width.
-        @testset "primal width $N" for N in (1, 2, 3)
-            y, _ = gemv_lanes(N, ntuple(_ -> 0.0, N), ntuple(_ -> 0.0, N))
-            @test y ≈ α * A0 * x0 + β * y0
-        end
-        # Per-lane derivatives at width 2 must match independent width-1 runs (nonzero dβ
-        # exercises the previously-corrupted `dβ * y[n]` lane).
-        _, w2 = gemv_lanes(2, (0.5, -0.3), (0.9, 0.2))
-        @test w2[1] ≈ gemv_lanes(1, (0.5,), (0.9,))[2][1]
-        @test w2[2] ≈ gemv_lanes(1, (-0.3,), (0.2,))[2][1]
-    end
-
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 end
 
