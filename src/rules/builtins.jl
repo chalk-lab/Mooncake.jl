@@ -367,13 +367,13 @@ end
 @intrinsic copysign_float
 function frule!!(::Dual{typeof(copysign_float)}, x, y)
     z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(y)) * tangent(x)
+    dz = sign(primal(x)) * sign(primal(y)) * tangent(x)
     return Dual(z, dz)
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
-    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_y), zero_rdata(_y)
+    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_x) * sign(_y), zero_rdata(_y)
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
 end
@@ -1257,8 +1257,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, IntrinsicsWrappers.checked_usub_int, 5, 4),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0, 4.0),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0, -3.0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, 4.0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0, -3.0),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, 4.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.copysign_float, 5.0f0, -3.0f0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0f0, 4.0f0),
+        (false, :stability, nothing, IntrinsicsWrappers.copysign_float, -5.0f0, -3.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.ctlz_int, 5),
         (false, :stability, nothing, IntrinsicsWrappers.ctpop_int, 5),
         (false, :stability, nothing, IntrinsicsWrappers.cttz_int, 5),
