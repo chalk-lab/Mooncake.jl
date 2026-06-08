@@ -987,7 +987,15 @@ end
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
+    # Route the forward-pass call through `__call_rule`: on Julia 1.10 this is the `(rule::Any)`
+    # barrier, which routes via `jl_apply_generic` and avoids the specsig OC-call codegen segfault
+    # (julia#51016/#61368) that a direct `fwds.fwds_oc(uf_args...)` call triggers when handed
+    # type-mismatched arguments (e.g. a debug-mode rule fed deliberately-wrong-typed inputs). On
+    # 1.11+ it is the direct call, so this is semantically identical and changes no derivative. We
+    # pass the `MistyClosure` itself (not its `.oc`): forward-over-reverse HVP forward-differentiates
+    # this body, and a `.oc` field access would need an undefined `_get_lifted_field` on the
+    # MistyClosure's forward tangent — calling the MistyClosure (which has a rule) avoids that.
+    return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
 # On Julia 1.10, route the call through the dynamic `__call_rule` barrier (the `(rule::Any)` cast
