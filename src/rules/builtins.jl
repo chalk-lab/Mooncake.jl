@@ -239,6 +239,28 @@ function frule!!(
         primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, partials)
     )
 end
+# Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are
+# themselves differentiable pointers, so the canonical V is the element-wise AoS
+# `Array{NTuple{Nw,Ptr{R}}, D}` (each element holds that pointer's Nw per-lane shadow Ptrs),
+# not the `NDualArray` SoA form above (which only applies to `NDualEltype` elements). Wrap each
+# lane's shadow pointer into its own array, then interleave element-wise into the AoS V.
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    p::Lifted{Ptr{Ptr{R}},Nw,NTuple{Nw,Ptr{Ptr{R}}}},
+    dims::Lifted,
+) where {Nw,R<:NDualEltype}
+    _dims = primal(dims)
+    primal_arr = unsafe_wrap(Array, primal(p), _dims)
+    p_partials = tangent(p)
+    lane_arrays = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
+    D = ndims(primal_arr)
+    v = similar(primal_arr, NTuple{Nw,Ptr{R}})
+    @inbounds for i in eachindex(primal_arr, v)
+        v[i] = ntuple(lane -> lane_arrays[lane][i], Val(Nw))
+    end
+    return Lifted{Array{Ptr{R},D},Nw}(primal_arr, v)
+end
 
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
