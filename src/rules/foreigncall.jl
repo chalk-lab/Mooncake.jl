@@ -86,13 +86,17 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-# Output is a `Ptr{Nothing}`, whose canonical V is `NTuple{Nw,Ptr{Nothing}}`. An
-# object address carries no meaningful per-lane derivative (there is no single
-# tangent address), so each lane is the primal address — coherent with the V
-# shape, and a no-op for the non-differentiable identity/hashing uses this serves.
+# Output is a `Ptr{Nothing}`, V `NTuple{Nw,Ptr{Nothing}}`. Thread the address of the input's
+# tangent OBJECT (the same width-N object in every lane) so a round-trip back through
+# `unsafe_pointer_to_objref` can recover the full forward slot, mirroring the reverse rule. Only a
+# mutable/boxed tangent is addressable; an immutable V (`NDualArray`/`NDual`/`NoDual`) gets a NULL
+# sentinel, which the inverse maps back to `NoDual`. The primal address — what the non-differentiable
+# identity/hashing/`objectid` uses consume — is unchanged, so those uses are unaffected.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
-    return Lifted{typeof(y),Nw}(y, ntuple(_ -> y, Val(Nw)))
+    tx = tangent(x)
+    taddr = ismutable(tx) ? pointer_from_objref(tx) : Ptr{Nothing}(0)
+    return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
@@ -105,15 +109,18 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-# Each lane would need its own deserialized object packaged into a V matching
-# `dual_type(Val(N), typeof(y))`, but the V shape depends on the dynamic
-# output type. Treat the output as non-differentiable from Lifted's
-# perspective; the canonical V is `NoDual`.
+# Inverse of the `pointer_from_objref` rule: recover the primal object from the primal address, and
+# — when the lane carries a non-NULL tangent-object address — recover that tangent object so the
+# forward derivative survives the round-trip. The recovered object is dynamically typed, so the
+# slot type and its V are only known at runtime; the `Lifted{typeof(y),Nw}` constructor sharpens
+# through `typeof(y)`, widening the inferred return type (the cost of this dynamic boundary).
 function frule!!(
     ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
 ) where {Nw}
     y = unsafe_pointer_to_objref(primal(x))
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    tx = tangent(x)
+    (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
