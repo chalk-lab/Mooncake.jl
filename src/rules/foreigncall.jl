@@ -272,6 +272,27 @@ function frule!!(
     )
     return Lifted{Array{P,M},Nw}(y, NDualArray{P,Nw,M,Array{P,M}}(y, new_partials))
 end
+# Non-differentiable element arrays (element-wise `Array{NoDual}` V, e.g. the
+# `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside `sortslices`): reshape primal and V in
+# lockstep. Mirrors the element-type-generic reverse rrule below.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{P,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{P,M}},Nw},
+    a::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
+    dims::Lifted,
+) where {Nw,P,M}
+    d = primal(dims)
+    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
+    v = ccall(
+        :jl_reshape_array, Array{NoDual,M}, (Any, Any, Any), Array{NoDual,M}, tangent(a), d
+    )
+    return Lifted{Array{P,M},Nw}(y, v)
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_reshape_array}},

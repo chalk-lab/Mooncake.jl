@@ -861,6 +861,16 @@ end
         return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N}}}
     end
 end
+# True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so its
+# `lifted_type` is a concrete `NoDual`-V `Lifted` that union-splits safely (see `lifted_type` below).
+function _all_nodual_union_members(@nospecialize(U))
+    if U isa Union
+        _all_nodual_union_members(U.a) && _all_nodual_union_members(U.b)
+    else
+        (U === Union{} || tangent_type(U) === NoTangent)
+    end
+end
+
 # Concrete-struct fallback. More-specific overloads above (IEEEFloat,
 # Complex, Array, Tuple, NamedTuple, MemoryRef) win when applicable;
 # structs land here.
@@ -877,6 +887,15 @@ end
     # broad `Lifted` instead — the same `@isdefined` fallback the `CoDual` ctors and
     # `codual_type(::Type{Type{P}})` use for this phantom-`TypeVar` case (chalk-lab/Mooncake.jl#1191).
     @isdefined(P) || return Lifted
+    # Distribute over a `Union` of purely non-differentiable results (e.g. `findfirst` returning
+    # `Union{Nothing,Int}`): the slot type is the small `Union{Lifted{A,…}, Lifted{B,…}}` of concrete
+    # `NoDual`-V `Lifted`s, which union-splits box-free at the OpaqueClosure return, rather than the
+    # widened `Lifted{T,…} where T<:Union{A,B}` that boxes (`Lifted` is invariant). Restricted to
+    # all-non-differentiable members: a member with a non-trivial V (e.g. `Vector{Any}`) in an
+    # invariant-`Lifted` Union return tripped an OC return-assertion crash, so those keep the UnionAll.
+    P isa Union &&
+        _all_nodual_union_members(P) &&
+        return Union{lifted_type(Val(N), P.a),lifted_type(Val(N), P.b)}
     return if isconcretetype(P) && P !== DataType
         Lifted{P,N,dual_type(Val(N), P)}
     elseif P <: Type
