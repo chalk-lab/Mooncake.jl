@@ -1460,15 +1460,21 @@ Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # Skip non-differentiable eltypes: avoids pointless caches and maps on sparse containers.                                                                                              
-    # Calling tangent_type in a generator body risks world-age cycles, but is probably sufficient here:
-    # every eltype for which tangent_type == NoTangent (integers, Bool, Symbol, …) has an                                                                                                 
-    # explicit non-generated method, and tangent_type for struct eltypes recurses only into
-    # field types, all of which eventually bottom out at such explicit methods. 
-    if P <: AbstractArray &&
-        !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}}) &&
-        tangent_type(eltype(P)) != NoTangent
-        return :(map(friendly_tangent_cache, x))
+    # AbstractArray with a non-float element: the element's differentiability decides between
+    # mapping `friendly_tangent_cache` over the elements (differentiable) and the raw cache
+    # (non-differentiable — skips pointless caches/maps on e.g. integer/sparse containers). The
+    # `tangent_type(eltype)` test is emitted in the RETURNED expression — never the generator body
+    # — so it resolves at the call world (where an extension's eltype overload is visible), instead
+    # of baking the generator-definition-world resolution that a later overload could not dislodge.
+    if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
+        ET = eltype(P)
+        return :(
+            if tangent_type($ET) === NoTangent
+                friendly_tangent_cache_internal(x)
+            else
+                map(friendly_tangent_cache, x)
+            end
+        )
     end
     # Mutable structs with fields: pre-build per-field caches at prepare time and store them
     # in the buffer as a NamedTuple, mirroring the immutable struct path. This avoids
