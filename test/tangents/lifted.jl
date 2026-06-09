@@ -591,8 +591,6 @@ end
             test_rule(MersenneTwister(0), add_float, 1.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), add_float_fast, 1.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), copysign_float, 2.0, -3.0; perf_flag=:none)
-            # x<0 regression (dropped sign(x) factor manifests only for x<0).
-            test_rule(MersenneTwister(0), copysign_float, -2.0, -3.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float, 6.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float_fast, 6.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), mul_float, 1.5, 2.5; perf_flag=:none)

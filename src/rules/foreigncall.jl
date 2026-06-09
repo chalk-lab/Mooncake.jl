@@ -24,7 +24,7 @@ function throw_missing_foreigncall_rule_error(rule_name::Symbol, args...)
             "$(typeof(map(primal, args))). " *
             "This problem has most likely arisen because there is a ccall somewhere in the " *
             "function you are trying to differentiate, for which an $rule_name has not been " *
-            "explicitly written." *
+            "explicitly written. " *
             "You have three options: write an $rule_name for this foreigncall, write an $rule_name " *
             "for a Julia function that calls this foreigncall, or re-write your code to " *
             "avoid this foreigncall entirely. " *

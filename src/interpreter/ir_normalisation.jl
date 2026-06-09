@@ -6,11 +6,10 @@ unchanged, but makes AD more straightforward. In particular, replace
 1. `:foreigncall` `Expr`s with `:call`s to `Mooncake._foreigncall_`,
 2. `:new` `Expr`s with `:call`s to `Mooncake._new_`,
 3. `:splatnew` Expr`s with `:call`s to `Mooncake._splat_new_`,
-4. resolve unbound GlobalRefs (Julia 1.12+ only) to their actual values,
-5. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
-6. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
-7. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-8. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
+5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
+6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
+7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
@@ -29,9 +28,6 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
         inst = splatnew_to_call(inst)
-        @static if VERSION > v"1.12-"
-            inst = resolve_unbound_globalrefs(ir, inst)
-        end
         inst = intrinsic_to_function(inst)
         inst = lift_getfield_and_others(inst)
         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
@@ -236,52 +232,6 @@ The purpose of this transformation is to make it possible to differentiate `:spl
 expressions in the same way as a primitive `:call` expression, i.e. via an `rrule!!`.
 """
 splatnew_to_call(x) = Meta.isexpr(x, :splatnew) ? Expr(:call, _splat_new_, x.args...) : x
-
-"""
-    resolve_unbound_globalrefs(ir, ex)
-
-Resolve GlobalRefs that are considered unbound in the given world range, but are actually
-defined due to partitioned bindings. 
-
-Only available on Julia 1.12+.
-"""
-# XXX: this is probably unsound, but the best workaround so far
-function resolve_unbound_globalrefs(ir, @nospecialize ex)
-    isa(ex, Expr) || return ex
-    args = nothing
-    for i in eachindex(ex.args)
-        arg = ex.args[i]
-        # extracted from `Compiler.check_op` (called by `Compiler.verify_ir`)
-        if isa(arg, GlobalRef) && arg.mod !== Core && arg.mod !== Base
-            (valid_worlds, alldef) = CC.scan_leaf_partitions(
-                nothing,
-                arg,
-                CC.WorldWithRange(CC.min_world(ir.valid_worlds), ir.valid_worlds),
-            ) do _, _, bpart
-                CC.is_defined_const_binding(CC.binding_kind(bpart))
-            end
-            if !alldef ||
-                CC.max_world(valid_worlds) < CC.max_world(ir.valid_worlds) ||
-                CC.min_world(valid_worlds) > CC.min_world(ir.valid_worlds)
-                # this is the potentially unsound bit, because we
-                # resolve a binding that was otherwise thought to be
-                # unbound during type inference.
-                if isdefined(arg.mod, arg.name)
-                    arg = getglobal(arg.mod, arg.name)
-                end
-            end
-            if args === nothing
-                args = ex.args[1:(i - 1)]
-            end
-        end
-        args === nothing && continue
-        push!(args, arg)
-    end
-    args === nothing && return ex
-    resolved = Expr(ex.head)
-    resolved.args = args
-    return resolved
-end
 
 """
     intrinsic_to_function(inst)
