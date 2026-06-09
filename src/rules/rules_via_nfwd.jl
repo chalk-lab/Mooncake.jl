@@ -24,7 +24,11 @@
 # ── Reverse-mode helpers ──────────────────────────────────────────────────────
 # Seed M scalar inputs as width-M `NDual`s, input i carrying the i-th identity direction, so a
 # single primal evaluation produces the full M-column Jacobian in the output's `.partials`.
-@inline function _nfwd_seed_inputs(primals::NTuple{M,P}) where {M,P<:IEEEFloat}
+# `Tuple{P,Vararg{P,Mm1}}` (≥1 element), not `NTuple{M,P}`: the latter leaves `P` unbound at M==0
+# (`Tuple{}`), which Aqua's `test_unbound_args` flags. Every caller passes ≥1 input, so requiring a
+# first element is exact; the width is `Mm1 + 1`.
+@inline function _nfwd_seed_inputs(primals::Tuple{P,Vararg{P,Mm1}}) where {P<:IEEEFloat,Mm1}
+    M = Mm1 + 1
     return ntuple(i -> NDual{P,M}(primals[i], ntuple(j -> P(i == j), Val(M))), Val(M))
 end
 
