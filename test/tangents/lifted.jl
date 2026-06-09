@@ -591,6 +591,8 @@ end
             test_rule(MersenneTwister(0), add_float, 1.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), add_float_fast, 1.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), copysign_float, 2.0, -3.0; perf_flag=:none)
+            # x<0 regression (dropped sign(x) factor manifests only for x<0).
+            test_rule(MersenneTwister(0), copysign_float, -2.0, -3.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float, 6.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), div_float_fast, 6.0, 2.0; perf_flag=:none)
             test_rule(MersenneTwister(0), mul_float, 1.5, 2.5; perf_flag=:none)
@@ -632,13 +634,21 @@ end
         @test Mooncake.primal(r_fast) === 3.0
         @test Mooncake.tangent(r_fast).partials === (1.0, 1.0)
 
-        # copysign_float: z = copysign(x, y); dz = sign(y) * dx.
+        # copysign_float: z = copysign(x, y); dz = sign(x)*sign(y)*dx (∂/∂y = 0).
         x2 = Mooncake.Lifted{T,N}(2.0, Mooncake.NDual{T,N}(2.0, (1.0, 0.0)))
         yneg = Mooncake.Lifted{T,N}(-3.0, Mooncake.NDual{T,N}(-3.0, (0.0, 1.0)))
         cf = Mooncake.Lifted{typeof(copysign_float),N}(copysign_float, Mooncake.NoTangent())
         r_cs = Mooncake.frule!!(cf, x2, yneg)
         @test Mooncake.primal(r_cs) === -2.0
-        @test Mooncake.tangent(r_cs).partials == (-1.0, 0.0)  # sign(-3)*(1,0); -0.0 ok
+        @test Mooncake.tangent(r_cs).value === -2.0  # NDual.value tracks the primal
+        @test Mooncake.tangent(r_cs).partials == (-1.0, 0.0)  # sign(2)*sign(-3)*(1,0); -0.0 ok
+        # x<0 regression: the original bug dropped the sign(x) factor, which only changes the
+        # answer for x<0 (sign(x)=1 when x>0). copysign(-2,-3) = -2; ∂/∂x = sign(-2)*sign(-3) = 1.
+        xneg = Mooncake.Lifted{T,N}(-2.0, Mooncake.NDual{T,N}(-2.0, (1.0, 0.0)))
+        r_cs_neg = Mooncake.frule!!(cf, xneg, yneg)
+        @test Mooncake.primal(r_cs_neg) === -2.0
+        @test Mooncake.tangent(r_cs_neg).value === -2.0
+        @test Mooncake.tangent(r_cs_neg).partials == (1.0, 0.0)  # buggy sign(y)-only → (-1.0, 0.0)
 
         # div_float: c = a/b; dc = (da*b - a*db)/b^2.
         a2 = Mooncake.Lifted{T,N}(6.0, Mooncake.NDual{T,N}(6.0, (1.0, 0.0)))
