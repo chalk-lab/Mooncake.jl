@@ -1,11 +1,6 @@
-@inline function _threading_foreigncall_frule(name::Val, args...)
-    return zero_dual(_foreigncall_(name, tuple_map(primal, args)...))
-end
-
-# Lifted analog — same body shape (run the foreigncall on extracted primals,
-# wrap the result in a Lifted slot with `NoDual` V since these threading
-# foreigncalls all produce non-differentiable results: Cint, Nothing, Task,
-# Bool, etc.). Width N comes from the per-rule signature below.
+# Run the foreigncall on extracted primals and wrap the result in a Lifted slot with `NoDual` V:
+# these threading foreigncalls all produce non-differentiable results (Cint, Nothing, Task, Bool,
+# etc.). Width N comes from the per-rule signature below.
 @inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
     y = _foreigncall_(name, tuple_map(primal, args)...)
     return Lifted{typeof(y),Nw}(y, NoDual())
