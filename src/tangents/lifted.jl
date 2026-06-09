@@ -189,6 +189,11 @@ end
 @inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
     return tangent(x).partials[lane]
 end
+@inline function tangent(
+    x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
+) where {P<:NDualEltype,N}
+    return tangent(x).partials[][lane]
+end
 # `NDualMemoryRef` / `MemoryRef` / `Core.memoryref` are 1.11+; gate to avoid an
 # `UndefVarError` at precompile on 1.10.
 @static if VERSION >= v"1.11-rc4"
@@ -301,7 +306,7 @@ end
 # before recursing, so a cycle reaching the same primal returns the shell — mirroring
 # reverse `zero_tangent_internal`. Leaf slots (scalar / array / complex) have no cycle and
 # convert via the lane accessor (aliased arrays already share one `partials` array).
-@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple}}) where {P} = (
+@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple,NDualRef}}) where {P} = (
     primal(x), _unlift_seed(x, IdDict{Any,Any}())
 )
 
@@ -335,6 +340,22 @@ function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P}
     return ntuple(length(v)) do i
         return _unlift_seed(Lifted{fieldtype(P, i),1}(p[i], v[i]), cache)
     end
+end
+# `Ref{P<:NDualEltype}` (V `NDualRef`): build the reverse `MutableTangent` it would have in reverse
+# mode (a `Ref` is a mutable struct, registered in the alias cache before returning). Its `:x` field
+# is non-always-init, so reverse wraps it in `PossiblyUninitTangent`.
+function _unlift_seed(
+    x::Lifted{<:Base.RefValue{P},1,<:NDualRef}, cache::IdDict
+) where {P<:NDualEltype}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    Tt = tangent_type(typeof(p))
+    shell = Tt()
+    cache[p] = shell
+    Ft = fieldtype(fieldtype(Tt, :fields), :x)
+    part = tangent(x).partials[][1]
+    shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
+    return shell
 end
 function _unlift_seed(x::Lifted{P,1,<:NamedTuple}, cache::IdDict) where {P}
     p = primal(x)
@@ -600,6 +621,14 @@ end
 @foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return NDualArray{T,N,D,Array{T,D},NDual{T,N}}
 end
+# `Base.RefValue{P<:NDualEltype}`: the `NDualRef` parallel-partials V (scalar analogue of `NDualArray`). A *distinct*
+# wrapper, so the generic struct recursion never re-lifts it (a bare `RefValue` shadow would be).
+# The generic struct rule below covers `Ref` of non-float / aggregate element types as usual.
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{<:Base.RefValue{P}}
+) where {N,P<:NDualEltype}
+    return NDualRef{P,N}
+end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{Array{Complex{R},D}}
 ) where {N,R<:IEEEFloat,D}
@@ -787,6 +816,9 @@ end
 end
 @inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
     return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}}
+end
+@inline function lifted_type(::Val{N}, ::Type{Base.RefValue{P}}) where {N,P<:NDualEltype}
+    return Lifted{Base.RefValue{P},N,NDualRef{P,N}}
 end
 @inline function lifted_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
     return Lifted{
@@ -1013,6 +1045,19 @@ end
     end
     return :(Backing(($(exprs...),)))
 end
+# `Ref{P<:NDualEltype}` (V `NDualRef`): build the parallel partials buffer from the reverse
+# tangent's scalar (its `:x` field is non-always-init, hence `PossiblyUninitTangent`-wrapped). More
+# specific than the generic `MutableTangent` lift below, which would route through `MutableDual`.
+@inline lift(x::Base.RefValue{P}, ẋ::MutableTangent) where {P<:NDualEltype} = lift(
+    x, ẋ, nothing
+)
+@inline function lift(
+    x::Base.RefValue{P}, ẋ::MutableTangent, ::Union{Nothing,IdDict}
+) where {P<:NDualEltype}
+    return Lifted{Base.RefValue{P},1}(
+        x, NDualRef{P,1}(Base.RefValue{NTuple{1,P}}((val(ẋ.fields.x),)))
+    )
+end
 @inline lift(x::P, ẋ::Tangent) where {P} = lift(x, ẋ, nothing)
 @inline function lift(x::P, ẋ::Tangent, c::Union{Nothing,IdDict}) where {P}
     backing = fieldtype(dual_type(Val(1), P), 1)
@@ -1136,6 +1181,15 @@ end
     return NDualArray{Complex{R},N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
 end
 
+# `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` factories above): fresh
+# slot-local parallel partials. Zero and uninit coincide (the partials are bits scalars).
+@inline function zero_dual(::Val{N}, ::Base.RefValue{P}) where {N,P<:NDualEltype}
+    return NDualRef{P,N}()
+end
+@inline function uninit_dual(::Val{N}, ::Base.RefValue{P}) where {N,P<:NDualEltype}
+    return NDualRef{P,N}()
+end
+
 # A `Ptr` has no numeric partials to zero (its V is `NTuple{N,Ptr}` of pointers, never a float
 # tangent that could be read as garbage), so its zero forward seed is the uninitialised one — and
 # critically the generic struct fallback would route a `Ptr` field through the 1-arg
@@ -1153,6 +1207,11 @@ end
     return NDualArray{Complex{R},N,D,A}(
         x, ntuple(_ -> randn(rng, Complex{R}, size(x)), Val(N))
     )
+end
+@inline function randn_dual(
+    ::Val{N}, rng::AbstractRNG, ::Base.RefValue{P}
+) where {N,P<:NDualEltype}
+    return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> randn(rng, P), Val(N))))
 end
 
 # ── Array seed factories (differentiable non-float elements: AoS) ────────────
@@ -1408,6 +1467,16 @@ for (factory, internal) in
             d[x] = v
             return v
         end
+        # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` branch): build the
+        # wrapper directly and register by identity, so the generic struct recursion never re-lifts it.
+        function $internal(
+            w::Val{N}, x::Base.RefValue{P}, d::MaybeCache
+        ) where {N,P<:NDualEltype}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            v = $factory(w, x)
+            d[x] = v
+            return v
+        end
         function $internal(w::Val{N}, x::Tuple, d::MaybeCache) where {N}
             dual_type(w, typeof(x)) === NoDual && return NoDual()
             return map(xi -> $internal(w, xi, d), x)
@@ -1461,6 +1530,14 @@ function _randn_dual_internal(
 ) where {N}
     # Assert the cache lookup to the concrete `dual_type`; see the `_zero_dual_internal`
     # Array overload for why an un-asserted `IdDict{Any,Any}` lookup poisons inference.
+    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+    v = randn_dual(w, rng, x)
+    d[x] = v
+    return v
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::Base.RefValue{P}, d::MaybeCache
+) where {N,P<:NDualEltype}
     haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
     v = randn_dual(w, rng, x)
     d[x] = v

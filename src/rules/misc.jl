@@ -151,6 +151,19 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
 
+# `Ref{P<:NDualEltype}` field read (`r[]`): rebuild the scalar inner V (`NDual` real /
+# `Complex{NDual}` complex, via `_scalar_ndual`) from the primal value and the `NDualRef` parallel
+# partials buffer. The generic frule above routes ImmutableDual/MutableDual/Tuple/NamedTuple V's;
+# `NDualRef` is the `Ref`-specific V, so it needs its own branch.
+@inline function frule!!(
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    ::Lifted{Val{:x}},
+) where {Nw,P<:NDualEltype}
+    v = getfield(primal(x), :x)
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+end
+
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
 # A `PossiblyUninitTangent` backing field is unwrapped: the caller has already
 # read the primal field (so it is defined), hence the PUT is initialised.
@@ -346,6 +359,19 @@ end
     x::Lifted,
 ) where {Nw,P,name}
     setfield!(primal(value), name, primal(x))
+    return x
+end
+# `Ref{P<:NDualEltype}` field write (`r[] = v`): set the primal value and the `NDualRef` partials
+# shadow (`_nfwd_dual_partial` extracts the per-lane partials from `NDual`/`Complex{NDual}`). The
+# MutableDual frule above handles generic mutable structs; `NDualRef` is the Ref-specific V.
+@inline function frule!!(
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    ::Lifted{Val{:x}},
+    x::Lifted{P,Nw},
+) where {Nw,P<:NDualEltype}
+    setfield!(primal(value), :x, primal(x))
+    tangent(value).partials[] = ntuple(k -> _nfwd_dual_partial(tangent(x), k), Val(Nw))
     return x
 end
 @inline function rrule!!(

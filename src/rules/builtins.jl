@@ -117,7 +117,8 @@ import ..Mooncake:
     extract,
     nan_tangent_guard,
     NDualArray,
-    NDualEltype
+    NDualEltype,
+    _scalar_ndual
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -356,16 +357,24 @@ end
 # (`T` is already the full target `Ptr` type, e.g. `Ptr{ComplexF64}` — not wrapped
 # again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
 # the generic frule above, which throws (it must not be silently bypassed here).
-# Exception: an AoS dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose
-# element stride differs from the re-typed primal pointer's, so keep its type — a downstream
-# `unsafe_copyto!` must copy that stride. Only raw/scalar lanes (`Ptr{Nothing}`,
-# `Ptr{<:IEEEFloat}`) re-type to the target.
+# Two lane element types keep their type instead of re-typing to the target:
+#  - an AoS dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose element stride
+#    differs from the re-typed primal pointer's, so a downstream `unsafe_copyto!` must copy it;
+#  - an objref tangent-object address (`Ptr{tangent_type(Nothing)}`, from `pointer_from_objref`)
+#    must NOT be re-typed into a fake-coherent `Ptr{<:IEEEFloat}` per-lane-partial pointer — kept
+#    distinct, a subsequent `pointerref` correctly hits the loud incoherent-V throw rather than
+#    reading bytes off the interleaved `MutableDual`.
+# Other (raw/scalar) lanes (`Ptr{Nothing}`, `Ptr{<:IEEEFloat}`) re-type to the target.
 @inline function frule!!(
     ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
 ) where {Nw,T<:Ptr,P<:Ptr}
     lanes = ntuple(Val(Nw)) do k
         p = tangent(x)[k]
-        eltype(typeof(p)) <: NDualArray ? p : bitcast(T, p)
+        if eltype(typeof(p)) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
+            p
+        else
+            bitcast(T, p)
+        end
     end
     return Lifted{T,Nw}(bitcast(T, primal(x)), lanes)
 end
@@ -737,8 +746,9 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
-# Load scalar via primal Ptr; load each lane's tangent scalar via that
-# lane's partial Ptr; pack into the canonical NDual V.
+# Load scalar via primal Ptr; load each lane's tangent scalar via that lane's partial Ptr; pack into
+# the canonical inner V — `NDual` for a real element, `Complex{NDual}` for a complex one (the inner
+# representation of a complex scalar is `Complex{NDual}`, never `NDual{Complex}`), via `_scalar_ndual`.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
     x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
@@ -750,7 +760,7 @@ function frule!!(
     a = pointerref(primal(x), _y, _z)
     x_partials = tangent(x)
     da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
-    return Lifted{T,Nw}(a, NDual{T,Nw}(a, da_lanes))
+    return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
 end
 # Non-differentiable pointer (V === NoDual): the element type is not an `NDualEltype`
 # (e.g. `Ptr{UInt64}`, `Ptr{Ptr{Float64}}`), so the loaded value carries no derivative.
@@ -764,10 +774,21 @@ end
 # V is `NoDual`) when it is produced by an upstream `unsafe_convert`/`bitcast` chain — e.g.
 # `_getindex_ra` reading a byte out of a reinterpreted integer array does `Ptr{UInt8}(unsafe_convert(
 # Ref{UInt32}, …))`. The load of a non-differentiable element carries no derivative, so collapse
-# to `NoDual`. The `T <: NDualEltype` SoA frule above serves the scalar differentiable case (it
-# packs an `NDual`). A differentiable non-scalar element (e.g. `Ptr{Ptr{Float64}}`, whose load is a
-# `Ptr{Float64}` with a per-lane-pointer V, not an `NDual`) is unsupported here — `pointerset`
-# propagates it, but the corresponding read shape is not implemented — so fail loudly.
+# to `NoDual`. The `T <: NDualEltype` frule above serves the scalar differentiable case (it packs
+# the canonical inner V from per-lane partial pointers). Two differentiable cases reach here with an
+# incoherent V and fail loudly: a non-scalar element (e.g. `Ptr{Ptr{Float64}}`, whose load is a
+# `Ptr{Float64}` with a per-lane-pointer V, not a scalar dual); and a raw scalar load through
+# `pointer_from_objref` of a general mutable struct, whose objref tangent-address lanes
+# (`Ptr{tangent_type(Nothing)}`) are not the canonical per-lane-partial shape (see the
+# `pointer_from_objref` rule). `Ref` itself is handled correctly — its forward tangent (`NDualRef`)
+# keeps a parallel partials buffer with primal-identical layout, so its branch above packs a dual.
+#
+# To LIFT the general mutable-struct case (make a forward raw scalar load correct, matching reverse):
+# the struct's forward tangent must keep its per-lane partials in a parallel buffer with
+# primal-identical layout (as `NDualRef` does for `Ref` and `NDualArray` for `Array`), so a
+# same-offset pointer lands the partials. Today a mutable struct's tangent is a `MutableDual` that
+# interleaves the value and partials in one object, with no parallel partials buffer to point at —
+# making `MutableDual` itself carry parallel partials is a core-representation change.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
     x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
@@ -776,8 +797,14 @@ function frule!!(
 ) where {Nw,T}
     tangent_type(T) === NoTangent || throw(
         ArgumentError(
-            "pointerref of a differentiable `Ptr{$T}` with an incoherent per-lane V; expected " *
-            "the canonical `NTuple{$Nw,Ptr{$T}}` SoA shape.",
+            "Forward-mode AD cannot take a raw scalar load (`pointerref`/`unsafe_load`) of a " *
+            "differentiable `Ptr{$T}` whose per-lane tangent is not the canonical " *
+            "`NTuple{$Nw,Ptr{$T}}` per-lane-partial shape. This typically arises from " *
+            "`pointerref`/`unsafe_load` through `pointer_from_objref` of a mutable struct: its " *
+            "forward tangent interleaves the value and partials in one object (no separate parallel " *
+            "partials storage at the object's address), so the load cannot recover the derivative. " *
+            "Use reverse mode, hold the value in a `Ref` or `Array` (whose forward tangents keep a " *
+            "parallel partials buffer), or write a custom forward tangent for the struct.",
         ),
     )
     a = pointerref(primal(x), primal(y), primal(z))
@@ -1964,8 +1991,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             CoDual(c, dc),
             CoDual(c_new_val, dc_new_val),
         ),
-        (true, :none, nothing, f_pointerset, CoDual(3.0, 1.0)),
-        (true, :none, nothing, f_atomic_pointerset, CoDual(3.0, 1.0)),
+        # Reverse only: a differentiable pointer-to-pointer raw store (`pointerset`/
+        # `atomic_pointerset` into a `Ptr{Ptr{Float64}}`) cannot be done in forward mode — the
+        # destination's per-lane tangent is an array-of-structs of pointers, so the forward rule
+        # fails loudly (it silently produced a wrong derivative before the loud guard). Reverse mode
+        # is correct (see the explicit value_and_gradient!! testset in test/rules/builtins.jl).
+        (true, :none, (skip_forward=true,), f_pointerset, CoDual(3.0, 1.0)),
+        (true, :none, (skip_forward=true,), f_atomic_pointerset, CoDual(3.0, 1.0)),
         (false, :none, nothing, getindex, randn(5), [1, 1]),
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),

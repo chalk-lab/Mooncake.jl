@@ -86,17 +86,38 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-# Output is a `Ptr{Nothing}`, V `NTuple{Nw,Ptr{Nothing}}`. Thread the address of the input's
-# tangent OBJECT (the same width-N object in every lane) so a round-trip back through
-# `unsafe_pointer_to_objref` can recover the full forward slot, mirroring the reverse rule. Only a
-# mutable/boxed tangent is addressable; an immutable V (`NDualArray`/`NDual`/`NoDual`) gets a NULL
-# sentinel, which the inverse maps back to `NoDual`. The primal address — what the non-differentiable
-# identity/hashing/`objectid` uses consume — is unchanged, so those uses are unaffected.
+# Generic fallback (a real/complex-scalar `Ref` is handled by the more-specific `NDualRef` overload
+# below). V is `NTuple{Nw, Ptr{tangent_type(Nothing)}}` — the tangent OBJECT's address, typed as the
+# reverse rule below threads it, and deliberately distinct from any per-lane-partial pointer V
+# (`Ptr{<:IEEEFloat}` / `Ptr{Nothing}`). `bitcast` preserves that element type, so the address
+# round-trips through `unsafe_pointer_to_objref` (recovering the full slot) but a raw scalar load
+# (`pointerref` after `bitcast` to a float ptr) stays incoherent and hits the loud `pointerref`
+# throw — a mutable struct's tangent interleaves value and partials with no parallel partials buffer
+# to address. A non-addressable (immutable / `NoDual`) tangent gets a NULL sentinel mapped back to
+# `NoDual`. The primal address (identity/hashing/`objectid`) is unchanged.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
     tx = tangent(x)
-    taddr = ismutable(tx) ? pointer_from_objref(tx) : Ptr{Nothing}(0)
+    taddr = if ismutable(tx)
+        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tx))
+    else
+        Ptr{tangent_type(Nothing)}(0)
+    end
     return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
+end
+# `Ref{P<:NDualEltype}` (`NDualRef`): unlike the interleaved `MutableDual` fallback above, the
+# partials live in a parallel buffer with primal-identical scalar layout. Thread per-lane pointers
+# into that buffer's contiguous `NTuple` (lane `k` at offset `(k-1)*sizeof(P)`), so the existing
+# `bitcast` (re-types each `Ptr{P}` lane) and `pointerref` (`NTuple{Nw,Ptr{P}}` → scalar dual)
+# frules reconstruct the derivative. Forward raw-pointer reads of a `Ref` (real or complex) are
+# correct; `unsafe_pointer_to_objref` reads the partials back through these pointers to round-trip.
+function frule!!(
+    ::Lifted{typeof(pointer_from_objref),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef{P,Nw}},
+) where {Nw,P<:NDualEltype}
+    y = pointer_from_objref(primal(x))
+    base = UInt(pointer_from_objref(tangent(x).partials))
+    return Lifted{typeof(y),Nw}(y, ntuple(k -> Ptr{P}(base + (k - 1) * sizeof(P)), Val(Nw)))
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
@@ -121,6 +142,25 @@ function frule!!(
     tx = tangent(x)
     (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
     return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
+end
+# Round-trip of a `Ref{<:NDualEltype}` pointer (V `NTuple{Nw,Ptr{<:NDualEltype}}`, from the `NDualRef`
+# rule above): recover the primal `Ref` from the primal pointer, and rebuild its `NDualRef` by reading
+# the per-lane partials back through the V's pointers. Forward tangent storage is slot-local, so a
+# fresh partials buffer holding the same values is correct (the JVP through identity is identity).
+# The V's `Ptr{<:NDualEltype}` element distinguishes a `Ref`-pointer from the generic objref tag
+# (`Ptr{tangent_type(Nothing)}`, handled above), and is the only such V — arrays are not round-tripped
+# this way. The scalar element type is read at runtime (`eltype`) rather than bound as a type
+# parameter, since `P` in `NTuple{Nw,Ptr{P}}` would be unbound at the degenerate `Nw == 0`.
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
+    x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
+) where {Nw}
+    ref = unsafe_pointer_to_objref(primal(x))
+    P = eltype(eltype(tangent(x)))
+    partials = ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw))
+    return Lifted{typeof(ref),Nw}(
+        ref, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(partials))
+    )
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))

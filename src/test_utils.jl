@@ -371,6 +371,7 @@ const _NoDerivativeV = Union{
     Mooncake.Nfwd.NDual,
     Complex{<:Mooncake.Nfwd.NDual},
     Mooncake.Nfwd.NDualArray,
+    Mooncake.Nfwd.NDualRef,
 }
 
 function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) where {P,T}
@@ -1388,8 +1389,11 @@ function test_rule(
 end
 
 # A test case's third tuple field is otherwise ignored by the runners; when it is a
-# `NamedTuple` it may carry per-case `test_rule` options. Currently only `skip_chunked`.
+# `NamedTuple` it may carry per-case `test_rule` options: `skip_chunked` (skip the width-N>1 forward
+# check) and `skip_forward` (skip forward mode entirely — for a case the forward rule deliberately
+# rejects, e.g. a differentiable pointer-to-pointer raw store, while reverse is correct).
 _case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
+_case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
 
 function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
@@ -1416,6 +1420,7 @@ function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
         interface_only, perf_flag, opts, f, x...
     ) in test_cases
 
+        mode === ForwardMode && _case_skip_forward(opts) && continue
         skip_chunked = _case_skip_chunked(opts)
         test_rule(
             rng_ctor(123),

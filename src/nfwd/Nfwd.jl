@@ -2125,6 +2125,31 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
+# `NDualRef{P, N}` — canonical V for `Base.RefValue{P<:NDualEltype}` (real or complex
+# scalar), the scalar analogue of `NDualArray`. The `N` per-lane scalar partials live in
+# their own parallel `Ref`, not interleaved with the value, so a raw pointer taken via
+# `pointer_from_objref` lands them at a parallel address (correct forward raw-pointer
+# access). Being a *distinct* type (not a bare `RefValue`) stops the generic struct
+# recursion from re-lifting it — so the seed factories, `_unlift_seed`, `_new_`,
+# `lgetfield`/`lsetfield!`, and raw-pointer frules each carry an explicit branch (as for
+# `NDualArray`). The slot's primal `Ref` lives in the enclosing `Lifted`, not here.
+# ──────────────────────────────────────────────────────────────────────────
+export NDualRef
+struct NDualRef{P<:NDualEltype,N}
+    partials::Base.RefValue{NTuple{N,P}}
+    # Explicit inner constructor: suppresses the auto-generated implicit `NDualRef(partials)`, whose
+    # `P` is unbound at `N=0` (`NTuple{0,P}` mentions no `P`) and would trip Aqua's unbound-args check.
+    # All call sites use the explicit `NDualRef{P,N}(...)` form, which binds both params.
+    function NDualRef{P,N}(partials::Base.RefValue{NTuple{N,P}}) where {P<:NDualEltype,N}
+        return new{P,N}(partials)
+    end
+end
+# Zero-init seed: fresh slot-local partials.
+@inline function NDualRef{P,N}() where {P<:NDualEltype,N}
+    return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> zero(P), Val(N))))
+end
+
+# ──────────────────────────────────────────────────────────────────────────
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
 # primitive and is *not* `<: AbstractArray`, so `NDualArray` does not

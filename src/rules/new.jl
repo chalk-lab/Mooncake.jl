@@ -71,6 +71,20 @@
     end
 end
 
+# `Ref(x)` / `RefValue{P}(x)` with `P<:NDualEltype` (real or complex scalar): the canonical V is
+# `NDualRef`, not the generic struct lift. Its parallel partials buffer takes the seed's per-lane
+# partials (`_nfwd_dual_partial` handles `NDual` and `Complex{NDual}`). More specific than the
+# @generated `_new_` above, so it wins.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}, x::Lifted{P,Nw}
+) where {Nw,P<:NDualEltype}
+    pr = Base.RefValue{P}(primal(x))
+    parts = ntuple(k -> _nfwd_dual_partial(tangent(x), k), Val(Nw))
+    return Lifted{Base.RefValue{P},Nw}(
+        pr, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(parts))
+    )
+end
+
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
 ) where {P,N}
