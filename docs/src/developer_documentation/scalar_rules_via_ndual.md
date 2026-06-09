@@ -13,9 +13,10 @@ If a primitive is fundamentally "a few scalar inputs in, a few scalar outputs ou
 
 In this setup:
 
-- `src/nfwd/Nfwd.jl` owns the scalar derivative semantics,
-- `src/nfwd/NfwdMooncake.jl` lifts those semantics into Mooncake's `Dual` / `CoDual` interface, and
-- `src/rules/rules_via_nfwd.jl` decides which primitive signatures should use that path.
+- `src/nfwd/Nfwd.jl` owns the scalar derivative semantics, and
+- `src/rules/rules_via_nfwd.jl` holds the primitive reverse-mode core that lifts those
+  semantics into Mooncake's `Lifted` / `CoDual` interface, and decides which primitive
+  signatures should use that path.
 
 That gives Mooncake one source of truth for:
 
@@ -50,12 +51,14 @@ Once that exists, the Mooncake primitive wrapper can stay thin:
 
 ```julia
 @is_primitive MinimalCtx Tuple{typeof(cospi),P} where {P<:IEEEFloat}
-function frule!!(f::Dual{typeof(cospi)}, x::Dual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_frule_call(Val(1), f, x)
+function frule!!(
+    ::Lifted{typeof(cospi),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    return Lifted{P,N}(cospi(primal(x)), cospi(tangent(x)))
 end
 
 function rrule!!(f::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return NfwdMooncake._nfwd_primitive_rrule_call(Val(1), f, x)
+    return _nfwd_primitive_rrule_call(Val(1), f, x)
 end
 ```
 
@@ -73,8 +76,9 @@ Use:
 The key point is that `N` is not an arity marker here.
 It is the number of tangent lanes carried by the `NDual` evaluation.
 
-`NfwdMooncake._nfwd_primitive_rrule_call`/`NfwdMooncake._nfwd_primitive_frule_call` are internal helpers for primitive wrappers, not
-a general public rule interface. They expect a stateless callable tangent, i.e. `NoTangent` or `NoFData`.
+`_nfwd_primitive_rrule_call` (defined in `src/rules/rules_via_nfwd.jl`) is an internal
+helper for primitive wrappers, not a general public rule interface. It expects a stateless
+callable tangent, i.e. `NoTangent` or `NoFData`.
 More generally, `nfwd` only supports scalar leaves it can lift to `NDual` directly, and
 arrays or tuples only when their element types and tangent layouts are supported by the
 same lift/extract path.

@@ -51,9 +51,9 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into the primitive reverse-mode path used by
-`src/rules/rules_via_nfwd.jl`.
+`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; the primitive
+reverse-mode core in `src/rules/rules_via_nfwd.jl` packages that machinery into the
+primitive `rrule!!`s defined there.
 """
 module Nfwd
 
