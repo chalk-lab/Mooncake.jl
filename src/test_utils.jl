@@ -1080,8 +1080,8 @@ function test_frule_performance(
         end
 
         # Test allocations in forwards-mode.
-        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
-        # crash (julia#61368). This boxes isbits values (e.g. NDual{Float64,1}) at every
+        # On Julia 1.10, __call_rule forces generic dispatch (the `(rule::Any)` barrier) to work
+        # around a codegen crash (julia#61368). This boxes isbits values (e.g. NDual{Float64,1}) at every
         # nested rule callsite inside the compiled OC, producing non-zero alloc counts
         # even for correct rules. Skip this check on Julia < 1.11.
         @static if VERSION >= v"1.11-"
@@ -1132,7 +1132,7 @@ function test_rrule_performance(
 
         # Test allocations in round-trip.
         # Skip on Julia < 1.11 for the same reason as the frule check above: the
-        # inferencebarrier workaround in __call_rule boxes isbits values at every
+        # `(rule::Any)` dispatch barrier in __call_rule boxes isbits values at every
         # nested rule callsite inside the compiled OC, producing spurious non-zero
         # alloc counts on Julia 1.10.
         @static if VERSION >= v"1.11-"

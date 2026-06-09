@@ -581,11 +581,9 @@ end
         N = 2
         T = Float64
 
-        # `test_rule` exercises each rule end-to-end through the framework's
-        # interpreter against finite-difference references. It currently
-        # tests the bare-`Dual` path (the interpreter wraps args as `Dual`);
-        # post-Final-task interpreter cutover it will automatically cover the
-        # `Lifted` parallels below.
+        # `test_rule` exercises each rule end-to-end through the framework's interpreter against
+        # finite-difference references, driving the `Lifted` forward path (post-cutover); the direct
+        # `frule!!` assertions below check the `Lifted`/`NDual` slot shapes the interpreter produces.
         if isdefined(@__MODULE__, :test_rule)
             test_rule(MersenneTwister(0), abs_float, -3.0; perf_flag=:none)
             test_rule(MersenneTwister(0), add_float, 1.0, 2.0; perf_flag=:none)

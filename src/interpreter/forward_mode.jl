@@ -568,7 +568,7 @@ _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.width)
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 # Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyFRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+# LazyFRule doesn't contain an OpaqueClosure directly, so no dispatch barrier needed.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::LazyFRule{sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},

@@ -40,7 +40,7 @@ __verify_sig(::typeof(rrule!!), fx::Tuple) = nothing
 
 @static if VERSION < v"1.11-"
     # rrule!! is a plain Julia function (not an OpaqueClosure), so calling it directly is
-    # safe on Julia 1.10; the inferencebarrier workaround is not needed here.
+    # safe on Julia 1.10; the `(rule::Any)` dispatch barrier is not needed here.
     @inline __call_rule(rule::typeof(rrule!!), args) = rule(args...)
 end
 

@@ -2021,7 +2021,7 @@ _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 # Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no dispatch barrier needed.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
