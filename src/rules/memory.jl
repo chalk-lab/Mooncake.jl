@@ -754,10 +754,9 @@ end
         return x
     end
     # Non-differentiable element array (element-wise `Array{NoDual}` V, e.g. an `Int32` stack):
-    # write the primal field only. The V's `.ref`/`.size` are not tracked here — non-diff array
-    # growth V-tracking is entangled with the deferred Memory/MemoryRef element-wise coherence (a
-    # `MemoryRef`'s dual is still whole `NoDual`, so the AoS `.ref` write above cannot apply). See
-    # temp/f1-fix-plan.md Phase 1b.
+    # write the primal field only. The V's `.ref`/`.size` are not tracked here — a non-diff
+    # `MemoryRef`'s dual is still whole `NoDual`, so the AoS `.ref` write above cannot apply
+    # (non-diff array-growth V-tracking would need element-wise Memory/MemoryRef coherence).
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
         value::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},

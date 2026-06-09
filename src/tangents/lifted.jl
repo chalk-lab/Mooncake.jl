@@ -689,9 +689,8 @@ end
     DT = dual_type(Val(N), T)
     return isconcretetype(DT) ? NamedTuple{names,DT} : Any
 end
-# `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}` per the design notes' Ptr
-# entry: N parallel partial pointers, one per lane. Matches reverse-mode
-# `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
+# `Ptr{T}` canonical V — `NTuple{N, Ptr{T}}`: N parallel partial pointers, one per lane.
+# Matches reverse-mode `tangent_type(Ptr{T}) === Ptr{tangent_type(T)}` at the per-lane level.
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return NTuple{N,Ptr{T}}
 end
