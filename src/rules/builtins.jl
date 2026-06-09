@@ -1970,10 +1970,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> (pointerset(pointer(x), UInt8(3), 2, 1); x),
             rand(UInt8, 5),
         ),
+        # Reverse only: a `pointerset`/`atomic_pointerset` into a `Vector{Ptr{Float64}}` stores a
+        # differentiable pointer into an array of differentiable pointers — its forward per-lane
+        # tangent is an array-of-structs of pointers, which the forward `pointerset` rule rejects
+        # loudly (same limitation class as `f_pointerset`). Reverse mode is correct.
         (
             true,
             :none,
-            nothing,
+            (skip_forward=true,),
             (x, v) ->
                 unsafe_wrap(Array, pointerset(pointer(x), pointer(v), 1, 1), length(x)),
             CoDual(c, dc),
@@ -1982,7 +1986,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (
             true,
             :none,
-            nothing,
+            (skip_forward=true,),
             (x, v) -> unsafe_wrap(
                 Array,
                 Core.Intrinsics.atomic_pointerset(pointer(x), pointer(v), :monotonic),
