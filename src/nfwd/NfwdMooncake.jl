@@ -9,72 +9,41 @@ import ..Mooncake:
     NoFData,
     NoRData,
     NoTangent,
-    __value_and_gradient!!,
-    __verify_sig,
-    _typeof,
     fdata,
     primal,
     rdata,
     tangent,
-    throw_val_and_grad_ret_type_error,
     tuple_map,
-    value_and_derivative!!,
-    value_and_gradient!!,
-    verify_fwds_inputs,
     zero_tangent
 
-# ── nfwd: NDual-backed forward-mode engine ────────────────────────────────────────
+# ── nfwd: NDual-backed primitive reverse-mode core ────────────────────────────────
 # `nfwd` evaluates code by lifting inputs into `NDual`s and running the primal
-# function directly on those lifted values. It does not reuse Mooncake's `frule!!`
-# (aka ir-based forward) path, even when `chunk_size == 1`.
+# function directly on those lifted values. This module supplies the chunked
+# NDual forward/reverse machinery that `src/rules/rules_via_nfwd.jl` uses to define
+# scalar (and small fixed-arity) primitive `rrule!!`s, entered through ordinary
+# Mooncake dispatch via `_nfwd_primitive_rrule_call`.
+#
+# It is especially useful when dual-number forward differentiation is more
+# compiler-friendly than IR-transform-based AD (for example when differentiating
+# through CUDA kernels) and often has significantly lower compilation latency.
 #
 # ── File layout ────────────────────────────────────────────────────────────────────
 # This file is organized as:
 # - core types
-# - public rule entrypoints
+# - primitive reverse-mode entrypoint
 # - shared validation and layout helpers
 # - reverse accumulation and execution
 # - forward evaluation pipeline
-# - cache spec checks
-# - cached scalar/array fast paths
-#
-# ── High-level interfaces ──────────────────────────────────────────────────────────
-#   build_frule(f, x...; chunk_size)
-#     returns `Rule`
-#     consumed via `rule(f::Lifted, x::Lifted...)`
-#     obeys the standard `frule!!` interface
-#     also accepts `sig::Type{<:Tuple}` for signature-based construction
-#
-#   build_rrule(f, x...; chunk_size)
-#     returns `RRule`
-#     consumed via `rule(f::CoDual, x::CoDual...)`
-#     obeys the standard `rrule!!` interface
-#     also accepts `sig::Type{<:Tuple}` for signature-based construction
 #
 # ── Constraints ────────────────────────────────────────────────────────────────────
 # - `chunk_size` is global across the whole call
 # - supported primals are IEEE float scalars, complex IEEE float scalars, dense arrays
 #   with those element types, and tuples thereof
-# - rule construction requires stateless callables (singleton callable types)
-# - `friendly_tangents=true`, `debug_mode=true`, and differentiation with respect to `f`
-#   are intentionally unsupported here
-#
-# ── Primitive Reverse-Mode Example ────────────────────────────────────────────────
-# `nfwd` can also be used to define reverse-mode rules, and is especially useful
-# when dual-number forward differentiation is more compiler-friendly than IR-transform-
-# based AD, for example when differentiating through CUDA kernels. It also often has
-# significantly lower compilation latency:
-#   f(x) = sum(abs2, x)
-#   sig = Tuple{typeof(f),Vector{Float64}}
-#   Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode sig
-#   Mooncake.build_primitive_rrule(::Type{sig}) =
-#       Mooncake.NfwdMooncake.build_rrule(sig; chunk_size=4)
-#
+# - differentiation with respect to `f` is intentionally unsupported here
 #
 # Core types
 #
-# High-level rule/cache objects first. The implementation details they rely on are defined
-# in later sections.
+# The implementation details they rely on are defined in later sections.
 
 @inline _nfwd_unpack_output_lane(yi::IEEEFloat, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
 @inline _nfwd_unpack_output_lane(yi::Complex{<:IEEEFloat}, dyi::Tuple, ::Val{lane}) where {lane} = dyi[lane]
@@ -105,291 +74,12 @@ struct Pullback{F,N,P,T,Y}
     y_fdata::Y
 end
 
-"""
-    ArrayScalarPullback
-
-Lightweight pullback returned by the optimised single-array-input / scalar-output rrule fast
-path.  The full gradient (∂f/∂x_i for all i) is computed eagerly during the rrule call and
-stored in `grad` (a separate copy, not aliased with `tangent(x_codual)`).  `fdata` is a
-reference to `tangent(x_codual)`.  The pullback accumulates `ȳ * grad` into `fdata`,
-satisfying Mooncake's standard increment semantics for mutable array tangents.
-"""
-struct ArrayScalarPullback{G<:AbstractArray}
-    grad::G   # precomputed ∂f/∂x; does NOT alias fdata
-    fdata::G  # tangent(x_cd); the accumulation target
-end
-
-function (pb::ArrayScalarPullback)(y_rdata)
-    if isone(y_rdata)
-        pb.fdata .+= pb.grad
-    else
-        pb.fdata .+= y_rdata .* pb.grad
-    end
-    return (NoRData(), NoRData())
-end
-
 #
-# Public construction and execution
+# Primitive reverse-mode entrypoint
 #
-# These are the main `nfwd` entry points. A reviewer should be able to read this section
-# first, then dive into the lower-level pipelines only as needed.
-
-"""
-    build_frule(f, x...; chunk_size=nothing)
-    build_frule(sig::Type{<:Tuple}; chunk_size=nothing)
-
-Build a forward-mode rule through `nfwd`.
-
-This path is independent from Mooncake's `frule!!` (aka ir-based forward) path and obeys
-the standard `frule!!` interface. It evaluates the primal function directly on
-NDual-lifted scalar / dense-array inputs. Rule construction is signature-based, so `nfwd`
-only supports stateless callables here.
-
-If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
-from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
-registers). For scalar-only signatures the DOF is known exactly at type level; for
-signatures containing arrays the preferred width is used directly.
-
-!!! warning "Not thread-safe"
-    The returned `Rule` holds a mutable workspace buffer that is updated in-place
-    on every call. Do not share a single rule across threads; build one rule per thread.
-
-!!! note "debug_mode"
-    The `debug_mode` keyword is accepted for API consistency with Mooncake's other
-    rule/cache builders but always throws when `true`; nfwd-specific debug checks are
-    not yet implemented. Mooncake's outer debug wrapper still validates CoDual
-    inputs/outputs when the rule is invoked inside a debug-mode rrule.
-
-## Example
-
-```julia
-julia> using Mooncake
-
-julia> frule = Mooncake.NfwdMooncake.build_frule(
-           Tuple{typeof(sum), Vector{Float64}}; chunk_size=1
-       );
-
-julia> x = [1.0, 2.0, 3.0];
-
-julia> out = frule(Mooncake.lift(sum, Mooncake.NoTangent()), Mooncake.lift(x, ones(3)));
-
-julia> Mooncake.primal(out), Mooncake.tangent(out)   # primal sum, directional derivative
-(6.0, 3.0)
-```
-"""
-function build_frule(
-    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
-)
-    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
-    buf = _nfwd_frule_buf_ref(sig, Val(resolved))
-    return Rule{sig,resolved,typeof(buf)}(buf)
-end
-
-function build_frule(
-    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
-)
-    return build_frule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
-end
-
-# Primitive scalar wrappers in rules_via_nfwd.jl only need these nfwd execution helpers.
-# Calling these helpers avoids constructing a fresh Rule/RRule wrapper at every primitive
-# callsite, which would otherwise add avoidable allocations and dispatch overhead to hot
-# scalar rules. Rule and RRule still back the public build_frule/build_rrule APIs, where
-# the caller builds one wrapper, reuses it, and keeps its mutable workspace private to
-# that instance. Primitive rules do not have that caller-owned lifecycle: they are
-# entered through ordinary Mooncake dispatch, so using Rule/RRule there would either
-# build a new mutable wrapper per call or hide shared mutable workspace behind a plain
-# rule method. That shared-state hazard is not unique to nfwd, but it matters most here
-# because primitive rules are expected to behave like ordinary stateless methods.
-# Lifted-arg width-1 scalar overload: scalar IEEEFloat input → routed
-# through `_wrap_lifted_output` so scalar, complex, and tuple outputs all
-# resolve via dispatch.
-@inline function (rule::Rule{sig,1})(
-    f::Mooncake.Lifted, x::Mooncake.Lifted{T,1,NDual{T,1}}
-) where {sig,T<:IEEEFloat}
-    _nfwd_verify_sig(rule, (f, x))
-    lifted = _nfwd_lift(primal(x), tangent(x).partials[1], Val(1))
-    return _wrap_lifted_output(primal(f)(lifted), Val(1))
-end
-
-@inline function (rule::Rule{sig,N})(
-    f::Mooncake.Lifted,
-    x1::Mooncake.Lifted{T1,N,NDual{T1,N}},
-    x2::Mooncake.Lifted{T2,N,NDual{T2,N}},
-) where {sig,N,T1<:IEEEFloat,T2<:IEEEFloat}
-    _nfwd_verify_sig(rule, (f, x1, x2))
-    y, dy = _nfwd_eval(
-        primal(f),
-        (primal(x1), primal(x2)),
-        (tangent(x1).partials, tangent(x2).partials),
-        Val(N),
-    )
-    partials = dy isa Tuple ? dy : (dy,)
-    return Mooncake.Lifted{typeof(y),N}(y, NDual{typeof(y),N}(y, partials))
-end
-
-@inline function (rule::Rule{sig,N})(
-    f::Mooncake.Lifted,
-    x1::Mooncake.Lifted{T1,N,NDual{T1,N}},
-    x2::Mooncake.Lifted{T2,N,NDual{T2,N}},
-    x3::Mooncake.Lifted{T3,N,NDual{T3,N}},
-) where {sig,N,T1<:IEEEFloat,T2<:IEEEFloat,T3<:IEEEFloat}
-    _nfwd_verify_sig(rule, (f, x1, x2, x3))
-    y, dy = _nfwd_eval(
-        primal(f),
-        (primal(x1), primal(x2), primal(x3)),
-        (tangent(x1).partials, tangent(x2).partials, tangent(x3).partials),
-        Val(N),
-    )
-    partials = dy isa Tuple ? dy : (dy,)
-    return Mooncake.Lifted{typeof(y),N}(y, NDual{typeof(y),N}(y, partials))
-end
-
-# Lifted-arg width-N array overload: input is `Lifted{<:Array{T}, N, NDualArray{...}}`,
-# where the partials live as `NTuple{N, Array{T,D}}` inside the V. The scalar
-# output is packed as a width-N `Lifted{T_out, N, NDual{T_out, N}}` whose
-# partials carry the N directional derivatives — coherent with the Lifted
-# canonical V invariant.
-function (rule::Rule{sig,N})(
-    f::Mooncake.Lifted, x::Mooncake.Lifted{P,N,VV}
-) where {sig,N,T<:IEEEFloat,Nd,P<:Array{T,Nd},VV<:Mooncake.NDualArray}
-    _nfwd_verify_sig(rule, (f, x))
-    px = _nfwd_check_primal(primal(x))
-    partials = tangent(x).partials
-    lifted = _nfwd_lift(px, partials, Val(N))
-    return _wrap_lifted_output(primal(f)(lifted), Val(N))
-end
-
-# Multi-input Lifted fallback: lift each input by its V shape (NDual or NDualArray),
-# call the primal function on the lifted args, and wrap the result via
-# `_wrap_lifted_output`. More-specific 1-scalar / 2-scalar / 3-scalar / 1-array
-# overloads win; this catches multi-array and mixed-shape input combinations.
-function (rule::Rule{sig,N})(
-    f::Mooncake.Lifted, args::Vararg{Mooncake.Lifted,M}
-) where {sig,N,M}
-    _nfwd_verify_sig(rule, (f, args...))
-    lifted_args = map(args) do x
-        return _nfwd_lift(_nfwd_check_primal(primal(x)), _lifted_partials(x), Val(N))
-    end
-    return _wrap_lifted_output(primal(f)(lifted_args...), Val(N))
-end
-
-@inline _lifted_partials(x::Mooncake.Lifted) = tangent(x).partials
-@inline function _lifted_partials(
-    x::Mooncake.Lifted{Complex{R},N,Complex{NDual{R,N}}}
-) where {R<:IEEEFloat,N}
-    v = tangent(x)
-    re_partials = real(v).partials
-    im_partials = imag(v).partials
-    return ntuple(k -> Complex(re_partials[k], im_partials[k]), Val(N))
-end
-
-# Scalar NDual output → Lifted{T, N, NDual{T, N}}.
-@inline function _wrap_lifted_output(out_nd::NDual{T,N}, ::Val{N}) where {T,N}
-    y = Nfwd._nfwd_dual_value(out_nd)
-    return Mooncake.Lifted{T,N}(y, out_nd)
-end
-
-# Tuple-of-V → Lifted{Tuple{P_i...}, N, Tuple{V_i...}}. Recurse into each
-# element so canonical V's compose (scalar NDual, NDualArray, nested tuple).
-@inline function _wrap_lifted_output(out::Tuple, ::Val{N}) where {N}
-    inner = map(o -> _wrap_lifted_output(o, Val(N)), out)
-    primals = map(Mooncake.primal, inner)
-    values = map(Mooncake.tangent, inner)
-    return Mooncake.Lifted{typeof(primals),N}(primals, values)
-end
-
-# AbstractArray of NDual → Lifted{Array{T,D}, N, NDualArray{T, N, D, ...}}.
-@inline function _wrap_lifted_output(
-    out_arr::AbstractArray{NDual{T,N},D}, ::Val{N}
-) where {T<:IEEEFloat,N,D}
-    primal_arr = similar(out_arr, T)
-    partials = ntuple(_ -> similar(out_arr, T), Val(N))
-    @inbounds for I in CartesianIndices(out_arr)
-        primal_arr[I] = Nfwd._nfwd_dual_value(out_arr[I])
-        for k in 1:N
-            partials[k][I] = Nfwd._nfwd_dual_partial(out_arr[I], k)
-        end
-    end
-    A = typeof(primal_arr)
-    return Mooncake.Lifted{A,N}(
-        primal_arr, Mooncake.NDualArray{T,N,D,A}(primal_arr, partials)
-    )
-end
-
-# Catch-all for output shapes the nfwd engine can't yet wrap (non-IEEEFloat
-# scalars, Bool arrays, etc.) — route through the public diagnostic so the
-# `UnsupportedOutputError` message points the user at supported shapes.
-@inline _wrap_lifted_output(y, ::Val{N}) where {N} = Nfwd._nfwd_output_error(y)
-
-"""
-    build_rrule(f, x...; chunk_size=nothing)
-    build_rrule(sig::Type{<:Tuple}; chunk_size=nothing)
-
-Build a reverse-mode rule through `nfwd`.
-
-The reverse rule is derived from chunked NDual forward passes and obeys the standard
-`rrule!!` interface. Rule construction is signature-based, so `nfwd` only supports
-stateless callables here.
-
-If `chunk_size` is omitted, nfwd automatically selects `min(DOF, hardware_preferred_width)`
-from the signature, where `hardware_preferred_width` is 8 (one AVX-512 / two AVX2 Float64
-registers). For scalar-only signatures the DOF is known exactly at type level; for
-signatures containing arrays the preferred width is used directly.
-
-!!! warning "Not thread-safe"
-    The returned `RRule` holds mutable workspace buffers (`buf`, `grad_buf`) that
-    are updated in-place on every call. Do not share a single rule across threads; build
-    one rule per thread, or use `Mooncake.prepare_derivative_cache` and create one cache
-    per thread.
-
-!!! note "debug_mode"
-    The `debug_mode` keyword is accepted for API consistency with Mooncake's other
-    rule/cache builders but always throws when `true`; nfwd-specific debug checks are
-    not yet implemented. Mooncake's outer debug wrapper still validates CoDual
-    inputs/outputs when the rule is invoked inside a debug-mode rrule.
-
-## Example
-
-```julia
-julia> using Mooncake
-
-julia> f(x) = sum(abs2, x)
-f (generic function with 1 method)
-
-julia> rrule = Mooncake.NfwdMooncake.build_rrule(
-           Tuple{typeof(f), Vector{Float64}}; chunk_size=1
-       );
-
-julia> x = [1.0, 2.0, 3.0];
-
-julia> y, pb!! = rrule(
-           Mooncake.CoDual(f, Mooncake.NoFData()),
-           Mooncake.CoDual(x, zeros(3)),
-       );
-
-julia> Mooncake.primal(y)
-14.0
-
-julia> pb!!(1.0)
-(Mooncake.NoRData(), [2.0, 4.0, 6.0])
-```
-"""
-function build_rrule(
-    sig::Type{<:Tuple}; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
-)
-    resolved = _nfwd_resolve_rule_chunk_size(sig, chunk_size; debug_mode)
-    buf = _nfwd_buf_ref(sig, Val(resolved))
-    grad_buf = _nfwd_grad_buf_ref(sig)
-    scalar_out = _nfwd_infer_scalar_output(sig)
-    return RRule{sig,resolved,typeof(buf),scalar_out,typeof(grad_buf)}(buf, grad_buf)
-end
-
-function build_rrule(
-    f, x...; chunk_size=nothing, debug_mode=false, silence_debug_messages=true
-)
-    return build_rrule(typeof((f, x...)); chunk_size, debug_mode, silence_debug_messages)
-end
+# `_nfwd_primitive_rrule_call` is the single entry point used by
+# `src/rules/rules_via_nfwd.jl`. It validates that `f` is non-differentiable and
+# dispatches into the shared chunked NDual reverse path below.
 
 @inline function _nfwd_primitive_rrule_call(
     ::Val{N}, f::CoDual, x::Vararg{CoDual,M}
@@ -398,163 +88,14 @@ end
     return _nfwd_rrule_call(primal(f), x, Val(N))
 end
 
-"""
-    (rule::RRule)(f::CoDual, x::Vararg{CoDual})
-
-Evaluate an `nfwd` reverse rule and return both the output `CoDual` and pullback.
-`f` must be a stateless callable: `tangent(f)` must be `NoFData`, otherwise an
-`ArgumentError` is thrown. Differentiating with respect to `f` is not supported.
-"""
-function (rule::RRule{sig,N})(f::CoDual, x::Vararg{CoDual,M}) where {sig,N,M}
-    _nfwd_verify_sig(rule, (f, x...))
-    _nfwd_check_function_tangent(tangent(f))
-    return _nfwd_rrule_call(primal(f), x, Val(N))
-end
-
-# Optimised single-real-array-input rrule, scalar-output fast path.
-#
-# When `scalar_out=true` (inferred at rule-build time), the output is known to be an
-# IEEEFloat scalar so we skip the redundant primal type-check call.  For small DOF / single-
-# chunk problems that extra call would cost one full function evaluation — e.g. for
-# `large_single_block` (DOF=2, 400 scalar ops) it was ~23% of total rrule time.
-#
-# The pullback only needs to scale the pre-computed gradient by the output cotangent —
-# zero per-call allocations at steady state.
-function (rule::RRule{sig,N,Tbuf,true})(
-    f::CoDual, x::CoDual{A}
-) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    f_runtime, x_primal = _nfwd_prepare_array_rrule_call(rule, f, x)
-    # Output type is known scalar — skip primal call and go straight to gradient sweep.
-    # Gradient is written to the pre-allocated grad_buf (not into tangent(x)), so the
-    # pullback can accumulate into the existing fdata without a copy.
-    return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
-end
-
-# Fallback: output type not known to be scalar at build time.  Run a primal call to
-# dispatch between the scalar fast path and the generic chunked path.
-function (rule::RRule{sig,N,Tbuf,false})(
-    f::CoDual, x::CoDual{A}
-) where {sig,N,Tbuf,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    f_runtime, x_primal = _nfwd_prepare_array_rrule_call(rule, f, x)
-    y_primal = f_runtime(x_primal)
-    if y_primal isa IEEEFloat
-        return _nfwd_array_scalar_rrule_result(rule, f_runtime, x, x_primal, Val(N))
-    else
-        _nfwd_is_supported_primal(y_primal) || _nfwd_output_error((x_primal,), y_primal)
-        y_cd = CoDual(y_primal, fdata(zero_tangent(y_primal)))
-        return y_cd,
-        _nfwd_pullback(f_runtime, (x_primal,), (tangent(x),), tangent(y_cd), Val(N))
-    end
-end
-
-# Optimization note:
-# This scalar specialization bypasses the general pullback-based reverse path for cached
-# `value_and_gradient!!` calls. Evaluating one NDual-lifted primal directly is enough to recover
-# the scalar primal and derivative, which removes the remaining steady-state allocations for
-# singleton scalar inputs.
-#
-# Complex scalars (CoDual{<:Complex}) have no matching specialization here and fall through
-# to the generic `__value_and_gradient!!` in src/interface.jl, which runs the full pullback.
-# This is correct and tested; it is simply not on the allocation-free fast path.
-"""
-    __value_and_gradient!!(rule::RRule, f::CoDual, x::CoDual)
-
-Dispatch the scalar cached fast path for `nfwd` reverse mode.
-"""
-function __value_and_gradient!!(
-    rule::RRule{sig,N}, f::CoDual, x::CoDual{T}
-) where {sig,N,T<:IEEEFloat}
-    _nfwd_verify_sig(rule, (f, x))
-    return _nfwd_scalar_value_and_gradient(primal(f), f, x, Val(N))
-end
-
-"""
-    __value_and_gradient!!(rule::RRule, f::CoDual, x::CoDual{<:Array})
-
-Scalar-output dense-array fast path for `nfwd` reverse rules. Dispatches to a
-typed-workspace path for `Vector{T}` inputs (via the buf type parameter) and a generic
-workspace path for higher-dimensional arrays.
-"""
-function __value_and_gradient!!(
-    rule::RRule{sig,chunk_size}, f::CoDual, x::CoDual{A}
-) where {sig,chunk_size,T<:IEEEFloat,N,A<:Array{T,N}}
-    _nfwd_verify_sig(rule, (f, x))
-    _nfwd_check_function_tangent(tangent(f))
-    y = _nfwd_array_scalar_value_and_gradient(primal(f), x, rule.buf, Val(chunk_size))
-    return y, (_nfwd_function_gradient(f), tangent(x))
-end
-
-const NFWD_DEBUG_MODE_WARNING =
-    "nfwd-backed reverse-mode rules ignore `debug_mode=true`; " *
-    "Mooncake's outer debug wrapper still checks CoDual inputs/outputs, but the " *
-    "inner nfwd rule executes without nfwd-specific debug checks."
-
-"""
-    _copy(rule::Rule)
-
-Copy a `Rule` while resetting cached workspace state.
-"""
-function _copy(x::Rule{sig,N,Tbuf}) where {sig,N,Tbuf}
-    return Rule{sig,N,Tbuf}(Tbuf(nothing))
-end
-
-"""
-    _copy(rule::RRule)
-
-Copy an `RRule` while resetting cached workspace state.
-"""
-function _copy(x::RRule{sig,N,Tbuf,scalar_out,Tgbuf}) where {sig,N,Tbuf,scalar_out,Tgbuf}
-    return RRule{sig,N,Tbuf,scalar_out,Tgbuf}(Tbuf(nothing), Tgbuf(nothing))
-end
-
-# RRule bakes sig into its type parameters and validates internally via
-# _nfwd_verify_sig on every call; no redundant check is needed here.
-__verify_sig(::RRule, ::Tuple) = nothing
-
-"""
-    verify_fwds_inputs(rule::RRule, x)
-
-Emit the outer debug-mode warning before delegating to generic forward-input checks.
-"""
-@noinline function verify_fwds_inputs(rule::RRule, @nospecialize(x::Tuple))
-    @warn NFWD_DEBUG_MODE_WARNING
-    return invoke(verify_fwds_inputs, Tuple{Any,Tuple}, rule, x)
-end
-
 #
 # Validation and layout helpers
 #
-# Shared validation, sizing, and shape utilities used across the forward, reverse, and cached
-# execution paths.
+# Shared validation, sizing, and shape utilities used across the forward and reverse paths.
 
 @inline function _nfwd_check_function_tangent(df)
     df isa Union{NoTangent,NoFData} && return nothing
     throw(ArgumentError("nfwd does not support differentiating with respect to `f`."))
-end
-
-@inline function _nfwd_resolve_rule_chunk_size(
-    sig::Type{<:Tuple}, chunk_size; debug_mode::Bool
-)
-    resolved = isnothing(chunk_size) ? _nfwd_sig_default_chunk_size(sig) : chunk_size
-    return _nfwd_validate(sig, resolved; debug_mode)
-end
-
-@inline function _nfwd_verify_sig(rule::Union{Rule,RRule}, fx::Tuple)
-    sig = _nfwd_rule_sig(rule)
-    Tfx = Tuple{map(_typeof ∘ primal, fx)...}
-    # Use <: (subtype) rather than == so that a rule built for an abstract signature
-    # (e.g. Tuple{typeof(f), AbstractVector{Float64}}) also accepts concrete subtypes
-    # at call time. This mirrors the convention used elsewhere in Mooncake's dispatch.
-    Tfx <: sig && return nothing
-    throw(ArgumentError("Arguments with sig $Tfx do not subtype rule signature, $sig"))
-end
-
-@inline function _nfwd_check_config(config)
-    config.friendly_tangents &&
-        throw(ArgumentError("nfwd does not currently support `friendly_tangents=true`."))
-    config.debug_mode &&
-        throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
-    return nothing
 end
 
 #
@@ -818,14 +359,6 @@ end
     return map(yi -> _nfwd_zero_output_tangent(yi, Val(N)), y)
 end
 
-# chunk_size=1: tangent is a plain scalar — return it regardless of which lane is requested.
-@inline _nfwd_scalar_lane(dy, ::Val{1}, _) = dy
-# chunk_size=N: tangent is an NTuple — index with a static Val{K} or a runtime Int.
-@inline _nfwd_scalar_lane(dy::Tuple{Any}, ::Val{1}, ::Val{K}) where {K} = dy[1]
-@inline _nfwd_scalar_lane(dy::Tuple{Any}, ::Val{1}, _lane::Int) = dy[1]
-@inline _nfwd_scalar_lane(dy::NTuple{N}, ::Val{N}, ::Val{K}) where {N,K} = dy[K]
-@inline _nfwd_scalar_lane(dy::NTuple{N}, ::Val{N}, lane::Int) where {N} = dy[lane]
-
 function _nfwd_contract_output(ȳ::T, dy::T) where {T<:IEEEFloat}
     return (_nfwd_real_dot(ȳ, dy),)
 end
@@ -890,9 +423,9 @@ end
 #
 # Reverse execution
 #
-# `Pullback` is a concrete callable struct rather than a closure so direct
-# `build_rrule(...)(...)` calls can stay allocation-free on the scalar path.
-# The pullback still carries the cached primals / tangents / output fdata needed to rerun
+# `Pullback` is a concrete callable struct rather than a closure so that the primitive
+# reverse-mode path can stay allocation-free on the scalar path.
+# The pullback carries the cached primals / tangents / output fdata needed to rerun
 # chunked NDual passes during the reverse sweep.
 
 """
@@ -1301,300 +834,4 @@ function _nfwd_extract(y, primals::Tuple, ::Val{N}) where {N}
     _nfwd_is_supported_primal(y) || _nfwd_output_error(primals, y)
     return y, _nfwd_zero_output_tangent(y, Val(N))
 end
-
-@inline _nfwd_function_gradient(f::CoDual) = tangent(fdata(tangent(f)), NoRData())
-
-@inline function _nfwd_prepare_array_rrule_call(
-    rule::RRule, f::CoDual, x::CoDual{A}
-) where {A<:Array}
-    _nfwd_verify_sig(rule, (f, x))
-    _nfwd_check_function_tangent(tangent(f))
-    return primal(f), _nfwd_check_primal(primal(x))
-end
-
-@inline function _nfwd_array_scalar_rrule_result(
-    rule::RRule{sig,N}, f_runtime, x::CoDual{A}, x_primal::A, ::Val{N}
-) where {sig,N,T<:IEEEFloat,Nd,A<:Array{T,Nd}}
-    grad_arr = _nfwd_lazy_grad_buf!(rule.grad_buf, x_primal)
-    y = _nfwd_array_scalar_value_and_gradient(f_runtime, x, rule.buf, grad_arr, Val(N))
-    y_cd = CoDual(y, fdata(zero_tangent(y)))
-    return y_cd, ArrayScalarPullback(grad_arr, tangent(x))
-end
-
-@inline function _nfwd_scalar_value_and_gradient(
-    f_runtime, f::CoDual, x::CoDual{T}, ::Val{N}
-) where {T<:IEEEFloat,N}
-    _nfwd_check_function_tangent(tangent(f))
-    x_primal = _nfwd_check_primal(primal(x))
-    seed = _nfwd_seed_tangent(x_primal, N, 1, 0)
-    y, dy = _nfwd_extract(f_runtime(_nfwd_lift(x_primal, seed, Val(N))), Val(N))
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    x_grad = tangent(fdata(tangent(x)), _nfwd_scalar_lane(dy, Val(N), Val(1)))
-    return y, (_nfwd_function_gradient(f), x_grad)
-end
-
-@inline function _nfwd_scalar_value_and_gradient(
-    f_runtime, f::CoDual, x::CoDual{T}, chunk_size::Integer
-) where {T<:IEEEFloat}
-    return _nfwd_scalar_value_and_gradient(
-        f_runtime, f, x, Val(_nfwd_check_chunk_size(chunk_size))
-    )
-end
-
-#
-# Cached array scalar fast path
-#
-# A single helper covers both Vector{T} and higher-dimensional Array{T,N} inputs.
-# The lifted array is fetched (and lazily allocated) via _nfwd_rrule_lifted!, which
-# dispatches on the buf ref type: typed-ref bufs (Vector{T} inputs) stay fully inferred;
-# untyped Ref{Any} bufs (N-D arrays) fall back to a runtime type check.
-#
-# The inner loop uses an incremental seeding strategy:
-#   1. The lifted array is initialised once with zero partials — O(n).
-#   2. Per chunk: only the C active elements are set to unit-partial form — O(C).
-#   3. After f is evaluated, those C elements are reset to zero — O(C).
-#
-# This replaces the previous O(n×C) approach (fill! the full seed + lift! every chunk)
-# with O(n) + O(C)×chunks, matching how ForwardDiff manages its GradientConfig.
-
-# Primary overload: gradient is written to an explicitly provided buffer `grad`.
-# `grad` must have the same shape and element type as `primal(x)`.
-# Each element of `grad` is written exactly once, so no fill! is needed — callers must
-# ensure `grad` is zeroed before use (e.g. via set_to_zero_maybe!! in value_and_gradient!!).
-# Does NOT touch `tangent(x)`.
-@inline function _nfwd_array_scalar_value_and_gradient(
-    f_runtime, x::CoDual{A}, buf::Base.RefValue, grad::A, ::Val{C}
-) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
-    x_primal = _nfwd_check_primal(primal(x))
-    n = length(x_primal)
-    lifted = _nfwd_rrule_lifted!(buf, x_primal, Val(C))
-
-    # For multi-chunk cases (DOF > C), init the full lifted array to zero-partial form so
-    # that non-seeded slots stay zero across chunks.  For DOF ≤ C (single chunk) every
-    # element is seeded immediately, so init is dead and skipped.
-    n > C && _nfwd_init_lifted!(lifted, x_primal, Val(C))
-    cart = CartesianIndices(x_primal)
-
-    y = zero(T)
-    for start_slot in 1:C:n
-        _nfwd_seed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
-        y, lane_vals = _nfwd_scalar_lanes(f_runtime(lifted), T, Val(C))
-        # Skip unseed on the last chunk: the buffer is always re-seeded (or re-inited) at
-        # the start of the next call, so leaving the last chunk seeded is safe.
-        start_slot + C <= n &&
-            _nfwd_unseed_lifted_chunk!(lifted, x_primal, cart, start_slot, Val(C))
-        global_slot = start_slot
-        @inbounds for lane_val in lane_vals
-            global_slot > n && break
-            grad[global_slot] = lane_val  # write (not accumulate); each slot written once
-            global_slot += 1
-        end
-    end
-
-    return y
-end
-
-# Backward-compatible overload: writes gradient into tangent(x) directly.
-# The caller (value_and_gradient!!) must zero tangent(x) before each call via
-# set_to_zero_maybe!!, since the primary overload no longer calls fill!.
-# Used by __value_and_gradient!! where the caller expects the returned gradient to be
-# the fdata array (i.e. tangent(x) == x_grad after the call).
-@inline function _nfwd_array_scalar_value_and_gradient(
-    f_runtime, x::CoDual{A}, buf::Base.RefValue, ::Val{C}
-) where {C,T<:IEEEFloat,N,A<:Array{T,N}}
-    return _nfwd_array_scalar_value_and_gradient(f_runtime, x, buf, tangent(x), Val(C))
-end
-
-#
-# Workspace helpers (_nfwd_buf_ref / _nfwd_rrule_lifted! /
-#                    _nfwd_grad_buf_ref / _nfwd_lazy_grad_buf!)
-#
-# The rrule buf stores only the lifted Array{NDual{T,C}} — no seed array needed.
-# The grad_buf stores a pre-allocated gradient array matching the input shape.
-# Two ref types are used for each, matching the frule buf pattern:
-#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
-
-_nfwd_buf_ref(sig, ::Val) = Ref{Any}(nothing)
-
-function _nfwd_buf_ref(::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}) where {F,T<:IEEEFloat,Nd,C}
-    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
-end
-
-_nfwd_grad_buf_ref(sig) = Ref{Any}(nothing)
-
-function _nfwd_grad_buf_ref(::Type{Tuple{F,Array{T,Nd}}}) where {F,T<:IEEEFloat,Nd}
-    return Ref{Union{Nothing,Array{T,Nd}}}(nothing)
-end
-
-@inline function _nfwd_alloc_workspace(::Type{Vector{T}}, dims::Tuple{Int}) where {T}
-    return Vector{T}(undef, dims[1])
-end
-
-@inline function _nfwd_alloc_workspace(::Type{Array{T,N}}, dims::NTuple{N,Int}) where {T,N}
-    return Array{T,N}(undef, dims)
-end
-
-@inline function _nfwd_array_workspace!(
-    buf::Base.RefValue{Union{Nothing,A}}, ::Type{A}, dims
-) where {A<:Array}
-    ws = buf[]
-    if ws === nothing || size(ws::A) != dims
-        ws = _nfwd_alloc_workspace(A, dims)
-        buf[] = ws
-    end
-    return ws::A
-end
-
-@inline function _nfwd_array_workspace!(
-    buf::Base.RefValue, ::Type{A}, dims
-) where {A<:Array}
-    ws = buf[]
-    if !(ws isa A && size(ws) == dims)
-        ws = _nfwd_alloc_workspace(A, dims)
-        buf[] = ws
-    end
-    return ws::A
-end
-
-# Typed-ref path: fully inferred (covers all array ranks, including Vector).
-@inline function _nfwd_rrule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},N}}}, x::Array{T,N}, ::Val{C}
-) where {T<:IEEEFloat,N,C}
-    return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
-end
-
-# Generic path: buf is Ref{Any}; workspace type recovered at runtime.
-@inline function _nfwd_rrule_lifted!(
-    buf::Base.RefValue, x::Array{T,N}, ::Val{C}
-) where {T<:IEEEFloat,N,C}
-    return _nfwd_array_workspace!(buf, Array{NDual{T,C},N}, size(x))
-end
-
-# Typed-ref path: fully inferred (covers all array ranks, including Vector).
-@inline function _nfwd_lazy_grad_buf!(
-    grad_buf::Base.RefValue{Union{Nothing,Array{T,N}}}, x_primal::Array{T,N}
-) where {T<:IEEEFloat,N}
-    return _nfwd_array_workspace!(grad_buf, Array{T,N}, size(x_primal))
-end
-
-# Generic path: grad_buf is Ref{Any}; gradient array type recovered at runtime.
-@inline function _nfwd_lazy_grad_buf!(
-    grad_buf::Base.RefValue, x_primal::Array{T,N}
-) where {T<:IEEEFloat,N}
-    return _nfwd_array_workspace!(grad_buf, Array{T,N}, size(x_primal))
-end
-
-# Initialise every element of `lifted` to NDual(x[i], 0̄) — O(n), called once per
-# value_and_gradient!! invocation.  Chunks then update only C elements each.
-@inline function _nfwd_init_lifted!(
-    lifted::Array{NDual{T,C},N}, x::Array{T,N}, ::Val{C}
-) where {T<:IEEEFloat,C,N}
-    z = ntuple(_ -> zero(T), Val(C))
-    @inbounds for I in CartesianIndices(x)
-        lifted[I] = NDual{T,C}(x[I], z)
-    end
-    return lifted
-end
-
-# Set C elements starting at `start_slot` to unit-partial form — O(C).
-@inline function _nfwd_seed_lifted_chunk!(
-    lifted::Array{NDual{T,C},N},
-    x::Array{T,N},
-    cart::CartesianIndices,
-    start_slot::Int,
-    ::Val{C},
-) where {T<:IEEEFloat,C,N}
-    @inbounds for lane in 1:C
-        gs = start_slot + lane - 1
-        gs > length(x) && break
-        I = cart[gs]
-        lifted[I] = NDual{T,C}(x[I], ntuple(k -> T(k == lane), Val(C)))
-    end
-    return lifted
-end
-
-# Reset those same C elements back to zero-partial form — O(C).
-@inline function _nfwd_unseed_lifted_chunk!(
-    lifted::Array{NDual{T,C},N},
-    x::Array{T,N},
-    cart::CartesianIndices,
-    start_slot::Int,
-    ::Val{C},
-) where {T<:IEEEFloat,C,N}
-    z = ntuple(_ -> zero(T), Val(C))
-    @inbounds for lane in 1:C
-        gs = start_slot + lane - 1
-        gs > length(x) && break
-        I = cart[gs]
-        lifted[I] = NDual{T,C}(x[I], z)
-    end
-    return lifted
-end
-
-function _nfwd_lift!(
-    out::Array{NDual{T,C}}, x::Array{T}, dx::Array{T}, ::Val{C}
-) where {T<:IEEEFloat,C}
-    @inbounds for I in CartesianIndices(x)
-        idx = Tuple(I)
-        out[I] = NDual{T,C}(x[I], ntuple(k -> dx[idx..., k], Val(C)))
-    end
-    return out
-end
-
-#
-# Frule lifted-array buffer helpers (_nfwd_frule_buf_ref / _nfwd_frule_lifted!)
-#
-# The frule receives the seed tangent directly from the caller (as the tangent part of the
-# input Dual), so no seed buffer is needed — only a pre-allocated Array{NDual{T,C}} of the
-# same shape as the primal input.  Two buf types are used:
-#   - Typed-ref (Array{T,Nd} input): fully inferred, no runtime isa check.
-#   - Generic Ref{Any} (non-array / unsupported input): workspace type recovered at runtime.
-
-_nfwd_frule_buf_ref(sig, ::Val) = Ref{Any}(nothing)
-
-function _nfwd_frule_buf_ref(
-    ::Type{Tuple{F,Array{T,Nd}}}, ::Val{C}
-) where {F,T<:IEEEFloat,Nd,C}
-    return Ref{Union{Nothing,Array{NDual{T,C},Nd}}}(nothing)
-end
-
-# Typed-ref path for Array{T,Nd} inputs (covers all ranks, including Vector).
-function _nfwd_frule_lifted!(
-    buf::Base.RefValue{Union{Nothing,Array{NDual{T,C},Nd}}},
-    x::Array{T,Nd},
-    dx::Array{T},
-    ::Val{C},
-) where {T<:IEEEFloat,Nd,C}
-    ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
-    return _nfwd_lift!(ws, x, dx, Val(C))
-end
-
-# Generic path for Array{T,Nd} inputs (Ref{Any} buf).
-function _nfwd_frule_lifted!(
-    buf::Base.RefValue, x::Array{T,Nd}, dx::Array{T}, ::Val{C}
-) where {T<:IEEEFloat,Nd,C}
-    ws = _nfwd_array_workspace!(buf, Array{NDual{T,C},Nd}, size(x))
-    return _nfwd_lift!(ws, x, dx, Val(C))
-end
-
-"""
-    _nfwd_scalar_lanes(y_raw, ::Type{T}, ::Val{C})
-
-Decode a scalar-output `nfwd` chunk evaluation into its primal value plus the `C`
-directional derivatives carried by that chunk. Constant outputs are treated as zero-tangent
-outputs, so this helper works for both NDual-carrying and plain scalar results.
-"""
-@inline function _nfwd_scalar_lanes(
-    y_raw::NDual{T,C}, ::Type{T}, ::Val{C}
-) where {T<:IEEEFloat,C}
-    return Nfwd.ndual_value(y_raw), ntuple(k -> Nfwd.ndual_partial(y_raw, k), Val(C))
-end
-
-@inline function _nfwd_scalar_lanes(y_raw, ::Type{T}, ::Val{C}) where {T<:IEEEFloat,C}
-    y, dy = _nfwd_extract(y_raw, Val(C))
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    return y, ntuple(k -> _nfwd_scalar_lane(dy, Val(C), Val(k)), Val(C))
-end
-
 end

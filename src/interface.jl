@@ -1951,10 +1951,8 @@ Hessian computation uses forward-over-reverse AD: one forward-mode pass per inpu
 dimension over the reverse-mode gradient function.
 
 !!! note
-    This path currently uses Mooncake's generic public forward cache over the captured
-    reverse-mode gradient closure. It does not currently dispatch to the public
-    `NfwdMooncake` fast path used by some `prepare_derivative_cache` /
-    `value_and_gradient!!` calls.
+    This path uses Mooncake's generic public forward cache over the captured
+    reverse-mode gradient closure.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)

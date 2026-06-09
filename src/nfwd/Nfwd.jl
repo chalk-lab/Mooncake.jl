@@ -51,10 +51,9 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-For Mooncake-interface rule construction on concrete signatures, see
-`Mooncake.NfwdMooncake.build_frule` and `Mooncake.NfwdMooncake.build_rrule`.
 `Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; `NfwdMooncake`
-packages that machinery into Mooncake's `Lifted` / `CoDual` rule interface.
+packages that machinery into the primitive reverse-mode path used by
+`src/rules/rules_via_nfwd.jl`.
 """
 module Nfwd
 
@@ -68,9 +67,6 @@ export NDual,
     ndual_value,
     ndual_partial,
     ndual_partials,
-    Rule,
-    RRule,
-    rule_chunk_size,
     UnsupportedError,
     UnsupportedInputError,
     UnsupportedOutputError,
@@ -87,7 +83,6 @@ export NDual,
     _nfwd_is_supported_scalar,
     _nfwd_output_error,
     _nfwd_resolve_chunk_size,
-    _nfwd_rule_sig,
     _nfwd_sig_default_chunk_size,
     _nfwd_sig_dof,
     _nfwd_type_dof,
@@ -314,7 +309,8 @@ function full_jacobian(f!, out::CuArray{T}, x::CuArray{T}) where {T}
     ∂x  = CuArray([seed_ntangent(Val(N), T, i) for i in 1:N])
     ∂out = fill!(similar(out, NDual{T,N}), zero_ntangent(Val(N), T))
 
-    rule = build_frule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
+    # A hypothetical NfwdMode{N}-aware forward rule run once with all N directions:
+    rule = nfwd_mode_rule(NfwdMode{N}(), typeof(f!), CuArray{T}, CuArray{T})
     rule(lift(f!, NoTangent()), lift(out, ∂out), lift(x, ∂x))
 
     # ∂out[i].partials == (∂out[i]/∂x[1], …, ∂out[i]/∂x[N]) — full m×N Jacobian
@@ -1650,76 +1646,13 @@ end
     return Base.mapreduce_impl(f, op, A, ifirst, ilast)
 end
 
-"""
-    Rule
-
-Callable forward-mode rule used by `nfwd`.
-
-`Rule` is built from a statically-known call signature. `buf` holds a reusable
-typed scratch buffer for in-place array lifting when a chunk-layout tangent is available.
-
-!!! warning
-    `Rule` owns mutable workspace. Reusing one instance avoids repeated wrapper
-    construction, but a single instance must not be shared across concurrent calls.
-    This is a general shared-mutable-state hazard, not something specific to `nfwd`.
-"""
-struct Rule{sig,N,Tbuf<:Base.RefValue}
-    buf::Tbuf
-end
-
-# Backward-compatible zero-arg constructor used by primitive rules in
-# rules_via_nfwd.jl.
-function Rule{sig,N}() where {sig,N}
-    Rule{sig,N,Base.RefValue{Any}}(Ref{Any}(nothing))
-end
-
-@inline rule_chunk_size(::Type{<:Rule{sig,N}}) where {sig,N} = N
-
-"""
-    RRule
-
-Callable reverse-mode rule used by `nfwd`.
-
-`RRule` is built from a statically-known call signature. Both direct
-[`build_rrule`](@ref) calls and primitive reverse-mode registration route through
-that signature-based construction path. `buf` holds reusable typed scratch buffers for
-cached scalar-output fast paths when that is available. `grad_buf` holds a separate
-pre-allocated gradient buffer for the single-array-input scalar-output fast paths, allowing
-the rrule to stay allocation-free at steady state without copying the computed gradient.
-
-The `scalar_out` type parameter is `true` when inference confirms at rule-build time that
-`f` returns an `IEEEFloat` scalar for the given input types. This allows the single-array
-rrule specialisation to skip the redundant primal type-check call, which otherwise costs
-one full function evaluation per gradient call.
-
-!!! warning
-    `RRule` owns mutable workspace in `buf` and `grad_buf`. Reusing one instance avoids
-    repeated wrapper construction, but a single instance must not be shared across
-    concurrent calls. This is a general shared-mutable-state hazard, not something
-    specific to `nfwd`.
-"""
-struct RRule{sig,N,Tbuf<:Base.RefValue,scalar_out,Tgbuf<:Base.RefValue}
-    buf::Tbuf
-    grad_buf::Tgbuf
-end
-
-# Backward-compatible zero-arg constructor used by primitive rules in
-# rules_via_nfwd.jl.
-function RRule{sig,N}() where {sig,N}
-    buf = Ref{Any}(nothing)
-    grad_buf = Ref{Any}(nothing)
-    return RRule{sig,N,typeof(buf),false,typeof(grad_buf)}(buf, grad_buf)
-end
-
-# Infer at rule-build time whether `sig` has a scalar IEEEFloat output.
-# Used to set the `scalar_out` type parameter on `RRule`, allowing the hot-path
-# rrule to skip the redundant primal type-check call for known-scalar functions.
+# Infer at rule-build time whether `sig` has a scalar IEEEFloat output, allowing a
+# rule to skip a redundant primal type-check call for known-scalar functions.
 #
 # Uses `Base.return_types`, which is a best-effort hint: it may return `[Any]` for
 # type-unstable functions or under some world-age conditions. In those cases this
-# function safely returns `false`, and the rrule falls through to the runtime primal
-# check (`scalar_out=false` path). There is no correctness risk from a missed inference
-# and only a missed optimisation.
+# function safely returns `false`, falling through to the runtime primal check. There
+# is no correctness risk from a missed inference and only a missed optimisation.
 function _nfwd_infer_scalar_output(sig::Type{<:Tuple})
     F = sig.parameters[1]
     Base.issingletontype(F) || return false
@@ -1947,9 +1880,6 @@ end
     hasmethod(f, argsig) && return sig
     throw(ArgumentError("nfwd rule construction expected a callable signature, got $sig."))
 end
-
-@inline _nfwd_rule_sig(::Rule{sig}) where {sig} = sig
-@inline _nfwd_rule_sig(::RRule{sig}) where {sig} = sig
 
 #
 # ── Canonical slot traversal ──────────────────────────────────────────────────────
