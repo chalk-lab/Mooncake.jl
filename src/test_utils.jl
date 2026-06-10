@@ -125,8 +125,11 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
+    lifted_type,
     randn_dual,
     randn_lifted,
+    zero_lifted,
+    uninit_lifted,
     lift,
     unlift,
     fcodual_type,
@@ -678,39 +681,55 @@ end
 # The bugs this guards against (e.g. a scalar `.value` set to `grad * x` instead of the result)
 # drift by O(1) relative, so a loose `isapprox` separates them cleanly from rounding noise.
 _chunked_v_approx(a, b) = isapprox(a, b; atol=1e-8, rtol=1e-6)
-function _chunked_v_invariant(p::Base.IEEEFloat, v::Mooncake.Nfwd.NDual)
+# The `IdDict` breaks cycles through mutable V nodes (`MutableDual`, mutable `Array`), which a
+# self-referential primal (`node.next === node`) produces; the immutable shapes can only cycle
+# back through one of those, so guarding the mutable entries alone is sufficient.
+_chunked_v_invariant(p, v) = _chunked_v_invariant(p, v, IdDict{Any,Nothing}())
+function _chunked_v_invariant(p::Base.IEEEFloat, v::Mooncake.Nfwd.NDual, ::IdDict)
     return _chunked_v_approx(v.value, p) && all(isfinite, v.partials)
 end
 function _chunked_v_invariant(
-    p::Complex{<:Base.IEEEFloat}, v::Complex{<:Mooncake.Nfwd.NDual}
+    p::Complex{<:Base.IEEEFloat}, v::Complex{<:Mooncake.Nfwd.NDual}, c::IdDict
 )
-    return _chunked_v_invariant(real(p), real(v)) && _chunked_v_invariant(imag(p), imag(v))
+    return _chunked_v_invariant(real(p), real(v), c) &&
+           _chunked_v_invariant(imag(p), imag(v), c)
 end
-function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray)
+function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray, ::IdDict)
     return _chunked_v_approx(v.primal, p) && all(a -> all(isfinite, a), v.partials)
 end
-_chunked_v_invariant(p::Tuple, v::Tuple) = all(map(_chunked_v_invariant, p, v))
-function _chunked_v_invariant(p::NamedTuple, v::NamedTuple)
-    return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n)), keys(v))
+function _chunked_v_invariant(p::Tuple, v::Tuple, c::IdDict)
+    all(map((a, b) -> _chunked_v_invariant(a, b, c), p, v))
 end
-function _chunked_v_invariant(p, v::Union{Mooncake.ImmutableDual,Mooncake.MutableDual})
-    nt = v.value
-    # An undefined primal field (partial `:new`) has no value to shadow — skip it.
-    return all(
-        n -> !isdefined(p, n) || _chunked_v_invariant(getfield(p, n), getfield(nt, n)),
+function _chunked_v_invariant(p::NamedTuple, v::NamedTuple, c::IdDict)
+    return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n), c), keys(v))
+end
+function _chunked_v_invariant(p, v::Mooncake.ImmutableDual, c::IdDict)
+    return _struct_v_invariant(p, v.value, c)
+end
+function _chunked_v_invariant(p, v::Mooncake.MutableDual, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    return _struct_v_invariant(p, v.value, c)
+end
+# An undefined primal field (partial `:new`) has no value to shadow — skip it.
+function _struct_v_invariant(p, nt::NamedTuple, c::IdDict)
+    all(
+        n -> !isdefined(p, n) || _chunked_v_invariant(getfield(p, n), getfield(nt, n), c),
         keys(nt),
     )
 end
-function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent)
-    return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v))
+function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent, c::IdDict)
+    return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v), c)
 end
-function _chunked_v_invariant(p::AbstractArray, v::AbstractArray)
-    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i]), eachindex(v))
+function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
 end
 # Fallthrough: shapes with nothing checkable here — `NoDual`/`NoTangent` (non-differentiable),
 # type-erased `FunctionWrapperTangent`, and any V shape not enumerated above (e.g. `Memory`
 # duals). The check degrades open: an unhandled shape passes rather than erroring.
-_chunked_v_invariant(_p, _v) = true
+_chunked_v_invariant(_p, _v, ::IdDict) = true
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(
@@ -1499,6 +1518,122 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
     @test tangent_type(primal_type) == expected_tangent_type
     @test is_foldable(tangent_type, (Type{expected_tangent_type},))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
+    return nothing
+end
+
+"""
+    test_lifted_type(primal_type, ::Val{N})
+
+Forward-mode analogue of [`test_tangent_type`](@ref). Checks that the forward representation
+type functions are well-formed for `primal_type` at chunk width `N`:
+
+- `dual_type(Val(N), primal_type)` (the inner `V`) and `lifted_type(Val(N), primal_type)` (the
+  slot) each return a `Type`;
+- the forward non-differentiable sentinel `NoDual` is used exactly when the reverse tangent is
+  `NoTangent` (`tangent_type(P) === NoTangent ⟺ dual_type === NoDual`) — catches a `NoTangent`
+  leaking into a forward slot or vice versa;
+- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`;
+- both functions are foldable and infer away — the foldability check is what surfaces a
+  world-age trap in a `@generated` `dual_type`/`lifted_type` (a sub-call baked into the
+  generator body instead of the returned expression).
+
+`P <: Type` (type-valued primals such as `Float64`, `Union{...}`) is excluded from the coherence
+check: those slots are deliberately sharpened to `Lifted{Type{X}, N}`, which is not the
+kind-widened `lifted_type` of the broad metatype (`DataType`/`Union`/`UnionAll`).
+"""
+function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
+    V = dual_type(Val(N), primal_type)
+    @test V isa Type
+    L = lifted_type(Val(N), primal_type)
+    @test L isa Type
+    @test (tangent_type(primal_type) === NoTangent) == (V === NoDual)
+    # Concrete, non-metatype primals are the hot path: assert coherence and that the type
+    # functions fold + infer away — the foldability check is what surfaces a `@generated`
+    # world-age trap (a sub-call baked into a `dual_type`/`lifted_type` generator body). A
+    # metatype / abstract primal deliberately kind-widens `lifted_type` to a `UnionAll`, which
+    # is not const-foldable, so those are exercised for runnability (the assertions above) only.
+    if isconcretetype(primal_type) && !(primal_type <: Type)
+        @test L === Lifted{primal_type,N,V}
+        @test is_foldable(dual_type, (Val{N}, Type{primal_type}))
+        @test is_foldable(lifted_type, (Val{N}, Type{primal_type}))
+        test_opt(dual_type, Tuple{Val{N},Type{primal_type}})
+        test_opt(lifted_type, Tuple{Val{N},Type{primal_type}})
+    end
+    return nothing
+end
+
+"""
+    test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+
+Forward-mode analogue of [`test_tangent`](@ref): the de-facto definition of the forward
+representation interface. If this runs without a failing test for a value `p`, then `p`'s
+forward (`Lifted` / `NDual`) representation is well-formed. It is purely representation-level
+— no rule is involved — and is the forward counterpart of `test_tangent` (`test_rule` covers
+rule correctness / finite-difference agreement separately).
+
+For each width `N ∈ widths` it checks, via [`test_lifted_type`](@ref) plus value-level
+assertions on the seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifted`):
+
+- primal aliasing — `primal(slot) === p` (the slot's primal is the user's storage, not a copy);
+- the slot has the coherent type `lifted_type(Val(N), typeof(p))`;
+- the **inner-value invariant** — every inner dual's `.value` tracks the primal it shadows, at
+  every width (`_chunked_v_invariant`). This is the check with no reverse analogue and the one
+  `test_rule` misses: it builds only width-1 seeds and checks the outer slot, not inner `.value`,
+  so a rule (or seed) that lets a scalar `.value` drift to e.g. `grad * x` passes `test_rule`
+  but fails here;
+- each per-lane accessor `tangent(slot, lane)` runs for `lane ∈ 1:N`;
+- the reverse↔forward bridge (width-1 only, the forward-over-reverse / HVP path): a reverse
+  tangent round-trips, `unlift(lift(p, ẋ)) == (p, ẋ)`.
+
+Self-referential primals whose cycle passes through a plain `Array` are outside the forward
+representation contract (the array seed path is not yet cycle-aware) and must be filtered by the
+caller; cyclic *mutable structs* are supported.
+"""
+function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+    @nospecialize rng p
+    P = typeof(p)
+    for N in widths
+        test_lifted_type(P, Val(N))
+
+        z = zero_lifted(Val(N), p)
+        u = uninit_lifted(Val(N), p)
+        r = randn_lifted(Val(N), rng, p)
+        @test z isa Lifted
+        @test u isa Lifted
+        @test r isa Lifted
+
+        # Primal aliasing: the slot wraps the user's storage, never a copy.
+        @test primal(z) === p
+        @test primal(r) === p
+
+        # Slot-type coherence. `lifted_type` kind-widens to a `UnionAll` for some primals
+        # (e.g. abstract-element containers), in which case the concrete sharpened slot is a
+        # subtype rather than an exact match. Type-valued primals are sharpened to `Type{X}`
+        # slots that do not match the broad metatype's `lifted_type` and are skipped.
+        L = lifted_type(Val(N), P)
+        if !(p isa Type)
+            isconcretetype(L) ? (@test typeof(z) === L) : (@test typeof(z) <: L)
+        end
+        @test typeof(r) === typeof(z)
+
+        # Inner-value invariant at this width — the load-bearing forward-only check.
+        @test _chunked_v_invariant(p, tangent(z))
+        @test _chunked_v_invariant(p, tangent(r))
+
+        # Per-lane accessors run for every lane.
+        for lane in 1:N
+            @test (tangent(z, lane); true)
+            @test (tangent(r, lane); true)
+        end
+    end
+
+    # Reverse↔forward bridge (width-1): a reverse tangent round-trips through lift/unlift.
+    ẋ = randn_tangent(rng, p)
+    s = lift(p, ẋ)
+    @test s isa Lifted
+    p2, ẋ2 = unlift(s)
+    @test has_equal_data(p2, p)
+    @test has_equal_data(ẋ2, ẋ)
     return nothing
 end
 

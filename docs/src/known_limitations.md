@@ -277,6 +277,16 @@ between the modes:
 
 Both patterns work in reverse mode. If you need them, use reverse mode.
 
+### Forward mode: self-referential plain arrays
+
+Reverse-mode tangent generation deduplicates aliased and cyclic references with an `IdDict`, so a
+self-referential array such as `x = Any[]; push!(x, x)` has a well-defined tangent. Forward-mode seed
+construction (`zero_lifted` / `randn_lifted`) is cycle-aware for mutable *structs* (the `MutableDual`
+view dedups the cycle), but the array-of-structs seed path for a plain `Array` is not, so seeding a
+self-referential array stack-overflows. Self-referential mutable structs and acyclic aliasing work in
+both modes; only a cycle that passes through a plain `Array` is forward-unsupported. If you need it, use
+reverse mode.
+
 ```@meta
 DocTestSetup = nothing
 ```

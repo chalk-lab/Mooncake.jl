@@ -24,6 +24,31 @@ struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
     σ::Float64
 end
 
+# True if a back-edge is reachable from `x` on the current traversal path — i.e. `x` is part of
+# a true cycle (not merely a shared DAG node). Used to keep self-referential primals whose cycle
+# passes through a plain `Array` out of the `test_lifted` drive: forward `zero_lifted` is not yet
+# cycle-aware for that path and would stack-overflow. `Type`s are leaves (their internals
+# self-reference but carry no forward representation).
+function _lifted_self_referential(x, seen=Base.IdSet{Any}())
+    (x isa Type || isbits(x)) && return false
+    x in seen && return true
+    push!(seen, x)
+    res = if x isa AbstractArray
+        any(i -> isassigned(x, i) && _lifted_self_referential(x[i], seen), eachindex(x))
+    elseif x isa Tuple
+        any(v -> _lifted_self_referential(v, seen), x)
+    elseif isstructtype(typeof(x))
+        any(
+            n -> isdefined(x, n) && _lifted_self_referential(getfield(x, n), seen),
+            1:nfields(x),
+        )
+    else
+        false
+    end
+    delete!(seen, x)
+    return res
+end
+
 @testset "lifted" begin
     @testset "cyclic MutableDual tangent arithmetic" begin
         # A self-referential mutable struct lifts to a cyclic `MutableDual` V; the
@@ -984,6 +1009,43 @@ end
         # Uninit field stays uninit/zero; the defined field gets the basis.
         let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).value.value
             @test nt.x.partials[1] == 1.0
+        end
+    end
+
+    @testset "test_lifted (representation interface)" begin
+        # Drive the forward representation contract over the SAME canonical primal table that
+        # `test_tangent` / `test_data` use for reverse mode, so the two stay in sync. Skip
+        # self-referential primals whose cycle passes through a plain `Array`: the forward
+        # array-seed path is not yet cycle-aware and `zero_lifted` would stack-overflow there
+        # (a documented forward limitation, see `known_limitations.md`). Cyclic mutable structs
+        # ARE supported and are covered explicitly below.
+        @testset "$(typeof(p))" for (interface_only, p, t...) in
+                                    Mooncake.tangent_test_cases()
+            _lifted_self_referential(p) && continue
+            test_lifted(Xoshiro(123456), p)
+        end
+
+        # Supported cycle: a self-referential mutable struct lifts to a cyclic `MutableDual` V,
+        # whose recursive seed / inner-value paths dedup via an `IdDict` (unlike the plain-array
+        # path skipped above).
+        @testset "cyclic mutable struct" begin
+            test_lifted(Xoshiro(1), make_circular_reference_struct())
+        end
+
+        # Type-level widening / sentinel cases the value-drive cannot reach (abstract and
+        # `Union` primals). Free-TypeVar `Tuple` phantoms are deliberately excluded — forward
+        # `dual_type` dispatch on them throws (see the `@test_broken` in `codual.jl`).
+        @testset "test_lifted_type $P (N=$N)" for P in (
+                Real,
+                AbstractVector{Float64},
+                Union{Float64,Float32},
+                Union{Float64,Int},
+                Complex{Float64},
+                Vector{Any},
+            ),
+            N in (1, 2, 3)
+
+            test_lifted_type(P, Val(N))
         end
     end
 end

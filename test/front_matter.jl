@@ -104,6 +104,8 @@ using .TestUtils:
     populate_address_map_internal,
     populate_address_map,
     test_tangent,
+    test_lifted,
+    test_lifted_type,
     check_allocs
 
 using .TestResources:
