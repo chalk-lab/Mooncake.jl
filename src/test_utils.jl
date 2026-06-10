@@ -680,7 +680,12 @@ end
 # different order for the primal slot than for the inner dual, so they can differ by a few ULPs.
 # The bugs this guards against (e.g. a scalar `.value` set to `grad * x` instead of the result)
 # drift by O(1) relative, so a loose `isapprox` separates them cleanly from rounding noise.
-_chunked_v_approx(a, b) = isapprox(a, b; atol=1e-8, rtol=1e-6)
+# The leading `===` fast-path also accepts bit-identical values that `isapprox` rejects: a
+# partial-`:new` mutable struct leaves its inline isbits fields (e.g. a `Float64`) physically
+# present but logically uninitialized — `isdefined` cannot see this, so the seed faithfully
+# copies the garbage bits into `.value`. Garbage-vs-itself is egal even when the bits are NaN
+# (which `isapprox` reports unequal), so `===` passes it while real drift still fails both.
+_chunked_v_approx(a, b) = a === b || isapprox(a, b; atol=1e-8, rtol=1e-6)
 # The `IdDict` breaks cycles through mutable V nodes (`MutableDual`, mutable `Array`), which a
 # self-referential primal (`node.next === node`) produces; the immutable shapes can only cycle
 # back through one of those, so guarding the mutable entries alone is sufficient.
