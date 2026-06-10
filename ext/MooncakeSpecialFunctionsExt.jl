@@ -12,12 +12,10 @@ import Mooncake:
     Lifted,
     NDual,
     frule!!,
-    Tangent,
     primal,
     tangent,
     notimplemented_tangent_guard,
-    ForwardMode,
-    extract
+    ForwardMode
 
 @from_chainrules DefaultCtx Tuple{typeof(airyai),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(airyaix),IEEEFloat}
@@ -284,119 +282,37 @@ function frule!!(
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
-# 2-arg standard Bessel and Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselj),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besselj),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besselj(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (besselj(v - 1, x) - besselj(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+# 2-arg standard Bessel and Hankel functions. The six share an identical body up to the
+# `∂x` recurrence (∂ᵥ is not implemented, hence the `notimplemented_tangent_guard`); generate
+# them from `(fn, ∂x-expression)` specs rather than repeating the body six times.
+for (f, ∂x_expr) in (
+    (:besselj, :((besselj(v - 1, x) - besselj(v + 1, x)) / 2)),
+    (:bessely, :((bessely(v - 1, x) - bessely(v + 1, x)) / 2)),
+    (:besseli, :((besseli(v - 1, x) + besseli(v + 1, x)) / 2)),
+    (:besselk, :(-(besselk(v - 1, x) + besselk(v + 1, x)) / 2)),
+    (:hankelh1, :((hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2)),
+    (:hankelh2, :((hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2)),
+)
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof($f),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
+        }
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+        ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+            v = primal(_v)
+            x = primal(_x)
+            y = $f(v, x)
+            primal_eltype = eltype(y isa Complex ? y.re : y)
+            ∂x = $∂x_expr
+            v_parts = tangent(_v).partials
+            x_v = tangent(_x)
+            dy_lanes = ntuple(Val(Nw)) do k
+                notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+            end
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+        end
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(bessely),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(bessely),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = bessely(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (bessely(v - 1, x) - bessely(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseli),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besseli),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besseli(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (besseli(v - 1, x) + besseli(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselk),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besselk),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besselk(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = -(besselk(v - 1, x) + besselk(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(hankelh1),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = hankelh1(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (hankelh1(v - 1, x) - hankelh1(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(hankelh2),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = hankelh2(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (hankelh2(v - 1, x) - hankelh2(v + 1, x)) / 2
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 #
