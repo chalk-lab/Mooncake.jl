@@ -193,7 +193,9 @@ end
 # Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
 # each lane to a dense tangent via `arrayify` (mirroring the reverse rrules, which also use `arrayify`),
 # then reuse the same per-lane reductions as the dense methods above. The dense `Array`/`NDualArray`
-# methods are strictly more specific. Restricted to `BlasFloat` (what `arrayify` supports).
+# methods are strictly more specific. Restricted to `BlasFloat` (what `arrayify` supports) — a *wrapped*
+# non-`BlasFloat` array (e.g. a `Float16` `SubArray`) therefore has no matching forward rule and fails
+# loudly with a `MethodError`; dense `Array{Float16}` is still covered by the `IEEEFloat` methods above.
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
@@ -205,9 +207,7 @@ function frule!!(
     y = logsumexp(px; kw...)
     if y isa AbstractArray
         dy_partials = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
-        return Lifted{typeof(y),Nw}(
-            y, NDualArray{P,Nw,ndims(y),typeof(y),NDual{P,Nw}}(y, dy_partials)
-        )
+        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
     else
         dy_lanes = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
