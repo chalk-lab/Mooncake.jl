@@ -72,6 +72,22 @@
         @test TestUtils.check_allocs(Mooncake.fcodual_type, P) == F
     end
 
+    @testset "(f)codual_type/dual_type with phantom TypeVar (#1191)" begin
+        # `UnionAll(A, AbstractArray{T, A})` normalises to a DataType whose body
+        # still references the free `T`; the generic `(f)codual_type(::Type{P})`
+        # and `dual_type(::Type{P})` binders can't bind `P` for such shapes and
+        # throw `UndefVarError`. The Tuple variant blocks a future fix that only
+        # special-cases AbstractArray.
+        phantom = UnionAll(TypeVar(:A), AbstractArray{TypeVar(:T),TypeVar(:A)})
+        phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
+        @test codual_type(phantom) === CoDual
+        @test Mooncake.fcodual_type(phantom) === CoDual
+        @test dual_type(phantom) === Dual
+        @test codual_type(phantom_tuple) === CoDual
+        @test Mooncake.fcodual_type(phantom_tuple) === CoDual
+        @test dual_type(phantom_tuple) === Dual
+    end
+
     @testset "NoPullback" begin
         @test Base.issingletontype(typeof(NoPullback(zero_fcodual(5.0))))
         @test NoPullback(zero_codual(5.0))(4.0) == (0.0,)
