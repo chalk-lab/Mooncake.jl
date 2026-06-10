@@ -258,12 +258,13 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
-### Forward mode: pointers into a tangent are struct-of-arrays, not array-of-structs
+### Forward mode: pointers into an interleaved tangent
 
 Reverse mode stores the tangent of a value as a separate object with the *same memory layout* as the
-primal (array-of-structs). Forward mode interleaves each lane's partial alongside the primal inside an
-`NDual` / `NDualArray` (struct-of-arrays). This makes two contrived pointer patterns behave differently
-between the modes:
+primal, so a tangent pointer addresses standalone derivative storage. Forward mode instead interleaves
+each lane's partial alongside the primal inside an `NDual` / `NDualArray`, so a per-element partial has
+no standalone address of its own. This makes two contrived pointer patterns behave differently between
+the modes:
 
 - Round-tripping a value through its own address, e.g.
   `pointerref(Base.bitcast(Ptr{Float64}, pointer_from_objref(Ref(x))), 1, 1)`. Reverse mode points the
@@ -272,7 +273,7 @@ between the modes:
   `NDual`), so the reconstructed pointer reads the primal slot — the derivative is **not** propagated.
 - `pointerset` into the pointer of an array of differentiable pointers, e.g.
   `pointerset(pointer(::Vector{Ptr{Float64}}), pointer(::Vector{Float64}), i, 1)`. Forward mode raises a
-  clear `ArgumentError` (the array-of-structs tangent stride does not match a bare element pointer)
+  clear `ArgumentError` (the interleaved tangent's element stride does not match a bare element pointer)
   rather than producing a wrong result.
 
 Both patterns work in reverse mode. If you need them, use reverse mode.
@@ -282,7 +283,7 @@ Both patterns work in reverse mode. If you need them, use reverse mode.
 Reverse-mode tangent generation deduplicates aliased and cyclic references with an `IdDict`, so a
 self-referential array such as `x = Any[]; push!(x, x)` has a well-defined tangent. Forward-mode seed
 construction (`zero_lifted` / `randn_lifted`) is cycle-aware for mutable *structs* (the `MutableDual`
-view dedups the cycle), but the array-of-structs seed path for a plain `Array` is not, so seeding a
+view dedups the cycle), but the per-element seed path for a plain `Array` is not, so seeding a
 self-referential array stack-overflows. Self-referential mutable structs and acyclic aliasing work in
 both modes; only a cycle that passes through a plain `Array` is forward-unsupported. If you need it, use
 reverse mode.
