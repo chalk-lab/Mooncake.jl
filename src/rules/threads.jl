@@ -45,7 +45,7 @@ end
 function frule!!(
     ::Lifted{typeof(Base.Threads.threading_run),Nw}, fun::Lifted{F}, static::Lifted{Bool}
 ) where {Nw,F}
-    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int})
+    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int}; chunk_size=Nw)
     worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
     Base.Threads.threading_run(primal(static)) do tid
         # `threading_run` hands worker ids in the default pool's 1-based tid space.
