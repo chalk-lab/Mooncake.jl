@@ -1992,6 +1992,12 @@ end
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualArray{Element, N, D, A, Wrapped}` — SoA canonical V for arrays.
 #
+# `NDualArray` and a plain `Array` of `NDual`s carry the same information, but keeping the
+# primal and each lane's partials as separate same-typed arrays (rather than interleaving them
+# per element) is more friendly: `primal` is a genuine `A` that can be passed straight to a
+# BLAS/LAPACK `ccall`, and each `partials[k]` is too, so a width-`N` rule reduces to `N+1`
+# native array calls instead of needing to de-interleave a `Array{NDual}` first.
+#
 # `primal::A` aliases user storage; `partials::NTuple{N, A}` holds slot-local
 # lane tangents (separately allocated, same shape). `Wrapped` is determined by `(Element, N)`
 # — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
@@ -2056,10 +2062,10 @@ end
 
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualRef{P, N}` — canonical V for `Base.RefValue{P<:NDualEltype}` (real or complex
-# scalar), the scalar analogue of `NDualArray`. The `N` per-lane scalar partials live in
-# their own parallel `Ref`, not interleaved with the value, so a raw pointer taken via
-# `pointer_from_objref` lands them at a parallel address (correct forward raw-pointer
-# access). Being a *distinct* type (not a bare `RefValue`) stops the generic struct
+# scalar), the scalar analogue of `NDualArray`. Carries the same information as a `Ref` of an
+# interleaved `NDual`, but the `N` per-lane scalar partials live in their own parallel `Ref`,
+# not interleaved with the value, so a raw pointer taken via `pointer_from_objref` lands them
+# at a parallel address (correct forward raw-pointer access). Being a *distinct* type (not a bare `RefValue`) stops the generic struct
 # recursion from re-lifting it — so the seed factories, `_unlift_seed`, `_new_`,
 # `lgetfield`/`lsetfield!`, and raw-pointer frules each carry an explicit branch (as for
 # `NDualArray`). The slot's primal `Ref` lives in the enclosing `Lifted`, not here.
@@ -2083,8 +2089,12 @@ end
 # `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
 # primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
-# cover it. `partials[k]` is a framework-allocated `MemoryRef` at the same
-# offset as `primal`, into a fresh `Memory{Element}` of the same length.
+# cover it. Like `NDualArray`, this carries the same information as a
+# `MemoryRef` of interleaved `NDual`s but keeps the primal and each lane's
+# partials as separate native `MemoryRef`s — friendlier because each is a
+# genuine `MemoryRef{Element}` usable directly in a `ccall`. `partials[k]` is a
+# framework-allocated `MemoryRef` at the same offset as `primal`, into a fresh
+# `Memory{Element}` of the same length.
 # ──────────────────────────────────────────────────────────────────────────
 
 @static if VERSION >= v"1.11-rc4"
