@@ -64,7 +64,9 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-@is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
+# `lgetfield(::Complex, ::Val)` is already a primitive via the generic
+# `Tuple{typeof(lgetfield),Any,Val}` declaration in `misc.jl`; this Complex-specific frule only
+# refines the forward V, so it needs no `@is_primitive` of its own.
 function frule!!(
     ::Lifted{typeof(lgetfield),N},
     x::Lifted{Complex{P},N,Complex{NDual{P,N}}},
@@ -105,7 +107,10 @@ function rrule!!(
     return y_cd, lgetfield_Complex_pullback
 end
 
-@is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
+# `_new_(Type{Complex{P}}, re, im)` is already a primitive via the generic `Tuple{typeof(_new_),Vararg}`
+# declaration in `new.jl`; this Complex-specific frule only refines the forward construction, so it
+# needs no `@is_primitive` of its own. (The previous `Tuple{typeof(_new_),<:Complex{P},P,P}` declaration
+# matched nothing — `_new_`'s second argument is the *type* `Type{Complex{P}}`, not a `Complex` value.)
 function frule!!(
     ::Lifted{typeof(_new_),N},
     ::Lifted{Type{Complex{P}},N},

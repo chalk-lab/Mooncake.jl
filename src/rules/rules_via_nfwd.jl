@@ -274,9 +274,6 @@ end
 # ── modf ──────────────────────────────────────────────────────────────────────
 # modf(x) = (frac, int) where frac = x - trunc(x); d(frac)/dx = 1, d(int)/dx = 0.
 
-# angle_fast is constant on real inputs, so dispatch directly to the zero-derivative path.
-@zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
-
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
 function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
     pv = modf(primal(x))
@@ -288,6 +285,10 @@ function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
     return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
 end
+
+# ── angle_fast ──────────────────────────────────────────────────────────────────
+# angle_fast is constant on real inputs, so dispatch directly to the zero-derivative path.
+@zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}
 
 # ── hypot(x, xs...) ───────────────────────────────────────────────────────────
 

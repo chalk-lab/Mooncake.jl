@@ -245,17 +245,6 @@ end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
 
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name) = getfield(f, name)
-_get_tangent_field(f::Union{NamedTuple,Tuple}, name, inbounds) = getfield(f, name, inbounds)
-_get_tangent_field(f::Union{Tangent,MutableTangent}, name) = val(getfield(f.fields, name))
-function _get_tangent_field(f::Union{Tangent,MutableTangent}, name, inbounds)
-    return val(getfield(f.fields, name, inbounds))
-end
-# When the struct tangent is NoTangent (e.g. a non-differentiable type captured inside
-# another struct), field access also contributes no derivative.
-_get_tangent_field(::NoTangent, _) = NoTangent()
-_get_tangent_field(::NoTangent, _, _) = NoTangent()
-
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}

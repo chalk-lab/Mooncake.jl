@@ -401,14 +401,14 @@ function rrule!!(
     ::CoDual{typeof(_getindex_hiprec)}, r::CoDual{P}, i::CoDual{<:Integer}
 ) where {P<:TWPStepRangeLen}
     offset = r.x.offset
-    function unsafe_getindex_pb(dy)
+    function getindex_hiprec_pb(dy)
         T = rdata_type(tangent_type(P))
         dref = dy
         dstep = dy * (i.x - offset)
         dr = T((ref=dref, step=dstep, len=NoRData(), offset=NoRData()))
         return NoRData(), dr, NoRData()
     end
-    return zero_fcodual(_getindex_hiprec(r.x, i.x)), unsafe_getindex_pb
+    return zero_fcodual(_getindex_hiprec(r.x, i.x)), getindex_hiprec_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(:),P,P,P} where {P<:IEEEFloat}
