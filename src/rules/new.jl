@@ -84,6 +84,14 @@ function frule!!(
         pr, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(parts))
     )
 end
+# Zero-arg `RefValue{P}()` (uninitialised — no value to seed): canonical V is a zero-init
+# `NDualRef`. Without this, M=0 falls into the @generated struct-lift branch above, which builds
+# a `MutableDual` backing incoherent with `dual_type === NDualRef` and throws.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}
+) where {Nw,P<:NDualEltype}
+    return Lifted{Base.RefValue{P},Nw}(Base.RefValue{P}(), NDualRef{P,Nw}())
+end
 
 function rrule!!(
     f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}

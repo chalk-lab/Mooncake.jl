@@ -1182,12 +1182,13 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     end
     return y, copy_pullback!!
 end
-# Forward `copy(::Array)`: copy primal and V together. SoA float array → copy each
-# lane's partial; AoS array → copy the (immutable-element) V array; non-diff → NoDual.
+# Forward `copy(::Array)`: copy primal and V together. `NDualArray` float/complex array → copy
+# each lane's partial; element-wise `Array`-of-duals V → copy the (immutable-element) V array;
+# non-diff → NoDual. `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex
+# `NDualArray`s (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
 function frule!!(
-    ::Lifted{typeof(copy),N},
-    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
-) where {N,T<:IEEEFloat,D}
+    ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
+) where {N,T<:NDualEltype,D}
     yp = copy(primal(a))
     parts = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
     return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, parts))
