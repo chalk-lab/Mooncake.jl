@@ -342,25 +342,6 @@ function frule!!(
 end
 
 @is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselkx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besselkx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besselkx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = -(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
     typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
 }
 function frule!!(
@@ -402,43 +383,34 @@ function frule!!(
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
-# Scaled Hankel functions
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh1x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(hankelh1x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = hankelh1x(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+# Scaled bessel-k and Hankel functions: single-`∂x` recurrence, identical body to the standard
+# group above (`besselkx`'s `∂x` adds `+ y`, the Hankels add `∓ im·y`). `besselix`/`besseljx`/
+# `besselyx` above are kept separate — they have a distinct two-term `∂x` involving `real`/`imag`.
+for (f, ∂x_expr) in (
+    (:besselkx, :(-(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y)),
+    (:hankelh1x, :((hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y)),
+    (:hankelh2x, :((hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y)),
+)
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof($f),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
+        }
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+        ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+            v = primal(_v)
+            x = primal(_x)
+            y = $f(v, x)
+            primal_eltype = eltype(y isa Complex ? y.re : y)
+            ∂x = $∂x_expr
+            v_parts = tangent(_v).partials
+            x_v = tangent(_x)
+            dy_lanes = ntuple(Val(Nw)) do k
+                notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+            end
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+        end
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(hankelh2x),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(hankelh2x),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = hankelh2x(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = (hankelh2x(v - 1, x) - hankelh2x(v + 1, x)) / 2 + im * y
-    v_parts = tangent(_v).partials
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 # ── NDual overloads for SpecialFunctions ──────────────────────────────────────
