@@ -92,7 +92,7 @@ end
 @inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
 # Per-lane tangent accessor and the width-1 lift boundary for the singleton V.
 @inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
-@inline lift(x::Task, ::TaskTangent) = Lifted{Task,1}(x, TaskTangent())
+@inline lift(x::Task, ẋ::TaskTangent) = Lifted{Task,1}(x, ẋ)
 
 function frule!!(
     ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
