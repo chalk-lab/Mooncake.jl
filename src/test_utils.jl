@@ -568,7 +568,7 @@ function test_frule_correctness(
         length(ε_list) ≥ 2 || throw(
             ArgumentError(
                 "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
-                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+                "grid ends at 1e-8, so the smallest usable cap is 1e-7.",
             ),
         )
     end
@@ -747,7 +747,7 @@ function test_rrule_correctness(
         length(ε_list) ≥ 2 || throw(
             ArgumentError(
                 "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
-                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+                "grid ends at 1e-8, so the smallest usable cap is 1e-7.",
             ),
         )
     end

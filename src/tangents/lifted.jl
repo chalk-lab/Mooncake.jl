@@ -141,9 +141,12 @@ _primal(x::Lifted) = primal(x)
 
 # Forward-mode equivalent of `verify_dual_type` — checks the slot's `V` is
 # compatible with `dual_type(Val(N), P)`. Used by the test framework.
-# Returns `true` for any well-formed Lifted slot; specific V-shape checks
-# happen at construction time via the V's invariants.
-verify_dual_type(::Lifted) = true
+# A well-formed slot's V is exactly the canonical `dual_type(Val(N), P)` for concrete `P` (the
+# coherence invariant). Abstract-`P` slots are sharpened to a concrete subtype at runtime, so the
+# static V cannot be asserted for them — accept those unconditionally.
+function verify_dual_type(::Lifted{P,N,V}) where {P,N,V}
+    !isconcretetype(P) || V === dual_type(Val(N), P)
+end
 
 """
     extract(d::Lifted) -> (primal, value)
