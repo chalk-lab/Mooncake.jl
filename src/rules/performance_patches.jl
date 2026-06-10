@@ -62,9 +62,9 @@ end
 # once. Only the matrix (D=2) input shape is supported.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
-    out::Lifted{Aout,N,NDualArray{T,N,2,Aout,NDual{T,N}}},
-    x1::Lifted{A1,N,NDualArray{T,N,2,A1,NDual{T,N}}},
-    x2::Lifted{A2,N,NDualArray{T,N,2,A2,NDual{T,N}}},
+    out::Lifted{Aout,N,<:NDualArray{T,N,2,Aout}},
+    x1::Lifted{A1,N,<:NDualArray{T,N,2,A1}},
+    x2::Lifted{A2,N,<:NDualArray{T,N,2,A2}},
 ) where {N,T<:IEEEFloat,Aout<:AbstractMatrix{T},A1<:AbstractMatrix{T},A2<:AbstractMatrix{T}}
     pout = primal(out)
     px1 = primal(x1)

@@ -249,7 +249,7 @@ for (fname, jlfname, elty) in (
                     return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
                            BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
                 end
-                return Lifted{$elty,Nw}(result, NDual{$elty,Nw}(result, dresult_lanes))
+                return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
             end
         end
     end

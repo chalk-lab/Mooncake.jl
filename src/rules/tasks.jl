@@ -75,8 +75,9 @@ end
 const TaskCoDual = CoDual{Task,TaskTangent}
 
 # Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.
-# All Task fields are non-differentiable, so the tangent carries no lane
-# data; we keep one shared `TaskTangent` per slot independent of width N.
+# Task support is scoped to RNG-state queries (see the top of this file), not to differentiating
+# arbitrary Task fields; the `TaskTangent` carries no lane data, so one shared `TaskTangent` per
+# slot suffices independent of width N.
 @foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
 @foldable @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
 
@@ -96,7 +97,8 @@ end
 function frule!!(
     ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
 ) where {N,f}
-    # All Task fields are non-differentiable, so the read carries no forward derivative.
+    # Within the supported RNG-state-query scope (see the top of this file), Task field reads
+    # carry no forward derivative.
     y = getfield(primal(x), f)
     return Lifted{typeof(y),N}(y, NoDual())
 end
