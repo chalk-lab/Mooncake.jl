@@ -53,7 +53,7 @@ true
 ### When Should You Use Debug Mode?
 
 Only use `debug_mode` when debugging a problem.
-This is because is has substantial performance implications.
+This is because it has substantial performance implications.
 
 
 ```@meta
