@@ -330,7 +330,7 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.nrm2),Int,X,Int
+        typeof(BLAS.nrm2),Integer,X,Integer
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
 # BLAS Lifted parallels — each rule iterates lanes and calls the BLAS

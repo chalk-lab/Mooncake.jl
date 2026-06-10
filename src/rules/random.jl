@@ -39,9 +39,7 @@ for f in [rand!, randn!, randexp!]
     @eval function frule!!(
         ::Lifted{typeof($f),Nw},
         rng::Lifted{<:SpecialisedRNGs},
-        x::Lifted{
-            Array{Float64,D},Nw,NDualArray{Float64,Nw,D,Array{Float64,D},NDual{Float64,Nw}}
-        },
+        x::Lifted{Array{Float64,D},Nw,<:NDualArray{Float64,Nw,D,Array{Float64,D}}},
     ) where {Nw,D}
         $f(primal(rng), primal(x))
         foreach(p -> fill!(p, 0.0), tangent(x).partials)
