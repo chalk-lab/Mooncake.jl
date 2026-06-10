@@ -27,9 +27,23 @@
 # `Tuple{P,Vararg{P,Mm1}}` (≥1 element), not `NTuple{M,P}`: the latter leaves `P` unbound at M==0
 # (`Tuple{}`), which Aqua's `test_unbound_args` flags. Every caller passes ≥1 input, so requiring a
 # first element is exact; the width is `Mm1 + 1`.
-@inline function _nfwd_seed_inputs(primals::Tuple{P,Vararg{P,Mm1}}) where {P<:IEEEFloat,Mm1}
+#
+# `@generated` to unroll into an explicit tuple of `NDual` constructions with literal identity
+# partials. A plain nested `ntuple` would close over the width `M` as a runtime `Int`, so the
+# inner `Val(M)` became a dynamic `Val(::Int)` — JET flagged "failed to optimize due to recursion"
+# and the uninferred result poisoned the downstream primal call (e.g. `max(::NDual,::NDual)::Any`)
+# into runtime dispatch and allocation. The generator body only builds the construction `Expr`
+# (every `one`/`zero`/`NDual` call runs at expansion's *result*, not in the generator), so it has
+# no world-age sub-dispatch trap.
+@generated function _nfwd_seed_inputs(
+    primals::Tuple{P,Vararg{P,Mm1}}
+) where {P<:IEEEFloat,Mm1}
     M = Mm1 + 1
-    return ntuple(i -> NDual{P,M}(primals[i], ntuple(j -> P(i == j), Val(M))), Val(M))
+    duals = map(1:M) do i
+        partials = Expr(:tuple, (i == j ? :(one(P)) : :(zero(P)) for j in 1:M)...)
+        return :(NDual{P,$M}(primals[$i], $partials))
+    end
+    return Expr(:tuple, duals...)
 end
 
 # Output primal value, for scalar (`NDual`) or tuple-of-`NDual` (e.g. `sincos`) results.
