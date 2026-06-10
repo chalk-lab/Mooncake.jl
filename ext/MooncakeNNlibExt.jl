@@ -19,6 +19,7 @@ import Mooncake:
     @from_rrule,
     DefaultCtx,
     MinimalCtx,
+    ReverseMode,
     @is_primitive,
     rrule!!,
     CoDual,
@@ -30,47 +31,6 @@ import Mooncake:
     frule!!,
     Lifted,
     NDualArray
-
-@inline function _nf_logsumexp_accum(
-    grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
-) where {N,T}
-    return ntuple(k -> grad[k] + w * partials[k], Val(N))
-end
-
-@inline function _nf_logsumexp_scale(grad::NTuple{N,T}, inv_sw::T) where {N,T}
-    return ntuple(k -> grad[k] * inv_sw, Val(N))
-end
-
-@inline function _nf_logsumexp_inf(x::AbstractVector{NDual{T,N}}, u::T) where {T,N}
-    count_u = 0
-    grad = ntuple(_ -> zero(T), Val(N))
-    @inbounds for xi in x
-        if xi.value == u
-            count_u += 1
-            grad = _nf_logsumexp_accum(grad, one(T), xi.partials)
-        end
-    end
-    return NDual{T,N}(u, _nf_logsumexp_scale(grad, inv(T(count_u))))
-end
-
-function NNlib.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEEFloat,N}
-    isempty(x) && return NDual{T,N}(typemin(T))
-    u = @inbounds x[begin].value
-    @inbounds for i in (firstindex(x) + 1):lastindex(x)
-        v = x[i].value
-        v > u && (u = v)
-    end
-    isinf(u) && return _nf_logsumexp_inf(x, u)
-    sum_w = zero(T)
-    grad = ntuple(_ -> zero(T), Val(N))
-    @inbounds for xi in x
-        w = exp(xi.value - u)
-        sum_w += w
-        grad = _nf_logsumexp_accum(grad, w, xi.partials)
-    end
-    y_val = u + log(sum_w)
-    return NDual{T,N}(y_val, _nf_logsumexp_scale(grad, inv(sum_w)))
-end
 
 # Array types which we test rules against, so are confident work.
 # Parametric on both element type P and dimensionality N.
@@ -109,10 +69,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -149,8 +109,10 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(softmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -187,8 +149,10 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(logsumexp),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -294,6 +258,13 @@ end
 # Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays.
 # bias_act! modifies x in-place (x .+= b), so we save x's primal before mutation,
 # compute in-place, return x as output, and restore x's primal in the pullback.
+#
+# Primitive in both modes over the full `SupportedArray` union. Reverse handles every shape
+# (the `rrule!!`'s `arrayify`). Forward only has a `frule!!` for plain `Array` (the canonical
+# `NDualArray` V exists only there); a wrapped/GPU `bias_act!` therefore fails forward with a
+# clear `MethodError` at the missing-frule boundary. Leaving it a forward primitive keeps that
+# loud failure rather than silently routing through the forward transform, which cannot yet
+# differentiate the mixed-wrapper broadcast in `bias_act!`'s body — use reverse mode for those.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -303,9 +274,8 @@ end
         SupportedArray{<:IEEEFloat,M} where {M},
     },
 )
-# Restricted to plain `Array{P, N/M}` (other SupportedArray shapes —
-# `AbstractGPUArray`, `Adjoint`, `Transpose` — need their own canonical V
-# which isn't yet defined). Per-lane partial broadcast.
+# Per-lane partial broadcast on the plain-`Array` `NDualArray` V (see the per-mode
+# `@is_primitive` above for why forward is `Array`-only).
 function frule!!(
     ::Lifted{typeof(bias_act!),Nw},
     ::Lifted{typeof(identity),Nw},
