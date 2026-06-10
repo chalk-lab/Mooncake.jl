@@ -236,27 +236,6 @@ function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
 end
 
-# Forward-over-reverse (e.g. `value_gradient_and_hessian!!`) can inline an `IdDict{K,V}()`
-# construction to a `_new_` node, bypassing the `Type{IdDict}()` rule above. The generic
-# `_new_` rules then build the tangent field-wise, dereferencing the uninitialised `ht`
-# `Memory` and throwing `UndefRefError`. Such a `_new_` is always an empty dict
-# (`count == 0`; entries are added later via `setindex!`), so the tangent is an empty
-# `IdDict{K,tangent_type(V)}()`, matching the constructor rule above.
-function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{P}}, x::Vararg{Dual,N}
-) where {K,V,P<:IdDict{K,V},N}
-    y = _new_(P, tuple_map(primal, x)...)
-    @assert getfield(y, :count) == 0 "_new_ rule for IdDict assumes an empty dict"
-    return Dual(y, IdDict{K,tangent_type(V)}())
-end
-function rrule!!(
-    f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
-) where {K,V,P<:IdDict{K,V},N}
-    y = _new_(P, tuple_map(primal, x)...)
-    @assert getfield(y, :count) == 0 "_new_ rule for IdDict assumes an empty dict"
-    return CoDual(y, IdDict{K,tangent_type(V)}()), NoPullback(f, p, x...)
-end
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
     test_cases = Any[
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
@@ -266,18 +245,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
         (false, :none, nothing, IdDict{Any,Any}),
-        # `_new_` on the empty `IdDict` shell (the inlined-construction path fixed above).
-        # `interface_only`: the `ht` `Memory` arg has no meaningful finite-difference perturbation.
-        (
-            true,
-            :none,
-            nothing,
-            _new_,
-            IdDict{Any,Any},
-            getfield(IdDict{Any,Any}(), :ht),
-            0,
-            0,
-        ),
     ]
     memory = Any[]
     return test_cases, memory

@@ -514,7 +514,7 @@ It is an error for the zero element of the tangent space of `x` to be represente
 anything other than that which this function returns.
 """
 zero_tangent(x)
-function zero_tangent(x::P) where {P}
+@noinline function zero_tangent(x::P) where {P}
     return zero_tangent_internal(x, isbitstype(P) ? NoCache() : IdDict())
 end
 function zero_tangent(x::Ptr)

@@ -164,7 +164,9 @@ Mooncake.tangent_type(::Type{<:NoTangentWrap}) = Mooncake.NoTangent
     end
 
     @testset "captured Ref under NoTangent-typed wrapper (regression)" begin
-        # Without the `_new_`/IdDict frule, this throws `UndefRefError`. Only the public
+        # Without `@noinline` on `zero_tangent` (which keeps its call un-inlined in rule
+        # IR, so the IdDict cache it builds is never exposed to the outer forward pass),
+        # this throws `UndefRefError`. Only the public
         # prepared-cache APIs on the default (non-debug) path hit it, not the
         # `compute_hessian` helper above. `f(x) = 3 * sum(abs2, x)`, so `∇²f = 6 * I`.
         mkclosure(r) = x -> r[] * sum(abs2, x)
