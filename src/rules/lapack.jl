@@ -714,15 +714,10 @@ function frule!!(
     F = bunchkaufman(S)
     Sinv = inv(F)
     y = logdet(F)
-    data_V = tangent(_S).value.data
-    # The stored `.data` partial is a full matrix, but only the `uplo` triangle is
-    # the symmetric perturbation. `Symmetric(·, uplo)` applies the storage weighting
-    # (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse `rrule!!`
-    # encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix is wrong.
-    dy_lanes = ntuple(
-        k -> dot(Sinv, Symmetric(_arrayify_lane(S.data, data_V, k), Symbol(S.uplo))),
-        Val(Nw),
-    )
+    # `_arrayify_lane(::Symmetric, …)` re-wraps each lane's `.data` partial as `Symmetric(·, uplo)`,
+    # applying the storage weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse
+    # `rrule!!` encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
+    dy_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 function rrule!!(
@@ -766,12 +761,8 @@ function frule!!(
         return Lifted{P,Nw}(d, NDual{P,Nw}(d, zero_parts))
     end
     Sinv = inv(F)
-    data_V = tangent(_S).value.data
-    # See `logdet` frule: `Symmetric(·, uplo)` applies the symmetric-storage weighting.
-    dy_lanes = ntuple(
-        k -> d * dot(Sinv, Symmetric(_arrayify_lane(S.data, data_V, k), Symbol(S.uplo))),
-        Val(Nw),
-    )
+    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
+    dy_lanes = ntuple(k -> d * dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
     return Lifted{P,Nw}(d, NDual{P,Nw}(d, dy_lanes))
 end
 function rrule!!(
@@ -822,12 +813,8 @@ function frule!!(
         return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
     end
     Sinv = inv(F)
-    data_V = tangent(_S).value.data
-    # See `logdet` frule: `Symmetric(·, uplo)` applies the symmetric-storage weighting.
-    ld_lanes = ntuple(
-        k -> dot(Sinv, Symmetric(_arrayify_lane(S.data, data_V, k), Symbol(S.uplo))),
-        Val(Nw),
-    )
+    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
+    ld_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
     ld_v = NDual{P,Nw}(ld, ld_lanes)
     s_v = NDual{P,Nw}(s, zero_parts)
     return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
