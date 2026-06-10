@@ -175,13 +175,13 @@ end
     getfield(getfield(V, :value), name)
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
-# NDualArray is the SoA wrapper for `Array{T,D}` slots (not a struct lift).
+# NDualArray is the parallel-arrays wrapper for `Array{T,D}` slots (not a struct lift).
 # Sub-field access into the underlying primal struct happens in inlined
-# `Array` / `Memory` code; project to the matching SoA per-lane V so the
+# `Array` / `Memory` code; project to the matching parallel-arrays per-lane V so the
 # downstream rule (`memoryrefnew`, etc.) keeps a coherent V chain.
 @static if VERSION >= v"1.11-rc4"
     # An `Array{T,D}` (any rank D) has a `.ref::MemoryRef{T}` field over flat
-    # `Memory{T}` storage. Project the SoA array V to the matching memory-ref V
+    # `Memory{T}` storage. Project the NDualArray V to the matching memory-ref V
     # so the downstream `memoryrefnew`/`memoryrefget` chain stays coherent.
     # Accept the integer field index too: `getfield(arr, 1)` is `.ref` — without
     # this the integer form silently fell through to a `NoDual`, zeroing the
@@ -197,8 +197,8 @@ end
         end
         return NoDual()
     end
-    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the SoA
-    # memory-ref V to the matching SoA `NDualArray` over those memories (the
+    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the parallel-arrays
+    # memory-ref V to the matching `NDualArray` over those memories (the
     # `.ptr_or_offset` field is a non-diff Ptr → `NoDual`). Mirrors the reverse
     # `rrule!!`, which returns `x.dx.mem`.
     @inline function _get_lifted_field(
@@ -216,20 +216,20 @@ end
         end
         return NoDual()
     end
-    # AoS array V (a plain `Array` of per-element forward Vs, for differentiable
+    # Element-wise array V (a plain `Array` of per-element forward Vs, for differentiable
     # non-float-element arrays): its `.ref` is a `MemoryRef` into the V array,
     # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff.
     @inline _get_lifted_field(V::Array, name::Symbol) =
         name === :ref ? getfield(V, :ref) : NoDual()
-    # AoS memory-ref V (a plain `MemoryRef` into an AoS V `Memory`): `.mem` projects to the AoS
-    # `Memory` V; `.ptr_or_offset` is the raw data pointer into that V `Memory`, typed as its AoS
-    # dual element (e.g. `Ptr{NDualArray}`) so a downstream `unsafe_copyto!` copies the correct
-    # per-element stride. Wrapped in a 1-tuple — the canonical per-lane `Ptr` V (width-1 AoS).
-    # Mirrors the 1.10 `jl_array_ptr` AoS frule, which emits `Ptr{NDualArray}` directly; without
+    # Element-wise memory-ref V (a plain `MemoryRef` into an element-wise V `Memory`): `.mem` projects to the
+    # element-wise `Memory` V; `.ptr_or_offset` is the raw data pointer into that V `Memory`, typed as its
+    # element-wise dual element (e.g. `Ptr{NDualArray}`) so a downstream `unsafe_copyto!` copies the correct
+    # per-element stride. Wrapped in a 1-tuple — the canonical per-lane `Ptr` V (width-1, element-wise).
+    # Mirrors the 1.10 `jl_array_ptr` element-wise frule, which emits `Ptr{NDualArray}` directly; without
     # this the 1.12 `pointer(::Vector{<diff non-float>})` path drops the tangent (`NoDual`).
     @inline function _get_lifted_field(V::MemoryRef, name::Symbol)
         name === :mem && return getfield(V, :mem)
-        # Only a differentiable element (AoS dual `Memory`, not `Memory{NoDual}`) carries a
+        # Only a differentiable element (element-wise dual `Memory`, not `Memory{NoDual}`) carries a
         # tangent pointer; a non-differentiable element's pointer stays `NoDual`.
         if name === :ptr_or_offset
             E = eltype(getfield(V, :mem))
@@ -238,7 +238,7 @@ end
         end
         return NoDual()
     end
-    # AoS `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
+    # Element-wise `Memory` V: its fields (`.length`, `.ptr`, by name OR position) are all
     # non-diff metadata; element access goes through `memoryrefget`, not here.
     @inline _get_lifted_field(::Memory, _) = NoDual()
 end
@@ -416,8 +416,8 @@ end
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     # Copy a Dict-field forward V to alias the copied primal array. A float-element field
-    # (e.g. `Vector{Float64}` vals → SoA `NDualArray`) rebuilds over the new primal array with
-    # copied partials; an AoS field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
+    # (e.g. `Vector{Float64}` vals → `NDualArray`) rebuilds over the new primal array with
+    # copied partials; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
     # keys/vals) is a shallow array copy whose elements alias the shallow-shared key/value
     # objects, matching `Base.copy(::Dict)`. The old `map(copy, …)` form errored on
     # `Vector{NoDual}` (`copy(::NoDual)`) and assumed every field was an `NDualArray`.

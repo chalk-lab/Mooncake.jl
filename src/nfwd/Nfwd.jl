@@ -1990,7 +1990,7 @@ end
 @inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualArray{Element, N, D, A, Wrapped}` — SoA canonical V for arrays.
+# `NDualArray{Element, N, D, A, Wrapped}` — parallel-arrays canonical V for arrays.
 #
 # `NDualArray` and a plain `Array` of `NDual`s carry the same information, but keeping the
 # primal and each lane's partials as separate same-typed arrays (rather than interleaving them
@@ -2003,7 +2003,7 @@ end
 # — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
 # `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
 # element-wise code through the array interface continues to dispatch; element
-# access is lazy (constructs an `NDual` on the fly from SoA storage).
+# access is lazy (constructs an `NDual` on the fly from the parallel-arrays storage).
 #
 # Mooncake-namespace method extensions (`primal`/`tangent`/`unpack_ndual`/
 # `unlift`) for `NDualArray` live in `src/tangents/lifted.jl`.
@@ -2086,7 +2086,7 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualMemoryRef{Element, N, M}` — parallel SoA wrapper for `MemoryRef`
+# `NDualMemoryRef{Element, N, M}` — parallel-arrays wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
 # primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
 # cover it. Like `NDualArray`, this carries the same information as a

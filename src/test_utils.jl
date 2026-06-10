@@ -416,7 +416,7 @@ __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, 
 function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}, n)
     getfield(t.value, n)
 end
-# SoA `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
+# parallel-arrays `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
 # `_get_lifted_field` (`:mem` → the `NDualArray` over the partials' memories;
 # `.ptr_or_offset` is a non-diff `Ptr` → `NoDual`).
 @static if VERSION >= v"1.11-rc4"

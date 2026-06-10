@@ -3,9 +3,9 @@
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
 # V for a differentiable `Ptr` is `NTuple{N, Ptr{E}}` (per-lane partial pointers,
-# E = SoA element type or the AoS dual element); the pointer shift
-# `tangent_lane + primal(y)` is applied to each lane. Covers both the SoA float
-# case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the AoS abstract-element case
+# E = parallel-arrays element type or the element-wise dual element); the pointer shift
+# `tangent_lane + primal(y)` is applied to each lane. Covers both the parallel-arrays
+# float case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the element-wise abstract-element case
 # (`Ptr{Real}`, V `NTuple{1,Ptr{Any}}`), matching the `rrule!!` breadth below.
 function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}

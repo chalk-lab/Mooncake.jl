@@ -4,7 +4,7 @@
 #
 # Design note (forward vs reverse). The forward V is *type-precise*: `V ===
 # dual_type(P)` mirrors the primal, so differentiability (`NDual` vs `NoDual`),
-# wrapper nesting, and array layout (SoA `NDualArray` vs AoS) are each distinct
+# wrapper nesting, and array layout (`NDualArray` vs element-wise array) are each distinct
 # *types*. Reverse (`CoDual`) is *runtime-uniform* — non-differentiability is the
 # value `NoFData`, and wrappers are flattened by a runtime `arrayify` — so one
 # `rrule!!` subsumes shapes that a `frule!!` must enumerate as separate methods
@@ -208,9 +208,10 @@ end
     # (empty arrays/vectors), so re-build a `MemoryRef` V through this guard.
     @inline _memoryref_at(mem, offset) =
         length(mem) == 0 ? Core.memoryref(mem) : Core.memoryref(mem, offset)
-    # AoS `MemoryRef` V (a plain `MemoryRef` into an AoS V `Memory`, e.g. `MemoryRef{NoDual}`
-    # for `MemoryRef{Int}`, or `MemoryRef{NDualArray}` for `MemoryRef{Vector}` comms). Project
-    # the lane through the `.mem`'s AoS-array lane accessor, then re-`memoryref` at the offset.
+    # Element-wise `MemoryRef` V (a plain `MemoryRef` into an element-wise V `Memory`, e.g.
+    # `MemoryRef{NoDual}` for `MemoryRef{Int}`, or `MemoryRef{NDualArray}` for `MemoryRef{Vector}`
+    # comms). Project the lane through the `.mem`'s element-wise array lane accessor, then
+    # re-`memoryref` at the offset.
     @inline function tangent(
         x::Lifted{P,N,V}, lane::Integer
     ) where {P<:MemoryRef,N,V<:MemoryRef}
@@ -232,10 +233,10 @@ end
 @inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
     return map(_ -> NoTangent(), tangent(x))
 end
-# General AoS container V — a plain `Array`/`Memory` of per-element forward Vs (e.g.
+# General element-wise container V — a plain `Array`/`Memory` of per-element forward Vs (e.g.
 # `Array{NDualArray}` from a nested array, or `Memory{…}` forward-over-reverse comms).
 # Project lane `k` element-wise to the same-shape array of each element's lane-`k`
-# tangent, mirroring reverse `tangent_type(Array{T}) === Array{tangent_type(T)}`. The SoA
+# tangent, mirroring reverse `tangent_type(Array{T}) === Array{tangent_type(T)}`. The
 # `NDualArray` (also `<:AbstractArray`) and the `AbstractArray{NoDual}` case have more
 # specific overloads above; undefined slots stay undefined (reverse-PUT semantics).
 @inline function tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray}
@@ -587,9 +588,9 @@ Shapes defined so far:
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
 - `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
-  — the SoA canonical V wrapper (`primal` aliases user storage; `partials` are slot-local).
+  — the parallel-arrays canonical V wrapper (`primal` aliases user storage; `partials` are slot-local).
 - `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}`
-  — complex-eltype SoA variant.
+  — complex-eltype `NDualArray` variant.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
@@ -599,7 +600,7 @@ Shapes defined so far:
 - Concrete struct `P` (mutable): `MutableDual{NamedTuple{...}}` — mutable
   counterpart for in-place tangent updates.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
-  `NDualMemoryRef{T, N, Memory{T}}` — parallel SoA wrapper (per-lane `MemoryRef` partials).
+  `NDualMemoryRef{T, N, Memory{T}}` — parallel-arrays wrapper (per-lane `MemoryRef` partials).
 """
 @foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
@@ -643,7 +644,7 @@ end
 # mirroring reverse's `Vector{NoTangent}`). `tangent_type(Array{T,D})` is never `NoTangent`, so an
 # array is never collapsed to whole `NoDual` — coherence requires `dual_type(P) === NoDual` only
 # when `tangent_type(P) === NoTangent`. The IEEEFloat / Complex overloads above are more specific
-# and provide the SoA `NDualArray` optimisation for scalar-float elements; this AoS form covers
+# and provide the `NDualArray` optimisation for scalar-float elements; this element-wise form covers
 # everything else (non-diff elements, tuples, structs, closures).
 @foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
     return :(Array{dual_type(Val($N), $T),$D})
@@ -733,12 +734,12 @@ end
     @inline function dual_type(::Val{N}, ::Type{Memory{Complex{R}}}) where {N,R<:IEEEFloat}
         return NDualArray{Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}}}
     end
-    # General (non-float) `Memory` / `MemoryRef` V, mirroring the AoS `Array` rule
-    # above: non-diff element → `NoDual`; differentiable element → AoS
+    # General (non-float) `Memory` / `MemoryRef` V, mirroring the element-wise `Array` rule
+    # above: non-diff element → `NoDual`; differentiable element → element-wise
     # `Memory{dual_type(elt)}` / `MemoryRef{dual_type(elt)}` (a plain memory/ref
     # of per-element forward Vs). Covers the reverse rule's `Memory{Tuple{pullback}}`
     # comms storage under forward-over-reverse. The IEEEFloat overloads above are
-    # more specific and provide the SoA optimisation for scalar-float elements.
+    # more specific and provide the `NDualArray` optimisation for scalar-float elements.
     @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
         return :(Memory{dual_type(Val($N), $T)})
     end
@@ -978,19 +979,19 @@ end
 @inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
-    # derivative storage); its forward V is the SoA `NDualMemoryRef`. Reached in
+    # derivative storage); its forward V is the parallel-arrays `NDualMemoryRef`. Reached in
     # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted.
     @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
         return Lifted{MemoryRef{T},1}(x, NDualMemoryRef{T,1,Memory{T}}(x, (ẋ,)))
     end
-    # `_lift_backing` always calls the 3-arg form; without these SoA-specific 3-arg
+    # `_lift_backing` always calls the 3-arg form; without these `NDualArray`-specific 3-arg
     # passthroughs a lifted reverse rule's float `dx::MemoryRef`/`Memory` field falls
-    # to the generic AoS lift below, producing a `MemoryRef{NDual}` that cannot convert
-    # to the declared SoA V. Mirrors the float `Array` passthroughs.
+    # to the generic element-wise lift below, producing a `MemoryRef{NDual}` that cannot convert
+    # to the declared `NDualArray` V. Mirrors the float `Array` passthroughs.
     @inline lift(x::MemoryRef{T}, ẋ::MemoryRef{T}, ::Union{Nothing,IdDict}) where {T<:IEEEFloat} = lift(
         x, ẋ
     )
-    # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the SoA NDualArray,
+    # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the NDualArray,
     # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
     # field is lifted under forward-over-reverse, or a Memory primal is seeded.
     @inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,A<:Memory{T}}
@@ -1011,7 +1012,7 @@ end
     @inline lift(x::Memory, ẋ::Memory{<:NoTangent}) = Lifted{typeof(x),1}(
         x, map(_ -> NoDual(), ẋ)
     )
-    # General AoS `Memory` (differentiable non-float / nested / `Any` element):
+    # General element-wise `Memory` (differentiable non-float / nested / `Any` element):
     # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
     @inline lift(x::Memory, ẋ::Memory) = lift(x, ẋ, nothing)
     @inline function lift(x::Memory, ẋ::Memory, c::Union{Nothing,IdDict})
@@ -1021,9 +1022,9 @@ end
         end
         return Lifted{typeof(x),1,typeof(v)}(x, v)
     end
-    # General AoS `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
+    # General element-wise `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
     # element): lift the `.mem` via the Memory lift, then `memoryref` at the
-    # offset. The `MemoryRef{IEEEFloat}` SoA overload above is more specific.
+    # offset. The `MemoryRef{IEEEFloat}` `NDualMemoryRef` overload above is more specific.
     @inline lift(x::MemoryRef, ẋ::MemoryRef) = lift(x, ẋ, nothing)
     @inline function lift(x::MemoryRef, ẋ::MemoryRef, c::Union{Nothing,IdDict})
         mem_v = tangent(lift(x.mem, ẋ.mem, c))
@@ -1113,14 +1114,14 @@ end
 @inline lift(x, ẋ::PossiblyUninitTangent, c::Union{Nothing,IdDict}) = lift(x, val(ẋ), c)
 # Non-differentiable element array: the reverse tangent is an all-`NoTangent` array; the forward V
 # mirrors it element-wise as an `Array{NoDual}` (coherent with `dual_type(Array{T,D}) =
-# Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the AoS
-# overload below when a cache is threaded.
+# Array{NoDual,D}`). The 3-arg passthrough keeps this more-specific behaviour ahead of the
+# element-wise overload below when a cache is threaded.
 @inline lift(x::Array, ẋ::Array{<:NoTangent}) = Lifted{typeof(x),1}(
     x, map(_ -> NoDual(), ẋ)
 )
 @inline lift(x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = lift(x, ẋ)
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they
-# match the AoS overload below by element type, so give them cache-threading
+# match the element-wise overload below by element type, so give them cache-threading
 # passthroughs that keep the more-specific terminal behaviour.
 @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {T<:IEEEFloat,D,A<:Array{T,D}} = lift(
     x, ẋ
@@ -1128,7 +1129,7 @@ end
 @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}} = lift(
     x, ẋ
 )
-# Differentiable non-float-element array: AoS V `Array{dual_type(Val(1), T), D}`,
+# Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
 # built element-wise from the per-element lift (coherent with `dual_type` above).
 # The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
 @inline lift(x::Array{T,D}, ẋ::Array) where {T,D} = lift(x, ẋ, nothing)
@@ -1241,10 +1242,10 @@ end
     return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> randn(rng, P), Val(N))))
 end
 
-# ── Array seed factories (differentiable non-float elements: AoS) ────────────
+# ── Array seed factories (differentiable non-float elements: element-wise) ────
 #
 # Mirrors `dual_type(Val(N), Array{T,D}) === Array{dual_type(Val(N), T), D}` and
-# the AoS `lift(::Array, ::Array)` path: a per-element V array, built element-wise
+# the element-wise `lift(::Array, ::Array)` path: a per-element V array, built element-wise
 # (skipping undefined slots). Float / Complex-float elements use the more-specific
 # `NDualArray` methods above.
 #
@@ -1672,7 +1673,7 @@ function _basis_seed!!(
     end
     return v
 end
-# AoS V (element-wise `Array` of inner duals, e.g. an abstract-element array):
+# Element-wise V (plain `Array` of inner duals, e.g. an abstract-element array):
 # rebuild each element in place.
 function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     haskey(dict, v) && return dict[v]
@@ -1723,12 +1724,12 @@ end
     @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}(p)
     end
-    # SoA `MemoryRef{IEEEFloat}` uninit/randn: per-lane partial MemoryRefs into
+    # `NDualMemoryRef{IEEEFloat}` uninit/randn: per-lane partial MemoryRefs into
     # fresh `Memory{T}` at `p`'s offset (mirrors the `NDualMemoryRef` zero-init
     # constructor + `zero_dual` above). The general `@generated` below is for
-    # non-float elements; it `memoryref`s an AoS Memory V, which would fail on the
-    # SoA `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
-    # (Open: `MemoryRef{Complex}` lacks the analogous SoA overload — see plan note.)
+    # non-float elements; it `memoryref`s an element-wise Memory V, which would fail on the
+    # `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
+    # (Open: `MemoryRef{Complex}` lacks the analogous `NDualMemoryRef` overload — see plan note.)
     @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)
@@ -1755,7 +1756,7 @@ end
     @inline function zero_dual(::Val{N}, m::Memory{Complex{R}}) where {N,R<:IEEEFloat}
         return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(m)
     end
-    # `uninit_dual` / `randn_dual` mirror `zero_dual` above (SoA for scalar-float
+    # `uninit_dual` / `randn_dual` mirror `zero_dual` above (`NDualArray` for scalar-float
     # elements). `similar(::Memory)` is a fresh same-eltype Memory; `randn` content
     # comes via the `Memory{T}(::Vector)` constructor (`randn` itself returns an
     # Array). Without these, a `Memory{T}` slot falls through to the generic-struct
@@ -1782,10 +1783,10 @@ end
             m, ntuple(_ -> Memory{Complex{R}}(randn(rng, Complex{R}, length(m))), Val(N))
         )
     end
-    # AoS (non-float differentiable element) `Memory` / `MemoryRef` seeds,
-    # mirroring the AoS array factory and `dual_type`: a per-element V memory,
+    # Element-wise (non-float differentiable element) `Memory` / `MemoryRef` seeds,
+    # mirroring the element-wise array factory and `dual_type`: a per-element V memory,
     # built element-wise; a non-diff element gives `NoDual`. The IEEEFloat
-    # overloads above are more specific and provide the SoA optimisation.
+    # overloads above are more specific and provide the `NDualArray` optimisation.
     @generated function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
         dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
         return quote

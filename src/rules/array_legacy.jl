@@ -98,8 +98,8 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V (differentiable non-float elements): delete primal and the element-wise
-# tangent `Array` in lockstep. (Mirrors the `_growend!` AoS frule.)
+# Element-wise V (differentiable non-float elements): delete primal and the element-wise
+# tangent `Array` in lockstep. (Mirrors the element-wise `_growend!` frule.)
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -152,8 +152,8 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V: vectors of differentiable non-float elements; the tangent is a plain
-# `Array` of per-element Vs, deleted in lockstep. (Mirrors the `_growend!` AoS frule.)
+# Element-wise V: vectors of differentiable non-float elements; the tangent is a plain
+# `Array` of per-element Vs, deleted in lockstep. (Mirrors the element-wise `_growend!` frule.)
 function frule!!(
     ::Lifted{typeof(Base._deleteend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -461,8 +461,8 @@ end
 
 # `Lifted{Ptr{T},N}(y, dy_partials)` is the canonical Ptr V — `dy_partials` is the
 # `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects. Real and complex
-# element types share one body: the SoA `NDualArray` stores per-lane partials as
-# `NTuple{N,Array{T,D}}` in both cases, so each lane's pointer is just
+# element types share one body: the `NDualArray` stores per-lane partials as
+# parallel `NTuple{N,Array{T,D}}` in both cases, so each lane's pointer is just
 # `jl_array_ptr` of `partials[k]`.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
@@ -479,12 +479,12 @@ function frule!!(
     )
     return Lifted{Ptr{T},N}(y, dy_partials)
 end
-# AoS V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
+# Element-wise V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
 # `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
-# not the SoA `NDualArray`'s per-lane partials. Its pointer is the single AoS partial
-# pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = AoS dual element),
-# coherent with `dual_type(Val(1), Ptr{P})`. Width-1 only: width-N over an abstract
-# element type would need N distinct pointers from one interleaved AoS array.
+# not the `NDualArray`'s parallel per-lane partials. Its pointer is the single element-wise
+# partial pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = element-wise
+# dual element), coherent with `dual_type(Val(1), Ptr{P})`. Width-1 only: width-N over an
+# abstract element type would need N distinct pointers from one interleaved element-wise array.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),1},
     ::Lifted{Val{:jl_array_ptr},1},
@@ -538,7 +538,7 @@ function frule!!(
     end
     return dest
 end
-# AoS V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
+# Element-wise V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
 # pullback buffers in the public forward-over-reverse HVP interface on 1.10).
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),N},
@@ -633,7 +633,7 @@ Base.@propagate_inbounds function frule!!(
     dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
     return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
-# AoS V: read the element primal and its per-element V from the parallel arrays.
+# Element-wise V: read the element primal and its per-element V from the parallel arrays.
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -696,7 +696,7 @@ function frule!!(
     end
     return A
 end
-# AoS V: set the element primal and its per-element V into the parallel arrays.
+# Element-wise V: set the element primal and its per-element V into the parallel arrays.
 function frule!!(
     ::Lifted{typeof(Core.arrayset),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -801,10 +801,10 @@ function frule!!(
         new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_partials)
     )
 end
-# AoS V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`
+# Element-wise V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`
 # reached via `copy(::Set)`/`copy(::Dict)` internals): copy the primal and the element-wise V
 # array. Mirrors the 1.11+ `Memory` path's general overload and the `rrule!!`'s `<:Array`
-# breadth; the more-specific `NDualArray` overload above wins for float SoA arrays.
+# breadth; the more-specific `NDualArray` overload above wins for float parallel-arrays.
 @inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
     return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
 end

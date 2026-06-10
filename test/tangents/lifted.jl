@@ -248,10 +248,10 @@ end
             @test Mooncake.primal(z) === p
         end
 
-        @testset "cache-threaded float Memory/MemoryRef lift is SoA" begin
+        @testset "cache-threaded float Memory/MemoryRef lift is parallel-arrays" begin
             # Under forward-over-reverse, a reverse rule's float `dx::MemoryRef`/`Memory`
             # field is lifted via the 3-arg cache form (`_lift_backing`). It must reach
-            # the SoA overload, not the generic AoS path (which yields `MemoryRef{NDual}`).
+            # the parallel-arrays overload, not the generic element-wise path (which yields `MemoryRef{NDual}`).
             T = Float64
             mem = Memory{T}(undef, 3)
             ẋmem = Memory{T}(undef, 3)
@@ -348,7 +348,7 @@ end
         P = Float64
         x = [1.0, 2.0, 3.0]
 
-        # Canonical V for `Vector{Float64}` is `NDualArray` (SoA). Two lane
+        # Canonical V for `Vector{Float64}` is `NDualArray` (parallel-arrays). Two lane
         # partial vectors carry the directional derivatives.
         x_inner = Mooncake.NDualArray{P,N,1,Vector{P}}(
             x, ([1.0, 0.0, -0.5], [0.5, 1.0, 0.0])
@@ -413,7 +413,7 @@ end
             Tuple{Mooncake.NDual{Float64,2}}
         @test Mooncake.dual_type(Val(2), Tuple{Float64,Float32}) ===
             Tuple{Mooncake.NDual{Float64,2},Mooncake.NDual{Float32,2}}
-        # Nested: a tuple of (scalar, array). Array V is the SoA NDualArray.
+        # Nested: a tuple of (scalar, array). Array V is the parallel-arrays NDualArray.
         @test Mooncake.dual_type(Val(2), Tuple{Float64,Vector{Float64}}) === Tuple{
             Mooncake.NDual{Float64,2},
             Mooncake.NDualArray{Float64,2,1,Vector{Float64},Mooncake.NDual{Float64,2}},
@@ -557,7 +557,7 @@ end
         @test view2.v === 0.0
     end
 
-    @testset "AoS Vector with abstract eltype (concrete struct elements)" begin
+    @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin
         # Regression: a `Vector{<:abstract}` holding concrete structs (e.g.
         # `Vector{Distribution}` of `Normal`s) must extract each element's lane
         # tangent via the CONCRETE `typeof(pe)`. The abstract static `eltype(P)`

@@ -110,7 +110,7 @@ end
 
 # Forward-mode analogue of `arrayify(::CoDual)`. Returns the primal array and an N-tuple of
 # per-lane tangent arrays, each canonicalised to the primal's wrapper. This mirrors the reverse
-# `arrayify` wrapper methods, applied across the SoA partials: no copy — BLAS/LAPACK run on the
+# `arrayify` wrapper methods, applied across the parallel per-lane partials: no copy — BLAS/LAPACK run on the
 # (possibly strided) views directly, and in-place writes flow back through the view into the
 # parent's partials. `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method.
 function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
@@ -396,7 +396,7 @@ end
 
 # dotc/dotu (complex) — forward mode only. Unlike real `dot` (which the cblas
 # routine returns by value), the complex routines write into a scalar `result =
-# Ref{T}()` passed to the ccall. The canonical SoA dual of that Ref stores a
+# Ref{T}()` passed to the ccall. The canonical NDualArray-style dual of that Ref stores a
 # `Complex{NDual{R,Nw}}`, which is not layout-compatible with the `Nw` contiguous
 # `T`-cells the foreigncall needs, so the `_foreigncall_` frule cannot land the
 # per-lane partials there. Instead we make `BLAS.dotc`/`dotu` themselves forward

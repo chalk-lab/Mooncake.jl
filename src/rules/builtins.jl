@@ -241,10 +241,10 @@ function frule!!(
     )
 end
 # Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are
-# themselves differentiable pointers, so the canonical V is the element-wise AoS
+# themselves differentiable pointers, so the canonical V is the element-wise
 # `Array{NTuple{Nw,Ptr{R}}, D}` (each element holds that pointer's Nw per-lane shadow Ptrs),
-# not the `NDualArray` SoA form above (which only applies to `NDualEltype` elements). Wrap each
-# lane's shadow pointer into its own array, then interleave element-wise into the AoS V.
+# not the `NDualArray` parallel-arrays form above (which only applies to `NDualEltype` elements). Wrap each
+# lane's shadow pointer into its own array, then interleave element-wise into the V.
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
@@ -287,7 +287,7 @@ end
 # The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
 # is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
 # `atomic_pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a
-# coherent `Ptr{Ptr{Float64}}` alike — and the AoS `Ptr{S≠T}` shape is excluded. A
+# coherent `Ptr{Ptr{Float64}}` alike — and the element-wise `Ptr{S≠T}` shape is excluded. A
 # non-differentiable element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the
 # primal; `tangent_type(T)` folds at specialisation so the branch is compile-time.
 function frule!!(
@@ -358,7 +358,7 @@ end
 # again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
 # the generic frule above, which throws (it must not be silently bypassed here).
 # Two lane element types keep their type instead of re-typing to the target:
-#  - an AoS dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose element stride
+#  - an element-wise dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose element stride
 #    differs from the re-typed primal pointer's, so a downstream `unsafe_copyto!` must copy it;
 #  - an objref tangent-object address (`Ptr{tangent_type(Nothing)}`, from `pointer_from_objref`)
 #    must NOT be re-typed into a fake-coherent `Ptr{<:IEEEFloat}` per-lane-partial pointer — kept
@@ -831,7 +831,7 @@ end
 # The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
 # is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
 # `pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a coherent
-# `Ptr{Ptr{Float64}}` alike — and the AoS `Ptr{S≠T}` shape is excluded. A non-differentiable
+# `Ptr{Ptr{Float64}}` alike — and the element-wise `Ptr{S≠T}` shape is excluded. A non-differentiable
 # element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the primal; `tangent_type(T)`
 # folds at specialisation so the branch is compile-time.
 function frule!!(
@@ -863,12 +863,12 @@ function frule!!(
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
-# An AoS per-lane V (`NTuple{Nw,Ptr{S}}` with partial element `S !== Ptr{T}`) reaches
+# An element-wise per-lane V (`NTuple{Nw,Ptr{S}}` with partial element `S !== Ptr{T}`) reaches
 # here when the destination is an array of differentiable pointers (e.g.
 # `pointer(::Vector{Ptr{Float64}})`, whose tangent buffer holds `Tuple{Ptr{Float64}}`
 # elements, not bare `Ptr{Float64}`). Writing a bare lane tangent through that pointer
-# would corrupt the AoS stride, so fail loudly — the AoS-array-of-pointers store is
-# unsupported. The SoA `NTuple{Nw,Ptr{T}}` frule above is strictly more specific.
+# would corrupt the element-wise stride, so fail loudly — the array-of-pointers store is
+# unsupported. The parallel-arrays `NTuple{Nw,Ptr{T}}` frule above is strictly more specific.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
     p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
@@ -878,8 +878,8 @@ function frule!!(
 ) where {Nw,T}
     tangent_type(T) === NoTangent || throw(
         ArgumentError(
-            "pointerset into a differentiable `Ptr{$T}` with an array-of-structs per-lane V; " *
-            "the AoS array-of-pointers store is unsupported.",
+            "pointerset into a differentiable `Ptr{$T}` with an element-wise array-of-duals per-lane V; " *
+            "the array-of-pointers store is unsupported.",
         ),
     )
     pointerset(primal(p), primal(x), primal(idx), primal(z))
@@ -1022,8 +1022,8 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-# The tangent V is either the SoA `NDualArray` (for `Vector{<:IEEEFloat}`) or a
-# plain `Vector` of per-element Vs (AoS); both are `AbstractVector`, so `Tuple`
+# The tangent V is either the parallel-arrays `NDualArray` (for `Vector{<:IEEEFloat}`) or a
+# plain `Vector` of per-element Vs (element-wise); both are `AbstractVector`, so `Tuple`
 # iterates either into the per-element tangent tuple. (`__vec_to_tuple` itself is
 # the `::Vector`-only primal helper and does not accept an NDualArray.) The
 # `<:AbstractVector` V bound also excludes non-differentiable (`NoDual`) vectors.
@@ -1384,7 +1384,7 @@ function frule!!(
     return x
 end
 # Array `.ref`/`.size` mutation (e.g. resize) via the runtime-name `setfield!` can't use
-# the `_setfield_tangent!` path — the SoA `NDualArray` V is immutable. Delegate to the
+# the `_setfield_tangent!` path — the parallel-arrays `NDualArray` V is immutable. Delegate to the
 # `lsetfield!` array frule (which updates the V via the partials/memref-aliasing), with the
 # positional field index normalised to the symbol it dispatches on (`1`→`:ref`, `2`→`:size`).
 @inline function frule!!(

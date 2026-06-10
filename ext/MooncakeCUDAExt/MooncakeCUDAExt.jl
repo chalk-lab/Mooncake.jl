@@ -723,7 +723,7 @@ end
 
 # `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
 # arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made primitive so the
-# forward transform does not trace into that primal-only reconstruction and drop the SoA partials:
+# forward transform does not trace into that primal-only reconstruction and drop the parallel per-lane partials:
 # view the primal and each partial alike, mirroring `reshape` above. The reverse tangent is a view of
 # `x.dx`, so accumulation into it propagates (NoPullback).
 @is_primitive(MinimalCtx, Tuple{typeof(view),CuMaybeComplexArray,Vararg})

@@ -246,7 +246,7 @@ end
 )
 # Per-lane copy of each `partials[lane]` MemoryRef in sync with the primal copy. `P <: NDualEltype`
 # (float or complex), matching the sibling MemoryRef frules — the per-lane copy is element-agnostic, and
-# the complex SoA V is the same `NDualMemoryRef{P,Nw,Memory{P}}` shape (e.g. the `copy_similar` /
+# the complex NDualMemoryRef V is the same `NDualMemoryRef{P,Nw,Memory{P}}` shape (e.g. the `copy_similar` /
 # `copyto_axcheck!` path of complex `logdet`/`logabsdet`).
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
@@ -642,15 +642,15 @@ end
     return y, memoryrefset_adjoint
 end
 
-# ── AoS (Array-of-Structures) memory ops ────────────────────────────────────
+# ── Element-wise (plain `Array` of inner duals) memory ops ──────────────────
 #
-# For a differentiable non-float-element array, the forward V is the AoS array
+# For a differentiable non-float-element array, the forward V is the element-wise array
 # `Array{dual_type(Val(N), elt), D}` (see `dual_type(Array{T,D})` in lifted.jl).
 # Its `.ref` is a plain `MemoryRef{V_elt}` (a MemoryRef into the V array),
 # parallel to the primal's `MemoryRef{P_elt}`. These memory ops thread both refs
 # in lockstep — `memoryrefget` returns `Lifted{P_elt, Nw, V_elt}` with
 # `V_elt === dual_type(Val(Nw), P_elt)`, so the V chain stays coherent. They
-# dispatch on a *plain* `MemoryRef` V, distinct from the float-SoA
+# dispatch on a *plain* `MemoryRef` V, distinct from the float-element parallel-arrays
 # `NDualMemoryRef` frules above. Forward-over-reverse exercises this path for the
 # reverse rule's `Vector{Tuple{pullback}}` pullback storage.
 @static if VERSION >= v"1.11-rc4"
@@ -661,8 +661,8 @@ end
         yt = memoryrefnew(tangent(x))
         return Lifted{typeof(yp),Nw}(yp, yt)
     end
-    # AoS `memoryrefnew(::Memory)`: the V is the AoS `Memory`; project it to the
-    # matching AoS `MemoryRef` V (1-arg `memoryrefnew` makes a ref to the start).
+    # Element-wise `memoryrefnew(::Memory)`: the V is the element-wise `Memory`; project it to the
+    # matching element-wise `MemoryRef` V (1-arg `memoryrefnew` makes a ref to the start).
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Memory,Nw,<:Memory}
     ) where {Nw}
@@ -727,7 +727,7 @@ end
         memoryrefset!(tangent(x), tangent(value), ord, bc)
         return value
     end
-    # AoS `unsafe_copyto!(dest, src, n)`: copy the primal and the AoS-V memrefs in
+    # Element-wise `unsafe_copyto!(dest, src, n)`: copy the primal and the element-wise V memrefs in
     # lockstep (used by `Memory`/`Array` growth over `Vector{Tuple{pullback}}`).
     @inline function frule!!(
         ::Lifted{typeof(unsafe_copyto!),Nw},
@@ -740,9 +740,9 @@ end
         unsafe_copyto!(tangent(dest), tangent(src), _n)
         return dest
     end
-    # AoS array field write (`Array` growth sets `.ref` / `.size`): set the field
-    # on the primal array and the parallel AoS-V array. `.ref` is the differentiable
-    # storage (take the AoS-V ref); `.size` is metadata shared with the primal.
+    # Element-wise array field write (`Array` growth sets `.ref` / `.size`): set the field
+    # on the primal array and the parallel element-wise V array. `.ref` is the differentiable
+    # storage (take the element-wise V ref); `.size` is metadata shared with the primal.
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
         value::Lifted{<:Array,Nw,<:Array},
@@ -755,7 +755,7 @@ end
     end
     # Non-differentiable element array (element-wise `Array{NoDual}` V, e.g. an `Int32` stack):
     # write the primal field only. The V's `.ref`/`.size` are not tracked here — a non-diff
-    # `MemoryRef`'s dual is still whole `NoDual`, so the AoS `.ref` write above cannot apply
+    # `MemoryRef`'s dual is still whole `NoDual`, so the element-wise `.ref` write above cannot apply
     # (non-diff array-growth V-tracking would need element-wise Memory/MemoryRef coherence).
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
@@ -878,10 +878,10 @@ function rrule!!(
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
-# AoS `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
-# the AoS `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
-# AoS `memoryrefset!`). Non-diff element → `NoDual`. The `NDualEltype` overload above
-# (SoA `NDualArray`) is more specific and wins for scalar IEEEFloat/Complex elements.
+# Element-wise `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
+# the element-wise `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
+# element-wise `memoryrefset!`). Non-diff element → `NoDual`. The `NDualEltype` overload above
+# (`NDualArray` parallel-arrays) is more specific and wins for scalar IEEEFloat/Complex elements.
 @generated function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P}
@@ -930,8 +930,8 @@ function frule!!(
     partials = ntuple(k -> _new_(Array{P,D}, tangent(ref).partials[k], _sz), Val(Nw))
     return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, partials))
 end
-# AoS `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
-# is the AoS `Array{dual_type(P),D}` built from the AoS-V ref (a plain
+# Element-wise `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
+# is the element-wise `Array{dual_type(P),D}` built from the element-wise V ref (a plain
 # `MemoryRef`) and the same size. Mirrors the reverse `rrule!!` below
 # (`_new_(Array{tangent_type(P),N}, ref.dx, size)`).
 @inline function frule!!(
