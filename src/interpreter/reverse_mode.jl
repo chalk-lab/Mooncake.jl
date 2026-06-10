@@ -1300,7 +1300,7 @@ function generate_ir(
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
-    # Check before normalise! to avoid cryptic failures downstream.
+    # Check for unsupported features before normalise! runs.
     for inst in stmt(ir.stmts)
         is_enter = Meta.isexpr(inst, :enter)
         @static if isdefined(Core, :EnterNode)

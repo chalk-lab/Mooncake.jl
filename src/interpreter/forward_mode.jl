@@ -192,6 +192,7 @@ function generate_dual_ir(
     end
     nargs = length(primal_ir.argtypes)
 
+    # Check for unsupported features before normalise! runs.
     # On Julia 1.12+, global writes compile to setglobal! rather than a non-const
     # GlobalRef in Expr arg position. verify_ir no longer catches this, so build_frule
     # would silently succeed but crash at runtime with a missing frule!!. Detect it
