@@ -1318,7 +1318,7 @@ function generate_ir(
         end
         # On Julia 1.12+, global writes compile to setglobal! rather than a non-const
         # GlobalRef in Expr arg position. verify_ir no longer catches this, so build_rrule
-        # would silently succeed but crash at runtime with a missing frule!!. Detect it
+        # would silently succeed but crash at runtime with a missing rrule!!. Detect it
         # here to give a loud compile-time error.
         @static if VERSION > v"1.12-"
             if Meta.isexpr(inst, :call) && inst.args[1] == GlobalRef(Base, :setglobal!)

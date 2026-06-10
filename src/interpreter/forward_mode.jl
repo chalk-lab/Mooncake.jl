@@ -192,6 +192,23 @@ function generate_dual_ir(
     end
     nargs = length(primal_ir.argtypes)
 
+    # On Julia 1.12+, global writes compile to setglobal! rather than a non-const
+    # GlobalRef in Expr arg position. verify_ir no longer catches this, so build_frule
+    # would silently succeed but crash at runtime with a missing frule!!. Detect it
+    # here to give a loud compile-time error.
+    @static if VERSION > v"1.12-"
+        for inst in stmt(primal_ir.stmts)
+            if Meta.isexpr(inst, :call) && inst.args[1] == GlobalRef(Base, :setglobal!)
+                unhandled_feature(
+                    "Differentiating functions which write to non-const global variables " *
+                    "is not supported by Mooncake.jl. The code being differentiated " *
+                    "contains a write to a non-const global variable. Consider refactoring " *
+                    "to avoid global writes, or providing a custom frule!!.",
+                )
+            end
+        end
+    end
+
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
     primal_ir = normalise!(primal_ir, spnames)
