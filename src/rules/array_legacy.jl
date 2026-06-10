@@ -98,24 +98,15 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Element-wise V (differentiable non-float elements): delete primal and the element-wise
-# tangent `Array` in lockstep. (Mirrors the element-wise `_growend!` frule.)
+# Plain-`Array` V: delete primal and the element-wise tangent `Array` in lockstep. Covers both
+# differentiable non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g.
+# `Vector{Int}`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
     d_p = primal(d)
     Base._deletebeg!(primal(a), d_p)
     Base._deletebeg!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): delete primal and V together.
-function frule!!(
-    ::Lifted{typeof(Base._deletebeg!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    d::Lifted,
-) where {N}
-    Base._deletebeg!(primal(a), primal(d))
-    Base._deletebeg!(tangent(a), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -153,24 +144,15 @@ function frule!!(
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 # Element-wise V: vectors of differentiable non-float elements; the tangent is a plain
-# `Array` of per-element Vs, deleted in lockstep. (Mirrors the element-wise `_growend!` frule.)
+# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g. `Vector{Int}`
+# reached via `filter`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deleteend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
     d_p = primal(d)
     Base._deleteend!(primal(a), d_p)
     Base._deleteend!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V, e.g. `Vector{Int}` reached via
-# `filter`): delete primal and V together. (Mirrors the `_growend!` NoDual frule.)
-function frule!!(
-    ::Lifted{typeof(Base._deleteend!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    d::Lifted,
-) where {N}
-    Base._deleteend!(primal(a), primal(d))
-    Base._deleteend!(tangent(a), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -216,7 +198,9 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V: tangent is a plain `Array` of per-element Vs, deleted in lockstep.
+# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deleteat!),N},
     a::Lifted{<:Vector,N,<:Array},
@@ -227,17 +211,6 @@ function frule!!(
     d_p = primal(delta)
     Base._deleteat!(primal(a), i_p, d_p)
     Base._deleteat!(tangent(a), i_p, d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): delete primal and V together.
-function frule!!(
-    ::Lifted{typeof(Base._deleteat!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    i::Lifted,
-    delta::Lifted,
-) where {N}
-    Base._deleteat!(primal(a), primal(i), primal(delta))
-    Base._deleteat!(tangent(a), primal(i), primal(delta))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -280,23 +253,15 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V: tangent is a plain `Array` of per-element Vs, grown in lockstep.
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growbeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
     d_p = primal(d)
     Base._growbeg!(primal(a), d_p)
     Base._growbeg!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): grow primal and V together.
-function frule!!(
-    ::Lifted{typeof(Base._growbeg!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    d::Lifted,
-) where {N}
-    Base._growbeg!(primal(a), primal(d))
-    Base._growbeg!(tangent(a), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -328,25 +293,16 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V: vectors of differentiable non-float elements (e.g. the
-# `Vector{Tuple{pullback}}` grown by reverse rules under forward-over-reverse on
-# Julia 1.10). The tangent is a plain `Array` of per-element Vs, grown in lockstep.
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers vectors of differentiable
+# non-float elements (e.g. the `Vector{Tuple{pullback}}` grown by reverse rules under
+# forward-over-reverse on Julia 1.10) AND non-differentiable element vectors (`Array{NoDual}` V) —
+# `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
     d_p = primal(d)
     Base._growend!(primal(a), d_p)
     Base._growend!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): grow primal and V together.
-function frule!!(
-    ::Lifted{typeof(Base._growend!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    d::Lifted,
-) where {N}
-    Base._growend!(primal(a), primal(d))
-    Base._growend!(tangent(a), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -380,7 +336,9 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Array-of-Structures V: tangent is a plain `Array` of per-element Vs, grown in lockstep.
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growat!),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, d::Lifted
 ) where {N}
@@ -388,17 +346,6 @@ function frule!!(
     d_p = primal(d)
     Base._growat!(primal(a), i_p, d_p)
     Base._growat!(tangent(a), i_p, d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): grow primal and V together.
-function frule!!(
-    ::Lifted{typeof(Base._growat!),N},
-    a::Lifted{<:Vector,N,<:AbstractArray{NoDual}},
-    i::Lifted,
-    d::Lifted,
-) where {N}
-    Base._growat!(primal(a), primal(i), primal(d))
-    Base._growat!(tangent(a), primal(i), primal(d))
     return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
@@ -436,21 +383,15 @@ function frule!!(
     end
     return x
 end
-# Array-of-Structures V: tangent is a plain `Array` of per-element Vs, hinted in lockstep.
+# Plain-`Array` V: an `Array` of per-element Vs, hinted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(sizehint!),N}, x::Lifted{<:Vector,N,<:Array}, sz::Lifted
 ) where {N}
     sz_p = primal(sz)
     sizehint!(primal(x), sz_p)
     sizehint!(tangent(x), sz_p)
-    return x
-end
-# Non-differentiable element vectors (element-wise `Array{NoDual}` V): hint primal and V together.
-function frule!!(
-    ::Lifted{typeof(sizehint!),N}, x::Lifted{<:Vector,N,<:AbstractArray{NoDual}}, sz::Lifted
-) where {N}
-    sizehint!(primal(x), primal(sz))
-    sizehint!(tangent(x), primal(sz))
     return x
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})

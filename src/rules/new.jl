@@ -28,14 +28,14 @@
             return Lifted{P,Nw}(y, tuple_map(tangent, x))
         end
     elseif P <: NamedTuple
-        # An all-non-differentiable NamedTuple has `dual_type(P) === NoDual`, so build
-        # whole `NoDual` rather than an element-wise V. The `tangent_type(P) === NoTangent`
-        # test resolves in the RETURNED expression (at the call world, where an extension's
-        # element overload is visible), never the generator body.
+        # An all-non-differentiable NamedTuple has `dual_type(P) === NoDual`, so build whole
+        # `NoDual` rather than an element-wise V (same `dual_type === NoDual` collapse used by the
+        # Tuple and struct branches). The test resolves in the RETURNED expression (at the call
+        # world, where an extension's element overload is visible), never the generator body.
         names = (P.parameters[1])::Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            tangent_type(P) === NoTangent && return Lifted{P,Nw}(y, NoDual())
+            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
         end
     elseif isprimitivetype(P) || fieldcount(P) == 0
@@ -61,10 +61,11 @@
         end
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            # A non-differentiable struct collapses to `NoDual`. This `tangent_type(P)`
-            # test resolves in the RETURNED expression (call world), never the generator
-            # body, so an extension's field overload (e.g. CUDA `CuArray`/`CuPtr`) is seen.
-            tangent_type(P) === NoTangent && return Lifted{P,Nw}(y, NoDual())
+            # A non-differentiable struct collapses to `NoDual` (same `dual_type === NoDual`
+            # collapse as the Tuple/NamedTuple branches). The test resolves in the RETURNED
+            # expression (call world), never the generator body, so an extension's field overload
+            # (e.g. CUDA `CuArray`/`CuPtr`) is seen.
+            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             backing = fieldtype(dual_type(Val(Nw), P), 1)
             return Lifted{P,Nw}(y, $wrapper(backing(($(field_exprs...),))))
         end
