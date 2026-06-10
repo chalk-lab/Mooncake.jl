@@ -60,18 +60,23 @@ import Base.CoreLogging as CoreLogging
     Symbol,
     Symbol,
 }
-@zero_derivative MinimalCtx Tuple{
-    typeof(Core._call_latest),
-    typeof(CoreLogging.handle_message),
-    Any,
-    Base.CoreLogging.LogLevel,
-    String,
-    Module,
-    Symbol,
-    Symbol,
-    String,
-    Int64,
-}
+
+# On 1.12+, @invokelatest no longer expands to Core._call_latest, it uses
+# Base.invokelatest/Base.invokelatest_gr instead.
+@static if VERSION < v"1.12-"
+    @zero_derivative MinimalCtx Tuple{
+        typeof(Core._call_latest),
+        typeof(CoreLogging.handle_message),
+        Any,
+        Base.CoreLogging.LogLevel,
+        String,
+        Module,
+        Symbol,
+        Symbol,
+        String,
+        Int64,
+    }
+end
 
 # Package loading internals; also needed for extension code paths.
 @zero_derivative MinimalCtx Tuple{Type{Base.PkgId},Module}
