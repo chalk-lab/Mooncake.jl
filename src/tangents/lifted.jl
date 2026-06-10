@@ -655,6 +655,11 @@ end
 # below, which must keep it `Tuple{}` to terminate the recursion.)
 @foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = NoDual
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    # Phantom free-TypeVar `Tuple` (e.g. `Tuple{T, A}`, where `UnionAll(A, Tuple{T,A})` normalises
+    # to a `DataType` with dangling typevars): the static parameter `P` is unbound, so referencing
+    # it below — or in the `tangent_type(P)` call — would throw `UndefVarError`. Widen to `Any`,
+    # mirroring the `@isdefined(P)` guard the `CoDual` constructor uses for the same case.
+    @isdefined(P) || return Any
     # Whole-tuple collapse (mirror reverse `tangent_type(P) === NoTangent`; the invariant
     # `dual_type(P) === NoDual` iff `tangent_type(P) === NoTangent`). Checked FIRST so a
     # non-concrete-but-non-differentiable tuple — e.g. `Tuple{Type{Float64},Type{Float64}}`,
@@ -836,6 +841,7 @@ end
 # `Lifted{Tuple{Function,Vararg},N,Any}` and the OpaqueClosure arg typeassert
 # would reject it (mirrors the generic struct overload below).
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    @isdefined(P) || return Any  # phantom free-TypeVar Tuple (see the `dual_type` guard above)
     return if isconcretetype(P)
         Lifted{P,N,dual_type(Val(N), P)}
     else

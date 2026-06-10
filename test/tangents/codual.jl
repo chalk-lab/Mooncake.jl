@@ -87,10 +87,12 @@
         @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        # Known gap: a free-TypeVar `Tuple` (e.g. `Tuple{T,A}`) can't bind the `P<:Tuple` forward
-        # `dual_type` method, so dispatch throws (reverse `codual_type` avoids this via an
-        # unconstrained single entry). Tracked separately; reverse mode above is robust.
-        @test_broken dual_type(Val(1), phantom_tuple) === Any
+        # A free-TypeVar `Tuple` (e.g. `Tuple{T,A}`) leaves the `P<:Tuple` static parameter
+        # unbound; the forward `dual_type`/`lifted_type` bodies guard with `@isdefined(P)` (the
+        # idiom the `CoDual` constructor uses) and widen to `Any` rather than referencing the
+        # undefined `P` and throwing `UndefVarError`.
+        @test dual_type(Val(1), phantom_tuple) === Any
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Any
     end
 
     @testset "NoPullback" begin
