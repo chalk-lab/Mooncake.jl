@@ -1627,8 +1627,11 @@ function frule!!(
         ntuple(_ -> zero(decoded.primal_out), Val(Nw))
     end
     P_out = typeof(decoded.primal_out)
+    # Use `_wrap_scalar_v_lanes` (not a raw `NDual{P_out,Nw}`) so a complex-valued `f` (ℝ→ℂ),
+    # whose `P_out === Complex{R}`, builds the canonical `Complex{NDual}` V rather than the
+    # invalid `NDual{Complex,…}`. Mirrors the dense `sum(f, x)` frule above.
     return Lifted{P_out,Nw}(
-        decoded.primal_out, NDual{P_out,Nw}(decoded.primal_out, dy_lanes)
+        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
     )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
