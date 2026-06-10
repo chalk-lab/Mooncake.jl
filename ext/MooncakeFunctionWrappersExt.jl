@@ -334,6 +334,12 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrap
     return T(t.fwds_wrapper, t.frule_wrapper, Ref(_scale_internal(c, a, t.dobj_ref[])))
 end
 
+# `FunctionWrapperTangent` is not field-parallel to `FunctionWrapper` (its fields are opaque
+# closures + a `dobj_ref`, not the wrapper's `ptr`/`obj`/… fields), so the standardised
+# field-access interaction tests (`getfield`/`_new_`/`setfield!`/…) do not apply — AD of a
+# FunctionWrapper happens at the call/construction level, never via field access.
+TestUtils.supports_field_access_interactions(::Type{<:FunctionWrapper}) = false
+
 function TestUtils.populate_address_map_internal(
     m::TestUtils.AddressMap, p::FunctionWrapper, t::FunctionWrapperTangent
 )

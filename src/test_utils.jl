@@ -2163,6 +2163,14 @@ attention to writing rules for are
 In all cases, you may wish to consult the current implementations of `rrule!!` for these
 functions for inspiration regarding how you might implement them for your type.
 """
+# Whether the standardised field-access interaction tests (`getfield`/`lgetfield`/`_new_`/
+# `setfield!`/`lsetfield!`) in `test_rule_and_type_interactions` apply to `P`. Defaults to `true`.
+# A type whose custom tangent is not field-parallel to the primal — i.e. field `i` of the primal
+# does not correspond to field `i` of the tangent (e.g. `FunctionWrapper`, whose tangent abstracts
+# the wrapped object behind opaque closures) — does not support field-access AD and overrides this
+# to `false`; its non-field interactions are still exercised.
+supports_field_access_interactions(::Type) = true
+
 function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
     @nospecialize rng p
 
@@ -2173,6 +2181,10 @@ function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
         functions_for_structs()
     else
         functions_for_all_types()
+    end
+    if !supports_field_access_interactions(P)
+        field_access_fs = (getfield, lgetfield, Mooncake._new_, setfield!, lsetfield!)
+        fs = filter(!in(field_access_fs), fs)
     end
 
     # Run standardised tests for all functions.
