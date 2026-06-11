@@ -703,9 +703,15 @@ function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray, ::I
     return _chunked_v_approx(v.primal, p) && all(a -> all(isfinite, a), v.partials)
 end
 function _chunked_v_invariant(p::Tuple, v::Tuple, c::IdDict)
-    all(map((a, b) -> _chunked_v_invariant(a, b, c), p, v))
+    # Arity must match: a length mismatch is exactly the `dual_type` incoherence this harness
+    # exists to catch (`map` would otherwise truncate to the shorter and still pass).
+    length(p) == length(v) || return false
+    return all(map((a, b) -> _chunked_v_invariant(a, b, c), p, v))
 end
 function _chunked_v_invariant(p::NamedTuple, v::NamedTuple, c::IdDict)
+    # Keys must match exactly: a coherent `dual_type` preserves the field names, so a mismatch is a
+    # bug (and guards the `getfield(p, n)` recursion below, which would otherwise throw on a stray key).
+    keys(p) == keys(v) || return false
     return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n), c), keys(v))
 end
 function _chunked_v_invariant(p, v::Mooncake.ImmutableDual, c::IdDict)
@@ -731,9 +737,12 @@ function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
     c[v] = nothing
     return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
 end
-# Fallthrough: shapes with nothing checkable here — `NoDual`/`NoTangent` (non-differentiable),
-# type-erased `FunctionWrapperTangent`, and any V shape not enumerated above (e.g. `Memory`
-# duals). The check degrades open: an unhandled shape passes rather than erroring.
+# Fallthrough: `NoDual`/`NoTangent` (non-differentiable) and the type-erased
+# `FunctionWrapperTangent` have nothing to check and pass. (`Memory` is *not* here — it is an
+# `AbstractArray`, so its `NDualArray` V is checked by the method above.) The differentiable
+# `NDualRef`/`NDualMemoryRef` shapes also currently land here and pass trivially; this is a known
+# open-degradation gap, untriggered because no test value produces a top-level `Ref`/`MemoryRef`
+# dual. The check degrades open: an unhandled shape passes rather than erroring.
 _chunked_v_invariant(_p, _v, ::IdDict) = true
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
