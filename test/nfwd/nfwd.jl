@@ -207,6 +207,23 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(rn, 2) ≈ 2.0
     end
 
+    @testset "complex NDualArray indexing" begin
+        # Complex-eltype NDualArray (element `Complex{NDual}`) must be indexable — previously its
+        # get/setindex! were `where {Element<:IEEEFloat}` only and threw `CanonicalIndexError`.
+        for N in (1, 2, 3)
+            p = ComplexF64[1.0 + 2.0im, 3.0 - 1.0im]
+            parts = ntuple(k -> ComplexF64[k + 0.0im, 0.0 + k * im], N)
+            a = Nfwd.NDualArray{ComplexF64,N,1,Vector{ComplexF64}}(p, parts)
+            e = a[1]
+            @test e isa Complex{NDual{Float64,N}}
+            @test e.re.value == 1.0 && e.im.value == 2.0
+            @test all(k -> e.re.partials[k] == k && e.im.partials[k] == 0.0, 1:N)
+            a[2] = e  # setindex! round-trip
+            @test a.primal[2] == 1.0 + 2.0im
+            @test all(k -> a.partials[k][2] == ComplexF64(k, 0.0), 1:N)
+        end
+    end
+
     @testset "math functions" begin
         # Test each f(Dual(v,1)) matches f'(v) analytically
         for (v, fns) in [

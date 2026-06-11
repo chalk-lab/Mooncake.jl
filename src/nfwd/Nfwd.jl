@@ -2064,6 +2064,23 @@ end
     ntuple(k -> (a.partials[k][i...]=x.partials[k]; nothing), Val(N))
     return a
 end
+# Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
+# and per-lane partial arrays hold `Complex{T}`, so split/recombine the real and imaginary parts.
+@inline function Base.getindex(
+    a::NDualArray{Element,N}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    return _scalar_ndual(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
+end
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.re.value, x.im.value)
+    ntuple(
+        k -> (a.partials[k][i...]=Complex(x.re.partials[k], x.im.partials[k]); nothing),
+        Val(N),
+    )
+    return a
+end
 
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualRef{P, N}` — canonical V for `Base.RefValue{P<:NDualEltype}` (real or complex
