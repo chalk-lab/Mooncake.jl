@@ -92,7 +92,9 @@
         # idiom the `CoDual` constructor uses) and widen to `Any` rather than referencing the
         # undefined `P` and throwing `UndefVarError`.
         @test dual_type(Val(1), phantom_tuple) === Any
-        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Any
+        # `lifted_type` returns a (broad) `Lifted` *slot* type, like the generic `lifted_type`
+        # phantom guard — not the inner-V `Any` that `dual_type` returns.
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
     @testset "NoPullback" begin

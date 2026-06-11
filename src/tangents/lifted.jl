@@ -602,6 +602,10 @@ Shapes defined so far:
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `NDualMemoryRef{T, N, Memory{T}}` — parallel-arrays wrapper (per-lane `MemoryRef` partials).
 """
+# No `isconcretetype(P)` guard (unlike the `lifted_type(::Type{P<:IEEEFloat})` sibling, which
+# widens a non-concrete `P` to a UnionAll): `dual_type` is the inner-V query and is only ever
+# invoked with concrete `P` — the slot-level `lifted_type` performs the non-concrete widening and
+# only calls `dual_type` in its `isconcretetype` branch, and the seed factories feed `typeof(x)`.
 @foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
 # in reverse mode, returning the forward-mode V sentinel `NoDual`.
@@ -842,7 +846,7 @@ end
 # `Lifted{Tuple{Function,Vararg},N,Any}` and the OpaqueClosure arg typeassert
 # would reject it (mirrors the generic struct overload below).
 @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
-    @isdefined(P) || return Any  # phantom free-TypeVar Tuple (see the `dual_type` guard above)
+    @isdefined(P) || return Lifted  # phantom free-TypeVar Tuple — broad `Lifted` slot, as the generic `lifted_type` guard below
     return if isconcretetype(P)
         Lifted{P,N,dual_type(Val(N), P)}
     else
