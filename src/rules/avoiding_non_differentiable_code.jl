@@ -100,24 +100,27 @@ end
     }
 end
 
-# specialized case for Builtin primitive Core._call_latest rrule for CoreLogging.handle_message kwargs call.
-@zero_derivative(
-    MinimalCtx,
-    Tuple{
-        typeof(Core._call_latest),
-        typeof(Core.kwcall),
-        NamedTuple,
-        typeof(CoreLogging.handle_message),
-        Any,
-        Base.CoreLogging.LogLevel,
-        String,
-        Module,
-        Symbol,
-        Symbol,
-        String,
-        Int64,
-    }
-)
+# On 1.12+, @invokelatest no longer expands to Core._call_latest, so this kwargs
+# variant is also dead code on 1.12+.
+@static if VERSION < v"1.12-"
+    @zero_derivative(
+        MinimalCtx,
+        Tuple{
+            typeof(Core._call_latest),
+            typeof(Core.kwcall),
+            NamedTuple,
+            typeof(CoreLogging.handle_message),
+            Any,
+            Base.CoreLogging.LogLevel,
+            String,
+            Module,
+            Symbol,
+            Symbol,
+            String,
+            Int64,
+        }
+    )
+end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_code})
     _x = Ref(5.0)
