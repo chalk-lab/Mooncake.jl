@@ -1,3 +1,8 @@
+struct _RefCaptureWrap{F}
+    f::F
+end
+(w::_RefCaptureWrap)(x) = w.f(x)
+Mooncake.tangent_type(::Type{<:_RefCaptureWrap}) = Mooncake.NoTangent
 function _compute_grad(rule, f, x::Vector{Float64}, x_fdata::Vector{Float64})
     fill!(x_fdata, 0.0)
     _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
@@ -223,5 +228,19 @@ end
         @test grad_y ≈ [6.0] rtol = 1e-10
         @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
         @test hvp_y ≈ [0.0] rtol = 1e-10
+    end
+
+    # Regression for https://github.com/chalk-lab/Mooncake.jl/issues/1193.
+    @testset "Ref-capture under NoTangent wrapper (issue #1193)" begin
+        f = _RefCaptureWrap(
+            let r = Ref(3.0);
+                x -> r[] * sum(abs2, x);
+            end,
+        )
+        x = [1.0, 2.0]
+        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0, 0.0], x)
+        @test hvp ≈ [6.0, 0.0]
+        _, _, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
+        @test H ≈ [6.0 0.0; 0.0 6.0]
     end
 end

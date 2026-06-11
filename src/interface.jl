@@ -2242,19 +2242,53 @@ true
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
-    # Pre-build the reverse-mode gradient cache so forward-over-reverse differentiates
-    # only through gradient evaluation, not through repeated rule construction.
+    # `prepare_gradient_cache` runs the inner rule once so captured `LazyDerivedRule`s
+    # get their `.rule` field initialised; otherwise `zero_tangent` over the captures
+    # would produce uninitialised `PossiblyUninitTangent`s that crash forward AD.
     grad_cache = prepare_gradient_cache(f, x...; config)
+
+    # `DerivedFoRRule` wraps a pre-built `Dual(rule, rule_tangent)` so forward AD reuses
+    # the rule's forward-mode-compiled dual callables instead of `zero_tangent`
+    # re-deriving them and leaking reverse-mode primitives (e.g. inlined `IdDict()`)
+    # into the forward IR. The second type parameter `D` discriminates derived
+    # (`D <: Dual`) from primitive (`D === Nothing`) rrules — primitive rrules have
+    # no MistyClosure IR and keep using `grad_cache`'s rule directly.
+    for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
+
     grad_f = if N == 1
-        y -> begin
-            val_and_grad = value_and_gradient!!(grad_cache, f, y)
-            (val_and_grad[1], val_and_grad[2][2])
+        if for_rule isa DerivedFoRRule{Nothing}
+            y -> begin
+                val_and_grad = value_and_gradient!!(grad_cache, f, y)
+                (val_and_grad[1], val_and_grad[2][2])
+            end
+        else
+            y -> begin
+                inner_rule = get_inner_rrule(for_rule)
+                t_f, t_y = grad_cache.tangents
+                t_f = set_to_zero!!(t_f)
+                t_y = set_to_zero!!(t_y)
+                val, grad = __value_and_gradient!!(
+                    inner_rule, CoDual(f, t_f), CoDual(y, t_y)
+                )
+                (val, grad[2])
+            end
         end
     else
-        function (ys...)
-            val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
-            # Drop the gradient w.r.t. f itself (always index 1); return only x-arg gradients.
-            (val_and_grad[1], Base.tail(val_and_grad[2]))
+        if for_rule isa DerivedFoRRule{Nothing}
+            (ys...) -> begin
+                val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
+                # Drop the gradient w.r.t. f itself (always index 1).
+                (val_and_grad[1], Base.tail(val_and_grad[2]))
+            end
+        else
+            (ys...) -> begin
+                inner_rule = get_inner_rrule(for_rule)
+                zeroed = tuple_map(set_to_zero!!, grad_cache.tangents)
+                coduals = tuple_map(CoDual, (f, ys...), zeroed)
+                val, grad = __value_and_gradient!!(inner_rule, coduals...)
+                # Drop the gradient w.r.t. f itself (always index 1).
+                (val, Base.tail(grad))
+            end
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config)
