@@ -144,6 +144,15 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
 
+        # integer / literal negative exponent at x=0: dv = ±Inf, so an *inactive* (zero-partial)
+        # lane must stay 0 via the guarded scale, not become 0*Inf = NaN. The active lane keeps
+        # the genuine singular Inf. (Regression for the unguarded `_pt_scale` on these paths.)
+        zneg = _d2(0.0, 1.0, 0.0)
+        @test isinf(Nfwd.ndual_partial(zneg^(-2), 1))      # active lane: genuine singularity
+        @test Nfwd.ndual_partial(zneg^(-2), 2) === 0.0     # inactive lane: zero, not NaN
+        @test isinf(Nfwd.ndual_partial(Base.literal_pow(^, zneg, Val(-2)), 1))
+        @test Nfwd.ndual_partial(Base.literal_pow(^, zneg, Val(-2)), 2) === 0.0
+
         z1 = _d2(0.0, 1.0, 0.0)
         p1 = _d2(1.0, 0.0, 0.0)
         @test Nfwd.ndual_partial(z1^p1, 1) === 1.0

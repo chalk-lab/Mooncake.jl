@@ -727,7 +727,10 @@ end
 @inline function Base.literal_pow(::typeof(^), a::NDual{T,N}, ::Val{n}) where {T,N,n}
     v = Base.literal_pow(^, a.value, Val(n))
     dv = ifelse(iszero(n), zero(T), T(n) * Base.literal_pow(^, a.value, Val(n - 1)))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    # Guarded scale: at a singularity (e.g. n<0, a.value==0 makes dv=±Inf) inactive
+    # lanes (zero partial) must stay zero rather than become 0*Inf=NaN, matching the
+    # real-exponent `^` path.
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, dv))
 end
 # Base defines literal_pow(^, ::AbstractFloat, ::Val{-1}) = inv(x) as a concrete
 # specialisation.  Since NDual <: AbstractFloat, this creates an ambiguity with the
@@ -739,7 +742,9 @@ end
 @inline function Base.:^(a::NDual{T,N}, n::Integer) where {T,N}
     v = a.value^n
     dv = ifelse(iszero(n), zero(T), T(n) * a.value^(n - 1))
-    return NDual{T,N}(v, _pt_scale(a.partials, dv))
+    # Guarded scale: keeps inactive (zero-partial) lanes at zero when dv is ±Inf at a
+    # singularity (n<0, a.value==0), matching the real-exponent `^` path.
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, dv))
 end
 
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
