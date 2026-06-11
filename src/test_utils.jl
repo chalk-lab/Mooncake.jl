@@ -640,14 +640,32 @@ function test_frule_correctness(
     @test any(isapprox_results)
 end
 
+# Positive allowlist for the per-lane correctness oracle: V shapes whose lane tangents lift back to
+# a valid width-1 seed and compare via `has_equal_data`. Everything else (struct-lift
+# `Mutable`/`ImmutableDual`, `Dict`, closure tangents, function wrappers, …) falls through to
+# `false` and is skipped — only the per-lane oracle, not the always-on invariant check.
+_chunk_lane_checkable(::Mooncake.Nfwd.NDual) = true
+_chunk_lane_checkable(::Mooncake.Nfwd.NDualArray) = true
+_chunk_lane_checkable(::Complex{<:Mooncake.Nfwd.NDual}) = true
+_chunk_lane_checkable(::NoDual) = true
+_chunk_lane_checkable(v::Tuple) = all(_chunk_lane_checkable, v)
+_chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
+_chunk_lane_checkable(@nospecialize(_v)) = false
+
 # ── Chunked forward-mode check (width N > 1) ─────────────────────────────────────────────────
 # `test_rule` builds only the width-1 frule, so chunked bugs are invisible to it: a width-N path
-# that crashes, NaN-poisons partials, corrupts an in-place primal, or lets an inner dual's `.value`
-# drift from the primal. `test_frule_chunked` builds the frule at widths > 1, seeds each argument
-# with N independent random lane directions, runs it, and checks the invariants that hold at any
-# width — the primal result is unchanged, and every inner dual's `.value` tracks the primal (to
-# float tolerance) with finite partials. Arguments with no width-N forward seed (e.g. raw `Ptr`s)
-# skip the chunked check.
+# that crashes, NaN-poisons partials, corrupts an in-place primal, lets an inner dual's `.value`
+# drift from the primal, or computes a wrong-but-finite partial in some lane (the classic
+# chunked-indexing bug: broadcasting lane 1 across all lanes). `test_frule_chunked` builds the
+# frule at widths > 1, seeds each argument with N independent random lane directions, runs it, and
+# checks: (1) the primal result is unchanged; (2) every inner dual's `.value` tracks the primal
+# (to float tolerance) with finite partials; (3) each lane's output partials match what the
+# width-1 frule produces when seeded with *that lane's* direction — the width-1 path being the one
+# `test_frule_correctness` finite-difference-validates, so it is the trusted per-lane oracle.
+#
+# No `try`/`catch`: a throw here is a real failure, not a skip. Only primitive rules reach this
+# (the caller gates on `is_primitive`); a primitive case with no width-N forward seed (a raw `Ptr`
+# arg, an unsupported pointer foreigncall) must opt out at the call site via `skip_chunked`.
 function test_frule_chunked(
     rng::AbstractRNG, x::Vararg{Any,P}; sig, widths=(2, 3)
 ) where {P}
@@ -656,20 +674,34 @@ function test_frule_chunked(
     # Fresh copy for the reference primal — `f` may mutate an argument in place.
     yp = map(_deepcopy, base)
     y_true = yp[1](yp[2:end]...)
+    interp = get_interpreter(ForwardMode)
     for N in widths
-        # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate
-        # it. The guard wraps only seeding/build/run, so a width-N gap (no frule, a raw
-        # `Ptr` arg, an unsupported Cluster-C pointer foreigncall) skips rather than fails —
-        # it is already covered width-1. The assertions stay *outside* the guard — a rule
-        # that runs but returns a wrong primal / NaN / drifted `.value` is a chunked bug.
-        y_ẏ = try
-            seeds = map(p -> randn_lifted(Val(N), rng, p), map(_deepcopy, base))
-            build_frule(get_interpreter(ForwardMode), sig; chunk_size=N)(seeds...)
-        catch
-            continue
+        # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
+        seeds = map(p -> randn_lifted(Val(N), rng, p), map(_deepcopy, base))
+        # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
+        # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
+        # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
+        # below still runs for every shape. (Only primitive rules reach this function — see caller.)
+        lane_checkable = all(s -> _chunk_lane_checkable(tangent(s)), seeds)
+        # Capture the per-lane width-1 seeds *before* the width-N run, which (for in-place rules)
+        # mutates the seed primals *and partials* in place — `_deepcopy` both so the captured lane
+        # directions survive the run. Each carries lane k's input direction.
+        lane_seeds = if lane_checkable
+            [map(s -> lift(_deepcopy(primal(s)), _deepcopy(tangent(s, k))), seeds) for k in 1:N]
+        else
+            nothing
         end
+        y_ẏ = build_frule(interp, sig; chunk_size=N)(seeds...)
         @test has_equal_data(y_true, primal(y_ẏ))
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
+        # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
+        # lane k's direction. Skipped (same allowlist) when the output is not a plain numeric dual.
+        if lane_checkable && _chunk_lane_checkable(tangent(y_ẏ))
+            for k in 1:N
+                y1 = build_frule(interp, sig; chunk_size=1)(lane_seeds[k]...)
+                @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1))
+            end
+        end
     end
 end
 
@@ -1382,8 +1414,11 @@ function test_rule(
             end
 
             # Chunked forward mode (width N > 1): width-1 testing above misses chunked bugs.
+            # Only for primitive rules: a derived rule's width-N execution is the composition of its
+            # primitives' (each checked on its own), and its inner OpaqueClosures / foreigncall paths
+            # carry width-N gaps that are interpreter-level and out of scope here.
             @testset "Chunked" begin
-                if test_fwd && !interface_only && !skip_chunked
+                if test_fwd && !interface_only && !skip_chunked && is_primitive
                     test_frule_chunked(rng, x...; sig)
                 end
             end
