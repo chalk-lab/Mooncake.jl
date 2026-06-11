@@ -6,6 +6,7 @@ Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterCitations = "daee34ce-89f3-4625-b898-19384cb65244"
 DocumenterInterLinks = "d12716ef-a0f6-4df4-a9f1-a5a34e75c656"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+LoweredCodeUtils = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [compat]
@@ -13,4 +14,6 @@ AllocCheck = "0.2.0"
 ChainRulesCore = "1"
 Documenter = "1"
 JET = "0.9, 0.10, 0.11"
+# TODO: remove cap once JET is compatible with LoweredCodeUtils 3.6 (aviatesk/JET.jl#823).
+LoweredCodeUtils = "<3.6"
 Mooncake = "0.5, 0.6"
