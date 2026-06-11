@@ -194,6 +194,19 @@ using Mooncake.Nfwd
         @test isnan(Nfwd.ndual_partial(as, 1))
     end
 
+    @testset "rem" begin
+        # rem rounds toward zero: ∂y = -trunc(x/y), NOT -floor (they differ for negative x/y).
+        rp = rem(_d2(7.5, 1.0, 0.0), _d2(2.3, 0.0, 1.0))
+        @test Nfwd.ndual_value(rp) ≈ rem(7.5, 2.3)
+        @test Nfwd.ndual_partial(rp, 1) === 1.0
+        @test Nfwd.ndual_partial(rp, 2) ≈ -trunc(7.5 / 2.3)
+
+        # Negative ratio: -trunc(-7/3)=2, whereas the old `floor`-based coeff gave 3 (regression).
+        rn = rem(_d2(-7.0, 1.0, 0.0), _d2(3.0, 0.0, 1.0))
+        @test Nfwd.ndual_value(rn) ≈ rem(-7.0, 3.0)
+        @test Nfwd.ndual_partial(rn, 2) ≈ 2.0
+    end
+
     @testset "math functions" begin
         # Test each f(Dual(v,1)) matches f'(v) analytically
         for (v, fns) in [

@@ -1353,9 +1353,6 @@ for _op in (:floor, :ceil, :round, :trunc)
     )
 end
 
-# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
-# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
-# enables functions like `modf` that call `rem(x, T(1))` internally.
 # Rounding ops have zero partial derivatives (piecewise constant). Define specific methods
 # so that functions like `modf` (which calls `trunc`) work through NDual on the CPU.
 for _op in (:floor, :ceil, :trunc)
@@ -1400,12 +1397,15 @@ for _op in (:div, :fld, :cld, :gcd, :lcm)
     )
 end
 
-# `rem(x, y)` has subgradient ∂x=1, ∂y=-floor(x/y) (a.e.). Defining the two-NDual
-# method here resolves the ambiguity with Base's `rem(x::T, y::T) where T<:Real` and
-# enables functions like `modf` that call `rem(x, T(1))` internally.
+# `rem(x, y) = x - trunc(x/y)*y` (rounds toward zero), so its subgradient is ∂x=1,
+# ∂y=-trunc(x/y) (a.e.) — `trunc`, not `floor` (they differ for negative x/y; `mod` uses `floor`).
+# Defining the two-NDual method here resolves the ambiguity with Base's `rem(x::T, y::T) where
+# T<:Real` and enables functions like `modf` that call `rem(x, T(1))` internally. Unlike `mod`,
+# `rem` keeps the finite one-sided subgradient at integer ratios rather than NaN: `modf` differentiates
+# only through the first argument (`y == 1` is constant), so the one-sided value is what it needs.
 @inline function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     pv, yv = ndual_value(x), ndual_value(y)
-    c = floor(pv / yv)
+    c = trunc(pv / yv)
     return NDual{T,N}(
         rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
     )
