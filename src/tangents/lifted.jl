@@ -1020,11 +1020,15 @@ end
     # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
     @inline lift(x::Memory, ẋ::Memory) = lift(x, ẋ, nothing)
     @inline function lift(x::Memory, ẋ::Memory, c::Union{Nothing,IdDict})
+        # Register before filling — see the `Array` lift: shares one V across aliased `x`.
+        c isa IdDict && haskey(c, x) && return c[x]::Lifted{typeof(x),1}
         v = similar(x, dual_type(Val(1), eltype(x)))
+        lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
+        c isa IdDict && (c[x] = lifted)
         @inbounds for i in eachindex(x)
             isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], c)))
         end
-        return Lifted{typeof(x),1,typeof(v)}(x, v)
+        return lifted
     end
     # General element-wise `MemoryRef` lift (non-float / nested / `Any` / `NoTangent`
     # element): lift the `.mem` via the Memory lift, then `memoryref` at the
@@ -1138,14 +1142,20 @@ end
 # The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
 @inline lift(x::Array{T,D}, ẋ::Array) where {T,D} = lift(x, ẋ, nothing)
 @inline function lift(x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}) where {T,D}
+    # Register in the cache *before* filling, so aliased occurrences of `x` share one V (matching
+    # the reverse `zero_tangent_internal(::Array)` aliasing invariant) and self-referential arrays
+    # terminate. Float / Complex-float element arrays don't reach here — their V aliases `ẋ`.
+    c isa IdDict && haskey(c, x) && return c[x]::Lifted{typeof(x),1}
     Vel = dual_type(Val(1), T)
     v = similar(x, Vel)
+    lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
+    c isa IdDict && (c[x] = lifted)
     @inbounds for i in eachindex(x)
         if isassigned(x, i)
             v[i] = tangent(lift(x[i], ẋ[i], c))
         end
     end
-    return Lifted{typeof(x),1,typeof(v)}(x, v)
+    return lifted
 end
 # V-shape passthrough — the test framework's tangent-shape arithmetic
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)

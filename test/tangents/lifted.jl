@@ -13,6 +13,10 @@ mutable struct LiftedTest_Aliased
     a::Vector{Float64}
     b::Vector{Float64}
 end
+mutable struct LiftedTest_AliasedNested
+    a::Vector{Vector{Float64}}
+    b::Vector{Vector{Float64}}
+end
 mutable struct LiftedTest_MaybeInit
     x::Float64
     y::Float64
@@ -996,6 +1000,16 @@ end
         let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).value.value
             @test nt.a === nt.b
             @test nt.a.partials[1] == [1.0, 0.0]
+        end
+
+        # Aliasing on the `lift` (reverse→forward) path, non-float-element array: the element-wise
+        # array lift must register the shared array in the cache so both fields get one V (matching
+        # reverse). Float-element fields above are safe via `ẋ`-aliasing; this exercises the gap.
+        let h = LiftedTest_AliasedNested([[1.0, 2.0], [3.0]], [[1.0, 2.0], [3.0]])
+            h.b = h.a
+            nt =
+                Mooncake.tangent(Mooncake.lift(h, Mooncake.randn_tangent(Xoshiro(1), h))).value
+            @test nt.a === nt.b
         end
 
         # Self-cyclic mutable struct: terminates; `.next` V is the node's own V.
