@@ -434,12 +434,14 @@ rule_type_nonreturning(e::Exception) = throw(e)
     end
 
     @testset "integration testing for invalid global ref errors" begin
-        @test_throws(
-            Mooncake.MooncakeRuleCompilationError,
-            Mooncake.build_rrule(
-                Tuple{typeof(Mooncake.TestResources.non_const_global_ref),Float64}
+        @static if VERSION > v"1.12-"
+            @test_throws(
+                Mooncake.MooncakeRuleCompilationError,
+                Mooncake.build_rrule(
+                    Tuple{typeof(Mooncake.TestResources.non_const_global_ref),Float64}
+                )
             )
-        )
+        end
     end
 
     # Tests designed to prevent accidentally re-introducing issues which we have fixed.
