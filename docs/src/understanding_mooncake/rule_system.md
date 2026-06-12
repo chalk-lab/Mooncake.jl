@@ -135,7 +135,7 @@ Observe that ``f`` behaves a little like a transition operator, in that the firs
 
 This model is good enough for the vast majority of functions.
 Unfortunately it isn't sufficient to describe a `function` when arguments alias each other (e.g. consider the way in which this particular model is wrong if `y` aliases `z`).
-Fortunately this is only a problem in a small fraction of all cases of aliasing, so we defer discussion of this until later on.
+Fortunately this is only a problem in a small fraction of all cases of aliasing, so we defer discussion of this until the [Aliasing Invariant](@ref) section below.
 
 Consider now how this approach can be used to model several additional Julia functions, and to obtain their derivatives and adjoints.
 
@@ -312,7 +312,7 @@ _**FData and RData**_
 While tangents are the things used to represent gradients and are what high-level interfaces will return, they are not what gets propagated forwards and backwards by rules during AD.
 
 Rather, during AD, Mooncake.jl makes a fundamental distinction between data which is identified by its address in memory (`Array`s, `mutable struct`s, etc), and data which is identified by its value (is-bits types such as `Float64`, `Int`, and `struct`s thereof).
-In particular, memory which is identified by its address gets assigned a unique location in memory in which its gradient lives (that this "unique gradient address" system is essential will become apparent when we discuss aliasing later on).
+In particular, memory which is identified by its address gets assigned a unique location in memory in which its gradient lives (that this "unique gradient address" system is essential will become apparent in the [Aliasing Invariant](@ref) section below).
 Conversely, the gradient w.r.t. a value type resides in another value type.
 
 The following docstring provides the best in-depth explanation.
@@ -330,6 +330,14 @@ _**CoDuals**_
 
 CoDuals are simply used to bundle together a primal and an associated fdata, depending upon context.
 Occassionally, they are used to pair together a primal and a tangent.
+
+### Aliasing Invariant
+
+The AD transform upholds the _aliasing invariant_: `primal(a) === primal(b)` implies `fdata(a) === fdata(b)`.
+In-place mutations accumulate into fdata buffers; two `CoDual`s with the same primal but different fdata buffers would diverge under mutation, producing wrong gradients.
+
+The invariant holds automatically in generated AD code.
+Custom rules that break it — constructing a `CoDual` with a primal already held by another live `CoDual` but a different fdata — must not allow the shared primal to be mutated in-place while both are live.
 
 _**A quick aside: Non-Differentiable Data**_
 

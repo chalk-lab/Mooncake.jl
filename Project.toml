@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.27"
+version = "0.5.31"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -74,11 +74,9 @@ GPUArraysCore = "0.1, 0.2"
 Graphs = "1"
 JET = "0.9, 0.10, 0.11"
 LinearAlgebra = "1"
-# Never imported; preventing force_latest_compatible_version from picking
-# JET 0.11 (Julia ≥ 1.12) on 1.11/LTS.
-Revise = "3"
-LogExpFunctions = "0.3"
+LogExpFunctions = "0.3, 1"
 Logging = "1"
+LoweredCodeUtils = "<3.6"
 LuxLib = "1.11"
 MLDataDevices = "1.10.0"
 MistyClosures = "2"
@@ -86,6 +84,9 @@ NNlib = "0.9"
 PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
+# Never imported; preventing force_latest_compatible_version from picking
+# JET 0.11 (Julia ≥ 1.12) on 1.11/LTS.
+Revise = "3"
 SLEEFPirates = "0.6.43"
 SpecialFunctions = "2"
 StableRNGs = "1"
@@ -102,6 +103,7 @@ DiffTests = "de460e47-3fe3-5279-bb4a-814414816d5d"
 DynamicExpressions = "a40a106e-89c9-4ca8-8020-a735e8728b6b"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+LoweredCodeUtils = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 StableRNGs = "860ef19b-820b-49d6-a774-d7a799459cd3"
@@ -116,6 +118,7 @@ test = [
     "DiffTests",
     "JET",
     "Logging",
+    "LoweredCodeUtils",
     "Pkg",
     "Revise",
     "StableRNGs",

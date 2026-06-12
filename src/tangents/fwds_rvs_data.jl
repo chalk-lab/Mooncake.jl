@@ -890,31 +890,32 @@ tangent type. This method must be equivalent to `tangent_type(_typeof(primal))`.
 """
 
 @foldable tangent_type(::Type{NoFData}, ::Type{NoRData}) = NoTangent
+@foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:NoRData} = NoTangent
+@foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:NoFData} = NoTangent
 @foldable tangent_type(::Type{NoFData}, ::Type{R}) where {R<:IEEEFloat} = R
 @foldable tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Array} = F
 
-# Union types. Supported cases:
-# - F=NoFData, R is a union of rdata-only branches (IEEEFloat or RData structs)
-# - F=Union{NoFData,FData}, R=Union{NoRData,RData} - both sides are unions (issue #1130)
-# - F is a union of fdata-only branches, R=NoRData
-# Each case requires explicit dispatch methods plus tiebreakers to resolve ambiguities.
+# Union types. Supported shapes:
+# - F=NoFData, R<:Union{NoRData, IEEEFloat or RData{...}}        (issue #1130)
+# - F<:Union{NoFData, FData}, R<:Union{NoRData, RData}            (both unions)
+# - F<:Union{NoFData, T} for fdata-only T (e.g. Array), R=NoRData
+# Each branch recurses by binary splitting on R.a/R.b or F.a/F.b, which handles
+# N-branch unions because Julia stores them as nested binary Unions.
 @foldable function tangent_type(
     ::Type{NoFData}, ::Type{R}
-) where {R<:Union{NoRData,Base.IEEEFloat,RData}}
-    # R==NoRData hits a more specific method above; Any is excluded by the constraint.
-    @assert R isa Union
+) where {R<:Union{NoRData,Base.IEEEFloat}}
+    @assert R isa Union  # R==NoRData hits a more specific method above; Any is excluded.
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
-# Tiebreaker: without this, method above (more specific on F) and method below (more
-# specific on R) are both ambiguous for tangent_type(NoFData, Union{NoRData,RData{...}}).
-# This method beats both: exact F and tighter R bound.
-# Note: Union{NoRData,RData{A},RData{B}} <: Union{NoRData,RData}, so N-branch unions
-# are handled correctly: Julia represents them as nested binary unions, and the recursive
-# splitting via R.a / R.b decompose them fully.
+# Covers Union{NoRData, RData{...}} (issue #1130). More specific than the F-union method
+# below on R, so dispatch lands here when F=NoFData and R<:Union{NoRData, RData}.
 @foldable function tangent_type(::Type{NoFData}, ::Type{R}) where {R<:Union{NoRData,RData}}
     @assert R isa Union
     Union{tangent_type(NoFData, R.a),tangent_type(NoFData, R.b)}
 end
+# Both F and R are unions. Arises for primals Union{Nothing, T} where T has both fdata
+# and rdata parts; pairing assumes that shape: NoFData ↔ NoRData (Nothing branch) and
+# FData ↔ RData (T branch).
 @foldable function tangent_type(
     ::Type{F}, ::Type{R}
 ) where {F<:Union{NoFData,FData},R<:Union{NoRData,RData}}
@@ -925,15 +926,14 @@ end
     Rb = R.a == NoRData ? R.b : R.a
     Union{tangent_type(Fa, Ra),tangent_type(Fb, Rb)}
 end
-# Tiebreaker: Method 3 (more specific on F) vs method below (more specific on R=NoRData).
-# No _validate_union needed: F<:Union{NoFData,FData} guarantees the non-NoFData branch is
-# FData, which by definition carries no rdata.
+# More specific than the generic F<:Union{NoFData, T} method below on F. _validate_union
+# is unnecessary: FData carries no rdata by construction.
 @foldable function tangent_type(::Type{F}, ::Type{NoRData}) where {F<:Union{NoFData,FData}}
     @assert F isa Union
     Union{tangent_type(F.a, NoRData),tangent_type(F.b, NoRData)}
 end
-# Handles Union{NoFData, T} where T is not FData (e.g. Array). Cases where T<:FData are
-# caught by the tiebreaker above. _validate_union guards against T carrying rdata.
+# Generic Union{NoFData, T} for non-FData T (e.g. Array). _validate_union rejects T
+# values that would silently carry rdata.
 @foldable function tangent_type(
     ::Type{F}, ::Type{NoRData}
 ) where {F<:Union{NoFData,T} where {T}}

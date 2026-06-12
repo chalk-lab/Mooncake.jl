@@ -48,45 +48,35 @@ end
             Xoshiro(123456), TestResources.P_adam_like_union; test_opt_flag=false
         )
         # https://github.com/chalk-lab/Mooncake.jl/issues/1130
-        # End-to-end tangent splitting for the original issue and the general mixed case.
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_lohi_container(); test_opt_flag=false
         )
         TestUtils.test_tangent_splitting(
             Xoshiro(123456), TestResources.make_P_mixed_container(); test_opt_flag=false
         )
-        # Direct tests for new tangent_type(F, R) methods.
-        # Method 1: NoFData + Union{NoRData, IEEEFloat}
+        # Direct dispatch checks for tangent_type(F, R) on union shapes.
+        # NoFData + Union{NoRData, IEEEFloat}
         @test tangent_type(NoFData, Union{NoRData,Float64}) == Union{NoTangent,Float64}
-        # Tiebreaker 1: NoFData + Union{NoRData, RData{...}}
+        # NoFData + Union{NoRData, RData{...}}  (issue #1130)
         @test tangent_type(
             NoFData, Union{NoRData,Mooncake.RData{@NamedTuple{lo::Float64,hi::Float64}}}
         ) == Union{NoTangent,Tangent{@NamedTuple{lo::Float64,hi::Float64}}}
-        # Method 3: both F and R are unions — round-trip via Union{Nothing, Mixed}
-        let P = Union{Nothing,TestResources.Mixed}
+        # Round-trip via Union{Nothing, T} for each remaining union shape.
+        for P in (
+            Union{Nothing,TestResources.Mixed},     # both F and R are unions
+            Union{Nothing,TestResources.VecOnly},   # F union, R = NoRData (FData branch)
+            Union{Nothing,Vector{Float64}},         # F union, R = NoRData (Array branch)
+        )
             @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
                 tangent_type(P)
         end
-        # Tiebreaker 2: Union{NoFData,FData} + NoRData — round-trip via Union{Nothing, VecOnly}
-        let P = Union{Nothing,TestResources.VecOnly}
-            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
-                tangent_type(P)
-        end
-        # General union method: Union{NoFData, Array} + NoRData (success path).
-        let P = Union{Nothing,Vector{Float64}}
-            @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
-                tangent_type(P)
-        end
-        # _validate_union: isprimitivetype path (Float64 is a primitive).
+        # _validate_union: primitive branch (Float64 is a primitive type).
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
-        # _validate_union: rdata_type != NoRData path (Tangent has rdata; not FData so
-        # tiebreaker 2 does not intercept).
+        # _validate_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
         @test_throws InvalidFDataException tangent_type(
             Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
         )
-        # N-branch rdata unions: Union{NoRData,RData{A},RData{B}} <: Union{NoRData,RData},
-        # so the tiebreaker dispatches. The R<:RData leaf guards against calling fields_type
-        # on the resulting sub-union, decomposing it recursively via binary union splitting.
+        # N-branch rdata union — Julia nests as binary unions, recursive splitting handles it.
         @test tangent_type(
             NoFData,
             Union{
@@ -101,8 +91,7 @@ end
             Tangent{@NamedTuple{x::Float64}},
             Tangent{@NamedTuple{y::Float32}},
         }
-        # N-branch fdata unions: symmetric case — Union{NoFData,FData{A},FData{B}} <: FData,
-        # so the F<:FData leaf guards against calling fields_type on the sub-union.
+        # N-branch fdata union — symmetric case for the F side.
         @test tangent_type(
             Union{
                 NoFData,

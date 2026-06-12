@@ -9,6 +9,37 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## `try`/`catch`/`finally` Blocks
+
+Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
+in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
+with a message explaining the cause. Forward mode does support these constructs.
+
+**The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
+For example:
+
+```julia
+# Does not work with Mooncake
+function safe_log(x)
+    try
+        return log(x)
+    catch e
+        return -Inf
+    end
+end
+
+# Works with Mooncake
+function safe_log(x)
+    x <= 0 && return -Inf
+    return log(x)
+end
+```
+
+If the `try`/`catch` block cannot be avoided (e.g. it lives inside a third-party library), the
+alternative is to provide a custom `rrule!!` for the function that contains the `try`/`catch`
+block, so that Mooncake never needs to differentiate through the block itself.
+See [Defining Rules](@ref) for guidance on writing custom rules.
+
 ## Mutation of Global Variables
 
 ```@meta
@@ -67,6 +98,66 @@ As you can see, the tangent is `0.0` rather than `6.0`.
 
 However, we view this as a pathological use of Julia's language features, and believe it is unlikely to cause trouble in practice.
 If you encounter a practical situation in which it is very important that this example work correctly, please open an issue.
+
+## Primitives and Overlays
+
+[`@mooncake_overlay`](@ref Mooncake.@mooncake_overlay) and [`@is_primitive`](@ref Mooncake.@is_primitive) both let you change what Mooncake sees when it differentiates a function, but they hook in at different layers and do not compose.
+`@mooncake_overlay` swaps in a replacement body Mooncake walks through; `@is_primitive` stops Mooncake walking and dispatches to a hand-written rule instead.
+Marking a signature as a primitive shadows any overlay reachable through it — the rule fires, the overlay does not, and Mooncake infers return types from the original method, not from the overlay.
+
+This causes two failure modes:
+
+1. **An overlay that changes the return type breaks the rule's return-type contract.**
+   Mooncake infers the return type from the original method, so a manual rule that returns a value of the overlaid type produces a `CoDual` that disagrees with that inferred type, triggering a runtime `TypeError`.
+   When the original and overlaid methods return the same type, the runtime check is trivially satisfied and the bug surfaces only as an incorrect gradient.
+
+2. **An overlay inside a primitive's body never runs.**
+   The rule replaces the body and runs the primal through ordinary Julia dispatch, which ignores overlays.
+   An overlay introduced to work around unsupported code reached from inside the primitive is silently inert — move it to a signature Mooncake still differentiates, or fold the workaround into the rule.
+
+The example below covers both cases.
+Case (1) overlays the primitive itself; case (2) overlays a helper called from the primitive's body.
+Each identity check asks whether Mooncake's inferred return type for the caller is `A` (the original) rather than `B` (what the overlay would produce):
+
+```jldoctest overlay-primitive-doctest
+julia> struct A end
+
+julia> struct B end
+
+julia> direct_primitive(::A) = A()
+direct_primitive (generic function with 1 method)
+
+julia> Mooncake.@mooncake_overlay direct_primitive(::A) = B()
+
+julia> Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(direct_primitive), A}
+
+julia> helper(::A) = A()
+helper (generic function with 1 method)
+
+julia> Mooncake.@mooncake_overlay helper(::A) = B()
+
+julia> indirect_primitive(x::A) = helper(x)
+indirect_primitive (generic function with 1 method)
+
+julia> Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(indirect_primitive), A}
+
+julia> caller_direct(x::A) = direct_primitive(x)
+caller_direct (generic function with 1 method)
+
+julia> caller_indirect(x::A) = indirect_primitive(x)
+caller_indirect (generic function with 1 method)
+
+julia> interp = Mooncake.MooncakeInterpreter(Mooncake.DefaultCtx, Mooncake.ReverseMode);
+
+julia> Base.code_ircode_by_type(Tuple{typeof(caller_direct), A}; interp)[1][2] === A
+true
+
+julia> Base.code_ircode_by_type(Tuple{typeof(caller_indirect), A}; interp)[1][2] === A
+true
+```
+
+Mooncake infers `A` for both callers, even though the overlays would produce a `B` — so any rule written against the overlay's return type fails the runtime check.
+Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
 
 ## Differentiating CUDA Kernels
 

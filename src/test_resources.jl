@@ -184,10 +184,9 @@ struct P_adam_like
 end
 const P_adam_like_union = Union{Nothing,P_adam_like}
 
-# https://github.com/chalk-lab/Mooncake.jl/issues/1130
-# LoHiContainer: Union{Nothing,LoHi} where LoHi has only Float64 fields — both branches
-# collapse to NoFData but rdata is Union{NoRData,RData{...}}, hitting the fix in
-# tangent_type(NoFData, R) where R<:Union{NoRData,Base.IEEEFloat,RData}.
+# Test resources for issue #1130: union fields whose tangents force F=NoFData with
+# R<:Union{NoRData, RData{...}} (LoHi), or both F and R unions (Mixed), or
+# F<:Union{NoFData, FData} with R=NoRData (VecOnly).
 struct LoHi
     lo::Float64
     hi::Float64
@@ -196,9 +195,6 @@ struct LoHiContainer
     lohi::Union{Nothing,LoHi}
 end
 make_P_lohi_container() = LoHiContainer(LoHi(1.0, 2.0))
-# MixedContainer: Union{Nothing,Mixed} where Mixed has both Float64 and Vector fields —
-# fdata is Union{NoFData,FData{...}} and rdata is Union{NoRData,RData{...}} simultaneously,
-# hitting tangent_type(F, R) where F<:Union{NoFData,FData}, R<:Union{NoRData,RData}.
 struct Mixed
     x::Float64
     v::Vector{Float64}
@@ -207,8 +203,6 @@ struct MixedContainer
     val::Union{Nothing,Mixed}
 end
 make_P_mixed_container() = MixedContainer(Mixed(1.0, [2.0, 3.0]))
-# VecOnly: Union{Nothing,VecOnly} where VecOnly has only Vector fields — used to exercise
-# tangent_type(F, NoRData) where F<:Union{NoFData,FData}.
 struct VecOnly
     v::Vector{Float64}
 end

@@ -477,15 +477,21 @@ end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_frule_correctness(
-    rng::AbstractRNG, x_ẋ...; frule, unsafe_perturb::Bool, rtol=1e-3, atol=1e-3
+    rng::AbstractRNG,
+    x_ẋ...;
+    frule,
+    unsafe_perturb::Bool,
+    rtol=1e-3,
+    atol=1e-3,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
-    @nospecialize rng x_ẋ
+    @nospecialize rng x_ẋ
 
-    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
+    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
     # Run original function on deep-copies of inputs.
-    x = map(primal, x_ẋ)
-    ẋ = map(tangent, x_ẋ)
+    x = map(primal, x_ẋ)
+    ẋ = map(normalize_tangent ∘ tangent, x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -493,6 +499,15 @@ function test_frule_correctness(
     # of different step sizes. We'll just require that one of them ends up being close to
     # what AD gives.
     ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+    if max_fd_step !== nothing
+        ε_list = filter(≤(max_fd_step), ε_list)
+        length(ε_list) ≥ 2 || throw(
+            ArgumentError(
+                "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
+                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+            ),
+        )
+    end
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -567,6 +582,7 @@ function test_rrule_correctness(
     output_tangent=nothing,
     rtol=1e-3,
     atol=1e-3,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
     @nospecialize rng x_x̄
 
@@ -587,6 +603,15 @@ function test_rrule_correctness(
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
     ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
+    if max_fd_step !== nothing
+        ε_list = filter(≤(max_fd_step), ε_list)
+        length(ε_list) ≥ 2 || throw(
+            ArgumentError(
+                "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
+                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+            ),
+        )
+    end
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -665,6 +690,84 @@ _deepcopy(x) = deepcopy(x)
 _deepcopy(x::Module) = x
 
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
+
+function test_frule_reuse(x_ẋ...; frule)
+    @nospecialize x_ẋ
+    x_ẋ_a = map(_deepcopy, x_ẋ)
+    x_ẋ_b = map(_deepcopy, x_ẋ)
+
+    # Snapshot every observable at the same point in each cycle. Without snapshots,
+    # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
+    # only one side would compare different temporal points if a rule mutates inputs.
+    # Skip the deepcopy when tangent is NoTangent: such primals (e.g. Module-containing
+    # types like Core.TypeName) can't safely be deepcopied and can't be mutated either.
+    y_ẏ_a = frule(x_ẋ_a...)
+    y_primal_a = tangent(y_ẏ_a) isa NoTangent ? primal(y_ẏ_a) : _deepcopy(primal(y_ẏ_a))
+    ẏ_a = _deepcopy(tangent(y_ẏ_a))
+    ẋ_a = map(_deepcopy ∘ tangent, x_ẋ_a)
+
+    y_ẏ_b = frule(x_ẋ_b...)
+    y_primal_b = tangent(y_ẏ_b) isa NoTangent ? primal(y_ẏ_b) : _deepcopy(primal(y_ẏ_b))
+    ẏ_b = _deepcopy(tangent(y_ẏ_b))
+    ẋ_b = map(_deepcopy ∘ tangent, x_ẋ_b)
+
+    @test has_equal_data(y_primal_a, y_primal_b)
+    @test has_equal_data(ẏ_a, ẏ_b)
+    @test all(map(has_equal_data, ẋ_a, ẋ_b))
+end
+
+function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=nothing)
+    @nospecialize rng x_x̄
+    x = map(primal, x_x̄)
+    x̄_zero_a = map(zero_tangent, x)
+    x_x̄_a = map(
+        (x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f),
+        x,
+        map(Mooncake.fdata, x̄_zero_a),
+    )
+    x̄_zero_b = map(zero_tangent, x)
+    x_x̄_b = map(
+        (x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f),
+        x,
+        map(Mooncake.fdata, x̄_zero_b),
+    )
+
+    # Snapshot every observable at the same point in each cycle: post-forward for
+    # output primal/fdata, post-pullback for inputs and pullback returns. Without
+    # snapshots, aliased mutable buffers can alias-pass; snapshotting only one side
+    # would compare different temporal points since the pullback restores in-place
+    # mutations on the way back.
+    # Skip the deepcopy when tangent (fdata) is NoFData: such primals (e.g. Module-
+    # containing types like Core.TypeName) can't safely be deepcopied and the pullback
+    # has no fdata path through which it could mutate them.
+    y_ȳ_a, pb_a!! = rrule(x_x̄_a...)
+    y_primal_a = tangent(y_ȳ_a) isa NoFData ? primal(y_ȳ_a) : _deepcopy(primal(y_ȳ_a))
+    y_fdata_a = _deepcopy(tangent(y_ȳ_a))
+    ȳ_delta = if isnothing(output_tangent)
+        randn_tangent(rng, primal(y_ȳ_a))
+    else
+        output_tangent
+    end
+    ȳ_a = increment!!(
+        set_to_zero!!(zero_tangent(primal(y_ȳ_a), tangent(y_ȳ_a))), _deepcopy(ȳ_delta)
+    )
+    x̄_rvs_a = _deepcopy(pb_a!!(Mooncake.rdata(ȳ_a)))
+    x̄_fwds_a = map(_deepcopy ∘ Mooncake.fdata, x̄_zero_a)
+
+    y_ȳ_b, pb_b!! = rrule(x_x̄_b...)
+    y_primal_b = tangent(y_ȳ_b) isa NoFData ? primal(y_ȳ_b) : _deepcopy(primal(y_ȳ_b))
+    y_fdata_b = _deepcopy(tangent(y_ȳ_b))
+    ȳ_b = increment!!(
+        set_to_zero!!(zero_tangent(primal(y_ȳ_b), tangent(y_ȳ_b))), _deepcopy(ȳ_delta)
+    )
+    x̄_rvs_b = _deepcopy(pb_b!!(Mooncake.rdata(ȳ_b)))
+    x̄_fwds_b = map(_deepcopy ∘ Mooncake.fdata, x̄_zero_b)
+
+    @test has_equal_data(y_primal_a, y_primal_b)
+    @test has_equal_data(y_fdata_a, y_fdata_b)
+    @test has_equal_data(x̄_rvs_a, x̄_rvs_b)
+    @test all(map(has_equal_data, x̄_fwds_a, x̄_fwds_b))
+end
 
 function test_frule_interface(x_ẋ...; frule)
     @nospecialize x_ẋ
@@ -908,7 +1011,10 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         print_results=true,
         output_tangent=nothing,
         atol=1e-3,
-        rtol=1e-3
+        rtol=1e-3,
+        frule=nothing,
+        rrule=nothing,
+        max_fd_step::Union{Nothing,Real}=nothing,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -959,9 +1065,18 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     Should usually be left `false` -- consult the docstring for `_add_to_primal` for more
     info on when you might wish to set it to `true`.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
-    the correctnes of reverse rules.
+    the correctness of reverse rules.
 - `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
 - `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
+- `frule=nothing`: if provided, use this callable as the forward rule instead of building one
+    from the interpreter. Useful for testing a hand-written `frule!!` directly.
+- `rrule=nothing`: if provided, use this callable as the reverse rule instead of building one
+    from the interpreter. Useful for testing a hand-written `rrule!!` directly.
+- `max_fd_step::Union{Nothing,Real}=nothing`: cap on finite-difference step sizes; only
+    `ε ≤ max_fd_step` are used. Each argument's tangent is unit-normalised independently,
+    so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
+    domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
+    the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -978,6 +1093,7 @@ function test_rule(
     rtol=1e-3,
     frule=nothing,
     rrule=nothing,
+    max_fd_step::Union{Nothing,Real}=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1028,6 +1144,18 @@ function test_rule(
     redirector = print_results ? ((f, x) -> f()) : redirect_stdout
     ts = redirector(devnull) do
         @testset "$(typeof(x))" begin
+            # Verify rules give identical results on a second call,
+            # i.e. the rule does not corrupt its internal state across calls.
+            @testset "Reuse" begin
+                if test_fwd && !interface_only
+                    test_frule_reuse(x_ẋ...; frule)
+                end
+                if test_rvs && !interface_only
+                    # Isolated rng so Reuse doesn't perturb Correctness's rng state.
+                    test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
+                end
+            end
+
             # Test that the interface is basically satisfied (checks types / memory addresses).
             @testset "Interface (1)" begin
                 test_fwd && test_frule_interface(x_ẋ...; frule)
@@ -1037,11 +1165,20 @@ function test_rule(
             # Test that answers are numerically correct / consistent.
             @testset "Correctness" begin
                 if test_fwd && !interface_only
-                    test_frule_correctness(rng, x_ẋ...; frule, unsafe_perturb, atol, rtol)
+                    test_frule_correctness(
+                        rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
+                    )
                 end
                 if test_rvs && !interface_only
                     test_rrule_correctness(
-                        rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol
+                        rng,
+                        x_x̄...;
+                        rrule,
+                        unsafe_perturb,
+                        output_tangent,
+                        atol,
+                        rtol,
+                        max_fd_step,
                     )
                 end
             end
