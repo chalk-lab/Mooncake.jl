@@ -2134,8 +2134,10 @@ end
     return primal(output), tangent(output)
 end
 
-# `fwd_cache` is the derivative cache for `grad_f`. The compiled inner rrule is cached
-# across `value_and_hvp!!` calls via a `LazyFoRRule` captured inside `fwd_cache`'s frule.
+# `fwd_cache` is the derivative cache for `grad_f`. For non-primitive `f`, the compiled
+# inner rrule lives in the `DerivedFoRRule` captured by `grad_f` (built once at prep);
+# `get_inner_rrule`'s frule serves its `Dual` to the forward pass on every
+# `value_and_hvp!!` call.
 """
     HVPCache
 
@@ -2242,19 +2244,25 @@ true
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
-    # `prepare_gradient_cache` runs the inner rule once so captured `LazyDerivedRule`s
-    # get their `.rule` field initialised; otherwise `zero_tangent` over the captures
-    # would produce uninitialised `PossiblyUninitTangent`s that crash forward AD.
+    # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
+    # buffers reused by `grad_f`, and supplies `output_spec`. The primitive
+    # (`DerivedFoRRule{Nothing}`) branches below also evaluate gradients through
+    # `grad_cache.rule`.
     grad_cache = prepare_gradient_cache(f, x...; config)
 
     # `DerivedFoRRule` wraps a pre-built `Dual(rule, rule_tangent)` so forward AD reuses
     # the rule's forward-mode-compiled dual callables instead of `zero_tangent`
     # re-deriving them and leaking reverse-mode primitives (e.g. inlined `IdDict()`)
-    # into the forward IR. The second type parameter `D` discriminates derived
+    # into the forward IR. The type parameter `D` discriminates derived
     # (`D <: Dual`) from primitive (`D === Nothing`) rrules — primitive rrules have
     # no MistyClosure IR and keep using `grad_cache`'s rule directly.
     for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
 
+    # The derived branches capture only these buffers: capturing `grad_cache` itself
+    # would make `zero_tangent(grad_f)` traverse `grad_cache.rule`'s MistyClosures and
+    # eagerly build dual callables over reverse-mode-optimised IR that the derived path
+    # never invokes.
+    tangents = grad_cache.tangents
     grad_f = if N == 1
         if for_rule isa DerivedFoRRule{Nothing}
             y -> begin
@@ -2264,7 +2272,7 @@ true
         else
             y -> begin
                 inner_rule = get_inner_rrule(for_rule)
-                t_f, t_y = grad_cache.tangents
+                t_f, t_y = tangents
                 t_f = set_to_zero!!(t_f)
                 t_y = set_to_zero!!(t_y)
                 val, grad = __value_and_gradient!!(
@@ -2283,7 +2291,7 @@ true
         else
             (ys...) -> begin
                 inner_rule = get_inner_rrule(for_rule)
-                zeroed = tuple_map(set_to_zero!!, grad_cache.tangents)
+                zeroed = tuple_map(set_to_zero!!, tangents)
                 coduals = tuple_map(CoDual, (f, ys...), zeroed)
                 val, grad = __value_and_gradient!!(inner_rule, coduals...)
                 # Drop the gradient w.r.t. f itself (always index 1).

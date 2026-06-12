@@ -200,8 +200,9 @@ end
     end
 
     @testset "cache reuse across multiple HVP calls" begin
-        # The LazyFoRRule should compile the inner rule only once; verify the cache
-        # produces consistent results when called repeatedly with different directions.
+        # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying;
+        # verify the cache produces consistent results when called repeatedly with
+        # different directions.
         f(x) = sum(x .* x)  # H = 2I
         x = [1.0, 2.0, 3.0]
         cache = prepare_hvp_cache(f, x)
