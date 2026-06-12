@@ -169,7 +169,7 @@ NOTE: you should only make use of this function if you cannot make use of the
 You make use of this functionality by writing a method of `Mooncake.frule!!`, and
 passing all of its arguments (including the function itself) to this function. For example:
 ```jldoctest; setup = :(using Mooncake: NoRData)
-julia> import Mooncake: zero_derivative, DefaultCtx, zero_dual, frule!!, Lifted
+julia> import Mooncake: zero_derivative, zero_lifted, frule!!, Lifted
 
 julia> foo(x::Vararg{Int}) = 5
 foo (generic function with 1 method)
@@ -177,7 +177,7 @@ foo (generic function with 1 method)
 julia> frule!!(f::Lifted{typeof(foo)}, x::Vararg{Lifted{Int}}) = zero_derivative(f, x...);
 
 julia> frule!!(zero_lifted(Val(1), foo), zero_lifted(Val(1), 3), zero_lifted(Val(1), 2))
-Mooncake.Lifted{Int64, 1, NoDual}(5, NoDual())
+Lifted{Int64, 1, Mooncake.NoDual}(5, Mooncake.NoDual())
 ```
 """
 @inline function zero_derivative(f::Lifted{F,W}, x::Vararg{Lifted,N}) where {F,W,N}
@@ -214,7 +214,7 @@ julia> is_primitive(DefaultCtx, ReverseMode, Tuple{typeof(foo), Any}, Base.get_w
 true
 
 julia> frule!!(zero_dual(foo), zero_dual(3.0))
-Mooncake.Lifted{Int64, 1, NoDual}(5, NoDual())
+Mooncake.Lifted{Int64, 1, Mooncake.NoDual}(5, Mooncake.NoDual())
 
 julia> rrule!!(zero_fcodual(foo), zero_fcodual(3.0))[2](NoRData())
 (NoRData(), 0.0)

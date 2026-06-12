@@ -158,14 +158,14 @@ function verify_args(r::DerivedFRule{sig}, x) where {sig}
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 
+@inline _lifted_width(::Lifted{P,N}) where {P,N} = N
+
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
 If isva and nargs=2, then inputs `(lift(5.0, 0.0), lift(4.0, 0.0), lift(3.0, 0.0))`
-are transformed into `(lift(5.0, 0.0), lift((5.0, 4.0), (0.0, 0.0)))` (each a `Lifted`).
+are transformed into `(lift(5.0, 0.0), lift((4.0, 3.0), (0.0, 0.0)))` (each a `Lifted`).
 """
-@inline _lifted_width(::Lifted{P,N}) where {P,N} = N
-
 function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     isva || return args
     # The grouped vararg slot must carry the same chunk width as the incoming slots

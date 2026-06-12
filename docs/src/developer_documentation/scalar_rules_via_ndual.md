@@ -14,7 +14,7 @@ If a primitive is fundamentally "a few scalar inputs in, a few scalar outputs ou
 In this setup:
 
 - `src/nfwd/Nfwd.jl` owns the scalar derivative semantics, and
-- `src/rules/rules_via_nfwd.jl` holds the primitive reverse-mode core that lifts those
+- `src/rules/rules_via_nfwd.jl` holds the thin primitive wrappers that lift those
   semantics into Mooncake's `Lifted` / `CoDual` interface, and decides which primitive
   signatures should use that path.
 
@@ -57,34 +57,33 @@ function frule!!(
     return Lifted{P,N}(cospi(primal(x)), cospi(tangent(x)))
 end
 
-function rrule!!(f::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    return _nfwd_primitive_rrule_call(Val(1), f, x)
+function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
+    yd = cospi(NDual{P,1}(primal(x), (one(P),)))
+    cospi_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
+    return zero_fcodual(_nfwd_out_value(yd)), cospi_pb!!
 end
 ```
 
 The real registrations live in `src/rules/rules_via_nfwd.jl`.
 
-Here `Val(1)` means "run the shared `nfwd` path with chunk size 1".
-In other words, this primitive wrapper asks `nfwd` to propagate one tangent direction at a time through the `NDual` implementation of `cospi`.
+The forward rule simply runs the primal on the inner `NDual` — the input slot already
+carries the `N` seeded tangent lanes, so the `NDual` overload propagates all of them in
+one evaluation.
 
-More generally, `Val(N)` is how these helpers receive the chunk size as a compile-time constant.
-Use:
+The reverse rule mirrors it: seed one identity lane per scalar input (one input here, so
+a width-1 `NDual` with partial `one(P)`; multi-input rules use `_nfwd_seed_inputs`, which
+puts input `i` on lane `i`), run the primal once, and capture the result `yd` — an
+`isbits` value whose `.partials` hold the full (tiny, fixed-arity) Jacobian. The pullback
+then just contracts the output cotangent against those partials (`_nfwd_input_grads`)
+and `_nfwd_out_value` strips the primal result out of `yd`. There is no separate reverse
+engine: both modes run the same `NDual` overload.
 
-- `Val(1)` for the usual scalar primitive wrappers in `rules_via_nfwd.jl`,
-- `Val(N)` with `N > 1` when you are deliberately calling the lower-level `nfwd` machinery in chunked mode.
-
-The key point is that `N` is not an arity marker here.
-It is the number of tangent lanes carried by the `NDual` evaluation.
-
-`_nfwd_primitive_rrule_call` (defined in `src/rules/rules_via_nfwd.jl`) is an internal
-helper for primitive wrappers, not a general public rule interface. It expects a stateless
-callable tangent, i.e. `NoTangent` or `NoFData`.
-More generally, `nfwd` only supports scalar leaves it can lift to `NDual` directly, and
-arrays or tuples only when their element types and tangent layouts are supported by the
-same lift/extract path.
+`nfwd` only supports scalar leaves it can lift to `NDual` directly, so this pattern fits
+primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tuples of
+them, e.g. `sincos`).
 
 The important part is that the Mooncake-level rule does not re-encode the derivative.
-It just routes the primitive through the shared `nfwd` path.
+It just routes the primitive through the shared `NDual` overload.
 
 ## Why This Is Useful
 

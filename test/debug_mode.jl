@@ -73,6 +73,21 @@
             ) isa Lifted
         end
 
+        # A concrete-primal slot whose V is not the canonical dual_type must be caught;
+        # Ptr primals are exempt (bitcast chains legitimately re-type per-lane pointers).
+        @testset "V-coherence check" begin
+            bad = Lifted{Float64,1,Mooncake.NoDual}(1.0, Mooncake.NoDual())
+            @test_throws ErrorException Mooncake.verify_v_coherence(bad)
+            @test Mooncake.verify_v_coherence(Mooncake.lift(3.14, 1.0)) === nothing
+            xv = [1.0]
+            GC.@preserve xv begin
+                ptr_slot = Lifted{Ptr{Float64},1}(
+                    pointer(xv), (Ptr{Tuple{Float64}}(UInt(pointer(xv))),)
+                )
+                @test Mooncake.verify_v_coherence(ptr_slot) === nothing
+            end
+        end
+
         @testset "integration with test_rule" begin
             # Test basic case - test_rule expects primal functions, not Duals
             Mooncake.TestUtils.test_rule(

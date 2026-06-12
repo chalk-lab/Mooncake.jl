@@ -2,15 +2,15 @@
     DebugFRule(rule)
 
 Construct a callable equivalent to `rule` but with additional type checking for forward-mode
-AD. Checks:
-- Each `Lifted` argument has V matching `dual_type(Val(N), typeof(primal))`
-- The returned `Lifted` has a correctly-typed V (verified at construction)
+AD. Checks that every argument and the returned value is a `Lifted`, and that each slot
+with a concrete primal type carries exactly the canonical `dual_type(Val(N), P)` V.
+`Ptr` primals are exempt: `bitcast`/`unsafe_convert` chains legitimately re-type
+per-lane pointer Vs.
 
 Forward-mode counterpart to [`DebugRRule`](@ref).
 
 *Note:* Debug mode significantly slows execution (10-100x) and should only be used for
 diagnosing problems, not production runs.
-```
 """
 struct DebugFRule{Trule}
     rule::Trule
@@ -33,21 +33,30 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
-    try
-        for _x in x
-            _x isa Lifted || error("Expected Lifted, got $(typeof(_x))")
-        end
-    catch e
-        error("Error in inputs to rule with input types $(_typeof(x))")
+    for _x in x
+        _x isa Lifted ||
+            error("Expected Lifted, got $(typeof(_x)); input types $(_typeof(x))")
+        verify_v_coherence(_x)
     end
 end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
-    try
-        y isa Lifted || error("frule!! must return a Lifted, got $(typeof(y))")
-    catch e
-        error("Error in outputs of rule with input types $(_typeof(x))")
-    end
+    y isa Lifted ||
+        error("frule!! must return a Lifted, got $(typeof(y)); input types $(_typeof(x))")
+    return verify_v_coherence(y)
+end
+
+# A concrete-primal slot must carry exactly the canonical V. `Ptr` primals are exempt:
+# `bitcast`/`unsafe_convert` chains legitimately re-type per-lane pointer Vs (see the
+# `pointerref` rules).
+@noinline function verify_v_coherence(x::Lifted{P,N,V}) where {P,N,V}
+    (isconcretetype(P) && !(P <: Ptr)) || return nothing
+    Vexp = dual_type(Val(N), P)
+    V === Vexp || error(
+        "Lifted slot with primal type $P carries a V of type $V, but the canonical " *
+        "forward representation is dual_type(Val($N), $P) === $Vexp.",
+    )
+    return nothing
 end
 
 """

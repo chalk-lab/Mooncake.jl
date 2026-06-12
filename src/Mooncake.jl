@@ -159,7 +159,7 @@ include("stack.jl")
 
 # Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
 # seed factories) before the interpreter — `interpreter/forward_mode.jl`
-# now dispatches on `Lifted{P, N, V}` (any chunk width N) per the Final-task cutover.
+# dispatches on `Lifted{P, N, V}` (any chunk width N).
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: NDual, NDualArray, NDualRef, NDualEltype, _scalar_ndual, _nfwd_dual_partial
 @static if VERSION >= v"1.11-rc4"

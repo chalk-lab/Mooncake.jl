@@ -1024,7 +1024,7 @@ end
 struct FieldUndefined end
 
 """
-    _dot(t::T, s::T)::Float64 where {T}
+    _dot(t, s)::Float64
 
 Required for testing.
 Should be defined for all standard tangent types.
@@ -1035,7 +1035,7 @@ Always available because all tangent types correspond to finite-dimensional vect
 _dot(t, s) = _dot_internal(IdDict{Any,Any}(), t, s)::Float64
 
 """
-    _dot_internal(c::MaybeCache, t::T, s::T) where {T}
+    _dot_internal(c::MaybeCache, t, s)
 
 Implementation for [`_dot`](@ref). Use `c` to handle circular references and aliasing.
 If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular references

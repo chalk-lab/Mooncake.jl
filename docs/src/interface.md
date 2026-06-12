@@ -76,7 +76,10 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 Passing `Config(chunk_size=2)` caps the forward chunk width `W`: the cache builds a native
 width-`W` `frule!!` that evaluates `W` directional derivatives per pass, and the gradient
 sweep runs `ceil(dof / W)` passes. Leaving `chunk_size=nothing` keeps Mooncake's default
-heuristic (`min(dof, 8)`). Cache construction stays passive (it transforms IR but does not
+heuristic (`min(dof, 8)`). Chunking only applies to packable inputs — a non-differentiable
+`f` whose arguments are all `IEEEFloat` scalars or arrays; any other input shape (structs,
+tuples, complex element types, a differentiable `f`, …) is pinned to width 1 regardless of
+`chunk_size`. Cache construction stays passive (it transforms IR but does not
 run the function). `show(cache)` / `repr(cache)` report the resolved `chunk_size` and
 whether a width-`W` chunk rule was built (`chunk=true` once `dof > 1`).
 
