@@ -112,7 +112,7 @@ end
 # per-lane tangent arrays, each canonicalised to the primal's wrapper. This mirrors the reverse
 # `arrayify` wrapper methods, applied across the parallel per-lane partials: no copy — BLAS/LAPACK run on the
 # (possibly strided) views directly, and in-place writes flow back through the view into the
-# parent's partials. `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method.
+# parent's partials.
 function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
     A = primal(x)
     return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
@@ -367,7 +367,8 @@ function frule!!(
         @inbounds for i in eachindex(Xv)
             s += real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
         end
-        s / (2 * y)
+        # Removable singularity at the zero vector: `s == 0` there, so `s / (2y)` is `0/0`.
+        iszero(s) ? zero(R) : s / (2 * y)
     end
     return Lifted{R,Nw}(y, _scalar_ndual(y, dy_lanes))
 end

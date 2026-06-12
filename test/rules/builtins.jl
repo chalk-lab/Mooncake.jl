@@ -148,6 +148,23 @@ end
     val_a, grad_a = value_and_gradient!!(cache_a, f_atomic_pointerset, 3.0)
     @test val_a ≈ 6.0
     @test grad_a[2] ≈ 2.0
+
+    # Regression: a differentiable element behind an element-wise (incoherent) per-lane V
+    # must hit the loud guard, mirroring pointerset, not a raw MethodError. The `let` keeps
+    # these names out of the testset scope: a bare `p` here would be captured by the
+    # `p = Ref(...)` assignments in the test functions above, turning them into closures.
+    let xv = [1.0]
+        GC.@preserve xv begin
+            ptr = pointer(xv)
+            pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
+            @test_throws ArgumentError Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), Mooncake.IntrinsicsWrappers.atomic_pointerset),
+                pslot,
+                Mooncake.zero_lifted(Val(1), 2.0),
+                Mooncake.zero_lifted(Val(1), :monotonic),
+            )
+        end
+    end
 end
 
 @testset "NaN handling in builtins rrules" begin

@@ -207,15 +207,11 @@ end
 function frule!!(
     ::Lifted{typeof(Base.FastMath.pow_fast),N}, x::Lifted{P,N,NDual{P,N}}, n::Lifted{I,N}
 ) where {N,P<:IEEEFloat,I<:Integer}
-    _x = primal(x)
-    _n = primal(n)
-    y = Base.FastMath.pow_fast(_x, _n)
-    # `Nfwd._nfwd_pow_grad_x` returns a scalar `P`; scaling NDual's partials
-    # by it and explicitly setting V.value to `y` preserves the invariant
-    # (a naive `grad * tangent(x)` would scale `.value` to `grad * x_p`, not `y`).
-    grad = Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y))
-    new_partials = Nfwd._pt_scale(tangent(x).partials, grad)
-    return Lifted{P,N}(y, NDual{P,N}(y, new_partials))
+    # The `NDual` overload sets `.value` to the primal result and scales the partials with
+    # `_pt_guarded_scale`, so a zero (inactive) lane stays zero even where the gradient is
+    # `±Inf` (e.g. `x == 0` with a negative exponent).
+    dy = Base.FastMath.pow_fast(tangent(x), primal(n))
+    return Lifted{P,N}(dy.value, dy)
 end
 function rrule!!(
     ::CoDual{typeof(Base.FastMath.pow_fast)}, x::CoDual{P}, n::CoDual{I}

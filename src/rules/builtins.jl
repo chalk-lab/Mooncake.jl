@@ -316,6 +316,24 @@ function frule!!(
     atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
+# Element-wise per-lane V (`NTuple{Nw,Ptr{S}}` with `S !== Ptr{T}`): see the matching
+# `pointerset` guard — the array-of-pointers store is unsupported, so fail loudly for a
+# differentiable element rather than raise a raw `MethodError`.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted,
+    order::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "atomic_pointerset into a differentiable `Ptr{$T}` with an element-wise " *
+            "array-of-duals per-lane V; the array-of-pointers store is unsupported.",
+        ),
+    )
+    atomic_pointerset(primal(p), primal(x), primal(order))
+    return p
+end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
