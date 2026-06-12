@@ -1553,6 +1553,25 @@ function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
         run_rule_test_cases(rng_ctor, v, m, false)
         run_rule_test_cases(rng_ctor, v, m, true)
     end
+    run_throwing_rule_test_cases(v)
+    return nothing
+end
+
+# Guard cases registered via `Mooncake.throwing_rule_test_cases`: each rule invocation must
+# throw the registered exception. The slot kind picks the rule family: `Lifted` args test
+# `frule!!` (the function slot is built at the args' width), `CoDual`s test `rrule!!`.
+function run_throwing_rule_test_cases(v::Val)
+    cases, memory = test_hook(Mooncake.throwing_rule_test_cases, v) do
+        Mooncake.throwing_rule_test_cases(v)
+    end
+    GC.@preserve memory @testset "throws $E: $f" for (E, f, args) in cases
+        if first(args) isa Lifted
+            W = Mooncake._lifted_width(first(args))
+            @test_throws E frule!!(zero_lifted(Val(W), f), args...)
+        else
+            @test_throws E rrule!!(Mooncake.zero_fcodual(f), args...)
+        end
+    end
     return nothing
 end
 

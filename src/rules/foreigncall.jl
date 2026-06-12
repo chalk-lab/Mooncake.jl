@@ -713,3 +713,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     ]
     return test_cases, memory
 end
+
+function throwing_rule_test_cases(::Val{:foreigncall})
+    # pointer_from_objref of a value whose forward V is immutable but differentiable
+    # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
+    # emit NULL lanes that silently drop the derivative downstream.
+    cases = Any[(
+        ArgumentError, pointer_from_objref, (randn_lifted(Val(1), Xoshiro(123456), [1.0]),)
+    )]
+    return cases, Any[]
+end

@@ -55,14 +55,6 @@
         @test tangent(y)[1].value == 99.0
     end
 
-    # Regression: an immutable differentiable V (e.g. `NDualArray`) has no tangent-object
-    # address, so pointer_from_objref must fail loudly rather than emit NULL lanes that
-    # silently drop the derivative downstream.
-    @test_throws ArgumentError Mooncake.frule!!(
-        Mooncake.zero_lifted(Val(1), pointer_from_objref),
-        Mooncake.randn_lifted(Val(1), Xoshiro(1), [1.0]),
-    )
-
     @testset "foreigncalls that should never be hit: $name" for name in [
         :jl_alloc_array_1d,
         :jl_alloc_array_2d,

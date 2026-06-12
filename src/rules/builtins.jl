@@ -2027,3 +2027,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     ]
     return test_cases, Any[]
 end
+
+function throwing_rule_test_cases(::Val{:builtins})
+    # atomic_pointerset through a differentiable element with an element-wise (incoherent)
+    # per-lane V must hit the loud guard, mirroring pointerset.
+    xv = [1.0]
+    ptr = pointer(xv)
+    pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
+    cases = Any[(
+        ArgumentError,
+        IntrinsicsWrappers.atomic_pointerset,
+        (pslot, zero_lifted(Val(1), 2.0), zero_lifted(Val(1), :monotonic)),
+    )]
+    return cases, Any[xv]
+end
