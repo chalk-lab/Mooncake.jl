@@ -23,7 +23,7 @@ Target: correct by construction where possible, aggressively testable where not,
 
 ## Working Conventions
 
-- Mirror the source/test layout: tests for `src/.../foo.jl` live at `test/.../foo.jl`. Shared test setup goes in `test/front_matter.jl`; group dispatch in `test/runtests.jl`.
+- Mirror the source/test layout: tests for `src/.../foo.jl` live at `test/.../foo.jl`. Shared test setup goes in `test/front_matter.jl`; group dispatch in `test/runtests.jl` (see it for how to run groups, including interactively).
 - Write rules at the lowest practical level (often foreign-call boundaries, see `src/rules/blas.jl`) to minimise the rule count. Canonicalise array-like inputs at the rule boundary (`arrayify`) instead of proliferating specialised methods.
 - Implement both `frule!!` and `rrule!!` for new primitives where possible. Use `@zero_derivative` for zero-derivative rules; check `src/rules/` for other convenience macros first.
 - Every custom rule needs an `@is_primitive` declaration, and the declaration must stay in lockstep with the rule's method coverage: a broader `@is_primitive` than the rule methods fails only at call time with a `MethodError`. Prefer the narrowest signature that covers the intended cases — overly broad signatures shadow more-specific rules or create ambiguities.
@@ -40,6 +40,7 @@ Target: correct by construction where possible, aggressively testable where not,
 - Fix representation problems by making `CoDual`/`Lifted` types correct inside rules, not by normalising in the transform or public interfaces.
 - Avoid `src/interpreter/` unless the task targets it. `Mooncake.primal_ir`/`dual_ir`/`fwd_ir`/`rvs_ir` are for inspection only — not semver-stable.
 - Internal helpers may change freely; exported/public behaviour needs tests, docs, and clear error messages. Prepared caches are shape/type dependent — when cache construction changes, test reuse and failure modes.
+- Write clear error messages, especially for malformed rules, unsupported cases, and rule-construction failures; prefer clear, concise names for variables, types, and methods.
 - Investigate before editing: root-cause and verify the intended fix first; keep investigation notes in `temp/` (untracked scratch). Prefer targeted changes and minimal inline fixes over new helpers or broad refactors; run the `minimise` skill before committing.
 - Run JuliaFormatter only from `test/integration_testing/format` (pins the CI version): `julia --project=test/integration_testing/format -e 'using JuliaFormatter; JuliaFormatter.format(".")'`.
 
@@ -74,6 +75,7 @@ The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type
 - MWE first, then the smallest focused test group, then broader groups only if needed. Before adding a test, check the behaviour isn't already covered; extend existing cases over adding new ones, and prune additions.
 - Canonical utilities: `TestUtils.test_rule` for rules; `TestUtils.test_tangent_splitting` on a concrete value (constructors in `src/test_resources.jl`) for tangent/fdata/rdata correctness; `TestUtils.test_data` for custom tangent types.
 - `test_rule` exercises forward rules at chunk widths 1, 2, 3 by default (via `TestUtils.test_frule`): width-1 finite-difference correctness, plus chunked checks that the primal is unchanged, inner `.value` tracks the primal, and — for primitive rules with plain numeric-dual arguments — per-lane partials match the width-1 oracle. Gaps to know: the per-lane oracle skips struct-lift/`Dict`/closure/`Ref` V shapes; derived (`is_primitive=false`) rules skip chunked widths entirely; seedless cases (raw `Ptr`) opt out via `skip_chunked`; random seeds rarely hit numeric edge cases — exercise those by hand (e.g. `x < 0` for `copysign`/`powi`).
+- Ensure supported primal types and their tangent types are exercised against the relevant rules, for compatibility and composability.
 - Never disable tests or weaken performance assertions to get CI green; stop and ask first.
 - Debug mode helps test malformed rules and diagnose failures: `docs/src/utilities/debug_mode.md`.
 - For performance-sensitive rules, run the rule directly: `@allocated` (zero-alloc primal ⇒ zero-alloc AD) and `@code_warntype` (type stability).
@@ -85,7 +87,7 @@ The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type
 
 ## Documentation
 
-- `docs/make.jl` defines the Documenter build and navigation.
+- `docs/make.jl` defines the Documenter build and navigation; top-level user pages include `index.md`, `tutorial.md`, and `interface.md`.
 - Known unsupported/incomplete behaviour: `docs/src/known_limitations.md`. Conceptual material: `docs/src/understanding_mooncake/`. Utilities: `docs/src/utilities/`. Contributor material: `docs/src/developer_documentation/`.
 - Defining/adapting rules: `docs/src/utilities/defining_rules.md` (its "Canonicalising Tangent Types" section covers `arrayify`/`matrixify`). Custom tangent types and recursive types: `docs/src/developer_documentation/custom_tangent_type.md`.
 - Update docs when changing public APIs, developer tooling, or core internals.
