@@ -700,6 +700,14 @@ end
 @inline function _lift_from_lanes(y::P, ::NTuple{Nw,NoTangent}) where {P,Nw}
     return Lifted{P,Nw}(y, NoDual())
 end
+# Tuple result (e.g. `logabsgamma` returning `(Float64, Int64)`): element-wise recursion, the V
+# being the tuple of element Vs (`Lifted` wraps once at the top level, per the dual protocol).
+@inline function _lift_from_lanes(y::Tuple, dys::NTuple{Nw,Tuple}) where {Nw}
+    Vs = ntuple(length(y)) do i
+        tangent(_lift_from_lanes(y[i], ntuple(k -> dys[k][i], Val(Nw))))
+    end
+    return Lifted{typeof(y),Nw}(y, Vs)
+end
 # Chunk width is always ≥ 1, so an empty lane-tuple never occurs at runtime. These methods only
 # disambiguate the `NTuple{Nw,…}` overloads above at `Nw == 0` (`Tuple{}`), where each typed-`y`
 # overload would otherwise overlap the `NoTangent` catch-all (flagged by Aqua). One per typed `y`,
@@ -707,6 +715,7 @@ end
 @noinline _lift_from_lanes(::IEEEFloat, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Complex{<:IEEEFloat}, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Array{<:NDualEltype}, ::Tuple{}) = _zero_lanes_error()
+@noinline _lift_from_lanes(::Tuple, ::Tuple{}) = _zero_lanes_error()
 _zero_lanes_error() = error("_lift_from_lanes: zero lanes (chunk width 0) is invalid")
 
 function construct_frule_wrapper_def(arg_names, arg_types, where_params)
