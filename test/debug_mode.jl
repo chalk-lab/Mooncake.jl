@@ -49,8 +49,7 @@
         @testset "valid inputs pass" begin
             # Single argument - use Float64, not π which has NoTangent
             rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
-            @test rule(Mooncake.lift(sin, NoTangent()), Mooncake.lift(3.14, 1.0)) isa
-                Mooncake.Lifted
+            @test rule(Mooncake.lift(sin, NoTangent()), Mooncake.lift(3.14, 1.0)) isa Lifted
 
             # Multiple arguments
             f_mul(x, y) = x * y
@@ -59,19 +58,19 @@
                 Mooncake.lift(f_mul, NoTangent()),
                 Mooncake.lift(2.0, 1.0),
                 Mooncake.lift(3.0, 0.5),
-            ) isa Mooncake.Lifted
+            ) isa Lifted
 
             # Arrays
             h(x) = sum(x)
             rule = Mooncake.build_frule(zero_dual(h), randn(5); debug_mode=true)
             @test rule(Mooncake.lift(h, NoTangent()), Mooncake.lift(randn(5), randn(5))) isa
-                Mooncake.Lifted
+                Lifted
 
             # NoTangent (non-differentiable)
             rule = Mooncake.build_frule(zero_dual(identity), 5; debug_mode=true)
             @test rule(
                 Mooncake.lift(identity, NoTangent()), Mooncake.lift(5, NoTangent())
-            ) isa Mooncake.Lifted
+            ) isa Lifted
         end
 
         @testset "integration with test_rule" begin

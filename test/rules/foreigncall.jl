@@ -22,10 +22,8 @@
     @testset "llvm.powi forward NDual.value coherence" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")
-        L(T, N, v) = Mooncake.Lifted{T,N}(v, Mooncake.NoDual())
-        xL(N, parts) = Mooncake.Lifted{Float64,N}(
-            2.0, Mooncake.Nfwd.NDual{Float64,N}(2.0, parts)
-        )
+        L(T, N, v) = Lifted{T,N}(v, Mooncake.NoDual())
+        xL(N, parts) = Lifted{Float64,N}(2.0, Mooncake.Nfwd.NDual{Float64,N}(2.0, parts))
         @testset "width $N" for N in (1, 2, 3)
             parts = ntuple(k -> Float64(k), N)
             r = Mooncake.frule!!(
@@ -40,7 +38,7 @@
                 L(Int32, N, Int32(3)),
                 xL(N, parts),
             )
-            iv = Mooncake.tangent(r)
+            iv = tangent(r)
             @test iv.value == 2.0^3                                    # V.value === primal result
             @test all(iv.partials .≈ ntuple(k -> 12.0 * parts[k], N))  # d/dx x^3 = 3x^2 = 12
         end

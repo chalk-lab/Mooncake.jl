@@ -40,10 +40,9 @@
             y = Mooncake.lift(zero(T), one(T))
             z = Mooncake.lift(zero(T), one(T))
 
-            @test Mooncake.tangent(Mooncake.frule!!(zero_dual(hypot), x), 1) === zero(T)
-            @test Mooncake.tangent(Mooncake.frule!!(zero_dual(hypot), x, y), 1) === zero(T)
-            @test Mooncake.tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z), 1) ===
-                zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x), 1) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y), 1) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z), 1) === zero(T)
 
             _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
             _, dx1 = pb1(one(T))
@@ -71,7 +70,7 @@
 
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(
                     zero_dual(^),
                     Mooncake.lift(zero(T), one(T)),
@@ -79,7 +78,7 @@
                 ),
                 1,
             ) === one(T)
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(
                     zero_dual(^),
                     Mooncake.lift(zero(T), one(T)),
@@ -88,7 +87,7 @@
                 1,
             ) === zero(T)
             @test isinf(
-                Mooncake.tangent(
+                tangent(
                     Mooncake.frule!!(
                         zero_dual(^),
                         Mooncake.lift(zero(T), one(T)),
@@ -99,7 +98,7 @@
             )
 
             @test isnan(
-                Mooncake.tangent(
+                tangent(
                     Mooncake.frule!!(
                         zero_dual(mod),
                         Mooncake.lift(T(4), one(T)),
@@ -109,12 +108,12 @@
                 ),
             )
             @test isnan(
-                Mooncake.tangent(
+                tangent(
                     Mooncake.frule!!(zero_dual(mod2pi), Mooncake.lift(T(2π), one(T))), 1
                 ),
             )
 
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(
                     zero_dual(max),
                     Mooncake.lift(one(T), one(T)),
@@ -122,7 +121,7 @@
                 ),
                 1,
             ) === zero(T)
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(
                     zero_dual(min),
                     Mooncake.lift(one(T), one(T)),
@@ -131,13 +130,13 @@
                 1,
             ) === one(T)
 
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(zero_dual(Base.eps), Mooncake.lift(one(T), one(T))), 1
             ) === zero(T)
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(zero_dual(nextfloat), Mooncake.lift(one(T), one(T))), 1
             ) === one(T)
-            @test Mooncake.tangent(
+            @test tangent(
                 Mooncake.frule!!(zero_dual(prevfloat), Mooncake.lift(one(T), one(T))), 1
             ) === one(T)
         end
