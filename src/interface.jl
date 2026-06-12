@@ -1497,6 +1497,11 @@ end
 # `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
 # this avoids the generic path's standard-basis seeding and lane accumulation.
 @inline function value_and_gradient!!(cache::FCache, f::F, x::T) where {F,T<:IEEEFloat}
+    # A differentiable `f` carries its own degrees of freedom: the width-1 single-seed run below
+    # cannot represent them (and `lift(f, NoTangent())` would seed uninitialised tangent storage),
+    # so fall back to the generic chunked path, which sweeps `f`'s dofs too.
+    tangent_type(F) === NoTangent ||
+        return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
     _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
     output = cache.single_rule(lift(f, NoTangent()), lift(x, one(x)))
     y = primal(output)
@@ -1519,9 +1524,9 @@ end
 # per chunk, mutate each arg seed's `NDualArray` partials in place to set standard-basis
 # directions (mapping the global slot to the owning arg via running offsets), run the
 # width-dispatched `value_and_derivative!!`, and scatter each lane's directional derivative
-# straight into the preallocated per-arg gradient buffer. A short trailing chunk leaves its
-# extra lanes' partials zero (free padding); `xs` are snapshotted into cache-owned buffers via
-# `copyto!` so an in-place `f` never touches the user's arrays. A differentiable `f`, mixed
+# straight into the preallocated per-arg gradient buffer. The seed primals are restored from
+# `xs` and the partials zeroed at the top of every chunk, so an in-place `f` neither touches the
+# user's arrays nor compounds across chunks. A differentiable `f`, mixed
 # element types, or any other shape has no preallocated seed (`gradient_seed === nothing`) and
 # falls back to the generic chunked path.
 function value_and_gradient!!(
@@ -1543,18 +1548,23 @@ function value_and_gradient!!(
     z = zero(T)
     for i in 1:N
         fill!(grad_bufs[i], z)
-        copyto!(arg_seeds[i].value.primal, xs[i])
     end
     dof = sum(length, xs)
     W = _lifted_width(f_seed)
     y = z
     s = 1
     while s <= dof
+        # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales the
+        # partials) during the previous chunk's run, so restore the primals from the user's
+        # arrays and zero the partials before setting this chunk's basis directions — otherwise
+        # the mutation compounds across chunks and the gradient is silently wrong.
         off = 0
         @inbounds for i in 1:N
             nda = arg_seeds[i].value
+            copyto!(nda.primal, xs[i])
             len = length(xs[i])
             for lane in 1:W
+                fill!(nda.partials[lane], z)
                 slot = s + lane - 1
                 (slot <= dof && off < slot <= off + len) &&
                     (nda.partials[lane][slot - off] = one(T))
@@ -1574,7 +1584,6 @@ function value_and_gradient!!(
                 slot = s + lane - 1
                 if slot <= dof && off < slot <= off + len
                     gb[slot - off] += tangent(output, lane)
-                    nda.partials[lane][slot - off] = z
                 end
             end
             off += len

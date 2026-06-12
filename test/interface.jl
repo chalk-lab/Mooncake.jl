@@ -786,6 +786,34 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.get_tangent_field(uninit_box_grad, :x) == 2 * x
             @test !Mooncake.is_init(uninit_y_grad) || Mooncake.val(uninit_y_grad) == 0.0
 
+            # An in-place-mutating `f` must not compound across packable chunks: the seed
+            # primals are restored from the user's arrays at the top of every chunk
+            # (regression: y and the chunk-2 gradient slots were silently wrong).
+            mut_f = v -> (s=sum(abs2, v); v .*= 2; s)
+            mut_x = collect(1.0:12.0)  # dof > default chunk width 8 → two chunks
+            mut_cache = Mooncake.prepare_derivative_cache(
+                mut_f, copy(mut_x); config=Mooncake.Config(; kwargs...)
+            )
+            mut_y, mut_grad = Mooncake.value_and_gradient!!(mut_cache, mut_f, copy(mut_x))
+            @test mut_y == sum(abs2, mut_x)
+            @test mut_grad[2] == 2 .* mut_x
+
+            # A differentiable closure `f` takes the generic path on a scalar input: the
+            # width-1 fast path cannot represent `f`'s own dofs (regression: it hard-coded
+            # NoTangent for `f` and seeded uninitialised tangent storage).
+            closure_f = let c = 3.0
+                v -> c * v
+            end
+            closure_cache = Mooncake.prepare_derivative_cache(
+                closure_f, x; config=Mooncake.Config(; kwargs...)
+            )
+            closure_y, closure_grad = Mooncake.value_and_gradient!!(
+                closure_cache, closure_f, x
+            )
+            @test closure_y == 3.0 * x
+            @test closure_grad[2] == 3.0
+            @test Mooncake.get_tangent_field(closure_grad[1], :c) == x
+
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)
             f32_scalar_cache = Mooncake.prepare_derivative_cache(
