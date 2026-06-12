@@ -218,16 +218,21 @@ end
     end
     # Element-wise array V (a plain `Array` of per-element forward Vs, for differentiable
     # non-float-element arrays): its `.ref` is a `MemoryRef` into the V array,
-    # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff.
-    @inline _get_lifted_field(V::Array, name::Symbol) =
-        name === :ref ? getfield(V, :ref) : NoDual()
+    # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff. Accept the integer
+    # field index too (`getfield(arr, 1)` occurs in forward-over-reverse), like the
+    # `NDualArray` method above.
+    @inline function _get_lifted_field(V::Array, name::Union{Symbol,Int})
+        name = name isa Int ? fieldname(typeof(V), name) : name
+        return name === :ref ? getfield(V, :ref) : NoDual()
+    end
     # Element-wise memory-ref V (a plain `MemoryRef` into an element-wise V `Memory`): `.mem` projects to the
     # element-wise `Memory` V; `.ptr_or_offset` is the raw data pointer into that V `Memory`, typed as its
     # element-wise dual element (e.g. `Ptr{NDualArray}`) so a downstream `unsafe_copyto!` copies the correct
     # per-element stride. Wrapped in a 1-tuple — the canonical per-lane `Ptr` V (width-1, element-wise).
     # Mirrors the 1.10 `jl_array_ptr` element-wise frule, which emits `Ptr{NDualArray}` directly; without
     # this the 1.12 `pointer(::Vector{<diff non-float>})` path drops the tangent (`NoDual`).
-    @inline function _get_lifted_field(V::MemoryRef, name::Symbol)
+    @inline function _get_lifted_field(V::MemoryRef, name::Union{Symbol,Int})
+        name = name isa Int ? fieldname(typeof(V), name) : name
         name === :mem && return getfield(V, :mem)
         # Only a differentiable element (element-wise dual `Memory`, not `Memory{NoDual}`) carries a
         # tangent pointer; a non-differentiable element's pointer stays `NoDual`.

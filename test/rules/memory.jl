@@ -22,4 +22,17 @@ end
         t = f(p)
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
+
+    # Regression: an isbits element-wise `Memory{P}(undef, n)` V must be filled with
+    # coherent zero duals — readable garbage partials would propagate as nonzero
+    # derivatives via whole-buffer copies.
+    @testset "element-wise undef Memory V zero partials (width $N)" for N in (1, 2, 3)
+        r = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), Memory{Tuple{Float64,Int}}),
+            Mooncake.zero_lifted(Val(N), undef),
+            Mooncake.zero_lifted(Val(N), 4),
+        )
+        @test all(i -> all(iszero, tangent(r)[i][1].partials), 1:4)
+        @test all(i -> tangent(r)[i][1].value === primal(r)[i][1], 1:4)
+    end
 end

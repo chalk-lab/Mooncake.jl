@@ -575,6 +575,8 @@ Base.@propagate_inbounds function frule!!(
     return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 # Element-wise V: read the element primal and its per-element V from the parallel arrays.
+# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; the read yields
+# the element's `NoDual`), so no separate `NoDual` method is needed.
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -585,17 +587,6 @@ Base.@propagate_inbounds function frule!!(
     _inb = primal(inbounds)
     y = arrayref(_inb, primal(x), _inds...)
     return Lifted{typeof(y),Nw}(y, arrayref(_inb, tangent(x), _inds...))
-end
-# Non-differentiable element array (element-wise `Array{NoDual}` V): the read yields a non-diff
-# scalar (V === NoDual).
-Base.@propagate_inbounds function frule!!(
-    ::Lifted{typeof(Core.arrayref),Nw},
-    inbounds::Lifted{Bool,Nw},
-    x::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
-    inds::Vararg{Lifted{Int,Nw},M},
-) where {Nw,M}
-    y = arrayref(primal(inbounds), primal(x), tuple_map(primal, inds)...)
-    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
@@ -638,6 +629,8 @@ function frule!!(
     return A
 end
 # Element-wise V: set the element primal and its per-element V into the parallel arrays.
+# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; writing the
+# scalar's `NoDual` into the V is a typed no-op), so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Core.arrayset),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -649,18 +642,6 @@ function frule!!(
     _inb = primal(inbounds)
     Core.arrayset(_inb, primal(A), primal(v), _inds...)
     Core.arrayset(_inb, tangent(A), tangent(v), _inds...)
-    return A
-end
-# Non-differentiable element array (element-wise `Array{NoDual}` V): only the primal is written;
-# the V's elements stay `NoDual` (writing a non-diff scalar's `NoDual` is a no-op).
-function frule!!(
-    ::Lifted{typeof(Core.arrayset),Nw},
-    inbounds::Lifted{Bool,Nw},
-    A::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
-    v::Lifted,
-    inds::Vararg{Lifted{Int,Nw},M},
-) where {Nw,M}
-    Core.arrayset(primal(inbounds), primal(A), primal(v), tuple_map(primal, inds)...)
     return A
 end
 function rrule!!(
@@ -732,10 +713,11 @@ function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
+# `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex `NDualArray`s
+# (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
 function frule!!(
-    ::Lifted{typeof(copy),N},
-    a::Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}},
-) where {N,T<:IEEEFloat,D}
+    ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
+) where {N,T<:NDualEltype,D}
     new_primal = copy(primal(a))
     new_partials = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
     return Lifted{Array{T,D},N}(
@@ -810,6 +792,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
         (true, :stability, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
         (false, :stability, nothing, copy, randn(5, 4)),
+        (false, :stability, nothing, copy, randn(Xoshiro(123456), ComplexF64, 5)),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 0),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 2),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 5),

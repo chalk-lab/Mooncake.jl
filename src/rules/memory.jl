@@ -753,20 +753,6 @@ end
         lsetfield!(tangent(value), Val(name), name === :ref ? tangent(x) : primal(x))
         return x
     end
-    # Non-differentiable element array (element-wise `Array{NoDual}` V, e.g. an `Int32` stack):
-    # write the primal field only. The V's `.ref`/`.size` are not tracked here — a non-diff
-    # `MemoryRef`'s dual is still whole `NoDual`, so the element-wise `.ref` write above cannot apply
-    # (non-diff array-growth V-tracking would need element-wise Memory/MemoryRef coherence).
-    @inline function frule!!(
-        ::Lifted{typeof(lsetfield!),Nw},
-        value::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
-        ::Lifted{Val{name}},
-        x::Lifted,
-    ) where {Nw,name}
-        lsetfield!(primal(value), Val(name), primal(x))
-        return x
-    end
-
     # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
     # forward V is `NoDual`, so each op threads only the primal and keeps a
     # `NoDual` result V. Reached in forward-over-reverse over reverse-rule infra.
@@ -879,17 +865,29 @@ function rrule!!(
 end
 
 # Element-wise `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
-# the element-wise `Memory{dual_type(P)}` (uninitialised; elements are written by the parallel
-# element-wise `memoryrefset!`). Non-diff element → `NoDual`. The `NDualEltype` overload above
-# (`NDualArray` parallel-arrays) is more specific and wins for scalar IEEEFloat/Complex elements.
+# the element-wise `Memory{dual_type(P)}`. Non-diff element → `NoDual`. The `NDualEltype`
+# overload above (`NDualArray` parallel-arrays) is more specific and wins for scalar
+# IEEEFloat/Complex elements. For an isbits element the fresh V slots are readable garbage,
+# which whole-buffer copies would propagate as nonzero partials — fill each with the coherent
+# zero dual of the (also garbage, also readable) primal element; non-isbits slots stay `#undef`
+# and are written by the parallel element-wise `memoryrefset!`.
 @generated function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P}
     MemV = dual_type(Val(Nw), Memory{P})
     MemV === NoDual && return :(Lifted{Memory{P},Nw}(Memory{P}(undef, primal(n)), NoDual()))
+    fill_expr = if isbitstype(P)
+        :(@inbounds for i in eachindex(dv)
+            dv[i] = zero_dual(Val(Nw), x[i])
+        end)
+    else
+        nothing
+    end
     return quote
         x = Memory{P}(undef, primal(n))
-        return Lifted{Memory{P},Nw}(x, $MemV(undef, primal(n)))
+        dv = $MemV(undef, primal(n))
+        $fill_expr
+        return Lifted{Memory{P},Nw}(x, dv)
     end
 end
 @static if VERSION >= v"1.12-"
@@ -899,9 +897,18 @@ end
         MemV = dual_type(Val(Nw), Memory{P})
         MemV === NoDual &&
             return :(Lifted{Memory{P},Nw}(Core.memorynew(Memory{P}, primal(n)), NoDual()))
+        fill_expr = if isbitstype(P)
+            :(@inbounds for i in eachindex(dv)
+                dv[i] = zero_dual(Val(Nw), x[i])
+            end)
+        else
+            nothing
+        end
         return quote
             x = Core.memorynew(Memory{P}, primal(n))
-            return Lifted{Memory{P},Nw}(x, $MemV(undef, primal(n)))
+            dv = $MemV(undef, primal(n))
+            $fill_expr
+            return Lifted{Memory{P},Nw}(x, dv)
         end
     end
 end
@@ -963,8 +970,8 @@ function frule!!(
     ::Lifted{Tuple{Val{Any}},Nw},
     ::Lifted{Val{0},Nw},
     ::Lifted{Val{:ccall},Nw},
-    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
-) where {Nw,P<:IEEEFloat}
+    x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
+) where {Nw,P<:NDualEltype}
     new_primal = copy(primal(x))
     new_partials = ntuple(k -> copy(tangent(x).partials[k]), Val(Nw))
     return Lifted{Memory{P},Nw}(
@@ -1051,16 +1058,11 @@ function frule!!(
     ::Lifted{Val{order},Nw},
 ) where {Nw,P<:IEEEFloat,D,name,order}
     # `.ref` projects to the matching `NDualMemoryRef` (mirrors the reverse
-    # `rrule!!`, which returns `x.dx.ref`). `.size` is non-differentiable, but
-    # its canonical V is the element-wise zero dual of the size tuple
-    # (`dual_type(NTuple{D,Int}) === NTuple{D,NoDual}`), not whole `NoDual`.
+    # `rrule!!`, which returns `x.dx.ref`); `.size` is non-differentiable and
+    # `dual_type` collapses the all-non-diff `NTuple{D,Int}` to `NoDual`, which is
+    # exactly what `_get_lifted_field` returns for it.
     y = getfield(primal(x), name, order)
-    dy = if name === :size || name === 2
-        zero_dual(Val(Nw), y)
-    else
-        _get_lifted_field(tangent(x), name)
-    end
-    return Lifted{typeof(y),Nw}(y, dy)
+    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -1076,9 +1078,6 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-function frule!!(f::Lifted{typeof(lgetfield),Nw}, x::Lifted, name::Lifted{<:Val}) where {Nw}
-    return frule!!(f, x, name, Lifted{Val{:not_atomic},Nw}(Val(:not_atomic), NoDual()))
-end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -1087,19 +1086,9 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-function frule!!(
-    ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, order::Lifted{Symbol}
-) where {Nw}
-    lg = Lifted{typeof(lgetfield),Nw}(lgetfield, NoDual())
-    name_v = Val(primal(name))
-    ord_v = Val(primal(order))
-    return frule!!(
-        lg,
-        x,
-        Lifted{typeof(name_v),Nw}(name_v, NoDual()),
-        Lifted{typeof(ord_v),Nw}(ord_v, NoDual()),
-    )
-end
+# No 4-arg `getfield` frule here: builtins' runtime-name `getfield` frule is type-stable
+# (no `Val(primal(name))` round-trip) and projects memory-type fields through the same
+# `_get_lifted_field` methods, so a delegator in this file would only shadow that path.
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -1393,6 +1382,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             f in [Val(:ref), Val(:size), Val(1), Val(2)]
         ],
         [(false, :none, nothing, getfield, randn(rng, 10), f) for f in [:ref, :size, 1, 2]],
+        # Element-wise V parent (non-NDualEltype elements): the Symbol AND Int field forms
+        # must both project through `_get_lifted_field(::Array, ...)`.
+        [
+            (false, :none, nothing, getfield, [randn(rng, 2) for _ in 1:3], f) for
+            f in [:ref, :size, 1, 2]
+        ],
         (
             false,
             :stability_and_allocs,
