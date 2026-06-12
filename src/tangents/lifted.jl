@@ -849,7 +849,10 @@ end
 # in `P`, so a concrete runtime `Lifted{Tuple{f,x},…}` is *not* a subtype of
 # `Lifted{Tuple{Function,Vararg},N,Any}` and the OpaqueClosure arg typeassert
 # would reject it (mirrors the generic struct overload below).
-@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+# `@unstable`: DispatchDoctor's `@stable` wrapper reads the static parameters unconditionally,
+# defeating the `@isdefined(P)` phantom-TypeVar guard below (UndefVarError under the
+# dispatch_doctor integration suite).
+@unstable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     @isdefined(P) || return Lifted  # phantom free-TypeVar Tuple — broad `Lifted` slot, as the generic `lifted_type` guard below
     return if isconcretetype(P)
         Lifted{P,N,dual_type(Val(N), P)}
@@ -898,7 +901,8 @@ end
 # argtypes via `CC.widenconst` and may produce abstract `P`; without
 # the UnionAll, `Lifted{Type{X}, N, V}` wouldn't be a subtype of
 # `Lifted{DataType, N, NoDual}` (Lifted is invariant in `P`).
-@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
+# `@unstable`: same DispatchDoctor exemption as the `Tuple` overload above.
+@unstable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # `@isdefined(P)` is false when the static parameter couldn't be bound — e.g. a `UnionAll`
     # with a free `TypeVar` in its body. Touching `P` would then throw `UndefVarError`; return the
     # broad `Lifted` instead — the same `@isdefined` fallback the `CoDual` ctors and
