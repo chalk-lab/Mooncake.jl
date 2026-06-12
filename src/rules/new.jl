@@ -65,8 +65,20 @@
             # collapse as the Tuple/NamedTuple branches). The test resolves in the RETURNED
             # expression (call world), never the generator body, so an extension's field overload
             # (e.g. CUDA `CuArray`/`CuPtr`) is seen.
-            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
-            backing = fieldtype(dual_type(Val(Nw), P), 1)
+            V = dual_type(Val(Nw), P)
+            V === NoDual && return Lifted{P,Nw}(y, NoDual())
+            # This branch can only build a struct-lift wrapper. When P's canonical V is a
+            # dedicated container instead (e.g. `NDualMemoryRef` for `MemoryRef`), the backing
+            # construction below would throw a baffling MethodError — fail clearly instead.
+            # (Runtime check in the returned expression, so a later more-specific `frule!!`
+            # overload for such a P simply wins and never reaches this.)
+            V <: Union{ImmutableDual,MutableDual} || error(
+                "forward _new_($P, ...): the canonical forward representation is $V, not a " *
+                "struct-lift Immutable/MutableDual, so the generic struct construction does " *
+                "not apply. Construct the value via its dedicated primitive (e.g. " *
+                "`memoryrefnew` for `MemoryRef`), or add a specific `frule!!` for this signature.",
+            )
+            backing = fieldtype(V, 1)
             return Lifted{P,Nw}(y, $wrapper(backing(($(field_exprs...),))))
         end
     end
