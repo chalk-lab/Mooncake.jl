@@ -14,6 +14,5 @@ AllocCheck = "0.2.0"
 ChainRulesCore = "1"
 Documenter = "1"
 JET = "0.9, 0.10, 0.11"
-# TODO: remove cap once JET is compatible with LoweredCodeUtils 3.6 (aviatesk/JET.jl#823).
 LoweredCodeUtils = "<3.6"
 Mooncake = "0.5, 0.6"

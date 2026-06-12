@@ -12,6 +12,5 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
 [compat]
 BFloat16s = "0.6"
-# TODO: remove cap once JET is compatible with LoweredCodeUtils 3.6 (aviatesk/JET.jl#823).
 LoweredCodeUtils = "<3.6"
 Revise = "3.0 - 3.12"
