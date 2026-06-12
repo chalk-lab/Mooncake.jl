@@ -17,6 +17,9 @@ mutable struct LiftedTest_AliasedNested
     a::Vector{Vector{Float64}}
     b::Vector{Vector{Float64}}
 end
+mutable struct LiftedTest_ParentField  # field name collides with the view's internals
+    parent::Float64
+end
 mutable struct LiftedTest_MaybeInit
     x::Float64
     y::Float64
@@ -545,9 +548,9 @@ end
         # Per-lane view via `tangent(::Lifted, lane)`.
         view = Mooncake.tangent(slot, 1)
         @test view isa Mooncake.MutableDualTangentView
-        @test getfield(view, :parent) === slot.value
-        @test getfield(view, :primal) === r
-        @test getfield(view, :lane) === 1
+        @test getfield(view, :_parent) === slot.value
+        @test getfield(view, :_primal) === r
+        @test getfield(view, :_lane) === 1
 
         # Read: getproperty returns the lane-1 partial of the `v` field.
         @test view.v === 0.0
@@ -559,6 +562,17 @@ end
         # Other lane unchanged.
         view2 = Mooncake.tangent(slot, 2)
         @test view2.v === 0.0
+    end
+
+    @testset "MutableDualTangentView field-name clash (parent)" begin
+        # A struct field literally named `parent` must resolve to its lane tangent, not the view's
+        # internal `_parent` (which is why those internals are underscore-prefixed). Read and write
+        # must agree.
+        slot = Mooncake.zero_lifted(Val(2), LiftedTest_ParentField(3.0))
+        view = Mooncake.tangent(slot, 1)
+        @test view.parent === 0.0          # lane-1 partial of field `parent`, not the MutableDual
+        view.parent = 7.0
+        @test view.parent === 7.0
     end
 
     @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin

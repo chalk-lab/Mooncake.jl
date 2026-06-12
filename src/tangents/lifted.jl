@@ -524,10 +524,14 @@ end
 # PossiblyUninitTangent) are added in follow-up commits.
 # ──────────────────────────────────────────────────────────────────────────
 
+# Internal fields are underscore-prefixed so the `getproperty` short-circuit below cannot collide
+# with a user struct field literally named `parent`/`primal`/`lane` (plausible for graph/tree
+# nodes) — without this, reading such a field returned the view's own field instead of the lane
+# tangent, while `setproperty!` wrote through correctly (a silent read/write asymmetry).
 struct MutableDualTangentView{SD<:MutableDual,P}
-    parent::SD
-    primal::P
-    lane::Int
+    _parent::SD
+    _primal::P
+    _lane::Int
 end
 
 # Lane-extraction (read) and lane-replacement (write) for individual V_i shapes.
@@ -541,14 +545,14 @@ end
 end
 
 function Base.getproperty(v::MutableDualTangentView, name::Symbol)
-    name in (:parent, :primal, :lane) && return getfield(v, name)
-    nt = getfield(v, :parent).value
-    return _lane_tangent(getfield(nt, name), getfield(v, :lane))
+    name in (:_parent, :_primal, :_lane) && return getfield(v, name)
+    nt = getfield(v, :_parent).value
+    return _lane_tangent(getfield(nt, name), getfield(v, :_lane))
 end
 
 function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
-    parent = getfield(v, :parent)
-    lane = getfield(v, :lane)
+    parent = getfield(v, :_parent)
+    lane = getfield(v, :_lane)
     nt = parent.value
     new_V_i = _replace_lane_tangent(getfield(nt, name), lane, x)
     setfield!(parent, :value, merge(nt, NamedTuple{(name,)}((new_V_i,))))
