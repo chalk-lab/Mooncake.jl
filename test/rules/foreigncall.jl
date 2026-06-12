@@ -44,6 +44,25 @@
         end
     end
 
+    # Regression: the deepcopy frule must copy the whole slot in ONE deepcopy walk. Copying
+    # primal and V separately severs `NDualArray.primal === primal(slot)`, so the copy's inner
+    # `.value` reads a stale third array after the copied primal is mutated.
+    @testset "deepcopy preserves slot-internal aliasing (width $N)" for N in (1, 2, 3)
+        x = Mooncake.randn_lifted(Val(N), Xoshiro(123), [1.0, 2.0])
+        y = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), deepcopy), x)
+        @test tangent(y).primal === primal(y)
+        primal(y)[1] = 99.0
+        @test tangent(y)[1].value == 99.0
+    end
+
+    # Regression: an immutable differentiable V (e.g. `NDualArray`) has no tangent-object
+    # address, so pointer_from_objref must fail loudly rather than emit NULL lanes that
+    # silently drop the derivative downstream.
+    @test_throws ArgumentError Mooncake.frule!!(
+        Mooncake.zero_lifted(Val(1), pointer_from_objref),
+        Mooncake.randn_lifted(Val(1), Xoshiro(1), [1.0]),
+    )
+
     @testset "foreigncalls that should never be hit: $name" for name in [
         :jl_alloc_array_1d,
         :jl_alloc_array_2d,

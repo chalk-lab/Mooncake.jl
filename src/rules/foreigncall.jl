@@ -93,15 +93,26 @@ end
 # round-trips through `unsafe_pointer_to_objref` (recovering the full slot) but a raw scalar load
 # (`pointerref` after `bitcast` to a float ptr) stays incoherent and hits the loud `pointerref`
 # throw — a mutable struct's tangent interleaves value and partials with no parallel partials buffer
-# to address. A non-addressable (immutable / `NoDual`) tangent gets a NULL sentinel mapped back to
-# `NoDual`. The primal address (identity/hashing/`objectid`) is unchanged.
+# to address. Only a proven-non-differentiable (`NoDual`) tangent gets the NULL sentinel mapped back
+# to `NoDual`; an immutable differentiable V (e.g. `NDualArray`) has no tangent-object address to
+# thread, so fail loudly rather than silently dropping the derivative. The primal address
+# (identity/hashing/`objectid`) is unchanged.
 function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
     tx = tangent(x)
-    taddr = if ismutable(tx)
+    taddr = if tx isa NoDual
+        Ptr{tangent_type(Nothing)}(0)
+    elseif ismutable(tx)
         bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tx))
     else
-        Ptr{tangent_type(Nothing)}(0)
+        throw(
+            ArgumentError(
+                "Forward-mode AD cannot take `pointer_from_objref` of a `$(typeof(primal(x)))` " *
+                "whose forward tangent is the immutable `$(typeof(tx))`: there is no " *
+                "tangent-object address to thread through the pointer, so the derivative would " *
+                "be silently dropped.",
+            ),
+        )
     end
     return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
 end
@@ -376,8 +387,14 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
+# Copy primal and V through one shared `IdDict` walk: independent `deepcopy` calls would sever
+# the internal aliasing (e.g. `NDualArray.primal === primal(slot)`), so the copy's inner `.value`
+# would read a stale third array after the copied primal is mutated. (`deepcopy(x::Lifted)` of
+# the whole slot would also work, but `deepcopy_internal(::Lifted, ...)` defeats inference.)
 function frule!!(::Lifted{typeof(deepcopy),Nw}, x::Lifted{P,Nw,V}) where {Nw,P,V}
-    return Lifted{P,Nw}(deepcopy(primal(x)), deepcopy(tangent(x)))
+    d = IdDict()
+    p = Base.deepcopy_internal(primal(x), d)::P
+    return Lifted{P,Nw}(p, Base.deepcopy_internal(tangent(x), d)::V)
 end
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
@@ -396,7 +413,8 @@ end
 # inference widens that slot to the existential `Lifted{Type{S}} where S`, which is `<: Lifted{<:Type}`
 # but NOT `<: Lifted{<:DataType}` (`Lifted` is invariant; `Type{S} <: DataType` only for concrete `S`).
 # With `DataType` the existential matched no method, so the call inferred `Union{}` → `unreachable` →
-# SIGILL once the concrete arg dispatched at runtime.
+# SIGILL once the concrete arg dispatched at runtime. This also broadens the REVERSE primitive from
+# `DataType` to `Type` — deliberate and harmless, since the derivative is zero either way.
 @zero_derivative MinimalCtx Tuple{typeof(fieldoffset),Type,Integer}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Any}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
