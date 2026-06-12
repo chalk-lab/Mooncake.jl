@@ -140,6 +140,15 @@ using Mooncake.Nfwd
         # real exponent (runtime Float64, uses ^(NDual, Real))
         @test Nfwd.ndual_value(x^2.0) ≈ 9.0
         @test Nfwd.ndual_partial(x^2.0, 1) ≈ 6.0
+
+        # NDual exponent with positive real base: d(b^a)/da = b^a log(b).
+        bp = 2.0^_d(3.0, 1.0)
+        @test Nfwd.ndual_value(bp) ≈ 8.0
+        @test Nfwd.ndual_partial(bp, 1) ≈ 8.0 * log(2.0)
+        # Negative real base: primal (-2.0)^3.0 is finite, but b^x is not real-differentiable
+        # in the exponent — must throw the clear local error, at any width.
+        @test_throws DomainError (-2.0)^_d(3.0, 1.0)
+        @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
@@ -222,6 +231,15 @@ using Mooncake.Nfwd
             @test a.primal[2] == 1.0 + 2.0im
             @test all(k -> a.partials[k][2] == ComplexF64(k, 0.0), 1:N)
         end
+
+        # The 5-param inner constructor rejects an incoherent `Wrapped` (eltype would
+        # desynchronise from what getindex returns); the coherent form still works.
+        @test_throws ArgumentError Nfwd.NDualArray{Float64,1,1,Vector{Float64},Float64}(
+            [1.0], ([0.0],)
+        )
+        @test Nfwd.NDualArray{Float64,1,1,Vector{Float64},NDual{Float64,1}}(
+            [1.0], ([0.0],)
+        ) isa Nfwd.NDualArray
     end
 
     @testset "math functions" begin

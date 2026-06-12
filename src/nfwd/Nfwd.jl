@@ -772,6 +772,17 @@ end
 
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
 @inline function Base.:^(b::Real, a::NDual{T,N}) where {T,N}
+    # For b < 0 the primal can be finite (integer-valued exponent) but b^x is not
+    # real-differentiable in the exponent (the derivative needs log(b)), so fail with a clear
+    # local error rather than letting `log(b)` throw a bare DomainError from inside the scale.
+    b < 0 && throw(
+        DomainError(
+            b,
+            "cannot differentiate b^x with a negative real base with respect to the " *
+            "exponent: the derivative requires log(b), which is not real. Rewrite with a " *
+            "complex base, or avoid differentiating the exponent.",
+        ),
+    )
     v = T(b)^a.value
     return NDual{T,N}(v, _pt_scale(a.partials, v * T(log(b))))
 end
@@ -2016,10 +2027,36 @@ end
 
 const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
+# The coherent wrapped-element type for an `NDualArray` of `Element` at width `N` — what
+# `getindex` actually returns. Used by the inner constructor to reject an incoherent `Wrapped`.
+@inline _wrapped_eltype(::Type{Element}, ::Val{N}) where {Element<:IEEEFloat,N} = NDual{
+    Element,N
+}
+@inline function _wrapped_eltype(
+    ::Type{Element}, ::Val{N}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    return Complex{NDual{T,N}}
+end
+
 struct NDualArray{Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped} <:
        AbstractArray{Wrapped,D}
     primal::A
     partials::NTuple{N,A}
+    # Explicit inner constructor: enforce that `Wrapped` matches `(Element, N)` — the
+    # auto-generated one admits any `Wrapped`, silently desynchronising `eltype` from what
+    # `getindex` returns. (Cf. `NDualRef`'s explicit inner constructor.) The `===` check on
+    # static parameters constant-folds after specialisation.
+    function NDualArray{Element,N,D,A,Wrapped}(
+        primal::A, partials::NTuple{N,A}
+    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
+        Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
+            ArgumentError(
+                "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
+                "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
+            ),
+        )
+        return new{Element,N,D,A,Wrapped}(primal, partials)
+    end
 end
 
 # 4-parameter outer constructors fill in `Wrapped` from `Element`.
