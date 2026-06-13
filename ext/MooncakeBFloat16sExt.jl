@@ -79,10 +79,10 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 # `IEEEFloat` (so `NDual` doesn't cover it), and it's a single-number
 # leaf type, so the structural-lift fallback doesn't apply either.
 # Mirrors the TWP / Ptr V pattern (`NTuple{N, T}`).
-@inline function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N}
+@foldable @inline function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N}
     return NTuple{N,P}
 end
-@inline function Mooncake.lifted_type(::Val{N}, ::Type{P}) where {N}
+@foldable @inline function Mooncake.lifted_type(::Val{N}, ::Type{P}) where {N}
     return Mooncake.Lifted{P,N,NTuple{N,P}}
 end
 # A BFloat16 is a single-number leaf, so its width-1 V `Tuple{BFloat16}` is a leaf, not a structural

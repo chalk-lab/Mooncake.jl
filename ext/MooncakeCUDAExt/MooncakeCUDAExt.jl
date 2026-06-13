@@ -209,10 +209,12 @@ end
 # `NDualArray` accepts any `AbstractArray{T,D}` storage by construction;
 # verified to work with CuArray (via the monkey-patch experiment
 # documented in feedback_cuda_cutover_plan.md).
-@inline function dual_type(::Val{N}, ::Type{P}) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
     return NDualArray{T,N,D,P,NDual{T,N}}
 end
-@inline function dual_type(
+@foldable @inline function dual_type(
     ::Val{N}, ::Type{P}
 ) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
     return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}}}
@@ -261,7 +263,7 @@ const _CuDualArray = Union{CuArray{<:IEEEFloat},CuArray{<:Complex{<:IEEEFloat}}}
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval function Mooncake.$internal(w::Val{N}, x::_CuDualArray, d::MaybeCache) where {N}
-        haskey(d, x) && return d[x]
+        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
         v = Mooncake.$factory(w, x)
         d[x] = v
         return v
@@ -270,7 +272,7 @@ end
 function Mooncake._randn_dual_internal(
     w::Val{N}, rng::Random.AbstractRNG, x::_CuDualArray, d::MaybeCache
 ) where {N}
-    haskey(d, x) && return d[x]
+    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
     v = Mooncake.randn_dual(w, rng, x)
     d[x] = v
     return v
@@ -278,7 +280,7 @@ end
 # Non-differentiable T (`tangent_type(T) === NoTangent`) makes the whole CuPtr a
 # `NoDual` slot — coherent with reverse-mode (`tangent_type(CuPtr{Cvoid}) === NoTangent`).
 # Differentiable T keeps the per-lane tangent pointer V.
-@inline function dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T}
+@foldable @inline function dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T}
     return tangent_type(T) === NoTangent ? NoDual : NTuple{N,CuPtr{T}}
 end
 
@@ -320,7 +322,7 @@ end
 # into one place (the reverse aliasing invariant). Forward tangents are slot-local — nothing is shared —
 # and a CuArray's JVP lives at the array level in the result's `NDualArray` partials (views build that
 # via the `view` frule, never through a tangent on the DataRef). So the handle carries no forward derivative.
-@inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
+@foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
@@ -722,11 +724,15 @@ function rrule!!(
 end
 
 # `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
-# arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made primitive so the
-# forward transform does not trace into that primal-only reconstruction and drop the parallel per-lane partials:
-# view the primal and each partial alike, mirroring `reshape` above. The reverse tangent is a view of
-# `x.dx`, so accumulation into it propagates (NoPullback).
-@is_primitive(MinimalCtx, Tuple{typeof(view),CuMaybeComplexArray,Vararg})
+# arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made a
+# FORWARD-mode primitive so the forward transform does not trace into that primal-only
+# reconstruction and drop the parallel per-lane partials: view the primal and each partial
+# alike, mirroring `reshape` above. Reverse mode is NOT a primitive — the traced path
+# already produces the canonical tangent for both contiguous (CuArray) and non-contiguous
+# (SubArray) results; a hand-written rrule!! here returned a malformed SubArray CoDual.
+@is_primitive(
+    MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(view),CuMaybeComplexArray,Vararg}
+)
 function frule!!(
     ::Lifted{typeof(view),Nw},
     x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
@@ -735,15 +741,24 @@ function frule!!(
     _inds = map(primal, inds)
     y = view(primal(x), _inds...)
     x_partials = tangent(x).partials
-    y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
-end
-function rrule!!(
-    ::CoDual{typeof(view)}, x::CoDual{<:CuMaybeComplexArray}, inds::Vararg{CoDual,M}
-) where {M}
-    _inds = map(primal, inds)
-    return CoDual(view(primal(x), _inds...), view(x.dx, _inds...)), _nopb(Val(M + 2))
+    if y isa CuMaybeComplexArray
+        y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
+        Y = typeof(y)
+        return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+    end
+    # Non-contiguous indices yield a SubArray, whose canonical V is the struct lift
+    # through the parent — the parent field must alias THIS slot's V so the derivative
+    # stays connected. Indices/offset/stride are non-differentiable metadata.
+    y.parent === primal(x) || throw(
+        ArgumentError(
+            "view(::CuArray, …) returned a SubArray whose parent is not the input " *
+            "array; cannot construct a coherent forward V for index types $(typeof(_inds)).",
+        ),
+    )
+    V = ImmutableDual((
+        parent=tangent(x), indices=NoDual(), offset1=NoDual(), stride1=NoDual()
+    ))
+    return Lifted{typeof(y),Nw}(y, V)
 end
 
 # Reverse `_new_` rule for the DataRef-based inner CuArray constructor. The tangent reuses the
@@ -1336,6 +1351,13 @@ function frule!!(
     for partial in tangent(x).partials
         unsafe_free!(partial)
     end
+    return Lifted{Nothing,Nw}(nothing, NoDual())
+end
+# Non-differentiable element types (`NoDual` V, e.g. `CuArray{Int}`): free the primal only.
+function frule!!(
+    ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,NoDual}
+) where {Nw}
+    unsafe_free!(primal(x))
     return Lifted{Nothing,Nw}(nothing, NoDual())
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
@@ -2937,15 +2959,27 @@ end
     parent_tangent = _bc_tangent(v.value.parent, parent(p), lane)
     return Tangent((; parent=parent_tangent))
 end
-# Generic Ref/struct primal with ImmutableDual or MutableDual V — the
-# Broadcast `args` may include e.g. `RefValue{F}` (non-diff inner) which the
-# legacy bare-Dual path treated as NoTangent.
-@inline function _bc_tangent(v::Union{ImmutableDual,MutableDual}, _, _)
-    # The fall-through reaches here only for V's the more-specific Broadcasted /
-    # wrapper overloads above didn't capture — those should be tangent-free
-    # under the legacy reverse-mode shape.
+# Generic Ref/struct primal with ImmutableDual or MutableDual V — the Broadcast `args`
+# may include e.g. `RefValue{F}` (non-diff inner), which carries no tangent. A struct V
+# with any differentiable field reaching this fall-through has no lane extraction, so
+# fail loudly rather than silently zeroing its derivative.
+@inline function _bc_tangent(v::Union{ImmutableDual,MutableDual}, p, _)
+    _bc_tangent_free(v) || throw(
+        ArgumentError(
+            "broadcast argument of type $(typeof(p)) carries a struct V with " *
+            "differentiable fields ($(typeof(v))); per-lane extraction is not " *
+            "implemented for this shape, so its derivative would be silently dropped.",
+        ),
+    )
     return NoTangent()
 end
+_bc_tangent_free(::Mooncake.NoDual) = true
+_bc_tangent_free(v::Union{ImmutableDual,MutableDual}) = all(_bc_tangent_free, v.value)
+_bc_tangent_free(v::Union{Tuple,NamedTuple}) = all(_bc_tangent_free, v)
+function _bc_tangent_free(v::Mooncake.PossiblyUninitTangent)
+    return !Mooncake.is_init(v) || _bc_tangent_free(Mooncake.val(v))
+end
+_bc_tangent_free(::Any) = false
 
 function frule!!(
     ::Lifted{typeof(Base.Broadcast.materialize),Nw},
@@ -2954,8 +2988,9 @@ function frule!!(
     bc_primal = primal(bc)
     bc_V = tangent(bc)
     # `out`, `decoded`, `flat_bc`, and `flat_pargs` are primal-only (lane-independent),
-    # so run the single dual-broadcast kernel once and reuse it for every lane's JVP.
-    _, flat_bc, flat_pargs, _ = _prepare_gpu_broadcast(
+    # so run the single dual-broadcast kernel once and reuse it for every lane's JVP
+    # (including lane 1's flattened tangents, captured here).
+    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
         bc_primal, _bc_tangent(bc_V, bc_primal, 1)
     )
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
@@ -2964,7 +2999,11 @@ function frule!!(
         return Lifted{typeof(out),Nw}(out, NoDual())
     end
     dy_lanes = ntuple(Val(Nw)) do k
-        flat_ts_k = _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, k))[4]
+        flat_ts_k = if k == 1
+            flat_ts_1
+        else
+            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, k))[4]
+        end
         _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts_k, out)
     end
     A = typeof(decoded.primal_out)
@@ -3044,7 +3083,7 @@ function frule!!(
     bc_primal = primal(bc)
     bc_V = tangent(bc)
     # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
-    _, flat_bc, flat_pargs, _ = _prepare_gpu_broadcast(
+    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
         bc_primal, _bc_tangent(bc_V, bc_primal, 1)
     )
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
@@ -3061,7 +3100,11 @@ function frule!!(
         return dest
     end
     for lane in 1:Nw
-        flat_ts = _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
+        flat_ts = if lane == 1
+            flat_ts_1
+        else
+            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
+        end
         dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
         copyto!(dest_partials[lane], dy)
     end
