@@ -118,9 +118,18 @@ lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent) = lift(x, ẋ, nothing)
 function lift(x::FunctionWrapper, ẋ::FunctionWrapperTangent, ::Union{Nothing,IdDict})
     return Lifted{typeof(x),1,typeof(ẋ)}(x, ẋ)
 end
+# A `FunctionWrapperTangent` wraps an OpaqueClosure tangent with all `N` lanes baked in,
+# so it cannot be decomposed per lane; at `N == 1` the whole tangent IS lane 1. Wider
+# slots fail loudly rather than hand every lane the full width-`N` tangent.
 @inline function tangent(
     x::Lifted{P,N,<:FunctionWrapperTangent}, ::Integer
 ) where {P<:FunctionWrapper,N}
+    N == 1 || throw(
+        ArgumentError(
+            "per-lane tangent extraction is unsupported for a width-$N FunctionWrapper " *
+            "slot: its FunctionWrapperTangent bakes all $N lanes into one OpaqueClosure.",
+        ),
+    )
     return x.value
 end
 
@@ -273,7 +282,7 @@ end
 function _zero_dual_internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
     t = _function_wrapper_forward_tangent(R, A, zero_lifted(Val(N), p.obj[]), Val(N))
-    d === nothing || setindex!(d, t, p)
+    d[p] = t
     return t
 end
 function _uninit_dual_internal(
@@ -281,7 +290,7 @@ function _uninit_dual_internal(
 ) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
     t = _function_wrapper_forward_tangent(R, A, uninit_lifted(Val(N), p.obj[]), Val(N))
-    d === nothing || setindex!(d, t, p)
+    d[p] = t
     return t
 end
 function _randn_dual_internal(
@@ -289,7 +298,7 @@ function _randn_dual_internal(
 ) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
     t = _function_wrapper_forward_tangent(R, A, randn_lifted(Val(N), rng, p.obj[]), Val(N))
-    d === nothing || setindex!(d, t, p)
+    d[p] = t
     return t
 end
 

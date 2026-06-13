@@ -121,11 +121,8 @@ end
 # recurses through the wrapper's V (`ImmutableDual` whose NamedTuple mirrors the wrapper's fields)
 # and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
 # `NDualArray`'s lane partial.
-@inline _arrayify_lane(::Array, V::NDualArray, lane::Integer) = V.partials[lane]
+@inline _arrayify_lane(::DenseArray, V::NDualArray, lane::Integer) = V.partials[lane]
 @inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
-@static if VERSION >= v"1.11-rc4"
-    @inline _arrayify_lane(::Memory, V::NDualArray, lane::Integer) = V.partials[lane]
-end
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
 ) where {P,B,C,D,E}
@@ -1480,18 +1477,20 @@ function frule!!(
     α = primal(α_dα)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
+    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
+    # it and copy per lane.
+    X = copy(B)
+    trsm!(side, uplo, trans, diag, one(P), A, X)
     @inbounds for lane in 1:Nw
         dα_lane = tangent(α_dα, lane)
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
-        tmp = copy(B)
-        trsm!(side, uplo, trans, diag, one(P), A, tmp)
-        dB_lane .+= dα_lane .* tmp
-        tmp2 = copy(tmp)
+        dB_lane .+= dα_lane .* X
+        tmp = copy(X)
         BLAS.trmm!(side, uplo, trans, diag, α, dA_lane, tmp)
         if diag == 'U'
-            tmp .-= α .* tmp2
+            tmp .-= α .* X
         end
         BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
         dB_lane .-= tmp

@@ -124,20 +124,22 @@ function frule!!(
     diag = primal(_diag)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
+    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
+    # it and copy per lane.
+    X = copy(B)
+    LAPACK.trtrs!(uplo, trans, diag, A, X)
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
-        tmp = copy(B)
-        LAPACK.trtrs!(uplo, trans, diag, A, tmp)
-        tmp2 = copy(tmp)
+        tmp = copy(X)
         if diag == 'N'
             a = uplo == 'L' ? LowerTriangular(dA_lane) : UpperTriangular(dA_lane)
             lmul!(trans == 'N' ? a : a', tmp)
         else
             a = uplo == 'L' ? UnitLowerTriangular(dA_lane) : UnitUpperTriangular(dA_lane)
             lmul!(trans == 'N' ? a : a', tmp)
-            tmp .-= tmp2
+            tmp .-= X
         end
         LAPACK.trtrs!(uplo, trans, diag, A, tmp)
         dB_lane .-= tmp
@@ -718,7 +720,7 @@ function frule!!(
     # applying the storage weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse
     # `rrule!!` encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
     dy_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -758,12 +760,12 @@ function frule!!(
     d = det(F)
     if iszero(d)
         zero_parts = ntuple(_ -> zero(P), Val(Nw))
-        return Lifted{P,Nw}(d, NDual{P,Nw}(d, zero_parts))
+        return Lifted{P,Nw}(d, _scalar_ndual(d, zero_parts))
     end
     Sinv = inv(F)
     # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
     dy_lanes = ntuple(k -> d * dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
-    return Lifted{P,Nw}(d, NDual{P,Nw}(d, dy_lanes))
+    return Lifted{P,Nw}(d, _scalar_ndual(d, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -808,15 +810,15 @@ function frule!!(
     y = (ld, s)
     zero_parts = ntuple(_ -> zero(P), Val(Nw))
     if iszero(s)
-        ld_v = NDual{P,Nw}(ld, zero_parts)
-        s_v = NDual{P,Nw}(s, zero_parts)
+        ld_v = _scalar_ndual(ld, zero_parts)
+        s_v = _scalar_ndual(s, zero_parts)
         return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
     end
     Sinv = inv(F)
     # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
     ld_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
-    ld_v = NDual{P,Nw}(ld, ld_lanes)
-    s_v = NDual{P,Nw}(s, zero_parts)
+    ld_v = _scalar_ndual(ld, ld_lanes)
+    s_v = _scalar_ndual(s, zero_parts)
     return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
 end
 function rrule!!(

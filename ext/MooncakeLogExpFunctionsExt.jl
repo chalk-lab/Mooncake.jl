@@ -154,8 +154,8 @@ function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
     ::Lifted{typeof(logsumexp),Nw},
-    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
-) where {Nw,P<:IEEEFloat,D}
+    x::Lifted{A,Nw,NDualArray{P,Nw,D,A,NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
     _x = primal(x)
     kw = primal(kwargs)
     y = logsumexp(_x; kw...)
@@ -188,6 +188,17 @@ function frule!!(
         end
         s
     end
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+end
+# Dense non-`Array` storage (e.g. `CuArray`): the same per-lane reduction via broadcast,
+# since scalar indexing is unavailable. The `Array` loop method above is strictly more
+# specific and keeps the 0-alloc CPU path.
+function frule!!(
+    ::Lifted{typeof(logsumexp),Nw}, x::Lifted{A,Nw,NDualArray{P,Nw,D,A,NDual{P,Nw}}}
+) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
+    _x = primal(x)
+    y = logsumexp(_x)
+    dy_lanes = ntuple(lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y)), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 # Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
@@ -293,9 +304,9 @@ end
 # Per-lane in-place `sum!` into `tangent(out).partials[lane]`.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
-    out::Lifted{Array{P,Do},Nw,NDualArray{P,Nw,Do,Array{P,Do},NDual{P,Nw}}},
-    x::Lifted{Array{P,Dx},Nw,NDualArray{P,Nw,Dx,Array{P,Dx},NDual{P,Nw}}},
-) where {Nw,P<:IEEEFloat,Do,Dx}
+    out::Lifted{Ao,Nw,NDualArray{P,Nw,Do,Ao,NDual{P,Nw}}},
+    x::Lifted{Ax,Nw,NDualArray{P,Nw,Dx,Ax,NDual{P,Nw}}},
+) where {Nw,P<:IEEEFloat,Do,Dx,Ao<:AbstractArray{P,Do},Ax<:AbstractArray{P,Dx}}
     _x = primal(x)
     y = primal(out)
     logsumexp!(y, _x)
