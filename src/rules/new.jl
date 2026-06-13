@@ -315,3 +315,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 end
 
 derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
+
+@static if VERSION >= v"1.11"
+    function throwing_rule_test_cases(::Val{:new})
+        # Forward `_new_` on a type whose canonical V is a dedicated container (not a
+        # struct-lift wrapper) must fail with the clear coherence error pointing at the
+        # supported primitive (`memoryrefnew` for `MemoryRef`), not a baffling MethodError
+        # from the backing construction.
+        mem = fill!(Memory{Float64}(undef, 3), 1.0)
+        ref = memoryref(mem)
+        cases = Any[(
+            "memoryrefnew",
+            _new_,
+            (
+                zero_lifted(Val(1), MemoryRef{Float64}),
+                zero_lifted(Val(1), ref.ptr_or_offset),
+                zero_lifted(Val(1), mem),
+            ),
+        )]
+        return cases, Any[mem, ref]
+    end
+end
