@@ -27,6 +27,11 @@ struct ScalarBox
     x::Float64
 end
 
+mutable struct IntScaler
+    a::Int
+end
+(s::IntScaler)(v) = s.a * sum(v)
+
 mutable struct AliasedPair
     a::Vector{Float64}
     b::Vector{Float64}
@@ -786,6 +791,18 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.get_tangent_field(uninit_box_grad, :x) == 2 * x
             @test !Mooncake.is_init(uninit_y_grad) || Mooncake.val(uninit_y_grad) == 0.0
 
+            # The packable path must evaluate the CALL-time `f`, not the prepare-time
+            # instance captured in the seed (regression: a value-stateful non-diff
+            # callable silently used stale state).
+            sc_cache = Mooncake.prepare_derivative_cache(
+                IntScaler(1), collect(1.0:4.0); config=Mooncake.Config(; kwargs...)
+            )
+            sc_val, sc_grad = Mooncake.value_and_gradient!!(
+                sc_cache, IntScaler(2), collect(1.0:4.0)
+            )
+            @test sc_val == 20.0
+            @test sc_grad[2] == fill(2.0, 4)
+
             # An in-place-mutating `f` must not compound across packable chunks: the seed
             # primals are restored from the user's arrays at the top of every chunk
             # (regression: y and the chunk-2 gradient slots were silently wrong).
@@ -813,6 +830,28 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test closure_y == 3.0 * x
             @test closure_grad[2] == 3.0
             @test Mooncake.get_tangent_field(closure_grad[1], :c) == x
+
+            # Width-N Lifted inputs against a cache without a chunk rule (scalar dof → no
+            # chunk built), and against a chunk rule of a different width, must raise a
+            # clear PreparedCacheError, not a MethodError/typeassert.
+            sq = z -> z^2
+            scalar_cache = Mooncake.prepare_derivative_cache(
+                sq, 1.5; config=Mooncake.Config(; kwargs...)
+            )
+            w3 = Mooncake.Lifted{Float64,3}(
+                1.5, Mooncake.Nfwd.NDual{Float64,3}(1.5, (1.0, 0.0, 0.0))
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                scalar_cache, Mooncake.zero_lifted(Val(3), sq), w3
+            )
+            wide_cache = Mooncake.prepare_derivative_cache(
+                mut_f, collect(1.0:12.0); config=Mooncake.Config(; kwargs...)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                wide_cache,
+                Mooncake.zero_lifted(Val(3), mut_f),
+                Mooncake.randn_lifted(Val(3), Xoshiro(1), collect(1.0:12.0)),
+            )
 
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)

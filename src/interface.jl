@@ -1245,8 +1245,7 @@ end
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
 !!! note
-    Cache construction stays lazy and does not execute `f(x...)`, whether the prepared
-    cache later runs through the IR-based `frule!!` path or an `Nfwd` fast path.
+    Cache construction stays lazy and does not execute `f(x...)`.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1297,9 +1296,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus the
     # inert `f_seed`. `nothing` for every other shape, which uses the generic gradient path.
     gradient_seed = let args = Base.tail(fx)
+        # The same-eltype requirement mirrors the packable method's dispatch
+        # (`x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype
+        # seed would be dead cache weight that dispatch can never reach.
         if gradient_chunk_size >= 1 &&
             !isempty(args) &&
-            all(a -> a isa AbstractVector{<:IEEEFloat}, args) &&
+            first(args) isa AbstractVector{<:IEEEFloat} &&
+            all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
             packable
             W = gradient_chunk_size
             (
@@ -1352,14 +1355,16 @@ end
 """
     value_and_gradient!!(cache::FCache, f, x...)
 
-Compute the value and gradient of a scalar-returning function via the generic chunked path:
-per chunk, seed `W = gradient_chunk_size` standard-basis directions, run the width-dispatched
-[`value_and_derivative!!`](@ref) (chunk rule for `W > 1`, single rule for `W == 1`), then
-accumulate each lane's directional derivative into gradient storage.
+Compute the value and gradient of the scalar-returning `f` at `x...` using forward-mode AD
+(the gradient is assembled from standard-basis directional derivatives, evaluated in chunks
+of the cache's resolved chunk width). This overload exists so callers can prepare a forward
+cache once, then use it either for directional derivatives via
+[`value_and_derivative!!`](@ref) or for full gradients.
 
-This overload exists so callers can prepare a forward cache once, then use it either for
-directional derivatives via [`value_and_derivative!!`](@ref) or full gradients via chunked
-forward mode.
+!!! warning
+    `cache` owns any mutable state returned by this function: mutable components of the
+    returned gradients will be overwritten if you call this function again with the same
+    `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
 function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     input_primals = (f, x...)
@@ -1379,7 +1384,9 @@ function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     total_dof = dof(native_gradients)
 
     if total_dof == 0
-        output = cache.single_rule(tuple_map(lift, input_primals, native_gradients)...)
+        output = __call_rule(
+            cache.single_rule, tuple_map(lift, input_primals, native_gradients)
+        )
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         if isnothing(cache.input_tangents)
@@ -1503,7 +1510,7 @@ end
     tangent_type(F) === NoTangent ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
     _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
-    output = cache.single_rule(lift(f, NoTangent()), lift(x, one(x)))
+    output = __call_rule(cache.single_rule, (lift(f, NoTangent()), lift(x, one(x))))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = (NoTangent(), last(unlift(output)))
@@ -1544,16 +1551,20 @@ function value_and_gradient!!(
     # would re-dispatch here).
     seed === nothing &&
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
-    f_seed, arg_seeds, grad_bufs = seed
+    f_seed_stored, arg_seeds, grad_bufs = seed
+    # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
+    # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
+    # guaranteed by the packability gate, so this is a free isbits rewrap.
+    f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
     z = zero(T)
     for i in 1:N
         fill!(grad_bufs[i], z)
     end
-    dof = sum(length, xs)
+    total_dof = sum(length, xs)
     W = _lifted_width(f_seed)
     y = z
     s = 1
-    while s <= dof
+    while s <= total_dof
         # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales the
         # partials) during the previous chunk's run, so restore the primals from the user's
         # arrays and zero the partials before setting this chunk's basis directions — otherwise
@@ -1566,7 +1577,7 @@ function value_and_gradient!!(
             for lane in 1:W
                 fill!(nda.partials[lane], z)
                 slot = s + lane - 1
-                (slot <= dof && off < slot <= off + len) &&
+                (slot <= total_dof && off < slot <= off + len) &&
                     (nda.partials[lane][slot - off] = one(T))
             end
             off += len
@@ -1582,7 +1593,7 @@ function value_and_gradient!!(
             len = length(xs[i])
             for lane in 1:W
                 slot = s + lane - 1
-                if slot <= dof && off < slot <= off + len
+                if slot <= total_dof && off < slot <= off + len
                     gb[slot - off] += tangent(output, lane)
                 end
             end
@@ -1629,7 +1640,22 @@ end
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    return __call_rule(cache.chunk_rule, fx)
+    rule = cache.chunk_rule
+    rule === nothing && throw(
+        PreparedCacheError(
+            "This cache holds no chunk rule: width-N Lifted inputs require the cache to " *
+            "have been prepared with chunk_size > 1 (resolved chunk width " *
+            "$(getfield(cache, :gradient_chunk_size))).",
+        ),
+    )
+    W = getfield(cache, :gradient_chunk_size)
+    _lifted_width(first(fx)) == W || throw(
+        PreparedCacheError(
+            "Lifted inputs have chunk width $(_lifted_width(first(fx))), but this " *
+            "cache's chunk rule was built at width $W.",
+        ),
+    )
+    return __call_rule(rule, fx)
 end
 
 """
@@ -1639,7 +1665,7 @@ Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to c
 
 Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 
-As with all functionality in Mooncake, `f` and `x` are returned to their original state: if `f` mutates itself or `x` in place, they are restored, so the inputs are not mutated.
+The arguments in `x` are returned to their original state: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the inputs are not mutated. `f` itself is not snapshotted — a callable that mutates its own fields is not restored.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
