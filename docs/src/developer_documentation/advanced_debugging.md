@@ -44,15 +44,15 @@ show_world_info(ins)
 
 ### Reverse mode stages
 
-`:raw` → `:normalized` → `:bbcode` → `:fwd_ir` / `:rvs_ir` → `:optimized_fwd` / `:optimized_rvs`
+`:raw` → `:normalized` → `:cfg_blocks` → `:fwd_ir` / `:rvs_ir` → `:optimized_fwd` / `:optimized_rvs`
 
 ### Forward mode stages
 
-`:raw` → `:normalized` → `:dual_ir` → `:optimized`
+`:raw` → `:normalized` → `:cfg_blocks` → `:dual_ir` → `:optimized`
 
 !!! note
-    The inspection tool also shows a `:bbcode` stage for cross-mode comparison,
-    but forward mode does not use BBCode internally.
+    The inspection tool also shows a `:cfg_blocks` stage for cross-mode comparison,
+    but forward mode does not use `CFGBlock`s internally.
 
 !!! note
     Primitive signatures such as `sin` do not generate AD IR stages here. Mooncake
