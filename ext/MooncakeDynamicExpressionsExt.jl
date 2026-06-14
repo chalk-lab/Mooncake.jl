@@ -806,27 +806,21 @@ function Mooncake.TestUtils.populate_address_map_internal(
 end
 
 function Mooncake.TestUtils.has_equal_data_internal(
-    x::N, y::N, equndef::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::N, y::N, equndef::Bool, d::IdDict{Any,Bool}
 ) where {T,N<:AbstractExpressionNode{T}}
-    idp = (objectid(x), objectid(y))
+    idp = (x, y)
     # Just use regular `AbstractExpressionNode` Base.:(==)
     return get!(() -> x == y, d, idp)
 end
 
 function Mooncake.TestUtils.has_equal_data_internal(
-    t::TangentNode{Tv,D},
-    s::TangentNode{Tv,D},
-    equndef::Bool,
-    d::Dict{Tuple{UInt,UInt},Bool},
+    t::TangentNode{Tv,D}, s::TangentNode{Tv,D}, equndef::Bool, d::IdDict{Any,Bool}
 ) where {Tv,D}
-    idp = (objectid(t), objectid(s))
+    idp = (t, s)
     return get!(() -> _has_equal_data_internal_helper(t, s, equndef, d), d, idp)
 end
 function _has_equal_data_internal_helper(
-    t::TangentNode{Tv,D},
-    s::TangentNode{Tv,D},
-    equndef::Bool,
-    d::Dict{Tuple{UInt,UInt},Bool},
+    t::TangentNode{Tv,D}, s::TangentNode{Tv,D}, equndef::Bool, d::IdDict{Any,Bool}
 ) where {Tv,D}
     deg = t.degree
     return deg == s.degree && if t.degree == 0
