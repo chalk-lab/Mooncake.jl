@@ -84,7 +84,9 @@ NNlib = "0.9"
 PrecompileTools = "1"
 Pkg = "1"
 Random = "1"
-Revise = "3.0 - 3.12"
+# Never imported; preventing force_latest_compatible_version from picking
+# JET 0.11 (Julia ≥ 1.12) on 1.11/LTS.
+Revise = "3"
 SLEEFPirates = "0.6.43"
 SpecialFunctions = "2"
 StableRNGs = "1"
