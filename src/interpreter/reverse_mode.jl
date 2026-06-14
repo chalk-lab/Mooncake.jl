@@ -1300,7 +1300,7 @@ function generate_ir(
     fwd_ret_type = forwards_ret_type(ir)
     rvs_ret_type = pullback_ret_type(ir)
 
-    # Check before normalise! to avoid a cryptic CC.verify_ir failure downstream.
+    # Check for unsupported features before normalise! runs.
     for inst in stmt(ir.stmts)
         is_enter = Meta.isexpr(inst, :enter)
         @static if isdefined(Core, :EnterNode)
@@ -1315,6 +1315,20 @@ function generate_ir(
                 "conditional checks), or providing a custom rrule!! for the relevant " *
                 "function. See the known limitations documentation for more context.",
             )
+        end
+        # On Julia 1.12+, global writes compile to setglobal! rather than a non-const
+        # GlobalRef in Expr arg position. verify_ir no longer catches this, so build_rrule
+        # would silently succeed but crash at runtime with a missing rrule!!. Detect it
+        # here to give a loud compile-time error.
+        @static if VERSION > v"1.12-"
+            if Meta.isexpr(inst, :call) && inst.args[1] == GlobalRef(Base, :setglobal!)
+                unhandled_feature(
+                    "Differentiating functions which write to non-const global variables " *
+                    "is not supported by Mooncake.jl. The code being differentiated " *
+                    "contains a write to a non-const global variable. Consider refactoring " *
+                    "to avoid global writes, or providing a custom rrule!!.",
+                )
+            end
         end
     end
 
