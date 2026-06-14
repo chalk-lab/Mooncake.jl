@@ -201,42 +201,40 @@ that takes an additional `visited` dictionary to track visited objects and avoid
 recursion in cases of circular references.
 """
 function has_equal_data(x, y; equal_undefs=true)
-    return has_equal_data_internal(x, y, equal_undefs, Dict{Tuple{UInt,UInt},Bool}())
+    return has_equal_data_internal(x, y, equal_undefs, IdDict{Any,Bool}())
 end
 
-function has_equal_data_internal(
-    x::Type, y::Type, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
-)
+function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
     return x == y
 end
 function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:String}
     return x == y
 end
 function has_equal_data_internal(
-    x::Core.TypeName, y::Core.TypeName, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::Core.TypeName, y::Core.TypeName, equal_undefs::Bool, d::IdDict{Any,Bool}
 )
     return x == y
 end
 function has_equal_data_internal(
-    x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
     # Pass an atol such that we can compare approximately against 0 values.
     return isapprox(x, y; atol=(√eps(P)), nans=true)
 end
 function has_equal_data_internal(
-    x::Module, y::Module, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::Module, y::Module, equal_undefs::Bool, d::IdDict{Any,Bool}
 )
     return x == y
 end
 function has_equal_data_internal(
-    x::GlobalRef, y::GlobalRef; equal_undefs=true, d::Dict{Tuple{UInt,UInt},Bool}
+    x::GlobalRef, y::GlobalRef; equal_undefs=true, d::IdDict{Any,Bool}
 )
     return x.mod == y.mod && x.name == y.name
 end
 function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Array}
     size(x) != size(y) && return false
 
@@ -252,7 +250,7 @@ function has_equal_data_internal(
     # - We consider "circular references to itself" as equal data for this subcomponent.
     # - However, other parts of x and y may still differ, so we continue checking.
 
-    id_pair = (objectid(x), objectid(y))
+    id_pair = (x, y)
     if haskey(d, id_pair)
         return d[id_pair]
     end
@@ -270,25 +268,25 @@ function has_equal_data_internal(
     return all(equality)
 end
 function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
 
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
     @eval function has_equal_data_internal(
-        x::$T, y::$T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+        x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
     )
         return x == y
     end
 end
 
 function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T}
     isprimitivetype(T) && return isequal(x, y)
 
-    id_pair = (objectid(x), objectid(y))
+    id_pair = (x, y)
     if haskey(d, id_pair)
         return d[id_pair]
     end
@@ -325,12 +323,12 @@ function has_equal_data_internal(
     end
 end
 function has_equal_data_internal(
-    x::T, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T,P}
     return false
 end
 function has_equal_data_internal(
-    x::T, y::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Dict}
     f(x, y) = has_equal_data_internal(x, y, equal_undefs, d)
     return length(x) == length(y) &&
@@ -1693,10 +1691,10 @@ function test_equality_comparison(x)
 
     # Check that the internal methods have been implemented.
     function _has_equal_data(x, y)
-        return has_equal_data_internal(x, y, true, Dict{Tuple{UInt,UInt},Bool}())
+        return has_equal_data_internal(x, y, true, IdDict{Any,Bool}())
     end
     function _has_equal_data_up_to_undefs(x, y)
-        return has_equal_data_internal(x, y, false, Dict{Tuple{UInt,UInt},Bool}())
+        return has_equal_data_internal(x, y, false, IdDict{Any,Bool}())
     end
 
     @test _has_equal_data(x, x) isa Bool
