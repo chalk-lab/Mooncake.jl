@@ -978,6 +978,23 @@ function frule!!(
         new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_partials)
     )
 end
+# Element-wise-V `Memory` copy: the V is itself a `Memory` (per-element forward Vs), not the
+# parallel-arrays `NDualArray`. Covers non-diff concrete elements (`Memory{NoDual}`, e.g. the
+# `Memory{UInt8}` metadata `copy(::Dict)` copies on 1.11+) and abstract `Memory{Any}`. Shallow-copy
+# the V to match `copy`'s own shallow element semantics, mirroring the reverse `rrule!!`. The
+# `NDualArray`-V method above is more specific and is not a `Memory`, so the two never overlap.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_genericmemory_copy},Nw},
+    ::Lifted,
+    ::Lifted{Tuple{Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    x::Lifted{<:Memory,Nw,<:Memory},
+) where {Nw}
+    new_primal = copy(primal(x))
+    return Lifted{typeof(new_primal),Nw}(new_primal, copy(tangent(x)))
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_genericmemory_copy}},
