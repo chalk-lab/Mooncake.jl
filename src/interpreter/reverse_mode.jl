@@ -1301,6 +1301,7 @@ function generate_ir(
     rvs_ret_type = pullback_ret_type(ir)
 
     # Check for unsupported features before normalise! runs.
+    setglobal_calls = (GlobalRef(Base, :setglobal!), GlobalRef(Core, :setglobal!))
     for inst in stmt(ir.stmts)
         is_enter = Meta.isexpr(inst, :enter)
         @static if isdefined(Core, :EnterNode)
@@ -1316,17 +1317,17 @@ function generate_ir(
                 "function. See the known limitations documentation for more context.",
             )
         end
-        # On Julia 1.12+, global writes compile to setglobal! rather than a non-const
-        # GlobalRef in Expr arg position. verify_ir no longer catches this, so build_rrule
-        # would silently succeed but crash at runtime with a missing rrule!!. Detect it
-        # here to give a loud compile-time error.
+        # Julia 1.12+ lowers non-const global writes (`global x = y`) to
+        # Base.setglobal! on 1.12 and Core.setglobal! on 1.13+.
+        # CC.verify_ir does not reject these calls because they are valid IR, so
+        # reject them here before rule construction reaches a missing rrule!!.
         @static if VERSION > v"1.12-"
-            if Meta.isexpr(inst, :call) && inst.args[1] == GlobalRef(Base, :setglobal!)
+            if Meta.isexpr(inst, :call) && inst.args[1] in setglobal_calls
                 unhandled_feature(
-                    "Differentiating functions which write to non-const global variables " *
-                    "is not supported by Mooncake.jl. The code being differentiated " *
-                    "contains a write to a non-const global variable. Consider refactoring " *
-                    "to avoid global writes, or providing a custom rrule!!.",
+                    "Mooncake.jl does not support differentiating code that assigns to " *
+                    "non-const global variables. Pass the state explicitly, return the " *
+                    "updated value, or provide a custom rrule!!. See the Known Limitations" *
+                    "documentation for more context.",
                 )
             end
         end
