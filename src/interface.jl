@@ -51,8 +51,8 @@ end
 function throw_val_and_grad_ret_type_error(y)
     throw(
         ValueAndGradientReturnTypeError(
-            "When calling __value_and_gradient!!, return value of primal must be a " *
-            "subtype of IEEEFloat. Instead, found value of type $(typeof(y)).",
+            "Computing a gradient requires the primal `f(x...)` to return a subtype of " *
+            "IEEEFloat. Instead, found a value of type $(typeof(y)).",
         ),
     )
 end
@@ -69,7 +69,7 @@ function Base.showerror(io::IO, err::ValueAndPullbackReturnTypeError)
     _print_boxed_error(io, split("ValueAndPullbackReturnTypeError: $(err.msg)", '\n'))
 end
 
-function throw_forward_ret_type_error(y)
+function throw_ptr_in_output_error(y)
     throw(
         ValueAndPullbackReturnTypeError(
             "Found a value of type $(typeof(y)) in output, but output is not permitted to be or contain a pointer. This is because the amount of memory to which it refers is unknown, therefore Mooncake.jl is unable to allocate appropriate memory for its gradients.",
@@ -293,13 +293,14 @@ end
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
 @inline _cache_x_input_specs(cache::Cache) = Base.tail(getfield(cache, :input_specs))
 
-@inline function _cache_type_size_summary(::Type{T}) where {T}
+# Human-readable size/shape category for a cached argument's type, used only by `show`.
+# `sizestr` is spliced into the array branch: a concrete `InputSpec` knows the size, while
+# the type-only summary does not.
+@inline function _cache_size_summary(::Type{T}, sizestr) where {T}
     return if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
         "scalar"
     elseif T <: AbstractArray
-        "size unknown"
-    elseif T === Any
-        "unknown"
+        sizestr
     elseif T <: NamedTuple
         "named tuple"
     elseif T <: Tuple
@@ -314,7 +315,7 @@ end
 end
 
 @inline _cache_type_summary(::Type{T}) where {T} =
-    T === Any ? "unknown" : "$(T) ($(_cache_type_size_summary(T)))"
+    T === Any ? "unknown" : "$(T) ($(_cache_size_summary(T, "size unknown")))"
 
 function _cache_print_io_summary(io::IO, input_specs::Tuple, output_summary)
     for (i, spec) in enumerate(input_specs)
@@ -376,7 +377,7 @@ function __exclude_func_with_unsupported_output(fx)
 end
 
 """
-    __exclude_unsupported_output_internal(y::T, address_set::Set{UInt}) where {T}
+    __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
 
 For checking if output`y` is a valid Mutable/immutable composite or a primitive type.
 Performs a recursive depth first search over the function output `y` with an `isbitstype()` check base case. The visited memory addresses are stored inside `address_set`.
@@ -715,7 +716,7 @@ end
 
 # in case f(args...) directly outputs a Ptr{T} or it contains a nested Ptr{T}.
 function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
-    return throw_forward_ret_type_error(y)
+    return throw_ptr_in_output_error(y)
 end
 
 """
@@ -1064,25 +1065,7 @@ end
 
 InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
 
-@inline function _cache_spec_size_summary(spec::InputSpec{T}) where {T}
-    return if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
-        "scalar"
-    elseif T <: AbstractArray
-        "size $(spec.size)"
-    elseif T <: NamedTuple
-        "named tuple"
-    elseif T <: Tuple
-        "tuple"
-    elseif T <: Function
-        "function"
-    elseif fieldcount(T) > 0 || Base.ismutabletype(T)
-        "struct"
-    else
-        "value"
-    end
-end
-
-@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_spec_size_summary(spec)))"
+@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_size_summary(T, "size $(spec.size)")))"
 
 const _MAX_CHUNK_WIDTH = 8
 
@@ -1146,18 +1129,6 @@ end
         $checks
         return fx
     end
-end
-
-# fcache gradient bookkeeping
-@noinline function _throw_uninit_field_error(::Type{P}, n::Int) where {P}
-    throw(
-        ArgumentError(
-            "Forward-mode gradient seeding encountered an undefined field " *
-            "`$(fieldname(P, n))` in a value of type `$P`, but that field is marked " *
-            "always-initialised. This object is in a partially initialised state that " *
-            "Mooncake cannot seed automatically.",
-        ),
-    )
 end
 
 # `dof(t)` counts the differentiable scalar degrees of freedom of a TANGENT `t`, so the
@@ -1245,7 +1216,10 @@ end
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
 !!! note
-    Cache construction stays lazy and does not execute `f(x...)`.
+    Cache construction stays lazy and does not execute `f(x...)`. Unlike the reverse
+    pullback cache, the forward output is therefore not pre-validated: an output that is or
+    contains a `Ptr` (or aliases/cycles) surfaces inside the rule at evaluation time rather
+    than as a `ValueAndPullbackReturnTypeError` at preparation.
 """
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
@@ -1360,6 +1334,10 @@ Compute the value and gradient of the scalar-returning `f` at `x...` using forwa
 of the cache's resolved chunk width). This overload exists so callers can prepare a forward
 cache once, then use it either for directional derivatives via
 [`value_and_derivative!!`](@ref) or for full gradients.
+
+The arguments in `x` are returned to their original state: if `f` mutates them in place,
+they are restored from a cache-owned snapshot. `f` itself is not snapshotted — a callable
+that mutates its own fields is not restored.
 
 !!! warning
     `cache` owns any mutable state returned by this function: mutable components of the
@@ -1987,7 +1965,8 @@ dimension over the reverse-mode gradient function.
 
 !!! note
     This path uses Mooncake's generic public forward cache over the captured
-    reverse-mode gradient closure.
+    reverse-mode gradient closure, and (via [`prepare_hvp_cache`](@ref)) calls `f(x...)`
+    once during cache preparation.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
@@ -2168,10 +2147,24 @@ end
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
+    # A gradient-prepared `Cache` has no output buffer (`y_cache === nothing`) — it shares the
+    # `Cache` type with a pullback cache and so passes the input-only `_validate_prepared_cache`,
+    # but the Jacobian needs the recorded output shape to seed rows. Point the user at the right
+    # constructor rather than letting `_validate_jacobian_output(nothing, …)` report "got Nothing".
     y_cache = cache.y_cache
+    y_cache === nothing && throw(
+        ArgumentError(
+            "value_and_jacobian!!(::Cache, …) needs a cache from `prepare_pullback_cache`, " *
+            "which records the output shape. This `Cache` came from `prepare_gradient_cache` " *
+            "(scalar output, no buffer); rebuild it with `prepare_pullback_cache(f, x)`.",
+        ),
+    )
     Ty = _validate_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dof)
+    # Reverse mode restores any in-place mutation of `x` on the pullback, so — unlike the
+    # forward `(::FCache)` method above, which snapshots `x` explicitly — each
+    # `value_and_pullback!!` call below leaves `x` unchanged with no snapshot here.
     if isempty(ȳ)
         y, _ = value_and_pullback!!(cache, ȳ, f, x)
         return y, J
