@@ -22,6 +22,9 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    # '1.12-nightly' tracks the in-development Julia 1.12.7 (release-1.12 branch).
+    # Allowed to fail so upstream breakage is tracked without blocking PRs/merges.
+    continue-on-error: ${{ matrix.version == '1.12-nightly' }}
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +57,7 @@ jobs:
         version:
           - 'lts'
           - '1.12'
+          - '1.12-nightly'  # in-dev Julia 1.12.7 (release-1.12); non-blocking, see continue-on-error above
         arch:
           - x64
         include:
