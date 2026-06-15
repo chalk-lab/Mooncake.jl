@@ -182,6 +182,13 @@ end
     end
 end
 
+@testset "get_inner_rrule is forward-over-reverse only" begin
+    for_rule = Mooncake.compile_for_rule(x -> sum(x .* x), [1.0, 2.0])
+    @test_throws "forward-over-reverse only" Mooncake.rrule!!(
+        zero_fcodual(Mooncake.get_inner_rrule), zero_fcodual(for_rule)
+    )
+end
+
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
     @testset "gradient correctness for x^4" begin
         f(x) = x[1]^4.0
@@ -229,6 +236,34 @@ end
         @test grad_y ≈ [6.0] rtol = 1e-10
         @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
         @test hvp_y ≈ [0.0] rtol = 1e-10
+    end
+
+    @testset "primitive f (DerivedFoRRule{Nothing} path)" begin
+        # When `f` is itself a reverse-mode primitive, `compile_for_rule` returns
+        # `DerivedFoRRule{Nothing}` and `grad_f` routes through `value_and_gradient!!`
+        # rather than an inner derived rrule.
+        @testset "single argument" begin
+            f = sum  # linear ⇒ zero Hessian
+            x = [1.0, 2.0, 3.0]
+            fval, grad, hvp = value_and_hvp!!(
+                prepare_hvp_cache(f, x), f, [1.0, 0.0, 0.0], x
+            )
+            @test fval ≈ 6.0
+            @test grad ≈ [1.0, 1.0, 1.0]
+            @test hvp ≈ [0.0, 0.0, 0.0]
+        end
+        @testset "multiple arguments" begin
+            f = hypot  # r = √(a²+b²); H = [b² -ab; -ab a²]/r³
+            a, b = 3.0, 4.0
+            fval, grads, hvps = value_and_hvp!!(
+                prepare_hvp_cache(f, a, b), f, (1.0, 0.0), a, b
+            )
+            @test fval ≈ 5.0
+            @test grads[1] ≈ 0.6 rtol = 1e-10
+            @test grads[2] ≈ 0.8 rtol = 1e-10
+            @test hvps[1] ≈ 0.128 rtol = 1e-10
+            @test hvps[2] ≈ -0.096 rtol = 1e-10
+        end
     end
 
     # Regression for https://github.com/chalk-lab/Mooncake.jl/issues/1193.
