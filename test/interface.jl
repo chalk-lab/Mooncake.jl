@@ -1163,13 +1163,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 hvp_cache, sin, 1.0
             )
 
-            # A gradient-prepared Cache (scalar output, y_cache===nothing) fed to the reverse
-            # jacobian must point at prepare_pullback_cache, not report "got Nothing".
-            grad_cache_for_jac = Mooncake.prepare_gradient_cache(sum, x_jac)
-            @test_throws "prepare_pullback_cache" Mooncake.value_and_jacobian!!(
-                grad_cache_for_jac, sum, x_jac
-            )
-
             f_mut_jac = x -> (x .*= 2; x .^ 2)
             x_mut_jac = [1.5, -2.0]
             rev_cache_mut_jac = Mooncake.prepare_pullback_cache(

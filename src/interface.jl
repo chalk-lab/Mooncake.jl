@@ -886,11 +886,15 @@ The API guarantees that tangents are initialized at zero before the first autodi
     else
         InputSpec(typeof(output_primal), ())
     end
+    # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient Cache is
+    # also a well-formed pullback Cache. `_copy_output` suffices for the isbits scalar output — no
+    # `_copy_to_output!!` fill needed (and the gradient run path never reads it anyway).
+    y_cache = _copy_output(primal(y))
     if config.friendly_tangents
         dests = tuple(map(friendly_tangent_cache, fx)...)
-        return Cache(rule, nothing, tangents, dests, nothing, input_specs, output_spec)
+        return Cache(rule, y_cache, tangents, dests, nothing, input_specs, output_spec)
     else
-        return Cache(rule, nothing, tangents, nothing, nothing, input_specs, output_spec)
+        return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
     end
 end
 
@@ -2147,18 +2151,7 @@ end
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    # A gradient-prepared `Cache` has no output buffer (`y_cache === nothing`) — it shares the
-    # `Cache` type with a pullback cache and so passes the input-only `_validate_prepared_cache`,
-    # but the Jacobian needs the recorded output shape to seed rows. Point the user at the right
-    # constructor rather than letting `_validate_jacobian_output(nothing, …)` report "got Nothing".
     y_cache = cache.y_cache
-    y_cache === nothing && throw(
-        ArgumentError(
-            "value_and_jacobian!!(::Cache, …) needs a cache from `prepare_pullback_cache`, " *
-            "which records the output shape. This `Cache` came from `prepare_gradient_cache` " *
-            "(scalar output, no buffer); rebuild it with `prepare_pullback_cache(f, x)`.",
-        ),
-    )
     Ty = _validate_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dof)
