@@ -121,9 +121,11 @@ struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
 end
 
-# Invoke the forward OpaqueClosure through `__call_rule`: on Julia 1.10 the `OpaqueClosure` method
-# routes the call via `jl_apply_generic` (no specsig OC call, avoiding the julia#51016/#61368
-# codegen segfaults) behind an argument-type guard; on Julia 1.11+ it is a direct specsig call.
+# Invoke the wrapped OpaqueClosure (`fwd_oc.oc`) directly rather than the `MistyClosure`
+# wrapper — the wrapper carries tangent metadata used elsewhere, not on this call path. The
+# call goes through `__call_rule`: on Julia 1.10 the `OpaqueClosure` method routes via
+# `jl_apply_generic` (no specsig OC call, avoiding the julia#51016/#61368 codegen segfaults)
+# behind an argument-type guard; on Julia 1.11+ it is a direct specsig call.
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
     args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
@@ -268,10 +270,12 @@ end
 """
     const_dual!(captures::Vector{Any}, stmt, ::Val{N}=Val(1))::Union{Lifted,Int}
 
-Build a `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose derivative is
-zero, so its tangent must be zeroed (an uninitialised array tangent would leak garbage into any
-op that reads the constant's tangent). If the resulting `Lifted` is a bits type, then it is returned. If it is not, then the `Lifted` is put into captures,
-and its location in `captures` returned.
+Build a width-`N` `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose
+derivative is zero, so its tangent must be zeroed (an uninitialised array tangent would leak
+garbage into any op that reads the constant's tangent). `N` is the chunk width, threaded into
+`zero_lifted(Val(N), v)` so the constant's V matches the surrounding chunked slots (`Val(1)`
+for a standard forward rule). If the resulting `Lifted` is a bits type, then it is returned. If
+it is not, then the `Lifted` is put into captures, and its location in `captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.

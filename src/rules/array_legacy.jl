@@ -143,7 +143,6 @@ function frule!!(
     end
     return Lifted{Nothing,N}(nothing, NoDual())
 end
-# Element-wise V: vectors of differentiable non-float elements; the tangent is a plain
 # Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
 # non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g. `Vector{Int}`
 # reached via `filter`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.

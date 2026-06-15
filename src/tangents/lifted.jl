@@ -3,7 +3,7 @@
 # `nfwd/Nfwd.jl` so the `NDual{T, N}` IEEEFloat carrier is in scope.
 #
 # Design note (forward vs reverse). The forward V is *type-precise*: `V ===
-# dual_type(P)` mirrors the primal, so differentiability (`NDual` vs `NoDual`),
+# dual_type(Val(N), P)` mirrors the primal, so differentiability (`NDual` vs `NoDual`),
 # wrapper nesting, and array layout (`NDualArray` vs element-wise array) are each distinct
 # *types*. Reverse (`CoDual`) is *runtime-uniform* — non-differentiability is the
 # value `NoFData`, and wrappers are flattened by a runtime `arrayify` — so one

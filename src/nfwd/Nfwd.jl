@@ -847,7 +847,7 @@ end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
 # NDual(y, zeros), and _pt_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
-# hits the same IEEE -0 canonicalization that the old Real/NDual division had.
+# hits the same IEEE -0 canonicalization that the existing Real/NDual division rule has.
 @inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2

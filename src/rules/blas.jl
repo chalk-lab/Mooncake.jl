@@ -422,13 +422,13 @@ for (jlfname, elty) in
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
-        lanes = ntuple(Val(Nw)) do lane
+        dresult_lanes = ntuple(Val(Nw)) do lane
             dX = _blas_lane_partial(_DX, lane)
             dY = _blas_lane_partial(_DY, lane)
             return BLAS.$jlfname(n, dX, incx, DY, incy) +
                    BLAS.$jlfname(n, DX, incx, dY, incy)
         end
-        return Lifted{$elty,Nw}(result, _scalar_ndual(result, lanes))
+        return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
     end
 end
 
