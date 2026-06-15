@@ -75,6 +75,17 @@ jobs:
           arch: ${{ matrix.arch }}
           include-all-prereleases: false
       - uses: julia-actions/cache@v3
+      # On in-development Julia ('-DEV' builds) JET refuses to load and ships an empty
+      # stub whose `test_opt`/`report_opt` just error. Set `JET_DEV_MODE` so the real
+      # JET loads and the JET-based checks actually run on 1.12-nightly. Scoped to that
+      # job so released-version jobs (and JET's `use_fixed_world` default) are untouched.
+      - name: Enable JET on in-dev Julia
+        if: matrix.version == '1.12-nightly'
+        run: |
+          cat > LocalPreferences.toml <<'EOF'
+          [JET]
+          JET_DEV_MODE = true
+          EOF
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         env:
