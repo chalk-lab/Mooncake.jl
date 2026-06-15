@@ -11,6 +11,16 @@ function foo(x)
     return y
 end
 
+# Helpers for the issue #1209 regression test. Defining `issue1209_inner(::Float64)` later
+# tightens `issue1209_callee`'s return type Float32->Float64, mimicking a mid-pass world
+# advance. `issue1209_lazy` reaches the callee statically (LazyFRule), `issue1209_dyn`
+# dynamically (DynamicFRule).
+issue1209_inner(x) = Float32(x) * 2.0f0
+@noinline issue1209_callee(x) = issue1209_inner(x)
+issue1209_lazy(x) = issue1209_callee(x)
+const ISSUE1209_FNS = Function[issue1209_callee]
+issue1209_dyn(x) = (ISSUE1209_FNS[1])(x)
+
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
@@ -50,5 +60,22 @@ end
         TestUtils.test_rule(
             StableRNG(123), f, 1.0; perf_flag=:none, is_primitive=false, mode=ForwardMode
         )
+    end
+
+    # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
+    # world advance; both lazy and dynamic must return the build-world result (Float32), not
+    # the post-advance world's (Float64).
+    @testset "stale rule world (issue #1209)" begin
+        lazy = Mooncake.build_frule(issue1209_lazy, 1.5)
+        dyn = Mooncake.build_frule(issue1209_dyn, 1.5)
+        @eval issue1209_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
+        lazy_out = Base.invokelatest(
+            lazy, Mooncake.zero_dual(issue1209_lazy), Mooncake.Dual(1.5, 1.0)
+        )
+        dyn_out = Base.invokelatest(
+            dyn, Mooncake.zero_dual(issue1209_dyn), Mooncake.Dual(1.5, 1.0)
+        )
+        @test Mooncake.primal(lazy_out) === 3.0f0
+        @test Mooncake.primal(dyn_out) === 3.0f0
     end
 end;

@@ -336,18 +336,24 @@ const GLOBAL_INTERPRETERS = Dict(
 )
 
 """
-    get_interpreter(mode::Type{<:Mode})
+    get_interpreter(mode::Type{<:Mode}; world::UInt=Base.get_world_counter())
 
-Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
-interpreter if one already exists for the current world age, otherwise creates a new one.
+Returns a `MooncakeInterpreter` for `mode` at `world`, defaulting to the current world age and
+served from a process-wide cache. A non-current `world` (e.g. when a Lazy/Dynamic rule rebuilds
+at its stored prediction world) yields a fresh, uncached interpreter, leaving the shared
+current-world cache untouched.
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter(mode::Type{<:Mode})
-    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
-        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
+function get_interpreter(mode::Type{<:Mode}; world::UInt=Base.get_world_counter())
+    return if world != Base.get_world_counter()
+        # Pinned older world (Lazy/Dynamic rule rebuild): fresh, never cached.
+        MooncakeInterpreter(DefaultCtx, mode; world)
+    elseif GLOBAL_INTERPRETERS[mode].world == world
+        GLOBAL_INTERPRETERS[mode]
+    else
+        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode; world)
     end
-    return GLOBAL_INTERPRETERS[mode]
 end
 
 """
