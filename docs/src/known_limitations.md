@@ -262,15 +262,19 @@ Honestly, your best bet is just to avoid differentiating functions whose argumen
 
 Reverse mode stores the tangent of a value as a separate object with the *same memory layout* as the
 primal, so a tangent pointer addresses standalone derivative storage. Forward mode instead interleaves
-each lane's partial alongside the primal inside an `NDual` / `NDualArray`, so a per-element partial has
-no standalone address of its own. This makes two contrived pointer patterns behave differently between
-the modes:
+each lane's partial alongside the primal inside the value's dual (`NDual` for a scalar field, a
+`MutableDual` for a mutable struct), so such a partial has no standalone address of its own. Two
+contrived pointer patterns are therefore unsupported in forward mode — and it fails loudly rather than
+silently miscomputing:
 
-- Round-tripping a value through its own address, e.g.
-  `pointerref(Base.bitcast(Ptr{Float64}, pointer_from_objref(Ref(x))), 1, 1)`. Reverse mode points the
-  tangent pointer at the standalone tangent object, so reading it back recovers the derivative. Forward
-  mode has no standalone tangent scalar to address (the partial lives at a non-zero offset inside the
-  `NDual`), so the reconstructed pointer reads the primal slot — the derivative is **not** propagated.
+- Round-tripping a **mutable struct** through its own object address, e.g.
+  `pointerref(Base.bitcast(Ptr{Float64}, pointer_from_objref(m)), 1, 1)` for a value `m` of
+  `mutable struct M; x::Float64; end`. Reverse mode points the tangent pointer at the standalone tangent
+  object, so reading it back recovers the derivative. Forward mode interleaves the partial inside the
+  struct's `MutableDual` — there is no parallel partials buffer at the object's address to point at — so
+  it raises a clear `ArgumentError` rather than reading the primal back as the derivative. (A `Ref` or
+  an `Array` *does* keep a parallel partials buffer — `NDualRef` / `NDualArray` — so the same round-trip
+  through one of those works in forward mode.)
 - `pointerset` into the pointer of an array of differentiable pointers, e.g.
   `pointerset(pointer(::Vector{Ptr{Float64}}), pointer(::Vector{Float64}), i, 1)`. Forward mode raises a
   clear `ArgumentError` (the interleaved tangent's element stride does not match a bare element pointer)
