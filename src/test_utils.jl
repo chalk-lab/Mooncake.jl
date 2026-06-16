@@ -375,6 +375,13 @@ const _NoDerivativeV = Union{
     Mooncake.Nfwd.NDualRef,
 }
 
+"""
+    populate_address_map_internal(m::AddressMap, primal, tangent)
+
+Fills `m` with pairs mapping from memory addresses in `primal` to corresponding memory
+addresses in `tangent`. If the same memory address appears multiple times in `primal`,
+throws an `AssertionError` if the same address is not mapped to in `tangent` each time.
+"""
 function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) where {P,T}
     isprimitivetype(P) && return m
     T === NoTangent && return m
@@ -2278,6 +2285,35 @@ functions for inspiration regarding how you might implement them for your type.
 # to `false`; its non-field interactions are still exercised.
 supports_field_access_interactions(::Type) = true
 
+"""
+    test_rule_and_type_interactions(rng::AbstractRNG, p)
+
+Check that a collection of standard functions for which we _ought_ to have a working rrule
+for `p` work, and produce the correct answer. For example, the `rrule!!` for `typeof` should
+work correctly on any type, we should have a working rule for `getfield` for any
+struct-type, and we should have a rule for `setfield!` for any mutable struct type.
+See extended help for more info.
+
+# Extended Help
+
+The purpose of this test is to ensure that, for any given `p`, the full range of primitive
+functions that _ought_ to work on it, do indeed work on it.
+
+This is one part of the interface where some care _might_ be required. If, for some reason,
+it should _never_ be the case that e.g. for a particular `p`, `getfield` should be called,
+then it may make no sense at all to run these tests. In such cases, the author of the type
+is responsible for knowing what they are doing. Please open an issue to discuss for your
+type if you are at all unsure what to do.
+
+When defining a custom tangent type for `P`, the functions that you will need to pay
+attention to writing rules for are
+- [`Mooncake._new_`](@ref)
+- [`Mooncake.lgetfield`](@ref)
+- [`Mooncake.lsetfield!`](@ref)
+
+In all cases, you may wish to consult the current implementations of `rrule!!` for these
+functions for inspiration regarding how you might implement them for your type.
+"""
 function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
     @nospecialize rng p
 

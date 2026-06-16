@@ -2135,32 +2135,6 @@ function _validate_jacobian_output(y, Tx)
     return Ty
 end
 
-"""
-    value_and_jacobian!!(cache::FCache, f, x)
-    value_and_jacobian!!(cache::Cache, f, x)
-
-Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued
-function `f` of a single vector input.
-
-The current implementation supports a single dense vector input and an
-`AbstractVector` output, both with the same `IEEEFloat` element type. The returned
-Jacobian is a dense matrix whose columns correspond to input coordinates.
-
-As with all functionality in Mooncake, `x` is returned to its original state: if `f`
-mutates `x` in place, it is restored, so the input is not mutated.
-
-!!! info
-    `cache` must be the output of [`prepare_derivative_cache`](@ref) or
-    [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
-    to construct the cache.
-
-!!! warning
-    With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
-    buffer owned by `cache` (reused to avoid per-call allocation, as the gradient and Hessian
-    paths already do) and is overwritten on the next call with the same cache. Copy it
-    (`copy`) before a subsequent call if you need to retain it. A reverse
-    [`prepare_pullback_cache`](@ref) cache returns a freshly allocated Jacobian.
-"""
 # Type-stable inner sweep for the zero-allocation packable Jacobian (function barrier, called from
 # the `@unstable` method below). Per chunk: restore the seed primal from `x`, set this chunk's
 # standard-basis columns in the seed's `NDualArray` partials in place, run the width-dispatched
@@ -2204,6 +2178,32 @@ function _fcache_jacobian_packable!!(
     return y, J
 end
 
+"""
+    value_and_jacobian!!(cache::FCache, f, x)
+    value_and_jacobian!!(cache::Cache, f, x)
+
+Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued
+function `f` of a single vector input.
+
+The current implementation supports a single dense vector input and an
+`AbstractVector` output, both with the same `IEEEFloat` element type. The returned
+Jacobian is a dense matrix whose columns correspond to input coordinates.
+
+As with all functionality in Mooncake, `x` is returned to its original state: if `f`
+mutates `x` in place, it is restored, so the input is not mutated.
+
+!!! info
+    `cache` must be the output of [`prepare_derivative_cache`](@ref) or
+    [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
+    to construct the cache.
+
+!!! warning
+    With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
+    buffer owned by `cache` (reused to avoid per-call allocation, as the gradient and Hessian
+    paths already do) and is overwritten on the next call with the same cache. Copy it
+    (`copy`) before a subsequent call if you need to retain it. A reverse
+    [`prepare_pullback_cache`](@ref) cache returns a freshly allocated Jacobian.
+"""
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
