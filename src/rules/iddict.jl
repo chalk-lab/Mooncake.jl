@@ -100,7 +100,7 @@ function TestUtils.populate_address_map_internal(
     return m
 end
 function TestUtils.has_equal_data_internal(
-    p::P, q::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    p::P, q::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:IdDict}
     ks = union(keys(p), keys(q))
     ks != keys(p) && return false

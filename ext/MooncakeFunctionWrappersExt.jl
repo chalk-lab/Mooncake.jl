@@ -135,12 +135,12 @@ end
 
 import .TestUtils: has_equal_data_internal
 function has_equal_data_internal(
-    p::P, q::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    p::P, q::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:FunctionWrapper}
     return has_equal_data_internal(p.obj, q.obj, equal_undefs, d)
 end
 function has_equal_data_internal(
-    t::T, s::T, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    t::T, s::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:FunctionWrapperTangent}
     return has_equal_data_internal(t.dobj_ref[], s.dobj_ref[], equal_undefs, d)
 end

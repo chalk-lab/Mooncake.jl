@@ -29,6 +29,15 @@ end
         )
     end
 
+    @testset "integration testing for invalid global ref errors" begin
+        @static if VERSION > v"1.12-"
+            @test_throws(
+                Mooncake.UnhandledLanguageFeatureException,
+                Mooncake.build_frule(Mooncake.TestResources.non_const_global_ref, 5.0)
+            )
+        end
+    end
+
     # Try try-catch statements.
     @testset "try-catch" begin
         rng = StableRNG(123)
