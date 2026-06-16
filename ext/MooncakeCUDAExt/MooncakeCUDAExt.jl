@@ -615,13 +615,13 @@ function randn_tangent_internal(rng::AbstractRNG, x::CuMaybeComplexArray, dict::
     return t
 end
 function TestUtils.has_equal_data_internal(
-    x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:CuMaybeComplexArray}
     # allow nan comparisons to return true, real() to cover complex case
     return isapprox(x, y; atol=(√eps(real(eltype(P)))), nans=true)
 end
 function TestUtils.has_equal_data_internal(
-    x::P, y::P, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:CuArray{<:Union{Integer,Bool}}}
     # For integer/bool CuArrays, compare by content by downloading to CPU.
     size(x) != size(y) && return false

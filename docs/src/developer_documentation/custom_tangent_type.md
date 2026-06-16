@@ -753,8 +753,8 @@ function Mooncake.TestUtils.populate_address_map_internal(m::Mooncake.TestUtils.
     return m
 end
 
-function Mooncake.TestUtils.has_equal_data_internal(x::A{T}, y::A{T}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}) where {T}
-    id_pair = (objectid(x), objectid(y))
+function Mooncake.TestUtils.has_equal_data_internal(x::A{T}, y::A{T}, equal_undefs::Bool, d::IdDict{Any,Bool}) where {T}
+    id_pair = (x, y)
     haskey(d, id_pair) && return d[id_pair]
     d[id_pair] = true
     eq = Mooncake.TestUtils.has_equal_data_internal(x.x, y.x, equal_undefs, d)
@@ -767,8 +767,8 @@ function Mooncake.TestUtils.has_equal_data_internal(x::A{T}, y::A{T}, equal_unde
     end
 end
 
-function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::TangentForA{Tx}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}) where {Tx}
-    id_pair = (objectid(t), objectid(s))
+function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::TangentForA{Tx}, equal_undefs::Bool, d::IdDict{Any,Bool}) where {Tx}
+    id_pair = (t, s)
     haskey(d, id_pair) && return d[id_pair]
     d[id_pair] = true
     eq = Mooncake.TestUtils.has_equal_data_internal(t.x, s.x, equal_undefs, d)
