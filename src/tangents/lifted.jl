@@ -237,17 +237,42 @@ end
 # tangent, mirroring reverse `tangent_type(Array{T}) === Array{tangent_type(T)}`. The
 # `NDualArray` (also `<:AbstractArray`) and the `AbstractArray{NoDual}` case have more
 # specific overloads above; undefined slots stay undefined (reverse-PUT semantics).
-@inline function tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray}
+@inline tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray} = _tangent_lane(
+    x, lane, IdDict{Any,Any}()
+)
+# `_tangent_lane` mirrors the `tangent(slot, lane)` dispatch hierarchy above, threading an aliasing
+# cache so an aliased / self-referential *element-wise* array terminates. The parallel-arrays
+# `NDualArray` and the all-`NoDual` cases are terminal (they cannot reference back into the array),
+# so delegate to their specific `tangent(slot, lane)` methods rather than recursing element-wise.
+function _tangent_lane(x::Lifted{P,N,<:NDualArray}, lane::Integer, ::IdDict) where {P,N}
+    tangent(x, lane)
+end
+function _tangent_lane(
+    x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, ::IdDict
+) where {P,N}
+    tangent(x, lane)
+end
+# Element-wise array: register the result shell before filling, then recurse elements through
+# `_tangent_lane` (a nested element-wise array re-enters here, cycle-safe via `d`; any other element
+# shape terminates at the generic method below → the plain `tangent(slot, lane)`).
+function _tangent_lane(
+    x::Lifted{P,N,V}, lane::Integer, d::IdDict
+) where {P,N,V<:AbstractArray}
     p = primal(x)
+    haskey(d, p) && return d[p]
     v = tangent(x)
     t = similar(p, tangent_type(eltype(P)))
+    d[p] = t
     # Build each element's slot from the CONCRETE `typeof(pe)`, not the static
     # `eltype(P)`: for an abstract-eltype array (e.g. `Vector{Distribution}` holding
     # `Normal`s) the abstract type has no fields, so `eltype(P)` would make the
     # struct-lift do `fieldtype(Distribution, :μ)` and throw.
-    _map_if_assigned!((pe, ve) -> tangent(Lifted{typeof(pe),N}(pe, ve), lane), t, p, v)
+    _map_if_assigned!(
+        (pe, ve) -> _tangent_lane(Lifted{typeof(pe),N}(pe, ve), lane, d), t, p, v
+    )
     return t
 end
+_tangent_lane(x::Lifted, lane::Integer, ::IdDict) = tangent(x, lane)
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
@@ -1151,15 +1176,18 @@ end
 @inline function lift(x::Array{T,D}, ẋ::Array, c::Union{Nothing,IdDict}) where {T,D}
     # Register in the cache *before* filling, so aliased occurrences of `x` share one V (matching
     # the reverse `zero_tangent_internal(::Array)` aliasing invariant) and self-referential arrays
-    # terminate. Float / Complex-float element arrays don't reach here — their V aliases `ẋ`.
-    c isa IdDict && haskey(c, x) && return c[x]::Lifted{typeof(x),1}
+    # terminate. A top-level call may arrive with `c === nothing` (the 2-arg entry); upgrade it to
+    # a fresh `IdDict` so the cycle break holds, mirroring the mutable-struct `lift` above. Float /
+    # Complex-float element arrays don't reach here — their V aliases `ẋ`.
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::Lifted{typeof(x),1}
     Vel = dual_type(Val(1), T)
     v = similar(x, Vel)
     lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
-    c isa IdDict && (c[x] = lifted)
+    d[x] = lifted
     @inbounds for i in eachindex(x)
         if isassigned(x, i)
-            v[i] = tangent(lift(x[i], ẋ[i], c))
+            v[i] = tangent(lift(x[i], ẋ[i], d))
         end
     end
     return lifted

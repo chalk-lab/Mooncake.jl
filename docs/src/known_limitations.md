@@ -282,19 +282,6 @@ silently miscomputing:
 
 Both patterns work in reverse mode. If you need them, use reverse mode.
 
-### Forward mode: self-referential plain arrays
-
-Reverse-mode tangent generation deduplicates aliased and cyclic references with an `IdDict`, so a
-self-referential array such as `x = Any[]; push!(x, x)` has a well-defined tangent. Forward-mode seed
-construction (`zero_lifted` / `uninit_lifted` / `randn_lifted`) now handles such cycles too: the
-element-wise array seed registers its shell in the cache *before* filling its elements — mirroring the
-mutable-struct path and reverse mode — so seeding a self-referential plain array no longer
-stack-overflows. The remaining gap is downstream of the seed: per-lane tangent extraction for an
-element-wise array of duals is not yet cycle-aware, so running full forward-mode AD on a function that
-returns a self-referential plain array can still stack-overflow. Self-referential mutable structs and
-acyclic aliasing are fully supported in both modes. If you need full forward AD through a plain-array
-cycle, use reverse mode.
-
 ```@meta
 DocTestSetup = nothing
 ```

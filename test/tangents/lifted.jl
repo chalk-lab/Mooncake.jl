@@ -58,33 +58,6 @@ using Mooncake:
 const ND = NDual
 NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
 
-# True if a back-edge is reachable from `x` on the current traversal path — i.e. `x` is part of
-# a true cycle (not merely a shared DAG node). Used to keep self-referential primals whose cycle
-# passes through a plain `Array` out of the `test_lifted` drive. Seed construction now handles such
-# cycles (the element-wise array seed registers its shell before filling), but the rest of the
-# `test_lifted` battery — per-lane extraction (`tangent(slot, lane)`), finite differencing — is not
-# yet cycle-aware for plain arrays and would stack-overflow. `Type`s are leaves (their internals
-# self-reference but carry no forward representation).
-function _lifted_self_referential(x, seen=Base.IdSet{Any}())
-    (x isa Type || isbits(x)) && return false
-    x in seen && return true
-    push!(seen, x)
-    res = if x isa AbstractArray
-        any(i -> isassigned(x, i) && _lifted_self_referential(x[i], seen), eachindex(x))
-    elseif x isa Tuple
-        any(v -> _lifted_self_referential(v, seen), x)
-    elseif isstructtype(typeof(x))
-        any(
-            n -> isdefined(x, n) && _lifted_self_referential(getfield(x, n), seen),
-            1:nfields(x),
-        )
-    else
-        false
-    end
-    delete!(seen, x)
-    return res
-end
-
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
     # `Base._stable_typeof` P (`Type{T}` for type-valued primals, matching rule dispatch).
@@ -105,24 +78,15 @@ end
         @test p isa LiftedTest_Cycle && p.next === p  # add_to_primal preserves the cycle
     end
 
-    @testset "self-referential plain-array seed" begin
-        # The element-wise array seed registers its shell in the cache before filling, so a
-        # cycle through a plain `Array` (which the cache-free factory would overflow on) builds
-        # a cyclic V and the tangent-arithmetic helpers terminate via their aliasing caches.
-        for seed in (
-            x -> zero_lifted(Val(1), x),
-            x -> uninit_lifted(Val(1), x),
-            x -> randn_lifted(Val(1), Xoshiro(1), x),
-            x -> zero_lifted(Val(3), x),
-        )
-            x = Any[]
-            push!(x, x)
-            v = tangent(seed(x))
-            @test v[1] === v                          # cyclic V built, no overflow
-        end
+    @testset "cyclic plain-array tangent arithmetic" begin
+        # A self-referential plain `Array` lifts to a cyclic element-wise V (the seed registers its
+        # shell before filling); the tangent-arithmetic helpers must terminate via their aliasing
+        # caches, as for the cyclic mutable struct above. (Seed/per-lane/lift/unlift across widths
+        # are covered by the `test_lifted` drive below.)
         x = Any[]
         push!(x, x)
         v = tangent(zero_lifted(Val(1), x))
+        @test v[1] === v                              # cyclic V built, no overflow
         @test Mooncake._dot(v, v) == 0.0
         s = Mooncake._scale(2.0, v)
         @test s[1] === s                              # scale preserves the cycle
@@ -677,18 +641,21 @@ end
     @testset "test_lifted (representation interface)" begin
         # Drive the forward representation contract over the SAME canonical primal table
         # that `test_tangent` / `test_data` use for reverse mode, so the two stay in sync.
-        # Skip self-referential primals whose cycle passes through a plain `Array`: the seed now
-        # builds (tested above), but the rest of this battery (per-lane extraction, finite diff) is
-        # not yet cycle-aware for plain arrays (`known_limitations.md`); cyclic mutable structs ARE
-        # fully supported (below).
         @testset "$(typeof(p))" for (interface_only, p, t...) in
                                     Mooncake.tangent_test_cases()
-            _lifted_self_referential(p) && continue
             test_lifted(Xoshiro(123456), p)
         end
 
         @testset "cyclic mutable struct" begin
             test_lifted(Xoshiro(1), make_circular_reference_struct())
+        end
+
+        @testset "self-referential plain array" begin
+            # The whole representation battery (seed, per-lane extraction, lift/unlift) is
+            # cycle-aware for plain-array cycles, not just the seed.
+            x = Any[]
+            push!(x, x)
+            test_lifted(Xoshiro(1), x)
         end
 
         # Type-level widening / sentinel cases the value-drive cannot reach (abstract and
