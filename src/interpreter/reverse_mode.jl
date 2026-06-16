@@ -1960,7 +1960,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
     if rule === nothing
         # Build at the world this rule was created at (matching the enclosing rule), not the
         # current world. See _build_rule! and issue #1209.
-        interp = get_interpreter(ReverseMode; world=dynamic_rule.world)
+        interp = get_interpreter(ReverseMode, dynamic_rule.world)
         rule = build_rrule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
         )
@@ -2081,7 +2081,7 @@ end
 # Build at the world `Trule` was predicted at, not the current world. See the LazyFRule
 # analogue in forward_mode.jl and issue #1209.
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ReverseMode; world=rule.world)
+    interp = get_interpreter(ReverseMode, rule.world)
     rule.rule = build_rrule(
         interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
     )

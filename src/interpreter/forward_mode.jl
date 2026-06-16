@@ -556,7 +556,7 @@ end
 # prediction can re-tighten `mi`'s inferred return type, yielding a rule that no longer
 # matches `Trule` and fails to `convert` on assignment below. See issue #1209.
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ForwardMode; world=rule.world)
+    interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(
         interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
     )
@@ -610,7 +610,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     if rule === nothing
         # Build at the world this rule was created at (matching the enclosing rule), not the
         # current world. See _build_rule! and issue #1209.
-        interp = get_interpreter(ForwardMode; world=dynamic_rule.world)
+        interp = get_interpreter(ForwardMode, dynamic_rule.world)
         rule = build_frule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
         )
