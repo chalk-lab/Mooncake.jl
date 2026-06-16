@@ -805,8 +805,10 @@ end
 # the struct's forward tangent must keep its per-lane partials in a parallel buffer with
 # primal-identical layout (as `NDualRef` does for `Ref` and `NDualArray` for `Array`), so a
 # same-offset pointer lands the partials. Today a mutable struct's tangent is a `MutableDual` that
-# interleaves the value and partials in one object, with no parallel partials buffer to point at —
-# making `MutableDual` itself carry parallel partials is a core-representation change.
+# interleaves the value and partials in one object, with no parallel partials buffer to point at.
+# The principled lift is a per-struct primal-shaped partials shadow (correct by construction); best
+# done opt-in, since making it the default mutable-struct tangent regresses chunked struct-field math.
+# A pointer shortcut that reads through the interleaving is rejected: it hardcodes the `NDual` layout.
 function frule!!(
     ::Lifted{typeof(pointerref),Nw},
     x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
