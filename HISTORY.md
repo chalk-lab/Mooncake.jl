@@ -1,3 +1,39 @@
+# 0.5.32
+
+- Fix forward-over-reverse Hessian-vector products on closures that capture a `Ref` wrapped in a `NoTangent`-typed aggregate, which previously threw `UndefRefError`. `prepare_hvp_cache` now eagerly compiles the inner `rrule!!` together with its forward-mode dual callables and routes the outer forward pass through a new `DerivedFoRRule`, so the inner `IdDict` constructor is no longer inlined past Mooncake's rule ([#1193](https://github.com/chalk-lab/Mooncake.jl/pull/1193), [#1202](https://github.com/chalk-lab/Mooncake.jl/pull/1202)).
+- Fix the gradient of `copysign(x, y)` with respect to `x`: the derivative is `sign(x) * sign(y)`, and the missing `sign(x)` factor previously gave the wrong gradient sign when `x < 0` ([#1196](https://github.com/chalk-lab/Mooncake.jl/pull/1196)).
+- Handle mutation of non-`const` globals (`setglobal!`) in forward mode on Julia 1.12+ ([#1194](https://github.com/chalk-lab/Mooncake.jl/pull/1194)).
+- Version-bound the `Core._call_latest(CoreLogging.handle_message, ...)` rule (and its keyword-argument variant) to Julia below 1.12 ([#1200](https://github.com/chalk-lab/Mooncake.jl/pull/1200)).
+
+# 0.5.31
+
+- Guard `codual_type` / `fcodual_type` against unbound `TypeVar`s ([#1191](https://github.com/chalk-lab/Mooncake.jl/pull/1191), [#1192](https://github.com/chalk-lab/Mooncake.jl/pull/1192)).
+
+# 0.5.30
+
+- Bump the `LogExpFunctions` compat bound to 1 ([#1186](https://github.com/chalk-lab/Mooncake.jl/pull/1186)).
+
+# 0.5.29
+
+- Add a `max_fd_step` keyword to `TestUtils.test_rule` that caps the finite-difference step sizes, keeping perturbations of domain-restricted functions (`log`, `sqrt`, `cholesky`) inside their domains ([#1173](https://github.com/chalk-lab/Mooncake.jl/pull/1173)).
+- Pre-allocate and reuse the Hessian, gradient, and basis-direction buffers in the Hessian cache so that repeated `value_gradient_and_hessian!!` calls avoid allocation ([#1178](https://github.com/chalk-lab/Mooncake.jl/pull/1178)).
+- Add consistency checks for rule reuse ([#1172](https://github.com/chalk-lab/Mooncake.jl/pull/1172)).
+- Mark `CUDACore.cudaError_enum` as having no tangent ([#1175](https://github.com/chalk-lab/Mooncake.jl/pull/1175)).
+
+# 0.5.28
+
+- Throw a clear `UnhandledLanguageFeatureException` for `try` / `catch` blocks in reverse-mode AD instead of an opaque IR-verification failure ([#1161](https://github.com/chalk-lab/Mooncake.jl/pull/1161)).
+- Import the ChainRules `svd` rule via `@from_rrule` ([#1163](https://github.com/chalk-lab/Mooncake.jl/pull/1163), closes [#670](https://github.com/chalk-lab/Mooncake.jl/issues/670)).
+- Guard the `friendly_tangent_cache` array branch against `NoTangent` element types (e.g. `SparseMatrixCSC{Int}`) ([#1150](https://github.com/chalk-lab/Mooncake.jl/pull/1150)).
+
+# 0.5.27
+
+- Add a cached `value_and_jacobian!!` interface for both forward-mode (chunked) and reverse-mode (row-by-row) caches ([#1153](https://github.com/chalk-lab/Mooncake.jl/pull/1153)).
+- Fix `tangent_type` for `Union{NoRData, RData{...}}` ([#1133](https://github.com/chalk-lab/Mooncake.jl/pull/1133)).
+- Add foreigncall zero-derivative rules for `jl_get_world_counter` and `jl_matching_methods`, supporting forward-over-reverse over those calls ([#1143](https://github.com/chalk-lab/Mooncake.jl/pull/1143)).
+- Handle `Ptr` in `zero_tangent` by delegating to `uninit_tangent` ([#1139](https://github.com/chalk-lab/Mooncake.jl/pull/1139)).
+- Update the CUDA extension for CUDA + cuDNN 6 ([#1148](https://github.com/chalk-lab/Mooncake.jl/pull/1148)).
+
 # 0.5.26
 
 - Add `Config(empty_cache=true)` to free internal caches before rebuilding rules.

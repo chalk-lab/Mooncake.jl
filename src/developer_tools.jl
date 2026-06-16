@@ -30,6 +30,7 @@ true
 function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple}; normalize=true)::IRCode
     ir, _ = lookup_ir(interp, sig)
     @static if VERSION > v"1.12-"
+        # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         ir = set_valid_world!(ir, interp.world)
     end
     normalize || return ir

@@ -46,10 +46,10 @@ function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
 end
 
 function TestUtils.has_equal_data_internal(
-    x::Memory{P}, y::Memory{P}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::Memory{P}, y::Memory{P}, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P}
     length(x) == length(y) || return false
-    id_pair = (objectid(x), objectid(y))
+    id_pair = (x, y)
     haskey(d, id_pair) && return d[id_pair]
 
     d[id_pair] = true
@@ -329,7 +329,7 @@ function randn_tangent_internal(rng::AbstractRNG, x::MemoryRef, dict::MaybeCache
 end
 
 function TestUtils.has_equal_data_internal(
-    x::MemoryRef{P}, y::MemoryRef{P}, equal_undefs::Bool, d::Dict{Tuple{UInt,UInt},Bool}
+    x::MemoryRef{P}, y::MemoryRef{P}, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P}
     equal_refs = Core.memoryrefoffset(x) == Core.memoryrefoffset(y)
     equal_data = TestUtils.has_equal_data_internal(x.mem, y.mem, equal_undefs, d)

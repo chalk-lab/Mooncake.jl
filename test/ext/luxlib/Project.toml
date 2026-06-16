@@ -1,5 +1,6 @@
 [deps]
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+LoweredCodeUtils = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
 Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
 LuxLib = "82251201-b29d-42c6-8e01-566dec8acb11"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
@@ -12,4 +13,5 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 
 [compat]
+LoweredCodeUtils = "<3.6"
 Revise = "3.0 - 3.12"

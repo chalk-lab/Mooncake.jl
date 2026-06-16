@@ -187,9 +187,29 @@ function generate_dual_ir(
     # Grab code associated to the primal.
     primal_ir, _ = lookup_ir(interp, sig_or_mi)
     @static if VERSION > v"1.12-"
+        # Pin to one world so verify_ir's GlobalRef check passes; see `set_valid_world!`.
         primal_ir = set_valid_world!(primal_ir, interp.world)
     end
     nargs = length(primal_ir.argtypes)
+
+    # Check for unsupported features before normalise! runs.
+    # Julia 1.12+ lowers non-const global writes (`global x = y`) to
+    # Base.setglobal! on 1.12 and Core.setglobal! on 1.13+.
+    # CC.verify_ir does not reject these calls because they are valid IR, so
+    # reject them here before rule construction reaches a missing frule!!.
+    @static if VERSION > v"1.12-"
+        setglobal_calls = (GlobalRef(Base, :setglobal!), GlobalRef(Core, :setglobal!))
+        for inst in stmt(primal_ir.stmts)
+            if Meta.isexpr(inst, :call) && inst.args[1] in setglobal_calls
+                unhandled_feature(
+                    "Mooncake.jl does not support differentiating code that assigns to " *
+                    "non-const global variables. Pass the state explicitly, return the " *
+                    "updated value, or provide a custom frule!!. See the Known Limitations " *
+                    "documentation for more context.",
+                )
+            end
+        end
+    end
 
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)

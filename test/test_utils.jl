@@ -60,6 +60,12 @@
             (a=make_indirect_circular_reference_array(); a[1][1]=1.0; a),
             (b=make_indirect_circular_reference_array(); b[1][1]=2.0; b),
         )
+
+        # Test that has_equal_data works on Method and MethodInstance objects
+        m = only(methods(sin, (Float64,)))
+        @test has_equal_data(m, m)
+        mi = first(m.specializations)
+        @test has_equal_data(mi, mi)
     end
     @testset "populate_address_map" begin
         @testset "primitive types" begin
@@ -146,5 +152,18 @@
         @test TestUtils.count_allocs(isbitstype, Float64) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Float64}) == 0
         @test TestUtils.count_allocs(Mooncake.fdata_type, Tuple{Vector{Float64}}) == 0
+    end
+    @testset "max_fd_step kwarg for testing rules" begin
+        # log is a primitive in Mooncake, so we wrap it in a lambda to test the derived-rule
+        # path. The input 0.005 is close to the boundary of log's domain (x > 0), so we cap
+        # the FD step at 1e-3 to avoid perturbing into x ≤ 0.
+        TestUtils.test_rule(
+            StableRNG(123),
+            x -> log(x),
+            0.005;
+            is_primitive=false,
+            print_results=false,
+            max_fd_step=1e-3,
+        )
     end
 end
