@@ -16,14 +16,14 @@
 # of this block.
 #
 # Value layer — `DerivedFoRRule{D}` (defined below, near `compile_for_rule`): a FoR
-# rule (or its absence) held as a value and reused across many calls. `D <: Dual`
-# carries a pre-built `Dual(rule, rule_tangent)` for HVP / Hessian; `D === Nothing`
+# rule (or its absence) held as a value and reused across many calls. `D <: Lifted`
+# carries a pre-built `Lifted(rule, rule_tangent)` for HVP / Hessian; `D === Nothing`
 # is the primitive-passthrough sentinel. Reuse is safe because the rule's Stacks
 # self-reset within each forward+reverse pass.
 #
 # Frule layer — `LazyFoRRule` / `DynamicFoRRule` (this section): callable caches
 # dispatched as the frule for `build_derived_rrule`. Each call returns a fresh
-# `Dual(rule, rule_tangent)`, with Stacks cloned via `_for_rule_cached_dual` —
+# `Lifted(rule, rule_tangent)`, with Stacks cloned via `_for_rule_cached_dual` —
 # defensive against nested AD where the rule may be re-entered before the
 # previous call's Stacks have self-reset. `build_primitive_frule` selects between
 # the two via `__build_primitive_frule` (@generated):
@@ -42,10 +42,10 @@
 # at a slight angle: reverse mode's three types are all *rule-callable*
 # (`(rule)(args...)` with primal args, returning AD output). None of the three
 # FoR types here is rule-callable in that sense:
-#   • `DerivedFoRRule` is a *carrier* of a pre-built `Dual(rule, rule_tangent)`;
+#   • `DerivedFoRRule` is a *carrier* of a pre-built `Lifted(rule, rule_tangent)`;
 #     callers extract via `get_inner_rrule`, they do not invoke it directly.
 #   • `LazyFoRRule` / `DynamicFoRRule` are *constructors* — their call shape is
-#     `(::Dual{typeof(build_derived_rrule)}, …)`, returning a fresh Dual rule
+#     `(::Lifted{typeof(build_derived_rrule)}, …)`, returning a fresh `Lifted` rule
 #     per invocation (the frule for `build_derived_rrule`, not for user code).
 # Mooncake has no top-level "FoR rule" type — the user entry point
 # `value_and_hvp!!` dispatches through a regular `DerivedFRule`. The shared
@@ -335,15 +335,15 @@ function rrule!!(
     )
 end
 
-# Wrapper around a pre-built `Dual(rule, rule_tangent)` so forward AD sees the
-# rule with its forward-mode-compiled dual callables instead of `zero_tangent`
+# Wrapper around a pre-built `Lifted(rule, rule_tangent)` so forward AD sees the
+# rule with its forward-mode-compiled dual callables instead of `zero_dual`
 # re-deriving them over the reverse-mode-optimised primal IR (which would
-# reintroduce the bug `_compile_for_rule` exists to avoid). `tangent_type` is
-# `NoTangent`; the tangent rides inside the cached `Dual`. The type parameter
-# `D` discriminates: `D <: Dual` for derived rrules, `D === Nothing` for
-# primitives — callers branch via `for_rule isa DerivedFoRRule{Nothing}`.
-# Stale-rule caveat: the cached `Dual` is pinned to world age at prep; rebuild
-# the `HVPCache` if methods change after prep.
+# reintroduce the bug `_compile_for_rule` exists to avoid). It is non-differentiable
+# in both modes — `tangent_type` is `NoTangent`, `dual_type` is `NoDual` — the
+# tangent rides inside the cached `Lifted`. The type parameter `D` discriminates:
+# `D <: Lifted` for derived rrules, `D === Nothing` for primitives — callers branch
+# via `for_rule isa DerivedFoRRule{Nothing}`. Stale-rule caveat: the cached `Lifted`
+# is pinned to world age at prep; rebuild the `HVPCache` if methods change after prep.
 struct DerivedFoRRule{D}
     rule_dual::D
 end
@@ -354,16 +354,21 @@ function compile_for_rule(f, x...; debug_mode::Bool=false)
         return DerivedFoRRule{Nothing}(nothing)
     end
     rule, _, _, rule_tangent = _compile_for_rule(interp, sig, sig, debug_mode)
-    return DerivedFoRRule(Dual(rule, rule_tangent))
+    # `lift(rule, rule_tangent)` is the forward analogue of the legacy `Dual(rule, rule_tangent)`,
+    # mirroring `LazyFoRRule` above (which returns `lift(rule, rule_tangent, IdDict())`).
+    return DerivedFoRRule(lift(rule, rule_tangent, IdDict()))
 end
 tangent_type(::Type{<:DerivedFoRRule}) = NoTangent
+dual_type(::Val{N}, ::Type{<:DerivedFoRRule}) where {N} = NoDual
 
-get_inner_rrule(r::DerivedFoRRule{<:Dual}) = primal(r.rule_dual)
-@is_primitive MinimalCtx Tuple{typeof(get_inner_rrule),<:DerivedFoRRule{<:Dual}}
-function frule!!(::Dual{typeof(get_inner_rrule)}, r::Dual{<:DerivedFoRRule{<:Dual}})
+get_inner_rrule(r::DerivedFoRRule{<:Lifted}) = primal(r.rule_dual)
+@is_primitive MinimalCtx Tuple{typeof(get_inner_rrule),<:DerivedFoRRule{<:Lifted}}
+function frule!!(
+    ::Lifted{typeof(get_inner_rrule),Nw}, r::Lifted{<:DerivedFoRRule{<:Lifted},Nw}
+) where {Nw}
     return primal(r).rule_dual
 end
-function rrule!!(::CoDual{typeof(get_inner_rrule)}, ::CoDual{<:DerivedFoRRule{<:Dual}})
+function rrule!!(::CoDual{typeof(get_inner_rrule)}, ::CoDual{<:DerivedFoRRule{<:Lifted}})
     throw(
         ArgumentError(
             "DerivedFoRRule is forward-over-reverse only; reverse-mode " *

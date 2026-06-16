@@ -1737,7 +1737,7 @@ end
 
 # `fwd_cache` is the derivative cache for `grad_f`. For non-primitive `f`, the compiled
 # inner rrule lives in the `DerivedFoRRule` captured by `grad_f` (built once at prep);
-# `get_inner_rrule`'s frule serves its `Dual` to the forward pass on every
+# `get_inner_rrule`'s frule serves its `Lifted` to the forward pass on every
 # `value_and_hvp!!` call.
 """
     HVPCache
@@ -1851,11 +1851,11 @@ true
     # `grad_cache.rule`.
     grad_cache = prepare_gradient_cache(f, x...; config)
 
-    # `DerivedFoRRule` wraps a pre-built `Dual(rule, rule_tangent)` so forward AD reuses
-    # the rule's forward-mode-compiled dual callables instead of `zero_tangent`
+    # `DerivedFoRRule` wraps a pre-built `Lifted(rule, rule_tangent)` so forward AD reuses
+    # the rule's forward-mode-compiled dual callables instead of `zero_dual`
     # re-deriving them and leaking reverse-mode primitives (e.g. inlined `IdDict()`)
     # into the forward IR. The type parameter `D` discriminates derived
-    # (`D <: Dual`) from primitive (`D === Nothing`) rrules — primitive rrules have
+    # (`D <: Lifted`) from primitive (`D === Nothing`) rrules — primitive rrules have
     # no MistyClosure IR and keep using `grad_cache`'s rule directly.
     for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
 
