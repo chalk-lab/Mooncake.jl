@@ -1510,11 +1510,29 @@ for (factory, internal) in
         # un-asserted `d[x]` infers `Any` and poisons `zero_lifted`/`uninit_lifted` to an
         # abstract `Lifted{P,N}` (runtime dispatch + allocs at the slot ctor). Mirrors the
         # assert the mutable-struct branch above already does on `d[x]`.
-        function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
+        #
+        # Float/Complex arrays seed to a parallel-arrays `NDualArray` whose elements are scalars:
+        # no element can reference back into `x`, so the cache-free factory suffices; register after.
+        function $internal(w::Val{N}, x::Array{<:NDualEltype}, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = $factory(w, x)
             d[x] = v
             return v
+        end
+        # Element-wise arrays (e.g. `Vector{Any}`, nested/aliased arrays) can alias or even
+        # reference themselves (`x = Any[]; push!(x, x)`). Register the shell BEFORE filling — as
+        # the mutable-struct branch above and reverse `zero_tangent_internal` do — and thread `d`
+        # through the elements, so a cycle reaching `x` again returns the shell instead of recursing
+        # forever, and aliased sub-arrays share one V. (The cache-free factory does neither: it
+        # recurses through the cache-free element factory and stack-overflows on a self-reference.)
+        function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
+            d[x] = shell
+            @inbounds for i in eachindex(x)
+                isassigned(x, i) && (shell[i] = $internal(w, x[i], d))
+            end
+            return shell
         end
         # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` branch): build the
         # wrapper directly and register by identity, so the generic struct recursion never re-lifts it.
@@ -1575,7 +1593,7 @@ end
     end
 end
 function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::Array, d::MaybeCache
+    w::Val{N}, rng::AbstractRNG, x::Array{<:NDualEltype}, d::MaybeCache
 ) where {N}
     # Assert the cache lookup to the concrete `dual_type`; see the `_zero_dual_internal`
     # Array overload for why an un-asserted `IdDict{Any,Any}` lookup poisons inference.
@@ -1583,6 +1601,19 @@ function _randn_dual_internal(
     v = randn_dual(w, rng, x)
     d[x] = v
     return v
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::Array, d::MaybeCache
+) where {N}
+    # Element-wise array: register the shell before filling and thread `d` through the elements,
+    # so a self-referential or aliased array seeds without overflowing; see `_zero_dual_internal`.
+    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+    shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
+    d[x] = shell
+    @inbounds for i in eachindex(x)
+        isassigned(x, i) && (shell[i] = _randn_dual_internal(w, rng, x[i], d))
+    end
+    return shell
 end
 function _randn_dual_internal(
     w::Val{N}, rng::AbstractRNG, x::Base.RefValue{P}, d::MaybeCache
