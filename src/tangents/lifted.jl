@@ -139,12 +139,10 @@ tangent(d::Lifted) = d.value
 _primal(x) = x
 _primal(x::Lifted) = primal(x)
 
-# Forward-mode equivalent of `verify_dual_type` — checks the slot's `V` is
-# compatible with `dual_type(Val(N), P)`. Used by the test framework.
-# A well-formed slot's V is exactly the canonical `dual_type(Val(N), P)` for concrete `P` (the
-# coherence invariant). Abstract-`P` slots are sharpened to a concrete subtype at runtime, so the
-# static V cannot be asserted for them — accept those unconditionally.
-function verify_dual_type(::Lifted{P,N,V}) where {P,N,V}
+# Forward-mode slot-type check used by the test framework: a well-formed `Lifted{P,N,V}` slot has
+# `V === dual_type(Val(N), P)` for concrete `P` (the coherence invariant). Abstract-`P` slots are
+# sharpened to a concrete subtype at runtime, so the static V cannot be asserted — accept those.
+function verify_lifted_type(::Lifted{P,N,V}) where {P,N,V}
     !isconcretetype(P) || V === dual_type(Val(N), P)
 end
 
@@ -510,9 +508,10 @@ end
 # slots (an immutable view that delegates `setproperty!` to the parent
 # `MutableDual`). The view is an immutable struct with three fields:
 #
-#   parent::SD  — the underlying `MutableDual` (writeback target).
-#   primal::P   — back-reference to the slot's primal struct.
-#   lane::Int   — which lane this view refers to.
+#   _parent::SD  — the underlying `MutableDual` (writeback target).
+#   _primal::P   — back-reference to the slot's primal struct.
+#   _lane::Int   — which lane this view refers to.
+# (Underscore-prefixed; see the collision rationale just above the struct definition below.)
 #
 # `getproperty` reads from the parent's NamedTuple and extracts the lane;
 # `setproperty!` writes the lane back to the parent via `setfield!`. This
@@ -1751,7 +1750,8 @@ end
     # constructor + `zero_dual` above). The general `@generated` below is for
     # non-float elements; it `memoryref`s an element-wise Memory V, which would fail on the
     # `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
-    # (Open: `MemoryRef{Complex}` lacks the analogous `NDualMemoryRef` overload — see plan note.)
+    # `MemoryRef{Complex}` has no specialized `NDualMemoryRef` overload; it falls through to the
+    # element-wise `@generated` path, which is correct (a deferred specialization, not a gap).
     @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)

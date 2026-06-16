@@ -688,6 +688,8 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
                 end
             end
         end
+        # Primal hoisted after the lane loop so every lane's `dβ * y[n]` reads the original `y`
+        # (running it per-lane would nest the primal and corrupt later lanes for Nw>1; see gemv!).
         BLAS.$fname(ul, α, A, x, β, y)
         return y_dy
     end

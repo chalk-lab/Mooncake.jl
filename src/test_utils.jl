@@ -1088,7 +1088,7 @@ function test_frule_interface(x_ẋ...; frule)
 
     # Check that input types are valid.
     for x_ẋ_component in x_ẋ
-        @test Mooncake.verify_dual_type(x_ẋ_component)
+        @test Mooncake.verify_lifted_type(x_ẋ_component)
     end
 
     # Run the frule, check it has output a thing of the correct type, and extract results.
