@@ -1182,7 +1182,7 @@ If `debug_mode` is `true`, then all calls to rules are replaced with calls to `D
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older than
 the current world (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world; see
-issue #1209). Otherwise the check guards general callers against passing a stale interpreter.
+issue #1209).
 """
 function build_rrule(
     interp::MooncakeInterpreter{C},

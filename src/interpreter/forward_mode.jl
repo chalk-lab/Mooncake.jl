@@ -53,7 +53,6 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g. when building rules for a MistyClosure, which uses its own
 world, or when a Lazy/Dynamic rule rebuilds at its stored prediction world; see issue #1209).
-Otherwise the check guards general callers against passing a stale interpreter.
 """
 function build_frule(
     interp::MooncakeInterpreter{C},

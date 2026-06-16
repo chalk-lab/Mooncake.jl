@@ -11,13 +11,10 @@ function foo(x)
     return y
 end
 
-# Helpers for the world-advance rule-staleness regression test (one trigger from issue
-# #1209). Defining `issue1209_inner(::Float64)` later tightens `issue1209_callee`'s return
-# type Float32->Float64 via a mid-pass world advance. `issue1209_lazy` reaches the callee
-# statically (LazyFRule), `issue1209_dyn` dynamically (DynamicFRule). NOTE: this covers only
-# the world-advance trigger; the issue's headline MWE, where `frule_type` widens the
-# predicted return type by inference type-complexity (not a world advance), is a distinct
-# failure mode that this fix does not address.
+# Helpers for the world-advance rule-staleness regression test (one trigger from issue #1209;
+# see `_build_rule!` in forward_mode.jl for the scope caveat). Defining `issue1209_inner(::Float64)`
+# later tightens `issue1209_callee`'s return type Float32->Float64 via a mid-pass world advance.
+# `issue1209_lazy` reaches the callee statically (LazyFRule), `issue1209_dyn` dynamically (DynamicFRule).
 issue1209_inner(x) = Float32(x) * 2.0f0
 @noinline issue1209_callee(x) = issue1209_inner(x)
 issue1209_lazy(x) = issue1209_callee(x)
