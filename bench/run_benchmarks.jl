@@ -223,16 +223,13 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Benchmark forward-mode AD via Mooncake. Forward mode has documented gaps
-            # (e.g. some raw-pointer foreigncalls), so tolerate a per-case failure and
-            # leave `mooncake_fwd` unset for that case rather than aborting the sweep.
-            @info "Mooncake (Forward)"
-            try
+            # Skip the registry-marked `skip_forward` cases (deliberate forward gaps);
+            # any other forward failure throws loudly rather than being swallowed.
+            if !(ranges[n] isa NamedTuple && get(ranges[n], :skip_forward, false))
+                @info "Mooncake (Forward)"
                 rule = Mooncake.build_frule(args...)
-                # Forward inputs are width-1 `Lifted` slots. CoDual args (e.g. `Ptr`/array
-                # cases that can't be zero-seeded from the primal alone) are lifted from
-                # their existing primal+tangent; other args get a zero seed (fine for
-                # timing — the frule does the same work regardless of tangent values).
+                # CoDual args are lifted from their primal+tangent; others get a zero seed
+                # (fine for timing — the frule's work is independent of tangent values).
                 lifts = map(
                     x ->
                         x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
@@ -247,10 +244,6 @@ function benchmark_rules!!(
                     _ -> GC.gc(false);
                     evals=1,
                     seconds=seconds,
-                )
-            catch err
-                @warn "Mooncake forward-mode benchmark skipped for this case" exception = (
-                    err, catch_backtrace()
                 )
             end
 
