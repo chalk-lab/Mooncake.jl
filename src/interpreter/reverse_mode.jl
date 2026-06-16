@@ -2079,7 +2079,7 @@ end
 end
 
 # Build at the world `Trule` was predicted at, not the current world. See the LazyFRule
-# analogue in forward_mode.jl and issue #1209.
+# analogue in forward_mode.jl and the world-advance trigger of issue #1209.
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode, rule.world)
     rule.rule = build_rrule(

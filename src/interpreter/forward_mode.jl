@@ -554,7 +554,8 @@ end
 
 # Build at the world `Trule` was predicted at, not the current world: a world advance since
 # prediction can re-tighten `mi`'s inferred return type, yielding a rule that no longer
-# matches `Trule` and fails to `convert` on assignment below. See issue #1209.
+# matches `Trule` and fails to `convert` on assignment below. Handles the world-advance
+# trigger of issue #1209 (not the inference-complexity-widening case in its headline MWE).
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(

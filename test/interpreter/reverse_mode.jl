@@ -24,9 +24,9 @@ end
 # (PR #1099).
 rule_type_nonreturning(e::Exception) = throw(e)
 
-# Helpers for the issue #1209 regression test (reverse mode); see the forward-mode analogue.
-# `issue1209r_lazy` reaches the callee statically (LazyDerivedRule), `issue1209r_dyn`
-# dynamically (DynamicDerivedRule).
+# Helpers for the world-advance rule-staleness regression test (reverse mode); see the
+# forward-mode analogue for the scope note. `issue1209r_lazy` reaches the callee statically
+# (LazyDerivedRule), `issue1209r_dyn` dynamically (DynamicDerivedRule).
 issue1209r_inner(x) = Float32(x) * 2.0f0
 @noinline issue1209r_callee(x) = issue1209r_inner(x)
 issue1209r_lazy(x) = issue1209r_callee(x)
@@ -521,7 +521,7 @@ issue1209r_dyn(x) = (ISSUE1209R_FNS[1])(x)
     # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
     # world advance; both lazy and dynamic must return the build-world result (Float32), not
     # the post-advance world's (Float64).
-    @testset "stale rule world (issue #1209)" begin
+    @testset "stale rule build-world after world advance (issue #1209 trigger)" begin
         lazy = Mooncake.build_rrule(issue1209r_lazy, 1.5)
         dyn = Mooncake.build_rrule(issue1209r_dyn, 1.5)
         @eval issue1209r_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type

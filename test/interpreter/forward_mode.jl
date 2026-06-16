@@ -11,10 +11,13 @@ function foo(x)
     return y
 end
 
-# Helpers for the issue #1209 regression test. Defining `issue1209_inner(::Float64)` later
-# tightens `issue1209_callee`'s return type Float32->Float64, mimicking a mid-pass world
-# advance. `issue1209_lazy` reaches the callee statically (LazyFRule), `issue1209_dyn`
-# dynamically (DynamicFRule).
+# Helpers for the world-advance rule-staleness regression test (one trigger from issue
+# #1209). Defining `issue1209_inner(::Float64)` later tightens `issue1209_callee`'s return
+# type Float32->Float64 via a mid-pass world advance. `issue1209_lazy` reaches the callee
+# statically (LazyFRule), `issue1209_dyn` dynamically (DynamicFRule). NOTE: this covers only
+# the world-advance trigger; the issue's headline MWE, where `frule_type` widens the
+# predicted return type by inference type-complexity (not a world advance), is a distinct
+# failure mode that this fix does not address.
 issue1209_inner(x) = Float32(x) * 2.0f0
 @noinline issue1209_callee(x) = issue1209_inner(x)
 issue1209_lazy(x) = issue1209_callee(x)
@@ -65,7 +68,7 @@ issue1209_dyn(x) = (ISSUE1209_FNS[1])(x)
     # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
     # world advance; both lazy and dynamic must return the build-world result (Float32), not
     # the post-advance world's (Float64).
-    @testset "stale rule world (issue #1209)" begin
+    @testset "stale rule build-world after world advance (issue #1209 trigger)" begin
         lazy = Mooncake.build_frule(issue1209_lazy, 1.5)
         dyn = Mooncake.build_frule(issue1209_dyn, 1.5)
         @eval issue1209_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
