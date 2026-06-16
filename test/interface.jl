@@ -1113,6 +1113,19 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (f_jac(x_jac2), expected_jac2)
             end
 
+            # Allocation regression: with an allocation-free primal the packable forward path
+            # reuses the cached seed and Jacobian buffer and must not allocate, matching the
+            # zero-allocation `value_and_gradient!!`. Covers width-1 and a chunked width.
+            for cs in (1, 2)
+                af_cache = Mooncake.prepare_derivative_cache(
+                    identity, x_jac; config=Mooncake.Config(; chunk_size=cs)
+                )
+                Mooncake.value_and_jacobian!!(af_cache, identity, x_jac)  # warm up / size buffer
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_jacobian!!, af_cache, identity, x_jac
+                ) == 0
+            end
+
             scalar_out_fwd_cache = Mooncake.prepare_derivative_cache(
                 sum,
                 x_jac;

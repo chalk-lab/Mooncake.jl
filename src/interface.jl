@@ -966,7 +966,7 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS,GS}
+struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS,GS,JB}
     single_rule::R
     input_tangents::IT
     output_primal::OP
@@ -989,6 +989,11 @@ struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS,GS}
     # (differentiable `f`, structs, tuples, complex, mixed eltypes, …), which uses the generic
     # chunked gradient path.
     gradient_seed::GS
+    # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a single
+    # same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix, sized and filled
+    # on the first call (the output shape is not known at construction). Like the gradient buffers
+    # it is reused and returned (overwritten on the next call). `nothing` for every other shape.
+    jacobian_buffer::JB
 end
 
 @inline _dual_primal_type(::Type) = Any
@@ -1292,6 +1297,17 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             nothing
         end
     end
+    # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
+    # float-vector input qualifies. The output shape is unknown here (`output_primal` is only
+    # populated under `friendly_tangents`), so hold a `Ref` that the first `value_and_jacobian!!`
+    # call sizes and fills once the output vector is known.
+    jacobian_buffer = let args = Base.tail(fx)
+        if gradient_seed !== nothing && length(args) == 1 && eltype(only(args)) <: IEEEFloat
+            Base.RefValue{Union{Nothing,Matrix{eltype(only(args))}}}(nothing)
+        else
+            nothing
+        end
+    end
     if config.friendly_tangents
         input_tangents = tuple_map(zero_tangent, fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
@@ -1307,6 +1323,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             input_specs,
             _copy_output(Base.tail(fx)),
             gradient_seed,
+            jacobian_buffer,
         )
     end
     return FCache(
@@ -1324,6 +1341,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         input_specs,
         _copy_output(Base.tail(fx)),
         gradient_seed,
+        jacobian_buffer,
     )
 end
 
@@ -2093,7 +2111,57 @@ mutates `x` in place, it is restored, so the input is not mutated.
     `cache` must be the output of [`prepare_derivative_cache`](@ref) or
     [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
     to construct the cache.
+
+!!! warning
+    With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
+    buffer owned by `cache` (reused to avoid per-call allocation, as the gradient and Hessian
+    paths already do) and is overwritten on the next call with the same cache. Copy it
+    (`copy`) before a subsequent call if you need to retain it. A reverse
+    [`prepare_pullback_cache`](@ref) cache returns a freshly allocated Jacobian.
 """
+# Type-stable inner sweep for the zero-allocation packable Jacobian (function barrier, called from
+# the `@unstable` method below). Per chunk: restore the seed primal from `x`, set this chunk's
+# standard-basis columns in the seed's `NDualArray` partials in place, run the width-dispatched
+# `value_and_derivative!!`, and copy each lane's directional derivative into the corresponding `J`
+# column. `J` is sized from the first output and cached in `Jref` (reused, overwritten next call).
+function _fcache_jacobian_packable!!(
+    cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dof::Int, x::AbstractVector{T}
+) where {T}
+    nda = arg_seed.value
+    z = zero(T)
+    local y, J
+    s = 1
+    while s <= total_dof
+        copyto!(nda.primal, x)
+        @inbounds for lane in 1:W
+            fill!(nda.partials[lane], z)
+            slot = s + lane - 1
+            slot <= total_dof && (nda.partials[lane][slot] = one(T))
+        end
+        output = value_and_derivative!!(cache, f_seed, arg_seed)
+        if s == 1
+            y = primal(output)
+            _validate_jacobian_output(y, T)
+            cached = Jref[]
+            J = if cached === nothing || size(cached) != (length(y), total_dof)
+                Jref[] = zeros(T, length(y), total_dof)
+            else
+                fill!(cached, z)
+            end
+        end
+        @inbounds for lane in 1:W
+            col = s + lane - 1
+            col <= total_dof || break
+            lt = tangent(output, lane)
+            for r in eachindex(lt)
+                J[r, col] = lt[r]
+            end
+        end
+        s += W
+    end
+    return y, J
+end
+
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
@@ -2102,6 +2170,26 @@ mutates `x` in place, it is restored, so the input is not mutated.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
+    # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer preallocated at
+    # prepare time (single same-eltype float vector in, float vector out). Mirrors the zero-alloc
+    # `value_and_gradient!!`: seed standard-basis columns into the cached `NDualArray` partials in
+    # place, run the width-dispatched `value_and_derivative!!`, and scatter each lane's directional
+    # derivative (one Jacobian column) into the reused `J`. The seed primal is a cache buffer (`x`
+    # is copied into it each chunk), so `x` is never touched — no snapshot needed. Like the gradient
+    # buffers, the returned `J` aliases the cache and is overwritten on the next call.
+    seed = cache.gradient_seed
+    Jref = cache.jacobian_buffer
+    if seed !== nothing && Jref !== nothing
+        f_seed_stored, arg_seeds, _ = seed
+        # Re-wrap the call-time `f` (the stored seed holds the prepare-time instance); `V === NoDual`
+        # is guaranteed by packability, so this is a free isbits rewrap. The sweep runs in a
+        # concretely-typed function barrier (this `@unstable` method would otherwise box the seed's
+        # per-lane partials each iteration).
+        f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
+        return _fcache_jacobian_packable!!(
+            cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dof, x
+        )
+    end
     # `f` non-differentiable and `x::Vector{<:IEEEFloat}` are always packable, so
     # `gradient_chunk_size == min(total_dof, requested)` and the per-chunk width `W` always
     # equals the built `chunk_rule` width — width-dispatched `value_and_derivative!!` routes
