@@ -666,15 +666,17 @@ function CC.IRCode(bb_code::BBCode)
     cfg = control_flow_graph(bb_code)
     insts = _lines_to_blocks(insts, cfg)
     @static if VERSION > v"1.12-"
-        lines = CC.copy(bb_code.debuginfo.codelocs)
-        n = length(insts)
-        if length(lines) > 3n
-            resize!(lines, 3n)
-        elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
-                push!(lines, 0)
-            end
-        end
+        # Reconstruct codelocs from each instruction's own line field (a Tuple{Int32,Int32,Int32}
+        # in Julia 1.12+). This is now always 3n entries by construction, regardless of how
+        # many instructions were added or removed during BBCode transforms. The old approach of
+        # copying debuginfo.codelocs and resizing was a defensive workaround: instructions added
+        # or removed during transforms don't update codelocs, causing a size mismatch and
+        # misalignment between debug info and line numbers, potentially affecting added, removed,
+        # and already-present instructions depending on where the changes occurred.
+        lines = Int32[v for inst in insts for v in inst.line]
+        debuginfo = CC.copy(bb_code.debuginfo)
+        resize!(debuginfo.codelocs, length(lines))
+        copyto!(debuginfo.codelocs, lines)
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],
@@ -684,7 +686,7 @@ function CC.IRCode(bb_code::BBCode)
                 UInt32[x.flag for x in insts],
             ),
             cfg,
-            CC.copy(bb_code.debuginfo),
+            debuginfo,
             CC.copy(bb_code.argtypes),
             CC.copy(bb_code.meta),
             CC.copy(bb_code.sptypes),

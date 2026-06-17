@@ -64,6 +64,25 @@ end
         @test length(Mooncake.collect_stmts(bb_code)) == length(stmt(ir.stmts))
         @test Mooncake.BasicBlockCode.id_to_line_map(bb_code) isa Dict{ID,Int}
     end
+
+    @static if VERSION > v"1.12-"
+        @testset "codelocs consistent after instruction insertion" begin
+            # Regression test: adding instructions during BBCode transforms used to leave
+            # debuginfo.codelocs at its original size, causing a mismatch with the new
+            # instruction count and wrong/misaligned debug info on BBCode -> IRCode conversion.
+            ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
+            bb = BBCode(ir)
+            # Insert an instruction into the first block
+            push!(bb.blocks[1].inst_ids, ID())
+            push!(bb.blocks[1].insts, new_inst(nothing))
+            new_ir = CC.IRCode(bb)
+            n = length(new_ir.stmts)
+            @test length(new_ir.stmts.line) == 3n
+            @test length(new_ir.debuginfo.codelocs) == 3n
+            @test new_ir.stmts.line == new_ir.debuginfo.codelocs
+        end
+    end
+
     @testset "control_flow_graph" begin
         ir = Base.code_ircode_by_type(Tuple{typeof(sin),Float64})[1][1]
         bb = BBCode(ir)
