@@ -1057,6 +1057,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gr[2][1] ≈ 2 .* tx2[1]
                 @test gr[2][2] ≈ 2 .* tx2[2]
 
+                # In-place-mutating `f` whose array spans >1 chunk: the seed primal must be
+                # restored (and partials re-zeroed) every chunk, else a later chunk runs on an
+                # earlier chunk's mutated primal. dof 10 > max chunk width forces two chunks.
+                fip = t -> begin
+                    t[1] .= t[1] .* 2.0
+                    sum(abs2, t[1])
+                end
+                tip0 = (collect(1.0:10.0),)
+                cip = Mooncake.prepare_derivative_cache(
+                    fip, tip0; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                tip = (collect(1.0:10.0),)
+                _, gip = Mooncake.value_and_gradient!!(cip, fip, tip)
+                @test gip[2][1] ≈ 8 .* collect(1.0:10.0)   # d/dt Σ(2t)² = 8t, across both chunks
+                @test tip == (collect(1.0:10.0),)          # user input not mutated
+
                 # Mixed array + scalar input has a non-array dof, so the gather bails and the
                 # generic chunked path runs — still correct.
                 fmix = nt -> sum(nt.v) + nt.s^2

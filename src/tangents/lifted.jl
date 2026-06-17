@@ -1767,6 +1767,13 @@ end
     inner, c = _basis_seed_isbits(v.value, slots, c)
     return (ImmutableDual(inner), c)
 end
+@inline function _basis_seed_isbits(
+    v::PossiblyUninitTangent, slots::NTuple{N,Int}, c::Int
+) where {N}
+    is_init(v) || return (v, c)
+    inner, c = _basis_seed_isbits(val(v), slots, c)
+    return (typeof(v)(inner), c)
+end
 
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
 function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}

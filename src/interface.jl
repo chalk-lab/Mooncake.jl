@@ -1755,18 +1755,17 @@ end
 end
 
 # Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)` leaf
-# tuple, threading a running global-dof offset. Partials stay zero between chunks: `_seed_chunk!`
-# sets the ≤`W` hot entries, `_clear_chunk!` resets them after the run.
+# tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an in-place `f`
+# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones.
 @inline _leaves_dof(::Tuple{}) = 0
 @inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
-@inline _zero_leaves!(::Tuple{}, W) = nothing
-@inline function _zero_leaves!(ls::Tuple, W)
-    nda, g = first(ls)
+@inline _zero_partials!(::Tuple{}, W) = nothing
+@inline function _zero_partials!(ls::Tuple, W)
+    nda = first(ls)[1]
     @inbounds for k in 1:W
         fill!(nda.partials[k], zero(eltype(nda.primal)))
     end
-    fill!(g, zero(eltype(g)))
-    return _zero_leaves!(Base.tail(ls), W)
+    return _zero_partials!(Base.tail(ls), W)
 end
 @inline _seed_chunk!(::Tuple{}, s, W, off) = off
 @inline function _seed_chunk!(ls::Tuple, s, W, off)
@@ -1778,17 +1777,6 @@ end
         s <= d <= s + W - 1 && (nda.partials[d - s + 1][i] = o)
     end
     return _seed_chunk!(Base.tail(ls), s, W, off + L)
-end
-@inline _clear_chunk!(::Tuple{}, s, W, off) = off
-@inline function _clear_chunk!(ls::Tuple, s, W, off)
-    nda = first(ls)[1]
-    z = zero(eltype(nda.primal))
-    L = length(nda.primal)
-    @inbounds for i in 1:L
-        d = off + i
-        s <= d <= s + W - 1 && (nda.partials[d - s + 1][i] = z)
-    end
-    return _clear_chunk!(Base.tail(ls), s, W, off + L)
 end
 @inline _scatter_chunk!(::Tuple{}, out, s, W, total, off) = off
 @inline function _scatter_chunk!(ls::Tuple, out, s, W, total, off)
@@ -1802,10 +1790,12 @@ end
 end
 
 # Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`). Mirrors
-# the flat-vector packable gradient: refresh the preallocated seed primals from the current
-# inputs, then per chunk poke the seed leaf partials in place, run the width-dispatched
+# the flat-vector packable gradient: per chunk restore the seed primals from the current inputs
+# and re-zero the partials (so an in-place `f` neither touches the user's arrays nor compounds
+# across chunks), poke the chunk's standard-basis partials in place, run the width-dispatched
 # `value_and_derivative!!`, and write each lane's directional derivative straight into the
-# matching preallocated gradient leaf.
+# matching preallocated gradient leaf (every dof is written exactly once, so `grad_bufs` needs
+# no zeroing).
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
@@ -1819,18 +1809,17 @@ function _structured_gradient!!(
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
     W = cache.gradient_chunk_size
-    _refresh_all!(arg_seeds, xs)
-    _zero_leaves!(leaves, W)
     total_dof = _leaves_dof(leaves)
     local y
     s = 1
     while s <= total_dof
+        _refresh_all!(arg_seeds, xs)
+        _zero_partials!(leaves, W)
         _seed_chunk!(leaves, s, W, 0)
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         _scatter_chunk!(leaves, out, s, W, total_dof, 0)
-        _clear_chunk!(leaves, s, W, 0)
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
