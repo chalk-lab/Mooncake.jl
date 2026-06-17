@@ -1068,6 +1068,52 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 _, gmix = Mooncake.value_and_gradient!!(cmix, fmix, mx)
                 @test gmix[2].v ≈ ones(2)
                 @test gmix[2].s ≈ 2 * mx.s
+
+                # Scalar-only structured inputs (isbits V) take the concrete-barrier path
+                # (IsbitsGradSeed): tuple/NamedTuple/immutable-struct of scalars — correct +
+                # zero-alloc. (Previously the generic chunked path, ~52 allocations.)
+                fnt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+                ntx = (; a=1.3, b=2.1, c=0.7)
+                cnt = Mooncake.prepare_derivative_cache(
+                    fnt, ntx; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test getfield(cnt, :gradient_seed) isa Mooncake.IsbitsGradSeed
+                ynt, gnt = Mooncake.value_and_gradient!!(cnt, fnt, ntx)
+                @test ynt == fnt(ntx)
+                @test gnt[2].a ≈ 2 * ntx.a * ntx.b + cos(ntx.a) * ntx.c
+                @test gnt[2].b ≈ ntx.a^2
+                @test gnt[2].c ≈ sin(ntx.a)
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cnt, fnt, ntx
+                ) == 0
+
+                # immutable struct of scalars: native gradient is a `Tangent` (scattered via the
+                # `Tangent` branch), and prepare-at-x0/evaluate-at-x1 (primal refresh) is correct.
+                fsp = p -> p.x1^2 * p.x2
+                csp = Mooncake.prepare_derivative_cache(
+                    fsp,
+                    SimplePair(1.0, 1.0);
+                    config=Mooncake.Config(; friendly_tangents=false),
+                )
+                @test getfield(csp, :gradient_seed) isa Mooncake.IsbitsGradSeed
+                ysp, gsp = Mooncake.value_and_gradient!!(csp, fsp, SimplePair(3.0, 4.0))
+                @test ysp == fsp(SimplePair(3.0, 4.0))
+                @test gsp[2].fields.x1 ≈ 2 * 3.0 * 4.0
+                @test gsp[2].fields.x2 ≈ 3.0^2
+
+                # Multi-chunk scalar input (dof 10 > max chunk width): correct + zero-alloc.
+                nt10 = NamedTuple{Tuple(Symbol.("x", 1:10))}(ntuple(Float64, 10))
+                f10 = nt -> sum(abs2, values(nt))
+                c10 = Mooncake.prepare_derivative_cache(
+                    f10, nt10; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test getfield(c10, :gradient_chunk_size) < 10
+                _, g10 = Mooncake.value_and_gradient!!(c10, f10, nt10)
+                @test g10[2].x1 ≈ 2.0
+                @test g10[2].x10 ≈ 20.0
+                @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, c10, f10, nt10
+                ) == 0
             end
         end
 

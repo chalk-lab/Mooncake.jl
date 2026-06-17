@@ -1235,6 +1235,18 @@ struct StructuredGradSeed{Ff,As,Gs,Ls}
     leaves::Ls
 end
 
+# For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars): there
+# are no array leaves to poke, but every piece — `zero_lifted`, the dict-free isbits
+# `basis_lifted!!`, `value_and_derivative!!`, and the scatter — is allocation-free, so a concrete
+# barrier with compile-time width `W` runs the chunked gradient with no allocation. Each chunk
+# rebuilds the isbits seed on the stack (capturing the current primal) and reconstructs the per-arg
+# `Lifted`s through the stored templates' concrete types (`typeof(tmpl)(primal, V)`, which folds
+# where `Lifted{fieldtype(P,i),W}` does not). `total_dof` is precomputed to avoid `dof`'s `IdDict`.
+struct IsbitsGradSeed{W,Tmpls}
+    templates::Tmpls
+    total_dof::Int
+end
+
 # Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse tangent
 # `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not array-backed.
 # `dict` guards against aliasing/cycles: a revisited array or mutable wrapper means the flat
@@ -1371,6 +1383,14 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             gradient_seed = StructuredGradSeed(
                 zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves
             )
+        elseif isbitstype(typeof(tangent(zero_lifted(Val(W), fx))))
+            # No array leaves but an isbits V (scalar-only structured input): the concrete-barrier
+            # path rebuilds the seed on the stack each chunk. Store per-input `Lifted` templates
+            # (for type-stable reconstruction) and the precomputed dof count.
+            templates = map(a -> zero_lifted(Val(W), a), fx)
+            gradient_seed = IsbitsGradSeed{W,typeof(templates)}(
+                templates, dof(tuple_map(zero_tangent, fx))
+            )
         end
     end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
@@ -1448,9 +1468,11 @@ that mutates its own fields is not restored.
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
 function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
-    # Array-backed structured inputs take the zero-allocation leaf-table path.
+    # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
+    # structured inputs take the isbits concrete-barrier path.
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
+    seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
     input_primals = (f, x...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
@@ -1812,6 +1834,79 @@ function _structured_gradient!!(
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
+    if isnothing(cache.input_tangents)
+        return y, native_gradients
+    end
+    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+    return y,
+    tangent_to_primal_internal!!(
+        friendly_gradients,
+        native_gradients,
+        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
+    )
+end
+
+# One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current primal),
+# basis-seed it at the chunk's slots, reconstruct the per-arg `Lifted`s through the stored
+# templates' concrete types, and run the width-dispatched rule. All allocation-free for isbits V.
+@inline function _isbits_chunk(cache, input_primals, templates, ::Val{W}, s) where {W}
+    seed_w = zero_lifted(Val(W), input_primals)
+    vs = tangent(basis_lifted!!(seed_w, ntuple(k -> s + k - 1, Val(W))))
+    lifteds = map((t, p, v) -> typeof(t)(p, v), templates, input_primals, vs)
+    return value_and_derivative!!(cache, lifteds...)
+end
+
+# Write the chunk's `W` directional derivatives into the gradient. `out`'s lane `k` is the
+# derivative w.r.t. dof `s + k - 1`; the gradient mirrors the input structure (recursive
+# coherence), so a single dof-ordered walk sets each leaf scalar directly. Pure isbits rebuild
+# with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
+@inline function _isbits_scatter(ng, out, ::Val{W}, total_dof, s) where {W}
+    coeffs = ntuple(lane -> tangent(out, lane), Val(W))
+    g, _ = _scatter_isbits(ng, coeffs, s, total_dof, 0)
+    return g
+end
+@inline _scatter_isbits(g::NoTangent, _coeffs, _s, _tot, c::Int) = (g, c)
+@inline function _scatter_isbits(
+    g::T, coeffs::NTuple{W}, s, tot, c::Int
+) where {T<:IEEEFloat,W}
+    c += 1
+    return (s <= c <= min(s + W - 1, tot) ? T(coeffs[c - s + 1]) : g, c)
+end
+@inline _scatter_isbits(::Tuple{}, _coeffs, _s, _tot, c::Int) = ((), c)
+@inline function _scatter_isbits(g::Tuple, coeffs, s, tot, c::Int)
+    h, c = _scatter_isbits(first(g), coeffs, s, tot, c)
+    t, c = _scatter_isbits(Base.tail(g), coeffs, s, tot, c)
+    return ((h, t...), c)
+end
+@inline function _scatter_isbits(g::NamedTuple{names}, coeffs, s, tot, c::Int) where {names}
+    t, c = _scatter_isbits(values(g), coeffs, s, tot, c)
+    return (NamedTuple{names}(t), c)
+end
+@inline function _scatter_isbits(g::Tangent, coeffs, s, tot, c::Int)
+    inner, c = _scatter_isbits(g.fields, coeffs, s, tot, c)
+    return (typeof(g)(inner), c)
+end
+
+# Zero-allocation gradient for scalar-only structured inputs (isbits V); see `IsbitsGradSeed`.
+function _isbits_gradient!!(
+    cache::FCache, f::F, xs::Tuple, gs::IsbitsGradSeed{W}
+) where {F,W}
+    input_primals = (f, xs...)
+    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    total_dof = gs.total_dof
+    templates = gs.templates
+    native_gradients = tuple_map(zero_tangent, input_primals)
+    # Peel the first (always full-width) chunk to keep the scalar `y` concretely typed.
+    first_out = _isbits_chunk(cache, input_primals, templates, Val(W), 1)
+    y = primal(first_out)
+    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    native_gradients = _isbits_scatter(native_gradients, first_out, Val(W), total_dof, 1)
+    s = 1 + W
+    while s <= total_dof
+        out = _isbits_chunk(cache, input_primals, templates, Val(W), s)
+        native_gradients = _isbits_scatter(native_gradients, out, Val(W), total_dof, s)
+        s += W
+    end
     if isnothing(cache.input_tangents)
         return y, native_gradients
     end

@@ -1720,9 +1720,52 @@ end
 # scalar-dof index and an `IdDict`
 # visits aliased arrays / cyclic mutable structs once, matching the dedup in
 # `dof` and the cycle/alias-aware `zero_lifted` the seed must come from.
-@inline function basis_lifted!!(seed::Lifted{P,N}, slots::NTuple{N,Int}) where {P,N}
+@inline function basis_lifted!!(seed::Lifted{P,N,V}, slots::NTuple{N,Int}) where {P,N,V}
+    # An isbits V has no arrays or mutable wrappers, so there is nothing to mutate in place and
+    # nothing to dedup: thread a plain `Int` cursor and rebuild on the stack, skipping the
+    # `Ref`/`IdDict` the general path allocates. This keeps forward seeding of scalar/tuple/
+    # NamedTuple/struct-of-scalar inputs allocation-free (`isbitstype(V)` folds at compile time).
+    if isbitstype(V)
+        v, _ = _basis_seed_isbits(seed.value, slots, 0)
+        return Lifted{P,N}(primal(seed), v)
+    end
     v = _basis_seed!!(seed.value, slots, Ref(0), IdDict{Any,Any}())
     return Lifted{P,N}(primal(seed), v)
+end
+
+# Pure-functional isbits reseed: returns `(rebuilt V, advanced cursor)`, threading the global
+# scalar-dof cursor by value. Mirrors `_basis_seed!!` for the isbits (array-free) shapes only.
+@inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
+    NoDual(), c
+)
+@inline function _basis_seed_isbits(v::NDual{T,N}, slots::NTuple{N,Int}, c::Int) where {T,N}
+    c += 1
+    return (NDual{T,N}(v.value, ntuple(k -> c == slots[k] ? one(T) : zero(T), Val(N))), c)
+end
+@inline function _basis_seed_isbits(
+    v::Complex{NDual{T,N}}, slots::NTuple{N,Int}, c::Int
+) where {T,N}
+    re, c = _basis_seed_isbits(real(v), slots, c)
+    im, c = _basis_seed_isbits(imag(v), slots, c)
+    return (Complex(re, im), c)
+end
+@inline _basis_seed_isbits(::Tuple{}, _slots::NTuple{N,Int}, c::Int) where {N} = ((), c)
+@inline function _basis_seed_isbits(v::Tuple, slots::NTuple{N,Int}, c::Int) where {N}
+    h, c = _basis_seed_isbits(first(v), slots, c)
+    t, c = _basis_seed_isbits(Base.tail(v), slots, c)
+    return ((h, t...), c)
+end
+@inline function _basis_seed_isbits(
+    v::NamedTuple{names}, slots::NTuple{N,Int}, c::Int
+) where {names,N}
+    t, c = _basis_seed_isbits(values(v), slots, c)
+    return (NamedTuple{names}(t), c)
+end
+@inline function _basis_seed_isbits(
+    v::ImmutableDual, slots::NTuple{N,Int}, c::Int
+) where {N}
+    inner, c = _basis_seed_isbits(v.value, slots, c)
+    return (ImmutableDual(inner), c)
 end
 
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
