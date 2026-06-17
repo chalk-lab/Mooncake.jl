@@ -571,7 +571,22 @@ Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`
 """
 function new_inst_vec(x::CC.InstructionStream)
     stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
-    return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    @static if VERSION > v"1.12-"
+        # In Julia 1.12+, x.line is a flat Vector{Int32} of length 3n (3 codeloc values per
+        # instruction). Extract the proper Tuple{Int32,Int32,Int32} for each instruction.
+        n = length(stmt)
+        return [
+            NewInstruction(
+                stmt[i],
+                x.type[i],
+                x.info[i],
+                (x.line[3i - 2], x.line[3i - 1], x.line[3i]),
+                x.flag[i],
+            ) for i in 1:n
+        ]
+    else
+        return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    end
 end
 
 # Maps from positional names (SSAValues for nodes, Integers for basic blocks) to IDs.

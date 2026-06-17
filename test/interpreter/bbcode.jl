@@ -67,9 +67,9 @@ end
 
     @static if VERSION > v"1.12-"
         @testset "codelocs consistent after instruction insertion" begin
-            # Regression test: adding instructions during BBCode transforms used to leave
-            # debuginfo.codelocs at its original size, causing a mismatch with the new
-            # instruction count and wrong/misaligned debug info on BBCode -> IRCode conversion.
+            # Adding instructions during BBCode transforms does not update debuginfo.codelocs.
+            # Check that BBCode -> IRCode produces consistent stmts.line and debuginfo.codelocs
+            # of the correct size after an instruction is inserted.
             ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
             bb = BBCode(ir)
             # Insert an instruction into the first block
