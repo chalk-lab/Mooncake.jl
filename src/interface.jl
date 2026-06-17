@@ -1247,6 +1247,22 @@ struct IsbitsGradSeed{W,Tmpls}
     total_dof::Int
 end
 
+# Is forward V `T` built only from real-float scalar dofs (`NoDual`/`NDual{<:IEEEFloat}` nested in
+# tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters via a one-dof-per
+# -leaf cursor walk that only knows these shapes, so this is its admission gate: complex dofs (two
+# dofs per element), `PossiblyUninitTangent`, and any other isbits V fall back to the generic path
+# (which handles them) rather than hitting an opaque `MethodError` in the scatter.
+_only_real_scalar_dofs(::Type{NoDual}) = true
+_only_real_scalar_dofs(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
+function _only_real_scalar_dofs(::Type{T}) where {T<:Tuple}
+    all(_only_real_scalar_dofs, fieldtypes(T))
+end
+function _only_real_scalar_dofs(::Type{NamedTuple{names,T}}) where {names,T}
+    _only_real_scalar_dofs(T)
+end
+_only_real_scalar_dofs(::Type{<:ImmutableDual{T}}) where {T} = _only_real_scalar_dofs(T)
+_only_real_scalar_dofs(::Type) = false
+
 # Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse tangent
 # `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not array-backed.
 # `dict` guards against aliasing/cycles: a revisited array or mutable wrapper means the flat
@@ -1383,10 +1399,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             gradient_seed = StructuredGradSeed(
                 zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves
             )
-        elseif isbitstype(typeof(tangent(zero_lifted(Val(W), fx))))
-            # No array leaves but an isbits V (scalar-only structured input): the concrete-barrier
-            # path rebuilds the seed on the stack each chunk. Store per-input `Lifted` templates
-            # (for type-stable reconstruction) and the precomputed dof count.
+        elseif isbitstype(typeof(fx)) &&
+            _only_real_scalar_dofs(typeof(tangent(zero_lifted(Val(W), fx))))
+            # Scalar-only structured input with real-float dofs: the concrete-barrier path rebuilds
+            # the seed on the stack each chunk. The primal tuple must be isbits too — otherwise the
+            # per-chunk `zero_lifted` would allocate (an `IdDict`); a non-isbits `f` falls back to
+            # the generic path. Store per-input `Lifted` templates (for type-stable reconstruction)
+            # and the precomputed dof count.
             templates = map(a -> zero_lifted(Val(W), a), fx)
             gradient_seed = IsbitsGradSeed{W,typeof(templates)}(
                 templates, dof(tuple_map(zero_tangent, fx))

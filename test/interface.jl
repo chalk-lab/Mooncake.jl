@@ -1130,6 +1130,39 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, c10, f10, nt10
                 ) == 0
+
+                # Complex scalar dofs have an isbits V but two dofs per element, which the isbits
+                # barrier's scatter cannot handle — they must take the generic path, not crash.
+                fz = z -> abs2(z)
+                cz = Mooncake.prepare_derivative_cache(
+                    fz, 1.0 + 2.0im; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test !(getfield(cz, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+                yz, gz = Mooncake.value_and_gradient!!(cz, fz, 1.0 + 2.0im)
+                @test yz == abs2(1.0 + 2.0im)
+                @test gz[2] ≈ 2.0 + 4.0im
+                fzt = t -> abs2(t[1]) + t[2]^2
+                czt = Mooncake.prepare_derivative_cache(
+                    fzt,
+                    (1.0 + 2.0im, 3.0);
+                    config=Mooncake.Config(; friendly_tangents=false),
+                )
+                @test !(getfield(czt, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+                _, gzt = Mooncake.value_and_gradient!!(czt, fzt, (1.0 + 2.0im, 3.0))
+                @test gzt[2] == (2.0 + 4.0im, 6.0)
+
+                # A non-isbits `f` (closure capturing a Vector) over scalar args must NOT take the
+                # isbits barrier (its per-chunk seed rebuild would allocate) — generic path instead.
+                clo = let k = [10.0]
+                    x -> k[1] * x.a + x.b^2
+                end
+                cclo = Mooncake.prepare_derivative_cache(
+                    clo, (; a=1.0, b=2.0); config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test !(getfield(cclo, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+                _, gclo = Mooncake.value_and_gradient!!(cclo, clo, (; a=1.0, b=2.0))
+                @test gclo[2].a ≈ 10.0
+                @test gclo[2].b ≈ 4.0
             end
         end
 
