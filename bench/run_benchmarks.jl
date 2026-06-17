@@ -223,29 +223,23 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Skip the registry-marked `skip_forward` cases (deliberate forward gaps);
-            # any other forward failure throws loudly rather than being swallowed.
-            if !(ranges[n] isa NamedTuple && get(ranges[n], :skip_forward, false))
-                @info "Mooncake (Forward)"
-                rule = Mooncake.build_frule(args...)
-                # CoDual args are lifted from their primal+tangent; others get a zero seed
-                # (fine for timing — the frule's work is independent of tangent values).
-                lifts = map(
-                    x ->
-                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
-                    args,
-                )
-                to_benchmark(rule, copy_coduals(lifts...)...)
-                include_other_frameworks && GC.gc(true)
-                suite["mooncake_fwd"] = Chairmarks.benchmark(
-                    () -> (rule, lifts),
-                    ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
-                    a -> to_benchmark(a[1], a[2]...),
-                    _ -> GC.gc(false);
-                    evals=1,
-                    seconds=seconds,
-                )
-            end
+            # Benchmark AD via Mooncake (forward).
+            @info "Mooncake (Forward)"
+            rule = Mooncake.build_frule(args...)
+            lifts = map(
+                x -> x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
+                args,
+            )
+            to_benchmark(rule, copy_coduals(lifts...)...)
+            include_other_frameworks && GC.gc(true)
+            suite["mooncake_fwd"] = Chairmarks.benchmark(
+                () -> (rule, lifts),
+                ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
+                a -> to_benchmark(a[1], a[2]...),
+                _ -> GC.gc(false);
+                evals=1,
+                seconds=seconds,
+            )
 
             if include_other_frameworks
                 if should_run_benchmark(Val(:zygote), args...)
@@ -303,8 +297,7 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = median(d["primal"]).time
     mooncake_time = median(d["mooncake"]).time
-    mooncake_fwd_time =
-        in("mooncake_fwd", keys(d)) ? median(d["mooncake_fwd"]).time : missing
+    mooncake_fwd_time = median(d["mooncake_fwd"]).time
     zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
