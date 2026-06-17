@@ -1386,7 +1386,7 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     `ε ≤ max_fd_step` are used. Each argument's tangent is unit-normalised independently,
     so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
     domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
-    the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
+    the domain. The FD grid ends at `1e-8`; the smallest usable cap is `1e-7`.
 - `skip_chunked::Bool=false`: skip the width-`N>1` chunked forward-mode check. Set this only
     for primals whose forward rule has a known width-`N` limitation (e.g. raw-pointer rules
     that round-trip through `unsafe_copyto!`), where the width-1 path is correct but the
