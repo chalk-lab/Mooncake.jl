@@ -231,7 +231,7 @@ For example, consider
 julia> using Mooncake.BasicBlockCode: ID # to improve printing
 
 julia> bb_ir.blocks[3].insts[1]
-Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (0, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (9, 2, 1), 0x00002478)
 ```
 This is the first instruction of the third basic block.
 The first field is a call to `Base.add_int`, the second field is `Int64` (we promise that the other fields are just copies of the corresponding data from the `Core.Compiler.InstructionStream` in the original `IRCode` representation of this IR).
@@ -319,7 +319,7 @@ The same transformation can be performed on `BBCode`:
 julia> bb_ir_copy = copy(bb_ir);
 
 julia> old_inst = bb_ir_copy.blocks[3].insts[2]
-Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (3, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (13, 3, 1), 0x00002478)
 
 julia> new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
 :((Core.Intrinsics.add_int)(ID(1), ID(5)))

@@ -573,7 +573,8 @@ function new_inst_vec(x::CC.InstructionStream)
     stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
     @static if VERSION > v"1.12-"
         # In Julia 1.12+, x.line is a flat Vector{Int32} of length 3n (3 codeloc values per
-        # instruction). Extract the proper Tuple{Int32,Int32,Int32} for each instruction.
+        # instruction). Construct each NewInstruction with its proper Tuple{Int32,Int32,Int32}
+        # line field by reading the 3 entries for instruction i at positions 3i-2, 3i-1, 3i.
         n = length(stmt)
         return [
             NewInstruction(
