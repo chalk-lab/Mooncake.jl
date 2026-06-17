@@ -432,11 +432,11 @@ julia> CC.IRCode(bb_ir_copy)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 └──      goto #2
-  4 ─      return %2
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2
 ```
 We see here that `IRCode` and `BBCode` involve similar levels of complexity to insert an instruction.
 
@@ -474,13 +474,13 @@ julia> CC.IRCode(bb_ir_copy)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 └──      goto #2
-  4 ─        dynamic (println)(%2)::Any
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+2 4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-  5 ─      return %2
+8 5 ─      return %2
 ```
 Observe that, in this case, rather than creating `new_bb` and then inserting instructions into it, we simply create the block _with_ the instructions.
 This programming style is often more convenient.
@@ -513,14 +513,14 @@ julia> new_ir = CC.IRCode(bb_ir_copy)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 │   %9 =   dynamic (iseven)(%2)::Any
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+2 │   %9 =   dynamic (iseven)(%2)::Any
   └──      goto #2 if not %9
   4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-  5 ─      return %2
+8 5 ─      return %2
 ```
 Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the `ID` associated to the instruction which computes the conditional appears in the `IDGotoIfNot` instruction.
 
