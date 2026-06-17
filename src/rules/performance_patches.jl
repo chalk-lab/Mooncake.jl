@@ -43,7 +43,13 @@ function frule!!(
     ::Lifted{typeof(abs2),N},
     x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    return Lifted{P,N}(sum(abs2, primal(x)), sum(abs2, tangent(x)))
+    # Chain rule on the parallel arrays: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·partialₖᵢ`,
+    # i.e. `2·dot(p, partialsₖ)` — both `sum(abs2, ·)` and `dot` are BLAS/SIMD over plain
+    # `Array`s. Folding `sum(abs2, tangent(x))` element-wise is the scalar left-fold, ~5x slower.
+    nda = tangent(x)
+    p = nda.primal
+    v = sum(abs2, p)
+    return Lifted{P,N}(v, NDual{P,N}(v, ntuple(k -> 2 * dot(p, nda.partials[k]), Val(N))))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
