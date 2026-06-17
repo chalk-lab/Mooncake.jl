@@ -1250,16 +1250,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             InputSpec(typeof(x), ())
         end
     end
-    # Chunking only batches packable inputs (a non-differentiable `f` plus IEEEFloat
-    # scalar/array args); other inputs (structs, tuples, complex, …) have no native chunk
-    # rule and run width-1, so pin their chunk width to 1 here instead of re-deciding
-    # packability per chunk at runtime.
-    packable =
-        tangent_type(typeof(first(fx))) === NoTangent &&
-        all(p -> p isa IEEEFloat || p isa Array{<:IEEEFloat}, Base.tail(fx))
+    # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
+    # type-generic, so structs, tuples, complex, and differentiable `f` batch `W` directional
+    # derivatives per pass through the generic chunked gradient path just like float arrays.
+    # Only the zero-allocation fast path below is shape-restricted (see `gradient_seed`).
     gradient_chunk_size = let total_dof = dof(tuple_map(zero_tangent, fx))
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
-        packable ? min(total_dof, requested) : 1
+        min(total_dof, requested)
     end
     # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
     # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
@@ -1279,14 +1276,16 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus the
     # inert `f_seed`. `nothing` for every other shape, which uses the generic gradient path.
     gradient_seed = let args = Base.tail(fx)
-        # The same-eltype requirement mirrors the packable method's dispatch
-        # (`x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype
-        # seed would be dead cache weight that dispatch can never reach.
+        # The zero-allocation seed needs a non-differentiable `f` (the path rewraps `f` without
+        # sweeping its dofs, assuming `V === NoDual`) and same-eltype float-vector args. The
+        # same-eltype requirement mirrors the seed method's dispatch (`x1::AbstractVector{T},
+        # xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed would be dead cache weight
+        # that dispatch can never reach.
         if gradient_chunk_size >= 1 &&
+            tangent_type(typeof(first(fx))) === NoTangent &&
             !isempty(args) &&
             first(args) isa AbstractVector{<:IEEEFloat} &&
-            all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
-            packable
+            all(a -> a isa AbstractVector{eltype(first(args))}, args)
             W = gradient_chunk_size
             (
                 zero_lifted(Val(W), fx[1]),
@@ -1356,6 +1355,11 @@ Compute the value and gradient of the scalar-returning `f` at `x...` using forwa
 of the cache's resolved chunk width). This overload exists so callers can prepare a forward
 cache once, then use it either for directional derivatives via
 [`value_and_derivative!!`](@ref) or for full gradients.
+
+All input shapes are chunked. The zero-allocation fast path additionally requires a
+non-differentiable `f` and same-element-type dense float-vector arguments (its preallocated
+seeds mutate flat array partials in place); other shapes — structs, tuples, complex, nested,
+or a differentiable `f` — are differentiated correctly but allocate a fresh seed per chunk.
 
 The arguments in `x` are returned to their original state: if `f` mutates them in place,
 they are restored from a cache-owned snapshot. `f` itself is not snapshotted — a callable

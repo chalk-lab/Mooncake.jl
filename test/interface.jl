@@ -1004,6 +1004,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, cache_10, f10, x10
                 ) == 0
+
+                # Non-packable inputs (here a NamedTuple) also chunk through the generic
+                # chunked gradient path: multi-dof builds a native chunk rule and the
+                # gradient is correct. (Such inputs were previously pinned to width 1.)
+                nt_x = (; a=1.3, b=2.1, c=0.7)
+                f_nt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+                cache_nt = Mooncake.prepare_derivative_cache(
+                    f_nt, nt_x; config=Mooncake.Config(; friendly_tangents=true)
+                )
+                @test getfield(cache_nt, :gradient_chunk_size) > 1
+                @test getfield(cache_nt, :chunk_rule) !== nothing
+                y_nt, g_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, nt_x)
+                @test y_nt == f_nt(nt_x)
+                @test g_nt[2].a ≈ 2 * nt_x.a * nt_x.b + cos(nt_x.a) * nt_x.c
+                @test g_nt[2].b ≈ nt_x.a^2
+                @test g_nt[2].c ≈ sin(nt_x.a)
             end
         end
 
