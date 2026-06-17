@@ -814,6 +814,12 @@ will return both to their original state as part of the process of computing the
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
 
+!!! warning
+    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable storage.
+    Each argument slot is given an independent cotangent buffer, so passing the same array in
+    two positions (e.g. `dot(X, X)`) accumulates into separate buffers and yields the wrong
+    result, as with the rule-direct `value_and_pullback!!`.
+
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
 It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
@@ -924,6 +930,12 @@ will return both to their original state as part of the process of computing the
     different arguments. Therefore, if you need to keep the values returned by this function
     around over multiple calls to this function with the same `cache`, you should take a
     copy (using `copy` or `deepcopy`) of them before calling again.
+
+!!! warning
+    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable storage.
+    Each argument slot is given an independent cotangent buffer, so passing the same array in
+    two positions (e.g. `dot(X, X)`) accumulates into separate buffers and yields the wrong
+    result, as with the rule-direct `value_and_pullback!!`.
 
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
 It contains one boolean for each element of `(f, x...)`.
@@ -1472,14 +1484,17 @@ of the cache's resolved chunk width). This overload exists so callers can prepar
 cache once, then use it either for directional derivatives via
 [`value_and_derivative!!`](@ref) or for full gradients.
 
-All input shapes are chunked. The zero-allocation fast path additionally requires a
-non-differentiable `f` and same-element-type dense float-vector arguments (its preallocated
-seeds mutate flat array partials in place); other shapes — structs, tuples, complex, nested,
-or a differentiable `f` — are differentiated correctly but allocate a fresh seed per chunk.
+All input shapes are chunked. With a non-differentiable `f`, three shape families additionally
+take a zero-allocation path that reuses cache-owned seeds: (1) one or more same-element-type
+dense float vectors; (2) tuples/NamedTuples/structs whose differentiable leaves are all real
+float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. Everything else —
+complex, mixed/abstract element types, possibly-uninitialised fields, or a differentiable `f` —
+is differentiated correctly via the generic chunked path, which allocates a fresh seed per chunk.
 
-The arguments in `x` are returned to their original state: if `f` mutates them in place,
-they are restored from a cache-owned snapshot. `f` itself is not snapshotted — a callable
-that mutates its own fields is not restored.
+The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers (the
+zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is restored
+(the generic path). `f` itself is not snapshotted — a callable that mutates its own fields is
+not restored.
 
 !!! warning
     `cache` owns any mutable state returned by this function: mutable components of the
@@ -1658,8 +1673,10 @@ end
 # width-dispatched `value_and_derivative!!`, and scatter each lane's directional derivative
 # straight into the preallocated per-arg gradient buffer. The seed primals are restored from
 # `xs` and the partials zeroed at the top of every chunk, so an in-place `f` neither touches the
-# user's arrays nor compounds across chunks. A differentiable `f`, mixed
-# element types, or any other shape has no preallocated seed (`gradient_seed === nothing`) and
+# user's arrays nor compounds across chunks. This method only matches same-eltype float-vector
+# args; other zero-alloc shapes (array-backed structured / scalar-only structured) build their
+# own seed at prepare time and dispatch from the generic `value_and_gradient!!` to
+# `_structured_gradient!!` / `_isbits_gradient!!`. A differentiable `f` (no preallocated seed)
 # falls back to the generic chunked path.
 function value_and_gradient!!(
     cache::FCache, f::F, x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T},Nm1}
@@ -1697,6 +1714,7 @@ function value_and_gradient!!(
         off = 0
         @inbounds for i in 1:N
             nda = arg_seeds[i].value
+            # Single-leaf inline of the structured path's `_refresh_seed!` (restore seed primal).
             copyto!(nda.primal, xs[i])
             len = length(xs[i])
             for lane in 1:W
@@ -1797,15 +1815,17 @@ end
     end
     return _seed_chunk!(Base.tail(ls), s, W, off + L)
 end
-@inline _scatter_chunk!(::Tuple{}, out, s, W, total, off) = off
-@inline function _scatter_chunk!(ls::Tuple, out, s, W, total, off)
+@inline _scatter_chunk!(::Tuple{}, out, s, W, off) = off
+@inline function _scatter_chunk!(ls::Tuple, out, s, W, off)
     nda, g = first(ls)
     L = length(nda.primal)
     @inbounds for i in 1:L
         d = off + i
-        s <= d <= min(s + W - 1, total) && (g[i] = tangent(out, d - s + 1))
+        # `d` ranges 1..total_dof across all leaves, so a `min(·, total_dof)` upper clamp would
+        # be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's empty lanes.
+        s <= d <= s + W - 1 && (g[i] = tangent(out, d - s + 1))
     end
-    return _scatter_chunk!(Base.tail(ls), out, s, W, total, off + L)
+    return _scatter_chunk!(Base.tail(ls), out, s, W, off + L)
 end
 
 # Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`). Mirrors
@@ -1838,7 +1858,7 @@ function _structured_gradient!!(
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        _scatter_chunk!(leaves, out, s, W, total_dof, 0)
+        _scatter_chunk!(leaves, out, s, W, 0)
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
@@ -2508,7 +2528,9 @@ mutates `x` in place, it is restored, so the input is not mutated.
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref) or
     [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
-    to construct the cache.
+    to construct the cache. A [`prepare_gradient_cache`](@ref) cache is for a scalar output and
+    is not usable here; it is rejected at call time with an "only supports AbstractVector
+    outputs" error.
 
 !!! warning
     With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
