@@ -1361,6 +1361,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 hvp_cache, sin, 1.0
             )
 
+            # Multi-argument calls get a clear error, not an opaque MethodError.
+            multi_cache = Mooncake.prepare_derivative_cache(x -> [sum(x)], [1.0, 2.0])
+            @test_throws "supports only a single AbstractVector input" Mooncake.value_and_jacobian!!(
+                multi_cache, x -> [sum(x)], [1.0, 2.0], [3.0]
+            )
+
             f_mut_jac = x -> (x .*= 2; x .^ 2)
             x_mut_jac = [1.5, -2.0]
             rev_cache_mut_jac = Mooncake.prepare_pullback_cache(

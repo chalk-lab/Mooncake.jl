@@ -238,9 +238,10 @@ end
 
 Run a forward rule directly, without first constructing a `FCache`.
 
-The `Lifted` interface returns the rule output (a `Lifted`) directly. The tuple interface
-returns `(y, dy)` using the rule's native tangent representation. Both compute a single
-directional derivative (one tangent per input).
+The tuple interface lifts each input to a width-1 slot and returns `(y, dy)` for a single
+directional derivative. The `Lifted` interface returns the rule output (a `Lifted`) directly and
+computes one derivative per lane of the supplied `Lifted` width — width-1 unless the caller built
+wider (chunked) slots.
 """
 @inline function value_and_derivative!!(rule::R) where {R}
     throw(
@@ -722,7 +723,9 @@ end
 """
     prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
-Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info.
+Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info,
+including the `config.friendly_tangents` output-tangent contract and the requirement that no two
+of `(f, x...)` alias the same mutable storage.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -865,7 +868,9 @@ end
 """
     prepare_gradient_cache(f, x...; config=Mooncake.Config())
 
-Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info.
+Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
+including the `config.friendly_tangents` output-tangent contract and the requirement that no two
+of `(f, x...)` alias the same mutable storage.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -1223,13 +1228,14 @@ end
     return total
 end
 
-# Snapshot/restore for the chunked gradient/Jacobian sweeps. Forward slots alias the user's
-# input (`primal(slot) === x`), and a sweep re-runs `f` once per chunk on that shared storage.
-# An in-place-mutating `f` would otherwise compound its mutation across chunks and corrupt
-# later chunks' derivatives. Each sweep snapshots the input args into the prepared
-# `cache.input_snapshot` buffer (args only — `f` is never mutated and may be uncopyable) and
-# restores from it (in place, via `_copy_to_output!!`) before each re-run and once at the end,
-# leaving the inputs unchanged, consistent with reverse mode.
+# Input-mutation safety (used only by the GENERIC chunked gradient path and the forward Jacobian
+# sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see `_refresh_all!`
+# / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot) === x`), and a sweep
+# re-runs `f` once per chunk on that shared storage; an in-place-mutating `f` would otherwise
+# compound its mutation across chunks and corrupt later chunks' derivatives. Those sweeps snapshot
+# the input args into the prepared `cache.input_snapshot` buffer (args only — `f` is never mutated
+# and may be uncopyable) and restore from it (in place, via `_copy_to_output!!`) before each re-run
+# and once at the end, leaving the inputs unchanged, consistent with reverse mode.
 
 # ── Zero-allocation gradient for array-backed structured inputs ──────────────────────────────
 #
@@ -1352,7 +1358,8 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
     # type-generic, so structs, tuples, complex, and differentiable `f` batch `W` directional
     # derivatives per pass through the generic chunked gradient path just like float arrays.
     # Only the zero-allocation fast path below is shape-restricted (see `gradient_seed`).
-    gradient_chunk_size = let total_dof = dof(tuple_map(zero_tangent, fx))
+    total_dof = dof(tuple_map(zero_tangent, fx))
+    gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dof, requested)
     end
@@ -1425,9 +1432,7 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             # the generic path. Store per-input `Lifted` templates (for type-stable reconstruction)
             # and the precomputed dof count.
             templates = map(a -> zero_lifted(Val(W), a), fx)
-            gradient_seed = IsbitsGradSeed{W,typeof(templates)}(
-                templates, dof(tuple_map(zero_tangent, fx))
-            )
+            gradient_seed = IsbitsGradSeed{W,typeof(templates)}(templates, total_dof)
         end
     end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
@@ -1507,6 +1512,20 @@ not restored.
     returned gradients will be overwritten if you call this function again with the same
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
+# Shared finalisation for every value_and_gradient!! path: return the native gradient directly, or
+# (when the cache was prepared with `friendly_tangents=true`) convert it to a primal-shaped one.
+# Type-stable — each caller's types are concrete at the call site.
+@inline function _finalize_gradient(cache::FCache, y, native_gradients, input_primals)
+    isnothing(cache.input_tangents) && return y, native_gradients
+    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+    return y,
+    tangent_to_primal_internal!!(
+        friendly_gradients,
+        native_gradients,
+        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
+    )
+end
+
 # Generic chunked fallback for any input the four concrete fast paths (scalar / packable float
 # vectors / array-backed-structured `StructuredGradSeed` / scalar-isbits `IsbitsGradSeed`) do not
 # cover: differentiable `f`, complex, mixed/abstract element types, possibly-uninitialised fields,
@@ -1547,16 +1566,7 @@ not restored.
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
         _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-        if isnothing(cache.input_tangents)
-            return y, native_gradients
-        end
-        friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-        return y,
-        tangent_to_primal_internal!!(
-            friendly_gradients,
-            native_gradients,
-            isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-        )
+        return _finalize_gradient(cache, y, native_gradients, input_primals)
     end
 
     # Per chunk of `W` standard-basis directions starting at `start_slot`:
@@ -1633,16 +1643,7 @@ not restored.
     # Final restore so the inputs are left unchanged (each chunk ran on the original).
     _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
 
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
+    return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
 #
@@ -1650,13 +1651,17 @@ end
 #
 # FCache path overview:
 # - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
-# - gradient machinery: `value_and_gradient!!` (scalar / packable-vector / generic chunked).
+# - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic chunked).
 #
-# Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)`:
+# Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)` (all need a non-diff `f`
+# except the scalar path):
 # - `x::IEEEFloat`: scalar width-1 path
 # - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
-# - otherwise: generic chunked path, which per chunk seeds `gradient_chunk_size` standard-basis
-#   directions and runs the width-dispatched `value_and_derivative!!`
+# - tuples/NamedTuples/structs of real float arrays: zero-alloc `StructuredGradSeed` leaf-table
+# - tuples/NamedTuples/immutable structs of real float scalars: zero-alloc `IsbitsGradSeed` barrier
+# - otherwise (differentiable `f`, complex, mixed/abstract eltypes, aliased/cyclic): generic chunked
+#   path, which per chunk seeds `gradient_chunk_size` standard-basis directions and runs the
+#   width-dispatched `value_and_derivative!!`
 
 # Scalar `value_and_gradient!!` fast path: a single width-1 forward evaluation through
 # `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
@@ -1672,16 +1677,7 @@ end
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     native_gradients = (NoTangent(), last(unlift(output)))
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, (f, x))
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
+    return _finalize_gradient(cache, y, native_gradients, (f, x))
 end
 
 # Zero-allocation packable gradient for one or more same-eltype float vectors. Reuse the
@@ -1721,7 +1717,7 @@ function value_and_gradient!!(
         fill!(grad_bufs[i], z)
     end
     total_dof = sum(length, xs)
-    W = _lifted_width(f_seed)
+    W = cache.gradient_chunk_size  # == _lifted_width(f_seed); read the cache field like the other paths
     y = z
     s = 1
     while s <= total_dof
@@ -1763,16 +1759,7 @@ function value_and_gradient!!(
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
+    return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
 # Refresh a preallocated seed's `NDualArray.primal` leaves from the current call's input `x`
@@ -1880,16 +1867,7 @@ function _structured_gradient!!(
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
+    return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
 # One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current primal),
@@ -1953,16 +1931,7 @@ function _isbits_gradient!!(
         native_gradients = _isbits_scatter(native_gradients, out, Val(W), total_dof, s)
         s += W
     end
-    if isnothing(cache.input_tangents)
-        return y, native_gradients
-    end
-    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
-    return y,
-    tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
-    )
+    return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
 """
@@ -2536,7 +2505,7 @@ end
 Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued
 function `f` of a single vector input.
 
-The current implementation supports a single dense vector input and an
+The current implementation supports a single non-empty dense vector input and an
 `AbstractVector` output, both with the same `IEEEFloat` element type. The returned
 Jacobian is a dense matrix whose columns correspond to input coordinates.
 
@@ -2677,6 +2646,18 @@ end
 
 @unstable function value_and_jacobian!!(cache, f::F, x) where {F}
     throw(ArgumentError("value_and_jacobian!! only supports cache types Cache and FCache"))
+end
+
+# Multi-argument calls match no 3-arg method above; give a clear error rather than a raw,
+# many-line MethodError (sibling `value_and_*!!` accept `f, x...`, so users may try it here).
+@unstable function value_and_jacobian!!(cache, f, x, xs...)
+    throw(
+        ArgumentError(
+            "value_and_jacobian!! supports only a single AbstractVector input; got " *
+            "$(length(xs) + 1) arguments. Concatenate the inputs into one vector, or use " *
+            "value_and_gradient!! / value_and_hvp!! for multi-argument functions.",
+        ),
+    )
 end
 
 """
@@ -2825,15 +2806,14 @@ end
 end
 
 # IT=Nothing specialisation: disambiguates against the Lifted-vararg and Tuple-vararg
-# zero-arg overloads (Aqua detects the ambiguity without this more-specific method).
+# zero-arg overloads (Aqua detects the ambiguity without this more-specific method). The validate
+# always throws an arity `PreparedCacheError` (`input_specs` has the `f` entry, no args given).
 function value_and_derivative!!(
     cache::FCache{R,Nothing,OP,FG,GW,CF,S}
 ) where {R,OP,FG,GW,CF,S<:Tuple}
-    _validate_prepared_cache(cache.input_specs, ())
-    error("unreachable")
+    return _validate_prepared_cache(cache.input_specs, ())
 end
 
 function value_and_derivative!!(cache::FCache)
-    _validate_prepared_cache(cache.input_specs, ())
-    error("unreachable")
+    return _validate_prepared_cache(cache.input_specs, ())
 end
