@@ -757,13 +757,17 @@ end
 # Memory itself is `<: AbstractArray{T, 1}` on 1.11+ — its canonical V is
 # an NDualArray over `Memory{T}`: `Memory{T} → NDualArray{T, N, 1, Memory{T}}`.
 @static if VERSION >= v"1.11-rc4"
-    @inline function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
+    @foldable @inline function dual_type(
+        ::Val{N}, ::Type{MemoryRef{T}}
+    ) where {N,T<:IEEEFloat}
         return NDualMemoryRef{T,N,Memory{T}}
     end
-    @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
+    @foldable @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
         return NDualArray{T,N,1,Memory{T},NDual{T,N}}
     end
-    @inline function dual_type(::Val{N}, ::Type{Memory{Complex{R}}}) where {N,R<:IEEEFloat}
+    @foldable @inline function dual_type(
+        ::Val{N}, ::Type{Memory{Complex{R}}}
+    ) where {N,R<:IEEEFloat}
         return NDualArray{Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}}}
     end
     # General (non-float) `Memory` / `MemoryRef` V, mirroring the element-wise `Array` rule
@@ -772,10 +776,10 @@ end
     # of per-element forward Vs). Covers the reverse rule's `Memory{Tuple{pullback}}`
     # comms storage under forward-over-reverse. The IEEEFloat overloads above are
     # more specific and provide the `NDualArray` optimisation for scalar-float elements.
-    @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
+    @foldable @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
         return :(Memory{dual_type(Val($N), $T)})
     end
-    @generated function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T}
+    @foldable @generated function dual_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T}
         return :(MemoryRef{dual_type(Val($N), $T)})
     end
 end
@@ -848,35 +852,43 @@ Shapes defined so far:
 # `Union{Float32,Float64}`) must widen to a UnionAll: `Lifted` is invariant in `P`, so the
 # invariant `Lifted{Union{…},N,NDual{Union{…},N}}` would reject the concrete runtime
 # `Lifted{Float32,…}` at the OpaqueClosure arg typeassert (mirrors the Tuple/struct overloads).
-@inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
+@foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
     return isconcretetype(P) ? Lifted{P,N,NDual{P,N}} : (Lifted{T,N,V} where {T<:P,V})
 end
-@inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
+@foldable @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
     return Lifted{Complex{R},N,Complex{NDual{R,N}}}
 end
-@inline function lifted_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
+@foldable @inline function lifted_type(
+    ::Val{N}, ::Type{Array{T,D}}
+) where {N,T<:IEEEFloat,D}
     return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}}
 end
-@inline function lifted_type(::Val{N}, ::Type{Base.RefValue{P}}) where {N,P<:NDualEltype}
+@foldable @inline function lifted_type(
+    ::Val{N}, ::Type{Base.RefValue{P}}
+) where {N,P<:NDualEltype}
     return Lifted{Base.RefValue{P},N,NDualRef{P,N}}
 end
-@inline function lifted_type(::Val{N}, ::Type{Array{Complex{R},D}}) where {N,R<:IEEEFloat,D}
+@foldable @inline function lifted_type(
+    ::Val{N}, ::Type{Array{Complex{R},D}}
+) where {N,R<:IEEEFloat,D}
     return Lifted{
         Array{Complex{R},D},
         N,
         NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}},
     }
 end
-@inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
+@foldable @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 # Abstract tuple/named-tuple `P` (e.g. a grouped-vararg `Tuple{Function,
 # Vararg{Any}}` in the forward IR) must widen to a UnionAll: `Lifted` is invariant
 # in `P`, so a concrete runtime `Lifted{Tuple{f,x},…}` is *not* a subtype of
 # `Lifted{Tuple{Function,Vararg},N,Any}` and the OpaqueClosure arg typeassert
 # would reject it (mirrors the generic struct overload below).
-# `@unstable`: DispatchDoctor's `@stable` wrapper reads the static parameters unconditionally,
-# defeating the `@isdefined(P)` phantom-TypeVar guard below (UndefVarError under the
-# dispatch_doctor integration suite).
-@unstable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+# `@foldable` (rather than a plain `@inline`): asserts `:foldable` effects so the foldability holds
+# under code-coverage instrumentation (which otherwise kills `effect_free`), and — being registered
+# as a DispatchDoctor `IncompatibleMacro` — also exempts this method from the module's `@stable`
+# wrapper, which would otherwise read the static parameters unconditionally and defeat the
+# `@isdefined(P)` phantom-TypeVar guard below (UndefVarError under the dispatch_doctor suite).
+@foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     @isdefined(P) || return Lifted  # phantom free-TypeVar Tuple — broad `Lifted` slot, as the generic `lifted_type` guard below
     return if isconcretetype(P)
         Lifted{P,N,dual_type(Val(N), P)}
@@ -884,7 +896,7 @@ end
         (Lifted{T,N,V} where {T<:P,V})
     end
 end
-@inline function lifted_type(
+@foldable @inline function lifted_type(
     ::Val{N}, ::Type{P}
 ) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
     return if isconcretetype(P)
@@ -893,15 +905,19 @@ end
         (Lifted{S,N,V} where {S<:P,V})
     end
 end
-@inline function lifted_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
+@foldable @inline function lifted_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
     return Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}
 end
 # MemoryRef + Memory canonical lifts (Julia 1.11+).
 @static if VERSION >= v"1.11-rc4"
-    @inline function lifted_type(::Val{N}, ::Type{MemoryRef{T}}) where {N,T<:IEEEFloat}
+    @foldable @inline function lifted_type(
+        ::Val{N}, ::Type{MemoryRef{T}}
+    ) where {N,T<:IEEEFloat}
         return Lifted{MemoryRef{T},N,NDualMemoryRef{T,N,Memory{T}}}
     end
-    @inline function lifted_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
+    @foldable @inline function lifted_type(
+        ::Val{N}, ::Type{Memory{T}}
+    ) where {N,T<:IEEEFloat}
         return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N}}}
     end
 end
@@ -925,8 +941,9 @@ end
 # argtypes via `CC.widenconst` and may produce abstract `P`; without
 # the UnionAll, `Lifted{Type{X}, N, V}` wouldn't be a subtype of
 # `Lifted{DataType, N, NoDual}` (Lifted is invariant in `P`).
-# `@unstable`: same DispatchDoctor exemption as the `Tuple` overload above.
-@unstable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
+# `@foldable`: same effect-assertion + DispatchDoctor `@stable` exemption as the `Tuple` overload
+# above (keeps foldability under coverage and preserves the `@isdefined(P)` guard).
+@foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # `@isdefined(P)` is false when the static parameter couldn't be bound — e.g. a `UnionAll`
     # with a free `TypeVar` in its body. Touching `P` would then throw `UndefVarError`; return the
     # broad `Lifted` instead — the same `@isdefined` fallback the `CoDual` ctors and
@@ -960,7 +977,7 @@ end
 # boundary. The kind-widening (34782f41b) is needed only for the genuinely abstract metatypes
 # (`DataType`, `Type`, `Type{<:T}` — which stay on the generic method); it explicitly excludes these
 # well-behaved `Type{X}` singletons, so narrow them here to keep the slot box-free.
-@inline function lifted_type(::Val{N}, ::Type{Type{X}}) where {N,X}
+@foldable @inline function lifted_type(::Val{N}, ::Type{Type{X}}) where {N,X}
     return Lifted{Type{X},N,dual_type(Val(N), Type{X})}
 end
 
