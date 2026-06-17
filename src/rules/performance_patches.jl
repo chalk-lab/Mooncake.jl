@@ -20,10 +20,12 @@
 function frule!!(
     ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}}
 ) where {N,P<:IEEEFloat,D}
-    # `sum(::NDualArray)` iterates via lazy `getindex` (producing NDual
-    # elements) and sums them — `.value` accumulates the primal, partials
-    # accumulate lane-wise, matching the canonical V invariant.
-    return Lifted{P,N}(sum(primal(x)), sum(tangent(x)))
+    # Reduce the primal and each lane's partial array separately — each is a plain `Array`, so
+    # `sum` vectorises. Folding the whole `NDualArray` element-wise instead (lazy `getindex` →
+    # one `NDual` per element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
+    nda = tangent(x)
+    pv = sum(nda.primal)
+    return Lifted{P,N}(pv, NDual{P,N}(pv, ntuple(k -> sum(nda.partials[k]), Val(N))))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
