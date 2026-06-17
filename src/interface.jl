@@ -1501,7 +1501,15 @@ not restored.
     returned gradients will be overwritten if you call this function again with the same
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
-function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
+# Generic chunked fallback for any input the four concrete fast paths (scalar / packable float
+# vectors / array-backed-structured `StructuredGradSeed` / scalar-isbits `IsbitsGradSeed`) do not
+# cover: differentiable `f`, complex, mixed/abstract element types, possibly-uninitialised fields,
+# aliased/cyclic structured inputs. It splices the runtime chunk width `cache.gradient_chunk_size`
+# into `ntuple`/`Lifted` type parameters, so it is deliberately type-unstable (the gradient infers
+# as `Any`) — trading inference and the per-chunk fresh-seed allocation for shape generality.
+# `@unstable`, like the sibling `prepare_*`/`value_and_jacobian!!`/`value_gradient_and_hessian!!`
+# entry points; the four fast paths above stay concrete.
+@unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
     seed = cache.gradient_seed
