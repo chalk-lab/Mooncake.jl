@@ -801,8 +801,8 @@ an acceptable tangent for `y`. If the cache was prepared with `config.friendly_t
 this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
 If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
 
-As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
-will return both to their original state as part of the process of computing the gradient.
+As with all functionality in Mooncake, if `f` modifies itself or `x`, `value_and_pullback!!`
+will return both to their original state as part of the process of computing the pullback.
 
 !!! info
     `cache` must be the output of [`prepare_pullback_cache`](@ref), and (fields of) `f` and
@@ -915,12 +915,12 @@ end
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
 differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
+If the cache was prepared with `config.friendly_tangents=true`, the gradient uses the same types as
 those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
 
-As with all functionality in Mooncake, if `f` modifes itself or `x`, `value_and_gradient!!`
+As with all functionality in Mooncake, if `f` modifies itself or `x`, `value_and_gradient!!`
 will return both to their original state as part of the process of computing the gradient.
 
 !!! info
@@ -1328,6 +1328,11 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
+`config.chunk_size` sets the forward chunk width baked into this cache (a default heuristic when
+`nothing`), capped at the total differentiable degrees of freedom. It governs the chunked
+[`value_and_gradient!!`](@ref) / [`value_and_jacobian!!`](@ref) paths (every input shape chunks),
+not the single-direction [`value_and_derivative!!`](@ref); the resolved width is shown by the cache.
+
 !!! note
     Cache construction stays lazy and does not execute `f(x...)`. Unlike the reverse
     pullback cache, the forward output is therefore not pre-validated: an output that is or
@@ -1495,12 +1500,14 @@ of the cache's resolved chunk width). This overload exists so callers can prepar
 cache once, then use it either for directional derivatives via
 [`value_and_derivative!!`](@ref) or for full gradients.
 
-All input shapes are chunked. With a non-differentiable `f`, three shape families additionally
-take a zero-allocation path that reuses cache-owned seeds: (1) one or more same-element-type
+All differentiable input shapes are chunked (a zero-dof input is evaluated once). Four shape
+families take a zero-allocation path that reuses cache-owned seeds: (0) a single scalar
+`x::IEEEFloat`; and, with a non-differentiable isbits `f`, (1) one or more same-element-type
 dense float vectors; (2) tuples/NamedTuples/structs whose differentiable leaves are all real
-float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. Everything else —
-complex, mixed/abstract element types, possibly-uninitialised fields, or a differentiable `f` —
-is differentiated correctly via the generic chunked path, which allocates a fresh seed per chunk.
+float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. (A non-isbits `f`
+on paths 1–2 costs one `Lifted` allocation per call, not per chunk.) Everything else — complex,
+mixed/abstract element types, possibly-uninitialised fields, or a differentiable `f` — is
+differentiated correctly via the generic chunked path, which allocates a fresh seed per chunk.
 
 The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers (the
 zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is restored
@@ -1717,7 +1724,9 @@ function value_and_gradient!!(
         fill!(grad_bufs[i], z)
     end
     total_dof = sum(length, xs)
-    W = cache.gradient_chunk_size  # == _lifted_width(f_seed); read the cache field like the other paths
+    # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field is the
+    # authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
+    W = cache.gradient_chunk_size
     y = z
     s = 1
     while s <= total_dof
@@ -1767,6 +1776,15 @@ end
 # is all the per-call primal state the rule needs). Type-stable, allocation-free.
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
 function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
+    # `_validate_prepared_cache` only checks top-level sizes, so a structured input whose NESTED
+    # array changed length still reaches here. Fail loudly and locally (a clear PreparedCacheError)
+    # instead of a raw `BoundsError`, or — for a shorter array — a silently-wrong partial `copyto!`.
+    length(v.primal) == length(x) || throw(
+        PreparedCacheError(
+            "Prepared cache mismatch: a nested array argument has length $(length(x)) but the " *
+            "cache was built for length $(length(v.primal)). Rebuild the cache for the new shape.",
+        ),
+    )
     copyto!(v.primal, x)
     return nothing
 end
@@ -1798,7 +1816,9 @@ end
 
 # Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)` leaf
 # tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an in-place `f`
-# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones.
+# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones —
+# so the seeding work is O(total_dof) per chunk, O(total_dof²) over a full gradient (compute, not
+# allocation); the alternative (clear only the previous chunk's hot entries) is unsafe for in-place `f`.
 @inline _leaves_dof(::Tuple{}) = 0
 @inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
 @inline _zero_partials!(::Tuple{}, W) = nothing
@@ -2506,7 +2526,9 @@ Using a pre-built cache, compute and return `(value, jacobian)` for a vector-val
 function `f` of a single vector input.
 
 The current implementation supports a single non-empty dense vector input and an
-`AbstractVector` output, both with the same `IEEEFloat` element type. The returned
+`AbstractVector` output, both with the same `IEEEFloat` element type. (Note the input must be
+dense even though [`value_and_gradient!!`](@ref) on the same cache also accepts strided views.)
+The returned
 Jacobian is a dense matrix whose columns correspond to input coordinates.
 
 As with all functionality in Mooncake, `x` is returned to its original state: if `f`
