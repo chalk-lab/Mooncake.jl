@@ -583,9 +583,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (true, :stability, nothing, objectid, randn(5)),
         (true, :stability, nothing, pointer_from_objref, _x),
         (
+            # `skip_forward`: the tangent buffer here is a reverse tangent (`_dx`), so the forward
+            # pointer round-trip recovers a reverse tangent rather than the canonical forward V — an
+            # incoherence by construction, not a rule bug. The real forward round-trip (recovering an
+            # `NDualRef`) is covered by the `unsafe_pointer_to_objref(pointer_from_objref(_x))` derived
+            # case below.
             true,
             :none, # primal is unstable
-            (lb=1e-3, ub=250),
+            (lb=1e-3, ub=250, skip_forward=true),
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),

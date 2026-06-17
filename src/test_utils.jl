@@ -710,7 +710,7 @@ function test_frule(
             x,
         )
         interface_only || test_frule_reuse(x_ẋ...; frule)
-        test_frule_interface(x_ẋ...; frule)
+        test_frule_interface(x_ẋ...; frule, is_primitive)
         if !interface_only
             test_frule_correctness(
                 rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
@@ -1074,7 +1074,7 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=noth
     @test all(map(has_equal_data, x̄_fwds_a, x̄_fwds_b))
 end
 
-function test_frule_interface(x_ẋ...; frule)
+function test_frule_interface(x_ẋ...; frule, is_primitive::Bool=true)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
@@ -1104,8 +1104,13 @@ function test_frule_interface(x_ẋ...; frule)
         throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
     end
 
-    # Check that returned fdata type is correct.
+    # Check the output slot is a `Lifted` and (for hand-written primitive rules) carries the
+    # canonical inner V. Derived rules are skipped: the transform legitimately uses `NoDual` as a
+    # non-differentiable marker for concrete results whose `dual_type` is not `NoDual` (e.g. a
+    # `Vector{Any}` method table) — correct and handled downstream, but not the canonical V. This
+    # mirrors the `is_primitive`-gating of the chunked V invariant.
     @test y_ẏ isa Lifted
+    is_primitive && @test Mooncake.verify_lifted_type(y_ẏ)
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
@@ -1514,14 +1519,15 @@ end
 
 # A test case's third tuple field is otherwise ignored by the runners; when it is a
 # `NamedTuple` it may carry per-case `test_rule` options: `skip_chunked` (skip the width-N>1 forward
-# check) and `skip_forward` (skip forward mode entirely — for a case the forward rule deliberately
-# rejects, e.g. a differentiable pointer-to-pointer raw store, while reverse is correct).
+# check) and `skip_forward` (skip forward mode entirely — for a case forward mode cannot represent
+# coherently while reverse is correct, e.g. a differentiable pointer-to-pointer raw store, or a
+# pointer round-trip whose tangent buffer is a reverse tangent). Applies to both case kinds.
 _case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
 _case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
 
 # One driver for both case kinds: hand-written cases test the registered `frule!!`/`rrule!!`
 # directly (`is_primitive=true`); derived cases run the full AD transform over a plain Julia
-# function (`is_primitive=false`, and may opt out of forward mode via `skip_forward`).
+# function (`is_primitive=false`). Either kind may opt out of forward mode via `skip_forward`.
 function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool)
     test_cases, memory = if derived
         test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
@@ -1538,7 +1544,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
         interface_only, perf_flag, opts, f, x...
     ) in test_cases
 
-        derived && mode === ForwardMode && _case_skip_forward(opts) && continue
+        mode === ForwardMode && _case_skip_forward(opts) && continue
         skip_chunked = _case_skip_chunked(opts)
         test_rule(
             rng_ctor(123),

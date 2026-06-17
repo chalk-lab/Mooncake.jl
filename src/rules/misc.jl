@@ -99,11 +99,12 @@ stop_gradient(x) = x
 
 @is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
 
-# `stop_gradient` zeros all derivative information, so the result V is
-# `NoDual` regardless of input shape.
+# `stop_gradient` zeros all derivative information. The result must still carry the canonical
+# `dual_type(Val(Nw), P)` V (a `NoDual` paired with a differentiable primal violates coherence and
+# breaks downstream field-access frules); `zero_lifted` builds that V with zero partials, which is
+# exactly a blocked gradient.
 function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
-    p = primal(x)
-    return Lifted{typeof(p),Nw}(p, NoDual())
+    return zero_lifted(Val(Nw), primal(x))
 end
 
 function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)

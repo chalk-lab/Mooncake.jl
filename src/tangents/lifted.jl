@@ -142,8 +142,11 @@ _primal(x::Lifted) = primal(x)
 # Forward-mode slot-type check used by the test framework: a well-formed `Lifted{P,N,V}` slot has
 # `V === dual_type(Val(N), P)` for concrete `P` (the coherence invariant). Abstract-`P` slots are
 # sharpened to a concrete subtype at runtime, so the static V cannot be asserted — accept those.
+# `Ptr` primals are exempt too: they have no ownable derivative storage, so a non-differentiable
+# `Ptr` result legitimately carries `NoDual` rather than the per-lane `NTuple{N,Ptr}` (mirrors the
+# `Ptr` exemption in `DebugFRule`'s `verify_v_coherence`; see the `pointerref`/`cglobal` rules).
 function verify_lifted_type(::Lifted{P,N,V}) where {P,N,V}
-    !isconcretetype(P) || V === dual_type(Val(N), P)
+    (!isconcretetype(P) || P <: Ptr) || V === dual_type(Val(N), P)
 end
 
 """
