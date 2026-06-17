@@ -1073,6 +1073,32 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gip[2][1] ≈ 8 .* collect(1.0:10.0)   # d/dt Σ(2t)² = 8t, across both chunks
                 @test tip == (collect(1.0:10.0),)          # user input not mutated
 
+                # The seed must not alias the user's prepare-time arrays: prepare AND evaluate at
+                # the SAME object with an in-place `f` — the input must be left unchanged.
+                fsame = t -> begin
+                    t[1] .= t[1] .* 2.0
+                    sum(abs2, t[1]) + sum(abs2, t[2])
+                end
+                tsame = ([1.0, 2.0, 3.0], [4.0, 5.0])
+                csame = Mooncake.prepare_derivative_cache(
+                    fsame, tsame; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                _, gsame = Mooncake.value_and_gradient!!(csame, fsame, tsame)  # same object
+                @test tsame == ([1.0, 2.0, 3.0], [4.0, 5.0])   # user input not clobbered
+                @test gsame[2][1] ≈ 8 .* [1.0, 2.0, 3.0]
+                @test gsame[2][2] ≈ 2 .* [4.0, 5.0]
+
+                # Zero-dof input (no float dofs) with an in-place `f`: the total_dof==0 generic
+                # branch must also snapshot/restore the user's input.
+                fz0 = x -> (x[1] += 1; 2.5)
+                xz0 = [10, 20, 30]
+                cz0 = Mooncake.prepare_derivative_cache(
+                    fz0, xz0; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                yz0, _ = Mooncake.value_and_gradient!!(cz0, fz0, xz0)
+                @test yz0 == 2.5
+                @test xz0 == [10, 20, 30]                      # user input not mutated
+
                 # Mixed array + scalar input has a non-array dof, so the gather bails and the
                 # generic chunked path runs — still correct.
                 fmix = nt -> sum(nt.v) + nt.s^2

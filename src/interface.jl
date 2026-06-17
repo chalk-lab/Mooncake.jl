@@ -1404,7 +1404,13 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
         !isempty(Base.tail(fx))
         W = gradient_chunk_size
         _args = Base.tail(fx)
-        _arg_seeds = map(a -> zero_lifted(Val(W), a), _args)
+        # Seed over fresh copies, NOT the user's arrays: `zero_lifted(Val(W), a)`'s `NDualArray`
+        # leaves alias `a`'s storage, so seeding over the prepare-time args directly would let an
+        # in-place `f` clobber the user's input (the per-chunk `_refresh_all!` copies the call-time
+        # input into these cache-owned buffers, which the rule may then mutate). `deepcopy`
+        # (not `_copy_output`) preserves any intra-arg aliasing, so the `_gather_arg_leaves` guard
+        # still detects aliased leaves and bails to the generic path. Mirrors the flat path's `similar`.
+        _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = map(zero_tangent, _args)
         _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
         if _leaves !== nothing
@@ -1532,11 +1538,15 @@ not restored.
     total_dof = dof(native_gradients)
 
     if total_dof == 0
+        # Snapshot/restore like the chunked loop below: forward slots alias the user's storage, so
+        # an in-place `f` over a zero-dof input (e.g. `Vector{Int}`) would otherwise mutate it.
+        _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
         output = __call_rule(
             cache.single_rule, tuple_map(lift, input_primals, native_gradients)
         )
         y = primal(output)
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
         if isnothing(cache.input_tangents)
             return y, native_gradients
         end
