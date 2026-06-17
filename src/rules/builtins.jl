@@ -1416,6 +1416,19 @@ end
         zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
     )
 end
+# A `RefValue`'s V is `NDualRef` (an immutable wrapper over per-lane partials, no `:x` field), so
+# the `_setfield_tangent!` path's generic `setproperty!` fallback would throw. Delegate to the Ref
+# `lsetfield!` frule (which writes the partials), like the Array branch — `RefValue`'s only field
+# is `:x` (index 1).
+@inline function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Base.RefValue}, name::Lifted, x::Lifted
+) where {Nw}
+    nm = primal(name)
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    return frule!!(
+        zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
+    )
+end
 # A `MutableDual` struct V stores fields in its backing `value` NamedTuple (the
 # same path `lsetfield!` takes), so merge there — `setproperty!` on the
 # `MutableDual` itself would hit its single `value` field. A non-diff V (`NoDual`)
@@ -1873,6 +1886,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, _range, setfield!, MutableFoo(5.0, randn(5)), 2, randn(5)),
         (false, :none, _range, setfield!, NonDifferentiableFoo(5, false), 1, 4),
         (false, :none, _range, setfield!, NonDifferentiableFoo(5, true), 2, false),
+        # runtime-name setfield! on a Ref (V is NDualRef): delegates to the lsetfield! frule.
+        (false, :none, _range, setfield!, Ref(5.0), :x, 4.0),
+        (false, :none, _range, setfield!, Ref(5.0), 1, 4.0),
         # swapfield! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability_and_allocs, nothing, tuple, 5.0, 4.0),
         (false, :stability_and_allocs, nothing, tuple, randn(5), 5.0),
