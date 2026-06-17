@@ -1219,6 +1219,64 @@ end
 # restores from it (in place, via `_copy_to_output!!`) before each re-run and once at the end,
 # leaving the inputs unchanged, consistent with reverse mode.
 
+# ── Zero-allocation gradient for array-backed structured inputs ──────────────────────────────
+#
+# Generalises the flat float-vector packable path to `NDualArray` leaves nested in
+# tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds and
+# per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray, gradient Array)`
+# leaf pairs in dof order. Per chunk the seed leaf partials are poked in place and each lane's
+# directional derivative is written straight into the matching gradient leaf — no per-chunk
+# allocation. Only differentiable dofs backed by real float arrays qualify; any scalar/complex/
+# abstract dof makes the gather return `nothing` and the input falls back to the generic path.
+struct StructuredGradSeed{Ff,As,Gs,Ls}
+    f_seed::Ff
+    arg_seeds::As
+    grad_bufs::Gs
+    leaves::Ls
+end
+
+# Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse tangent
+# `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not array-backed.
+# `dict` guards against aliasing/cycles: a revisited array or mutable wrapper means the flat
+# leaf table would mis-order or double-count dofs (the generic path dedups instead), so bail to
+# `nothing` and let that path handle it.
+_grad_leaves(::NoDual, @nospecialize(g), dict) = ()
+function _grad_leaves(v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict) where {T<:IEEEFloat}
+    haskey(dict, v) && return nothing
+    dict[v] = nothing
+    return ((v, g),)
+end
+function _grad_leaves(v::Tuple, g::Tuple, dict)
+    return if length(v) == length(g)
+        _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), v, g))
+    else
+        nothing
+    end
+end
+function _grad_leaves(v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
+    return _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), values(v), values(g)))
+end
+_grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.value, g.fields, dict)
+function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
+    haskey(dict, v) && return nothing
+    dict[v] = nothing
+    return _grad_leaves(v.value, g.fields, dict)
+end
+_grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/complex/abstract/uninit/mismatch
+
+@inline _cat_leaves(t::Tuple) = _any_nothing(t) ? nothing : _flatten_leaves(t)
+@inline _any_nothing(::Tuple{}) = false
+@inline _any_nothing(t::Tuple) = first(t) === nothing || _any_nothing(Base.tail(t))
+@inline _flatten_leaves(::Tuple{}) = ()
+@inline _flatten_leaves(t::Tuple) = (first(t)..., _flatten_leaves(Base.tail(t))...)
+
+function _gather_arg_leaves(arg_seeds::Tuple, grad_bufs::Tuple)
+    dict = IdDict{Any,Any}()
+    return _cat_leaves(
+        map((s, g) -> _grad_leaves(tangent(s), g, dict), arg_seeds, grad_bufs)
+    )
+end
+
 """
     prepare_derivative_cache(fx...; config=Mooncake.Config())
 
@@ -1296,6 +1354,25 @@ Returns a cache used with [`value_and_derivative!!`](@ref). See that function fo
             nothing
         end
     end
+    # Structured array-backed inputs (NDualArray leaves nested in tuples/NamedTuples/structs)
+    # that the flat-vector seed above does not cover: preallocate per-arg seeds + gradient
+    # buffers and gather their leaf pairs for the zero-allocation leaf-table path. `nothing`
+    # (so the generic chunked path runs) when any dof is not array-backed, or `f` is differentiable.
+    if gradient_seed === nothing &&
+        gradient_chunk_size >= 1 &&
+        tangent_type(typeof(first(fx))) === NoTangent &&
+        !isempty(Base.tail(fx))
+        W = gradient_chunk_size
+        _args = Base.tail(fx)
+        _arg_seeds = map(a -> zero_lifted(Val(W), a), _args)
+        _grad_bufs = map(zero_tangent, _args)
+        _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
+        if _leaves !== nothing
+            gradient_seed = StructuredGradSeed(
+                zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves
+            )
+        end
+    end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
     # float-vector input qualifies. The output shape is unknown here (`output_primal` is only
     # populated under `friendly_tangents`), so hold a `Ref` that the first `value_and_jacobian!!`
@@ -1371,6 +1448,9 @@ that mutates its own fields is not restored.
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
 function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
+    # Array-backed structured inputs take the zero-allocation leaf-table path.
+    seed = cache.gradient_seed
+    seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     input_primals = (f, x...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
@@ -1603,6 +1683,132 @@ function value_and_gradient!!(
             end
             off += len
         end
+        s += W
+    end
+    native_gradients = (NoTangent(), grad_bufs...)
+    if isnothing(cache.input_tangents)
+        return y, native_gradients
+    end
+    friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
+    return y,
+    tangent_to_primal_internal!!(
+        friendly_gradients,
+        native_gradients,
+        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
+    )
+end
+
+# Refresh a preallocated seed's `NDualArray.primal` leaves from the current call's input `x`
+# (a parallel walk of the forward V and the primal; the inner duals read `.primal`, so this
+# is all the per-call primal state the rule needs). Type-stable, allocation-free.
+_refresh_seed!(::NoDual, @nospecialize(x)) = nothing
+function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
+    copyto!(v.primal, x)
+    return nothing
+end
+_refresh_seed!(v::ImmutableDual, x) = _refresh_fields!(v.value, x)
+_refresh_seed!(v::MutableDual, x) = _refresh_fields!(v.value, x)
+_refresh_seed!(v::NamedTuple, x) = _refresh_fields!(v, x)
+@generated function _refresh_seed!(v::Tuple, x::Tuple)
+    return Expr(
+        :block,
+        (:(_refresh_seed!(v[$i], x[$i])) for i in 1:length(v.parameters))...,
+        :(nothing),
+    )
+end
+@generated function _refresh_fields!(v::NamedTuple{ns}, x) where {ns}
+    return Expr(
+        :block,
+        (
+            :(_refresh_seed!(getfield(v, $(QuoteNode(n))), getfield(x, $(QuoteNode(n)))))
+            for n in ns
+        )...,
+        :(nothing),
+    )
+end
+@inline _refresh_all!(::Tuple{}, ::Tuple{}) = nothing
+@inline function _refresh_all!(arg_seeds::Tuple, xs::Tuple)
+    _refresh_seed!(tangent(first(arg_seeds)), first(xs))
+    return _refresh_all!(Base.tail(arg_seeds), Base.tail(xs))
+end
+
+# Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)` leaf
+# tuple, threading a running global-dof offset. Partials stay zero between chunks: `_seed_chunk!`
+# sets the ≤`W` hot entries, `_clear_chunk!` resets them after the run.
+@inline _leaves_dof(::Tuple{}) = 0
+@inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
+@inline _zero_leaves!(::Tuple{}, W) = nothing
+@inline function _zero_leaves!(ls::Tuple, W)
+    nda, g = first(ls)
+    @inbounds for k in 1:W
+        fill!(nda.partials[k], zero(eltype(nda.primal)))
+    end
+    fill!(g, zero(eltype(g)))
+    return _zero_leaves!(Base.tail(ls), W)
+end
+@inline _seed_chunk!(::Tuple{}, s, W, off) = off
+@inline function _seed_chunk!(ls::Tuple, s, W, off)
+    nda = first(ls)[1]
+    o = one(eltype(nda.primal))
+    L = length(nda.primal)
+    @inbounds for i in 1:L
+        d = off + i
+        s <= d <= s + W - 1 && (nda.partials[d - s + 1][i] = o)
+    end
+    return _seed_chunk!(Base.tail(ls), s, W, off + L)
+end
+@inline _clear_chunk!(::Tuple{}, s, W, off) = off
+@inline function _clear_chunk!(ls::Tuple, s, W, off)
+    nda = first(ls)[1]
+    z = zero(eltype(nda.primal))
+    L = length(nda.primal)
+    @inbounds for i in 1:L
+        d = off + i
+        s <= d <= s + W - 1 && (nda.partials[d - s + 1][i] = z)
+    end
+    return _clear_chunk!(Base.tail(ls), s, W, off + L)
+end
+@inline _scatter_chunk!(::Tuple{}, out, s, W, total, off) = off
+@inline function _scatter_chunk!(ls::Tuple, out, s, W, total, off)
+    nda, g = first(ls)
+    L = length(nda.primal)
+    @inbounds for i in 1:L
+        d = off + i
+        s <= d <= min(s + W - 1, total) && (g[i] = tangent(out, d - s + 1))
+    end
+    return _scatter_chunk!(Base.tail(ls), out, s, W, total, off + L)
+end
+
+# Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`). Mirrors
+# the flat-vector packable gradient: refresh the preallocated seed primals from the current
+# inputs, then per chunk poke the seed leaf partials in place, run the width-dispatched
+# `value_and_derivative!!`, and write each lane's directional derivative straight into the
+# matching preallocated gradient leaf.
+function _structured_gradient!!(
+    cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
+) where {F}
+    input_primals = (f, xs...)
+    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    f_stored = seed.f_seed
+    # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V === NoDual`
+    # is guaranteed by the non-differentiable-`f` gate, so this is a free isbits rewrap.
+    f_seed = typeof(f_stored)(f, tangent(f_stored))
+    arg_seeds = seed.arg_seeds
+    grad_bufs = seed.grad_bufs
+    leaves = seed.leaves
+    W = cache.gradient_chunk_size
+    _refresh_all!(arg_seeds, xs)
+    _zero_leaves!(leaves, W)
+    total_dof = _leaves_dof(leaves)
+    local y
+    s = 1
+    while s <= total_dof
+        _seed_chunk!(leaves, s, W, 0)
+        out = value_and_derivative!!(cache, f_seed, arg_seeds...)
+        y = primal(out)
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        _scatter_chunk!(leaves, out, s, W, total_dof, 0)
+        _clear_chunk!(leaves, s, W, 0)
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)

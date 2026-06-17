@@ -1020,6 +1020,54 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test g_nt[2].a ≈ 2 * nt_x.a * nt_x.b + cos(nt_x.a) * nt_x.c
                 @test g_nt[2].b ≈ nt_x.a^2
                 @test g_nt[2].c ≈ sin(nt_x.a)
+
+                # Array-backed structured inputs take the zero-allocation leaf-table path
+                # (StructuredGradSeed): tuple/Matrix of float arrays — correct + zero-alloc.
+                ft = t -> sum(abs2, t[1]) + sum(abs2, t[2])
+                tx = ([1.0, 2.0, 3.0], [4.0, 5.0])
+                ct = Mooncake.prepare_derivative_cache(
+                    ft, tx; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test getfield(ct, :gradient_seed) isa Mooncake.StructuredGradSeed
+                yt, gt = Mooncake.value_and_gradient!!(ct, ft, tx)
+                @test yt == ft(tx)
+                @test gt[2][1] ≈ 2 .* tx[1]
+                @test gt[2][2] ≈ 2 .* tx[2]
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, ct, ft, tx) == 0
+
+                fA = A -> sum(abs2, A)
+                Ax = [1.0 2.0; 3.0 4.0]
+                cA = Mooncake.prepare_derivative_cache(
+                    fA, Ax; config=Mooncake.Config(; friendly_tangents=false)
+                )
+                @test getfield(cA, :gradient_seed) isa Mooncake.StructuredGradSeed
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) == 0
+                _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
+                @test gA[2] ≈ 2 .* Ax
+
+                # Primal refresh: prepare at one point, evaluate at another.
+                cr = Mooncake.prepare_derivative_cache(
+                    ft,
+                    ([1.0, 1.0, 1.0], [1.0, 1.0]);
+                    config=Mooncake.Config(; friendly_tangents=false),
+                )
+                tx2 = ([2.0, 3.0, 4.0], [5.0, 6.0])
+                yr, gr = Mooncake.value_and_gradient!!(cr, ft, tx2)
+                @test yr == ft(tx2)
+                @test gr[2][1] ≈ 2 .* tx2[1]
+                @test gr[2][2] ≈ 2 .* tx2[2]
+
+                # Mixed array + scalar input has a non-array dof, so the gather bails and the
+                # generic chunked path runs — still correct.
+                fmix = nt -> sum(nt.v) + nt.s^2
+                mx = (; v=[1.0, 2.0], s=3.0)
+                cmix = Mooncake.prepare_derivative_cache(
+                    fmix, mx; config=Mooncake.Config(; friendly_tangents=true)
+                )
+                @test !(getfield(cmix, :gradient_seed) isa Mooncake.StructuredGradSeed)
+                _, gmix = Mooncake.value_and_gradient!!(cmix, fmix, mx)
+                @test gmix[2].v ≈ ones(2)
+                @test gmix[2].s ≈ 2 * mx.s
             end
         end
 
