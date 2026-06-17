@@ -131,15 +131,15 @@ for f in (
 )
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        # `$f(::NDual)` has its own overload in Nfwd.jl that propagates partials
-        # correctly; the result V's `.value` matches `f(primal(x))`, preserving the
-        # canonical V invariant. `_typeof(y)` handles tuple-returning primitives
-        # (e.g. `sincos`): y::Tuple{P,P}, dy::Tuple{NDual,NDual}.
+        # `$f(::NDual)` has its own overload in Nfwd.jl that propagates partials and sets
+        # the result's `.value` to `f(primal(x))` (inner-value invariant), so read the
+        # primal back from `dy` instead of recomputing it. `_nfwd_out_value`/`_typeof`
+        # handle tuple-returning primitives (e.g. `sincos`): dy::Tuple{NDual,NDual}.
         function frule!!(
             ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
         ) where {N,P<:IEEEFloat}
-            y = $f(primal(x))
             dy = $f(tangent(x))
+            y = _nfwd_out_value(dy)
             return Lifted{_typeof(y),N}(y, dy)
         end
         function rrule!!(::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -172,7 +172,8 @@ end
 function frule!!(
     ::Lifted{typeof(tanpi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    return Lifted{P,N}(tanpi(primal(x)), tanpi(tangent(x)))
+    dy = tanpi(tangent(x))
+    return Lifted{P,N}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     yd = tanpi(NDual{P,1}(primal(x), (one(P),)))
@@ -187,7 +188,8 @@ for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
         function frule!!(
             ::Lifted{typeof($f),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
         ) where {N,P<:IEEEFloat}
-            return Lifted{P,N}($f(primal(x1), primal(x2)), $f(tangent(x1), tangent(x2)))
+            dy = $f(tangent(x1), tangent(x2))
+            return Lifted{P,N}(dy.value, dy)
         end
         function rrule!!(
             ::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
@@ -234,10 +236,8 @@ for f in (clamp,)
             x2::Lifted{P,N,NDual{P,N}},
             x3::Lifted{P,N,NDual{P,N}},
         ) where {N,P<:IEEEFloat}
-            return Lifted{P,N}(
-                $f(primal(x1), primal(x2), primal(x3)),
-                $f(tangent(x1), tangent(x2), tangent(x3)),
-            )
+            dy = $f(tangent(x1), tangent(x2), tangent(x3))
+            return Lifted{P,N}(dy.value, dy)
         end
         function rrule!!(
             ::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
@@ -255,9 +255,8 @@ end
 function frule!!(
     ::Lifted{typeof(sincosd),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    pv = sincosd(primal(x))
     tv = sincosd(tangent(x))
-    return Lifted{Tuple{P,P},N}(pv, tv)
+    return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
 function rrule!!(::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     yd = sincosd(NDual{P,1}(primal(x), (one(P),)))
@@ -271,9 +270,8 @@ end
 function frule!!(
     ::Lifted{typeof(sincospi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    pv = sincospi(primal(x))
     tv = sincospi(tangent(x))
-    return Lifted{Tuple{P,P},N}(pv, tv)
+    return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
 function rrule!!(::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     yd = sincospi(NDual{P,1}(primal(x), (one(P),)))
@@ -286,9 +284,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(modf),P} where {P<:IEEEFloat}
 function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    pv = modf(primal(x))
     tv = modf(tangent(x))
-    return Lifted{Tuple{P,P},N}(pv, tv)
+    return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
 function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     yd = modf(NDual{P,1}(primal(x), (one(P),)))
@@ -308,10 +305,8 @@ function frule!!(
     x::Lifted{P,N,NDual{P,N}},
     xs::Vararg{Lifted{P,N,NDual{P,N}},M},
 ) where {N,P<:IEEEFloat,M}
-    return Lifted{P,N}(
-        hypot(primal(x), tuple_map(primal, xs)...),
-        hypot(tangent(x), tuple_map(tangent, xs)...),
-    )
+    dy = hypot(tangent(x), tuple_map(tangent, xs)...)
+    return Lifted{P,N}(dy.value, dy)
 end
 function rrule!!(
     ::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
