@@ -207,6 +207,18 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test all(iszero, vc.partials[1]) && all(iszero, vc.partials[2])
         @test typeof(zero_lifted(Val(2), xc)) === lifted_type(Val(2), Vector{ComplexF64})
 
+        # Complex MemoryRef (1.11+): the forward seed factories must produce the canonical
+        # NDualMemoryRef{Complex} that dual_type advertises (and that reverse zero_tangent supports).
+        # Previously only float MemoryRefs had factories, so a complex one fell to the generic
+        # @generated factory and threw a confusing nested `memoryref` MethodError.
+        @static if VERSION >= v"1.11-"
+            mrc = ComplexF64[1.0 + 2.0im, 3.0 - 1.0im].ref
+            DTc = dual_type(Val(2), typeof(mrc))
+            @test typeof(tangent(zero_lifted(Val(2), mrc))) === DTc
+            @test typeof(tangent(Mooncake.uninit_lifted(Val(2), mrc))) === DTc
+            @test typeof(tangent(Mooncake.randn_lifted(Val(2), Xoshiro(1), mrc))) === DTc
+        end
+
         # Tuple / NamedTuple: outer container is per-element; array elements alias.
         t = (1.0, 2.0f0, [3.0, 4.0])
         vt = zero_dual(Val(2), t)

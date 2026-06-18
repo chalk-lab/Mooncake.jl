@@ -1939,10 +1939,13 @@ end
     # constructor + `zero_dual` above). The general `@generated` below is for
     # non-float elements; it `memoryref`s an element-wise Memory V, which would fail on the
     # `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
-    # `MemoryRef{Complex}` has its own `dual_type` -> `NDualMemoryRef` overload (above), but no
-    # specialized `zero_dual`/`uninit_dual`/`randn_dual` here: a complex `MemoryRef` is built by the
-    # memory.jl frules, never seeded directly, so seeding one is unsupported and fails loudly
-    # (`MethodError`). Add the parallel complex factories if a seeded complex `MemoryRef` is needed.
+    # `MemoryRef{Complex}` has its own `dual_type` -> `NDualMemoryRef` overload (above) and is
+    # seedable in reverse mode (`zero_tangent`), so without matching forward factories
+    # `zero_lifted`/`uninit_lifted`/`randn_lifted` of a bare complex `MemoryRef` fell to the generic
+    # `@generated` factory below and threw a confusing nested `memoryref` `MethodError` (the generic
+    # path `memoryref`s an element-wise Memory V, but `Memory{Complex}`'s V is an `NDualArray`). The
+    # complex factories below mirror the float ones (substituting `Complex{R}`) so the seed is
+    # coherent with `dual_type` and the reverse oracle.
     @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)
@@ -1957,6 +1960,32 @@ end
         len = length(p.mem)
         return NDualMemoryRef{T,N,Memory{T}}(
             p, ntuple(_ -> _memoryref_at(Memory{T}(randn(rng, T, len)), offset), Val(N))
+        )
+    end
+    # Complex `MemoryRef` factories: identical shape to the float ones with element `Complex{R}`
+    # (`Complex{R} <: NDualEltype`, so `NDualMemoryRef{Complex{R},…}` is valid). Keeps forward
+    # seeding coherent with `dual_type(MemoryRef{Complex})` and the reverse `zero_tangent`.
+    @inline function zero_dual(::Val{N}, p::MemoryRef{Complex{R}}) where {N,R<:IEEEFloat}
+        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(p)
+    end
+    @inline function uninit_dual(::Val{N}, p::MemoryRef{Complex{R}}) where {N,R<:IEEEFloat}
+        offset = Core.memoryrefoffset(p)
+        len = length(p.mem)
+        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(
+            p, ntuple(_ -> _memoryref_at(Memory{Complex{R}}(undef, len), offset), Val(N))
+        )
+    end
+    @inline function randn_dual(
+        ::Val{N}, rng::AbstractRNG, p::MemoryRef{Complex{R}}
+    ) where {N,R<:IEEEFloat}
+        offset = Core.memoryrefoffset(p)
+        len = length(p.mem)
+        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(
+            p,
+            ntuple(
+                _ -> _memoryref_at(Memory{Complex{R}}(randn(rng, Complex{R}, len)), offset),
+                Val(N),
+            ),
         )
     end
     # Memory{T} is `<: AbstractArray{T, 1}`, so its canonical V is the
