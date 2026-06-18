@@ -333,16 +333,15 @@ end
     x::Lifted,
 ) where {Nw,P,name}
     setfield!(primal(value), name, primal(x))
-    md = tangent(value)
-    nt = getfield(md, :value)
     # Normalise an integer field index to its symbol name: the V's backing `NamedTuple` is
     # symbol-keyed, so `NamedTuple{(name,)}` with an `Int` `name` would throw (mirrors the
     # integer-index normalisation in `_get_lifted_field`).
     nm = name isa Int ? fieldname(P, name) : name
-    # Coerce into the declared backing field type — a `PossiblyUninitTangent`
-    # field (non-always-init) must be re-wrapped, the write makes it initialised.
-    v_i = _coerce_backing_field(fieldtype(typeof(nt), nm), tangent(x))
-    setfield!(md, :value, merge(nt, NamedTuple{(nm,)}((v_i,))))
+    # Write the field's per-lane V back through the shared `MutableDual` writeback helper, which
+    # coerces the backing field type and `convert`s the merged `NamedTuple` (needed for abstract
+    # fields — see `_setfield_tangent!`). Sharing the helper keeps this in lockstep with the
+    # runtime-name `setfield!` frule rather than duplicating the merge logic.
+    _setfield_tangent!(tangent(value), nm, tangent(x))
     return x
 end
 # Non-differentiable struct (V === NoDual): set the primal field; there is no
@@ -543,6 +542,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
             Val(:y),
             true,
         ),
+        # Always-initialised ABSTRACT field (`Foo.x::Real`): its backing V field is bare `Any`, so the
+        # merged `NamedTuple` narrows to a concrete dual type and (NamedTuple invariance) would fail a
+        # bare `setfield!` writeback — the `convert` in the shared `_setfield_tangent!` is required.
+        # `:none` perf flag: an abstract field legitimately boxes, so don't assert stability/allocs.
+        (false, :none, nothing, lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
     ]
 
     # Some specific test cases for lgetfield to test the basics.
