@@ -1917,6 +1917,33 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
+    # α·B·A + β·C for side='R' (A is N×N); A is symmetric (symm!) / Hermitian (hemm!), read through
+    # the `uplo` triangle. These BLAS level-3 ops had no test_rule coverage (Task G).
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123462)
+            fs = P <: BlasComplexFloat ? (BLAS.symm!, BLAS.hemm!) : (BLAS.symm!,)
+            map_prod(
+                fs, ['L', 'R'], uplos, [1, 3], [1, 2], dαs
+            ) do (f, side, ul, M, N, dα)
+                P <: BlasRealFloat && imag(dα) != 0 && return []
+                R = side == 'L' ? M : N
+                As = blas_matrices(rng, P, R, R)
+                Bs = blas_matrices(rng, P, M, N)
+                Cs = blas_matrices(rng, P, M, N)
+                return map(As, Bs, Cs) do A, B, C
+                    α_dα = CoDual(randn(rng, P), P(dα))
+                    β_dβ = CoDual(randn(rng, P), randn(rng, P))
+                    # 1.10 fails to infer part of a matmat product in the pullback
+                    perf_flag = VERSION < v"1.11-" ? :none : :stability
+                    (false, perf_flag, nothing, f, side, ul, α_dα, A, B, β_dβ, C)
+                end
+            end
+        end...,
+    )
+
     memory = Any[]
     return test_cases, memory
 end
