@@ -324,8 +324,8 @@ function frule!!(
     ::Lifted{typeof(bias_act!),Nw},
     ::Lifted{typeof(identity),Nw},
     x::Lifted{Array{P,N},Nw,NDualArray{P,Nw,N,Array{P,N},NDual{P,Nw}}},
-    b::Lifted{Array{P,M},Nw,NDualArray{P,Nw,M,Array{P,M},NDual{P,Nw}}},
-) where {Nw,P<:IEEEFloat,N,M}
+    b::Lifted{Array{Q,M},Nw,NDualArray{Q,Nw,M,Array{Q,M},NDual{Q,Nw}}},
+) where {Nw,P<:IEEEFloat,Q<:IEEEFloat,N,M}
     primal(x) .+= primal(b)
     for lane in 1:Nw
         tangent(x).partials[lane] .+= tangent(b).partials[lane]

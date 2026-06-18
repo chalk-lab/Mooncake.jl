@@ -356,6 +356,23 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
     end
+
+    # The loop above runs reverse mode only. The `bias_act!` forward frule must accept x and b with
+    # DIFFERENT float element types (e.g. Float64 input + Float32 bias, common in mixed-precision
+    # models) — the `@is_primitive` and reverse rule allow it, but the frule previously bound both to
+    # a shared eltype, raising a forward MethodError. Exercise it explicitly (Array-only forward; CPU).
+    @testset "bias_act! mixed-eltype forward" begin
+        test_rule(
+            StableRNG(123),
+            bias_act!,
+            identity,
+            randn(StableRNG(1), 8, 4),
+            randn(StableRNG(2), Float32, 8);
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
 end
 
 # Testing arrayify for general adjoint, transpose types (LinearAlgebra.jl, NNlib.jl etc)
