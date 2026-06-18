@@ -1856,6 +1856,34 @@ function _basis_seed!!(
     is_init(v) || return v
     return typeof(v)(_basis_seed!!(val(v), slots, cursor, dict))
 end
+# `Ref{P}` forward V: one scalar dof held in a mutable `Base.RefValue` partials shadow. Mirror the
+# `NDual` scalar method (real: one cursor step; complex: two, real then imag), and register in `dict`
+# so an aliased `Ref` seeds once — like `NDualArray`/`MutableDual`.
+function _basis_seed!!(
+    v::NDualRef{P,N}, slots::NTuple{N,Int}, cursor, dict
+) where {P<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    cursor[] += 1
+    c = cursor[]
+    v.partials[] = ntuple(k -> c == slots[k] ? one(P) : zero(P), Val(N))
+    return v
+end
+function _basis_seed!!(
+    v::NDualRef{Complex{R},N}, slots::NTuple{N,Int}, cursor, dict
+) where {R<:IEEEFloat,N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    cursor[] += 1
+    cr = cursor[]
+    cursor[] += 1
+    ci = cursor[]
+    v.partials[] = ntuple(
+        k -> Complex(cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)),
+        Val(N),
+    )
+    return v
+end
 function _basis_seed!!(v::ImmutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
     return ImmutableDual(_basis_seed!!(v.value, slots, cursor, dict))
 end
@@ -1864,6 +1892,29 @@ function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where
     dict[v] = v
     v.value = _basis_seed!!(v.value, slots, cursor, dict)
     return v
+end
+# `MemoryRef{<:IEEEFloat}` forward V (Julia 1.11+): like `NDualArray` but the partials are per-lane
+# `MemoryRef`s. `dof` walks the whole underlying `Memory`, so advance one cursor step per memory
+# element and write each lane's partial there; register in `dict` for aliasing. (No complex method:
+# a complex `MemoryRef` cannot be seeded — its `zero_lifted`/`uninit_lifted` factories are
+# unsupported, see the `MemoryRef{Complex}` note in the seed-factory section above — so a complex
+# `NDualMemoryRef` can never reach here.)
+@static if VERSION >= v"1.11-rc4"
+    function _basis_seed!!(
+        v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
+    ) where {T<:IEEEFloat,N}
+        haskey(dict, v) && return dict[v]
+        dict[v] = v
+        mems = ntuple(k -> v.partials[k].mem, Val(N))
+        @inbounds for idx in eachindex(v.primal.mem)
+            cursor[] += 1
+            c = cursor[]
+            for k in 1:N
+                mems[k][idx] = c == slots[k] ? one(T) : zero(T)
+            end
+        end
+        return v
+    end
 end
 
 # Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a

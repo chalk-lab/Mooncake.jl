@@ -725,6 +725,37 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.value_and_gradient!!(tuple_cache_grad_fwd, f_tuple, tuple_x) ==
                 (x^2 + sin(y), (Mooncake.NoTangent(), (2 * x, cos(y))))
 
+            # A differentiable `Ref` within a multi-dof gradient input forces the chunked
+            # `basis_lifted!!` seeding path (2 dofs at chunk_size=2); `_basis_seed!!` had no
+            # `NDualRef` method (#4), so this threw a MethodError. Forward must match the reverse
+            # oracle (the `Ref`'s cotangent is a `MutableTangent`).
+            g_ref = t -> t[1][]^2 + sin(t[2])
+            ref_fwd = Mooncake.prepare_derivative_cache(
+                g_ref, (Ref(x), y); config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            ref_rev = Mooncake.prepare_gradient_cache(g_ref, (Ref(x), y))
+            yf_ref, gf_ref = Mooncake.value_and_gradient!!(ref_fwd, g_ref, (Ref(x), y))
+            yr_ref, gr_ref = Mooncake.value_and_gradient!!(ref_rev, g_ref, (Ref(x), y))
+            @test yf_ref == yr_ref
+            @test TestUtils.has_equal_data(gf_ref, gr_ref)
+
+            # Complex `Ref` exercises the distinct complex `NDualRef` `_basis_seed!!` (two cursor
+            # steps per dof: real then imag).
+            g_cref = t -> abs2(t[1][]) + sin(t[2])
+            cref0 = ComplexF64(x, y)
+            cref_fwd = Mooncake.prepare_derivative_cache(
+                g_cref, (Ref(cref0), y); config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            cref_rev = Mooncake.prepare_gradient_cache(g_cref, (Ref(cref0), y))
+            yf_cref, gf_cref = Mooncake.value_and_gradient!!(
+                cref_fwd, g_cref, (Ref(cref0), y)
+            )
+            yr_cref, gr_cref = Mooncake.value_and_gradient!!(
+                cref_rev, g_cref, (Ref(cref0), y)
+            )
+            @test yf_cref == yr_cref
+            @test TestUtils.has_equal_data(gf_cref, gr_cref)
+
             h = (sp::SimplePair) -> sp.x1^2 + sin(sp.x2)
             sp = SimplePair(x, y)
             cache_sp_fwd_friendly = Mooncake.prepare_derivative_cache(
