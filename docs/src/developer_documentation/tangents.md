@@ -33,3 +33,9 @@ type-level part) — the forward counterpart of [`Mooncake.TestUtils.test_tangen
 at chunk widths 1, 2 and 3, that the forward seed factories produce a coherent slot whose primal aliases
 the input, that every inner dual's `.value` tracks the primal it shadows (the inner-value invariant
 `test_rule` does not check), and that a reverse tangent round-trips through `unlift`/`lift`.
+
+The forward-mode slot type itself:
+
+```@docs; canonical=true
+Mooncake.Lifted
+```
