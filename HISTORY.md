@@ -1,3 +1,20 @@
+# 0.6.0
+
+Breaking release: the forward-mode AD representation was rewritten.
+
+- Removed the public `Mooncake.Dual{P,T}` type. Forward-mode values are now carried by the
+  `Mooncake.Lifted{P,N,V}` slot (now `@public`), whose forward value `V === dual_type(Val(N), P)`
+  is built from the parallel-arrays representation (`NDual` for scalars, `NDualArray` for arrays,
+  etc.) rather than a single interleaved tangent. `N` is the chunk width.
+- `value_and_derivative!!` now takes `(f, df)` / `(x, dx)` tuples (or `Lifted` slots) and returns a
+  plain `(value, derivative)` tuple, instead of consuming and returning `Dual`s. Hand-written
+  `frule!!`s now dispatch on `Lifted` rather than `Dual`.
+- Forward mode is now batched ("chunked"): a width-`N` rule propagates `N` directional derivatives
+  per pass (`chunk_size`), powering forward-mode gradients (`value_and_gradient!!` over a forward
+  cache), Jacobians (`value_and_jacobian!!`), and forward-over-reverse HVPs / Hessians.
+- Forward-mode seed factories are width-parameterized: `zero_dual(Val(N), x)` / `uninit_dual` /
+  `randn_dual` (and the `zero_lifted` / `uninit_lifted` / `randn_lifted` slot wrappers).
+
 # 0.5.32
 
 - Fix forward-over-reverse Hessian-vector products on closures that capture a `Ref` wrapped in a `NoTangent`-typed aggregate, which previously threw `UndefRefError`. `prepare_hvp_cache` now eagerly compiles the inner `rrule!!` together with its forward-mode dual callables and routes the outer forward pass through a new `DerivedFoRRule`, so the inner `IdDict` constructor is no longer inlined past Mooncake's rule ([#1193](https://github.com/chalk-lab/Mooncake.jl/pull/1193), [#1202](https://github.com/chalk-lab/Mooncake.jl/pull/1202)).
