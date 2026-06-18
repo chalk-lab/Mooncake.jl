@@ -756,6 +756,14 @@ end
     # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
     # forward V is `NoDual`, so each op threads only the primal and keeps a
     # `NoDual` result V. Reached in forward-over-reverse over reverse-rule infra.
+    #
+    # Not covered by `test_rule` by design: the canonical seed harness
+    # (`dual_type`/`zero_lifted`/`randn_lifted`) over a standalone `Memory`/`MemoryRef` primal always
+    # yields the wrapper V (`NDualArray`/`NDualMemoryRef`, or `MemoryRef{NoDual}` for a non-diff
+    # *element*), never this bare-`NoDual` sentinel — which only arises for a non-differentiable
+    # whole-buffer slot inside the reverse rule's own storage during forward-over-reverse. These
+    # methods are therefore exercised only through forward-over-reverse HVP/Hessian tests, not the
+    # per-rule battery; that is intentional, not a coverage gap.
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual}
     ) where {Nw}
