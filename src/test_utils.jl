@@ -662,7 +662,7 @@ _chunk_lane_checkable(@nospecialize(_v)) = false
         rng::AbstractRNG, x...;
         sig, frule=Mooncake.frule!!, widths=(1, 2, 3), is_primitive=true,
         interface_only=false, perf_flag=:none, unsafe_perturb=false,
-        atol=1e-3, rtol=1e-3, max_fd_step=nothing,
+        atol=1e-3, rtol=1e-3, max_fd_step=nothing, debug_mode=false,
     )
 
 The width-parameterised forward-rule harness: one entry point covering every chunk width.
@@ -679,6 +679,11 @@ across all lanes). Concretely: (1) the primal result is unchanged; (2) every inn
 `.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
 partials match what the width-1 frule produces when seeded with *that lane's* direction — the
 width-1 path being finite-difference-validated above, so it is the trusted per-lane oracle.
+
+Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
+is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
+at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-supplied `frule`
+is honoured only at width 1.
 
 No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
 only for primitive rules (a derived rule's width-N execution is the composition of its
@@ -699,6 +704,7 @@ function test_frule(
     atol=1e-3,
     rtol=1e-3,
     max_fd_step=nothing,
+    debug_mode::Bool=false,
 ) where {P}
     @nospecialize rng x
     # Width-1 battery. The seeds are shared across the four checks (matching their historical
@@ -743,7 +749,7 @@ function test_frule(
         else
             nothing
         end
-        y_ẏ = build_frule(interp, sig; chunk_size=N)(seeds...)
+        y_ẏ = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
         @test has_equal_data(y_true, primal(y_ẏ))
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
         # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
@@ -1468,6 +1474,7 @@ function test_rule(
                         atol,
                         rtol,
                         max_fd_step,
+                        debug_mode,
                     )
                 end
             end
