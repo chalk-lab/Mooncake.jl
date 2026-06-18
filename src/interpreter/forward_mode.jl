@@ -52,7 +52,7 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
 than the current world (e.g. when building rules for a MistyClosure, which uses its own
-world, or when a Lazy/Dynamic rule rebuilds at its stored prediction world; see issue #1209).
+world, or when a Lazy/Dynamic rule rebuilds at its stored prediction world; see issue #1218).
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -553,8 +553,8 @@ end
 
 # Build at the world `Trule` was predicted at, not the current world: a world advance since
 # prediction can re-tighten `mi`'s inferred return type, yielding a rule that no longer
-# matches `Trule` and fails to `convert` on assignment below. Handles the world-advance
-# trigger of issue #1209 (not the inference-complexity-widening case in its headline MWE).
+# matches `Trule` and fails to `convert` on assignment below. Fixes the world-advance bug
+# #1218 (not the inference-complexity-widening case in #1209's headline MWE).
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(
@@ -609,7 +609,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         # Build at the world this rule was created at (matching the enclosing rule), not the
-        # current world. See _build_rule! and issue #1209.
+        # current world. See _build_rule! and issue #1218.
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
         rule = build_frule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true

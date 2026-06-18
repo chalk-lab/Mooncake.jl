@@ -25,13 +25,13 @@ end
 rule_type_nonreturning(e::Exception) = throw(e)
 
 # Helpers for the world-advance rule-staleness regression test (reverse mode); see the
-# forward-mode analogue for the scope note. `issue1209r_lazy` reaches the callee statically
-# (LazyDerivedRule), `issue1209r_dyn` dynamically (DynamicDerivedRule).
-issue1209r_inner(x) = Float32(x) * 2.0f0
-@noinline issue1209r_callee(x) = issue1209r_inner(x)
-issue1209r_lazy(x) = issue1209r_callee(x)
-const ISSUE1209R_FNS = Function[issue1209r_callee]
-issue1209r_dyn(x) = (ISSUE1209R_FNS[1])(x)
+# forward-mode analogue for the scope note. `stale_rvs_lazy` reaches the callee statically
+# (LazyDerivedRule), `stale_rvs_dyn` dynamically (DynamicDerivedRule).
+stale_rvs_inner(x) = Float32(x) * 2.0f0
+@noinline stale_rvs_callee(x) = stale_rvs_inner(x)
+stale_rvs_lazy(x) = stale_rvs_callee(x)
+const STALE_RVS_FNS = Function[stale_rvs_callee]
+stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
 @testset "s2s_reverse_mode_ad" begin
     @testset "SharedDataPairs" begin
@@ -521,15 +521,15 @@ issue1209r_dyn(x) = (ISSUE1209R_FNS[1])(x)
     # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
     # world advance; both lazy and dynamic must return the build-world result (Float32), not
     # the post-advance world's (Float64).
-    @testset "stale rule build-world after world advance (issue #1209 trigger)" begin
-        lazy = Mooncake.build_rrule(issue1209r_lazy, 1.5)
-        dyn = Mooncake.build_rrule(issue1209r_dyn, 1.5)
-        @eval issue1209r_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
+    @testset "stale rule build-world after world advance (issue #1218)" begin
+        lazy = Mooncake.build_rrule(stale_rvs_lazy, 1.5)
+        dyn = Mooncake.build_rrule(stale_rvs_dyn, 1.5)
+        @eval stale_rvs_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
         lazy_y, _ = Base.invokelatest(
-            lazy, Mooncake.zero_fcodual(issue1209r_lazy), Mooncake.zero_fcodual(1.5)
+            lazy, Mooncake.zero_fcodual(stale_rvs_lazy), Mooncake.zero_fcodual(1.5)
         )
         dyn_y, _ = Base.invokelatest(
-            dyn, Mooncake.zero_fcodual(issue1209r_dyn), Mooncake.zero_fcodual(1.5)
+            dyn, Mooncake.zero_fcodual(stale_rvs_dyn), Mooncake.zero_fcodual(1.5)
         )
         @test Mooncake.primal(lazy_y) === 3.0f0
         @test Mooncake.primal(dyn_y) === 3.0f0

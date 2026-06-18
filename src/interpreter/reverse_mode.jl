@@ -1182,7 +1182,7 @@ If `debug_mode` is `true`, then all calls to rules are replaced with calls to `D
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older than
 the current world (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world; see
-issue #1209).
+issue #1218).
 """
 function build_rrule(
     interp::MooncakeInterpreter{C},
@@ -1959,7 +1959,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
         # Build at the world this rule was created at (matching the enclosing rule), not the
-        # current world. See _build_rule! and issue #1209.
+        # current world. See _build_rule! and issue #1218.
         interp = get_interpreter(ReverseMode, dynamic_rule.world)
         rule = build_rrule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
@@ -2079,7 +2079,7 @@ end
 end
 
 # Build at the world `Trule` was predicted at, not the current world. See the LazyFRule
-# analogue in forward_mode.jl and the world-advance trigger of issue #1209.
+# analogue in forward_mode.jl and the world-advance bug #1218.
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode, rule.world)
     rule.rule = build_rrule(
