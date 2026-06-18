@@ -117,6 +117,17 @@ using Mooncake.Nfwd
         x = _d(3.0, 1.0)
         @test Nfwd.ndual_value(inv(x)) ≈ 1/3.0
         @test Nfwd.ndual_partial(inv(x), 1) ≈ -1/9.0
+
+        # At a removable singularity (x=0) the inv / `x^-1` / division paths scale by a blown-up
+        # reciprocal, so an *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
+        # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression R3-1:
+        # inv / literal `x^-1` / Real÷NDual / NDual÷NDual / NDual÷Real previously used the unguarded
+        # `_pt_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
+        z = _d2(0.0, 0.0, 1.0)
+        for d in (inv(z), z^(-1), 1.0 / z, _d2(3.0, 0.0, 1.0) / z, _d2(3.0, 0.0, 1.0) / 0.0)
+            @test Nfwd.ndual_partial(d, 1) === 0.0   # inactive lane: 0, not NaN
+            @test isinf(Nfwd.ndual_partial(d, 2))    # active lane: genuine singularity
+        end
     end
 
     @testset "power" begin

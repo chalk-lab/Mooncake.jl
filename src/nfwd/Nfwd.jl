@@ -609,18 +609,24 @@ end
 @inline Base.:*(b::Bool, x::NDual{T,N}) where {T,N} = ifelse(b, x, copysign(zero(x), x))
 @inline Base.:*(x::NDual{T,N}, b::Bool) where {T,N} = b * x
 
-# Quotient rule: d(a/b) = (da - (a/b)*db) / b
+# Quotient rule: d(a/b) = (da - (a/b)*db) / b. Guarded scales (both the inner `v*db` and the
+# outer `/b`): at a removable singularity `b.value==0` the factors `v` and `inv(b.value)` are
+# `Inf`, so an inactive (zero-partial) lane would otherwise become `0*Inf = NaN`; the guard
+# keeps it `0` (matching the power/log/sqrt paths).
 @inline function Base.:/(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value / b.value
     return NDual{T,N}(
-        v, _pt_scale(_pt_sub(a.partials, _pt_scale(b.partials, v)), inv(b.value))
+        v,
+        _pt_guarded_scale(
+            _pt_sub(a.partials, _pt_guarded_scale(b.partials, v)), inv(b.value)
+        ),
     )
 end
 
 # NDual / Real: multiply by reciprocal — avoids promoting c to NDual.
 @inline function Base.:/(x::NDual{T,N}, c::Real) where {T,N}
     s = inv(T(c))
-    return NDual{T,N}(x.value * s, _pt_scale(x.partials, s))
+    return NDual{T,N}(x.value * s, _pt_guarded_scale(x.partials, s))
 end
 
 # Real / NDual: d(c/b) = -(c/b²) db.  Without this, c::Real is promoted to
@@ -633,14 +639,17 @@ end
 @inline function Base.:/(c::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     vi = inv(S(x.value))
-    return NDual{S,N}(S(c) * vi, _pt_scale(x.partials, -(S(c) * vi * vi)))
+    return NDual{S,N}(S(c) * vi, _pt_guarded_scale(x.partials, -(S(c) * vi * vi)))
 end
 
 # Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
 # promoting one(T)/a would trigger, eliminating a useless `0*x.value` fmul per slot.
+# Guarded scale: at `a.value==0` the factor `-(vi*vi)` is `-Inf`, so an inactive (zero-partial)
+# lane would become `0*-Inf = NaN`; the guard keeps it `0` (matches the integer-power paths).
+# Also fixes `x^-1` / `literal_pow(^, x, Val(-1))`, which delegate to this method.
 @inline function Base.inv(a::NDual{T,N}) where {T,N}
     vi = inv(a.value)
-    return NDual{T,N}(vi, _pt_scale(a.partials, -(vi * vi)))
+    return NDual{T,N}(vi, _pt_guarded_scale(a.partials, -(vi * vi)))
 end
 
 # FMA (Fused Multiply-Add) based muladd: a single CPU instruction computes a*b+c
