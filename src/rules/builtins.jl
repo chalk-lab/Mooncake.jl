@@ -1315,6 +1315,25 @@ function frule!!(
         return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
 end
+# `Ref{P<:NDualEltype}` (`NDualRef` V): the generic `_get_lifted_field` path above has no
+# `NDualRef` method, so rebuild the scalar inner V from the parallel partials buffer, mirroring the
+# literal-name `lgetfield` Ref branch in misc.jl (the read counterpart of the `setfield!` Ref frule).
+# Runtime name is `:x` (or its index `1`), the Ref's only field. Covers real and complex elements.
+function frule!!(
+    ::Lifted{typeof(getfield),Nw}, x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef}, name::Lifted
+) where {Nw,P<:NDualEltype}
+    v = getfield(primal(x), primal(name))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+end
+function frule!!(
+    ::Lifted{typeof(getfield),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    name::Lifted,
+    inbounds::Lifted,
+) where {Nw,P<:NDualEltype}
+    v = getfield(primal(x), primal(name), primal(inbounds))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
@@ -1889,6 +1908,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # runtime-name setfield! on a Ref (V is NDualRef): delegates to the lsetfield! frule.
         (false, :none, _range, setfield!, Ref(5.0), :x, 4.0),
         (false, :none, _range, setfield!, Ref(5.0), 1, 4.0),
+        # runtime-name getfield on a Ref (V is NDualRef) — the read counterpart; rebuilds the
+        # scalar V via _scalar_ndual. Real + complex element, by name and by index.
+        (false, :none, _range, getfield, Ref(5.0), :x),
+        (false, :none, _range, getfield, Ref(5.0), 1),
+        (false, :none, _range, getfield, Ref(5.0), :x, false),
+        (false, :none, _range, getfield, Ref(1.0 + 2.0im), :x),
         # swapfield! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability_and_allocs, nothing, tuple, 5.0, 4.0),
         (false, :stability_and_allocs, nothing, tuple, randn(5), 5.0),
