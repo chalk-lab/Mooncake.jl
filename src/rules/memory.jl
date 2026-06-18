@@ -835,7 +835,12 @@ end
     ) where {Nw,P<:NDualEltype}
         _n = primal(n)
         x = Core.memorynew(Memory{P}, _n)
-        partials = ntuple(_ -> Core.memorynew(Memory{P}, _n), Val(Nw))
+        # Zero each partial: `Core.memorynew` returns uninitialized memory, which whole-buffer
+        # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
+        # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently lowered).
+        partials = ntuple(
+            _ -> (m=Core.memorynew(Memory{P}, _n); fill!(m, zero(P)); m), Val(Nw)
+        )
         return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
     end
     function rrule!!(

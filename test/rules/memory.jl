@@ -35,4 +35,27 @@ end
         @test all(i -> all(iszero, tangent(r)[i][1].partials), 1:4)
         @test all(i -> tangent(r)[i][1].value === primal(r)[i][1], 1:4)
     end
+
+    # Regression: the NDualEltype `Core.memorynew` frule (Julia 1.12+ array lowering) must zero
+    # each partial buffer like its `Memory{P}(undef, n)` sibling — bare `Core.memorynew` returns
+    # uninitialized memory that whole-buffer copies would propagate as nonzero partials.
+    @static if VERSION >= v"1.12-"
+        @testset "Core.memorynew NDualEltype V zero partials (width $N)" for N in (1, 2, 3)
+            # Dirty the heap so an unzeroed buffer would read back nonzero (deterministic guard).
+            let junk = Memory{Float64}[]
+                for _ in 1:200
+                    m = Core.memorynew(Memory{Float64}, 16)
+                    fill!(m, 12345.0)
+                    push!(junk, m)
+                end
+            end
+            GC.gc(false)
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(N), Core.memorynew),
+                Mooncake.zero_lifted(Val(N), Memory{Float64}),
+                Mooncake.zero_lifted(Val(N), 8),
+            )
+            @test all(p -> all(iszero, p), tangent(r).partials)
+        end
+    end
 end
