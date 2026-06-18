@@ -351,6 +351,20 @@ function get_interpreter(mode::Type{<:Mode})
 end
 
 """
+    get_interpreter(mode::Type{<:Mode}, world::UInt)
+
+Returns a `MooncakeInterpreter` for `mode` pinned to `world`. When `world` is the current
+world age this is equivalent to `get_interpreter(mode)` (served from the process-wide cache).
+A non-current `world` (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world)
+yields a fresh, uncached interpreter, leaving the shared current-world cache untouched.
+"""
+function get_interpreter(mode::Type{<:Mode}, world::UInt)
+    world == Base.get_world_counter() && return get_interpreter(mode)
+    # Pinned older world (Lazy/Dynamic rule rebuild): fresh, never cached.
+    return MooncakeInterpreter(DefaultCtx, mode; world)
+end
+
+"""
     empty_mooncake_caches!()
 
 This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
