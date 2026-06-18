@@ -1469,8 +1469,8 @@ function frule!!(
     _t::Lifted{Char},
     _diag::Lifted{Char},
     α_dα::Lifted{P,Nw},
-    A_dA::Lifted{<:AbstractMatrix{P},Nw},
-    B_dB::Lifted{<:AbstractMatrix{P},Nw},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
     side = primal(_side)
     uplo = primal(_uplo)
