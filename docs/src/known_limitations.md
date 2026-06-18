@@ -175,10 +175,11 @@ If you observe unexpected performance regressions in differentiated code that is
 
 ## Differentiating Through Another Automatic Differentiation Library
 
-Mooncake.jl differentiates ordinary Julia code; it is not meant to differentiate *through* another automatic differentiation library.
-If the function you hand to Mooncake itself calls a second autograd tool — for example by building and replaying a tape — you are asking Mooncake to differentiate that tool's internals rather than your underlying mathematical function.
-This is outside Mooncake's scope and is not supported.
+Mooncake.jl is designed to differentiate ordinary Julia code, rather than to differentiate *through* another automatic differentiation library.
+If the function you hand to Mooncake itself calls a second autograd tool — for example by building and replaying a tape — you are effectively asking Mooncake to differentiate that tool's internals rather than your underlying mathematical function.
 
+Because such a library is itself Julia code, Mooncake will not refuse to differentiate it, and in some cases it may even work.
+This use is, however, *not officially supported*, so treat it as use-at-your-own-risk: if something goes wrong, fixing it is not something we are obligated to maintain.
 Such code leans on exactly the features that make AD hard, such as runtime code generation and world-age changes that happen mid-run, so it may fail loudly or, worse, return a plausible but incorrect gradient.
 See [issue #1209](https://github.com/chalk-lab/Mooncake.jl/issues/1209) for an example.
 
