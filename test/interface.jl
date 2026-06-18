@@ -882,6 +882,38 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ),
             )
 
+            # A view input cannot use the flat packable seed (`similar(::SubArray)` is a plain
+            # `Vector`, mismatching the view type the rule and cache spec expect). It must fall
+            # through to the structured path and return the structural (parent-field) gradient,
+            # matching reverse mode (regression: the flat seed threw a PreparedCacheError, and the
+            # AbstractVector fast method then mis-dispatched the StructuredGradSeed).
+            view_f = v -> sum(abs2, v)
+            view_x = view(collect(1.0:6.0), 1:3)
+            view_cache = Mooncake.prepare_derivative_cache(
+                view_f, view_x; config=Mooncake.Config(; kwargs...)
+            )
+            view_val, view_grad = Mooncake.value_and_gradient!!(view_cache, view_f, view_x)
+            @test view_val == sum(abs2, view_x)
+            @test Mooncake.get_tangent_field(view_grad[2], :parent) ==
+                vcat(2 .* collect(1.0:3.0), zeros(3))
+
+            # A structured input whose NESTED array is reused at the same length but a different
+            # shape must be rejected (size, not just length, is validated) instead of silently
+            # computing on the stale cache-owned shape (regression: returned the wrong primal).
+            nested_f = t -> sum(t[1] * permutedims(t[1]))
+            nested_cache = Mooncake.prepare_derivative_cache(
+                nested_f,
+                (reshape(collect(1.0:6.0), 2, 3),);
+                config=Mooncake.Config(; kwargs...),
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                nested_cache, nested_f, (reshape(collect(1.0:6.0), 3, 2),)
+            )
+            nested_A2 = reshape(collect(7.0:12.0), 2, 3)
+            @test first(
+                Mooncake.value_and_gradient!!(nested_cache, nested_f, (nested_A2,))
+            ) == nested_f((nested_A2,))
+
             if get(kwargs, :debug_mode, false)
                 @test true
             else

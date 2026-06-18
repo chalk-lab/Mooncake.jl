@@ -1391,11 +1391,20 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
         # same-eltype requirement mirrors the seed method's dispatch (`x1::AbstractVector{T},
         # xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed would be dead cache weight
         # that dispatch can never reach.
+        #
+        # `typeof(similar(a)) == typeof(a)`: the flat seed primals are `similar(a)`, but the rule
+        # and `input_specs` are built for `typeof(a)`. For an input whose `similar` does not
+        # round-trip its type (a `SubArray`/view, whose `similar` is a plain `Vector`), the seed
+        # primal type would mismatch both, so the inner `value_and_derivative!!` revalidation
+        # throws a PreparedCacheError (and the rule's OpaqueClosure would type-mismatch anyway).
+        # Exclude those here so they fall through to the structured path, whose `deepcopy`-built
+        # seeds DO round-trip the type and so handle them correctly.
         if gradient_chunk_size >= 1 &&
             tangent_type(typeof(first(fx))) === NoTangent &&
             !isempty(args) &&
             first(args) isa AbstractVector{<:IEEEFloat} &&
-            all(a -> a isa AbstractVector{eltype(first(args))}, args)
+            all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
+            all(a -> typeof(similar(a)) == typeof(a), args)
             W = gradient_chunk_size
             (
                 zero_lifted(Val(W), fx[1]),
@@ -1709,10 +1718,13 @@ function value_and_gradient!!(
     input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     seed = cache.gradient_seed
-    # A differentiable `f` (or any non-packable shape) has no preallocated seed; fall back to
-    # the generic chunked method via `invoke` (the args are float vectors, so a plain call
-    # would re-dispatch here).
-    seed === nothing &&
+    # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is destructured
+    # below. Any other seed — `nothing` (differentiable `f` / non-packable), or the struct seeds
+    # `StructuredGradSeed`/`IsbitsGradSeed` (e.g. a view, whose `similar` is not its own type so it
+    # is excluded from the flat path) — is delegated to the generic method, which dispatches on the
+    # seed type. `invoke` is needed because a plain call would re-dispatch back to this method (the
+    # args are float vectors).
+    seed isa Tuple ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
     f_seed_stored, arg_seeds, grad_bufs = seed
     # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
@@ -1777,12 +1789,14 @@ end
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
 function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
     # `_validate_prepared_cache` only checks top-level sizes, so a structured input whose NESTED
-    # array changed length still reaches here. Fail loudly and locally (a clear PreparedCacheError)
-    # instead of a raw `BoundsError`, or — for a shorter array — a silently-wrong partial `copyto!`.
-    length(v.primal) == length(x) || throw(
+    # array changed shape still reaches here. Check `size`, not just `length`: a same-length
+    # reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the stale cache-owned
+    # shape and run the rule on it — silently wrong for any f that depends on size/axes. Fail
+    # loudly and locally (a clear PreparedCacheError) instead.
+    size(v.primal) == size(x) || throw(
         PreparedCacheError(
-            "Prepared cache mismatch: a nested array argument has length $(length(x)) but the " *
-            "cache was built for length $(length(v.primal)). Rebuild the cache for the new shape.",
+            "Prepared cache mismatch: a nested array argument has size $(size(x)) but the " *
+            "cache was built for size $(size(v.primal)). Rebuild the cache for the new shape.",
         ),
     )
     copyto!(v.primal, x)
