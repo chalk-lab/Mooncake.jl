@@ -273,6 +273,10 @@ function has_equal_data_internal(
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
 
+# Method, CodeInstance, and MethodInstance form circular reference chains
+# (Method.specializations → MethodInstance, MethodInstance.def → Method,
+# MethodInstance.cache → CodeInstance, CodeInstance.def → MethodInstance).
+# Recursing into their fields would loop forever, so delegate to == instead.
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
     @eval function has_equal_data_internal(
         x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
