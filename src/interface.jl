@@ -2003,10 +2003,14 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
         ),
     )
     W = getfield(cache, :gradient_chunk_size)
-    _lifted_width(first(fx)) == W || throw(
+    # Every slot must share the cache's chunk width: the chunk rule's OpaqueClosure is built at
+    # width `W` and would otherwise type-mismatch on a trailing slot opaquely. Checking only
+    # `first(fx)` would let mixed-width inputs (e.g. width-W `f` with a width-W' argument) past.
+    widths = map(_lifted_width, fx)
+    all(==(W), widths) || throw(
         PreparedCacheError(
-            "Lifted inputs have chunk width $(_lifted_width(first(fx))), but this " *
-            "cache's chunk rule was built at width $W.",
+            "Lifted inputs have chunk widths $widths, but this cache's chunk rule was " *
+            "built at width $W; all inputs must share the cache's chunk width.",
         ),
     )
     return __call_rule(rule, fx)

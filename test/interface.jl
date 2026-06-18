@@ -883,6 +883,18 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.zero_lifted(Val(3), mut_f),
                 Mooncake.randn_lifted(Val(3), Xoshiro(1), collect(1.0:12.0)),
             )
+            # Mixed-width slots whose FIRST slot matches the cache's chunk width must still raise a
+            # clear PreparedCacheError (every slot must share the width; checking only `first`
+            # would let a trailing differently-sized slot reach the chunk rule's OC as a typeassert).
+            chunk2_cache = Mooncake.prepare_derivative_cache(
+                f, x, y; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                chunk2_cache,
+                Mooncake.zero_lifted(Val(2), f),
+                Mooncake.zero_lifted(Val(2), x),
+                Mooncake.zero_lifted(Val(3), y),
+            )
 
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)
