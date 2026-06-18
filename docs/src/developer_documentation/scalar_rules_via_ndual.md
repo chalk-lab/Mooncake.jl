@@ -54,7 +54,9 @@ Once that exists, the Mooncake primitive wrapper can stay thin:
 function frule!!(
     ::Lifted{typeof(cospi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    return Lifted{P,N}(cospi(primal(x)), cospi(tangent(x)))
+    dy = cospi(tangent(x))      # the NDual overload runs the primal once, storing it in dy.value
+    y = _nfwd_out_value(dy)     # read the primal back — do NOT recompute cospi(primal(x))
+    return Lifted{_typeof(y),N}(y, dy)
 end
 
 function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
