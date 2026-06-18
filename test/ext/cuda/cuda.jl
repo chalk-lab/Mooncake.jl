@@ -182,8 +182,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             return sum(dest)
         end
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
-        # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
-        # offset, which is CuPtr{Float32} + Integer (differentiable T).
+        # _view_sum: a contiguous-range view of a CuArray returns a CuArray (via
+        # unsafe_contiguous_view → unsafe_convert(CuPtr{T}, parent) + offset). In REVERSE mode
+        # (view is not a forward primitive there) that pointer arithmetic is traced, exercising
+        # CuPtr{Float32} + Integer. In FORWARD mode the `view` frule intercepts and builds the
+        # result CuArray's NDualArray directly, so the CuPtr lowering is not traced. A strided
+        # (non-contiguous) index instead yields a SubArray (the frule's ImmutableDual branch),
+        # tested directly below.
         _view_sum(x) = sum(view(x, 2:length(x)))
         _view_sum_cx(x) = real(sum(view(x, 2:length(x))))
         # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
@@ -573,6 +578,31 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             test_rule(
                 StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
             )
+        end
+
+        # The `view` forward frule has two branches: contiguous indices return a CuArray
+        # (NDualArray V, covered by `_view_sum` above) and non-contiguous (strided) indices
+        # return a SubArray whose V is the struct lift `ImmutableDual((parent=tangent(x), …))`.
+        # That SubArray branch can't be reached through `test_rule`: `sum` over a strided GPU
+        # SubArray hits limitations unrelated to the view rule (forward: the `atomic_pointerref`
+        # intrinsic in the reduction kernel, issue #208; reverse: a try/catch in
+        # `GPUArrays._mapreduce`). Exercise the branch's V construction + parent aliasing directly.
+        @testset "view strided SubArray frule branch (width $N)" for N in (1, 3)
+            px = CuArray(rand(StableRNG(1), Float32, 8))
+            xs = Mooncake.zero_lifted(Val(N), px)
+            out = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(N), view), xs, Mooncake.zero_lifted(Val(N), 1:2:8)
+            )
+            y, V = primal(out), tangent(out)
+            @test y isa SubArray
+            @test Array(y) == Array(view(px, 1:2:8))
+            @test V isa Mooncake.ImmutableDual
+            # parent V aliases the input slot's V so the JVP stays connected (the view's tangent
+            # is the view of the parent's tangent); index metadata is non-differentiable.
+            @test V.value.parent === tangent(xs)
+            @test V.value.indices isa Mooncake.NoDual
+            @test V.value.offset1 isa Mooncake.NoDual
+            @test V.value.stride1 isa Mooncake.NoDual
         end
 
         # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.
