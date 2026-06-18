@@ -988,13 +988,17 @@ end
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
     # Route the forward-pass call through `__call_rule`: on Julia 1.10 this is the `(rule::Any)`
-    # barrier, which routes via `jl_apply_generic` and avoids the specsig OC-call codegen segfault
-    # (julia#51016/#61368) that a direct `fwds.fwds_oc(uf_args...)` call triggers when handed
-    # type-mismatched arguments (e.g. a debug-mode rule fed deliberately-wrong-typed inputs). On
-    # 1.11+ it is the direct call, so this is semantically identical and changes no derivative. We
-    # pass the `MistyClosure` itself (not its `.oc`): forward-over-reverse HVP forward-differentiates
-    # this body, and a `.oc` field access would need an undefined `_get_lifted_field` on the
-    # MistyClosure's forward tangent — calling the MistyClosure (which has a rule) avoids that.
+    # barrier, which de-specialises the call so codegen emits `jl_apply_generic` rather than a
+    # specsig OC call at this site (the julia#51016/#61368 trigger). On 1.11+ it is the direct
+    # call, semantically identical and changing no derivative.
+    #
+    # We pass the `MistyClosure` itself, not its bare `.oc`: forward-over-reverse HVP
+    # forward-differentiates this body, and a `.oc` field access would need an undefined
+    # `_get_lifted_field` on the MistyClosure's forward tangent. The trade-off: because `fwds_oc`
+    # is a `MistyClosure` (not a `Core.OpaqueClosure`), this dispatches to the generic barrier, not
+    # the `OpaqueClosure{A}` overload's `args isa A` guard. So unlike the forward `DerivedFRule`
+    # (which passes the bare guarded `.oc`), the inner `mc.oc(...)` is unguarded here — a
+    # type-mismatched call on 1.10 is not converted to a clean `TypeError` the same way.
     return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
