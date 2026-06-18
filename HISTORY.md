@@ -11,9 +11,10 @@ Breaking release: the forward-mode AD representation was rewritten.
   `frule!!`s now dispatch on `Lifted` rather than `Dual`.
 - Forward mode is now batched ("chunked"): a width-`N` rule propagates `N` directional derivatives
   per pass (`chunk_size`), powering forward-mode gradients (`value_and_gradient!!` over a forward
-  cache) and Jacobians (`value_and_jacobian!!`). Forward-over-reverse HVPs (`value_and_hvp!!`) and
-  Hessians (`value_gradient_and_hessian!!`) currently run the outer forward pass at width 1;
-  chunking them is a planned follow-up.
+  cache), Jacobians (`value_and_jacobian!!`), and single-argument forward-over-reverse Hessians
+  (`value_gradient_and_hessian!!`, which sweeps `N` Hessian columns per pass, `N` auto-capped at the
+  input dimension). Single HVPs (`value_and_hvp!!`) run at width 1 by design (one directional
+  derivative); multi-argument and 1-DOF Hessians also remain width-1.
 - Forward-mode seed factories are width-parameterized: `zero_dual(Val(N), x)` / `uninit_dual` /
   `randn_dual` (and the `zero_lifted` / `uninit_lifted` / `randn_lifted` slot wrappers).
 

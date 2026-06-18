@@ -2200,7 +2200,7 @@ true
 ```
 """
 @unstable @inline function prepare_hvp_cache(
-    f::F, x::Vararg{Any,N}; config=Config()
+    f::F, x::Vararg{Any,N}; config=Config(), _chunk::Int=1
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
     # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
@@ -2215,7 +2215,28 @@ true
     # into the forward IR. The type parameter `D` discriminates derived
     # (`D <: Lifted`) from primitive (`D === Nothing`) rrules — primitive rrules have
     # no MistyClosure IR and keep using `grad_cache`'s rule directly.
-    for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
+    # Internal chunk width for the forward-over-reverse dual callables and `grad_f`'s forward
+    # chunk rule (kept in lockstep so they agree). Default 1 (width-1): a standalone HVP is a
+    # single direction, so `value_and_hvp!!` must stay width-1. `prepare_hessian_cache` passes
+    # `_chunk = N > 1` to build a width-N variant for its chunked Hessian sweep; cap at `dof(x)`
+    # (cannot batch more Hessian columns than input DOFs).
+    fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, dof(tuple_map(zero_tangent, x)))
+    # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing `config.chunk_size`
+    # through: at width 1 (standalone HVP) this builds no `chunk_rule`, so the cache cannot bake an
+    # unusable width-K chunk rule over a width-1 for_rule (the FoR `rule_dual` and the `chunk_rule`
+    # widths can never diverge). The width-W Hessian variant (from `prepare_hessian_cache`) gets a
+    # width-W `chunk_rule` matching its width-W for_rule. `empty_cache=false`: any global-cache reset
+    # already happened in `prepare_gradient_cache` above; re-clearing here would invalidate it.
+    fwd_config = Config(;
+        config.debug_mode,
+        config.silence_debug_messages,
+        config.friendly_tangents,
+        chunk_size=fwd_chunk_size,
+        empty_cache=false,
+    )
+    for_rule = compile_for_rule(
+        f, x...; debug_mode=config.debug_mode, chunk_size=fwd_chunk_size
+    )
 
     # The derived branches capture only these buffers: capturing `grad_cache` itself
     # would make `zero_tangent(grad_f)` traverse `grad_cache.rule`'s MistyClosures and
@@ -2258,7 +2279,7 @@ true
             end
         end
     end
-    fwd_cache = prepare_derivative_cache(grad_f, x...; config)
+    fwd_cache = prepare_derivative_cache(grad_f, x...; config=fwd_config)
     return HVPCache(
         f,
         grad_f,
@@ -2382,13 +2403,18 @@ The cache pre-allocates the Hessian, gradient, and basis-direction buffers that
 fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if
 you need to retain previous results.
 
-Hessian computation uses forward-over-reverse AD: one forward-mode pass per input
-dimension over the reverse-mode gradient function.
+Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function. A
+single-argument Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward
+pass (≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an internal
+maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it. Multi-argument Hessians use
+one forward pass per total input dimension.
 
 !!! note
-    This path uses Mooncake's generic public forward cache over the captured
-    reverse-mode gradient closure, and (via [`prepare_hvp_cache`](@ref)) calls `f(x...)`
-    once during cache preparation.
+    This path uses Mooncake's generic public forward cache over the captured reverse-mode
+    gradient closure. A single-argument chunked Hessian prepares two forward variants — width-1
+    (shared with [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is
+    evaluated and the forward-over-reverse rule compiled twice during preparation; the width-1 and
+    multi-argument cases prepare a single variant.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
@@ -2407,13 +2433,45 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     T = _validate_hessian_arguments(x...)
     base = prepare_hvp_cache(f, x...; config)
+    # Chunked forward-over-reverse Hessian sweep (single-arg): build a width-W variant of
+    # `grad_f` whose FoR rule's dual callables are width W, alongside the width-1 `base` used by
+    # `value_and_hvp!!`. `chunked === nothing` keeps the width-1 column loop (multi-arg, scalar
+    # 1-DOF, or chunk_size 1). Auto (`chunk_size` nothing/0) chunks the full matrix.
+    chunked = if N == 1
+        dof_x = dof(tuple_map(zero_tangent, x))
+        W = let c = getfield(config, :chunk_size)
+            req = if (c === nothing || c == 0)
+                _MAX_CHUNK_WIDTH
+            else
+                Nfwd._nfwd_check_chunk_size(c)
+            end
+            min(req, dof_x)
+        end
+        # `empty_cache=false`: the `base` prepare above already honoured `config.empty_cache`;
+        # re-clearing for the width-W variant would invalidate what `base` just compiled.
+        if W > 1
+            ch_config = Config(;
+                config.debug_mode,
+                config.silence_debug_messages,
+                config.friendly_tangents,
+                config.chunk_size,
+                empty_cache=false,
+            )
+            ch = prepare_hvp_cache(f, x...; config=ch_config, _chunk=W)
+            (ch.grad_f, ch.fwd_cache, W)
+        else
+            nothing
+        end
+    else
+        nothing
+    end
     return HVPCache(
         base.f,
         base.grad_f,
         base.grad_tangent,
         base.fwd_cache,
         base.output_spec,
-        _make_hessian_buffers(T, x),
+        (_make_hessian_buffers(T, x), chunked),
     )
 end
 
@@ -2700,6 +2758,44 @@ end
     )
 end
 
+# Chunked forward-over-reverse Hessian sweep (single-arg). The Hessian is the Jacobian of
+# `grad_f`: x -> (value, gradient). Seed `W` standard-basis columns of `x1` per pass via
+# `basis_lifted!!`, run the width-`W` forward derivative of `grad_f`, and read one Hessian
+# column per lane from the gradient-tangent (output tuple index 2). Mirrors the chunked
+# Jacobian sweep. Fills `g` (gradient) and `H` (Hessian, columns) in place and returns the
+# primal value. A function barrier (specialised on `Val{W}`) keeps the per-lane partials
+# unboxed despite the `@unstable` caller. `x1` is snapshotted and restored so an in-place `f`
+# does not corrupt the input across chunks (the seed primal aliases `x1`).
+function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where {W}
+    f_seed = zero_lifted(Val(W), grad_f)
+    x_seed = zero_lifted(Val(W), x1)
+    cols(start_col) = ntuple(lane -> let slot = start_col + lane - 1
+        slot <= n ? slot : 0
+    end, Val(W))
+    x_snapshot = copy(x1)
+    output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
+    po = primal(output)
+    value = po[1]
+    g .= po[2]
+    @inbounds for lane in 1:W
+        lane <= n || break
+        H[:, lane] .= tangent(output, lane)[2]
+    end
+    for start_col in (W + 1):W:n
+        copyto!(x1, x_snapshot)
+        output = value_and_derivative!!(
+            fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
+        )
+        @inbounds for lane in 1:W
+            col = start_col + lane - 1
+            col <= n || break
+            H[:, col] .= tangent(output, lane)[2]
+        end
+    end
+    copyto!(x1, x_snapshot)
+    return value
+end
+
 """
     value_gradient_and_hessian!!(cache::HVPCache, f, x...)
 
@@ -2713,7 +2809,9 @@ matrix.
 `H_blocks[k][j]` is the `nk × nj` matrix `∂²f/∂xk∂xj`. The return structure differs
 from the single-argument case.
 
-Uses forward-over-reverse AD: one forward-mode pass per total input dimension.
+Uses forward-over-reverse AD. A single-argument Hessian is chunked, sweeping `config.chunk_size`
+basis directions per forward pass; multi-argument Hessians use one forward pass per total input
+dimension.
 
 !!! info
     `cache` must be the output of [`prepare_hessian_cache`](@ref), and `f` must be the
@@ -2753,8 +2851,9 @@ H
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    buf = cache.hess_buffers
-    buf === nothing && _throw_not_hessian_cache()
+    hb = cache.hess_buffers
+    hb === nothing && _throw_not_hessian_cache()
+    buf, chunked = hb
     if buf isa NamedTuple{(:H_blocks, :grads, :vs)}
         _throw_hessian_arity_mismatch(length(buf.vs), 1)
     end
@@ -2776,6 +2875,14 @@ H
         fval, _, _ = value_and_hvp!!(cache, f, v, x1)
         return fval, g, H
     end
+    # Chunked forward-over-reverse: when `prepare_hessian_cache` built a width-W variant of
+    # `grad_f` (its FoR dual callables are width W), sweep W Hessian columns per pass. Falls back
+    # to the width-1 column loop otherwise (multi-arg, scalar 1-DOF, or chunk_size 1).
+    if chunked !== nothing
+        grad_f_c, fwd_c, W = chunked
+        value = _chunked_hessian_sweep!(grad_f_c, fwd_c, H, g, x1, n, Val(W))
+        return value, g, H
+    end
     local value
     for i in 1:n
         v[i] = one(T)
@@ -2796,9 +2903,10 @@ end
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    buf = cache.hess_buffers
+    hb = cache.hess_buffers
     nargs = N + 1
-    buf === nothing && _throw_not_hessian_cache()
+    hb === nothing && _throw_not_hessian_cache()
+    buf, _ = hb
     if buf isa NamedTuple{(:H, :grad, :v)}
         _throw_hessian_arity_mismatch(1, nargs)
     end
