@@ -161,13 +161,22 @@ function _randn_dual_internal(
     return out
 end
 # Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
-function lift(x::IdDict{K,V}, ẋ::IdDict{K,Vt}) where {K,V,Vt}
+@inline lift(x::IdDict{K,V}, ẋ::IdDict{K,Vt}) where {K,V,Vt} = lift(x, ẋ, IdDict())
+# Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
+# struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
+# recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict
+# terminates instead of overflowing the stack (the reverse oracle's IdDict factories all guard).
+function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::Lifted{IdDict{K,V},1}
     DV = dual_type(Val(1), V)
     out = IdDict{K,DV}()
+    lifted = Lifted{IdDict{K,V},1}(x, out)
+    d[x] = lifted
     for (k, v) in x
-        out[k] = lift(v, ẋ[k]).value
+        out[k] = tangent(lift(v, ẋ[k], d))
     end
-    return Lifted{IdDict{K,V},1}(x, out)
+    return lifted
 end
 # Lane accessor: extract lane `l` from each value's V, producing the reverse `tangent_type` dict.
 @inline function tangent(
