@@ -150,6 +150,27 @@ end
     @test grad_a[2] ≈ 2.0
 end
 
+@testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
+    # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
+    # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
+    # threw a MethodError. The NoDual fallback must wrap it and return a NoDual-V Lifted.
+    m = Memory{UInt8}(undef, 4)
+    for i in 1:4
+        m[i] = UInt8(i)
+    end
+    p = pointer(m)
+    for N in (1, 2)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), unsafe_wrap),
+            Mooncake.zero_lifted(Val(N), Array),
+            Mooncake.zero_lifted(Val(N), p),
+            Mooncake.zero_lifted(Val(N), (4,)),
+        )
+        @test Mooncake.tangent(out) isa Mooncake.NoDual
+        @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
+    end
+end
+
 @testset "NaN handling in builtins rrules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]

@@ -263,6 +263,22 @@ function frule!!(
     return Lifted{Array{Ptr{R},D},Nw}(primal_arr, v)
 end
 
+# Non-differentiable pointer element: `dual_type(Ptr{T}) === NoDual` when `T` is non-differentiable
+# (e.g. `Ptr{UInt8}` from String/IO wrapping, `Ptr{Int}`), so the lifted pointer's V is `NoDual` and
+# the wrapped array's element type is non-differentiable too — its canonical V is `NoDual`. The broad
+# `@is_primitive` covers every `Ptr` and the reverse rule handles all `T`, so without this the forward
+# rule's method coverage is narrower than its `@is_primitive` (a MethodError at call time). Mirrors the
+# `NoDual` fallbacks on the sibling pointer rules (pointerref/pointerset/unsafe_copyto!).
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    dims::Lifted,
+) where {Nw}
+    arr = unsafe_wrap(Array, primal(p), primal(dims))
+    return Lifted{typeof(arr),Nw}(arr, NoDual())
+end
+
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
     ::CoDual{<:Type{<:Array}},
