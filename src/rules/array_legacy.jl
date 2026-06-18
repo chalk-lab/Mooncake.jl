@@ -84,13 +84,14 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-# Mutate the user's Vector and every lane's partial Vector in sync.
-# Restricted to `T <: IEEEFloat` element types (NDualArray V).
+# Mutate the user's Vector and every lane's partial Vector in sync. `T<:NDualEltype` with the
+# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too (#6); the body is
+# element-type-agnostic. The plain-`Array`-V overload below covers non-`NDualArray` element-wise Vs.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     d::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._deletebeg!(primal(a), d_p)
     for lane in 1:N
@@ -133,9 +134,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
 function frule!!(
     ::Lifted{typeof(Base._deleteend!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     d::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._deleteend!(primal(a), d_p)
     for lane in 1:N
@@ -185,10 +186,10 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
 function frule!!(
     ::Lifted{typeof(Base._deleteat!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     i::Lifted,
     delta::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     i_p = primal(i)
     d_p = primal(delta)
     Base._deleteat!(primal(a), i_p, d_p)
@@ -242,9 +243,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
 function frule!!(
     ::Lifted{typeof(Base._growbeg!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     d::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._growbeg!(primal(a), d_p)
     for lane in 1:N
@@ -282,9 +283,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
 function frule!!(
     ::Lifted{typeof(Base._growend!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     d::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._growend!(primal(a), d_p)
     for lane in 1:N
@@ -323,10 +324,10 @@ end
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
 function frule!!(
     ::Lifted{typeof(Base._growat!),N},
-    a::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     i::Lifted,
     d::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     i_p = primal(i)
     d_p = primal(d)
     Base._growat!(primal(a), i_p, d_p)
@@ -372,9 +373,9 @@ end
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
 function frule!!(
     ::Lifted{typeof(sizehint!),N},
-    x::Lifted{Vector{T},N,NDualArray{T,N,1,Vector{T},NDual{T,N}}},
+    x::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
     sz::Lifted,
-) where {N,T<:IEEEFloat}
+) where {N,T<:NDualEltype}
     sz_p = primal(sz)
     sizehint!(primal(x), sz_p)
     for lane in 1:N
@@ -807,6 +808,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Base._growend!, randn(5), 3),
         (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
         (false, :stability, nothing, sizehint!, randn(5), 10),
+        # Complex vectors (`NDualArray` V `Complex{NDual}` inner): the parallel-arrays frules were
+        # `T<:IEEEFloat`-only, so the broad `@is_primitive` had no matching frule -> MethodError (#6).
+        (false, :stability, nothing, Base._deletebeg!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteend!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteat!, randn(ComplexF64, 5), 2, 2),
+        (true, :stability, nothing, Base._growbeg!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growend!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growat!, randn(ComplexF64, 5), 2, 2),
+        (false, :stability, nothing, sizehint!, randn(ComplexF64, 5), 10),
         (false, :stability, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
         # Mismatched dest/src dimensionality (0-dim source into a Vector).
         (false, :none, nothing, unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
