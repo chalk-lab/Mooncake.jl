@@ -593,13 +593,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             out = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(N), view), xs, Mooncake.zero_lifted(Val(N), 1:2:8)
             )
-            y, V = primal(out), tangent(out)
+            y, V = Mooncake.primal(out), Mooncake.tangent(out)
             @test y isa SubArray
             @test Array(y) == Array(view(px, 1:2:8))
             @test V isa Mooncake.ImmutableDual
             # parent V aliases the input slot's V so the JVP stays connected (the view's tangent
             # is the view of the parent's tangent); index metadata is non-differentiable.
-            @test V.value.parent === tangent(xs)
+            @test V.value.parent === Mooncake.tangent(xs)
             @test V.value.indices isa Mooncake.NoDual
             @test V.value.offset1 isa Mooncake.NoDual
             @test V.value.stride1 isa Mooncake.NoDual
