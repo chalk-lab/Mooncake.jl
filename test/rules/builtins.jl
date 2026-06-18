@@ -171,11 +171,10 @@ end
     # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
     # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
     # threw a MethodError. The NoDual fallback must wrap it and return a NoDual-V Lifted.
-    m = Memory{UInt8}(undef, 4)
-    for i in 1:4
-        m[i] = UInt8(i)
-    end
-    p = pointer(m)
+    # Use a `Vector{UInt8}` (not `Memory`, which is Julia 1.11+) so this runs on the LTS too; `buf`
+    # is kept alive for the duration of the testset, so `p` stays valid.
+    buf = UInt8[1, 2, 3, 4]
+    p = pointer(buf)
     for N in (1, 2)
         out = Mooncake.frule!!(
             Mooncake.zero_lifted(Val(N), unsafe_wrap),
