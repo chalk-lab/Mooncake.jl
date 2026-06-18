@@ -268,6 +268,12 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
             @test all(iszero, a.partials[1].mem) && all(iszero, a.partials[2].mem)
             @test Mooncake._memoryrefget_ndual(a, :not_atomic, false) === nd(1.0, 0.0, 0.0)
             @test primal(zero_lifted(Val(2), p)) === p
+
+            # Empty backing memory: `zero_dual` must not `BoundsError` on the unguarded
+            # `Core.memoryref(mem, offset)` (offset==1, out of bounds for len 0) (#5).
+            empty_p = Float64[].ref
+            @test typeof(zero_dual(Val(2), empty_p)) ===
+                Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
         end
 
         @testset "cache-threaded float Memory/MemoryRef lift is parallel-arrays" begin

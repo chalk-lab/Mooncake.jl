@@ -2172,10 +2172,13 @@ end
     ) where {Element<:NDualEltype,N,M<:Memory{Element}}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)
+        # Empty backing memory: `Core.memoryref(mem, offset)` (offset==1) is out of bounds, so use
+        # the 1-arg form (mirrors `_memoryref_at`'s empty guard in lifted.jl, inlined here because
+        # that helper is defined later).
         alloc_partial() = (
             mem=Memory{Element}(undef, len);
             fill!(mem, zero(Element));
-            Core.memoryref(mem, offset)
+            len == 0 ? Core.memoryref(mem) : Core.memoryref(mem, offset)
         )
         return NDualMemoryRef{Element,N,M}(p, ntuple(_ -> alloc_partial(), Val(N)))
     end
