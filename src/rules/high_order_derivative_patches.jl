@@ -397,7 +397,11 @@ end
         a::Lifted{<:Memory},
     ) where {Nw}
         y = ccall(:jl_genericmemory_owner, Any, (Any,), primal(a))
-        return Lifted{typeof(y),Nw}(y, NoDual())
+        # The owner of a `Memory{T}` is itself a `Memory{T}` — differentiable for `T<:IEEEFloat`
+        # (canonical V `NDualArray`, not `NoDual`). Return the canonical zero forward value (mirrors
+        # the sibling `rrule!!`'s `zero_fcodual` and main's `zero_dual`); a bare `NoDual` paired with
+        # a differentiable result violates canonical-V and yields `NoTangent()` on a lane read.
+        return zero_lifted(Val(Nw), y)
     end
     function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
