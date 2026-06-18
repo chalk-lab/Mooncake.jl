@@ -896,6 +896,27 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.zero_lifted(Val(3), y),
             )
 
+            # Derived vararg rules at chunk width > 1 exercise `__unflatten_dual_varargs`' width-W
+            # group assembly (`Lifted{GP,W}(group_primal, group_v)`), which `test_frule` skips
+            # (derived rules run width 1 only) and other chunked tests miss (all fixed-arity). A W=1
+            # regression in that path throws a typeassert; cover it at chunk_size=2.
+            vararg_f = (a, bs...) -> a + sum(bs)
+            vararg_cache = Mooncake.prepare_derivative_cache(
+                vararg_f, x, y, 3.0; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(vararg_cache, vararg_f, x, y, 3.0) ==
+                (x + y + 3.0, (Mooncake.NoTangent(), 1.0, 1.0, 1.0))
+            # All-non-differentiable vararg group: `dual_type(Val(2), Tuple{Int,Int})` is `NoDual`,
+            # exercising the `group_v === NoDual ? NoDual()` collapse branch at width 2.
+            vararg_nd = (a, ns::Vararg{Int}) -> a + sum(ns)
+            vararg_nd_cache = Mooncake.prepare_derivative_cache(
+                vararg_nd, x, 2, 3; config=Mooncake.Config(; chunk_size=2, kwargs...)
+            )
+            @test Mooncake.value_and_gradient!!(vararg_nd_cache, vararg_nd, x, 2, 3) == (
+                x + 5,
+                (Mooncake.NoTangent(), 1.0, Mooncake.NoTangent(), Mooncake.NoTangent()),
+            )
+
             f32_scalar = x -> Float32(x^2 + sin(x))
             x32 = Float32(x)
             f32_scalar_cache = Mooncake.prepare_derivative_cache(
