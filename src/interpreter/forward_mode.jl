@@ -345,8 +345,8 @@ function modify_fwd_ad_stmts!(
         end
     else
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        zero_dual_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
-        Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
+        zero_lifted_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
+        Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
     end
 
     return nothing
