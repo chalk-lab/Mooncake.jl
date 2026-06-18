@@ -211,6 +211,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     # Specialised test cases for _new_.
     specific_test_cases = Any[
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{}),
+        # `Ref(x)` / `RefValue{P}(x)` construction (real + complex): the canonical V is `NDualRef`.
+        # `:none` perf — a mutable `Ref` allocates, so the alloc check does not apply.
+        (false, :none, nothing, _new_, Base.RefValue{Float64}, 5.0),
+        (false, :none, nothing, _new_, Base.RefValue{ComplexF64}, 1.0 + 2.0im),
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Float64}, 5.0),
         (false, :stability_and_allocs, nothing, _new_, @NamedTuple{y::Int, x::Int}, 5, 4),
         (
