@@ -1016,21 +1016,11 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# Project the field V via `_get_lifted_field`: non-differentiable metadata
-# (`.length`, `.ptr`, `.size`) yields `NoDual`, while the differentiable storage
-# field (`.ref`) yields the matching `NDualMemoryRef`. A blanket `NoDual` here
-# would drop the per-lane partials of `.ref` — silently zeroing the derivative in
-# forward-over-reverse, where these field accesses are exercised. Mirrors the
-# reverse `rrule!!` below, which returns `x.dx.ref` for the storage field.
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{Memory{P},Nw,NDualArray{P,Nw,1,Memory{P},NDual{P,Nw}}},
-    ::Lifted{Val{name},Nw},
-    ::Lifted{Val{order},Nw},
-) where {Nw,P<:IEEEFloat,name,order}
-    y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
-end
+# No forward `lgetfield` frules for Memory/MemoryRef/Array here: the generic `lgetfield` frule in
+# misc.jl projects the field V through the same `_get_lifted_field` methods (which handle `.ref` ->
+# `NDualMemoryRef`, `.mem` -> `NDualArray`, metadata -> `NoDual`; see their docstrings in misc.jl),
+# so an element-type-restricted frule here would only duplicate that path. The reverse `rrule!!`s
+# below are kept — they do their own field-specific projection.
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -1043,19 +1033,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-# MemoryRef field access — `.ptr_or_offset` is a non-differentiable Ptr
-# (`NoDual`); `.mem` projects to the matching per-lane `NDualArray` so the
-# storage's partials survive (see the `Memory` overload above for why a blanket
-# `NoDual` is wrong). Mirrors the reverse `rrule!!`, which returns `x.dx.mem`.
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
-    ::Lifted{Val{name},Nw},
-    ::Lifted{Val{order},Nw},
-) where {Nw,P<:IEEEFloat,name,order}
-    y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -1068,19 +1045,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
-    ::Lifted{Val{name},Nw},
-    ::Lifted{Val{order},Nw},
-) where {Nw,P<:IEEEFloat,D,name,order}
-    # `.ref` projects to the matching `NDualMemoryRef` (mirrors the reverse
-    # `rrule!!`, which returns `x.dx.ref`); `.size` is non-differentiable and
-    # `dual_type` collapses the all-non-diff `NTuple{D,Int}` to `NoDual`, which is
-    # exactly what `_get_lifted_field` returns for it.
-    y = getfield(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, _get_lifted_field(tangent(x), name))
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Array,<:Array},
