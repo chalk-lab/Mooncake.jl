@@ -1190,13 +1190,23 @@ Returns a `DerivedRule` which is an `rrule!!` for `sig_or_mi` in context `C`. Se
 docstring for `rrule!!` for more info.
 
 If `debug_mode` is `true`, then all calls to rules are replaced with calls to `DebugRRule`s.
+
+Set `skip_world_age_check=true` when the interpreter's world age is intentionally older than
+the current world (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world; see
+issue #1218).
 """
 function build_rrule(
-    interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode=false, silence_debug_messages=true
+    interp::MooncakeInterpreter{C},
+    sig_or_mi;
+    debug_mode=false,
+    silence_debug_messages=true,
+    skip_world_age_check=false,
 ) where {C}
     @nospecialize sig_or_mi
 
-    build_rrule_checks(interp, sig_or_mi, debug_mode, silence_debug_messages)
+    build_rrule_checks(
+        interp, sig_or_mi, debug_mode, silence_debug_messages, skip_world_age_check
+    )
 
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
@@ -1210,13 +1220,17 @@ end
 
 # Separated out so we can make an frule!! for it, for forward-over-reverse.
 function build_rrule_checks(
-    interp::MooncakeInterpreter, sig_or_mi, debug_mode::Bool, silence_debug_messages::Bool
+    interp::MooncakeInterpreter,
+    sig_or_mi,
+    debug_mode::Bool,
+    silence_debug_messages::Bool,
+    skip_world_age_check::Bool=false,
 )
     @nospecialize sig_or_mi
 
     # To avoid segfaults, ensure that we bail out if the interpreter's world age is greater
     # than the current world age.
-    if Base.get_world_counter() > interp.world
+    if !skip_world_age_check && Base.get_world_counter() > interp.world
         throw(
             ArgumentError(
                 "World age associated to interp is behind current world age. Please " *
@@ -1932,12 +1946,17 @@ This is used to implement dynamic dispatch.
 struct DynamicDerivedRule{V}
     cache::V
     debug_mode::Bool
+    world::UInt
 end
 
-DynamicDerivedRule(debug_mode::Bool) = DynamicDerivedRule(Dict{Any,Any}(), debug_mode)
+function DynamicDerivedRule(debug_mode::Bool)
+    return DynamicDerivedRule(
+        Dict{Any,Any}(), debug_mode, get_interpreter(ReverseMode).world
+    )
+end
 
-# Create new dynamic rule with empty cache and same debug mode
-_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode)
+# Create new dynamic rule with empty cache and same debug mode and build world
+_copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
@@ -1950,8 +1969,12 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        interp = get_interpreter(ReverseMode)
-        rule = build_rrule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        # Build at the world this rule was created at (matching the enclosing rule), not the
+        # current world. See _build_rule! and issue #1218.
+        interp = get_interpreter(ReverseMode, dynamic_rule.world)
+        rule = build_rrule(
+            interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
+        )
         dynamic_rule.cache[sig] = rule
     end
     return __call_rule(rule, args)
@@ -2022,20 +2045,23 @@ the rule for A, we would be unable to complete the derivation of the rule for A.
 mutable struct LazyDerivedRule{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
+    world::UInt
     rule::Trule
     function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(
+            debug_mode, mi, interp.world
+        )
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, world::UInt
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, world)
     end
 end
 
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode)
+# Create new lazy rule with same method instance, debug mode, and prediction world
+_copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -2063,9 +2089,13 @@ end
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
+# Build at the world `Trule` was predicted at, not the current world. See the LazyFRule
+# analogue in forward_mode.jl and the world-advance bug #1218.
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ReverseMode)
-    rule.rule = build_rrule(interp, rule.mi; debug_mode=rule.debug_mode)
+    interp = get_interpreter(ReverseMode, rule.world)
+    rule.rule = build_rrule(
+        interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
+    )
     return __call_rule(rule.rule, args)
 end
 
