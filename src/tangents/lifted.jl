@@ -773,6 +773,15 @@ end
     ) where {N,R<:IEEEFloat}
         return NDualArray{Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}}}
     end
+    # Complex `MemoryRef`: the memory.jl frules build/consume `NDualMemoryRef` for any
+    # `P<:NDualEltype` (complex included), so the canonical V must be `NDualMemoryRef`, not the
+    # element-wise `MemoryRef{Complex{NDual}}` the general fallback would give (mismatch ->
+    # MethodError on complex `push!`/grow). Parallels the float `MemoryRef` overload above.
+    @foldable @inline function dual_type(
+        ::Val{N}, ::Type{MemoryRef{Complex{R}}}
+    ) where {N,R<:IEEEFloat}
+        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}
+    end
     # General (non-float) `Memory` / `MemoryRef` V, mirroring the element-wise `Array` rule
     # above: non-diff element → `NoDual`; differentiable element → element-wise
     # `Memory{dual_type(elt)}` / `MemoryRef{dual_type(elt)}` (a plain memory/ref
@@ -1879,8 +1888,10 @@ end
     # constructor + `zero_dual` above). The general `@generated` below is for
     # non-float elements; it `memoryref`s an element-wise Memory V, which would fail on the
     # `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
-    # `MemoryRef{Complex}` has no specialized `NDualMemoryRef` overload; it falls through to the
-    # element-wise `@generated` path, which is correct (a deferred specialization, not a gap).
+    # `MemoryRef{Complex}` has its own `dual_type` -> `NDualMemoryRef` overload (above), but no
+    # specialized `zero_dual`/`uninit_dual`/`randn_dual` here: a complex `MemoryRef` is built by the
+    # memory.jl frules, never seeded directly, so seeding one is unsupported and fails loudly
+    # (`MethodError`). Add the parallel complex factories if a seeded complex `MemoryRef` is needed.
     @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)

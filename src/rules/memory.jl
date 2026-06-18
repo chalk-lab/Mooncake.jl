@@ -1478,6 +1478,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (true, :none, nothing, Base._growend!, randn(5), 3),
         (true, :none, nothing, Base._growat!, randn(5), 2, 2),
         (false, :none, nothing, sizehint!, randn(5), 10),
+        # Forward AD over growing a `Vector{ComplexF64}` runs `memoryrefnew` on a complex `Memory`,
+        # whose canonical forward V must be `NDualMemoryRef` (#2): before the
+        # `dual_type(MemoryRef{Complex})` overload the slot was typed `MemoryRef{Complex{NDual}}` and
+        # the writeback threw a MethodError. Reverse mode is the oracle.
+        (
+            false,
+            :none,
+            nothing,
+            x -> (v=ComplexF64[]; push!(v, x); push!(v, 2x); sum(abs2, v)),
+            ComplexF64(1.0, 2.0),
+        ),
         (false, :none, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
         (
             false,
