@@ -135,7 +135,13 @@ end
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
-    setindex!(tangent(d), tangent(val), primal(key))
+    # Coerce via V so the tangent slot gets tangent_type(V), not tangent_type(typeof(val)).
+    tv = if tangent_type(V) == tangent_type(typeof(primal(val)))
+        tangent(val)
+    else
+        zero_tangent(convert(V, primal(val)))
+    end
+    setindex!(tangent(d), tv, primal(key))
     return d
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
@@ -147,14 +153,20 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
     end
 
     setindex!(primal(d), primal(val), k)
-    setindex!(tangent(d), zero_tangent(primal(val), tangent(val)), k)
+    # Coerce via V so the tangent slot gets tangent_type(V), not tangent_type(typeof(val)).
+    setindex!(tangent(d), zero_tangent(convert(V, primal(val))), k)
 
     dval = lazy_zero_rdata(primal(val))
     dkey = lazy_zero_rdata(primal(key))
     function setindex_pb!!(::NoRData)
 
-        # Increment tangent.
-        _dval = increment!!(instantiate(dval), rdata(tangent(d)[k]))
+        # If V and typeof(val) differ in differentiability, their rdata types don't match; val gets zero gradient.
+        _dval =
+            if rdata_type(tangent_type(V)) == rdata_type(tangent_type(typeof(primal(val))))
+                increment!!(instantiate(dval), rdata(tangent(d)[k]))
+            else
+                instantiate(dval)
+            end
 
         # Restore previous state if necessary.
         if restore_state
@@ -241,6 +253,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
         (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
         (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
+        # type-mismatched stores (typeof(val) ≠ V)
+        (false, :none, nothing, setindex!, IdDict(:a => 1.0), 2, :b),
+        (false, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
