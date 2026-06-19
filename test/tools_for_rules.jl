@@ -391,6 +391,16 @@ end
             end
         end
 
+        @testset "@from_chainrules width>1 unsupported result errors loudly" begin
+            # The width-N result packing covers only scalars/dense-arrays/tuples/non-diff results;
+            # an unsupported result (e.g. a `NamedTuple`) succeeds at width 1 via the generic
+            # `lift` but must fail with a clear `ArgumentError` at width > 1, not a bare
+            # `MethodError`.
+            @test_throws ArgumentError Mooncake._lift_from_lanes(
+                (a=1.0, b=2.0), ((a=0.1, b=0.2), (a=0.3, b=0.4))
+            )
+        end
+
         @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin
             f_no = NoFData()
             r_no = NoRData()

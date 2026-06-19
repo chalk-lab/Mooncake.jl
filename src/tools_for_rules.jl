@@ -708,6 +708,20 @@ end
     end
     return Lifted{typeof(y),Nw}(y, Vs)
 end
+# Least-specific fallback: the width-1 `_frule_wrapper` packs results with the generic `lift`,
+# which also handles struct/`NamedTuple`/structured-array results, but the width-`Nw` methods above
+# cover only the documented `@from_chainrules` surface (real/complex IEEE-float scalars, dense
+# arrays of those, tuples of those, fully non-differentiable). An imported rule returning anything
+# else would succeed at width 1 but hit a bare `MethodError` here — fail loudly and
+# width-independently instead.
+@noinline function _lift_from_lanes(y, dys::Tuple)
+    msg =
+        "`@from_chainrules` forward rules at chunk width > 1 support results that are real or " *
+        "complex IEEE-float scalars, dense `Array`s of those, tuples of those, or fully " *
+        "non-differentiable; got an unsupported result of type $(typeof(y)). Restrict the " *
+        "imported rule to those result types."
+    return throw(ArgumentError(msg))
+end
 # Chunk width is always ≥ 1, so an empty lane-tuple never occurs at runtime. These methods only
 # disambiguate the `NTuple{Nw,…}` overloads above at `Nw == 0` (`Tuple{}`), where each typed-`y`
 # overload would otherwise overlap the `NoTangent` catch-all (flagged by Aqua). One per typed `y`,
