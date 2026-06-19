@@ -355,13 +355,6 @@ function populate_address_map(primal, tangent)
     return populate_address_map_internal(AddressMap(), primal, tangent)
 end
 
-"""
-    populate_address_map_internal(m::AddressMap, primal, tangent)
-
-Fills `m` with pairs mapping from memory addresses in `primal` to corresponding memory
-addresses in `tangent`. If the same memory address appears multiple times in `primal`,
-throws an `AssertionError` if the same address is not mapped to in `tangent` each time.
-"""
 # Forward-mode V's with no slot-local address to track. The aliasing contract is
 # asymmetric (primal aliases user storage; tangent storage is slot-local), so the
 # reverse-mode address-map machinery does not apply — return `m` unchanged.
