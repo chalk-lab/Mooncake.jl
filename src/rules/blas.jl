@@ -147,10 +147,10 @@ end
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer) = Symmetric(
     _arrayify_lane(x.data, V.value.data, lane), Symbol(x.uplo)
 )
-@inline _arrayify_lane(x::UpperTriangular, V::ImmutableDual, lane::Integer) = UpperTriangular(
-    _arrayify_lane(x.data, V.value.data, lane)
-)
-@inline _arrayify_lane(x::LowerTriangular, V::ImmutableDual, lane::Integer) = LowerTriangular(
+# All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
+# `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
+# `arrayify(::AbstractTriangular)` and avoiding the drift that left the Unit variants uncovered.
+@inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.value.data, lane)
 )
 @inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer) where {T} = reinterpret(
