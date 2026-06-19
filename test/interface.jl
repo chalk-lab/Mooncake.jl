@@ -1530,6 +1530,25 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     view_cache_jac, f_view_jac, x_jac_view
                 )
             end
+
+            # Differentiable `f` (captures a vector ⇒ dof(f) ≥ 1) with a short input and a vector
+            # output takes the non-packable forward path, where the per-chunk width
+            # `W = gradient_chunk_size` includes `f`'s dofs, so `W > length(x)`. The first-chunk
+            # J-write loop must guard `lane <= total_dof`, else it writes past `J`'s `length(x)`
+            # columns (BoundsError under --check-bounds=yes). Forward must match the reverse oracle.
+            let
+                g_cap = let w = collect(1.0:7.0)
+                    z -> [z[1] * sum(w), z[1] + z[2]]
+                end
+                z = [0.5, 0.5]
+                cf = Mooncake.prepare_derivative_cache(g_cap, z)
+                @test getfield(cf, :gradient_chunk_size) > length(z)  # W > total_dof
+                _, Jf = Mooncake.value_and_jacobian!!(cf, g_cap, z)
+                _, Jr = Mooncake.value_and_jacobian!!(
+                    Mooncake.prepare_pullback_cache(g_cap, z), g_cap, z
+                )
+                @test Jf == Jr == [28.0 0.0; 1.0 1.0]
+            end
         end
 
         @testset "prepare_derivative_cache does not execute the function" begin

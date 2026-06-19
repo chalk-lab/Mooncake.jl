@@ -2590,12 +2590,13 @@ mutates `x` in place, it is restored, so the input is not mutated.
             cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dof, x
         )
     end
-    # `f` non-differentiable and `x::Vector{<:IEEEFloat}` are always packable, so
-    # `gradient_chunk_size == min(total_dof, requested)` and the per-chunk width `W` always
-    # equals the built `chunk_rule` width — width-dispatched `value_and_derivative!!` routes
-    # to `chunk_rule` (W > 1) or `single_rule` (W == 1, no chunk rule). Each chunk seeds `W`
-    # standard-basis columns starting at `start_col` via `basis_lifted!!` (slots past
-    # `total_dof` map to `0`, an all-zero lane) and reads one Jacobian column per lane.
+    # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not cover): seed
+    # each chunk's `W` standard-basis columns starting at `start_col` via `basis_lifted!!` (slots
+    # past `total_dof` map to `0`, an all-zero lane) and read one Jacobian column per lane.
+    # `W = gradient_chunk_size` is `min(dof((f, x...)), requested)`, which INCLUDES `f`'s own dofs,
+    # so for a differentiable `f` it can exceed `total_dof = length(x)`; every J-write loop must
+    # guard `lane <= total_dof`. Width-dispatched `value_and_derivative!!` routes to `chunk_rule`
+    # (W > 1) or `single_rule` (W == 1, no chunk rule).
     W = cache.gradient_chunk_size
     f_seed = zero_lifted(Val(W), f)
     x_seed = zero_lifted(Val(W), x)        # `NDualArray` partials reseeded in place per chunk
@@ -2610,9 +2611,10 @@ mutates `x` in place, it is restored, so the input is not mutated.
     y = primal(output)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
-    # First chunk is never short (`W == gradient_chunk_size ≤ total_dof`); only trailing
-    # chunks can run past `total_dof` and need the per-lane bound below.
+    # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so lanes
+    # past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
     @inbounds for lane in 1:W
+        lane <= total_dof || break
         J[:, lane] .= tangent(output, lane)
     end
     for start_col in (W + 1):W:total_dof
