@@ -1292,10 +1292,11 @@ end
 const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
-# 2-arg `getfield(x, name)`: delegate to `lgetfield`, whose generic Lifted body
-# (`_get_lifted_field` in misc.jl) covers tuples, named-tuples, and structs. Kept
-# here rather than memory.jl so it is available on Julia 1.10 (array_legacy path),
-# where the forward-over-reverse HVP public interface needs it.
+# 2-arg `getfield(x, name)`: shares `lgetfield`'s generic Lifted-body helper
+# (`_get_lifted_field` in misc.jl), which covers tuples, named-tuples, and structs (the body
+# calls it directly rather than routing through the `lgetfield` frule — see below). Kept here
+# rather than memory.jl so it is available on Julia 1.10 (array_legacy path), where the
+# forward-over-reverse HVP public interface needs it.
 function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
     # Extract the field directly rather than routing through `lgetfield(x, Val(primal(name)))`:
     # `Val(runtime_name)` is type-unstable (the parameter is a runtime value), so the routed
