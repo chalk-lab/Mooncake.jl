@@ -78,7 +78,7 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 # i.e. N parallel BFloat16 partials, one per lane. BFloat16 is not in
 # `IEEEFloat` (so `NDual` doesn't cover it), and it's a single-number
 # leaf type, so the structural-lift fallback doesn't apply either.
-# Mirrors the TWP / Ptr V pattern (`NTuple{N, T}`).
+# Mirrors the TwicePrecision / Ptr V pattern (`NTuple{N, T}`).
 @foldable @inline function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N}
     return NTuple{N,P}
 end
