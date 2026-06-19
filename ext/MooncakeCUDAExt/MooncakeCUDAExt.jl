@@ -2151,6 +2151,12 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
+# Forward mode supports only a dense input whose V is `NDualArray` (the partials are read off
+# `tangent(x).partials` directly). A wrapped CPU input (SubArray/Adjoint/…) gets the generic
+# struct-lift V instead, which this method does not match; the broad `@is_primitive` still selects
+# the primitive, so such inputs fail loudly with a `MethodError`. Differentiate them in reverse
+# mode (the rrule below accepts any `AbstractArray`). Broadening forward to wrappers via `arrayify`
+# (as the `_kron!` frule does) is the preferred fix but needs GPU CI to validate the `cu` calls.
 function frule!!(
     ::Lifted{typeof(cu),Nw}, x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:NDualArray}
 ) where {Nw}
