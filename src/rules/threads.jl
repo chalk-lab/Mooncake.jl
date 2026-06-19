@@ -1,10 +1,11 @@
-# Run the foreigncall on extracted primals and wrap the result in a Lifted slot with `NoDual` V:
-# these threading foreigncalls produce results that carry no forward derivative here —
-# non-differentiable scalars (Cint, Nothing, Bool, …) plus `Task` handles, whose derivative is not
-# tracked through these calls. Width N comes from the per-rule signature below.
+# Run the foreigncall on extracted primals and wrap the result in its canonical zero Lifted slot.
+# These threading foreigncalls carry no forward derivative, but the result type still dictates V:
+# non-differentiable scalars (Cint, Nothing, Bool, …) get `NoDual`, while `Task` handles get a zero
+# `TaskTangent`. `zero_lifted` picks the coherent V per result type — a blanket `NoDual` would violate
+# canonical-V coherence for the `Task`-returning calls (jl_new_task, …). Width N from the signature below.
 @inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
     y = _foreigncall_(name, tuple_map(primal, args)...)
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return zero_lifted(Val(Nw), y)
 end
 
 function _threading_foreigncall_rrule()
