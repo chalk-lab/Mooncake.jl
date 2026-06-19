@@ -51,7 +51,8 @@ Returns a function which performs forward-mode AD for `sig_or_mi`. Will derive a
 `sig_or_mi` is not a primitive.
 
 Set `skip_world_age_check=true` when the interpreter's world age is intentionally older
-than the current world (e.g., when building rules for MistyClosure which uses its own world).
+than the current world (e.g. when building rules for a MistyClosure, which uses its own
+world, or when a Lazy/Dynamic rule rebuilds at its stored prediction world; see issue #1218).
 """
 function build_frule(
     interp::MooncakeInterpreter{C},
@@ -191,6 +192,25 @@ function generate_dual_ir(
         primal_ir = set_valid_world!(primal_ir, interp.world)
     end
     nargs = length(primal_ir.argtypes)
+
+    # Check for unsupported features before normalise! runs.
+    # Julia 1.12+ lowers non-const global writes (`global x = y`) to
+    # Base.setglobal! on 1.12 and Core.setglobal! on 1.13+.
+    # CC.verify_ir does not reject these calls because they are valid IR, so
+    # reject them here before rule construction reaches a missing frule!!.
+    @static if VERSION > v"1.12-"
+        setglobal_calls = (GlobalRef(Base, :setglobal!), GlobalRef(Core, :setglobal!))
+        for inst in stmt(primal_ir.stmts)
+            if Meta.isexpr(inst, :call) && inst.args[1] in setglobal_calls
+                unhandled_feature(
+                    "Mooncake.jl does not support differentiating code that assigns to " *
+                    "non-const global variables. Pass the state explicitly, return the " *
+                    "updated value, or provide a custom frule!!. See the Known Limitations " *
+                    "documentation for more context.",
+                )
+            end
+        end
+    end
 
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
@@ -488,20 +508,23 @@ end
 mutable struct LazyFRule{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
+    world::UInt
     rule::Trule
     function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
         interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(
+            debug_mode, mi, interp.world
+        )
     end
     function LazyFRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool
+        mi::Core.MethodInstance, debug_mode::Bool, world::UInt
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, world)
     end
 end
 
-# Create new lazy rule with same method instance and debug mode
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode)
+# Create new lazy rule with same method instance, debug mode, and prediction world
+_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -528,9 +551,15 @@ end
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
+# Build at the world `Trule` was predicted at, not the current world: a world advance since
+# prediction can re-tighten `mi`'s inferred return type, yielding a rule that no longer
+# matches `Trule` and fails to `convert` on assignment below. Fixes the world-advance bug
+# #1218 (not the inference-complexity-widening case in #1209's headline MWE).
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
-    interp = get_interpreter(ForwardMode)
-    rule.rule = build_frule(interp, rule.mi; debug_mode=rule.debug_mode)
+    interp = get_interpreter(ForwardMode, rule.world)
+    rule.rule = build_frule(
+        interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
+    )
     return __call_rule(rule.rule, args)
 end
 
@@ -563,12 +592,15 @@ end
 struct DynamicFRule{V}
     cache::V
     debug_mode::Bool
+    world::UInt
 end
 
-DynamicFRule(debug_mode::Bool) = DynamicFRule(Dict{Any,Any}(), debug_mode)
+function DynamicFRule(debug_mode::Bool)
+    return DynamicFRule(Dict{Any,Any}(), debug_mode, get_interpreter(ForwardMode).world)
+end
 
-# Create new dynamic rule with empty cache and same debug mode  
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode)
+# Create new dynamic rule with empty cache and same debug mode and build world
+_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
@@ -576,8 +608,12 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        interp = get_interpreter(ForwardMode)
-        rule = build_frule(interp, sig; debug_mode=dynamic_rule.debug_mode)
+        # Build at the world this rule was created at (matching the enclosing rule), not the
+        # current world. See _build_rule! and issue #1218.
+        interp = get_interpreter(ForwardMode, dynamic_rule.world)
+        rule = build_frule(
+            interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
+        )
         dynamic_rule.cache[sig] = rule
     end
     return __call_rule(rule, args)

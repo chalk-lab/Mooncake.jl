@@ -10,7 +10,7 @@ LoweredCodeUtils = "6f1432cf-f94c-5a45-995e-cdbf5db27b0b"
 Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 
 [compat]
-AllocCheck = "0.2.0"
+AllocCheck = "0.2.5"
 ChainRulesCore = "1"
 Documenter = "1"
 JET = "0.9, 0.10, 0.11"

@@ -14,8 +14,7 @@ steps:
       unset LD_LIBRARY_PATH
       julia --code-coverage=user --eval='include("test/run_extra.jl")'
     agents:
-      queue: "juliagpu"
-      cuda: "*"
+      queue: "cuda"
     if: build.message !~ /\[skip tests\]/
     timeout_in_minutes: 60
     env:
@@ -42,8 +41,7 @@ steps:
       unset LD_LIBRARY_PATH
       julia --code-coverage=user --eval='include("test/run_extra.jl")'
     agents:
-      queue: "juliagpu"
-      cuda: "*"
+      queue: "cuda"
     if: build.message !~ /\[skip tests\]/
     timeout_in_minutes: 60
     env:

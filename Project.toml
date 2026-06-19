@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.31"
+version = "0.5.32"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -55,7 +55,7 @@ MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
 ADTypes = "1.9"
-AllocCheck = "0.2"
+AllocCheck = "0.2.5"
 Aqua = "0.8.9"
 BFloat16s = "0.6"
 BenchmarkTools = "1"
