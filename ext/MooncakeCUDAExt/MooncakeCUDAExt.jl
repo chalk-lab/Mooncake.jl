@@ -2145,12 +2145,7 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-# Forward mode supports only a dense input whose V is `NDualArray` (the partials are read off
-# `tangent(x).partials` directly). A wrapped CPU input (SubArray/Adjoint/…) gets the generic
-# struct-lift V instead, which this method does not match; the broad `@is_primitive` still selects
-# the primitive, so such inputs fail loudly with a `MethodError`. Differentiate them in reverse
-# mode (the rrule below accepts any `AbstractArray`). Broadening forward to wrappers via `arrayify`
-# (as the `_kron!` frule does) is the preferred fix but needs GPU CI to validate the `cu` calls.
+# Dense input (V is `NDualArray`): `cu` the primal and each lane's partial to the device.
 function frule!!(
     ::Lifted{typeof(cu),Nw}, x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:NDualArray}
 ) where {Nw}
@@ -2160,6 +2155,33 @@ function frule!!(
     Y = typeof(y)
     Element = eltype(y)
     return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+end
+# Wrapped CPU input (SubArray/Adjoint/Transpose/Reshaped/…): the broad `@is_primitive` admits it,
+# but its forward V is the generic struct lift, not `NDualArray`, so the dense method does not match.
+# `cu` preserves the wrapper (`cu(::SubArray)` → a `SubArray` over a device parent), so the result's
+# canonical V is the same struct lift over the parent's `NDualArray`. Rebuild it: `cu` the primal
+# (its `.parent` is the device parent, which the parent `NDualArray` aliases) and `cu` each lane of
+# the input's parent partials; keep the wrapper's non-differentiable metadata fields `NoDual`. The
+# reverse rrule below already handles wrappers. Mirrors the CUDA `view` frule's struct-lift branch.
+function frule!!(
+    ::Lifted{typeof(cu),Nw},
+    x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:ImmutableDual},
+) where {Nw}
+    in_nt = tangent(x).value
+    parent_nda = in_nt.parent
+    parent_nda isa NDualArray || throw(
+        ArgumentError(
+            "forward `cu` supports a single-level array wrapper over a dense array; got a nested " *
+            "or non-array-wrapper forward representation $(typeof(parent_nda)) for input " *
+            "$(typeof(primal(x))). Use reverse mode for this input.",
+        ),
+    )
+    y = cu(primal(x))
+    Pp = y.parent
+    parent_partials = ntuple(k -> cu(parent_nda.partials[k]), Val(Nw))
+    parent_V = NDualArray{eltype(Pp),Nw,ndims(Pp),typeof(Pp)}(Pp, parent_partials)
+    V = ImmutableDual(merge(in_nt, (parent=parent_V,)))
+    return Lifted{typeof(y),Nw}(y, V)
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)

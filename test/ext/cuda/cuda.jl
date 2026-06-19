@@ -605,6 +605,31 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test V.value.stride1 isa Mooncake.NoDual
         end
 
+        # `cu` on a wrapped CPU input (SubArray/Adjoint/…): its forward V is the generic struct
+        # lift, not `NDualArray`, so it takes the wrapper-fallback frule. `cu` preserves the
+        # wrapper, so the result's canonical V is the same struct lift over the device parent's
+        # `NDualArray`. Like the view branch above this can't go through `test_rule` (downstream
+        # `sum` over the GPU SubArray hits the strided-reduction limit) — exercise the V
+        # construction, parent aliasing, and per-lane JVP (`d(cu(x)) = cu(dx)`) directly.
+        @testset "cu wrapped-input frule branch (width $N)" for N in (1, 3)
+            base = rand(StableRNG(1), Float32, 8)
+            x = view(base, 1:4)
+            seed = Mooncake.randn_lifted(Val(N), StableRNG(2), x)
+            out = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), cu), seed)
+            y, V = Mooncake.primal(out), Mooncake.tangent(out)
+            @test y isa SubArray && parent(y) isa CuArray
+            @test Array(y) == Array(x)
+            @test V isa Mooncake.ImmutableDual
+            @test V.value.parent isa Mooncake.NDualArray
+            @test V.value.parent.primal === parent(y)  # parent V aliases the result's parent
+            @test V.value.indices isa Mooncake.NoDual
+            inV = Mooncake.tangent(seed)
+            for k in 1:N
+                @test Array(V.value.parent.partials[k]) ==
+                    Array(cu(inV.value.parent.partials[k]))
+            end
+        end
+
         # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.
         #
         # Background: there are two dispatch branches in the rule:
