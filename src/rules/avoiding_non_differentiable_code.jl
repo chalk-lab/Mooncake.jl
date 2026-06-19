@@ -40,8 +40,6 @@ end
 @zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
 
 # Logging: String-related primitive rules.
-# (`zero_fcodual`, `MinimalCtx`, `@is_primitive`, `NoPullback`, `CoDual` are already in scope —
-# this file is `include`d directly into `module Mooncake` — so no `using Mooncake: …` is needed.)
 using Base: getindex, getproperty
 using Base.Threads: Atomic
 using Base.CoreLogging: LogLevel, handle_message, invokelatest
