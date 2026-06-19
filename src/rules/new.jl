@@ -4,7 +4,10 @@
 # returns a per-shape construction expression. All sub-function calls
 # (`_new_`, `tuple_map`, `Lifted`, `ImmutableDual`, `MutableDual`) live in
 # the returned expression per AGENTS.md; the generator body uses only
-# introspection. Specific overloads in other files (e.g.
+# introspection. In particular each branch's `dual_type(Val(Nw), P) === NoDual` collapse test
+# (whole-`NoDual` vs element-wise V) is emitted into the returned expression and evaluated at the
+# call world, never the generator body, so a more-specific or extension `dual_type` overload (e.g.
+# CUDA `CuArray`/`CuPtr`) is respected. Specific overloads in other files (e.g.
 # `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more specific and
 # take precedence.
 #
@@ -23,15 +26,12 @@
             y = _new_(P, tuple_map(primal, x)...)
             # An all-non-differentiable tuple (incl. the empty `Tuple{}`) has
             # `dual_type(P) === NoDual`; build whole `NoDual`, not an element-wise V.
-            # Test resolves in the returned expression (call world), not the body.
             dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             return Lifted{P,Nw}(y, tuple_map(tangent, x))
         end
     elseif P <: NamedTuple
         # An all-non-differentiable NamedTuple has `dual_type(P) === NoDual`, so build whole
-        # `NoDual` rather than an element-wise V (same `dual_type === NoDual` collapse used by the
-        # Tuple and struct branches). The test resolves in the RETURNED expression (at the call
-        # world, where an extension's element overload is visible), never the generator body.
+        # `NoDual` rather than an element-wise V (same collapse as the Tuple/struct branches).
         names = (P.parameters[1])::Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
@@ -61,17 +61,14 @@
         end
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            # A non-differentiable struct collapses to `NoDual` (same `dual_type === NoDual`
-            # collapse as the Tuple/NamedTuple branches). The test resolves in the RETURNED
-            # expression (call world), never the generator body, so an extension's field overload
-            # (e.g. CUDA `CuArray`/`CuPtr`) is seen.
+            # A non-differentiable struct collapses to `NoDual` (same collapse as the
+            # Tuple/NamedTuple branches).
             V = dual_type(Val(Nw), P)
             V === NoDual && return Lifted{P,Nw}(y, NoDual())
             # This branch can only build a struct-lift wrapper. When P's canonical V is a
             # dedicated container instead (e.g. `NDualMemoryRef` for `MemoryRef`), the backing
             # construction below would throw a baffling MethodError — fail clearly instead.
-            # (Runtime check in the returned expression, so a later more-specific `frule!!`
-            # overload for such a P simply wins and never reaches this.)
+            # (Runtime guard, so a more-specific `frule!!` for such a P wins before reaching this.)
             V <: Union{ImmutableDual,MutableDual} || error(
                 "forward _new_($P, ...): the canonical forward representation is $V, not a " *
                 "struct-lift Immutable/MutableDual, so the generic struct construction does " *
