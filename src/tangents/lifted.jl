@@ -1893,12 +1893,12 @@ function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where
     v.value = _basis_seed!!(v.value, slots, cursor, dict)
     return v
 end
-# `MemoryRef{<:IEEEFloat}` forward V (Julia 1.11+): like `NDualArray` but the partials are per-lane
+# `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the partials are per-lane
 # `MemoryRef`s. `dof` walks the whole underlying `Memory`, so advance one cursor step per memory
-# element and write each lane's partial there; register in `dict` for aliasing. (No complex method:
-# a complex `MemoryRef` cannot be seeded — its `zero_lifted`/`uninit_lifted` factories are
-# unsupported, see the `MemoryRef{Complex}` note in the seed-factory section above — so a complex
-# `NDualMemoryRef` can never reach here.)
+# element (two for complex — real then imag, like the `NDualArray` complex method) and write each
+# lane's partial there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it has a
+# `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex `NDualMemoryRef`
+# reaches here and needs the complex method below, mirroring `NDualArray` / `NDualRef`.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(
         v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
@@ -1911,6 +1911,25 @@ end
             c = cursor[]
             for k in 1:N
                 mems[k][idx] = c == slots[k] ? one(T) : zero(T)
+            end
+        end
+        return v
+    end
+    function _basis_seed!!(
+        v::NDualMemoryRef{Complex{R},N}, slots::NTuple{N,Int}, cursor, dict
+    ) where {R<:IEEEFloat,N}
+        haskey(dict, v) && return dict[v]
+        dict[v] = v
+        mems = ntuple(k -> v.partials[k].mem, Val(N))
+        @inbounds for idx in eachindex(v.primal.mem)
+            cursor[] += 1
+            cr = cursor[]
+            cursor[] += 1
+            ci = cursor[]
+            for k in 1:N
+                mems[k][idx] = Complex(
+                    cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
+                )
             end
         end
         return v

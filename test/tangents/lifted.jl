@@ -654,6 +654,17 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).value.value
             @test nt.x.partials[1] == 1.0
         end
+
+        # Complex `MemoryRef` (Julia 1.11+): the complex `NDualMemoryRef` `_basis_seed!!`
+        # mirrors the complex `NDualArray` (two dofs per element — real then imag). Regression
+        # for the missing complex method, which previously `MethodError`d here.
+        @static if VERSION >= v"1.11-"
+            let m = Memory{ComplexF64}(undef, 2)
+                m .= [1.0 + 0.0im, 2.0 + 0.0im]
+                b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
+                @test collect(tangent(b).partials[1].mem) == [0.0 + 1.0im, 0.0 + 0.0im]
+            end
+        end
     end
 
     @testset "test_lifted (representation interface)" begin
