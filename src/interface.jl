@@ -1593,8 +1593,12 @@ end
     #    per lane is the width-1 `basis_lifted!!` seed at that scalar dof, `unlift`ed back to a
     #    reverse tangent (a scalar output makes each lane's derivative the coefficient for its
     #    seeded basis direction).
-    # `W == gradient_chunk_size ≤ total_dof`, so the first chunk is always full width; it is
-    # peeled out to keep the scalar `y` concretely typed.
+    # `W = gradient_chunk_size`. The first chunk is peeled out to keep the scalar `y` concretely
+    # typed. Like the trailing loop it guards `lane <= total_dof`: a lane past the last dof (a short
+    # final/only chunk, or `W > total_dof`) carries a zero seed direction (`basis_lifted!!` maps
+    # out-of-range slots to none) that contributes nothing — keeping the sweep correct and uniform
+    # with the Jacobian/Hessian sweeps rather than relying on `W <= total_dof` (the assumption whose
+    # absence in the Jacobian sweep caused an out-of-bounds write).
     W = cache.gradient_chunk_size
     nfields = Val(fieldcount(typeof(input_primals)))
     P = typeof(input_primals)
@@ -1615,6 +1619,7 @@ end
     y = primal(first_out)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     for lane in 1:W
+        lane <= total_dof || break
         coeff = Float64(tangent(first_out, lane))
         native_gradients = tuple_map(
             (g, dx) -> begin
