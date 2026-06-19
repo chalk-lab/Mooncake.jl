@@ -64,8 +64,7 @@ Rules dispatch on `Lifted{P, N}` (V left abstract) and use `primal`,
 constructed via `Lifted{P_out, N}(primal_out, value_out)`.
 
 Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward
-mode. `Lifted` never nests inside another `Lifted`'s `V`; only `Val(0)`
-slots are unwrapped (primal passthrough).
+mode. `Lifted` never nests inside another `Lifted`'s `V`.
 """
 struct Lifted{P,N,V}
     primal::P
@@ -539,16 +538,15 @@ end
 #   _parent::SD  — the underlying `MutableDual` (writeback target).
 #   _primal::P   — back-reference to the slot's primal struct.
 #   _lane::Int   — which lane this view refers to.
-# (Underscore-prefixed; see the collision rationale just above the struct definition below.)
 #
 # `getproperty` reads from the parent's NamedTuple and extracts the lane;
 # `setproperty!` writes the lane back to the parent via `setfield!`. This
 # enables `view.field = x` to mutate the slot's V from within a forward-mode
 # rule body.
 #
-# This initial commit supports V_i = `NDual{T, N}` (scalar IEEEFloat field)
-# only. Other V_i shapes (NDualArray, Complex{NDual}, nested MutableDual,
-# PossiblyUninitTangent) are added in follow-up commits.
+# Only scalar `NDual{T, N}` field Vs are supported; other shapes (NDualArray, Complex{NDual},
+# nested MutableDual, PossiblyUninitTangent) are not yet handled — extend `_lane_tangent` /
+# `_replace_lane_tangent` below to add them.
 # ──────────────────────────────────────────────────────────────────────────
 
 # Internal fields are underscore-prefixed so the `getproperty` short-circuit below cannot collide
@@ -709,7 +707,8 @@ end
     return _dual_tuple_v(Val(N), P)
 end
 # Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
-# `Tuple`. Concrete tails only (the top `dual_type(Tuple)` guards `isconcretetype`).
+# `Tuple`. Fixed-length (non-`Vararg`) tails only; the top `dual_type(Tuple)` rejects `Vararg`
+# tuples before recursing here, so the head/tail cons always terminates.
 @foldable @inline _dual_tuple_v(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
 @foldable @inline function _dual_tuple_v(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     H = Base.tuple_type_head(P)
