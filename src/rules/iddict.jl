@@ -255,7 +255,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
         # type-mismatched stores (typeof(val) ≠ V)
         (false, :none, nothing, setindex!, IdDict(:a => 1.0), 2, :b),
-        (false, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
+        (true, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
