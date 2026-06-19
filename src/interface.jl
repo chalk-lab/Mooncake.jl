@@ -416,12 +416,11 @@ For types with custom copy semantics, overload this function (see `Core.SimpleVe
 """
 # The two-argument methods are the allocation-free hot path (input restore on every
 # autodiff pass); they recurse two-argument and stay byte-identical to the original
-# acyclic implementation. Only at a cycle-capable node — a mutable struct or a
-# reference-element array, which can be self-referential — do they re-dispatch to
-# the three-argument family below, which threads an `IdDict` aliasing cache: each
-# mutable `dst` is registered (keyed by its `src`) before its fields are restored,
-# so a cycle returns the in-progress `dst` instead of recursing forever. Mirrors
-# reverse-mode's `MaybeCache`.
+# acyclic implementation. Only the mutable-struct method re-dispatches to the three-argument
+# family below (when `ismutable(src)`), which threads an `IdDict` aliasing cache: each mutable
+# `dst` — and each reference-element array — is registered (keyed by its `src`) before its
+# contents are restored, so a cycle returns the in-progress `dst` instead of recursing forever.
+# Mirrors reverse-mode's `MaybeCache`.
 _copy_to_output!!(dst::Number, src::Number) = src
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
@@ -435,10 +434,9 @@ function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
     return Core.svec(map(_copy_to_output!!, dst, src)...)
 end
 
-# copy for Array, Memory. This acyclic method recurses two-argument; an array only
-# participates in a cycle as a field of a cyclic mutable struct, which enters the
-# three-argument family first (whose array method threads the cache), so this
-# method never needs the cache itself and stays identical to the original.
+# copy for Array, Memory. Acyclic hot path: recurses two-argument with no aliasing cache. Cycle
+# handling (including a self-referential reference-element array) lives in the three-argument array
+# method below, which threads the cache.
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
