@@ -691,8 +691,7 @@ function CC.IRCode(bb_code::BBCode)
         # and already-present instructions depending on where the changes occurred.
         lines = Int32[v for inst in insts for v in inst.line]
         debuginfo = CC.copy(bb_code.debuginfo)
-        resize!(debuginfo.codelocs, length(lines))
-        copyto!(debuginfo.codelocs, lines)
+        debuginfo.codelocs = lines
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],

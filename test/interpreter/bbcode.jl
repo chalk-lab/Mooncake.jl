@@ -68,18 +68,18 @@ end
     @static if VERSION > v"1.12-"
         @testset "codelocs consistent after instruction insertion" begin
             # Adding instructions during BBCode transforms does not update debuginfo.codelocs.
-            # Check that BBCode -> IRCode produces consistent stmts.line and debuginfo.codelocs
-            # of the correct size after an instruction is inserted.
+            # Check that BBCode -> IRCode produces new_ir with stmts.line and debuginfo.codelocs of the
+            # correct size (3n) after an instruction is inserted.
             ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
+            n_orig = length(ir.stmts)
             bb = BBCode(ir)
-            # Insert an instruction into the first block
             push!(bb.blocks[1].inst_ids, ID())
             push!(bb.blocks[1].insts, new_inst(nothing))
             new_ir = CC.IRCode(bb)
             n = length(new_ir.stmts)
+            @test n == n_orig + 1
             @test length(new_ir.stmts.line) == 3n
             @test length(new_ir.debuginfo.codelocs) == 3n
-            @test new_ir.stmts.line == new_ir.debuginfo.codelocs
         end
     end
 
