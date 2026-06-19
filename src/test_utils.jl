@@ -126,7 +126,6 @@ using Mooncake:
     increment_rdata!!,
     dual_type,
     lifted_type,
-    randn_dual,
     randn_lifted,
     zero_lifted,
     uninit_lifted,
