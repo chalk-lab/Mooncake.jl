@@ -42,9 +42,12 @@ function frule!!(
     Xp = primal(X_dX)
     Y_partials = ntuple(_ -> similar(Xp), Val(Nw))
     Y_primal = similar(Xp)
-    # Per-lane ChainRules call, using a fresh primal copy each time
-    # (LinearAlgebra.exp! mutates). `Y_primal` is fully written by lane 1's `copyto!`
-    # below (Nw ≥ 1), so it needs no pre-fill.
+    # One `ChainRules.frule` call per lane. ChainRules' matrix-exp frule computes the primal
+    # `exp(X)` and the directional derivative together via a single augmented block-matrix
+    # exponential, so each lane recomputes `exp(X)` (the dominant cost): it cannot be hoisted out
+    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` mutates, so
+    # each lane needs a fresh `Xc`; the (lane-independent) `Y_primal` is taken from lane 1, which
+    # therefore needs no pre-fill (Nw ≥ 1).
     @inbounds for lane in 1:Nw
         Xc = copy(Xp)
         dXc = copy(tangent(X_dX).partials[lane])
