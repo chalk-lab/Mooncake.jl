@@ -273,6 +273,8 @@ function has_equal_data_internal(
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
 
+# `Method`, `CodeInstance`, and `MethodInstance` reference one another; recursing
+# into their fields traverses the runtime's method graph and overflows the stack.
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
     @eval function has_equal_data_internal(
         x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
