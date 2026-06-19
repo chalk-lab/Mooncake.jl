@@ -165,7 +165,7 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
             if rdata_type(tangent_type(V)) == rdata_type(tangent_type(typeof(primal(val))))
                 increment!!(instantiate(dval), rdata(tangent(d)[k]))
             else
-                instantiate(dval)
+                zero_rdata(primal(val))
             end
 
         # Restore previous state if necessary.
