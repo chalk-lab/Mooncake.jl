@@ -10,8 +10,6 @@ import ..DefaultCtx
 import .._foreigncall_
 import ..CoDual
 import ..Lifted
-import ..primal
-import ..NoTangent
 import ..NoPullback
 import ..zero_fcodual
 # `frule!!` / `rrule!!` must be imported so the definitions below add methods to
