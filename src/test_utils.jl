@@ -273,9 +273,11 @@ function has_equal_data_internal(
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
 end
 
-# Method, CodeInstance, and MethodInstance form circular reference chains
-# (Method.specializations → MethodInstance, MethodInstance.def → Method,
-# MethodInstance.cache → CodeInstance, CodeInstance.def → MethodInstance).
+# `Method`, `CodeInstance`, and `MethodInstance` have mutually recursive fields:
+# `Method.specializations` → `MethodInstance`
+# `MethodInstance.def` → `Method`
+# `MethodInstance.cache` → `CodeInstance`
+# `CodeInstance.def` → `MethodInstance`
 # Generic `has_equal_data_internal` will lead to infinite recursion.
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
     @eval function has_equal_data_internal(
