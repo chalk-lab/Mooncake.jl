@@ -12,7 +12,8 @@ using PrecompileTools: @setup_workload, @compile_workload
 # `prepare_derivative_cache` → `value_and_derivative!!` pipelines (which internally call
 # `build_rrule`/`build_frule`, `generate_ir`, and all the IR-transformation infrastructure)
 # for both a simple scalar and a simple vector function.  Because the IR-manipulation
-# methods (`normalise!`, `BBCode`, `make_ad_stmts!`, …) work on `IRCode`/`BBCode` objects
+# methods (`normalise!`, `_ircode_to_cfg_blocks`, `make_ad_stmts!`, …) work on `IRCode` /
+# `Vector{CFGBlock}` objects
 # whose *Julia type* is the same regardless of which function is being differentiated, one
 # call through the pipeline is enough to pre-warm the bulk of the compilation work.
 

@@ -30,7 +30,7 @@ Do not assume — ask the user to pick.
 |-------|--------|-------------|
 | Raw IR | `:raw` | optimised, type-inferred SSAIR from Julia's compiler |
 | Normalised | `:normalized` | after Mooncake's normalisation passes |
-| BBCode | `:bbcode` | BBCode representation with stable IDs |
+| CFG blocks | `:cfg_blocks` | `Vector{CFGBlock}` representation with stable IDs |
 | Forward IR | `:fwd_ir` | generated forward-pass IR |
 | Reverse IR | `:rvs_ir` | generated pullback IR |
 | Optimised Forward | `:optimized_fwd` | forward pass after optimisation |
@@ -41,7 +41,7 @@ Do not assume — ask the user to pick.
 |-------|--------|-------------|
 | Raw IR | `:raw` | optimised, type-inferred SSAIR from Julia's compiler |
 | Normalised | `:normalized` | after Mooncake's normalisation passes |
-| BBCode | `:bbcode` | inspection-only — forward mode does not use BBCode internally |
+| CFG blocks | `:cfg_blocks` | inspection-only — forward mode does not use the `CFGBlock` representation internally |
 | Dual IR | `:dual_ir` | generated dual-number IR |
 | Optimised | `:optimized` | after optimisation passes |
 
