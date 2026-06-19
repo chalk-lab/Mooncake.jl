@@ -65,9 +65,24 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-# Outer lane loop writes `dout.partials[lane]` per lane using each input's
-# `partials[lane]`; the primal `LinearAlgebra._kron!(pout, px1, px2)` runs
-# once. Only the matrix (D=2) input shape is supported.
+# One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
+# d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
+function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
+    m = firstindex(dout_l)
+    for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+        x1ij = px1[i, j]
+        dx1ij = dx1_l[i, j]
+        for k in axes(px2, 1)
+            dout_l[m] = (x1ij * dx2_l[k, l]) + (dx1ij * px2[k, l])
+            m += 1
+        end
+    end
+    return dout_l
+end
+
+# Dense fast path: read each lane's partials directly off the `NDualArray` V; the primal
+# `LinearAlgebra._kron!(pout, px1, px2)` runs once. Covers every real `IEEEFloat` (including
+# Float16, which `arrayify` does not support). Only the matrix (D=2) input shape is supported.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{Aout,N,<:NDualArray{T,N,2,Aout}},
@@ -82,18 +97,30 @@ function Mooncake.frule!!(
     dx1_ts = tangent(x1).partials
     dx2_ts = tangent(x2).partials
     for lane in 1:N
-        dout_l = dout_ts[lane]
-        dx1_l = dx1_ts[lane]
-        dx2_l = dx2_ts[lane]
-        m = firstindex(dout_l)
-        for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
-            x1ij = px1[i, j]
-            dx1ij = dx1_l[i, j]
-            for k in axes(px2, 1)
-                dout_l[m] = (x1ij * dx2_l[k, l]) + (dx1ij * px2[k, l])
-                m += 1
-            end
-        end
+        _kron!_jvp_lane!(dout_ts[lane], px1, dx1_ts[lane], px2, dx2_ts[lane])
+    end
+    return out
+end
+
+# Wrapper fallback: the broad `@is_primitive` admits wrapped inputs (SubArray/Triangular/
+# Symmetric/Reshaped/…) whose forward V is the generic struct lift, not `NDualArray`, so the dense
+# method above does not match — without this they would `MethodError` at call time while the reverse
+# `_kron!` rrule handles them. `arrayify` canonicalises the primal and each lane's partial through
+# the wrapper (no copy), mirroring the reverse rrule and the forward `kron` frule. `BlasFloat` only
+# (what `arrayify` supports); the dense method is strictly more specific, so dense inputs still take
+# it, and dense `out` paired with a wrapped input routes here.
+function Mooncake.frule!!(
+    ::Lifted{typeof(LinearAlgebra._kron!),N},
+    out::Lifted{<:AbstractMatrix{T},N},
+    x1::Lifted{<:AbstractMatrix{T},N},
+    x2::Lifted{<:AbstractMatrix{T},N},
+) where {N,T<:IEEEFloat}
+    pout, dout_s = arrayify(out)
+    px1, dx1_s = arrayify(x1)
+    px2, dx2_s = arrayify(x2)
+    LinearAlgebra._kron!(pout, px1, px2)
+    for lane in 1:N
+        _kron!_jvp_lane!(dout_s[lane], px1, dx1_s[lane], px2, dx2_s[lane])
     end
     return out
 end
@@ -205,6 +232,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 LinearAlgebra._kron!,
                 zeros(P, 50, 50),
                 randn(rng, P, 5, 5),
+                randn(rng, P, 10, 10),
+            )
+        end,
+
+        # _kron!(x, y) with a strided wrapper input (SubArray): exercises the `arrayify`
+        # fallback frule. The dense-only forward frule matched only `NDualArray` slots, so a
+        # wrapper input (forward V is the generic struct lift) that the broad `@is_primitive` and
+        # the reverse rrule admit would MethodError. `BlasFloat` only (what `arrayify` supports).
+        map([Float64, Float32]) do P
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra._kron!,
+                zeros(P, 50, 50),
+                view(randn(rng, P, 6, 6), 1:5, 1:5),
                 randn(rng, P, 10, 10),
             )
         end,
