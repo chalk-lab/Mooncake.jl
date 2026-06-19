@@ -2115,8 +2115,7 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
     output_spec::TOS
     # Hessian-assembly buffers populated by `prepare_hessian_cache`, `nothing` for caches
     # built via `prepare_hvp_cache`. `value_gradient_and_hessian!!` writes into these.
-    # Single-arg layout: `(; H::Matrix, grad::Vector, v::Vector)`.
-    # Multi-arg layout:  `(; H_blocks::Tuple, grads::Tuple, vs::Tuple)`.
+    # Layout: `((; H::Matrix, grad::Vector, v::Vector), chunked)`.
     hess_buffers::THB
 end
 
@@ -2170,19 +2169,20 @@ end
 end
 
 """
-    prepare_hvp_cache(f, x...; config=Mooncake.Config())
+    prepare_hvp_cache(f, x; config=Mooncake.Config())
 
 Prepare a cache for computing Hessian-vector products (HVPs) of `f`. Returns an `HVPCache`
 for use with [`value_and_hvp!!`](@ref).
 
-`f` must map `x...` to a scalar. Multiple arguments are supported: see
-[`value_and_hvp!!`](@ref) for the calling convention.
+`f` must map a single `AbstractVector` `x` to a scalar. Like [`value_and_jacobian!!`](@ref),
+only a single input is supported; concatenate the inputs of a multi-argument function into
+one vector.
 
 The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The
 inner rule is compiled only once regardless of how many HVPs are subsequently evaluated.
 
-*Note:* `cache` is tied to the types and shapes of `x...`. Evaluating at a different point
-is fine, but changing the shapes requires a new cache.
+*Note:* `cache` is tied to the type and shape of `x`. Evaluating at a different point
+is fine, but changing the shape requires a new cache.
 
 !!! note
     Calls `f(x...)` during cache preparation (via inner gradient and derivative caches).
@@ -2203,6 +2203,7 @@ true
     f::F, x::Vararg{Any,N}; config=Config(), _chunk::Int=1
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
+    N > 1 && _throw_hvp_multiarg("prepare_hvp_cache", N)
     # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
     # buffers reused by `grad_f`, and supplies `output_spec`. The primitive
     # (`DerivedFoRRule{Nothing}`) branches below also evaluate gradients through
@@ -2243,40 +2244,19 @@ true
     # eagerly build dual callables over reverse-mode-optimised IR that the derived path
     # never invokes.
     tangents = grad_cache.tangents
-    grad_f = if N == 1
-        if for_rule isa DerivedFoRRule{Nothing}
-            y -> begin
-                val_and_grad = value_and_gradient!!(grad_cache, f, y)
-                (val_and_grad[1], val_and_grad[2][2])
-            end
-        else
-            y -> begin
-                inner_rule = get_inner_rrule(for_rule)
-                t_f, t_y = tangents
-                t_f = set_to_zero!!(t_f)
-                t_y = set_to_zero!!(t_y)
-                val, grad = __value_and_gradient!!(
-                    inner_rule, CoDual(f, t_f), CoDual(y, t_y)
-                )
-                (val, grad[2])
-            end
+    grad_f = if for_rule isa DerivedFoRRule{Nothing}
+        y -> begin
+            val_and_grad = value_and_gradient!!(grad_cache, f, y)
+            (val_and_grad[1], val_and_grad[2][2])
         end
     else
-        if for_rule isa DerivedFoRRule{Nothing}
-            (ys...) -> begin
-                val_and_grad = value_and_gradient!!(grad_cache, f, ys...)
-                # Drop the gradient w.r.t. f itself (always index 1).
-                (val_and_grad[1], Base.tail(val_and_grad[2]))
-            end
-        else
-            (ys...) -> begin
-                inner_rule = get_inner_rrule(for_rule)
-                zeroed = tuple_map(set_to_zero!!, tangents)
-                coduals = tuple_map(CoDual, (f, ys...), zeroed)
-                val, grad = __value_and_gradient!!(inner_rule, coduals...)
-                # Drop the gradient w.r.t. f itself (always index 1).
-                (val, Base.tail(grad))
-            end
+        y -> begin
+            inner_rule = get_inner_rrule(for_rule)
+            t_f, t_y = tangents
+            t_f = set_to_zero!!(t_f)
+            t_y = set_to_zero!!(t_y)
+            val, grad = __value_and_gradient!!(inner_rule, CoDual(f, t_f), CoDual(y, t_y))
+            (val, grad[2])
         end
     end
     fwd_cache = prepare_derivative_cache(grad_f, x...; config=fwd_config)
@@ -2290,44 +2270,33 @@ true
     )
 end
 
-function _make_hessian_buffers(::Type{T}, xs::Tuple) where {T}
-    if length(xs) == 1
-        n = length(xs[1])
-        return (; H=zeros(T, n, n), grad=zeros(T, n), v=zeros(T, n))
-    end
-    ns = tuple_map(length, xs)
-    nargs = length(xs)
-    # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]
-    H_blocks = ntuple(k -> ntuple(j -> zeros(T, ns[k], ns[j]), nargs), nargs)
-    grads = tuple_map(ni -> zeros(T, ni), ns)
-    vs = tuple_map(ni -> zeros(T, ni), ns)
-    return (; H_blocks, grads, vs)
+function _make_hessian_buffers(::Type{T}, n::Int) where {T}
+    return (; H=zeros(T, n, n), grad=zeros(T, n), v=zeros(T, n))
 end
 
 @noinline _throw_not_hessian_cache() = throw(
     ArgumentError(
-        "`cache` was not built with `prepare_hessian_cache`; rebuild via `prepare_hessian_cache(f, x...)` to use `value_gradient_and_hessian!!`",
+        "`cache` was not built with `prepare_hessian_cache`; rebuild via `prepare_hessian_cache(f, x)` to use `value_gradient_and_hessian!!`",
     ),
 )
 
-@noinline _throw_hessian_arity_mismatch(cached::Int, got::Int) = throw(
+# HVP and Hessian, like `value_and_jacobian!!`, take a single vector input; multi-argument
+# functions must concatenate their inputs into one vector.
+@noinline _throw_hvp_multiarg(fname::String, got::Int) = throw(
     ArgumentError(
-        "cache was prepared for $cached argument$(cached == 1 ? "" : "s") but called with $got; rebuild via `prepare_hessian_cache`",
+        "$fname supports only a single AbstractVector input; got $got arguments. " *
+        "Concatenate the inputs into one vector.",
     ),
 )
 
 """
-    value_and_hvp!!(cache::HVPCache, f, v, x...)
+    value_and_hvp!!(cache::HVPCache, f, v, x)
 
-Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at
-`x...` and the Hessian-vector product `H v`.
-
-**Single argument:** `v` is the tangent direction; returns `(f(x), ∇f(x), H(x)v)`. For
-`f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are `Vector{Float64}`.
-
-**Multiple arguments:** `v` must be a tuple of tangent directions (one per argument);
-returns `(f(x...), (∇f_x1, ∇f_x2, ...), (h1, h2, ...))` where
-`hk = ∑_j (∂²f/∂xk∂xj) v[j]` is the joint Hessian-vector product for argument `xk`.
+Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at `x`
+and the Hessian-vector product `H v`. `v` is the tangent direction; returns
+`(f(x), ∇f(x), H(x)v)`. For `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are
+`Vector{Float64}`. Like [`value_and_jacobian!!`](@ref), only a single `AbstractVector` input
+is supported; concatenate the inputs of a multi-argument function into one vector.
 
 As with all functionality in Mooncake, `x` is returned to its original state: if `f`
 mutates `x` in place, it is restored, so the input is not mutated.
@@ -2369,52 +2338,38 @@ true
     return f_val, grad, hvp
 end
 
-@inline function value_and_hvp!!(
-    cache::HVPCache, f::F, v::Tuple, x1::T1, xrest::Vararg{Any,N}
-) where {F,T1,N}
-    all_x = (x1, xrest...)
-    cache.f === f || throw(
-        ArgumentError("`f` must be the same function object used to construct `cache`")
-    )
-    input_primals = (cache.grad_f, all_x...)
-    _validate_prepared_cache(getfield(cache.fwd_cache, :input_specs), input_primals)
-    length(v) == length(all_x) ||
-        throw(ArgumentError("Expected one tangent direction per primal argument"))
-    for i in eachindex(all_x)
-        _assert_matching_tangent_shape(all_x[i], v[i], i)
-    end
-    (f_val, grads), (_, hvps) = value_and_derivative!!(
-        cache.fwd_cache, (cache.grad_f, cache.grad_tangent), map(tuple, all_x, v)...
-    )
-    return f_val, grads, hvps
+# Multi-argument calls match no single-arg method above; give a clear error rather than a raw
+# MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
+@inline function value_and_hvp!!(cache::HVPCache, f, v, x1, x2, xs::Vararg{Any,N}) where {N}
+    return _throw_hvp_multiarg("value_and_hvp!!", N + 2)
 end
 
 """
-    prepare_hessian_cache(f, x...; config=Mooncake.Config())
+    prepare_hessian_cache(f, x; config=Mooncake.Config())
 
-Return a cache for computing `f(x...)`, gradients `∇f`, and the Hessian (or Hessian
-blocks) of `f` via [`value_gradient_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref),
-which is also accepted by [`value_and_hvp!!`](@ref).
+Return a cache for computing `f(x)`, the gradient `∇f`, and the Hessian of `f` via
+[`value_gradient_and_hessian!!`](@ref). Returns an [`HVPCache`](@ref), which is also
+accepted by [`value_and_hvp!!`](@ref).
 
-The `x...` inputs must be `AbstractVector`s of a single IEEE-float element type;
-validation is eager and raises `ArgumentError` here rather than at evaluation time.
+Like [`value_and_jacobian!!`](@ref), only a single `AbstractVector` input of an IEEE-float
+element type is supported; concatenate the inputs of a multi-argument function into one
+vector. Validation is eager and raises `ArgumentError` here rather than at evaluation time.
 The cache pre-allocates the Hessian, gradient, and basis-direction buffers that
 [`value_gradient_and_hessian!!`](@ref) writes into, so subsequent calls do not allocate
 fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if
 you need to retain previous results.
 
-Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function. A
-single-argument Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward
-pass (≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an internal
-maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it. Multi-argument Hessians use
-one forward pass per total input dimension.
+Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function. The
+Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward pass
+(≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an internal
+maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it.
 
 !!! note
     This path uses Mooncake's generic public forward cache over the captured reverse-mode
-    gradient closure. A single-argument chunked Hessian prepares two forward variants — width-1
-    (shared with [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is
-    evaluated and the forward-over-reverse rule compiled twice during preparation; the width-1 and
-    multi-argument cases prepare a single variant.
+    gradient closure. A chunked Hessian prepares two forward variants — width-1 (shared with
+    [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is evaluated and the
+    forward-over-reverse rule compiled twice during preparation; the width-1 (scalar 1-DOF or
+    `chunk_size=1`) case prepares a single variant.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
@@ -2431,37 +2386,35 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
-    T = _validate_hessian_arguments(x...)
-    base = prepare_hvp_cache(f, x...; config)
-    # Chunked forward-over-reverse Hessian sweep (single-arg): build a width-W variant of
-    # `grad_f` whose FoR rule's dual callables are width W, alongside the width-1 `base` used by
-    # `value_and_hvp!!`. `chunked === nothing` keeps the width-1 column loop (multi-arg, scalar
-    # 1-DOF, or chunk_size 1). Auto (`chunk_size` nothing/0) chunks the full matrix.
-    chunked = if N == 1
-        dof_x = dof(tuple_map(zero_tangent, x))
-        W = let c = getfield(config, :chunk_size)
-            req = if (c === nothing || c == 0)
-                _MAX_CHUNK_WIDTH
-            else
-                Nfwd._nfwd_check_chunk_size(c)
-            end
-            min(req, dof_x)
-        end
-        # `empty_cache=false`: the `base` prepare above already honoured `config.empty_cache`;
-        # re-clearing for the width-W variant would invalidate what `base` just compiled.
-        if W > 1
-            ch_config = Config(;
-                config.debug_mode,
-                config.silence_debug_messages,
-                config.friendly_tangents,
-                config.chunk_size,
-                empty_cache=false,
-            )
-            ch = prepare_hvp_cache(f, x...; config=ch_config, _chunk=W)
-            (ch.grad_f, ch.fwd_cache, W)
+    N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
+    x1 = only(x)
+    T = _validate_hessian_argument(x1, 1)
+    base = prepare_hvp_cache(f, x1; config)
+    # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose FoR
+    # rule's dual callables are width W, alongside the width-1 `base` used by `value_and_hvp!!`.
+    # `chunked === nothing` keeps the width-1 column loop (scalar 1-DOF, or chunk_size 1). Auto
+    # (`chunk_size` nothing/0) chunks the full matrix.
+    dof_x = dof(zero_tangent(x1))
+    W = let c = getfield(config, :chunk_size)
+        req = if (c === nothing || c == 0)
+            _MAX_CHUNK_WIDTH
         else
-            nothing
+            Nfwd._nfwd_check_chunk_size(c)
         end
+        min(req, dof_x)
+    end
+    # `empty_cache=false`: the `base` prepare above already honoured `config.empty_cache`;
+    # re-clearing for the width-W variant would invalidate what `base` just compiled.
+    chunked = if W > 1
+        ch_config = Config(;
+            config.debug_mode,
+            config.silence_debug_messages,
+            config.friendly_tangents,
+            config.chunk_size,
+            empty_cache=false,
+        )
+        ch = prepare_hvp_cache(f, x1; config=ch_config, _chunk=W)
+        (ch.grad_f, ch.fwd_cache, W)
     else
         nothing
     end
@@ -2471,7 +2424,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.grad_tangent,
         base.fwd_cache,
         base.output_spec,
-        (_make_hessian_buffers(T, x), chunked),
+        (_make_hessian_buffers(T, length(x1)), chunked),
     )
 end
 
@@ -2487,19 +2440,6 @@ function _validate_hessian_argument(x, i::Int)
             "Hessian computation only supports AbstractVector inputs with IEEEFloat element types; argument $i has eltype $T",
         ),
     )
-    return T
-end
-
-function _validate_hessian_arguments(x::Vararg{Any,N}) where {N}
-    T = _validate_hessian_argument(x[1], 1)
-    for i in 2:N
-        Ti = _validate_hessian_argument(x[i], i)
-        Ti == T || throw(
-            ArgumentError(
-                "Hessian computation requires all arguments to share the same IEEEFloat element type; argument 1 has eltype $T but argument $i has eltype $Ti",
-            ),
-        )
-    end
     return T
 end
 
@@ -2797,28 +2737,21 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
 end
 
 """
-    value_gradient_and_hessian!!(cache::HVPCache, f, x...)
+    value_gradient_and_hessian!!(cache::HVPCache, f, x)
 
 Using a pre-built `cache` from [`prepare_hessian_cache`](@ref), compute and return
-`(value, gradient, hessian)` of `f`.
+`(f(x), ∇f(x), ∇²f(x))` — value, gradient vector, and Hessian matrix of `f`.
 
-**Single argument:** returns `(f(x), ∇f(x), ∇²f(x))` — value, gradient vector, Hessian
-matrix.
-
-**Multiple arguments:** returns `(f(x1,...), (∇_x1 f, ∇_x2 f, ...), H_blocks)` where
-`H_blocks[k][j]` is the `nk × nj` matrix `∂²f/∂xk∂xj`. The return structure differs
-from the single-argument case.
-
-Uses forward-over-reverse AD. A single-argument Hessian is chunked, sweeping `config.chunk_size`
-basis directions per forward pass; multi-argument Hessians use one forward pass per total input
-dimension.
+Uses forward-over-reverse AD; the Hessian is chunked, sweeping `config.chunk_size` basis
+directions per forward pass. Like [`value_and_jacobian!!`](@ref), only a single
+`AbstractVector` input is supported; concatenate the inputs of a multi-argument function
+into one vector.
 
 !!! info
     `cache` must be the output of [`prepare_hessian_cache`](@ref), and `f` must be the
-    same function object used to construct `cache`. All `x` arguments must have the
-    same sizes and element types as used to construct the cache. The implementation
-    supports only `AbstractVector`s of IEEE floats, with all arguments sharing the same
-    element type. For non-vector inputs, use [`value_and_hvp!!`](@ref) to obtain
+    same function object used to construct `cache`. `x` must have the same size and element
+    type as used to construct the cache. The implementation supports only `AbstractVector`s
+    of IEEE floats. For non-vector inputs, use [`value_and_hvp!!`](@ref) to obtain
     second-order directional derivatives without forming a full Hessian.
 
 !!! warning
@@ -2854,9 +2787,6 @@ H
     hb = cache.hess_buffers
     hb === nothing && _throw_not_hessian_cache()
     buf, chunked = hb
-    if buf isa NamedTuple{(:H_blocks, :grads, :vs)}
-        _throw_hessian_arity_mismatch(length(buf.vs), 1)
-    end
     T = _validate_hessian_argument(x1, 1)
     H = buf.H
     g = buf.grad
@@ -2877,7 +2807,7 @@ H
     end
     # Chunked forward-over-reverse: when `prepare_hessian_cache` built a width-W variant of
     # `grad_f` (its FoR dual callables are width W), sweep W Hessian columns per pass. Falls back
-    # to the width-1 column loop otherwise (multi-arg, scalar 1-DOF, or chunk_size 1).
+    # to the width-1 column loop otherwise (scalar 1-DOF, or chunk_size 1).
     if chunked !== nothing
         grad_f_c, fwd_c, W = chunked
         value = _chunked_hessian_sweep!(grad_f_c, fwd_c, H, g, x1, n, Val(W))
@@ -2897,60 +2827,12 @@ H
     return value, g, H
 end
 
+# Multi-argument calls match no single-arg method above; give a clear error rather than a raw
+# MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
 @unstable @inline function value_gradient_and_hessian!!(
-    cache::HVPCache, f::F, x1::T1, xrest::Vararg{Any,N}
-) where {F,T1,N}
-    cache.f === f || throw(
-        ArgumentError("`f` must be the same function object used to construct `cache`")
-    )
-    hb = cache.hess_buffers
-    nargs = N + 1
-    hb === nothing && _throw_not_hessian_cache()
-    buf, _ = hb
-    if buf isa NamedTuple{(:H, :grad, :v)}
-        _throw_hessian_arity_mismatch(1, nargs)
-    end
-    all_xs = (x1, xrest...)
-    T = _validate_hessian_arguments(all_xs...)
-    ns = tuple_map(length, all_xs)
-    H_blocks = buf.H_blocks
-    grads = buf.grads
-    v = buf.vs
-    # Buffer arity/sizes are fixed at cache build time; reject mismatched inputs
-    # before indexing `v[k]`/`H_blocks`, otherwise the sweep below raises a raw
-    # `BoundsError`.
-    nargs == length(v) || _throw_hessian_arity_mismatch(length(v), nargs)
-    for k in 1:nargs
-        ns[k] == length(v[k]) || throw(
-            ArgumentError(
-                "argument $k has length $(ns[k]) but cache was prepared for length $(length(v[k])); rebuild via `prepare_hessian_cache`",
-            ),
-        )
-    end
-    # Reset each `v[k]` in case a prior call threw between `v[k][i] = one(T)` and
-    # `v[k][i] = zero(T)`.
-    tuple_map(vk -> fill!(vk, zero(T)), v)
-    if all(==(0), ns)
-        fval, _, _ = value_and_hvp!!(cache, f, v, all_xs...)
-        return fval, grads, H_blocks
-    end
-    local value
-    first_iter = true
-    for argidx in 1:nargs
-        v_i = v[argidx]
-        for i in 1:ns[argidx]
-            v_i[i] = one(T)
-            fval, gs_alias, hvps = value_and_hvp!!(cache, f, v, all_xs...)
-            if first_iter
-                value = fval
-                tuple_map((g, a) -> (g .= a), grads, gs_alias)
-                first_iter = false
-            end
-            tuple_map((Hk, hk) -> (@inbounds @views Hk[argidx][:, i] .= hk), H_blocks, hvps)
-            v_i[i] = zero(T)
-        end
-    end
-    return value, grads, H_blocks
+    cache::HVPCache, f, x1, x2, xs::Vararg{Any,N}
+) where {N}
+    return _throw_hvp_multiarg("value_gradient_and_hessian!!", N + 2)
 end
 
 # IT=Nothing specialisation: disambiguates against the Lifted-vararg and Tuple-vararg

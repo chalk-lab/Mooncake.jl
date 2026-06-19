@@ -1560,23 +1560,23 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test Mooncake.dof(x) == 1
             end
 
-            @testset "multi-argument HVP validates direction arity" begin
+            @testset "multi-argument HVP is rejected" begin
+                # Like `value_and_jacobian!!`, HVP supports only a single vector input;
+                # rejected eagerly at prepare and at the compute call.
                 f(x, y) = sum(x .* x) + sum(y .* y)
                 x = [1.0, 2.0]
                 y = [3.0]
-                cache = prepare_hvp_cache(f, x, y)
-                @test_throws ArgumentError value_and_hvp!!(cache, f, ([1.0, 0.0],), x, y)
+                @test_throws ArgumentError prepare_hvp_cache(f, x, y)
+                cache = prepare_hvp_cache(sum, x)
+                @test_throws ArgumentError value_and_hvp!!(
+                    cache, sum, ([1.0, 0.0], [1.0]), x, y
+                )
             end
 
             @testset "HVP validates tangent shapes" begin
-                f(x, y) = sum(x .* x) + sum(y .* y)
                 x = [1.0, 2.0]
-                y = [3.0]
                 cache1 = prepare_hvp_cache(sum, x)
                 @test_throws ArgumentError value_and_hvp!!(cache1, sum, [1.0], x)
-
-                cache2 = prepare_hvp_cache(f, x, y)
-                @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
             end
 
             @testset "HVP cache mismatch errors" begin
@@ -1610,14 +1610,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
                 # Array, Hessian 2I: hvp = 2v. Reads x via getindex/broadcast.
                 let f = x -> sum(x .* x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
-                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, (v,), x)
+                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
                     @test val ≈ sum(x .* x)
                     @test g ≈ 2 .* x
                     @test hv ≈ 2 .* v
                 end
                 # Fused-primitive path (`sum(abs2, ·)`), same Hessian.
                 let f = x -> sum(abs2, x), x = [2.0, 3.0, 4.0], v = [0.0, 1.0, 0.0]
-                    _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, (v,), x)
+                    _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
                     @test hv ≈ 2 .* v
                 end
             end
@@ -1735,76 +1735,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test (v2, g2, H2) == (0.0, Float64[], zeros(0, 0))
             end
 
-            @testset "multi-arg: two vectors" begin
+            @testset "multi-argument Hessian is rejected" begin
+                # Like `value_and_jacobian!!`, the Hessian supports only a single vector input;
+                # rejected eagerly at prepare and at the compute call.
                 f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
                 x = [1.0, 2.0]
                 y = [3.0, 4.0]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val ≈ f(x, y)
-                @test gx ≈ 2x + [y[1], 0.0] rtol = 1e-10
-                @test gy ≈ 2y + [x[1], 0.0] rtol = 1e-10
-                @test Hxx ≈ 2 * I rtol = 1e-10
-                @test Hyy ≈ 2 * I rtol = 1e-10
-                @test Hxy ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-                @test Hyx ≈ [1.0 0.0; 0.0 0.0] rtol = 1e-10
-            end
-
-            @testset "multi-arg: cache reuse" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                x1, y1 = [1.0, 0.0], [0.0, 1.0]
-                x2, y2 = [2.0, 3.0], [4.0, 5.0]
-                cache = prepare_hessian_cache(f, x1, y1)
-                v1, (gx1, gy1), ((Hxx1, _), (_, Hyy1)) = value_gradient_and_hessian!!(
-                    cache, f, x1, y1
-                )
-                # `cache` owns the returned tuples; snapshot before reusing the cache.
-                gx1, gy1, Hxx1, Hyy1 = copy(gx1), copy(gy1), copy(Hxx1), copy(Hyy1)
-                v2, (gx2, gy2), ((Hxx2, _), (_, Hyy2)) = value_gradient_and_hessian!!(
-                    cache, f, x2, y2
-                )
-                @test v1 ≈ f(x1, y1)
-                @test v2 ≈ f(x2, y2)
-                @test gx1 ≈ 2x1
-                @test gx2 ≈ 2x2
-                @test Hxx1 ≈ 2 * I
-                @test Hxx2 ≈ 2 * I
-                @test Hyy1 ≈ 2 * I
-                @test Hyy2 ≈ 2 * I
-            end
-
-            @testset "multi-arg: first arg empty" begin
-                f(x, y) = sum(y .^ 2)
-                x = Float64[]
-                y = [1.0, 2.0]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val ≈ f(x, y)
-                @test gx == Float64[]
-                @test gy ≈ 2y
-                @test Hxx == zeros(0, 0)
-                @test Hyy ≈ 2 * I
-            end
-
-            @testset "multi-arg: all args empty" begin
-                f(x, y) = 0.0
-                x = Float64[]
-                y = Float64[]
-                cache = prepare_hessian_cache(f, x, y)
-                val, (gx, gy), ((Hxx, Hxy), (Hyx, Hyy)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test val == 0.0
-                @test gx == Float64[]
-                @test gy == Float64[]
-                @test Hxx == zeros(0, 0)
-                @test Hxy == zeros(0, 0)
-                @test Hyx == zeros(0, 0)
-                @test Hyy == zeros(0, 0)
+                @test_throws ArgumentError prepare_hessian_cache(f, x, y)
+                cache = prepare_hessian_cache(sum, x)
+                @test_throws ArgumentError value_gradient_and_hessian!!(cache, sum, x, y)
             end
 
             @testset "reject non-vector inputs" begin
@@ -1817,13 +1756,6 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 f(x) = sum(abs2, x)
                 x = ComplexF64[1 + 0im, 2 + 0im]
                 @test_throws ArgumentError prepare_hessian_cache(f, x)
-            end
-
-            @testset "reject mismatched element types across arguments" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                x = Float64[1.0, 2.0]
-                y = Float32[3.0, 4.0]
-                @test_throws ArgumentError prepare_hessian_cache(f, x, y)
             end
 
             @testset "reject mismatched function object" begin
@@ -1852,52 +1784,11 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H1 === H2
             end
 
-            @testset "multi-arg cache buffer reuse" begin
-                f(x, y) = sum(x .^ 2) + sum(y .^ 2) + x[1] * y[1]
-                x = [1.0, 2.0]
-                y = [3.0, 4.0]
-                cache = prepare_hessian_cache(f, x, y)
-                _, (gx1, gy1), ((Hxx1, Hxy1), (Hyx1, Hyy1)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                _, (gx2, gy2), ((Hxx2, Hxy2), (Hyx2, Hyy2)) = value_gradient_and_hessian!!(
-                    cache, f, x, y
-                )
-                @test gx1 === gx2 && gy1 === gy2
-                @test Hxx1 === Hxx2 && Hxy1 === Hxy2
-                @test Hyx1 === Hyx2 && Hyy1 === Hyy2
-            end
-
-            @testset "reject mismatched cache arity" begin
-                f(x) = sum(abs2, x)
-                f(x, y) = sum(abs2, x) + sum(abs2, y)
-                # 2-arg cache, 3-arg call.
-                cache2 = prepare_hessian_cache(f, [1.0], [2.0])
-                @test_throws r"cache was prepared for 2 arguments but called with 3" value_gradient_and_hessian!!(
-                    cache2, f, [1.0], [2.0], [3.0]
-                )
-                # 2-arg cache, 1-arg call — single-arg dispatch must report arity, not
-                # the generic "not a hessian cache" error.
-                @test_throws r"cache was prepared for 2 arguments but called with 1" value_gradient_and_hessian!!(
-                    cache2, f, [1.0]
-                )
-                # 1-arg cache, 2-arg call — multi-arg dispatch, same expectation.
-                cache1 = prepare_hessian_cache(f, [1.0, 2.0])
-                @test_throws r"cache was prepared for 1 argument but called with 2" value_gradient_and_hessian!!(
-                    cache1, f, [1.0, 2.0], [3.0]
-                )
-            end
-
             @testset "empty-cache reused at non-empty input" begin
                 f(x) = sum(x .^ 2)
                 cache = prepare_hessian_cache(f, Float64[])
                 @test_throws ArgumentError value_gradient_and_hessian!!(
                     cache, f, [1.0, 2.0]
-                )
-                g(x, y) = sum(x .^ 2) + sum(y .^ 2)
-                cache2 = prepare_hessian_cache(g, Float64[], Float64[])
-                @test_throws ArgumentError value_gradient_and_hessian!!(
-                    cache2, g, [1.0], Float64[]
                 )
             end
 
