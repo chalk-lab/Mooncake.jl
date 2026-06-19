@@ -2562,10 +2562,12 @@ mutates `x` in place, it is restored, so the input is not mutated.
 
 !!! warning
     With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
-    buffer owned by `cache` (reused to avoid per-call allocation, as the gradient and Hessian
-    paths already do) and is overwritten on the next call with the same cache. Copy it
-    (`copy`) before a subsequent call if you need to retain it. A reverse
-    [`prepare_pullback_cache`](@ref) cache returns a freshly allocated Jacobian.
+    buffer owned by `cache` *only on the zero-allocation path*, taken when `f` is
+    non-differentiable (carries no parameters of its own). On that path the buffer (reused as the
+    gradient and Hessian paths do) is overwritten on the next call with the same cache, so `copy`
+    it first if you need to retain it. A differentiable `f` (e.g. a closure capturing parameters)
+    instead returns a freshly allocated Jacobian each call, as does a reverse
+    [`prepare_pullback_cache`](@ref) cache.
 """
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
