@@ -206,9 +206,7 @@ end
 #   CuPtr{T}                            → NTuple{N, CuPtr{T}}
 #   CuDataRef (any memory-kind variant) → NoDual (opaque handle)
 #
-# `NDualArray` accepts any `AbstractArray{T,D}` storage by construction;
-# verified to work with CuArray (via the monkey-patch experiment
-# documented in feedback_cuda_cutover_plan.md).
+# `NDualArray` accepts any `AbstractArray{T,D}` storage by construction, including `CuArray`.
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{P}
 ) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
@@ -832,12 +830,10 @@ function rrule!!(
     return _cudataref_lgetfield_rev(primal(x), name), _nopb(Val(3))
 end
 
-# lgetfield rules for CuArray.  CuArray has 4 fields:
-#   :data (field 1) — the DataRef handle; tangent flows here
-#   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
-# CuArray field access — `.data` is an opaque DataRef (NoDual V);
-# `.maxsize`/`.offset`/`.dims` are non-differentiable metadata. Result V
-# is `NoDual` in either case.
+# lgetfield rules for CuArray (4 fields: `:data` the DataRef handle, then `:maxsize`/`:offset`/
+# `:dims` metadata). Reverse mode (rrule) routes the cotangent through `:data`; the metadata fields
+# are non-differentiable. Forward mode (frule) returns a `NoDual` result V for every field — the
+# JVP lives in the `NDualArray` partials, not behind the `.data` handle.
 function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{<:CuArray,Nw,<:NDualArray},
@@ -1580,9 +1576,7 @@ end
 # Works for both f: ℂ→ℝ (e.g. abs2, real, imag) and f: ℂ→ℂ (e.g. sin, exp).
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
-# Width-1 Lifted ports. The helper `_gpu_sum_f_frule` previously took
-# a bare Dual{<:CuGpuSumFArray}; we replicate its body inline using the
-# Lifted-shaped tangent access path.
+# Width-`Nw` forward rule for `sum(f, x)` on real/complex CuArrays.
 function frule!!(
     ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
 ) where {Nw}
