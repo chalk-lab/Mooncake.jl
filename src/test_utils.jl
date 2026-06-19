@@ -276,7 +276,7 @@ end
 # Method, CodeInstance, and MethodInstance form circular reference chains
 # (Method.specializations → MethodInstance, MethodInstance.def → Method,
 # MethodInstance.cache → CodeInstance, CodeInstance.def → MethodInstance).
-# Recursing into their fields would loop forever, so delegate to == instead.
+# Generic `has_equal_data_internal` will lead to infinite recursion.
 for T in (:(Core.Method), :(Core.CodeInstance), :(Core.MethodInstance))
     @eval function has_equal_data_internal(
         x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
