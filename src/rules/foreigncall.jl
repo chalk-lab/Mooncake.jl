@@ -256,32 +256,36 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
-# Reshape both primal and per-lane partials via ccall.
+# Reshape both primal and per-lane partials via ccall. Element-type-agnostic across the whole
+# `NDualEltype` surface (real and complex floats): the `NDualArray`'s primal and parallel partials
+# are all plain `Array{E,D}`, so the reshape `ccall` eltype tracks the array's actual eltype `E`,
+# mirroring the element-type-generic reverse rrule below. (Width parameter `W` of the V is left free
+# so this matches both the real `NDual{E,Nw}` and complex `Complex{NDual{R,Nw}}` element duals.)
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_reshape_array},Nw},
-    ::Lifted{Val{Array{P,M}},Nw},
+    ::Lifted{Val{Array{E,M}},Nw},
     ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
     ::Lifted, # nreq
     ::Lifted, # calling convention
-    ::Lifted{Type{Array{P,M}},Nw},
-    a::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+    ::Lifted{Type{Array{E,M}},Nw},
+    a::Lifted{Array{E,D},Nw,<:NDualArray{E,Nw,D,Array{E,D}}},
     dims::Lifted,
-) where {Nw,P<:IEEEFloat,M,D}
+) where {Nw,E<:NDualEltype,M,D}
     d = primal(dims)
-    y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
+    y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
     new_partials = ntuple(
         k -> ccall(
             :jl_reshape_array,
-            Array{P,M},
+            Array{E,M},
             (Any, Any, Any),
-            Array{P,M},
+            Array{E,M},
             tangent(a).partials[k],
             d,
         ),
         Val(Nw),
     )
-    return Lifted{Array{P,M},Nw}(y, NDualArray{P,Nw,M,Array{P,M}}(y, new_partials))
+    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_partials))
 end
 # Non-differentiable element arrays (element-wise `Array{NoDual}` V, e.g. the
 # `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside `sortslices`): reshape primal and V in
@@ -653,6 +657,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
+        # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
+        # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
+        # `jl_reshape_array` foreigncall, the path the real-only frule used to miss.
+        (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
