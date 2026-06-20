@@ -409,18 +409,11 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test tangent(r).partials[2] == 0.0
     end
 
-    @testset "frule!! one-to-one parallels (tasks.jl)" begin
-        task = Task(() -> nothing)
-        # A Task field is non-differentiable: forward V is `NoDual` (the forward-mode
-        # sentinel; reverse would use `NoTangent`).
-        task_slot = sl(2, task, TaskTangent())
-        r = frule!!(sl(2, lgetfield), task_slot, sl(2, Val(:rngState1)))
-        @test primal(r) === getfield(task, :rngState1)
-        @test tangent(r) === NoDual()
-        r2 = frule!!(sl(2, getfield), task_slot, sl(2, :rngState1))
-        @test primal(r2) === getfield(task, :rngState1)
-        @test tangent(r2) === NoDual()
-    end
+    # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
+    # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via
+    # `verify_lifted_type` across widths 1-3, so no bespoke parallel is needed. (The new.jl /
+    # iddict.jl / memory.jl parallels below are kept: they cover ImmutableDual/MutableDual `_new_`
+    # wrappers, the IdDict setindex!->getindex persistence, and `lmemoryrefget`, none registered.)
 
     @testset "frule!! one-to-one parallels (new.jl _new_)" begin
         # Immutable struct branch → ImmutableDual V; mutable branch → MutableDual V.
