@@ -302,6 +302,19 @@ end
     V_i = _get_lifted_field(tangent(x), f)
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
+# `Ref{P<:NDualEltype}` field read with an order argument: the `NDualRef` V needs the same
+# rebuild as the 2-arg branch (the order arg controls atomicity, not the value/derivative).
+# Without this the generic 3-arg frule above routes through `_get_lifted_field(::NDualRef, ...)`,
+# which has no method.
+@inline function frule!!(
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    ::Lifted{Val{:x}},
+    ::Lifted{Val{order}},
+) where {Nw,P<:NDualEltype,order}
+    v = getfield(primal(x), :x, order)
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}
@@ -592,6 +605,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (true, :none, nothing, lgetfield, UInt8, Val(:layout)),
         (false, :none, nothing, lgetfield, UInt8, Val(:hash)),
         (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
+
+        # Ref{<:NDualEltype} carries the `NDualRef` V. Regression for the 3-arg (order-arg) form:
+        # the generic frule routed it through a missing `_get_lifted_field(::NDualRef, ...)`. The
+        # `order` loop below generates both the 2-arg and 3-arg variants from this single entry.
+        (false, :none, nothing, lgetfield, Ref(5.0), Val(:x)),
     ]
 
     # Create `lgetfield` tests for each type in TestTypes for broader coverage.
