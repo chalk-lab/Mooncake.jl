@@ -398,86 +398,10 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test ts isa AbstractVector && ts[1] isa Tangent
     end
 
-    @testset "frule!! one-to-one parallels (builtins.jl intrinsics)" begin
-        IW = IntrinsicsWrappers
-
-        # End-to-end through the interpreter (widths 1,2,3 + FD via test_rule).
-        if isdefined(@__MODULE__, :test_rule)
-            for args in Any[
-                (IW.abs_float, -3.0),
-                (IW.add_float, 1.0, 2.0),
-                (IW.add_float_fast, 1.0, 2.0),
-                (IW.copysign_float, 2.0, -3.0),
-                (IW.div_float, 6.0, 2.0),
-                (IW.div_float_fast, 6.0, 2.0),
-                (IW.mul_float, 1.5, 2.5),
-                (IW.mul_float_fast, 1.5, 2.5),
-                (IW.neg_float, 4.0),
-                (IW.neg_float_fast, 4.0),
-                (IW.sub_float, 5.0, 2.0),
-                (IW.sub_float_fast, 5.0, 2.0),
-                (IW.fma_float, 1.5, 2.0, 0.5),
-                (IW.muladd_float, 1.5, 2.0, 0.5),
-                (IW.fpext, Float64, 1.5f0),
-                (IW.fptrunc, Float32, 1.5),
-            ]
-                test_rule(MersenneTwister(0), args...; perf_flag=:none)
-            end
-        end
-
-        # Direct Lifted-arg checks of the per-lane partials (lane k seeds input k; each
-        # row also asserts the inner-value invariant `.value === primal`). Args are
-        # `(value, lane1_seed, lane2_seed)` triples.
-        @testset "$op" for (op, args, ep, et) in Any[
-            (IW.abs_float, ((-3.0, 1.0, -1.0),), 3.0, (-1.0, 1.0)),       # dy = sign(x) dx
-            (IW.add_float, ((1.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (1.0, 1.0)),
-            (IW.add_float_fast, ((1.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (1.0, 1.0)),
-            # copysign: dz = sign(x) sign(y) dx, ∂/∂y = 0. The x<0 row is the regression
-            # for the bug that dropped the sign(x) factor (only visible for x < 0).
-            (IW.copysign_float, ((2.0, 1.0, 0.0), (-3.0, 0.0, 1.0)), -2.0, (-1.0, 0.0)),
-            (IW.copysign_float, ((-2.0, 1.0, 0.0), (-3.0, 0.0, 1.0)), -2.0, (1.0, 0.0)),
-            # div: ∂(a/b)/∂a = 1/b, ∂/∂b = -a/b².
-            (IW.div_float, ((6.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (0.5, -1.5)),
-            (IW.div_float_fast, ((6.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (0.5, -1.5)),
-            # mul: product rule.
-            (IW.mul_float, ((1.5, 1.0, 0.0), (2.5, 0.0, 1.0)), 3.75, (2.5, 1.5)),
-            (IW.mul_float_fast, ((1.5, 1.0, 0.0), (2.5, 0.0, 1.0)), 3.75, (2.5, 1.5)),
-            (IW.neg_float, ((4.0, 1.0, -2.0),), -4.0, (-1.0, 2.0)),
-            (IW.neg_float_fast, ((4.0, 1.0, -2.0),), -4.0, (-1.0, 2.0)),
-            (IW.sub_float, ((5.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (1.0, -1.0)),
-            (IW.sub_float_fast, ((5.0, 1.0, 0.0), (2.0, 0.0, 1.0)), 3.0, (1.0, -1.0)),
-            # fma/muladd: ∂(xy+z)/∂x = y, ∂/∂y = x (lane 1 seeds dx, lane 2 dy).
-            (
-                IW.fma_float,
-                ((1.5, 1.0, 0.0), (2.0, 0.0, 1.0), (0.5, 0.0, 0.0)),
-                3.5,
-                (2.0, 1.5),
-            ),
-            (
-                IW.muladd_float,
-                ((1.5, 1.0, 0.0), (2.0, 0.0, 1.0), (0.5, 0.0, 0.0)),
-                3.5,
-                (2.0, 1.5),
-            ),
-        ]
-            slots = map(a -> sl(2, a[1], nd(a...)), args)
-            r = frule!!(sl(2, op), slots...)
-            @test typeof(r) === Lifted{typeof(ep),2,NDual{typeof(ep),2}}
-            @test primal(r) === ep
-            @test tangent(r).value === ep  # inner-value invariant
-            @test tangent(r).partials == et  # `==`: a -0.0 partial matches 0.0
-        end
-
-        # fpext / fptrunc: cross-precision lifts change the dual's scalar type.
-        r_ext = frule!!(
-            sl(2, IW.fpext), sl(2, Float64), sl(2, 1.5f0, nd(1.5f0, 1.0f0, 0.0f0))
-        )
-        @test typeof(r_ext) === Lifted{Float64,2,NDual{Float64,2}}
-        @test primal(r_ext) === 1.5 && tangent(r_ext).partials === (1.0, 0.0)
-        r_tr = frule!!(sl(2, IW.fptrunc), sl(2, Float32), sl(2, 1.5, nd(1.5, 1.0, 0.0)))
-        @test typeof(r_tr) === Lifted{Float32,2,NDual{Float32,2}}
-        @test primal(r_tr) === 1.5f0 && tangent(r_tr).partials === (1.0f0, 0.0f0)
-    end
+    # builtins.jl intrinsics (abs/add/copysign/div/mul/neg/sub/fma/muladd/fpext/fptrunc) are
+    # registered in `hand_written_rule_test_cases(:builtins)`, which drives them through
+    # `test_rule` (both modes, widths 1-3, FD) plus the per-lane oracle, so no bespoke
+    # one-to-one parallel testset is needed here.
 
     @testset "frule!! one-to-one parallels (rules_via_nfwd.jl)" begin
         # Representative coverage of each registration pattern in the file
