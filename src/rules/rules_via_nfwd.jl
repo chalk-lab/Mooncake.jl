@@ -315,3 +315,23 @@ function rrule!!(
     nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
     return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
 end
+
+# Cases for the scalar primitives defined here that no other group's registry covers
+# (`exp`/`log`/`sin`/.../`hypot` are in `Val{:low_level_maths}`). Driven from
+# test/rules/low_level_maths.jl — the sibling scalar-math group — so they get the full battery
+# without standing up a separate CI job. `tanpi` is kept away from its `0.5` singularity.
+function hand_written_rule_test_cases(rng_ctor, ::Val{:rules_via_nfwd})
+    (
+        Any[
+            (false, :stability_and_allocs, nothing, tanpi, 0.1),
+            (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
+            (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
+            (false, :stability_and_allocs, nothing, sincos, 1.0),
+            (false, :stability_and_allocs, nothing, sincosd, 30.0),
+            (false, :stability_and_allocs, nothing, sincospi, 0.25),
+            (false, :stability_and_allocs, nothing, modf, 1.7),
+        ],
+        Any[],
+    )
+end
+derived_rule_test_cases(rng_ctor, ::Val{:rules_via_nfwd}) = Any[], Any[]

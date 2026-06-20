@@ -374,32 +374,10 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
     # one-to-one parallel testset is needed here.
 
     @testset "frule!! one-to-one parallels (rules_via_nfwd.jl)" begin
-        # Representative coverage of each registration pattern in the file
-        # (tanpi away from its 1.5 singularity).
-        if isdefined(@__MODULE__, :test_rule)
-            for args in Any[
-                (exp, 1.5),
-                (log, 1.5),
-                (sin, 1.5),
-                (cos, 1.5),
-                (sqrt, 1.5),
-                (cbrt, 1.5),
-                (tanpi, 0.1),
-                (atan, 1.0, 2.0),
-                (^, 2.0, 3.0),
-                (max, 1.5, 0.5),
-                (Base.FastMath.pow_fast, 2.0, 3),
-                (clamp, 0.5, 0.0, 1.0),
-                (sincos, 1.0),
-                (sincosd, 30.0),
-                (sincospi, 0.25),
-                (modf, 1.7),
-                (hypot, 3.0, 4.0),
-                (hypot, 1.0, 2.0, 2.0),
-            ]
-                test_rule(MersenneTwister(0), args...; perf_flag=:none)
-            end
-        end
+        # These primitives are registry-covered: exp/log/sin/cos/sqrt/cbrt/atan/^/max/hypot in
+        # Val{:low_level_maths}, and tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf in
+        # Val{:rules_via_nfwd} — both driven through test_rule (FD, both modes, widths 1-3,
+        # :stability_and_allocs) by the low_level_maths group. Only the seed-specific check remains.
 
         # Direct Lifted-arg invocation for one unary representative.
         r = frule!!(sl(2, sin), sl(2, 1.0, nd(1.0, 1.0, 0.0)))

@@ -1,5 +1,8 @@
 @testset "low_level_maths" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:low_level_maths))
+    # Sibling scalar-math primitives from rules_via_nfwd.jl that no other group registers
+    # (tanpi, pow_fast, clamp, sincos, sincosd, sincospi, modf); run here to avoid a separate CI job.
+    TestUtils.run_rule_test_cases(StableRNG, Val(:rules_via_nfwd))
     @testset "NaN handling in rrules" begin
         test_cases = vcat(
             map([Float16, Float32, Float64]) do T
