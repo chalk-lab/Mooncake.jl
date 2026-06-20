@@ -782,7 +782,7 @@ Now we can run the full test utility and successfully check if all the tangent /
 Run the check for both a non-cyclic case to check our method implementations,
 as well as a cyclic case to make sure that our interactions with the caches are correct:
 
-```julia
+```@example custom_tangent_type
 # Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
 
