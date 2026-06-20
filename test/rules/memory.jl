@@ -27,6 +27,16 @@ end
     # coherent zero duals — readable garbage partials would propagate as nonzero
     # derivatives via whole-buffer copies.
     @testset "element-wise undef Memory V zero partials (width $N)" for N in (1, 2, 3)
+        # Dirty the heap so an unzeroed partial buffer would read back nonzero — without this the
+        # guard is vacuous (a fresh `undef` buffer commonly reads zero by chance).
+        let junk = Memory{Float64}[]
+            for _ in 1:200
+                m = Memory{Float64}(undef, 16)
+                fill!(m, 12345.0)
+                push!(junk, m)
+            end
+        end
+        GC.gc(false)
         r = Mooncake.frule!!(
             Mooncake.zero_lifted(Val(N), Memory{Tuple{Float64,Int}}),
             Mooncake.zero_lifted(Val(N), undef),
