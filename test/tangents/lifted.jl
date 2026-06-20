@@ -411,30 +411,11 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
 
     # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
     # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via
-    # `verify_lifted_type` across widths 1-3, so no bespoke parallel is needed. (The new.jl /
-    # iddict.jl / memory.jl parallels below are kept: they cover ImmutableDual/MutableDual `_new_`
-    # wrappers, the IdDict setindex!->getindex persistence, and `lmemoryrefget`, none registered.)
-
-    @testset "frule!! one-to-one parallels (new.jl _new_)" begin
-        # Immutable struct branch → ImmutableDual V; mutable branch → MutableDual V.
-        r_imm = frule!!(
-            sl(2, _new_),
-            sl(2, LiftedTest_Point),
-            sl(2, 1.5, nd(1.5, 1.0, 0.0)),
-            sl(2, 2.5, nd(2.5, 0.0, 1.0)),
-        )
-        @test typeof(r_imm) ===
-            Lifted{LiftedTest_Point,2,dual_type(Val(2), LiftedTest_Point)}
-        @test primal(r_imm) === LiftedTest_Point(1.5, 2.5)
-        @test tangent(r_imm) isa ImmutableDual
-
-        r_mut = frule!!(
-            sl(2, _new_), sl(2, LiftedTest_RefF), sl(2, 7.0, nd(7.0, 1.0, -1.0))
-        )
-        @test typeof(r_mut) === Lifted{LiftedTest_RefF,2,dual_type(Val(2), LiftedTest_RefF)}
-        @test primal(r_mut).v === 7.0
-        @test tangent(r_mut) isa MutableDual
-    end
+    # `verify_lifted_type` across widths 1-3, so no bespoke parallel is needed. `_new_` on immutable
+    # and mutable structs is likewise registered (Val{:new}: StructFoo -> ImmutableDual, MutableFoo
+    # -> MutableDual, with the V shape checked by verify_lifted_type), so no new.jl parallel either.
+    # The iddict.jl / memory.jl parallels below ARE kept: the IdDict setindex!->getindex persistence
+    # and `lmemoryrefget` are not registered anywhere.
 
     @testset "frule!! one-to-one parallels (iddict.jl)" begin
         # Constructor, then setindex! + getindex round trip.
