@@ -19,13 +19,15 @@ end
     # (dual_type(Task) === TaskTangent). The Task's V is never consumed in simple forward AD, so
     # this is checked at the frule boundary. `TaskTangent` is width-invariant, so width 1 suffices.
     # Args mirror the normalized `_foreigncall_(Val(:jl_new_task), RT, AT, nreq, cc, f, cf, ssize)`.
+    # `ssize` is a native `Int` (Int32 on 32-bit), so the arg-type must be `Int`, not a hardcoded
+    # `Int64` — the latter mismatches the `Int32` value on 32-bit and ccall-TypeErrors.
     @testset "jl_new_task slot coherence" begin
         zl(v) = Mooncake.zero_lifted(Val(1), v)
         r = Mooncake.frule!!(
             zl(Mooncake._foreigncall_),
             zl(Val(:jl_new_task)),
             zl(Val{Ref{Task}}()),
-            zl((Val{Any}(), Val{Any}(), Val{Int64}())),
+            zl((Val{Any}(), Val{Any}(), Val{Int}())),
             zl(Val{0}()),
             zl(Val{:ccall}()),
             zl(() -> nothing),
