@@ -127,3 +127,18 @@ function rrule!!(
     _new_complex_pb(dy::Complex{P}) = NoRData(), NoRData(), real(dy), imag(dy)
     return zero_fcodual(_new_(Complex{P}, re.x, im.x)), _new_complex_pb
 end
+
+# No primitive `:complex` cases — the Complex-scalar `lgetfield` (real/imag) and `_new_`
+# (construction) rules are exercised only as derived cases below.
+hand_written_rule_test_cases(rng_ctor, ::Val{:complex}) = Any[], Any[]
+
+function derived_rule_test_cases(rng_ctor, ::Val{:complex})
+    test_cases = Any[
+        (false, :none, nothing, real, 1.0 + 2.0im),
+        (false, :none, nothing, imag, 1.0 + 2.0im),
+        (false, :none, nothing, z -> z.re * z.im, 1.5 - 0.5im),
+        (false, :none, nothing, (a, b) -> Complex(a, b), 1.0, 2.0),
+        (false, :none, nothing, (a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
+    ]
+    return test_cases, Any[]
+end
