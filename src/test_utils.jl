@@ -1704,9 +1704,9 @@ assertions on the seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifte
 - the reverse↔forward bridge (width-1 only, the forward-over-reverse / HVP path): a reverse
   tangent round-trips, `unlift(lift(p, ẋ)) == (p, ẋ)`.
 
-Self-referential primals whose cycle passes through a plain `Array` are outside the forward
-representation contract (the array seed path is not yet cycle-aware) and must be filtered by the
-caller; cyclic *mutable structs* are supported.
+Self-referential primals are supported: both cyclic *mutable structs* and cycles through a plain
+`Array` (the array seed path is cycle-aware). `circular_vector` and the cyclic-struct entry in
+`tangent_test_cases()` exercise the two paths.
 """
 function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
     @nospecialize rng p

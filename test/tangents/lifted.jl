@@ -572,18 +572,6 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
             test_lifted(Xoshiro(123456), p)
         end
 
-        @testset "cyclic mutable struct" begin
-            test_lifted(Xoshiro(1), make_circular_reference_struct())
-        end
-
-        @testset "self-referential plain array" begin
-            # The whole representation battery (seed, per-lane extraction, lift/unlift) is
-            # cycle-aware for plain-array cycles, not just the seed.
-            x = Any[]
-            push!(x, x)
-            test_lifted(Xoshiro(1), x)
-        end
-
         # Type-level widening / sentinel cases the value-drive cannot reach (abstract and
         # `Union` primals). Free-TypeVar `Tuple` phantoms are exercised in `codual.jl`.
         @testset "test_lifted_type $P (N=$N)" for P in (
