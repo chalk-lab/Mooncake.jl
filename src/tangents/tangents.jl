@@ -2087,6 +2087,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.StructNoFwds(5.0),
         TestResources.StructNoRvs([5.0]),
         TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0),
+        # Complex scalar + array: a differentiable element type otherwise absent from this list,
+        # so it is driven through both test_lifted (forward) and test_tangent (reverse).
+        1.0 + 2.0im,
+        ComplexF64[1.0 + 2.0im, -3.0 + 0.5im, 0.0 - 1.0im],
         LowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UpperTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
         UnitLowerTriangular{Float64,Matrix{Float64}}(randn(2, 2)),
