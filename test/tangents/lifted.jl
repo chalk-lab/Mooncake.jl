@@ -479,10 +479,20 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
     end
 
     @testset "frule!! one-to-one parallels (threads.jl)" begin
-        # `_foreigncall_`'s strict signature makes a representative call fragile;
-        # verify the Lifted threading rules are registered instead.
-        sigs = [sprint(show, m) for m in methods(frule!!)]
-        @test any(s -> occursin("jl_in_threaded_region", s) && occursin("Lifted", s), sigs)
+        # Behaviourally exercise a threading foreigncall frule (non-diff Cint result -> `NoDual` V),
+        # rather than string-matching the method table. ABI mirrors the normalized
+        # `_foreigncall_(Val(:jl_in_threaded_region), RT, AT, nreq, cc)` (no call args).
+        sl1(v) = sl(1, v)
+        r = frule!!(
+            sl1(Mooncake._foreigncall_),
+            sl1(Val(:jl_in_threaded_region)),
+            sl1(Val{Cint}()),
+            sl1(()),
+            sl1(Val{0}()),
+            sl1(Val{:ccall}()),
+        )
+        @test primal(r) isa Cint
+        @test tangent(r) isa NoDual
     end
 
     @testset "type-stability" begin
