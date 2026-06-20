@@ -2094,10 +2094,15 @@ function throwing_rule_test_cases(::Val{:builtins})
     xv = [1.0]
     ptr = pointer(xv)
     pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
-    cases = Any[(
-        ArgumentError,
-        IntrinsicsWrappers.atomic_pointerset,
-        (pslot, zero_lifted(Val(1), 2.0), zero_lifted(Val(1), :monotonic)),
-    )]
+    cases = Any[
+        (
+            ArgumentError,
+            IntrinsicsWrappers.atomic_pointerset,
+            (pslot, zero_lifted(Val(1), 2.0), zero_lifted(Val(1), :monotonic)),
+        ),
+        # Forward `throw` rule must re-raise (the reverse rule is covered by the `throw` rrule cases).
+        (ArgumentError, throw, (zero_lifted(Val(1), ArgumentError("hello")),)),
+        (AssertionError, throw, (zero_lifted(Val(1), AssertionError("hello")),)),
+    ]
     return cases, Any[xv]
 end

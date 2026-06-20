@@ -80,23 +80,7 @@ foo_throws(e) = throw(e)
             AssertionError,
             Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(AssertionError("hello")))
         )
-
-        # Forward rule (frule!!) likewise re-raises (covers the forward `throw` rule, which was
-        # otherwise untested — only the reverse rule above was exercised).
-        @test_throws(
-            ArgumentError,
-            Mooncake.frule!!(
-                Mooncake.zero_lifted(Val(1), throw),
-                Mooncake.zero_lifted(Val(1), ArgumentError("hello")),
-            )
-        )
-        @test_throws(
-            AssertionError,
-            Mooncake.frule!!(
-                Mooncake.zero_lifted(Val(1), throw),
-                Mooncake.zero_lifted(Val(1), AssertionError("hello")),
-            )
-        )
+        # The forward `throw` rule re-raise is registered in `throwing_rule_test_cases(:builtins)`.
 
         # Derived rule throws the correct exception.
         rule_arg = Mooncake.build_rrule(Tuple{typeof(foo_throws),ArgumentError})
