@@ -15,7 +15,7 @@ end
 
     # Regression: a `Task`-returning threading foreigncall (jl_new_task) must yield a
     # canonical-coherent slot. The frule wraps results with `zero_lifted`, so the Task gets a
-    # `TaskTangent` V; a blanket `Lifted(y, NoDual())` would fail `verify_v_coherence`
+    # `TaskTangent` V; a blanket `Lifted(y, NoDual())` would fail `verify_canonical_dual_type`
     # (dual_type(Task) === TaskTangent). The Task's V is never consumed in simple forward AD, so
     # this is checked at the frule boundary. `TaskTangent` is width-invariant, so width 1 suffices.
     # Args mirror the normalized `_foreigncall_(Val(:jl_new_task), RT, AT, nreq, cc, f, cf, ssize)`.
@@ -34,6 +34,6 @@ end
         )
         @test primal(r) isa Task
         @test tangent(r) isa Mooncake.TaskTangent
-        @test Mooncake.verify_v_coherence(r) === nothing
+        @test Mooncake.verify_canonical_dual_type(r) === nothing
     end
 end

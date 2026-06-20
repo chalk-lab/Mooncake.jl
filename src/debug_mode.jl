@@ -36,14 +36,14 @@ end
     for _x in x
         _x isa Lifted ||
             error("Expected Lifted, got $(typeof(_x)); input types $(_typeof(x))")
-        verify_v_coherence(_x)
+        verify_canonical_dual_type(_x)
     end
 end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
     y isa Lifted ||
         error("frule!! must return a Lifted, got $(typeof(y)); input types $(_typeof(x))")
-    return verify_v_coherence(y)
+    return verify_canonical_dual_type(y)
 end
 
 # A concrete-primal slot must carry exactly the canonical V. `Ptr` primals are exempt:
@@ -52,7 +52,7 @@ end
 # recursive V *type*, and the canonical seed factories keep each `NDualArray`'s partials axes in
 # step with its primal — a runtime axis mismatch is not separately asserted here (it would surface
 # in the rule's own array ops), unlike reverse mode's structural `verify_fdata_value` walk.
-@noinline function verify_v_coherence(x::Lifted{P,N,V}) where {P,N,V}
+@noinline function verify_canonical_dual_type(x::Lifted{P,N,V}) where {P,N,V}
     (isconcretetype(P) && !(P <: Ptr)) || return nothing
     Vexp = dual_type(Val(N), P)
     V === Vexp || error(

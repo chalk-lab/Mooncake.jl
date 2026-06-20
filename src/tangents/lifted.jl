@@ -143,7 +143,7 @@ _primal(x::Lifted) = primal(x)
 # sharpened to a concrete subtype at runtime, so the static V cannot be asserted — accept those.
 # `Ptr` primals are exempt too: they have no ownable derivative storage, so a non-differentiable
 # `Ptr` result legitimately carries `NoDual` rather than the per-lane `NTuple{N,Ptr}` (mirrors the
-# `Ptr` exemption in `DebugFRule`'s `verify_v_coherence`; see the `pointerref`/`cglobal` rules).
+# `Ptr` exemption in `DebugFRule`'s `verify_canonical_dual_type`; see the `pointerref`/`cglobal` rules).
 function verify_lifted_type(::Lifted{P,N,V}) where {P,N,V}
     (!isconcretetype(P) || P <: Ptr) || V === dual_type(Val(N), P)
 end

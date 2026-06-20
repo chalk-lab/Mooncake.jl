@@ -77,14 +77,14 @@
         # Ptr primals are exempt (bitcast chains legitimately re-type per-lane pointers).
         @testset "V-coherence check" begin
             bad = Lifted{Float64,1,Mooncake.NoDual}(1.0, Mooncake.NoDual())
-            @test_throws ErrorException Mooncake.verify_v_coherence(bad)
-            @test Mooncake.verify_v_coherence(Mooncake.lift(3.14, 1.0)) === nothing
+            @test_throws ErrorException Mooncake.verify_canonical_dual_type(bad)
+            @test Mooncake.verify_canonical_dual_type(Mooncake.lift(3.14, 1.0)) === nothing
             xv = [1.0]
             GC.@preserve xv begin
                 ptr_slot = Lifted{Ptr{Float64},1}(
                     pointer(xv), (Ptr{Tuple{Float64}}(UInt(pointer(xv))),)
                 )
-                @test Mooncake.verify_v_coherence(ptr_slot) === nothing
+                @test Mooncake.verify_canonical_dual_type(ptr_slot) === nothing
             end
         end
 
