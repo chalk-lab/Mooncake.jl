@@ -1707,15 +1707,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, IntrinsicsWrappers.floor_llvm, 4.1),
         (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0, 4.0, 3.0),
         (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0f0, 4.0f0, 3.0f0),
-        # `interface_only=false` so FD validates the cross-precision derivative (partial passthrough);
-        # `perf_flag=:none` because the `Type` argument trips the type-stability probe (the reason
-        # these were interface-only, which silently skipped derivative checking).
-        (false, :none, nothing, IntrinsicsWrappers.fpext, Float64, 5.0f0),
+        # `interface_only=false` so FD validates the cross-precision partial-passthrough derivative
+        # (interface-only gates only the FD checks, not the perf checks, so it silently skipped
+        # derivative validation). Perf flags retained: the rules are type-stable here (fpext also
+        # zero-alloc) — the `Type` argument does not trip the stability probe.
+        (false, :stability_and_allocs, nothing, IntrinsicsWrappers.fpext, Float64, 5.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.1, 4.0),
         (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.0f1, 4.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.fptosi, UInt32, 4.1),
         (false, :stability, nothing, IntrinsicsWrappers.fptoui, Int32, 4.1),
-        (false, :none, nothing, IntrinsicsWrappers.fptrunc, Float32, 5.0),
+        (false, :stability, nothing, IntrinsicsWrappers.fptrunc, Float32, 5.0),
         (true, :stability, nothing, IntrinsicsWrappers.have_fma, Float64),
         (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.1, 4.0),
         (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.0f1, 4.0f0),
