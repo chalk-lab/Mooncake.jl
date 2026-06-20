@@ -1276,6 +1276,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         # Rules for `Memory`
         (true, :stability, nothing, Memory{Float64}, undef, 5),
         (true, :stability, nothing, Memory{Memory{Float64}}, undef, 5),
+        # Non-scalar isbits element: exercises the generic `Memory{P}(undef, n)` constructor rule
+        # for a struct/tuple eltype (the `bitstype` branch of `_dot_internal`).
+        (true, :stability, nothing, Memory{Tuple{Float64,Int}}, undef, 4),
         [(false, :stability_and_allocs, nothing, lgetfield, m, Val(:length)) for m in mems],
         [(false, :stability_and_allocs, nothing, lgetfield, m, Val(1)) for m in mems],
         [(false, :none, nothing, getfield, m, :length) for m in mems],
