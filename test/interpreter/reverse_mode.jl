@@ -757,9 +757,7 @@ end
             @testset "IDPhiNode" begin
                 id = ID()
                 d = Dict{ID,Bool}(id => false)
-                Mooncake._find_id_uses!(
-                    d, IDPhiNode([ID()], Vector{Any}(undef, 1))
-                )
+                Mooncake._find_id_uses!(d, IDPhiNode([ID()], Vector{Any}(undef, 1)))
                 @test d[id] == false
                 Mooncake._find_id_uses!(d, IDPhiNode([ID()], Any[id]))
                 @test d[id] == true
@@ -808,8 +806,7 @@ end
             ],
             Any[Any for _ in 1:4],
         )
-        @test Mooncake._is_reachable(_ircode_to_cfg_blocks(ir)) ==
-            [true, false, false]
+        @test Mooncake._is_reachable(_ircode_to_cfg_blocks(ir)) == [true, false, false]
     end
     @testset "_remove_unreachable_cfg_blocks!" begin
 
@@ -865,8 +862,7 @@ end
         blk_id = ID()
         blks = CFGBlock[
             CFGBlock(
-                blk_id,
-                Mooncake.IDInstPair[(ID(), new_inst(nothing)), (ID(), new_inst(sw))],
+                blk_id, Mooncake.IDInstPair[(ID(), new_inst(nothing)), (ID(), new_inst(sw))]
             ),
             CFGBlock(d1, Mooncake.IDInstPair[(ID(), new_inst(ReturnNode(1)))]),
             CFGBlock(d2, Mooncake.IDInstPair[(ID(), new_inst(ReturnNode(2)))]),
@@ -939,7 +935,9 @@ end
         header, body, unreachable = ID(), ID(), ID()
         blks = CFGBlock[
             # header branches to itself (back-edge) and falls through to body.
-            CFGBlock(header, Mooncake.IDInstPair[(ID(), new_inst(IDGotoIfNot(true, header)))]),
+            CFGBlock(
+                header, Mooncake.IDInstPair[(ID(), new_inst(IDGotoIfNot(true, header)))]
+            ),
             CFGBlock(body, Mooncake.IDInstPair[(ID(), new_inst(ReturnNode(1)))]),
             CFGBlock(unreachable, Mooncake.IDInstPair[(ID(), new_inst(ReturnNode(2)))]),
         ]

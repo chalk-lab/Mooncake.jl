@@ -778,16 +778,14 @@ function Mooncake.TestUtils.has_equal_data_internal(t::TangentForA{Tx}, s::Tange
 end
 ```
 
-Now we can run it again and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.
-We run the check for both a non-cyclic case to check our method implementations,
-as well as a cyclic case to make sure that our interactions with the caches are correct.
+Now we can run the full test utility and successfully check if all the tangent / fdata / rdata and other required functionality works correctly for the self-referential type A.
+Run the check for both a non-cyclic case to check our method implementations,
+as well as a cyclic case to make sure that our interactions with the caches are correct:
 
-```@example custom_tangent_type
+```julia
 # Non-cyclic A
 Mooncake.TestUtils.test_data(Random.default_rng(), A(1.0, A(2.0, A(3.0))))
-```
 
-```@example custom_tangent_type
 # Cyclic A
 cyclic_a = A(1.0, A(2.0))
 cyclic_a.a.a = cyclic_a

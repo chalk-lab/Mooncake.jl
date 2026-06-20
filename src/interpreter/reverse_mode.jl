@@ -150,7 +150,9 @@ end
 Returns the terminator associated to `bb`. If the last instruction in `bb` isa
 `Terminator` then that is returned, otherwise `nothing` is returned.
 """
-terminator(bb::CFGBlock) = isa(bb.insts[end].stmt, Terminator) ? bb.insts[end].stmt : nothing
+function terminator(bb::CFGBlock)
+    isa(bb.insts[end].stmt, Terminator) ? bb.insts[end].stmt : nothing
+end
 
 """
     insert_before_terminator(
@@ -184,8 +186,9 @@ collect_stmts(bb::CFGBlock)::Vector{IDInstPair} = collect(zip(bb.inst_ids, bb.in
 Produce a `Vector` containing all of the statements in `blks`, in order, so it is safe to
 assume that element `n` refers to the `n`th statement of the corresponding `IRCode`.
 """
-collect_stmts(blks::Vector{CFGBlock})::Vector{IDInstPair} =
-    reduce(vcat, map(collect_stmts, blks))
+collect_stmts(blks::Vector{CFGBlock})::Vector{IDInstPair} = reduce(
+    vcat, map(collect_stmts, blks)
+)
 
 """
     _compute_cfg_successors(blks::Vector{CFGBlock})::Dict{ID, Vector{ID}}
@@ -753,7 +756,8 @@ _find_id_uses!(d::Dict{ID,Bool}, x) = nothing
 Computes a `Vector` whose length is `length(blks)`. The `n`th element is `true` iff it is
 possible for control flow to reach the `n`th block.
 """
-_is_reachable(blks::Vector{CFGBlock})::Vector{Bool} = _distance_to_entry(blks) .< typemax(Int)
+_is_reachable(blks::Vector{CFGBlock})::Vector{Bool} =
+    _distance_to_entry(blks) .< typemax(Int)
 
 """
     _remove_unreachable_cfg_blocks!(blks::Vector{CFGBlock})::Vector{CFGBlock}
@@ -2169,7 +2173,13 @@ function generate_ir(
         ir, primal_blocks, ad_stmts_blocks, fwds_comms_insts, info, _typeof(shared_data)
     )
     rvs_ir = pullback_ir(
-        ir, primal_blocks, Treturn, ad_stmts_blocks, pb_comms_insts, info, _typeof(shared_data)
+        ir,
+        primal_blocks,
+        Treturn,
+        ad_stmts_blocks,
+        pb_comms_insts,
+        info,
+        _typeof(shared_data),
     )
     opt_fwd_ir = do_optimize ? optimise_ir!(fwd_ir; do_inline) : fwd_ir
     opt_rvs_ir = do_optimize ? optimise_ir!(rvs_ir; do_inline) : rvs_ir
