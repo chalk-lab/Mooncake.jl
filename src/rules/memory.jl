@@ -741,8 +741,10 @@ end
         return dest
     end
     # Element-wise array field write (`Array` growth sets `.ref` / `.size`): set the field
-    # on the primal array and the parallel element-wise V array. `.ref` is the differentiable
-    # storage (take the element-wise V ref); `.size` is metadata shared with the primal.
+    # on the primal array and the parallel element-wise V array. `.size` (field 2) is metadata
+    # shared with the primal; every other field — i.e. `.ref` (field 1), the differentiable
+    # storage — takes the element-wise V ref. Key on `:size`/`2` (not `:ref`) so the integer
+    # alias `Val(1)` for `.ref` is handled, matching the reverse rrule and the NDualArray sibling.
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
         value::Lifted{<:Array,Nw,<:Array},
@@ -750,7 +752,11 @@ end
         x::Lifted,
     ) where {Nw,name}
         lsetfield!(primal(value), Val(name), primal(x))
-        lsetfield!(tangent(value), Val(name), name === :ref ? tangent(x) : primal(x))
+        lsetfield!(
+            tangent(value),
+            Val(name),
+            (name === :size || name === 2) ? primal(x) : tangent(x),
+        )
         return x
     end
     # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
@@ -1399,6 +1405,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             randn(rng, 10),
             Val(1),
             randn(rng, 10).ref,
+        ),
+        # Element-wise V parent: writing `.ref` (field 1) by integer index `Val(1)` must thread the
+        # tangent ref, not the primal. The symbol form `Val(:ref)` took the right branch but the
+        # integer alias did not (regression vs the reverse rrule / NDualArray sibling predicate).
+        (
+            false,
+            :none,
+            nothing,
+            lsetfield!,
+            [randn(rng, 2) for _ in 1:3],
+            Val(1),
+            [randn(rng, 2) for _ in 1:3].ref,
         ),
         (
             false,
