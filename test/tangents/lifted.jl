@@ -321,39 +321,9 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test primal(r3) == Complex(1.5, -0.5) && tangent(r3) === z_inner
     end
 
-    @testset "frule!! one-to-one parallels (performance_patches.jl)" begin
-        x = [1.0, 2.0, 3.0]
-        x_slot = sl(
-            2,
-            x,
-            NDualArray{Float64,2,1,Vector{Float64}}(x, ([1.0, 0.0, -0.5], [0.5, 1.0, 0.0])),
-        )
-
-        r = frule!!(sl(2, sum), x_slot)
-        @test typeof(r) === Lifted{Float64,2,NDual{Float64,2}}
-        @test tangent(r) === nd(sum(x), 0.5, 1.5)
-
-        # Forward derivative of sum(abs2, x) along d is 2*dot(x, d).
-        r2 = frule!!(sl(2, sum), sl(2, abs2), x_slot)
-        @test primal(r2) == sum(abs2, x)
-        @test tangent(r2).value == sum(abs2, x)
-        @test tangent(r2).partials[1] ≈ 2 * (1.0 * 1.0 + 3.0 * -0.5)
-        @test tangent(r2).partials[2] ≈ 2 * (1.0 * 0.5 + 2.0 * 1.0)
-
-        # LinearAlgebra._kron!: per-lane Kronecker product into dout. Lane 1 perturbs x1
-        # by x1 itself, lane 2 perturbs x2 by x2: both give kron(x1, x2) as the partial.
-        x1m, x2m, outm = [1.0 2.0], reshape([3.0, 4.0], 2, 1), Matrix{Float64}(undef, 2, 2)
-        arr_slot(m, p1, p2) = sl(2, m, NDualArray{Float64,2,2,Matrix{Float64}}(m, (p1, p2)))
-        r_kron = frule!!(
-            sl(2, LinearAlgebra._kron!),
-            arr_slot(outm, zeros(2, 2), zeros(2, 2)),
-            arr_slot(x1m, copy(x1m), zeros(1, 2)),
-            arr_slot(x2m, zeros(2, 1), copy(x2m)),
-        )
-        @test outm == [3.0 6.0; 4.0 8.0]
-        @test r_kron.value.partials[1] == [3.0 6.0; 4.0 8.0]
-        @test r_kron.value.partials[2] == [3.0 6.0; 4.0 8.0]
-    end
+    # performance_patches.jl rules (sum, sum(abs2,·), LinearAlgebra._kron!) are registered in
+    # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V is per-lane
+    # oracle-checkable, so `test_rule` covers value + per-lane partials across widths 1-3.
 
     @testset "MutableDualTangentView (NDual field)" begin
         r = LiftedTest_RefF(3.0)
