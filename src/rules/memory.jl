@@ -1293,6 +1293,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             (false, :none, nothing, memoryrefget, mem_ref, :not_atomic, bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [false, true]
         ],
+        # `lmemoryrefget` (literal Val-wrapped ordering/boundscheck), the get-analogue of the
+        # `lmemoryrefset!` entry below.
+        [
+            (false, :none, nothing, lmemoryrefget, mem_ref, Val(:not_atomic), bc) for
+            mem_ref in filter(isassigned, mem_refs) for bc in [Val(false), Val(true)]
+        ],
         [(false, :none, nothing, memoryrefnew, mem) for mem in mems],
         [
             (false, :none, nothing, memoryrefnew, mem, 1) for

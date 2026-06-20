@@ -303,23 +303,9 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         end
     end
 
-    @testset "frule!! one-to-one parallels (complex.jl)" begin
-        re_inner, im_inner = nd(1.5, 1.0, 0.0), nd(-0.5, 0.0, 1.0)
-        z_inner = Complex(re_inner, im_inner)
-        z = sl(2, Complex(1.5, -0.5), z_inner)
-
-        r = frule!!(sl(2, lgetfield), z, sl(2, Val(:re)))
-        @test typeof(r) === Lifted{Float64,2,NDual{Float64,2}}
-        @test primal(r) == 1.5 && tangent(r) === re_inner
-        r2 = frule!!(sl(2, lgetfield), z, sl(2, Val(:im)))
-        @test primal(r2) == -0.5 && tangent(r2) === im_inner
-
-        r3 = frule!!(
-            sl(2, _new_), sl(2, ComplexF64), sl(2, 1.5, re_inner), sl(2, -0.5, im_inner)
-        )
-        @test typeof(r3) === Lifted{ComplexF64,2,Complex{NDual{Float64,2}}}
-        @test primal(r3) == Complex(1.5, -0.5) && tangent(r3) === z_inner
-    end
+    # complex.jl rules: `lgetfield(::Complex, Val(:re)/:im)` and `_new_(ComplexF64, re, im)` are
+    # registered in `hand_written_rule_test_cases(:complex)`, driven through test_rule (both modes,
+    # widths 1-3, :stability_and_allocs) by the complex group — no bespoke parallel needed.
 
     # performance_patches.jl rules (sum, sum(abs2,·), LinearAlgebra._kron!) are registered in
     # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V is per-lane
@@ -373,27 +359,19 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
     # `test_rule` (both modes, widths 1-3, FD) plus the per-lane oracle, so no bespoke
     # one-to-one parallel testset is needed here.
 
-    @testset "frule!! one-to-one parallels (rules_via_nfwd.jl)" begin
-        # These primitives are registry-covered: exp/log/sin/cos/sqrt/cbrt/atan/^/max/hypot in
-        # Val{:low_level_maths}, and tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf in
-        # Val{:rules_via_nfwd} — both driven through test_rule (FD, both modes, widths 1-3,
-        # :stability_and_allocs) by the low_level_maths group. Only the seed-specific check remains.
-
-        # Direct Lifted-arg invocation for one unary representative.
-        r = frule!!(sl(2, sin), sl(2, 1.0, nd(1.0, 1.0, 0.0)))
-        @test typeof(r) === Lifted{Float64,2,NDual{Float64,2}}
-        @test primal(r) === sin(1.0)
-        @test tangent(r).partials[1] ≈ cos(1.0)
-        @test tangent(r).partials[2] == 0.0
-    end
+    # rules_via_nfwd.jl scalar primitives are registry-covered: exp/log/sin/.../hypot in
+    # Val{:low_level_maths}, tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf in
+    # Val{:rules_via_nfwd}. test_rule's per-lane oracle already checks per-lane partials for these
+    # numeric-dual primitives, so the explicit-seed direct `sin` check added nothing.
 
     # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
     # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via
     # `verify_lifted_type` across widths 1-3, so no bespoke parallel is needed. `_new_` on immutable
     # and mutable structs is likewise registered (Val{:new}: StructFoo -> ImmutableDual, MutableFoo
     # -> MutableDual, with the V shape checked by verify_lifted_type), so no new.jl parallel either.
-    # The iddict.jl / memory.jl parallels below ARE kept: the IdDict setindex!->getindex persistence
-    # and `lmemoryrefget` are not registered anywhere.
+    # The iddict.jl parallel below IS kept: the IdDict setindex!->getindex persistence (mutation
+    # threaded across two rule calls on the same slot) is not expressible as a registry case.
+    # (memory.jl's ctor / memoryrefnew / lmemoryrefget are all registered, so no memory parallel.)
 
     @testset "frule!! one-to-one parallels (iddict.jl)" begin
         # Constructor, then setindex! + getindex round trip.
@@ -409,32 +387,6 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         r_gi = frule!!(sl(2, getindex), d_slot, sl(2, :a))
         @test primal(r_gi) === 3.0
         @test tangent(r_gi).partials === (1.0, -1.0)
-    end
-
-    @static if VERSION >= v"1.11-rc4"
-        @testset "frule!! one-to-one parallels (memory.jl)" begin
-            # Memory{P}(undef, n) constructor → zeroed parallel-arrays V.
-            r_mem = frule!!(sl(2, Memory{Float64}), sl(2, undef), sl(2, 3))
-            @test typeof(r_mem) === lifted_type(Val(2), Memory{Float64})
-            @test length(primal(r_mem)) == 3
-            @test all(iszero, tangent(r_mem).partials[1])
-            @test all(iszero, tangent(r_mem).partials[2])
-
-            # memoryrefnew(::Memory) → MemoryRef slot.
-            r_ref = frule!!(sl(2, Core.memoryrefnew), r_mem)
-            @test typeof(r_ref) === lifted_type(Val(2), MemoryRef{Float64})
-            @test primal(r_ref) === Core.memoryref(primal(r_mem))
-
-            # lmemoryrefget — read an NDual back out at position 1.
-            r_get = frule!!(
-                sl(2, Mooncake.lmemoryrefget),
-                r_ref,
-                sl(2, Val(:not_atomic)),
-                sl(2, Val(false)),
-            )
-            @test typeof(r_get) === Lifted{Float64,2,NDual{Float64,2}}
-            @test primal(r_get) === primal(r_mem)[1]
-        end
     end
 
     @testset "frule!! one-to-one parallels (threads.jl)" begin

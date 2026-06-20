@@ -128,9 +128,19 @@ function rrule!!(
     return zero_fcodual(_new_(Complex{P}, re.x, im.x)), _new_complex_pb
 end
 
-# No primitive `:complex` cases — the Complex-scalar `lgetfield` (real/imag) and `_new_`
-# (construction) rules are exercised only as derived cases below.
-hand_written_rule_test_cases(rng_ctor, ::Val{:complex}) = Any[], Any[]
+# Complex-scalar `lgetfield` (field read) and `_new_` (construction) are primitives (via the generic
+# lgetfield/_new_ declarations), so register them as hand-written cases to get the chunked widths the
+# derived cases below skip (is_primitive=false).
+function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
+    (
+        Any[
+            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:re)),
+            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:im)),
+            (false, :stability_and_allocs, nothing, _new_, ComplexF64, 1.5, -0.5),
+        ],
+        Any[],
+    )
+end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:complex})
     test_cases = Any[
