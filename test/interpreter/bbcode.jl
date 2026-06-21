@@ -64,6 +64,45 @@ end
         @test length(Mooncake.collect_stmts(bb_code)) == length(stmt(ir.stmts))
         @test Mooncake.BasicBlockCode.id_to_line_map(bb_code) isa Dict{ID,Int}
     end
+
+    @static if VERSION > v"1.12-"
+        @testset "codelocs consistent after instruction insertion" begin
+            # In 1.12+, codelocs (and stmts.line) pack 3 Int32 per instruction, so an
+            # n-instruction IRCode has 3n entries that must stay aligned across the round-trip.
+            ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
+            n_orig = length(ir.stmts)
+            orig_ir_codelocs = copy(ir.debuginfo.codelocs)
+            bb = BBCode(ir)
+
+            # Mirror insert_before_terminator! to predict where the new instruction lands.
+            blk = bb.blocks[1]
+            insert_idx = if isnothing(Mooncake.terminator(blk))
+                length(blk.insts) + 1
+            else
+                length(blk.insts)
+            end
+            # Recognisable codeloc to check it lands at the right offset, not just that sizes match.
+            sentinel = (Int32(123), Int32(45), Int32(6))
+            inst = CC.NewInstruction(
+                nothing, Any, CC.NoCallInfo(), sentinel, CC.IR_FLAG_REFINED
+            )
+            Mooncake.insert_before_terminator!(blk, ID(), inst)
+            orig_bb_codelocs = copy(bb.debuginfo.codelocs)
+            new_ir = CC.IRCode(bb)
+            n = length(new_ir.stmts)
+            insert_range = (3insert_idx - 2):(3insert_idx)
+
+            @test n == n_orig + 1
+            @test length(new_ir.stmts.line) == 3n
+            @test length(new_ir.debuginfo.codelocs) == 3n
+            @test Tuple(new_ir.stmts.line[insert_range]) == sentinel
+            @test new_ir.debuginfo.codelocs !== bb.debuginfo.codelocs
+            # Conversion must not mutate the source; bb and ir share the same codelocs array.
+            @test bb.debuginfo.codelocs == orig_bb_codelocs
+            @test ir.debuginfo.codelocs == orig_ir_codelocs
+        end
+    end
+
     @testset "control_flow_graph" begin
         ir = Base.code_ircode_by_type(Tuple{typeof(sin),Float64})[1][1]
         bb = BBCode(ir)

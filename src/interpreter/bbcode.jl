@@ -571,7 +571,23 @@ Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`
 """
 function new_inst_vec(x::CC.InstructionStream)
     stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
-    return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    @static if VERSION > v"1.12-"
+        # In Julia 1.12+, x.line is a flat Vector{Int32} of length 3n (3 codeloc values per
+        # instruction). Construct each NewInstruction with its proper Tuple{Int32,Int32,Int32}
+        # line field by reading the 3 entries for instruction i at positions 3i-2, 3i-1, 3i.
+        n = length(stmt)
+        return [
+            NewInstruction(
+                stmt[i],
+                x.type[i],
+                x.info[i],
+                (x.line[3i - 2], x.line[3i - 1], x.line[3i]),
+                x.flag[i],
+            ) for i in 1:n
+        ]
+    else
+        return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    end
 end
 
 # Maps from positional names (SSAValues for nodes, Integers for basic blocks) to IDs.
@@ -666,15 +682,16 @@ function CC.IRCode(bb_code::BBCode)
     cfg = control_flow_graph(bb_code)
     insts = _lines_to_blocks(insts, cfg)
     @static if VERSION > v"1.12-"
-        lines = CC.copy(bb_code.debuginfo.codelocs)
-        n = length(insts)
-        if length(lines) > 3n
-            resize!(lines, 3n)
-        elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
-                push!(lines, 0)
-            end
-        end
+        # Reconstruct codelocs from each instruction's own line field (a Tuple{Int32,Int32,Int32}
+        # in Julia 1.12+). This is now always 3n entries by construction, regardless of how
+        # many instructions were added or removed during BBCode transforms. The old approach of
+        # copying debuginfo.codelocs and resizing was a defensive workaround: instructions added
+        # or removed during transforms don't update codelocs, causing a size mismatch and
+        # misalignment between debug info and line numbers, potentially affecting added, removed,
+        # and already-present instructions depending on where the changes occurred.
+        lines = Int32[v for inst in insts for v in inst.line]
+        debuginfo = CC.copy(bb_code.debuginfo)
+        debuginfo.codelocs = lines
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],
@@ -684,7 +701,7 @@ function CC.IRCode(bb_code::BBCode)
                 UInt32[x.flag for x in insts],
             ),
             cfg,
-            CC.copy(bb_code.debuginfo),
+            debuginfo,
             CC.copy(bb_code.argtypes),
             CC.copy(bb_code.meta),
             CC.copy(bb_code.sptypes),
