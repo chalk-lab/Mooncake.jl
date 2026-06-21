@@ -175,15 +175,11 @@ If you observe unexpected performance regressions in differentiated code that is
 
 ## Differentiating Through Another Automatic Differentiation Library
 
-Mooncake.jl differentiates ordinary Julia code; it is not meant to differentiate *through* another automatic differentiation library.
-If the function you hand to Mooncake itself calls a second autograd tool — for example by building and replaying a tape — you are asking Mooncake to differentiate that tool's internals rather than your underlying mathematical function.
-This is outside Mooncake's scope and is not officially supported.
+Mooncake.jl is not meant to differentiate *through* another automatic differentiation library.
+If the function you hand to Mooncake itself calls a second autograd tool — for example, by building and replaying a tape — you are asking Mooncake to differentiate that tool's internals rather than your underlying mathematical function.
+This is outside Mooncake's scope and is not officially supported. See [issue #1209](https://github.com/chalk-lab/Mooncake.jl/issues/1209) for an example.
 
-Such code leans on exactly the features that make AD hard, such as runtime code generation and world-age changes that happen mid-run, so it may fail loudly or, worse, return a plausible but incorrect gradient.
-See [issue #1209](https://github.com/chalk-lab/Mooncake.jl/issues/1209) for an example.
-
-Instead, differentiate the underlying function directly with Mooncake.
-If part of your computation genuinely needs another AD tool, wrap that part in a custom rule so Mooncake treats it as a primitive and never looks inside; see [Defining Rules](@ref).
+If part of your computation genuinely needs another AD tool, wrap that part in a custom rule, so Mooncake treats it as a primitive and never looks inside; see [Defining Rules](@ref).
 
 ## Circular References in Type Declarations
 
