@@ -17,8 +17,15 @@
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:Array{P}}) where {P<:IEEEFloat}
-    return Dual(sum(primal(x)), sum(tangent(x)))
+function frule!!(
+    ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}}
+) where {N,P<:IEEEFloat,D}
+    # Reduce the primal and each lane's partial array separately — each is a plain `Array`, so
+    # `sum` vectorises. Folding the whole `NDualArray` element-wise instead (lazy `getindex` →
+    # one `NDual` per element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
+    nda = tangent(x)
+    pv = sum(nda.primal)
+    return Lifted{P,N}(pv, NDual{P,N}(pv, ntuple(k -> sum(nda.partials[k]), Val(N))))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -32,9 +39,17 @@ end
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
-    ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
-) where {P<:IEEEFloat}
-    return Dual(sum(abs2, primal(x)), 2 * dot(primal(x), tangent(x)))
+    ::Lifted{typeof(sum),N},
+    ::Lifted{typeof(abs2),N},
+    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
+) where {N,P<:IEEEFloat,D}
+    # Chain rule on the parallel arrays: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·partialₖᵢ`,
+    # i.e. `2·dot(p, partialsₖ)` — both `sum(abs2, ·)` and `dot` are BLAS/SIMD over plain
+    # `Array`s. Folding `sum(abs2, tangent(x))` element-wise is the scalar left-fold, ~5x slower.
+    nda = tangent(x)
+    p = nda.primal
+    v = sum(abs2, p)
+    return Lifted{P,N}(v, NDual{P,N}(v, ntuple(k -> 2 * dot(p, nda.partials[k]), Val(N))))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
@@ -50,26 +65,62 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-function Mooncake.frule!!(
-    ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractVecOrMat{<:T}},
-    x2::Dual{<:AbstractVecOrMat{<:T}},
-) where {T<:Base.IEEEFloat}
-    pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
-    LinearAlgebra._kron!(pout, px1, px2)
-    # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
-    # suffers
-    m = firstindex(dout)
+# One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
+# d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
+function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
+    m = firstindex(dout_l)
     for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
         x1ij = px1[i, j]
-        dx1ij = dx1[i, j]
+        dx1ij = dx1_l[i, j]
         for k in axes(px2, 1)
-            dout[m] = (x1ij * dx2[k, l]) + (dx1ij * px2[k, l])
+            dout_l[m] = (x1ij * dx2_l[k, l]) + (dx1ij * px2[k, l])
             m += 1
         end
+    end
+    return dout_l
+end
+
+# Dense fast path: read each lane's partials directly off the `NDualArray` V; the primal
+# `LinearAlgebra._kron!(pout, px1, px2)` runs once. Covers every real `IEEEFloat` (including
+# Float16, which `arrayify` does not support). Only the matrix (D=2) input shape is supported.
+function Mooncake.frule!!(
+    ::Lifted{typeof(LinearAlgebra._kron!),N},
+    out::Lifted{Aout,N,<:NDualArray{T,N,2,Aout}},
+    x1::Lifted{A1,N,<:NDualArray{T,N,2,A1}},
+    x2::Lifted{A2,N,<:NDualArray{T,N,2,A2}},
+) where {N,T<:IEEEFloat,Aout<:AbstractMatrix{T},A1<:AbstractMatrix{T},A2<:AbstractMatrix{T}}
+    pout = primal(out)
+    px1 = primal(x1)
+    px2 = primal(x2)
+    LinearAlgebra._kron!(pout, px1, px2)
+    dout_ts = tangent(out).partials
+    dx1_ts = tangent(x1).partials
+    dx2_ts = tangent(x2).partials
+    for lane in 1:N
+        _kron!_jvp_lane!(dout_ts[lane], px1, dx1_ts[lane], px2, dx2_ts[lane])
+    end
+    return out
+end
+
+# Wrapper fallback: the broad `@is_primitive` admits wrapped inputs (SubArray/Triangular/
+# Symmetric/Reshaped/…) whose forward V is the generic struct lift, not `NDualArray`, so the dense
+# method above does not match — without this they would `MethodError` at call time while the reverse
+# `_kron!` rrule handles them. `arrayify` canonicalises the primal and each lane's partial through
+# the wrapper (no copy), mirroring the reverse rrule and the forward `kron` frule. `BlasFloat` only
+# (what `arrayify` supports); the dense method is strictly more specific, so dense inputs still take
+# it, and dense `out` paired with a wrapped input routes here.
+function Mooncake.frule!!(
+    ::Lifted{typeof(LinearAlgebra._kron!),N},
+    out::Lifted{<:AbstractMatrix{T},N},
+    x1::Lifted{<:AbstractMatrix{T},N},
+    x2::Lifted{<:AbstractMatrix{T},N},
+) where {N,T<:IEEEFloat}
+    pout, dout_s = arrayify(out)
+    px1, dx1_s = arrayify(x1)
+    px2, dx2_s = arrayify(x2)
+    LinearAlgebra._kron!(pout, px1, px2)
+    for lane in 1:N
+        _kron!_jvp_lane!(dout_s[lane], px1, dx1_s[lane], px2, dx2_s[lane])
     end
     return out
 end
@@ -132,6 +183,28 @@ function Mooncake.rrule!!(
     return CoDual(y, dy), kron_pb!!
 end
 
+# Forward analogue of the `kron` rrule above: make `kron` a forward primitive too (mirrors the
+# reverse one declared for `ReverseMode`). `arrayify` canonicalises each lane's tangent through the
+# input wrapper (Matrix/SubArray/Triangular/…) to a dense partial, then the bilinear product rule
+# gives the JVP per lane: `d(kron(x1,x2))ₖ = kron(dx1ₖ, x2) + kron(x1, dx2ₖ)`. Restricted to real
+# `BlasFloat` (what `arrayify` and the real `NDualArray{…,NDual{T,N}}` packing support; the tested
+# precisions). Float16 / complex `kron` stay derived in forward mode.
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+} where {T<:Union{Float32,Float64}}
+function Mooncake.frule!!(
+    ::Lifted{typeof(kron),N},
+    x1::Lifted{<:AbstractVecOrMat{T},N},
+    x2::Lifted{<:AbstractVecOrMat{T},N},
+) where {N,T<:Union{Float32,Float64}}
+    px1, dx1s = arrayify(x1)
+    px2, dx2s = arrayify(x2)
+    y = kron(px1, px2)
+    partials = ntuple(k -> kron(dx1s[k], px2) + kron(px1, dx2s[k]), Val(N))
+    A = typeof(y)
+    return Lifted{A,N}(y, NDualArray{T,N,2,A,NDual{T,N}}(y, partials))
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     sum_sizes = [(11,), (11, 3)]
@@ -159,6 +232,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 LinearAlgebra._kron!,
                 zeros(P, 50, 50),
                 randn(rng, P, 5, 5),
+                randn(rng, P, 10, 10),
+            )
+        end,
+
+        # _kron!(x, y) with a strided wrapper input (SubArray): exercises the `arrayify`
+        # fallback frule. The dense-only forward frule matched only `NDualArray` slots, so a
+        # wrapper input (forward V is the generic struct lift) that the broad `@is_primitive` and
+        # the reverse rrule admit would MethodError. `BlasFloat` only (what `arrayify` supports).
+        map([Float64, Float32]) do P
+            return (
+                true,
+                :none,
+                nothing,
+                LinearAlgebra._kron!,
+                zeros(P, 50, 50),
+                view(randn(rng, P, 6, 6), 1:5, 1:5),
                 randn(rng, P, 10, 10),
             )
         end,

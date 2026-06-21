@@ -64,13 +64,17 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-@is_primitive MinimalCtx Tuple{typeof(lgetfield),Complex{P},Val} where {P<:IEEEFloat}
+# `lgetfield(::Complex, ::Val)` is already a primitive via the generic
+# `Tuple{typeof(lgetfield),Any,Val}` declaration in `misc.jl`; this Complex-specific frule only
+# refines the forward V, so it needs no `@is_primitive` of its own.
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CF,<:CF}, ::Dual{Val{FieldName}}
-) where {FieldName}
+    ::Lifted{typeof(lgetfield),N},
+    x::Lifted{Complex{P},N,Complex{NDual{P,N}}},
+    ::Lifted{Val{FieldName},N},
+) where {N,P<:IEEEFloat,FieldName}
     y = getfield(primal(x), FieldName)
     dy = getfield(tangent(x), FieldName)
-    return Dual(y, dy)
+    return Lifted{P,N}(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -86,7 +90,7 @@ function rrule!!(
     elseif FieldName === :im
         a_tangent.im
     else
-        throw(ArgumentError(lazy"lgetfield: Unknown field '$FieldName' for type Complex{$T}."))
+        throw(ArgumentError(lazy"lgetfield: Unknown field '$FieldName' for type $(typeof(a))."))
     end
 
     value_output_fdata = fdata(actual_field_tangent_value)
@@ -103,17 +107,48 @@ function rrule!!(
     return y_cd, lgetfield_Complex_pullback
 end
 
-@is_primitive MinimalCtx Tuple{typeof(_new_),<:Complex{P},P,P} where {P<:IEEEFloat}
+# `_new_(Type{Complex{P}}, re, im)` is already a primitive via the generic `Tuple{typeof(_new_),Vararg}`
+# declaration in `new.jl`; this Complex-specific frule only refines the forward construction, so it
+# needs no `@is_primitive` of its own. (The previous `Tuple{typeof(_new_),<:Complex{P},P,P}` declaration
+# matched nothing — `_new_`'s second argument is the *type* `Type{Complex{P}}`, not a `Complex` value.)
 function frule!!(
-    ::Dual{typeof(_new_)}, ::Dual{Type{Complex{P}}}, re::Dual{P}, im::Dual{P}
-) where {P<:IEEEFloat}
+    ::Lifted{typeof(_new_),N},
+    ::Lifted{Type{Complex{P}},N},
+    re::Lifted{P,N,NDual{P,N}},
+    im::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
     x = _new_(Complex{P}, primal(re), primal(im))
-    dx = _new_(Complex{P}, tangent(re), tangent(im))
-    return Dual(x, dx)
+    dx = _new_(Complex{NDual{P,N}}, tangent(re), tangent(im))
+    return Lifted{Complex{P},N}(x, dx)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)}, ::CoDual{Type{Complex{P}}}, re::CoDual{P}, im::CoDual{P}
 ) where {P<:IEEEFloat}
     _new_complex_pb(dy::Complex{P}) = NoRData(), NoRData(), real(dy), imag(dy)
     return zero_fcodual(_new_(Complex{P}, re.x, im.x)), _new_complex_pb
+end
+
+# Complex-scalar `lgetfield` (field read) and `_new_` (construction) are primitives (via the generic
+# lgetfield/_new_ declarations), so register them as hand-written cases to get the chunked widths the
+# derived cases below skip (is_primitive=false).
+function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
+    (
+        Any[
+            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:re)),
+            (false, :stability_and_allocs, nothing, lgetfield, 1.5 - 0.5im, Val(:im)),
+            (false, :stability_and_allocs, nothing, _new_, ComplexF64, 1.5, -0.5),
+        ],
+        Any[],
+    )
+end
+
+function derived_rule_test_cases(rng_ctor, ::Val{:complex})
+    test_cases = Any[
+        (false, :none, nothing, real, 1.0 + 2.0im),
+        (false, :none, nothing, imag, 1.0 + 2.0im),
+        (false, :none, nothing, z -> z.re * z.im, 1.5 - 0.5im),
+        (false, :none, nothing, (a, b) -> Complex(a, b), 1.0, 2.0),
+        (false, :none, nothing, (a, b) -> abs2(Complex(a, b)), 1.0, 2.0),
+    ]
+    return test_cases, Any[]
 end

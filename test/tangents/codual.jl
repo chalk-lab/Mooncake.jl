@@ -82,10 +82,19 @@
         phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
         @test codual_type(phantom) === CoDual
         @test Mooncake.fcodual_type(phantom) === CoDual
-        @test dual_type(phantom) === Dual
+        # Forward `dual_type` is width-parameterised (`dual_type(::Val{N}, ::Type)`) on this branch;
+        # the legacy one-arg `Dual` mapping is gone. A phantom-TypeVar primal widens to `Any`.
+        @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        @test dual_type(phantom_tuple) === Dual
+        # A free-TypeVar `Tuple` (e.g. `Tuple{T,A}`) leaves the `P<:Tuple` static parameter
+        # unbound; the forward `dual_type`/`lifted_type` bodies guard with `@isdefined(P)` (the
+        # idiom the `CoDual` constructor uses) and widen to `Any` rather than referencing the
+        # undefined `P` and throwing `UndefVarError`.
+        @test dual_type(Val(1), phantom_tuple) === Any
+        # `lifted_type` returns a (broad) `Lifted` *slot* type, like the generic `lifted_type`
+        # phantom guard — not the inner-V `Any` that `dual_type` returns.
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
     @testset "NoPullback" begin

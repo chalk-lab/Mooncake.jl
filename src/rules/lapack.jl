@@ -1,10 +1,20 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
 @is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
 function frule!!(
-    ::Dual{typeof(LAPACK.getrf!)}, A_dA::Dual{<:AbstractMatrix{P}}
-) where {P<:BlasFloat}
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA))
-    return _getrf_fwd(A_dA, ipiv, info)
+    ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
+) where {Nw,P<:BlasFloat}
+    A, dA_lanes = arrayify(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
+        dA_lane .= L * tril(F, -1) + triu(F) * U
+    end
+    y = (A, ipiv, info)
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
@@ -31,14 +41,24 @@ end
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}},
 )
 function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    _kwargs::Dual{<:NamedTuple},
-    ::Dual{typeof(getrf!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
+    ::Lifted{typeof(Core.kwcall),Nw},
+    _kwargs::Lifted{<:NamedTuple},
+    ::Lifted{typeof(getrf!),Nw},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+) where {Nw,P<:BlasFloat}
     check = primal(_kwargs).check
-    _, ipiv, info = LAPACK.getrf!(primal(A_dA); check)
-    return _getrf_fwd(A_dA, ipiv, info)
+    A, dA_lanes = arrayify(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A; check)
+    L = UnitLowerTriangular(A)
+    U = UpperTriangular(A)
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
+        dA_lane .= L * tril(F, -1) + triu(F) * U
+    end
+    y = (A, ipiv, info)
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -62,19 +82,6 @@ function rrule!!(
     end
     dipiv = zero_tangent(ipiv)
     return CoDual((_A.x, ipiv, code), (_A.dx, dipiv, NoFData())), getrf_pb!!
-end
-
-function _getrf_fwd(A_dA, ipiv, info)
-    A, dA = arrayify(A_dA)
-
-    # Compute Frechet derivative.
-    L = UnitLowerTriangular(A)
-    U = UpperTriangular(A)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
-    F = rdiv!(ldiv!(L, dA[p, :]), U)
-    dA .= L * tril(F, -1) + triu(F) * U
-
-    return Dual((A, ipiv, info), (tangent(A_dA), zero_tangent(ipiv), NoTangent()))
 end
 
 function _getrf_pb!(A, dA, ipiv, A_copy)
@@ -105,39 +112,38 @@ end
     } where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(trtrs!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract data.
+    ::Lifted{typeof(trtrs!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
+) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    LAPACK.trtrs!(uplo, trans, diag, A, dB)
-    tmp = copy(B)
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp now contains inv(A) B.
-
-    tmp2 = copy(tmp)
-    if diag == 'N'
-        a = uplo == 'L' ? LowerTriangular(dA) : UpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
-    else
-        a = uplo == 'L' ? UnitLowerTriangular(dA) : UnitUpperTriangular(dA)
-        lmul!(trans == 'N' ? a : a', tmp)
-        tmp .-= tmp2
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
+    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
+    # it and copy per lane.
+    X = copy(B)
+    LAPACK.trtrs!(uplo, trans, diag, A, X)
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
+        LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
+        tmp = copy(X)
+        if diag == 'N'
+            a = uplo == 'L' ? LowerTriangular(dA_lane) : UpperTriangular(dA_lane)
+            lmul!(trans == 'N' ? a : a', tmp)
+        else
+            a = uplo == 'L' ? UnitLowerTriangular(dA_lane) : UnitUpperTriangular(dA_lane)
+            lmul!(trans == 'N' ? a : a', tmp)
+            tmp .-= X
+        end
+        LAPACK.trtrs!(uplo, trans, diag, A, tmp)
+        dB_lane .-= tmp
     end
-    LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp is now α inv(A) dA inv(A) B.
-    dB .-= tmp
-
-    # Run primal computation.
     LAPACK.trtrs!(uplo, trans, diag, A, B)
     return B_dB
 end
@@ -185,38 +191,36 @@ end
     } where {P<:BlasRealFloat}
 )
 function frule!!(
-    ::Dual{typeof(getrs!)},
-    _trans::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract data.
+    ::Lifted{typeof(getrs!),Nw},
+    _trans::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    _ipiv::Lifted{<:AbstractVector{Int}},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
+) where {Nw,P<:BlasRealFloat}
     trans = primal(_trans)
-    A, dA = arrayify(A_dA)
     ipiv = primal(_ipiv)
-    B, dB = arrayify(B_dB)
-
-    # Run primal computation.
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     LAPACK.getrs!(trans, A, ipiv, B)
-
-    # Compute Frechet derivative.
     L = UnitLowerTriangular(A)
-    dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
-    dU = UpperTriangular(dA)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(dB, 1))
-    tmp = dL_plus_I * U
-    tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-    if trans == 'N'
-        mul!(dB, tmp2, B, -one(P), one(P))
-    else
-        mul!(dB, tmp2', B, -one(P), one(P))
+    p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
+    invp = invperm(p)
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
+        dL_plus_I = UnitLowerTriangular(dA_lane)
+        dU = UpperTriangular(dA_lane)
+        tmp = dL_plus_I * U
+        tmp .-= U
+        tmp2 = mul!(tmp, L, dU, one(P), one(P))[invp, :]
+        if trans == 'N'
+            mul!(dB_lane, tmp2, B, -one(P), one(P))
+        else
+            mul!(dB_lane, tmp2', B, -one(P), one(P))
+        end
+        LAPACK.getrs!(trans, A, ipiv, dB_lane)
     end
-    LAPACK.getrs!(trans, A, ipiv, dB)
-
     return B_dB
 end
 function rrule!!(
@@ -303,30 +307,28 @@ end
     MinimalCtx, Tuple{typeof(getri!),AbstractMatrix{<:BlasRealFloat},AbstractVector{Int}},
 )
 function frule!!(
-    ::Dual{typeof(getri!)},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    _ipiv::Dual{<:AbstractVector{Int}},
-) where {P<:BlasRealFloat}
-    # Extract args.
-    A, dA = arrayify(A_dA)
+    ::Lifted{typeof(getri!),Nw},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    _ipiv::Lifted{<:AbstractVector{Int}},
+) where {Nw,P<:BlasRealFloat}
+    A, dA_lanes = arrayify(A_dA)
     ipiv = primal(_ipiv)
-
-    # Compute part of Frechet derivative.
     L = UnitLowerTriangular(A)
-    dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
-    dU = UpperTriangular(dA)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(dA, 1))
-    tmp = dL_plus_I * U
-    tmp .-= U
-    tmp2 = mul!(tmp, L, dU, one(P), one(P))[invperm(p), :]
-
-    # Perform primal computation.
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
+    invp = invperm(p)
+    tmp2s = ntuple(Val(Nw)) do lane
+        dA_lane = dA_lanes[lane]
+        dL_plus_I = UnitLowerTriangular(dA_lane)
+        dU = UpperTriangular(dA_lane)
+        tmp = dL_plus_I * U
+        tmp .-= U
+        mul!(tmp, L, dU, one(P), one(P))[invp, :]
+    end
     LAPACK.getri!(A, ipiv)
-
-    # Compute Frechet derivative.
-    dA .= (-A * tmp2 * A)
-
+    @inbounds for lane in 1:Nw
+        dA_lanes[lane] .= (-A * tmp2s[lane] * A)
+    end
     return A_dA
 end
 function rrule!!(
@@ -367,33 +369,31 @@ end
 
 @is_primitive(MinimalCtx, Tuple{typeof(potrf!),Char,AbstractMatrix{<:BlasRealFloat}})
 function frule!!(
-    ::Dual{typeof(potrf!)}, _uplo::Dual{Char}, A_dA::Dual{<:AbstractMatrix{<:BlasRealFloat}}
-)
-    # Extract args and take a copy of A.
+    ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
+) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A, dA = arrayify(A_dA)
-
-    # Run primal computation.
+    A, dA_lanes = arrayify(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
-
-    # Compute Frechet derivative.
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        if uplo == 'L'
+            L = LowerTriangular(A)
+            tmp = LowerTriangular(ldiv!(L, Symmetric(dA_lane, :L) / L'))
+            for n in 1:size(A, 1)
+                tmp[n, n] = tmp[n, n] / 2
+            end
+            _copytrito!(dA_lane, lmul!(L, tmp), 'L')
+        else
+            U = UpperTriangular(A)
+            tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA_lane, :U), U))
+            for n in 1:size(A, 1)
+                tmp[n, n] = tmp[n, n] / 2
+            end
+            _copytrito!(dA_lane, rmul!(tmp, U), 'U')
         end
-        _copytrito!(dA, lmul!(L, tmp), 'L')
-    else
-        U = UpperTriangular(A)
-        tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA, :U), U))
-        @inbounds for n in 1:size(A, 1)
-            tmp[n, n] = tmp[n, n] / 2
-        end
-        _copytrito!(dA, rmul!(tmp, U), 'U')
     end
-
-    return Dual((A, info), (tangent(A_dA), NoTangent()))
+    y = (A, info)
+    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), NoDual()))
 end
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
@@ -465,33 +465,29 @@ end
     } where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(potrs!)},
-    _uplo::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractVecOrMat{P}},
-) where {P<:BlasRealFloat}
-
-    # Extract args and take a copy of B.
+    ::Lifted{typeof(potrs!),Nw},
+    _uplo::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{P},Nw},
+    B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
+) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Run primal computation.
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
     LAPACK.potrs!(uplo, A, B)
-
-    # Compute Frechet derivative.
-    if uplo == 'L'
-        L = LowerTriangular(A)
-        dL = LowerTriangular(dA)
-        mul!(dB, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
-    else
-        U = UpperTriangular(A)
-        dU = UpperTriangular(dA)
-        mul!(dB, Symmetric(U'dU + dU'U), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB)
+    @inbounds for lane in 1:Nw
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
+        if uplo == 'L'
+            L = LowerTriangular(A)
+            dL = LowerTriangular(dA_lane)
+            mul!(dB_lane, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
+        else
+            U = UpperTriangular(A)
+            dU = UpperTriangular(dA_lane)
+            mul!(dB_lane, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+        end
+        LAPACK.potrs!(uplo, A, dB_lane)
     end
-
     return B_dB
 end
 function rrule!!(
@@ -539,16 +535,18 @@ end
         } where {P<:BlasFloat},
     )
     function frule!!(
-        ::Dual{typeof(LAPACK.lacpy!)},
-        B_dB::Dual{<:AbstractMatrix{P}},
-        A_dA::Dual{<:AbstractMatrix{P}},
-        _uplo::Dual{Char},
-    ) where {P<:BlasFloat}
-        B, dB = arrayify(B_dB)
-        A, dA = arrayify(A_dA)
-
-        LAPACK.lacpy!(B, A, primal(_uplo))
-        LAPACK.lacpy!(dB, dA, primal(_uplo))
+        ::Lifted{typeof(LAPACK.lacpy!),Nw},
+        B_dB::Lifted{<:AbstractMatrix{P},Nw},
+        A_dA::Lifted{<:AbstractMatrix{P},Nw},
+        _uplo::Lifted{Char},
+    ) where {Nw,P<:BlasFloat}
+        uplo = primal(_uplo)
+        B, dB_lanes = arrayify(B_dB)
+        A, dA_lanes = arrayify(A_dA)
+        LAPACK.lacpy!(B, A, uplo)
+        @inbounds for lane in 1:Nw
+            LAPACK.lacpy!(dB_lanes[lane], dA_lanes[lane], uplo)
+        end
         return B_dB
     end
     function rrule!!(
@@ -711,12 +709,18 @@ w.r.t. the underlying data array `A`.
     Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(logdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
+    ::Lifted{typeof(logdet),Nw},
+    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
     F = bunchkaufman(S)
     Sinv = inv(F)
-    return Dual(logdet(F), dot(Sinv, d_data))
+    y = logdet(F)
+    # `_arrayify_lane(::Symmetric, …)` re-wraps each lane's `.data` partial as `Symmetric(·, uplo)`,
+    # applying the storage weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse
+    # `rrule!!` encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
+    dy_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -748,17 +752,20 @@ The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with 
     MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(det)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
+    ::Lifted{typeof(det),Nw},
+    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
-    # Zero tangent for singular S. Strictly correct only for rank ≤ n-2; at rank n-1
-    # the true derivative is the adjugate (nonzero), but exact floating-point zeros are
-    # measure-zero in practice.
-    iszero(d) && return Dual(d, zero(P))
+    if iszero(d)
+        zero_parts = ntuple(_ -> zero(P), Val(Nw))
+        return Lifted{P,Nw}(d, _scalar_ndual(d, zero_parts))
+    end
     Sinv = inv(F)
-    return Dual(d, d * dot(Sinv, d_data))
+    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
+    dy_lanes = ntuple(k -> d * dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    return Lifted{P,Nw}(d, _scalar_ndual(d, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
@@ -794,14 +801,25 @@ cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
     Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
 )
 function frule!!(
-    ::Dual{typeof(logabsdet)}, _S::Dual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
-    S, d_data = arrayify(_S)
+    ::Lifted{typeof(logabsdet),Nw},
+    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+) where {Nw,P<:BlasRealFloat}
+    S = primal(_S)
     F = bunchkaufman(S; check=false)
     ld, s = logabsdet(F)
-    iszero(s) && return Dual((ld, s), (zero(P), zero(P)))
+    y = (ld, s)
+    zero_parts = ntuple(_ -> zero(P), Val(Nw))
+    if iszero(s)
+        ld_v = _scalar_ndual(ld, zero_parts)
+        s_v = _scalar_ndual(s, zero_parts)
+        return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
+    end
     Sinv = inv(F)
-    return Dual((ld, s), (dot(Sinv, d_data), zero(P)))
+    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
+    ld_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    ld_v = _scalar_ndual(ld, ld_lanes)
+    s_v = _scalar_ndual(s, zero_parts)
+    return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}

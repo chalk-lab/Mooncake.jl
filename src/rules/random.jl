@@ -33,11 +33,16 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
+    # `$f` is non-differentiable — it overwrites the primal with new random
+    # values; the output doesn't depend on input tangents. Write the new
+    # primal once, then zero each lane's partial.
     @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
-    )
+        ::Lifted{typeof($f),Nw},
+        rng::Lifted{<:SpecialisedRNGs},
+        x::Lifted{Array{Float64,D},Nw,<:NDualArray{Float64,Nw,D,Array{Float64,D}}},
+    ) where {Nw,D}
         $f(primal(rng), primal(x))
-        tangent(x) .= 0
+        foreach(p -> fill!(p, 0.0), tangent(x).partials)
         return x
     end
     @eval function rrule!!(

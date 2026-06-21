@@ -987,19 +987,30 @@ end
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    return fwds.fwds_oc(uf_args...)::CoDual, pb
+    # Route the forward-pass call through `__call_rule`: on Julia 1.10 this is the `(rule::Any)`
+    # barrier, which de-specialises the call so codegen emits `jl_apply_generic` rather than a
+    # specsig OC call at this site (the julia#51016/#61368 trigger). On 1.11+ it is the direct
+    # call, semantically identical and changing no derivative.
+    #
+    # We pass the `MistyClosure` itself, not its bare `.oc`: forward-over-reverse HVP
+    # forward-differentiates this body, and a `.oc` field access would need an undefined
+    # `_get_lifted_field` on the MistyClosure's forward tangent. The trade-off: because `fwds_oc`
+    # is a `MistyClosure` (not a `Core.OpaqueClosure`), this dispatches to the generic barrier, not
+    # the `OpaqueClosure{A}` overload's `args isa A` guard. So unlike the forward `DerivedFRule`
+    # (which passes the bare guarded `.oc`), the inner `mc.oc(...)` is unguarded here — a
+    # type-mismatched call on 1.10 is not converted to a clean `TypeError` the same way.
+    return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type. Both the CoDual and Pullback types are encoded in DerivedRule's
-# type parameters; the Pullback's nargs comes from the number of args at the call site.
+# On Julia 1.10, route the call through the dynamic `__call_rule` barrier (the `(rule::Any)` cast
+# in a `@noinline` body avoids the specsig OC-call codegen crash) and assert the return type to
+# restore type stability. Both the CoDual and Pullback types are encoded in DerivedRule's type
+# parameters; the Pullback's nargs comes from the number of args at the call site.
 @static if VERSION < v"1.11-"
-    @inline function __call_rule(
+    @noinline function __call_rule(
         rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A
     ) where {Tp,FA,FR,RA,RR,isva,pnargs,A<:Tuple}
-        return __call_rule_erased!(
-            Base.inferencebarrier(rule), args
-        )::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
+        return ((rule::Any)(args...))::Tuple{FR,Pullback{Tp,RA,RR,isva,fieldcount(A)}}
     end
 end
 
@@ -2055,7 +2066,7 @@ _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyDerivedRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 # Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+# LazyDerivedRule doesn't contain an OpaqueClosure directly, so no dispatch barrier needed.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::LazyDerivedRule{sig,DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}}, args::A
@@ -2099,8 +2110,8 @@ function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where 
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
-        # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
-        # time only and does not affect hot-path performance.
+        # this allocates a throwaway instance; the cost is compile-time only and does not
+        # affect hot-path performance.
         rule = build_primitive_rrule(sig)
         return debug_mode ? DebugRRule{typeof(rule)} : typeof(rule)
     end

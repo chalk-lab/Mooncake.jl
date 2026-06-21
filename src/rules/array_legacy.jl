@@ -84,10 +84,31 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deletebeg!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    Base._deletebeg!(primal(a), primal(d))
-    Base._deletebeg!(tangent(a), primal(d))
-    return zero_dual(nothing)
+# Mutate the user's Vector and every lane's partial Vector in sync. `T<:NDualEltype` with the
+# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too (#6); the body is
+# element-type-agnostic. The plain-`Array`-V overload below covers non-`NDualArray` element-wise Vs.
+function frule!!(
+    ::Lifted{typeof(Base._deletebeg!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    d::Lifted,
+) where {N,T<:NDualEltype}
+    d_p = primal(d)
+    Base._deletebeg!(primal(a), d_p)
+    for lane in 1:N
+        Base._deletebeg!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: delete primal and the element-wise tangent `Array` in lockstep. Covers both
+# differentiable non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g.
+# `Vector{Int}`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._deletebeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+) where {N}
+    d_p = primal(d)
+    Base._deletebeg!(primal(a), d_p)
+    Base._deletebeg!(tangent(a), d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -111,10 +132,28 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._deleteend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    Base._deleteend!(primal(a), primal(d))
-    Base._deleteend!(tangent(a), primal(d))
-    return zero_dual(nothing)
+function frule!!(
+    ::Lifted{typeof(Base._deleteend!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    d::Lifted,
+) where {N,T<:NDualEltype}
+    d_p = primal(d)
+    Base._deleteend!(primal(a), d_p)
+    for lane in 1:N
+        Base._deleteend!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g. `Vector{Int}`
+# reached via `filter`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._deleteend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+) where {N}
+    d_p = primal(d)
+    Base._deleteend!(primal(a), d_p)
+    Base._deleteend!(tangent(a), d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -146,14 +185,33 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
 function frule!!(
-    ::Dual{typeof(Base._deleteat!)},
-    a::Dual{<:Vector},
-    i::Dual{<:Integer},
-    delta::Dual{<:Integer},
-)
-    Base._deleteat!(primal(a), primal(i), primal(delta))
-    Base._deleteat!(tangent(a), primal(i), primal(delta))
-    return zero_dual(nothing)
+    ::Lifted{typeof(Base._deleteat!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    i::Lifted,
+    delta::Lifted,
+) where {N,T<:NDualEltype}
+    i_p = primal(i)
+    d_p = primal(delta)
+    Base._deleteat!(primal(a), i_p, d_p)
+    for lane in 1:N
+        Base._deleteat!(tangent(a).partials[lane], i_p, d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._deleteat!),N},
+    a::Lifted{<:Vector,N,<:Array},
+    i::Lifted,
+    delta::Lifted,
+) where {N}
+    i_p = primal(i)
+    d_p = primal(delta)
+    Base._deleteat!(primal(a), i_p, d_p)
+    Base._deleteat!(tangent(a), i_p, d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
@@ -184,11 +242,27 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
 function frule!!(
-    ::Dual{typeof(Base._growbeg!)}, a::Dual{<:Vector{T}}, d::Dual{<:Integer}
-) where {T}
-    Base._growbeg!(primal(a), primal(d))
-    Base._growbeg!(tangent(a), primal(d))
-    return zero_dual(nothing)
+    ::Lifted{typeof(Base._growbeg!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    d::Lifted,
+) where {N,T<:NDualEltype}
+    d_p = primal(d)
+    Base._growbeg!(primal(a), d_p)
+    for lane in 1:N
+        Base._growbeg!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._growbeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+) where {N}
+    d_p = primal(d)
+    Base._growbeg!(primal(a), d_p)
+    Base._growbeg!(tangent(a), d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -207,10 +281,29 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
-function frule!!(::Dual{typeof(Base._growend!)}, a::Dual{<:Vector}, d::Dual{<:Integer})
-    Base._growend!(primal(a), primal(d))
-    Base._growend!(tangent(a), primal(d))
-    return zero_dual(nothing)
+function frule!!(
+    ::Lifted{typeof(Base._growend!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    d::Lifted,
+) where {N,T<:NDualEltype}
+    d_p = primal(d)
+    Base._growend!(primal(a), d_p)
+    for lane in 1:N
+        Base._growend!(tangent(a).partials[lane], d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers vectors of differentiable
+# non-float elements (e.g. the `Vector{Tuple{pullback}}` grown by reverse rules under
+# forward-over-reverse on Julia 1.10) AND non-differentiable element vectors (`Array{NoDual}` V) —
+# `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+) where {N}
+    d_p = primal(d)
+    Base._growend!(primal(a), d_p)
+    Base._growend!(tangent(a), d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -230,11 +323,30 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
 function frule!!(
-    ::Dual{typeof(Base._growat!)}, a::Dual{<:Vector}, i::Dual{<:Integer}, d::Dual{<:Integer}
-)
-    Base._growat!(primal(a), primal(i), primal(d))
-    Base._growat!(tangent(a), primal(i), primal(d))
-    return zero_dual(nothing)
+    ::Lifted{typeof(Base._growat!),N},
+    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    i::Lifted,
+    d::Lifted,
+) where {N,T<:NDualEltype}
+    i_p = primal(i)
+    d_p = primal(d)
+    Base._growat!(primal(a), i_p, d_p)
+    for lane in 1:N
+        Base._growat!(tangent(a).partials[lane], i_p, d_p)
+    end
+    return Lifted{Nothing,N}(nothing, NoDual())
+end
+# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Base._growat!),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, d::Lifted
+) where {N}
+    i_p = primal(i)
+    d_p = primal(d)
+    Base._growat!(primal(a), i_p, d_p)
+    Base._growat!(tangent(a), i_p, d_p)
+    return Lifted{Nothing,N}(nothing, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -259,9 +371,27 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sizehint!),Vector,Integer}
-function frule!!(::Dual{typeof(sizehint!)}, x::Dual{<:Vector}, sz::Dual{<:Integer})
-    sizehint!(primal(x), primal(sz))
-    sizehint!(tangent(x), primal(sz))
+function frule!!(
+    ::Lifted{typeof(sizehint!),N},
+    x::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+    sz::Lifted,
+) where {N,T<:NDualEltype}
+    sz_p = primal(sz)
+    sizehint!(primal(x), sz_p)
+    for lane in 1:N
+        sizehint!(tangent(x).partials[lane], sz_p)
+    end
+    return x
+end
+# Plain-`Array` V: an `Array` of per-element Vs, hinted in lockstep. Covers both differentiable
+# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
+# Array`, so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(sizehint!),N}, x::Lifted{<:Vector,N,<:Array}, sz::Lifted
+) where {N}
+    sz_p = primal(sz)
+    sizehint!(primal(x), sz_p)
+    sizehint!(tangent(x), sz_p)
     return x
 end
 function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<:Integer})
@@ -270,18 +400,44 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
+# `Lifted{Ptr{T},N}(y, dy_partials)` is the canonical Ptr V — `dy_partials` is the
+# `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects. Real and complex
+# element types share one body: the `NDualArray` stores per-lane partials as
+# parallel `NTuple{N,Array{T,D}}` in both cases, so each lane's pointer is just
+# `jl_array_ptr` of `partials[k]`.
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_ptr}},
-    ::Dual{Val{Ptr{T}}},
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    a::Dual{<:Array{T},<:Array{V}},
-) where {T,V}
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{T}},N},
+    ::Lifted{Tuple{Val{Any}},N},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}},
+) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    dy = ccall(:jl_array_ptr, Ptr{V}, (Any,), tangent(a))
-    return Dual(y, dy)
+    dy_partials = ntuple(
+        k -> ccall(:jl_array_ptr, Ptr{T}, (Any,), tangent(a).partials[k]), Val(N)
+    )
+    return Lifted{Ptr{T},N}(y, dy_partials)
+end
+# Element-wise V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
+# `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
+# not the `NDualArray`'s parallel per-lane partials. Its pointer is the single element-wise
+# partial pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = element-wise
+# dual element), coherent with `dual_type(Val(1), Ptr{P})`. Width-1 only: width-N over an
+# abstract element type would need N distinct pointers from one interleaved element-wise array.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),1},
+    ::Lifted{Val{:jl_array_ptr},1},
+    ::Lifted{Val{Ptr{P}},1},
+    ::Lifted{Tuple{Val{Any}},1},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{<:Array,1,<:Array{E}},
+) where {P,E}
+    y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
+    dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
+    return Lifted{Ptr{P},1}(y, (dy,))
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -302,17 +458,42 @@ end
 @is_primitive MinimalCtx Tuple{
     typeof(unsafe_copyto!),Array{T},Any,Array{T},Any,Any
 } where {T}
+# `unsafe_copyto!` copies `n` elements linearly, so dest and src dimensionalities need not
+# match (e.g. copying a 0-dim `Array{T,0}` into a `Vector{T}`); bind them separately.
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:Array{T}},
-    doffs::Dual,
-    src::Dual{<:Array{T}},
-    soffs::Dual,
-    n::Dual,
-) where {T}
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{Array{T,Dd},N,<:NDualArray{T,N,Dd,Array{T,Dd}}},
+    doffs::Lifted,
+    src::Lifted{Array{T,Ds},N,<:NDualArray{T,N,Ds,Array{T,Ds}}},
+    soffs::Lifted,
+    n::Lifted,
+) where {N,T<:NDualEltype,Dd,Ds}
     _n = primal(n)
-    Base.unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), _n)
-    Base.unsafe_copyto!(tangent(dest), primal(doffs), tangent(src), primal(soffs), _n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    for lane in 1:N
+        Base.unsafe_copyto!(
+            tangent(dest).partials[lane], _doffs, tangent(src).partials[lane], _soffs, _n
+        )
+    end
+    return dest
+end
+# Element-wise V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
+# pullback buffers in the public forward-over-reverse HVP interface on 1.10).
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),N},
+    dest::Lifted{<:Array,N,<:Array},
+    doffs::Lifted,
+    src::Lifted{<:Array,N,<:Array},
+    soffs::Lifted,
+    n::Lifted,
+) where {N}
+    _n = primal(n)
+    _doffs = primal(doffs)
+    _soffs = primal(soffs)
+    Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
+    Base.unsafe_copyto!(tangent(dest), _doffs, tangent(src), _soffs, _n)
     return dest
 end
 function rrule!!(
@@ -362,16 +543,50 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
+# Primitive forward rule for `complex(::Array{<:IEEEFloat})`. Its derived copy chain
+# (`Vector{Complex}` constructor → `_copyto_impl!` → `_unsafe_copyto!`) reaches the `jl_array_ptr`
+# foreigncall and element-wise `Core.arrayset`, which are uncovered for complex `NDualArray` on
+# legacy-array Julia (1.11-rc4+ lowers array copies through the covered `MemoryRef` path); a
+# primitive short-circuits the chain. ForwardMode-scoped so reverse mode keeps its derived rule;
+# the JVP is exact (complex(x) = x + 0im, so d(complex(x)) = complex(dx)). No version guard — this
+# file is only included on `VERSION < 1.11-rc4` (see `Mooncake.jl`).
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(complex),Array{P,D}
+} where {P<:IEEEFloat,D}
+function frule!!(
+    ::Lifted{typeof(complex),N},
+    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
+) where {N,P<:IEEEFloat,D}
+    y = complex(primal(x))  # y = x + 0im
+    parts = ntuple(k -> complex(tangent(x).partials[k]), Val(N))  # d(complex(x)) = complex(dx)
+    return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, parts))
+end
+
 Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(Core.arrayref)},
-    inbounds::Dual{Bool},
-    x::Dual{<:Array},
-    inds::Vararg{Dual{Int},N},
-) where {N}
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
-    y = arrayref(primal(inbounds), primal(x), _inds...)
-    dy = arrayref(primal(inbounds), tangent(x), _inds...)
-    return Dual(y, dy)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
+    return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
+end
+# Element-wise V: read the element primal and its per-element V from the parallel arrays.
+# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; the read yields
+# the element's `NoDual`), so no separate `NoDual` method is needed.
+Base.@propagate_inbounds function frule!!(
+    ::Lifted{typeof(Core.arrayref),Nw},
+    inbounds::Lifted{Bool,Nw},
+    x::Lifted{<:Array,Nw,<:Array},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    y = arrayref(_inb, primal(x), _inds...)
+    return Lifted{typeof(y),Nw}(y, arrayref(_inb, tangent(x), _inds...))
 end
 Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(Core.arrayref)},
@@ -397,15 +612,36 @@ Base.@propagate_inbounds function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(Core.arrayset)},
-    inbounds::Dual{Bool},
-    A::Dual{<:Array},
-    v::Dual,
-    inds::Dual{Int}...,
-)
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{Array{T,D},Nw,<:NDualArray{T,Nw,D,Array{T,D}}},
+    v::Lifted{T,Nw},
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,T<:NDualEltype,D,M}
     _inds = tuple_map(primal, inds)
-    Core.arrayset(primal(inbounds), primal(A), primal(v), _inds...)
-    Core.arrayset(primal(inbounds), tangent(A), tangent(v), _inds...)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    for lane in 1:Nw
+        Core.arrayset(
+            _inb, tangent(A).partials[lane], _nfwd_dual_partial(tangent(v), lane), _inds...
+        )
+    end
+    return A
+end
+# Element-wise V: set the element primal and its per-element V into the parallel arrays.
+# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; writing the
+# scalar's `NoDual` into the V is a typed no-op), so no separate `NoDual` method is needed.
+function frule!!(
+    ::Lifted{typeof(Core.arrayset),Nw},
+    inbounds::Lifted{Bool,Nw},
+    A::Lifted{<:Array,Nw,<:Array},
+    v::Lifted,
+    inds::Vararg{Lifted{Int,Nw},M},
+) where {Nw,M}
+    _inds = tuple_map(primal, inds)
+    _inb = primal(inbounds)
+    Core.arrayset(_inb, primal(A), primal(v), _inds...)
+    Core.arrayset(_inb, tangent(A), tangent(v), _inds...)
     return A
 end
 function rrule!!(
@@ -468,15 +704,33 @@ function isbits_arrayset_rrule(
     return A, isbits_arrayset_pullback!!
 end
 
-function frule!!(::Dual{typeof(Core.arraysize)}, X, dim)
-    return zero_dual(Core.arraysize(primal(X), primal(dim)))
+function frule!!(::Lifted{typeof(Core.arraysize),N}, X::Lifted, dim::Lifted) where {N}
+    y = Core.arraysize(primal(X), primal(dim))
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
+# `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex `NDualArray`s
+# (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
+function frule!!(
+    ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
+) where {N,T<:NDualEltype,D}
+    new_primal = copy(primal(a))
+    new_partials = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
+    return Lifted{Array{T,D},N}(
+        new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_partials)
+    )
+end
+# Element-wise V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`
+# reached via `copy(::Set)`/`copy(::Dict)` internals): copy the primal and the element-wise V
+# array. Mirrors the 1.11+ `Memory` path's general overload and the `rrule!!`'s `<:Array`
+# breadth; the more-specific `NDualArray` overload above wins for float parallel-arrays.
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
+end
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -497,9 +751,11 @@ function _copy_dict_tangent(mt::MutableTangent)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
+# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
+# update needed; mutate the primal and return the slot unchanged.
 function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:Array{<:Union{UInt8,Int8}}}, x::Dual{<:Integer}
-)
+    ::Lifted{typeof(fill!),N}, a::Lifted{<:Array{<:Union{UInt8,Int8}},N}, x::Lifted
+) where {N}
     fill!(primal(a), primal(x))
     return a
 end
@@ -536,6 +792,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Array{Float64,4}, undef, (2, 3, 4, 5)),
         (true, :stability, nothing, Array{Float64,5}, undef, (2, 3, 4, 5, 6)),
         (false, :stability, nothing, copy, randn(5, 4)),
+        (false, :stability, nothing, copy, randn(Xoshiro(123456), ComplexF64, 5)),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 0),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 2),
         (false, :stability, nothing, Base._deletebeg!, randn(5), 5),
@@ -551,7 +808,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Base._growend!, randn(5), 3),
         (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
         (false, :stability, nothing, sizehint!, randn(5), 10),
+        # Complex vectors (`NDualArray` V `Complex{NDual}` inner): the parallel-arrays frules were
+        # `T<:IEEEFloat`-only, so the broad `@is_primitive` had no matching frule -> MethodError (#6).
+        (false, :stability, nothing, Base._deletebeg!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteend!, randn(ComplexF64, 5), 2),
+        (false, :stability, nothing, Base._deleteat!, randn(ComplexF64, 5), 2, 2),
+        (true, :stability, nothing, Base._growbeg!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growend!, randn(ComplexF64, 5), 3),
+        (true, :stability, nothing, Base._growat!, randn(ComplexF64, 5), 2, 2),
+        (false, :stability, nothing, sizehint!, randn(ComplexF64, 5), 10),
         (false, :stability, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
+        # Mismatched dest/src dimensionality (0-dim source into a Vector).
+        (false, :none, nothing, unsafe_copyto!, [0.0], 1, fill(2.0), 1, 1),
         (
             false,
             :stability,

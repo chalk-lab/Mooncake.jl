@@ -59,7 +59,6 @@ import Mooncake:
     _scale_internal,
     _new_,
     TestUtils,
-    Dual,
     CoDual,
     NoTangent,
     NoPullback,
@@ -79,7 +78,20 @@ import Mooncake:
     RData,
     nan_tangent_guard,
     NDual,
-    Nfwd
+    NDualArray,
+    Lifted,
+    NoDual,
+    dual_type,
+    lifted_type,
+    Nfwd,
+    ImmutableDual,
+    MutableDual,
+    zero_lifted,
+    _zero_dual_internal,
+    _uninit_dual_internal,
+    _randn_dual_internal,
+    MaybeCache,
+    _typeof
 
 import Mooncake.TestUtils:
     populate_address_map_internal, AddressMap, __increment_should_allocate
@@ -160,8 +172,10 @@ end
 # the primal copy increments the refcount; the tangent DataRef is also copied so that the
 # new CuArray's .data field holds a separate handle to the same tangent GPU memory.
 @is_primitive(MinimalCtx, Tuple{typeof(copy),<:CuDataRef})
-function frule!!(::Dual{typeof(copy)}, x::Dual{<:CuDataRef,<:CuDataRef})
-    return Dual(copy(primal(x)), copy(tangent(x)))
+# CuDataRef has NoDual V (opaque handle); copy primal only — the V is
+# already a no-derivative sentinel and needs no per-lane work.
+function frule!!(::Lifted{typeof(copy),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}) where {Nw}
+    return Lifted{_typeof(primal(x)),Nw}(copy(primal(x)), NoDual())
 end
 function rrule!!(::CoDual{typeof(copy)}, x::CoDual{<:CuDataRef,<:CuDataRef})
     return CoDual(copy(primal(x)), copy(tangent(x))), _nopb(Val(2))
@@ -183,6 +197,130 @@ end
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
+
+# Forward-mode canonical V for CUDA primitives — mirrors the host
+# (`Array{T,D}` / `Ptr{T}` / etc.) V shapes:
+#
+#   CuArray{T<:IEEEFloat,D}            → NDualArray{T,N,D,CuArray{T,D},NDual{T,N}}
+#   CuArray{Complex{R<:IEEEFloat},D}   → NDualArray{Complex{R},N,D,…,Complex{NDual{R,N}}}
+#   CuPtr{T}                            → NTuple{N, CuPtr{T}}
+#   CuDataRef (any memory-kind variant) → NoDual (opaque handle)
+#
+# `NDualArray` accepts any `AbstractArray{T,D}` storage by construction, including `CuArray`.
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
+    return NDualArray{T,N,D,P,NDual{T,N}}
+end
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}}}
+end
+
+# Seed factories for CuArray (mirror the host `Array{T,D}` overloads in `src/lifted.jl`):
+# the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields
+# and fail; an explicit `NDualArray` seed keeps `zero_dual` / `uninit_dual` / `randn_dual`
+# coherent with `dual_type`.
+@inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return NDualArray{T,N,D,A}(x)
+end
+@inline function Mooncake.zero_dual(
+    ::Val{N}, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x)
+end
+@inline function Mooncake.uninit_dual(
+    ::Val{N}, x::A
+) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return NDualArray{T,N,D,A}(x)
+end
+@inline function Mooncake.uninit_dual(
+    ::Val{N}, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,A}(x)
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, rng::Random.AbstractRNG, x::A
+) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
+    partials = ntuple(_ -> A(randn(rng, T, size(x)...)), Val(N))
+    return NDualArray{T,N,D,A}(x, partials)
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, rng::Random.AbstractRNG, x::A
+) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    partials = ntuple(_ -> A(randn(rng, Complex{R}, size(x)...)), Val(N))
+    return NDualArray{Complex{R},N,D,A}(x, partials)
+end
+# Cache-aware seed delegations: a `CuArray` has a custom `NDualArray` V, so the cache-aware
+# `_*_dual_internal` must delegate to the cache-free factory above (like core's `Array`
+# delegation) rather than fall to the generic struct-lift @generated, which would recurse into
+# CuArray's internal `DataRef`/`Ptr` fields. Register by primal identity so aliased CuArrays
+# (e.g. from `reshape`/`view`) share one V.
+const _CuDualArray = Union{CuArray{<:IEEEFloat},CuArray{<:Complex{<:IEEEFloat}}}
+for (factory, internal) in
+    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
+    @eval function Mooncake.$internal(w::Val{N}, x::_CuDualArray, d::MaybeCache) where {N}
+        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+        v = Mooncake.$factory(w, x)
+        d[x] = v
+        return v
+    end
+end
+function Mooncake._randn_dual_internal(
+    w::Val{N}, rng::Random.AbstractRNG, x::_CuDualArray, d::MaybeCache
+) where {N}
+    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+    v = Mooncake.randn_dual(w, rng, x)
+    d[x] = v
+    return v
+end
+# Non-differentiable T (`tangent_type(T) === NoTangent`) makes the whole CuPtr a
+# `NoDual` slot — coherent with reverse-mode (`tangent_type(CuPtr{Cvoid}) === NoTangent`).
+# Differentiable T keeps the per-lane tangent pointer V.
+@foldable @inline function dual_type(::Val{N}, ::Type{CuPtr{T}}) where {N,T}
+    return tangent_type(T) === NoTangent ? NoDual : NTuple{N,CuPtr{T}}
+end
+
+@inline function Mooncake.zero_dual(::Val{N}, x::CuPtr{T}) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+@inline function Mooncake.uninit_dual(::Val{N}, x::CuPtr{T}) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+@inline function Mooncake.randn_dual(
+    ::Val{N}, ::Random.AbstractRNG, x::CuPtr{T}
+) where {N,T}
+    tangent_type(T) === NoTangent && return NoDual()
+    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+end
+
+# Width-1 `lift` overloads for CuPtr / CuArray — mirror the host `Ptr` / `Array`
+# `lift` overloads in `src/lifted.jl`. Without these, the test-side `lift(p, ẋ)`
+# boundary call MethodErrors for CuPtr / CuArray inputs.
+@inline function Mooncake.lift(x::CuPtr{T}, ẋ::CuPtr{T}) where {T}
+    return Mooncake.Lifted{CuPtr{T},1}(x, (ẋ,))
+end
+@inline function Mooncake.lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:CuArray{T,D}}
+    return Mooncake.Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
+end
+@inline function Mooncake.lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
+    return Mooncake.Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+end
+# CuDataRef is non-differentiable (V === NoDual). The legacy fixture idiom
+# `Dual(data, copy(data))` passes a same-typed handle as the tangent; here we
+# discard it and produce the canonical NoDual V.
+@inline function Mooncake.lift(x::A, ::A) where {A<:CuDataRef}
+    return Mooncake.Lifted{A,1}(x, NoDual())
+end
+# Forward uses NoDual; reverse uses `tangent_type === P` (above). The difference is the aliasing model:
+# reverse reuses the handle as *shared* cotangent storage so aliased CuArrays/views accumulate gradient
+# into one place (the reverse aliasing invariant). Forward tangents are slot-local — nothing is shared —
+# and a CuArray's JVP lives at the array level in the result's `NDualArray` partials (views build that
+# via the `view` frule, never through a tangent on the DataRef). So the handle carries no forward derivative.
+@foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
 }
@@ -213,9 +351,14 @@ end
     Tuple{typeof(unsafe_convert),Type{CuPtr{T}},CuArray{T}} where {T<:Complex{<:IEEEFloat}},
 )
 function frule!!(
-    ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
-    return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
+    ::Lifted{typeof(unsafe_convert),Nw},
+    ::Lifted{Type{CuPtr{T}},Nw},
+    x::Lifted{X,Nw,<:NDualArray},
+) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T},Nw}
+    y = unsafe_convert(CuPtr{T}, primal(x))
+    x_partials = tangent(x).partials
+    dy = ntuple(k -> unsafe_convert(CuPtr{T}, x_partials[k]), Val(Nw))
+    return Lifted{CuPtr{T},Nw}(y, dy)
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
@@ -230,15 +373,21 @@ end
 # For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
 # is NoTangent and the pointer arithmetic carries no gradient.
 @is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
+# Differentiable T: per-lane CuPtr offset.
 function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},CuPtr{T}}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), tangent(p) + primal(n))
+    ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NTuple{Nw,CuPtr{T}}}, n::Lifted{<:Integer}
+) where {Nw,T}
+    np = primal(n)
+    new_primal = primal(p) + np
+    p_partials = tangent(p)
+    new_partials = ntuple(k -> p_partials[k] + np, Val(Nw))
+    return Lifted{CuPtr{T},Nw}(new_primal, new_partials)
 end
+# Non-differentiable T: NoDual tangent.
 function frule!!(
-    ::Dual{typeof(+)}, p::Dual{CuPtr{T},NoTangent}, n::Dual{<:Integer,NoTangent}
-) where {T}
-    return Dual(primal(p) + primal(n), NoTangent())
+    ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NoDual}, n::Lifted{<:Integer}
+) where {Nw,T}
+    return Lifted{CuPtr{T},Nw}(primal(p) + primal(n), NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(+)}, p::CoDual{CuPtr{T},CuPtr{T}}, n::CoDual{<:Integer,NoFData}
@@ -553,9 +702,17 @@ end
     MinimalCtx, Tuple{typeof(reshape),CuMaybeComplexArray,NTuple{N,Int}} where {N},
 )
 function frule!!(
-    ::Dual{typeof(reshape)}, x::Dual{<:CuMaybeComplexArray}, dims::Dual{<:NTuple}
-)
-    return Dual(reshape(primal(x), primal(dims)), reshape(tangent(x), primal(dims)))
+    ::Lifted{typeof(reshape),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    dims::Lifted{<:NTuple},
+) where {Nw}
+    _dims = primal(dims)
+    y = reshape(primal(x), _dims)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> reshape(x_partials[k], _dims), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -564,21 +721,51 @@ function rrule!!(
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
 end
 
-# `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
-# similar operations). The tangent reuses the DataRef from the input tangent so that
-# gradient accumulation propagates automatically.
+# `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
+# arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made a
+# FORWARD-mode primitive so the forward transform does not trace into that primal-only
+# reconstruction and drop the parallel per-lane partials: view the primal and each partial
+# alike, mirroring `reshape` above. Reverse mode is NOT a primitive — the traced path
+# already produces the canonical tangent for both contiguous (CuArray) and non-contiguous
+# (SubArray) results; a hand-written rrule!! here returned a malformed SubArray CoDual.
+@is_primitive(
+    MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(view),CuMaybeComplexArray,Vararg}
+)
 function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{P}},
-    data::Dual,
-    maxsize::Dual,
-    offset::Dual,
-    dims::Dual,
-) where {P<:CuMaybeComplexArray}
-    y = _new_(P, primal(data), primal(maxsize), primal(offset), primal(dims))
-    dy = _new_(P, tangent(data), primal(maxsize), primal(offset), primal(dims))
-    return Dual(y, dy)
+    ::Lifted{typeof(view),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    inds::Vararg{Lifted,M},
+) where {Nw,M}
+    _inds = map(primal, inds)
+    y = view(primal(x), _inds...)
+    x_partials = tangent(x).partials
+    if y isa CuMaybeComplexArray
+        y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
+        Y = typeof(y)
+        return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+    end
+    # Non-contiguous indices yield a SubArray, whose canonical V is the struct lift
+    # through the parent — the parent field must alias THIS slot's V so the derivative
+    # stays connected. Indices/offset/stride are non-differentiable metadata.
+    y.parent === primal(x) || throw(
+        ArgumentError(
+            "view(::CuArray, …) returned a SubArray whose parent is not the input " *
+            "array; cannot construct a coherent forward V for index types $(typeof(_inds)).",
+        ),
+    )
+    V = ImmutableDual((
+        parent=tangent(x), indices=NoDual(), offset1=NoDual(), stride1=NoDual()
+    ))
+    return Lifted{typeof(y),Nw}(y, V)
 end
+
+# Reverse `_new_` rule for the DataRef-based inner CuArray constructor. The tangent reuses the
+# input tangent's DataRef (shared cotangent storage), so gradient accumulation propagates
+# automatically. There is deliberately NO forward parallel: `dual_type(CuDataRef) === NoDual` makes
+# the handle forward-opaque (the JVP lives at the array level in the result's `NDualArray`, not in
+# the DataRef), so a forward `_new_(CuArray, DataRef, …)` would have no tangent to propagate — and
+# it is never needed, because forward views/reshapes build the result's `NDualArray` directly via
+# the `view` frule above, never through this constructor.
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{P}},
@@ -605,26 +792,23 @@ end
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
-@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), NoTangent()
-)
 @inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), NoFData()
-)
-@inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
 )
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
 )
 
+# CuDataRef field access — fields (`rc`, `freed`, `cached`) are
+# reference-counting internals with no derivative flow; Lifted V is `NoDual`.
 function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuDataRef,<:CuDataRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    return _cudataref_lgetfield_fwd(primal(x), name, order)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuDataRef,Nw,NoDual},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -635,9 +819,10 @@ function rrule!!(
     return _cudataref_lgetfield_rev(primal(x), name, order), _nopb(Val(4))
 end
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuDataRef,<:CuDataRef}, ::Dual{Val{name}}
-) where {name}
-    return _cudataref_lgetfield_fwd(primal(x), name)
+    ::Lifted{typeof(lgetfield),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}, ::Lifted{Val{name},Nw}
+) where {Nw,name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
@@ -645,16 +830,18 @@ function rrule!!(
     return _cudataref_lgetfield_rev(primal(x), name), _nopb(Val(3))
 end
 
-# lgetfield rules for CuArray.  CuArray has 4 fields:
-#   :data (field 1) — the DataRef handle; tangent flows here
-#   :maxsize (field 2), :offset (field 3), :dims (field 4) — non-differentiable metadata
+# lgetfield rules for CuArray (4 fields: `:data` the DataRef handle, then `:maxsize`/`:offset`/
+# `:dims` metadata). Reverse mode (rrule) routes the cotangent through `:data`; the metadata fields
+# are non-differentiable. Forward mode (frule) returns a `NoDual` result V for every field — the
+# JVP lives in the `NDualArray` partials, not behind the `.data` handle.
 function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:CuArray,<:CuArray},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name, order)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuArray,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+    ::Lifted{Val{order},Nw},
+) where {Nw,name,order}
+    y = _cu_lgetfield_primal(primal(x), name, order)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -664,11 +851,13 @@ function rrule!!(
 ) where {name,order}
     return _cuarray_lgetfield_rev(primal(x), x.dx, name, order), _nopb(Val(4))
 end
-
 function frule!!(
-    ::Dual{typeof(lgetfield)}, x::Dual{<:CuArray,<:CuArray}, ::Dual{Val{name}}
-) where {name}
-    return _cuarray_lgetfield_fwd(primal(x), tangent(x), name)
+    ::Lifted{typeof(lgetfield),Nw},
+    x::Lifted{<:CuArray,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+) where {Nw,name}
+    y = _cu_lgetfield_primal(primal(x), name, nothing)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
@@ -684,7 +873,9 @@ const _SCALAR_IDX_MSG =
     "broadcasting. Add a new rule or open an issue at " *
     "https://github.com/chalk-lab/Mooncake.jl."
 @is_primitive(MinimalCtx, Tuple{typeof(getindex),CuArray,Integer})
-function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
+function frule!!(
+    ::Lifted{typeof(getindex),Nw}, x::Lifted{<:CuArray}, i::Lifted{<:Integer}
+) where {Nw}
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:Integer})
@@ -692,7 +883,9 @@ function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:I
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
-function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
+function frule!!(
+    ::Lifted{typeof(setindex!),Nw}, x::Lifted{<:CuArray}, v::Lifted, i::Lifted{<:Integer}
+) where {Nw}
     _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(
@@ -712,12 +905,18 @@ end
     MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
 )
 function frule!!(
-    ::Dual{typeof(getindex)},
-    x::Dual{<:CuMaybeComplexArray},
-    idx::Dual{<:AbstractVector{<:Integer}},
-)
-    px, dx = arrayify(x)
-    return Dual(px[primal(idx)], dx[primal(idx)])
+    ::Lifted{typeof(getindex),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    idx::Lifted{<:AbstractVector{<:Integer}},
+) where {Nw}
+    pidx = primal(idx)
+    px = primal(x)
+    y = px[pidx]
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> x_partials[k][pidx], Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
@@ -741,11 +940,17 @@ end
 # dot (real): d(dot(x,y)) = dot(dx,y) + dot(x,dy)
 #             pullback:     dx += dz*y,  dy += dz*x
 @is_primitive(MinimalCtx, Tuple{typeof(norm),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
+function frule!!(
+    ::Lifted{typeof(norm),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
     y = norm(px)
-    dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
-    return Dual(y, dy)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(R) : real(dot(px, x_partials[k])) / y
+    end
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -759,10 +964,19 @@ function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(dot),CuFloatArray,CuFloatArray})
-function frule!!(::Dual{typeof(dot)}, x::Dual{<:CuFloatArray}, y::Dual{<:CuFloatArray})
-    px, dx = arrayify(x)
-    py, dy = arrayify(y)
-    return Dual(dot(px, py), dot(dx, py) + dot(px, dy))
+function frule!!(
+    ::Lifted{typeof(dot),Nw},
+    x::Lifted{<:CuFloatArray,Nw,<:NDualArray},
+    y::Lifted{<:CuFloatArray,Nw,<:NDualArray},
+) where {Nw}
+    px = primal(x)
+    py = primal(y)
+    z = dot(px, py)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    y_partials = tangent(y).partials
+    dz_lanes = ntuple(k -> dot(x_partials[k], py) + dot(px, y_partials[k]), Val(Nw))
+    return Lifted{R,Nw}(z, NDual{R,Nw}(z, dz_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(dot)}, x::CoDual{<:CuFloatArray}, y::CoDual{<:CuFloatArray}
@@ -782,7 +996,7 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
-    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
+    @eval frule!!(::Lifted{typeof($_fn),Nw}, x::Lifted{<:CuArray}; kwargs...) where {Nw} = _throw_gpu_argument_error(
         "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     )
     @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
@@ -798,11 +1012,37 @@ end
 #
 # Note: undefined when any element of x is zero (gradient is skipped in that case).
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
+function frule!!(
+    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
     y = prod(px)
-    dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
-    return Dual(y, dy)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(R) : y * sum(x_partials[k] ./ px)
+    end
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+end
+function frule!!(
+    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = prod(px)
+    Y = typeof(y)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(Val(Nw)) do k
+        iszero(y) ? zero(Y) : y * sum(x_partials[k] ./ px)
+    end
+    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
+    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
+    return Lifted{Y,Nw}(
+        y,
+        Complex{NDual{R,Nw}}(
+            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
+        ),
+    )
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -825,9 +1065,16 @@ end
 #
 # Supports the optional `dims` keyword (passed through to CUDA's cumsum).
 @is_primitive(MinimalCtx, Tuple{typeof(cumsum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumsum)}, x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
-    return Dual(cumsum(px; kw...), cumsum(dx; kw...))
+function frule!!(
+    ::Lifted{typeof(cumsum),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
+) where {Nw}
+    px = primal(x)
+    y = cumsum(px; kw...)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -852,12 +1099,17 @@ end
 # so the Jacobian at that position is zero (the zero annihilates the product).
 # nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
 @is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
-    px, dx = arrayify(x)
+function frule!!(
+    ::Lifted{typeof(cumprod),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}; kw...
+) where {Nw}
+    px = primal(x)
     y = cumprod(px; kw...)
     inv_px = nan_tangent_guard.(px, inv.(px))
-    dy = y .* cumsum(dx .* inv_px; kw...)
-    return Dual(y, dy)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> y .* cumsum(x_partials[k] .* inv_px; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -883,10 +1135,18 @@ end
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
 function frule!!(
-    ::Dual{typeof(accumulate)}, ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
-)
-    px, dx = arrayify(x)
-    return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
+    ::Lifted{typeof(accumulate),Nw},
+    ::Lifted{typeof(+),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray};
+    kw...,
+) where {Nw}
+    px = primal(x)
+    y = accumulate(+, px; kw...)
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
@@ -905,7 +1165,9 @@ function rrule!!(
     return CoDual(y, dy_out), accumulate_plus_pb!!
 end
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
-function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
+function frule!!(
+    ::Lifted{typeof(accumulate),Nw}, op::Lifted, x::Lifted{<:CuArray}; kwargs...
+) where {Nw}
     _throw_gpu_argument_error(
         "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
         _UNIMPL_MSG,
@@ -921,9 +1183,33 @@ end
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
-function frule!!(::Dual{typeof(sum)}, x::Dual{<:CuMaybeComplexArray})
-    px, dx = arrayify(x)
-    return Dual(sum(px), sum(dx))
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = sum(px)
+    R = eltype(px)
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
+    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
+end
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    px = primal(x)
+    y = sum(px)
+    Y = typeof(y)
+    R = real(eltype(px))
+    x_partials = tangent(x).partials
+    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
+    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
+    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
+    return Lifted{Y,Nw}(
+        y,
+        Complex{NDual{R,Nw}}(
+            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
+        ),
+    )
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     _, dx = arrayify(x)
@@ -953,18 +1239,20 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = arrayify(src)
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    doffs::Lifted{<:Integer},
+    src::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    soffs::Lifted{<:Integer},
+    n::Lifted{<:Integer},
+) where {Nw}
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    dest_partials = tangent(dest).partials
+    src_partials = tangent(src).partials
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], doffs_v, src_partials[lane], soffs_v, n_v)
+    end
     return dest
 end
 function rrule!!(
@@ -1004,18 +1292,20 @@ end
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    doffs::Dual{<:Integer,NoTangent},
-    src::Dual{<:Array,<:Array},
-    soffs::Dual{<:Integer,NoTangent},
-    n::Dual{<:Integer,NoTangent},
-)
-    pdest, ddest = arrayify(dest)
-    psrc, dsrc = primal(src), tangent(src)
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    doffs::Lifted{<:Integer},
+    src::Lifted{<:Array,Nw,<:NDualArray},
+    soffs::Lifted{<:Integer},
+    n::Lifted{<:Integer},
+) where {Nw}
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
-    unsafe_copyto!(ddest, doffs_v, dsrc, soffs_v, n_v)
+    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
+    dest_partials = tangent(dest).partials
+    src_partials = tangent(src).partials
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], doffs_v, src_partials[lane], soffs_v, n_v)
+    end
     return dest
 end
 function rrule!!(
@@ -1050,11 +1340,21 @@ end
 # It is a pure side-effect with no mathematical output — gradient is zero.
 # Both the primal and its fdata (if any) are independent GPU allocations; free both.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
-function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
+function frule!!(
+    ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,<:NDualArray}
+) where {Nw}
     unsafe_free!(primal(x))
-    dx = tangent(x)
-    dx isa NoFData || unsafe_free!(dx)
-    return Dual(nothing, NoTangent())
+    for partial in tangent(x).partials
+        unsafe_free!(partial)
+    end
+    return Lifted{Nothing,Nw}(nothing, NoDual())
+end
+# Non-differentiable element types (`NoDual` V, e.g. `CuArray{Int}`): free the primal only.
+function frule!!(
+    ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,NoDual}
+) where {Nw}
+    unsafe_free!(primal(x))
+    return Lifted{Nothing,Nw}(nothing, NoDual())
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
     unsafe_free!(primal(x))
@@ -1067,9 +1367,9 @@ end
 # (no mathematical output) encountered inside CuArray constructors (e.g. view/derive).
 # The primal registration must happen; the gradient is zero.
 @is_primitive MinimalCtx Tuple{typeof(Core.finalizer),Any,Any}
-function frule!!(::Dual{typeof(Core.finalizer)}, f::Dual, x::Dual)
+function frule!!(::Lifted{typeof(Core.finalizer),Nw}, f::Lifted, x::Lifted) where {Nw}
     Core.finalizer(primal(f), primal(x))
-    return Dual(nothing, NoTangent())
+    return Lifted{Nothing,Nw}(nothing, NoDual())
 end
 function rrule!!(::CoDual{typeof(Core.finalizer)}, f::CoDual, x::CoDual)
     Core.finalizer(primal(f), primal(x))
@@ -1081,8 +1381,8 @@ end
 # It contains a try/catch block which causes Mooncake's IR transformation to produce
 # invalid IR ("terminator not last in block"). Mark as primitive: returns Bool, no gradient.
 @is_primitive MinimalCtx Tuple{typeof(hasfieldcount),Type}
-function frule!!(::Dual{typeof(hasfieldcount)}, T::Dual{<:Type})
-    return Dual(hasfieldcount(primal(T)), NoTangent())
+function frule!!(::Lifted{typeof(hasfieldcount),Nw}, T::Lifted{<:Type}) where {Nw}
+    return Lifted{Bool,Nw}(hasfieldcount(primal(T)), NoDual())
 end
 function rrule!!(::CoDual{typeof(hasfieldcount)}, T::CoDual{<:Type})
     return CoDual(hasfieldcount(primal(T)), NoFData()), _nopb(Val(2))
@@ -1099,11 +1399,22 @@ end
 # For float x the tangent array is filled with tangent(x).
 @is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
 function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
-)
+    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}, x::Lifted
+) where {Nw}
     fill!(primal(a), primal(x))
-    tx = tangent(x)
-    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    a_partials = tangent(a).partials
+    Eout = eltype(a_partials[1])
+    if tangent(x) isa NoDual
+        for partial in a_partials
+            fill!(partial, zero(Eout))
+        end
+    else
+        # Per-lane scalar tangent via the canonical accessor, which handles a real `NDual`
+        # and a complex `Complex{NDual}` alike — the raw `.partials` field exists only on `NDual`.
+        @inbounds for lane in 1:Nw
+            fill!(a_partials[lane], Eout(tangent(x, lane)))
+        end
+    end
     return a
 end
 function rrule!!(
@@ -1150,15 +1461,26 @@ _fields(x::CuMaybeComplexArray) = (parent=x,)
 @is_primitive(
     DefaultCtx, Tuple{typeof(sum),<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}},
 )
+# `Transpose{T,<:CuArray}` has canonical V `ImmutableDual{@NamedTuple{parent::NDualArray}}`;
+# sum the parent's per-lane partials.
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), sum(_fields(tangent(x)).parent))
+    ::Lifted{typeof(sum),Nw},
+    x::Lifted{<:Transpose{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
+) where {Nw,T<:CuFloatOrComplex}
+    y = sum(primal(x))
+    parent_partials = tangent(x).value.parent.partials
+    dy_lanes = ntuple(k -> sum(parent_partials[k]), Val(Nw))
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function frule!!(
-    ::Dual{typeof(sum)}, x::Dual{<:Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
-)
-    return Dual(sum(primal(x)), conj(sum(_fields(tangent(x)).parent)))
+    ::Lifted{typeof(sum),Nw},
+    x::Lifted{<:Adjoint{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
+) where {Nw,T<:CuFloatOrComplex}
+    y = sum(primal(x))
+    parent_partials = tangent(x).value.parent.partials
+    # Adjoint applies elementwise conj — sum then conjugate.
+    dy_lanes = ntuple(k -> conj(sum(parent_partials[k])), Val(Nw))
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, x::CoDual{<:Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}}
@@ -1222,22 +1544,6 @@ function _check_gpu_sum_f(f)
     return nothing
 end
 
-function _gpu_sum_f_frule(f, x)
-    _check_gpu_sum_f(f)
-    flat_px = parent(primal(x))
-    flat_dx = _fields(tangent(x)).parent
-    flat_pargs = (flat_px,)
-    flat_tangents = (flat_dx,)
-    out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
-    dy = if decoded.is_diff && !(flat_dx isa NoTangent)
-        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
-    else
-        zero(decoded.primal_out)
-    end
-    return Dual(decoded.primal_out, dy)
-end
-
 function _gpu_sum_f_rrule(f, x)
     _check_gpu_sum_f(f)
     flat_px = parent(primal(x))
@@ -1270,8 +1576,79 @@ end
 # Works for both f: ℂ→ℝ (e.g. abs2, real, imag) and f: ℂ→ℂ (e.g. sin, exp).
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
-function frule!!(::Dual{typeof(sum)}, f::Dual, x::Dual{<:CuGpuSumFArray})
-    return _gpu_sum_f_frule(primal(f), x)
+# Width-`Nw` forward rule for `sum(f, x)` on real/complex CuArrays.
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    _check_gpu_sum_f(primal(f))
+    flat_px = primal(x)
+    x_partials = tangent(x).partials
+    # One dual broadcast computes f and df/dx for every element; each lane then reuses
+    # `out` for a cheap reduction against that lane's input tangent.
+    out = _gpu_broadcast_dual(primal(f), flat_px)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
+    dy_lanes = if decoded.is_diff
+        ntuple(
+            k -> _gpu_accumulate_reduced_jvp(
+                out, (flat_px,), (x_partials[k],), decoded.primal_out
+            ),
+            Val(Nw),
+        )
+    else
+        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
+    end
+    P_out = typeof(decoded.primal_out)
+    return Lifted{P_out,Nw}(
+        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
+    )
+end
+
+# Wrap a scalar primal `y` with per-lane partials `dy_lanes` into the canonical
+# V, picking by scalar shape: `NDual` for real, `Complex{NDual}` for complex —
+# so the invalid `NDual{Complex{R},N}` (NDual.T must be IEEEFloat) is never built.
+@inline function _wrap_scalar_v_lanes(y::T, dy_lanes::NTuple{N,T}) where {T<:IEEEFloat,N}
+    return NDual{T,N}(y, dy_lanes)
+end
+@inline function _wrap_scalar_v_lanes(
+    y::Complex{R}, dy_lanes::NTuple{N,Complex{R}}
+) where {R<:IEEEFloat,N}
+    re = NDual{R,N}(real(y), ntuple(k -> real(dy_lanes[k]), Val(N)))
+    im = NDual{R,N}(imag(y), ntuple(k -> imag(dy_lanes[k]), Val(N)))
+    return Complex(re, im)
+end
+
+# Transpose/Adjoint of CuFloatArray — V is ImmutableDual{@NamedTuple{parent::NDualArray}}.
+function frule!!(
+    ::Lifted{typeof(sum),Nw},
+    f::Lifted,
+    x::Lifted{
+        <:Union{Adjoint{<:IEEEFloat,<:CuFloatArray},Transpose{<:IEEEFloat,<:CuFloatArray}},
+        Nw,
+        <:ImmutableDual,
+    },
+) where {Nw}
+    _check_gpu_sum_f(primal(f))
+    flat_px = parent(primal(x))
+    x_partials = tangent(x).value.parent.partials
+    out = _gpu_broadcast_dual(primal(f), flat_px)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
+    dy_lanes = if decoded.is_diff
+        ntuple(
+            k -> _gpu_accumulate_reduced_jvp(
+                out, (flat_px,), (x_partials[k],), decoded.primal_out
+            ),
+            Val(Nw),
+        )
+    else
+        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
+    end
+    P_out = typeof(decoded.primal_out)
+    # Use `_wrap_scalar_v_lanes` (not a raw `NDual{P_out,Nw}`) so a complex-valued `f` (ℝ→ℂ),
+    # whose `P_out === Complex{R}`, builds the canonical `Complex{NDual}` V rather than the
+    # invalid `NDual{Complex,…}`. Mirrors the dense `sum(f, x)` frule above.
+    return Lifted{P_out,Nw}(
+        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
+    )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
@@ -1296,12 +1673,12 @@ for _op in (:(+), :(Base.add_sum))
         MinimalCtx, Tuple{typeof(mapreduce),Any,typeof($_op),CuMaybeComplexArray}
     )
     @eval function frule!!(
-        ::Dual{typeof(mapreduce)},
-        f::Dual,
-        ::Dual{typeof($_op)},
-        x::Dual{<:CuMaybeComplexArray},
-    )
-        return frule!!(Dual(sum, NoTangent()), f, x)
+        ::Lifted{typeof(mapreduce),Nw},
+        f::Lifted,
+        ::Lifted{typeof($_op)},
+        x::Lifted{<:CuMaybeComplexArray},
+    ) where {Nw}
+        return frule!!(zero_lifted(Val(Nw), sum), f, x)
     end
     @eval function rrule!!(
         ::CoDual{typeof(mapreduce)},
@@ -1329,9 +1706,11 @@ end
 for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
     @eval @is_primitive(MinimalCtx, Tuple{typeof(reduce),typeof($_op),CuMaybeComplexArray})
     @eval function frule!!(
-        ::Dual{typeof(reduce)}, ::Dual{typeof($_op)}, x::Dual{<:CuMaybeComplexArray}
-    )
-        return frule!!(Dual($_fn, NoTangent()), x)
+        ::Lifted{typeof(reduce),Nw},
+        ::Lifted{typeof($_op)},
+        x::Lifted{<:CuMaybeComplexArray},
+    ) where {Nw}
+        return frule!!(zero_lifted(Val(Nw), $_fn), x)
     end
     @eval function rrule!!(
         ::CoDual{typeof(reduce)}, ::CoDual{typeof($_op)}, x::CoDual{<:CuMaybeComplexArray}
@@ -1348,7 +1727,9 @@ end
 # Catch-all rules for unsupported operators — give a clear error rather than letting
 # Mooncake attempt to trace into an opaque CUDA reduction kernel.
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
-function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
+function frule!!(
+    ::Lifted{typeof(mapreduce),Nw}, f::Lifted, op::Lifted, x::Lifted{<:CuArray}
+) where {Nw}
     _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
         "got op=$(primal(op)). " *
@@ -1364,7 +1745,7 @@ function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
-function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
+function frule!!(::Lifted{typeof(reduce),Nw}, op::Lifted, x::Lifted{<:CuArray}) where {Nw}
     _throw_gpu_argument_error(
         "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
         "got op=$(primal(op)). " *
@@ -1384,14 +1765,14 @@ end
 for (_fn, _supports_kwargs) in ((:vcat, false), (:hcat, false), (:cat, true))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Vararg{Union{CuArray,Number}}})
     if _supports_kwargs
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...; kwargs...) = _throw_gpu_argument_error(
+        @eval frule!!(::Lifted{typeof($_fn),Nw}, args::Lifted...; kwargs...) where {Nw} = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...; kwargs...) = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
     else
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...) = _throw_gpu_argument_error(
+        @eval frule!!(::Lifted{typeof($_fn),Nw}, args::Lifted...) where {Nw} = _throw_gpu_argument_error(
             "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
         )
         @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...) = _throw_gpu_argument_error(
@@ -1485,27 +1866,33 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matmatmul!),Nw},
+    C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    tA::Lifted{Char},
+    tB::Lifted{Char},
+    A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+) where {Nw}
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
     _check_complex_transpose_flag(T, tAv, tBv)
     _1 = one(T)
     _0 = zero(T)
-    # primal: C = op_A(A) * op_B(B)
     cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
-    # tangent (product rule): dC = op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)
-    cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
-    cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    C_partials = tangent(C).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dC = C_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
+        cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    end
     return C
 end
 function rrule!!(
@@ -1567,18 +1954,18 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matmatmul!)},
-    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    tA::Dual{Char,NoTangent},
-    tB::Dual{Char,NoTangent},
-    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pC, dC = matrixify(C)
-    pA, dA = matrixify(A)
-    pB, dB = matrixify(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matmatmul!),Nw},
+    C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    tA::Lifted{Char},
+    tB::Lifted{Char},
+    A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    alpha::Lifted{<:Number},
+    beta::Lifted{<:Number},
+) where {Nw}
+    pC = primal(C)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     tBv = primal(tB)
     T = eltype(pA)
@@ -1586,11 +1973,17 @@ function frule!!(
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
-    # primal: C := α*op_A(A)*op_B(B) + β*C
     cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
-    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
-    cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
-    cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    C_partials = tangent(C).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dC = C_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
+        cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    end
     return C
 end
 function rrule!!(
@@ -1673,17 +2066,17 @@ end
     },
 )
 function frule!!(
-    ::Dual{typeof(LinearAlgebra.generic_matvecmul!)},
-    Y::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    tA::Dual{<:AbstractChar,NoTangent},
-    A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
-    B::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
-)
-    pY, dY = primal(Y), tangent(Y)
-    pA, dA = primal(A), tangent(A)
-    pB, dB = primal(B), tangent(B)
+    ::Lifted{typeof(LinearAlgebra.generic_matvecmul!),Nw},
+    Y::Lifted{<:CuMaybeComplexVec,Nw,<:NDualArray},
+    tA::Lifted{<:AbstractChar},
+    A::Lifted{<:CuMaybeComplexMat,Nw,<:NDualArray},
+    B::Lifted{<:CuMaybeComplexVec,Nw,<:NDualArray},
+    alpha::Lifted{<:Number},
+    beta::Lifted{<:Number},
+) where {Nw}
+    pY = primal(Y)
+    pA = primal(A)
+    pB = primal(B)
     tAv = primal(tA)
     av = primal(alpha)
     bv = primal(beta)
@@ -1691,9 +2084,17 @@ function frule!!(
     _check_gemv_eltypes(T, eltype(pB))
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
-    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
-    cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
-    cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    Y_partials = tangent(Y).partials
+    A_partials = tangent(A).partials
+    B_partials = tangent(B).partials
+    @inbounds for lane in 1:Nw
+        dY = Y_partials[lane]
+        dA = A_partials[lane]
+        dB = B_partials[lane]
+        # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+        cuBLAS.gemv!(tAv, av, dA, pB, bv, dY)
+        cuBLAS.gemv!(tAv, av, pA, dB, _1, dY)
+    end
     # primal: pY = av*op(pA)*pB + bv*pY
     cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
     return Y
@@ -1744,8 +2145,43 @@ end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
-    return Dual(cu(primal(x)), cu(tangent(x)))
+# Dense input (V is `NDualArray`): `cu` the primal and each lane's partial to the device.
+function frule!!(
+    ::Lifted{typeof(cu),Nw}, x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:NDualArray}
+) where {Nw}
+    y = cu(primal(x))
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> cu(x_partials[k]), Val(Nw))
+    Y = typeof(y)
+    Element = eltype(y)
+    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+end
+# Wrapped CPU input (SubArray/Adjoint/Transpose/Reshaped/…): the broad `@is_primitive` admits it,
+# but its forward V is the generic struct lift, not `NDualArray`, so the dense method does not match.
+# `cu` preserves the wrapper (`cu(::SubArray)` → a `SubArray` over a device parent), so the result's
+# canonical V is the same struct lift over the parent's `NDualArray`. Rebuild it: `cu` the primal
+# (its `.parent` is the device parent, which the parent `NDualArray` aliases) and `cu` each lane of
+# the input's parent partials; keep the wrapper's non-differentiable metadata fields `NoDual`. The
+# reverse rrule below already handles wrappers. Mirrors the CUDA `view` frule's struct-lift branch.
+function frule!!(
+    ::Lifted{typeof(cu),Nw},
+    x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:ImmutableDual},
+) where {Nw}
+    in_nt = tangent(x).value
+    parent_nda = in_nt.parent
+    parent_nda isa NDualArray || throw(
+        ArgumentError(
+            "forward `cu` supports a single-level array wrapper over a dense array; got a nested " *
+            "or non-array-wrapper forward representation $(typeof(parent_nda)) for input " *
+            "$(typeof(primal(x))). Use reverse mode for this input.",
+        ),
+    )
+    y = cu(primal(x))
+    Pp = y.parent
+    parent_partials = ntuple(k -> cu(parent_nda.partials[k]), Val(Nw))
+    parent_V = NDualArray{eltype(Pp),Nw,ndims(Pp),typeof(Pp)}(Pp, parent_partials)
+    V = ImmutableDual(merge(in_nt, (parent=parent_V,)))
+    return Lifted{typeof(y),Nw}(y, V)
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
     dx = tangent(x)
@@ -1763,9 +2199,13 @@ end
     MinimalCtx, Tuple{Type{Array{T,N}},CuArray{T,N}} where {T<:CuFloatOrComplex,N}
 )
 function frule!!(
-    ::Dual{Type{Array{T,N}}}, x::Dual{<:CuArray{T,N}}
-) where {T<:CuFloatOrComplex,N}
-    return Dual(Array(primal(x)), Array(tangent(x)))
+    ::Lifted{Type{Array{T,D}},Nw}, x::Lifted{<:CuArray{T,D},Nw,<:NDualArray}
+) where {T<:CuFloatOrComplex,D,Nw}
+    y = Array(primal(x))
+    x_partials = tangent(x).partials
+    y_partials = ntuple(k -> Array(x_partials[k]), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{T,Nw,D,Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
@@ -1784,9 +2224,14 @@ end
 # frule:    d(Diagonal(v)) = Diagonal(dv)
 # pullback: dv += diag(dD)  (i.e. extract the diagonal from the output cotangent)
 @is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexArray})
-function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray})
-    # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
-    return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
+# Diagonal is a non-mutable struct; per the structural lift, its V is
+# `ImmutableDual{@NamedTuple{diag::Vdiag}}` where `Vdiag` is the input's
+# NDualArray V.
+function frule!!(
+    ::Lifted{<:Type{<:Diagonal},Nw}, v::Lifted{<:CuMaybeComplexArray,Nw,Vdiag}
+) where {Nw,Vdiag<:NDualArray}
+    y = Diagonal(primal(v))
+    return Lifted{typeof(y),Nw}(y, ImmutableDual((; diag=tangent(v))))
 end
 function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
     pv, dv = arrayify(v)
@@ -2509,24 +2954,86 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize)}, bc::Dual{<:Broadcasted{<:CuArrayStyle}}
-)
-    bc_primal = primal(bc)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
+# Per-lane tangent extraction for the canonical forward V shapes that appear as
+# `Broadcasted.args` entries, used by the `materialize` / `materialize!` frules
+# below to reconstruct a legacy reverse-mode-shaped Broadcasted tangent (which
+# the existing `_prepare_gpu_broadcast` / `_gpu_bcast_leaves` helpers consume).
+# `lane` selects the chunk slot, so each lane reuses the single dual-broadcast
+# kernel for an independent JVP.
+@inline _bc_tangent(::Mooncake.NoDual, _, _) = NoTangent()
+@inline _bc_tangent(::Mooncake.NoTangent, _, _) = NoTangent()
+@inline _bc_tangent(::Tuple{Mooncake.NoTangent}, _, _) = NoTangent()
+@inline _bc_tangent(::Tuple{Mooncake.NoDual}, _, _) = NoTangent()
+@inline _bc_tangent(v::Nfwd.NDual{T,N}, _, lane) where {T,N} = v.partials[lane]
+@inline _bc_tangent(v::Nfwd.NDualArray{T,N}, _, lane) where {T,N} = v.partials[lane]
+@inline function _bc_tangent(v::Complex{Nfwd.NDual{R,N}}, _, lane) where {R,N}
+    return Complex(real(v).partials[lane], imag(v).partials[lane])
+end
+@inline function _bc_tangent(v::ImmutableDual, p::Broadcasted, lane)
+    nt = v.value
+    targs = ntuple(length(p.args)) do i
+        _bc_tangent(nt.args[i], p.args[i], lane)
+    end
+    return Tangent((; style=NoTangent(), f=NoTangent(), args=targs, axes=NoTangent()))
+end
+# Wrapper-arg fall-throughs: Transpose/Adjoint primals with parent NDualArray V.
+@inline function _bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint}, lane)
+    parent_tangent = _bc_tangent(v.value.parent, parent(p), lane)
+    return Tangent((; parent=parent_tangent))
+end
+# Generic Ref/struct primal with ImmutableDual or MutableDual V — the Broadcast `args`
+# may include e.g. `RefValue{F}` (non-diff inner), which carries no tangent. A struct V
+# with any differentiable field reaching this fall-through has no lane extraction, so
+# fail loudly rather than silently zeroing its derivative.
+@inline function _bc_tangent(v::Union{ImmutableDual,MutableDual}, p, _)
+    _bc_tangent_free(v) || throw(
+        ArgumentError(
+            "broadcast argument of type $(typeof(p)) carries a struct V with " *
+            "differentiable fields ($(typeof(v))); per-lane extraction is not " *
+            "implemented for this shape, so its derivative would be silently dropped.",
+        ),
+    )
+    return NoTangent()
+end
+_bc_tangent_free(::Mooncake.NoDual) = true
+_bc_tangent_free(v::Union{ImmutableDual,MutableDual}) = all(_bc_tangent_free, v.value)
+_bc_tangent_free(v::Union{Tuple,NamedTuple}) = all(_bc_tangent_free, v)
+function _bc_tangent_free(v::Mooncake.PossiblyUninitTangent)
+    return !Mooncake.is_init(v) || _bc_tangent_free(Mooncake.val(v))
+end
+_bc_tangent_free(::Any) = false
 
-    # One GPU kernel: compute primal AND all partial derivatives simultaneously.
-    # Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
+function frule!!(
+    ::Lifted{typeof(Base.Broadcast.materialize),Nw},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},Nw,<:ImmutableDual},
+) where {Nw}
+    bc_primal = primal(bc)
+    bc_V = tangent(bc)
+    # `out`, `decoded`, `flat_bc`, and `flat_pargs` are primal-only (lane-independent),
+    # so run the single dual-broadcast kernel once and reuse it for every lane's JVP
+    # (including lane 1's flattened tangents, captured here).
+    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
+        bc_primal, _bc_tangent(bc_V, bc_primal, 1)
+    )
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
-
-    # Non-differentiable output (e.g. Bool from comparisons): zero tangent.
     if !decoded.is_diff
-        return Dual(out, NoTangent())
+        return Lifted{typeof(out),Nw}(out, NoDual())
     end
-
-    dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
-    return Dual(decoded.primal_out, dy)
+    dy_lanes = ntuple(Val(Nw)) do k
+        flat_ts_k = if k == 1
+            flat_ts_1
+        else
+            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, k))[4]
+        end
+        _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts_k, out)
+    end
+    A = typeof(decoded.primal_out)
+    T = eltype(A)
+    D = ndims(A)
+    return Lifted{A,Nw}(
+        decoded.primal_out, NDualArray{T,Nw,D,A}(decoded.primal_out, dy_lanes)
+    )
 end
 
 function rrule!!(
@@ -2591,33 +3098,38 @@ end
     } where {P<:CuMaybeComplexArray},
 )
 function frule!!(
-    ::Dual{typeof(Base.Broadcast.materialize!)},
-    dest::Dual{P,P},
-    bc::Dual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
+    ::Lifted{typeof(Base.Broadcast.materialize!),Nw},
+    dest::Lifted{P,Nw,<:NDualArray},
+    bc::Lifted{<:Broadcasted{<:CuArrayStyle},Nw,<:ImmutableDual},
+) where {P<:CuMaybeComplexArray,Nw}
     bc_primal = primal(bc)
-    _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
-
+    bc_V = tangent(bc)
+    # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
+    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
+        bc_primal, _bc_tangent(bc_V, bc_primal, 1)
+    )
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    pout, dout = primal(dest), tangent(dest)
+    pout = primal(dest)
+    dest_partials = tangent(dest).partials
     decoded = _gpu_decode_ndual_output(
         Val(:broadcast), dual_out, flat_pargs; extract_primal=false
     )
-
-    # Write primal result in-place into dest.
     _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
-
-    # Non-differentiable output (e.g. Bool arrays): zero the tangent and return.
     if !decoded.is_diff
-        fill!(dout, zero(eltype(dout)))
+        for lane in 1:Nw
+            fill!(dest_partials[lane], zero(eltype(dest_partials[lane])))
+        end
         return dest
     end
-
-    # JVP: accumulate into a temporary to handle aliasing (dest may appear in
-    # bc.args, so flat_ts may contain a reference to dout; we must not overwrite
-    # dout until all contributions have been read from the old tangent values).
-    dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
-    copyto!(dout, dy)
+    for lane in 1:Nw
+        flat_ts = if lane == 1
+            flat_ts_1
+        else
+            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
+        end
+        dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
+        copyto!(dest_partials[lane], dy)
+    end
     return dest
 end
 function rrule!!(

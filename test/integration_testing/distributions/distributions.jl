@@ -223,45 +223,28 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
     end
 
-    # ── param_logpdf_cases: unified ForwardMode / ReverseMode / NfwdMooncake tests ──────────────────
-    # Tuple format: (name, f, args, chunk_size, modes, perf_flag)
-    # Each entry differentiates a logpdf lambda w.r.t. scalar (or array) constructor parameters
-    # and/or the observation.  modes is a subset of (:forward, :reverse, :nfwd):
-    #   • (:forward, :reverse, :nfwd) — test all three modes (most entries)
-    #   • (:forward, :reverse) — regular AD only (NDual not applicable; see end of list)
-    #   • (:nfwd,) — NfwdMooncake only (supported but unused by current entries)
-    # When both :forward and :reverse are present, they share a single test_rule call.
+    # ── param_logpdf_cases: unified ForwardMode / ReverseMode tests ──────────────────
+    # Tuple format: (name, f, args, chunk_size, modes, perf_flag). The `chunk_size` field is
+    # vestigial — it fed the removed standalone-NDual `:nfwd` mode and is now ignored.
+    # `modes` is a subset of (:forward, :reverse):
+    #   • (:forward, :reverse) — both modes, sharing a single test_rule call (most entries)
+    #   • (:reverse,)          — reverse only (forward not applicable)
     #
     # Limitations / workarounds are documented inline:
     #   • Erlang: integer shape k is non-differentiable; x-only differentiation.
-    #   • PDMat-based covariances: NDual <: AbstractFloat so PDMat(Symmetric(NDual_matrix)) works.
-    #   • product_distribution components: Distribution objects are not NDual-parameterised.
-    #   • truncated Beta shape params: ∂I_x/∂a, ∂I_x/∂b not implemented; bounds+x only for NfwdMooncake.
     #   • LKJCholesky observation: pass lower-triangular L as plain Matrix, reconstruct inside lambda.
-    #   • Dirichlet with array α: NDual <: AbstractFloat so Vector{NDual} works; chunk_size=3.
-    #   • MvLogitNormal with pre-built Symmetric/PDMat S arg: modes=(:forward, :reverse).
-    #   • reshape, vec, LKJCholesky workaround: modes=(:forward, :reverse).
-
-    _NfwdMode(f, args, C) = Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=C)
 
     param_logpdf_cases = Any[
 
         # ── Univariate ────────────────────────────────────────────────────────────
 
-        (
-            "Arcsine() 1",
-            x -> logpdf(Arcsine(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Arcsine() 1", x -> logpdf(Arcsine(), x), (0.5,), 1, (:forward, :reverse), :none),
         (
             "Arcsine(a,b) 1",
             (a, b, x) -> logpdf(Arcsine(a, b), x),
             (-0.3, 0.9, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -269,7 +252,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Arcsine(a, b), x),
             (0.5, 1.1, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -277,7 +260,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(Beta(α, β), x),
             (1.1, 1.1, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -285,7 +268,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(Beta(α, β), x),
             (1.1, 1.5, 0.9),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -293,7 +276,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(Beta(α, β), x),
             (1.6, 1.5, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -301,7 +284,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(BetaPrime(α, β), x),
             (1.1, 1.1, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -309,7 +292,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(BetaPrime(α, β), x),
             (1.1, 1.6, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -317,7 +300,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, β, x) -> logpdf(BetaPrime(α, β), x),
             (1.6, 1.3, 0.9),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -325,7 +308,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
             (1.0, 2.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -333,7 +316,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
             (-0.5, 2.5, -0.45),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -341,23 +324,16 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Biweight(μ, σ), x),
             (0.0, 1.0, 0.3),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
-        (
-            "Cauchy() 1",
-            x -> logpdf(Cauchy(), x),
-            (-0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Cauchy() 1", x -> logpdf(Cauchy(), x), (-0.5,), 1, (:forward, :reverse), :none),
         (
             "Cauchy(μ) 1",
             (μ, x) -> logpdf(Cauchy(μ), x),
             (1.0, 0.99),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -365,39 +341,18 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Cauchy(μ, σ), x),
             (1.0, 0.1, 1.01),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
-        (
-            "Chi 1",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (2.5, 0.5),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chi 2",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (5.5, 1.1),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Chi 3",
-            (ν, x) -> logpdf(Chi(ν), x),
-            (0.1, 0.7),
-            2,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Chi 1", (ν, x) -> logpdf(Chi(ν), x), (2.5, 0.5), 2, (:forward, :reverse), :none),
+        ("Chi 2", (ν, x) -> logpdf(Chi(ν), x), (5.5, 1.1), 2, (:forward, :reverse), :none),
+        ("Chi 3", (ν, x) -> logpdf(Chi(ν), x), (0.1, 0.7), 2, (:forward, :reverse), :none),
         (
             "Chisq 1",
             (ν, x) -> logpdf(Chisq(ν), x),
             (2.5, 0.5),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -405,7 +360,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν, x) -> logpdf(Chisq(ν), x),
             (5.5, 1.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -413,7 +368,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν, x) -> logpdf(Chisq(ν), x),
             (0.1, 0.7),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -421,7 +376,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
             (0.0, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -429,7 +384,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
             (-0.5, 2.0, -0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -437,7 +392,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Cosine(μ, σ), x),
             (0.4, 0.5, 0.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -445,7 +400,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
             (0.0, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -453,7 +408,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
             (-0.5, 1.2, -0.9),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -461,42 +416,21 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Epanechnikov(μ, σ), x),
             (-0.4, 1.6, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
         # Erlang — x-only differentiation; integer shape k is non-differentiable.
         # Erlang(k, θ) requires k ∈ ℤ₊, so NDual cannot be passed as the shape argument.
-        (
-            "Erlang() 1",
-            x -> logpdf(Erlang(), x),
-            (0.5,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Erlang() 2",
-            x -> logpdf(Erlang(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Erlang() 3",
-            x -> logpdf(Erlang(), x),
-            (0.9,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Erlang() 1", x -> logpdf(Erlang(), x), (0.5,), 1, (:forward, :reverse), :none),
+        ("Erlang() 2", x -> logpdf(Erlang(), x), (0.1,), 1, (:forward, :reverse), :none),
+        ("Erlang() 3", x -> logpdf(Erlang(), x), (0.9,), 1, (:forward, :reverse), :none),
         (
             "Exponential() 1",
             x -> logpdf(Exponential(), x),
             (0.1,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -504,7 +438,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (θ, x) -> logpdf(Exponential(θ), x),
             (0.5, 0.9),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -512,7 +446,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (θ, x) -> logpdf(Exponential(θ), x),
             (1.4, 0.05),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -520,7 +454,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
             (2.1, 3.5, 0.7),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -528,7 +462,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
             (1.4, 5.4, 3.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -536,31 +470,17 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν1, ν2, x) -> logpdf(FDist(ν1, ν2), x),
             (5.5, 3.3, 7.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
-        (
-            "Frechet() 1",
-            x -> logpdf(Frechet(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
-        (
-            "Frechet() 2",
-            x -> logpdf(Frechet(), x),
-            (1.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Frechet() 1", x -> logpdf(Frechet(), x), (0.1,), 1, (:forward, :reverse), :none),
+        ("Frechet() 2", x -> logpdf(Frechet(), x), (1.1,), 1, (:forward, :reverse), :none),
         (
             "Frechet(α,θ) 1",
             (α, θ, x) -> logpdf(Frechet(α, θ), x),
             (1.5, 2.4, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -568,7 +488,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Gamma(α, θ), x),
             (0.9, 1.2, 4.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -576,7 +496,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Gamma(α, θ), x),
             (0.5, 1.9, 1.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -584,7 +504,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Gamma(α, θ), x),
             (1.8, 3.2, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -592,7 +512,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (0.3, 1.3, 0.1, 2.4),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -600,7 +520,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (-0.7, 2.2, 0.4, 1.1),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -608,7 +528,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedExtremeValue(μ, σ, ξ), x),
             (0.5, 0.9, -0.5, -7.0),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -616,7 +536,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (0.3, 1.1, 1.1, 5.0),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -624,7 +544,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (-0.25, 0.9, 0.1, 0.8),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -632,7 +552,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, ξ, x) -> logpdf(GeneralizedPareto(μ, σ, ξ), x),
             (0.3, 1.1, -5.1, 0.31),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -640,7 +560,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
             (0.1, 0.5, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -648,7 +568,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
             (-0.5, 1.1, -0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -656,7 +576,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Gumbel(μ, σ), x),
             (0.3, 0.1, 0.3),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -664,7 +584,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(InverseGamma(a, b), x),
             (1.5, 1.4, 0.4),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :allocs,
         ),
         (
@@ -672,7 +592,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.1, 0.5, 1.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -680,7 +600,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.2, 1.1, 3.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -688,7 +608,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, λ, x) -> logpdf(InverseGaussian(μ, λ), x),
             (0.1, 1.2, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -696,7 +616,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.1, 0.95, 0.1, 1.1, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -704,7 +624,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.15, 0.9, 0.12, 0.94, 0.5),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -712,7 +632,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (γ, δ, ξ, λ, x) -> logpdf(JohnsonSU(γ, δ, ξ, λ), x),
             (0.1, 0.95, 0.1, 1.1, -0.3),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -720,7 +640,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(Kolmogorov(), x),
             (1.1,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -728,7 +648,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(Kolmogorov(), x),
             (0.9,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -736,7 +656,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(Kolmogorov(), x),
             (1.5,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -744,7 +664,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
             (2.0, 5.0, 0.71),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -752,7 +672,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
             (0.1, 5.0, 0.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -760,7 +680,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Kumaraswamy(a, b), x),
             (0.5, 4.5, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -768,7 +688,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, β, x) -> logpdf(Laplace(μ, β), x),
             (0.1, 1.0, 0.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -776,7 +696,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, β, x) -> logpdf(Laplace(μ, β), x),
             (-0.5, 2.1, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -784,7 +704,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, β, x) -> logpdf(Laplace(μ, β), x),
             (-0.35, 0.4, -0.3),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -792,7 +712,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, c, x) -> logpdf(Levy(μ, c), x),
             (0.1, 0.9, 4.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -800,7 +720,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, c, x) -> logpdf(Levy(μ, c), x),
             (0.5, 0.9, 0.6),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -808,7 +728,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, c, x) -> logpdf(Levy(μ, c), x),
             (1.1, 0.5, 2.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -816,7 +736,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (θ, x) -> logpdf(Lindley(θ), x),
             (0.5, 2.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -824,7 +744,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (θ, x) -> logpdf(Lindley(θ), x),
             (1.1, 3.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -832,7 +752,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (θ, x) -> logpdf(Lindley(θ), x),
             (1.9, 3.5),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -840,7 +760,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, s, x) -> logpdf(Logistic(μ, s), x),
             (0.1, 1.2, 1.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -848,7 +768,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, s, x) -> logpdf(Logistic(μ, s), x),
             (0.5, 0.7, 0.6),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -856,7 +776,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, s, x) -> logpdf(Logistic(μ, s), x),
             (-0.5, 0.1, -0.4),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -864,7 +784,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
             (0.1, 1.1, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -872,7 +792,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
             (0.5, 0.7, 0.6),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -880,7 +800,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogitNormal(μ, σ), x),
             (-0.12, 1.1, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -888,7 +808,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
             (0.0, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -896,7 +816,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
             (0.5, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -904,7 +824,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(LogNormal(μ, σ), x),
             (-0.1, 1.3, 0.75),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -912,7 +832,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(LogUniform(a, b), x),
             (0.1, 0.9, 0.75),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -920,7 +840,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(LogUniform(a, b), x),
             (0.15, 7.8, 7.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -928,23 +848,16 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(LogUniform(a, b), x),
             (2.0, 3.0, 2.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
-        (
-            "Normal() 1",
-            x -> logpdf(Normal(), x),
-            (0.1,),
-            1,
-            (:forward, :reverse, :nfwd),
-            :none,
-        ),
+        ("Normal() 1", x -> logpdf(Normal(), x), (0.1,), 1, (:forward, :reverse), :none),
         (
             "Normal(μ,σ) 1",
             (μ, σ, x) -> logpdf(Normal(μ, σ), x),
             (0.0, 1.0, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -952,7 +865,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Normal(μ, σ), x),
             (0.5, 1.0, 0.05),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -960,7 +873,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Normal(μ, σ), x),
             (0.0, 1.5, -0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -968,7 +881,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Normal(μ, σ), x),
             (-0.1, 0.9, -0.3),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -976,7 +889,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (m, s, x) -> logpdf(NormalCanon(m, s), x),
             (0.1, 1.0, -0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :allocs,
         ),
         (
@@ -984,7 +897,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, α, β, δ, x) -> logpdf(NormalInverseGaussian(μ, α, β, δ), x),
             (0.0, 1.0, 0.2, 0.1, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -992,7 +905,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Pareto(α, θ), x),
             (1.0, 1.0, 3.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1000,7 +913,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Pareto(α, θ), x),
             (1.1, 0.9, 3.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1008,7 +921,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Pareto(α, θ), x),
             (1.0, 1.0, 1.4),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1016,7 +929,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (p, x) -> logpdf(PGeneralizedGaussian(p), x),
             (0.2, 5.0),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1024,7 +937,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, α, p, x) -> logpdf(PGeneralizedGaussian(μ, α, p), x),
             (0.5, 1.0, 0.3, 5.0),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1032,7 +945,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, α, p, x) -> logpdf(PGeneralizedGaussian(μ, α, p), x),
             (-0.1, 11.1, 6.5, -0.3),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1040,7 +953,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(Rayleigh(σ), x),
             (0.5, 0.6),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1048,7 +961,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(Rayleigh(σ), x),
             (0.9, 1.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1056,7 +969,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(Rayleigh(σ), x),
             (0.55, 0.63),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1064,7 +977,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (r, x) -> logpdf(Semicircle(r), x),
             (1.0, 0.9),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1072,7 +985,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (r, x) -> logpdf(Semicircle(r), x),
             (5.1, 5.05),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1080,7 +993,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (r, x) -> logpdf(Semicircle(r), x),
             (0.5, -0.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1088,7 +1001,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.1, 1.0, 0.97, 0.7, -2.0),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1096,7 +1009,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.15, 1.0, 0.97, 0.7, -2.0),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1104,7 +1017,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, p, α, x) -> logpdf(SkewedExponentialPower(μ, σ, p, α), x),
             (0.1, 1.1, 0.99, 0.7, 0.5),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1112,7 +1025,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (0.0, 1.0, -1.0, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1120,7 +1033,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (0.5, 2.0, 1.1, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1128,7 +1041,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, α, x) -> logpdf(SkewNormal(μ, σ, α), x),
             (-0.5, 1.0, 0.0, 0.1),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1136,7 +1049,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (0.0, 1.0, 0.5),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1144,7 +1057,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (-0.5, 2.1, -2.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1152,7 +1065,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(SymTriangularDist(μ, σ), x),
             (1.7, 0.3, 1.75),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1160,7 +1073,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν, x) -> logpdf(TDist(ν), x),
             (1.1, 99.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1168,7 +1081,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν, x) -> logpdf(TDist(ν), x),
             (10.1, 25.0),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1176,7 +1089,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (ν, x) -> logpdf(TDist(ν), x),
             (2.1, -89.5),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1184,7 +1097,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.0, 1.5, 0.5, 0.45),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1192,7 +1105,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.1, 1.4, 0.45, 0.12),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1200,7 +1113,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, c, x) -> logpdf(TriangularDist(a, b, c), x),
             (0.0, 1.5, 0.5, 0.2),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1208,7 +1121,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
             (1.0, 1.0, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1216,7 +1129,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
             (1.1, 2.1, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1224,7 +1137,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (μ, σ, x) -> logpdf(Triweight(μ, σ), x),
             (1.9, 10.0, -0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1232,7 +1145,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Uniform(a, b), x),
             (0.0, 1.0, 0.2),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1240,7 +1153,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Uniform(a, b), x),
             (-0.1, 1.1, 1.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1248,7 +1161,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(Uniform(a, b), x),
             (99.5, 100.5, 100.0),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1256,7 +1169,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (κ, x) -> logpdf(VonMises(κ), x),
             (0.5, 0.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1264,7 +1177,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (κ, x) -> logpdf(VonMises(κ), x),
             (0.3, -0.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1272,7 +1185,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (κ, x) -> logpdf(VonMises(κ), x),
             (0.2, -0.5),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1280,7 +1193,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Weibull(α, θ), x),
             (0.5, 1.0, 0.45),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1288,7 +1201,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Weibull(α, θ), x),
             (0.3, 1.1, 0.66),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1296,7 +1209,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α, θ, x) -> logpdf(Weibull(α, θ), x),
             (0.75, 1.3, 0.99),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1307,7 +1220,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(MvNormal(Diagonal(Fill(σ, 1))), [x]),
             (1.5, -0.3),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1315,7 +1228,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x1, x2) -> logpdf(MvNormal(Diagonal(Fill(σ, 2))), [x1, x2]),
             (0.5, 0.2, -0.3),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1323,7 +1236,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (m, σ, x) -> logpdf(MvNormal([m], σ), [x]),
             (0.0, 0.9, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1331,7 +1244,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (m1, m2, σ, x1, x2) -> logpdf(MvNormal([m1, m2], σ), [x1, x2]),
             (0.0, 0.1, 0.9, 0.1, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1339,7 +1252,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ, x) -> logpdf(MvNormal(Diagonal([σ])), [x]),
             (0.1, 0.1),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1347,7 +1260,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (σ1, σ2, x1, x2) -> logpdf(MvNormal(Diagonal([σ1, σ2])), [x1, x2]),
             (0.1, 0.2, 0.1, 0.15),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1356,7 +1269,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Diagonal(Fill(σ, 2))), [x1, x2]),
             (0.1, -0.3, 0.9, 0.1, -0.1),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1364,7 +1277,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (m1, m2, σ, x1, x2) -> logpdf(MvNormal([m1, m2], σ * I), [x1, x2]),
             (0.1, -0.1, 0.4, -0.1, 0.15),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1373,7 +1286,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Hermitian(Diagonal([σ1, σ2]))), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1382,7 +1295,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Symmetric(Diagonal([σ1, σ2]))), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1391,7 +1304,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([m1, m2], Diagonal([σ1, σ2])), [x1, x2]),
             (0.2, 0.3, 0.5, 0.4, -0.1, 0.05),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1399,7 +1312,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (m1, m2, v1, v2, x1, x2) -> logpdf(MvNormal([m1, m2], [v1, v2]), [x1, x2]),
             (0.2, -0.3, 0.5, 0.6, 0.4, -0.3),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1411,7 +1324,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (s, x) -> logpdf(MvNormal([-0.15], Symmetric(reshape([s], 1, 1))), [x]),
             (1.21, -0.05),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1419,7 +1332,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (s, x) -> logpdf(MvNormal([-0.15], PDMat(Symmetric(reshape([s], 1, 1)))), [x]),
             (1.21, -0.05),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1428,7 +1341,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormal([0.2, -0.15], Symmetric([s11 s12; s12 s22])), [x1, x2]),
             (2.01, 0.63, 1.21, 0.05, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1438,7 +1351,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (2.01, 0.63, 1.21, 0.05, -0.05),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1447,7 +1360,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 logpdf(MvNormalCanon([0.1, -0.1], Symmetric([s11 s12; s12 s22])), [x1, x2]),
             (1.45, 0.9, 1.21, 0.2, -0.25),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1458,7 +1371,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (2.01, 0.63, 1.21, 0.5, 0.1),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1469,7 +1382,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(product_distribution([Normal()]), [x]),
             (0.3,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1477,7 +1390,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (x1, x2) -> logpdf(product_distribution([Normal(), Uniform()]), [x1, x2]),
             (-0.4, 0.3),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1487,7 +1400,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x -> logpdf(Categorical(x, 1 - x), 1),
             (0.3,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1497,7 +1410,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (α1, α2, x1, x2) -> logpdf(Dirichlet([α1, α2]), [x1, x2]),
             (1.5, 1.1, 0.4, 0.6),
             4,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1510,7 +1423,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (0.4, 0.6, 2.01, 0.63, 1.21, 0.27, 0.24),
             7,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1530,7 +1443,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (randn(StableRNG(4), 2, 3),),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1545,7 +1458,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (vec(randn(StableRNG(0), 2, 3)), vec(randn(StableRNG(4), 2, 3))),
             12,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1566,7 +1479,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             ),
             (randn(StableRNG(2), 2, 3),),
             6,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1574,7 +1487,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             X -> logpdf(MatrixBeta(5, 9.0, 10.0), X),
             (rand(StableRNG(123456), MatrixBeta(5, 9.0, 10.0)),),
             25,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1586,7 +1499,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 ),
             ),
             25,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1594,7 +1507,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             η -> logpdf(LKJ(5, η), LKJ_SAMPLE_RMAT),
             (1.1,),
             1,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1602,7 +1515,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             Rmat -> logpdf(LKJ(5, 1.1), Rmat),
             (LKJ_SAMPLE_RMAT,),
             25,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1610,7 +1523,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (η, Rmat) -> logpdf(LKJ(5, η), Rmat),
             (1.1, LKJ_SAMPLE_RMAT),
             26,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
@@ -1625,7 +1538,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(truncated(Beta(1.1, 1.3), a, b), x),
             (0.1, 0.9, 0.4),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1633,7 +1546,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, x) -> logpdf(truncated(Beta(1.1, 1.3); lower=a), x),
             (0.1, 0.4),
             2,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1641,7 +1554,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, x) -> logpdf(truncated(Normal(), a, b), x),
             (-0.3, 0.3, 0.1),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
         (
@@ -1649,14 +1562,14 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, b, α, β, x) -> logpdf(truncated(Uniform(α, β), a, b), x),
             (0.1, 0.9, -0.1, 1.1, 0.4),
             5,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
         # LKJCholesky — workaround: pass lower-triangular factor L as a plain Matrix.
         # Cholesky's constructor requires a numeric matrix, not NDual, so we accept Lmat::Matrix
         # as the NDual input and reconstruct Cholesky(Lmat, 'L', 0) inside the lambda.
-        # Restrict these to reverse/nfwd: forward-mode correctness uses unconstrained finite-
+        # Restrict these to reverse: forward-mode correctness uses unconstrained finite-
         # difference perturbations of Lmat, which leave the valid Cholesky manifold and produce
         # NaN primal evaluations.
         (
@@ -1664,7 +1577,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             Lmat -> logpdf(LKJCholesky(5, 1.1), Cholesky(Lmat, 'L', 0)),
             (LKJ_CHOLESKY_SAMPLE_LMAT,),
             25,
-            (:reverse, :nfwd),
+            (:reverse,),
             :none,
         ),
         (
@@ -1672,7 +1585,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (η, Lmat) -> logpdf(LKJCholesky(5, η), Cholesky(Lmat, 'L', 0)),
             (1.1, LKJ_CHOLESKY_SAMPLE_LMAT),
             26,
-            (:reverse, :nfwd),
+            (:reverse,),
             :none,
         ),
 
@@ -1683,24 +1596,14 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (a, x) -> logpdf(Dirichlet(a), [x, 1 - x]),
             ([1.5, 1.1], 0.6),
             3,
-            (:forward, :reverse, :nfwd),
+            (:forward, :reverse),
             :none,
         ),
 
         # ── Forward+Reverse only ───────────────────────────────────────────────────
-        # NfwdMooncake not applicable for the following entries:
-        #
-        #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; NfwdMooncake.build_rrule
-        #                                does not seed structured-matrix args with NDual partials
-        #   truncated Beta α+β         — ∂I_x/∂a and ∂I_x/∂b not implemented; can't differentiate
-        #   left-truncated Beta α+β      through the truncation normalisation w.r.t. shape params
-        #   reshape / vec              — Distribution objects baked into lambda; no float params to seed
-        #   LKJCholesky workaround     — regular-AD coverage only; NfwdMooncake covered by LKJCholesky L/η+L
 
-        # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument.
-        # NfwdMooncake.build_rrule does not seed structured-matrix args (Symmetric wrapping
-        # PDMat) with NDual partials.  The scalar-param "MvLogitNormal m+Σ+x" entry
-        # above already covers NfwdMooncake differentiation through MvLogitNormal.
+        # S is a pre-built Symmetric{Float64,PDMat{Float64}} passed as an argument. The scalar-param
+        # "MvLogitNormal m+Σ+x" entry above already covers differentiation through MvLogitNormal.
         (
             "MvLogitNormal m+Σ (array)",
             (m, S, x) -> logpdf(MvLogitNormal(m, S), vcat(x, 1 - sum(x))),
@@ -1709,12 +1612,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        # truncated Beta / left-truncated Beta with shape params (α, β) as differentiable
-        # args.  NfwdMooncake not supported: differentiating through the truncation normalisation
-        # constant requires ∂I_x/∂a and ∂I_x/∂b (partial derivatives of the regularised
-        # incomplete beta function w.r.t. shape params), which are not implemented.
-        # The NfwdMooncake entries "truncated Beta 1" / "truncated Beta lower 1" above cover
-        # NfwdMooncake for truncated Beta with α, β fixed.
+        # truncated Beta / left-truncated Beta with shape params (α, β) as differentiable args.
         (
             "truncated Beta α+β",
             (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
@@ -1731,10 +1629,8 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse),
             :none,
         ),
-        # reshape / vec — the Distribution objects (product_distribution, LKJ) are
-        # baked into the lambda as non-float values; there are no float parameters to
-        # seed as NDual.  These entries exist for regular-AD coverage of the wrapper
-        # code paths only.
+        # reshape / vec — the Distribution objects (product_distribution, LKJ) are baked into the
+        # lambda as non-float values, so these entries exercise the wrapper code paths only.
         (
             "reshape",
             x -> logpdf(reshape(product_distribution([Normal(), Uniform()]), 1, 2), x),
@@ -1752,9 +1648,8 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             :none,
         ),
         # LKJCholesky workaround (2×2): constructs Cholesky from scratch inside the lambda.
-        # NfwdMooncake equivalent is "LKJCholesky L" / "LKJCholesky η+L" above (size-5, proper
-        # Lmat approach).  This entry exercises the Cholesky-from-raw-matrix code path
-        # under regular AD only.
+        # Exercises the Cholesky-from-raw-matrix code path ("LKJCholesky L"/"η+L" above use the
+        # size-5 proper Lmat approach).
         (
             "LKJCholesky workaround",
             function (X, v)
@@ -1770,7 +1665,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         ),
     ]
 
-    @testset "$name" for (name, f, args, C, modes, perf_flag) in param_logpdf_cases
+    @testset "$name" for (name, f, args, _C, modes, perf_flag) in param_logpdf_cases
         if :forward in modes && :reverse in modes
             test_rule(StableRNG(123456), f, args...; perf_flag, is_primitive=false)
         elseif :forward in modes
@@ -1790,17 +1685,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 perf_flag,
                 is_primitive=false,
                 mode=Mooncake.ReverseMode,
-            )
-        end
-        if :nfwd in modes
-            test_rule(
-                StableRNG(123456),
-                f,
-                args...;
-                perf_flag,
-                is_primitive=false,
-                mode=Mooncake.ReverseMode,
-                rrule=_NfwdMode(f, args, C),
             )
         end
     end

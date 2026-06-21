@@ -23,12 +23,19 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
-    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
+    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
         @info "$n: $(_typeof(fx))"
         rng = Xoshiro(123546)
         mode = ForwardMode
+        skip_chunked = TestUtils._case_skip_chunked(opts)
         TestUtils.test_rule(
-            rng, fx...; perf_flag=pf, interface_only=int_only, is_primitive=false, mode
+            rng,
+            fx...;
+            perf_flag=pf,
+            interface_only=int_only,
+            is_primitive=false,
+            mode,
+            skip_chunked,
         )
     end
 
@@ -70,10 +77,10 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
         dyn = Mooncake.build_frule(stale_fwd_dyn, 1.5)
         @eval stale_fwd_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
         lazy_out = Base.invokelatest(
-            lazy, Mooncake.zero_dual(stale_fwd_lazy), Mooncake.Dual(1.5, 1.0)
+            lazy, Mooncake.zero_lifted(Val(1), stale_fwd_lazy), Mooncake.lift(1.5, 1.0)
         )
         dyn_out = Base.invokelatest(
-            dyn, Mooncake.zero_dual(stale_fwd_dyn), Mooncake.Dual(1.5, 1.0)
+            dyn, Mooncake.zero_lifted(Val(1), stale_fwd_dyn), Mooncake.lift(1.5, 1.0)
         )
         @test Mooncake.primal(lazy_out) === 3.0f0
         @test Mooncake.primal(dyn_out) === 3.0f0

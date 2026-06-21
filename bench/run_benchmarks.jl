@@ -20,7 +20,8 @@ using AbstractGPs,
     Zygote
 
 using Mooncake:
-    Dual,
+    Lifted,
+    lift,
     CoDual,
     hand_written_rule_test_cases,
     derived_rule_test_cases,
@@ -28,12 +29,12 @@ using Mooncake:
     _typeof,
     primal,
     tangent,
-    zero_dual,
+    zero_lifted,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
 
-to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
+to_benchmark(__frule!!::R, dx::Vararg{Lifted,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -222,15 +223,18 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Benchmark AD via Mooncake.
+            # Benchmark AD via Mooncake (forward).
             @info "Mooncake (Forward)"
             rule = Mooncake.build_frule(args...)
-            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-            to_benchmark(rule, copy_coduals(duals...)...)
+            lifts = map(
+                x -> x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
+                args,
+            )
+            to_benchmark(rule, copy_coduals(lifts...)...)
             include_other_frameworks && GC.gc(true)
             suite["mooncake_fwd"] = Chairmarks.benchmark(
-                () -> (rule, duals),
-                ((rule, duals),) -> (rule, copy_coduals(duals...)),
+                () -> (rule, lifts),
+                ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
                 a -> to_benchmark(a[1], a[2]...),
                 _ -> GC.gc(false);
                 evals=1,

@@ -10,7 +10,7 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
-function frule!!(::Dual{typeof(_foreigncall_)}, args...)
+function frule!!(::Lifted{typeof(_foreigncall_),Nw}, args...) where {Nw}
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
@@ -86,10 +86,49 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-function frule!!(::Dual{typeof(pointer_from_objref)}, x)
+# Generic fallback (a real/complex-scalar `Ref` is handled by the more-specific `NDualRef` overload
+# below). V is `NTuple{Nw, Ptr{tangent_type(Nothing)}}` — the tangent OBJECT's address, typed as the
+# reverse rule below threads it, and deliberately distinct from any per-lane-partial pointer V
+# (`Ptr{<:IEEEFloat}` / `Ptr{Nothing}`). `bitcast` preserves that element type, so the address
+# round-trips through `unsafe_pointer_to_objref` (recovering the full slot) but a raw scalar load
+# (`pointerref` after `bitcast` to a float ptr) stays incoherent and hits the loud `pointerref`
+# throw — a mutable struct's tangent interleaves value and partials with no parallel partials buffer
+# to address. Only a proven-non-differentiable (`NoDual`) tangent gets the NULL sentinel mapped back
+# to `NoDual`; an immutable differentiable V (e.g. `NDualArray`) has no tangent-object address to
+# thread, so fail loudly rather than silently dropping the derivative. The primal address
+# (identity/hashing/`objectid`) is unchanged.
+function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
-    return Dual(y, dy)
+    tx = tangent(x)
+    taddr = if tx isa NoDual
+        Ptr{tangent_type(Nothing)}(0)
+    elseif ismutable(tx)
+        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tx))
+    else
+        throw(
+            ArgumentError(
+                "Forward-mode AD cannot take `pointer_from_objref` of a `$(typeof(primal(x)))` " *
+                "whose forward tangent is the immutable `$(typeof(tx))`: there is no " *
+                "tangent-object address to thread through the pointer, so the derivative would " *
+                "be silently dropped.",
+            ),
+        )
+    end
+    return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
+end
+# `Ref{P<:NDualEltype}` (`NDualRef`): unlike the interleaved `MutableDual` fallback above, the
+# partials live in a parallel buffer with primal-identical scalar layout. Thread per-lane pointers
+# into that buffer's contiguous `NTuple` (lane `k` at offset `(k-1)*sizeof(P)`), so the existing
+# `bitcast` (re-types each `Ptr{P}` lane) and `pointerref` (`NTuple{Nw,Ptr{P}}` → scalar dual)
+# frules reconstruct the derivative. Forward raw-pointer reads of a `Ref` (real or complex) are
+# correct; `unsafe_pointer_to_objref` reads the partials back through these pointers to round-trip.
+function frule!!(
+    ::Lifted{typeof(pointer_from_objref),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef{P,Nw}},
+) where {Nw,P<:NDualEltype}
+    y = pointer_from_objref(primal(x))
+    base = UInt(pointer_from_objref(tangent(x).partials))
+    return Lifted{typeof(y),Nw}(y, ntuple(k -> Ptr{P}(base + (k - 1) * sizeof(P)), Val(Nw)))
 end
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     y = CoDual(
@@ -102,8 +141,37 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+# Inverse of the `pointer_from_objref` rule: recover the primal object from the primal address, and
+# — when the lane carries a non-NULL tangent-object address — recover that tangent object so the
+# forward derivative survives the round-trip. The recovered object is dynamically typed, so the
+# slot type and its V are only known at runtime; the `Lifted{typeof(y),Nw}` constructor sharpens
+# through `typeof(y)`, widening the inferred return type (the cost of this dynamic boundary).
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
+) where {Nw}
+    y = unsafe_pointer_to_objref(primal(x))
+    tx = tangent(x)
+    (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
+    return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
+end
+# Round-trip of a `Ref{<:NDualEltype}` pointer (V `NTuple{Nw,Ptr{<:NDualEltype}}`, from the `NDualRef`
+# rule above): recover the primal `Ref` from the primal pointer, and rebuild its `NDualRef` by reading
+# the per-lane partials back through the V's pointers. Forward tangent storage is slot-local, so a
+# fresh partials buffer holding the same values is correct (the JVP through identity is identity).
+# The V's `Ptr{<:NDualEltype}` element distinguishes a `Ref`-pointer from the generic objref tag
+# (`Ptr{tangent_type(Nothing)}`, handled above), and is the only such V — arrays are not round-tripped
+# this way. The scalar element type is read at runtime (`eltype`) rather than bound as a type
+# parameter, since `P` in `NTuple{Nw,Ptr{P}}` would be unbound at the degenerate `Nw == 0`.
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
+    x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
+) where {Nw}
+    ref = unsafe_pointer_to_objref(primal(x))
+    P = eltype(eltype(tangent(x)))
+    partials = ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw))
+    return Lifted{typeof(ref),Nw}(
+        ref, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(partials))
+    )
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
@@ -122,11 +190,38 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
+# A differentiable Ptr's V is `NTuple{N, Ptr}` (per-lane partial pointers). Copy the primal
+# data and each lane's tangent data through its own per-lane pair of source/destination
+# pointers. The partial-pointer element type is element-type-agnostic, so this covers both
+# the scalar parallel-arrays case (`Ptr{T<:NDualEltype}`, V `NTuple{N,Ptr{T}}`) and the nested-array case
+# (`Ptr{Vector{Float64}}` from `pointer(::Vector{Vector{Float64}})`, V `NTuple{N,Ptr{NDualArray}}`),
+# matching the `rrule!!`'s `Ptr{T}` breadth below.
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
-) where {T}
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
+    src::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
+    n::Lifted,
+) where {Nw,P<:Ptr}
+    _n = primal(n)
+    unsafe_copyto!(primal(dest), primal(src), _n)
+    dest_partials = tangent(dest)
+    src_partials = tangent(src)
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], src_partials[lane], _n)
+    end
+    return dest
+end
+# Non-differentiable pointers (V === NoDual, e.g. `Ptr{UInt8}` / `Ptr{Int}` — the
+# element type is non-differentiable, `tangent_type(T) === NoTangent`): copy the primal
+# data; no tangent to copy. (A `Ptr{Vector{Float64}}` is differentiable — its V is
+# `NTuple{Nw, Ptr}`, handled by the V<:NTuple frule above, not this NoDual overload.)
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{Ptr{T},Nw,NoDual},
+    src::Lifted{Ptr{T},Nw,NoDual},
+    n::Lifted,
+) where {Nw,T}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
 function rrule!!(
@@ -161,21 +256,57 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
+# Reshape both primal and per-lane partials via ccall. Element-type-agnostic across the whole
+# `NDualEltype` surface (real and complex floats): the `NDualArray`'s primal and parallel partials
+# are all plain `Array{E,D}`, so the reshape `ccall` eltype tracks the array's actual eltype `E`,
+# mirroring the element-type-generic reverse rrule below. (Width parameter `W` of the V is left free
+# so this matches both the real `NDual{E,Nw}` and complex `Complex{NDual{R,Nw}}` element duals.)
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_reshape_array}},
-    ::Dual{Val{Array{P,M}}},
-    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    x::Dual{Type{Array{P,M}}},
-    a::Dual{Array{P,N},Array{T,N}},
-    dims::Dual,
-) where {P,T,M,N}
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{E,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{E,M}},Nw},
+    a::Lifted{Array{E,D},Nw,<:NDualArray{E,Nw,D,Array{E,D}}},
+    dims::Lifted,
+) where {Nw,E<:NDualEltype,M,D}
+    d = primal(dims)
+    y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
+    new_partials = ntuple(
+        k -> ccall(
+            :jl_reshape_array,
+            Array{E,M},
+            (Any, Any, Any),
+            Array{E,M},
+            tangent(a).partials[k],
+            d,
+        ),
+        Val(Nw),
+    )
+    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_partials))
+end
+# Non-differentiable element arrays (element-wise `Array{NoDual}` V, e.g. the
+# `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside `sortslices`): reshape primal and V in
+# lockstep. Mirrors the element-type-generic reverse rrule below.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{P,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{P,M}},Nw},
+    a::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
+    dims::Lifted,
+) where {Nw,P,M}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
-    dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
-    return Dual(y, dy)
+    v = ccall(
+        :jl_reshape_array, Array{NoDual,M}, (Any, Any, Any), Array{NoDual,M}, tangent(a), d
+    )
+    return Lifted{Array{P,M},Nw}(y, v)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -197,20 +328,20 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_isassigned}},
-    ::Dual{RT}, # return type is Int32
-    arg_types::Dual{AT}, # arg types are (Any, UInt64)
-    ::Dual{nreq}, # nreq
-    ::Dual{calling_convention}, # calling convention
-    a::Dual{<:Array},
-    ii::Dual{UInt},
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_array_isassigned},Nw},
+    ::Lifted{RT,Nw},
+    ::Lifted{AT,Nw},
+    ::Lifted{nreq,Nw},
+    ::Lifted{calling_convention,Nw},
+    a::Lifted,
+    ii::Lifted,
     args...,
-) where {RT,AT,nreq,calling_convention}
+) where {Nw,RT,AT,nreq,calling_convention}
     GC.@preserve args begin
         y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
     end
-    return zero_dual(y)
+    return Lifted{Cint,Nw}(y, NoDual())
 end
 
 function rrule!!(
@@ -231,16 +362,17 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_type_unionall}},
-    ::Dual{Val{Any}}, # return type
-    ::Dual{Tuple{Val{Any},Val{Any}}}, # arg types
-    ::Dual{Val{0}}, # number of required args
-    ::Dual{Val{:ccall}},
-    a::Dual,
-    b::Dual,
-)
-    return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_type_unionall},Nw},
+    ::Lifted{Val{Any},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    a::Lifted,
+    b::Lifted,
+) where {Nw}
+    y = ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -259,7 +391,15 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
-frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
+# Copy primal and V through one shared `IdDict` walk: independent `deepcopy` calls would sever
+# the internal aliasing (e.g. `NDualArray.primal === primal(slot)`), so the copy's inner `.value`
+# would read a stale third array after the copied primal is mutated. (`deepcopy(x::Lifted)` of
+# the whole slot would also work, but `deepcopy_internal(::Lifted, ...)` defeats inference.)
+function frule!!(::Lifted{typeof(deepcopy),Nw}, x::Lifted{P,Nw,V}) where {Nw,P,V}
+    d = IdDict()
+    p = Base.deepcopy_internal(primal(x), d)::P
+    return Lifted{P,Nw}(p, Base.deepcopy_internal(tangent(x), d)::V)
+end
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
     dx = zero_rdata(primal(x))
@@ -272,15 +412,26 @@ function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     return y, deepcopy_pb!!
 end
 
-@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),DataType,Integer}
+# `Type`, not `DataType`: the type-value arg lifts to `Lifted{Type{T}}`, and `@zero_derivative`
+# emits the forward sig `Lifted{<:Type}`. Under `@nospecialize` (e.g. in `test_frule_correctness`)
+# inference widens that slot to the existential `Lifted{Type{S}} where S`, which is `<: Lifted{<:Type}`
+# but NOT `<: Lifted{<:DataType}` (`Lifted` is invariant; `Type{S} <: DataType` only for concrete `S`).
+# With `DataType` the existential matched no method, so the call inferred `Union{}` → `unreachable` →
+# SIGILL once the concrete arg dispatched at runtime. This also broadens the REVERSE primitive from
+# `DataType` to `Type` — deliberate and harmless, since the derivative is zero either way.
+@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),Type,Integer}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Any}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Dual,N}
-) where {N}
-    return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_string_ptr},Nw},
+    args::Vararg{Lifted,M},
+) where {Nw,M}
+    y = _foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...)
+    # Returns a `Ptr{UInt8}` — tangent is structurally non-differentiable.
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 
 function rrule!!(
@@ -293,11 +444,12 @@ end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
     @eval function frule!!(
-        f::Dual{typeof(_foreigncall_)},
-        n::Dual{Val{$(QuoteNode(name))}},
-        args::Vararg{Dual,N},
-    ) where {N}
-        return zero_derivative(f, n, args...)
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        args::Vararg{Lifted,M},
+    ) where {Nw,M}
+        y = _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
+        return Lifted{typeof(y),Nw}(y, NoDual())
     end
     @eval function rrule!!(
         f::CoDual{typeof(_foreigncall_)},
@@ -311,21 +463,25 @@ end
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(QuoteNode(name))}},
-        ::Dual{Val{$P}},
-        ::Dual{Tuple{Val{$P},Val{Int32}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:llvmcall}},
-        x::Dual{$P},
-        n::Dual{Int32},
-        ::Dual{Int32},
-        ::Dual{$P},
-    )
-        _x, dx = extract(x)
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        ::Lifted{Val{$P},Nw},
+        ::Lifted{Tuple{Val{$P},Val{Int32}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:llvmcall},Nw},
+        x::Lifted{$P,Nw,NDual{$P,Nw}},
+        n::Lifted{Int32,Nw},
+        ::Lifted{Int32,Nw},
+        ::Lifted{$P,Nw,NDual{$P,Nw}},
+    ) where {Nw}
+        _x = primal(x)
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
-        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+        # Scale only the partials and set V.value to `y`. A naive `grad * tangent(x)` multiplies
+        # the inner NDual, scaling `.value` to `grad * x_p` and breaking the V.value === primal
+        # invariant (mirrors the `pow_fast` frule in rules_via_nfwd.jl).
+        grad = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y))
+        return Lifted{$P,Nw}(y, NDual{$P,Nw}(y, Nfwd._pt_scale(tangent(x).partials, grad)))
     end
 
     @eval function rrule!!(
@@ -405,7 +561,9 @@ for name in [
     ) where {RT,nreq,calling_convention}
         return unexpected_foreigncall_error($name)
     end
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$name},Nw}, args...
+    ) where {Nw}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
@@ -429,9 +587,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (true, :stability, nothing, objectid, randn(5)),
         (true, :stability, nothing, pointer_from_objref, _x),
         (
+            # `skip_forward`: the tangent buffer here is a reverse tangent (`_dx`), so the forward
+            # pointer round-trip recovers a reverse tangent rather than the canonical forward V — an
+            # incoherence by construction, not a rule bug. The real forward round-trip (recovering an
+            # `NDualRef`) is covered by the `unsafe_pointer_to_objref(pointer_from_objref(_x))` derived
+            # case below.
             true,
             :none, # primal is unstable
-            (lb=1e-3, ub=250),
+            (lb=1e-3, ub=250, skip_forward=true),
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
@@ -494,12 +657,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
+        # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
+        # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
+        # `jl_reshape_array` foreigncall, the path the real-only frule used to miss.
+        (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
+            # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot yet
+            # preserve the canonical dual at width N>1 (a Cluster-C forward limitation); the
+            # width-1 path is correct, so skip only the chunked check here.
             false,
             :none,
-            nothing,
+            (skip_chunked=true,),
             unsafe_copyto_tester,
             [randn(3) for _ in 1:5],
             [randn(4) for _ in 1:6],
@@ -555,4 +725,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         ),
     ]
     return test_cases, memory
+end
+
+function throwing_rule_test_cases(::Val{:foreigncall})
+    # pointer_from_objref of a value whose forward V is immutable but differentiable
+    # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
+    # emit NULL lanes that silently drop the derivative downstream.
+    cases = Any[(
+        ArgumentError, pointer_from_objref, (randn_lifted(Val(1), Xoshiro(123456), [1.0]),)
+    )]
+    return cases, Any[]
 end

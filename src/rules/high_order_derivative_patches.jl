@@ -17,14 +17,14 @@
 # of this block.
 #
 # Value layer — `DerivedFoRRule{D}` (defined below, near `compile_for_rule`): a FoR
-# rule (or its absence) held as a value and reused across many calls. `D <: Dual`
-# carries a pre-built `Dual(rule, rule_tangent)` for HVP / Hessian; `D === Nothing`
+# rule (or its absence) held as a value and reused across many calls. `D <: Lifted`
+# carries a pre-built `Lifted(rule, rule_tangent)` for HVP / Hessian; `D === Nothing`
 # is the primitive-passthrough sentinel. Reuse is safe because the rule's Stacks
 # self-reset within each forward+reverse pass.
 #
 # Frule layer — `LazyFoRRule` / `DynamicFoRRule` (this section): callable caches
 # dispatched as the frule for `build_derived_rrule`. Each call returns a fresh
-# `Dual(rule, rule_tangent)`, with Stacks cloned via `_for_rule_cached_dual` —
+# `Lifted(rule, rule_tangent)`, with Stacks cloned via `_for_rule_cached_dual` —
 # defensive against nested AD where the rule may be re-entered before the
 # previous call's Stacks have self-reset. `build_primitive_frule` selects between
 # the two via `__build_primitive_frule` (@generated):
@@ -43,10 +43,10 @@
 # at a slight angle: reverse mode's three types are all *rule-callable*
 # (`(rule)(args...)` with primal args, returning AD output). None of the three
 # FoR types here is rule-callable in that sense:
-#   • `DerivedFoRRule` is a *carrier* of a pre-built `Dual(rule, rule_tangent)`;
+#   • `DerivedFoRRule` is a *carrier* of a pre-built `Lifted(rule, rule_tangent)`;
 #     callers extract via `get_inner_rrule`, they do not invoke it directly.
 #   • `LazyFoRRule` / `DynamicFoRRule` are *constructors* — their call shape is
-#     `(::Dual{typeof(build_derived_rrule)}, …)`, returning a fresh Dual rule
+#     `(::Lifted{typeof(build_derived_rrule)}, …)`, returning a fresh `Lifted` rule
 #     per invocation (the frule for `build_derived_rrule`, not for user code).
 # Mooncake has no top-level "FoR rule" type — the user entry point
 # `value_and_hvp!!` dispatches through a regular `DerivedFRule`. The shared
@@ -78,8 +78,9 @@ end
 # Not thread-safe: the Dict is mutated without a lock (same caveat as LazyFoRRule's
 # bare field assignment).
 mutable struct DynamicFoRRule
-    cache::Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}  # (sig, debug_mode) => (rule, fwd_dc, rvs_dc)
-    DynamicFoRRule() = new(Dict{Tuple{Any,Bool},Tuple{Any,Any,Any}}())
+    # (sig, debug_mode, chunk_width) => (rule, fwd_dc, rvs_dc)
+    cache::Dict{Tuple{Any,Bool,Int},Tuple{Any,Any,Any}}
+    DynamicFoRRule() = new(Dict{Tuple{Any,Bool,Int},Tuple{Any,Any,Any}}())
 end
 
 @generated function __build_primitive_frule(
@@ -126,46 +127,97 @@ function build_primitive_frule(
     return __build_primitive_frule(sig)
 end
 
+# Forward-over-reverse seed for a reverse rule (or one of its closures). The
+# forward V must carry the forward dual-callables — which only `_dual_mc` /
+# `zero_tangent` can build — and its `fwds_oc` / `pb_oc` must share their comms
+# captures. Both fall out of lifting the reverse zero tangent: `zero_tangent`
+# already builds the dual-callables into its `MistyClosureTangent`s, and `lift`'s
+# aliasing cache shares the captures. The generic structural seed factory cannot
+# do either (it would try to construct the `Any`-typed `MistyClosureTangent`
+# backing from scratch), so route these types through `lift`.
+@inline function zero_dual(::Val{1}, x::Union{DerivedRule,MistyClosure})
+    return tangent(lift(x, zero_tangent(x), IdDict()))
+end
+
+# A `MooncakeInterpreter` is compiler state used to *build* rules (its caches map
+# `MethodInstance`s to compiled code); no user derivative flows through it. Its
+# reverse `tangent_type` is nonetheless a deep struct over `IdDict`/`Memory{Any}`
+# caches. In forward mode it is non-differentiable: its V is `NoDual`. This lets
+# `_build_rule!` (lazy rule construction inside a forward pass, forward-over-
+# reverse) seed the interpreter slot without lifting the entire compiler-cache
+# structure.
+@foldable @inline dual_type(::Val{N}, ::Type{<:MooncakeInterpreter}) where {N} = NoDual
+@inline zero_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
+@inline uninit_dual(::Val{N}, ::MooncakeInterpreter) where {N} = NoDual()
+# A `MooncakeInterpreter` is non-diff, so its only tangent kinds are `NoTangent`/`NoDual`. Match those
+# two *specifically* (not `::Any`) so we dominate the generic `lift(x, ::NoTangent)`/`lift(x::P, ::NoDual)`
+# in the 1st arg rather than being ambiguous (an `::Any` 2nd arg ties with those 2nd-arg-specific generics).
+@inline lift(x::MooncakeInterpreter, ::NoTangent) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+@inline lift(x::MooncakeInterpreter, ::NoDual) = Lifted{typeof(x),1,NoDual}(x, NoDual())
+
 # LazyFoRRule / DynamicFoRRule are frules for build_derived_rrule:
 #
 #   build_derived_rrule : (interp, sig_or_mi, sig, debug_mode) → rrule
-#   LazyFoRRule         : (Dual(build_derived_rrule, ·), Dual(interp, ·), ...) → Dual(rrule, t_rule)
+#   LazyFoRRule         : (Lifted(build_derived_rrule, ·), Lifted(interp, ·), ...) → Lifted(rrule, t_rule)
 #                         where t_rule = J_{build_derived_rrule} · (t_interp, ...)
 #
 # _for_rule_cached_dual and _compile_for_rule are shared helpers used by both.
 
-# Cache-hit helper: given a previously compiled (rule, fwd_dc, rvs_dc), return
-# Dual(rule, rule_tangent) with fresh empty Stacks for this call.
+# Cache-hit helper: given a previously compiled (rule, fwd_dc, rvs_dc), return the width-`N`
+# forward V (`Lifted(rule, V)`) with fresh empty Stacks for this call.
 #
 # Stack aliasing invariant: fwd_oc and rvs_oc share the same comms Stack objects from
-# shared_data (fwd_oc.captures[i] === rvs_oc.captures[i]).  Their tangent Stacks must
-# also be aliased: the fwds tangent pass writes to comms tangent Stacks and the rvs
-# tangent pass reads from the same objects.  zero_tangent uses an IdDict internally, so
-# calling it jointly on both captures tuples ensures
-# captures_tangent[1][i] === captures_tangent[2][i] for aliased primal objects.
-# _copy(Stack{T}) resets each primal Stack to empty; regenerating captures_tangent from
-# the fresh primal keeps tangent Stacks size-consistent.
-function _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode::Bool)
-    new_rule = _copy(rule)
-    inner_rule = debug_mode ? new_rule.rule : new_rule
-    captures_tangent = zero_tangent((
-        inner_rule.fwds_oc.oc.captures, inner_rule.pb_oc_ref[].oc.captures
-    ))
-    inner_tangent = Tangent((;
-        fwds_oc=MistyClosureTangent(captures_tangent[1], _copy(fwd_dc)),
-        pb_oc_ref=MutableTangent((;
-            x=PossiblyUninitTangent(MistyClosureTangent(captures_tangent[2], _copy(rvs_dc)))
+# shared_data (fwd_oc.captures[i] === rvs_oc.captures[i]); their tangent Stacks must alias too
+# (the fwds tangent pass writes the comms tangent Stacks the rvs tangent pass reads). This holds
+# because (1) `_copy(rule)` (via `_copy(DerivedRule)`) copies the captures once and installs the
+# same copy into both `fwds_oc` and `pb_oc_ref`, so `fwd_caps[i] === rvs_caps[i]`; and (2)
+# `_for_rule_dual` threads a single `IdDict` through its two `_zero_dual_internal` calls, and a
+# comms `Stack` (a mutable struct) is registered by primal identity, so the shared Stack yields one
+# shared tangent-Stack V. `_copy(Stack{T})` resets each primal Stack to empty, keeping the freshly
+# built tangent Stacks size-consistent.
+function _for_rule_cached_dual(rule, fwd_dc, rvs_dc, ::Val{N}, debug_mode::Bool) where {N}
+    # Fresh `_copy`s give independent comms Stacks for this call; `_for_rule_dual` builds the
+    # width-`N` forward V (captures from the copied rule, dual-callables from the copied
+    # callables), with the shared aliasing cache giving `fwds_oc`/`pb_oc` one captures slot.
+    return _for_rule_dual(_copy(rule), _copy(fwd_dc), _copy(rvs_dc), Val(N), debug_mode)
+end
+
+# Build the canonical width-`N` forward V (the `DerivedFoRRule.rule_dual`'s `Lifted`) directly,
+# for chunked forward-over-reverse (HVP/Hessian at chunk width N>1). The width-1 path keeps using
+# `lift(rule, rule_tangent)`; this is its width-N analogue. It can build the V directly (rather than
+# lifting a reverse tangent) because the FoR `captures_tangent` is zero — all seed directions come
+# from the outer `x` — so the captures' forward V is just `zero_dual` at width N. The dual callables
+# (`fwd_dc`/`rvs_dc`) are the forward-mode-optimised ones built by `_compile_for_rule`; reusing them
+# (rather than rebuilding via `zero_dual(rule)`) avoids re-deriving over the reverse-optimised primal
+# IR — the bug the FoR machinery exists to avoid. The shared `IdDict` preserves the fwds/pb captures
+# Stack aliasing (matching `_for_rule_cached_dual`). The assembled V must equal
+# `dual_type(Val(N), typeof(rule))` exactly, or the `Lifted{...,V}` typeassert downstream rejects it.
+function _for_rule_dual(rule, fwd_dc, rvs_dc, ::Val{N}, debug_mode::Bool) where {N}
+    inner = debug_mode ? rule.rule : rule
+    fwd_caps = inner.fwds_oc.oc.captures
+    rvs_caps = inner.pb_oc_ref[].oc.captures
+    d = IdDict()
+    fwd_capsV = Lifted{typeof(fwd_caps),N}(
+        fwd_caps, _zero_dual_internal(Val(N), fwd_caps, d)
+    )
+    rvs_capsV = Lifted{typeof(rvs_caps),N}(
+        rvs_caps, _zero_dual_internal(Val(N), rvs_caps, d)
+    )
+    innerV = ImmutableDual((;
+        fwds_oc=MistyClosureTangent(fwd_capsV, fwd_dc),
+        pb_oc_ref=MutableDual((;
+            x=PossiblyUninitTangent(MistyClosureTangent(rvs_capsV, rvs_dc))
         )),
-        nargs=NoTangent(),
+        nargs=NoDual(),
     ))
-    rule_tangent = debug_mode ? Tangent((; rule=inner_tangent)) : inner_tangent
-    return Dual(new_rule, rule_tangent)
+    V = debug_mode ? ImmutableDual((; rule=innerV)) : innerV
+    return Lifted{typeof(rule),N,typeof(V)}(rule, V)
 end
 
 # First-call compilation helper: build a DerivedRule (+ dual callables + tangent) for
 # (interp, sig_or_mi, sig, debug_mode). Returns (rule, fwd_dc, rvs_dc, rule_tangent).
 function _compile_for_rule(
-    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool
+    interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool; chunk_size::Int=1
 ) where {C}
     @nospecialize sig_or_mi sig
 
@@ -202,8 +254,12 @@ function _compile_for_rule(
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
         captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
-        fwd_dc = build_frule(interp_forward, fwd_oc; skip_world_age_check=true, debug_mode)
-        rvs_dc = build_frule(interp_forward, rvs_oc; skip_world_age_check=true, debug_mode)
+        fwd_dc = build_frule(
+            interp_forward, fwd_oc; skip_world_age_check=true, debug_mode, chunk_size
+        )
+        rvs_dc = build_frule(
+            interp_forward, rvs_oc; skip_world_age_check=true, debug_mode, chunk_size
+        )
         tangent = Tangent((;
             fwds_oc=MistyClosureTangent(captures_tangent[1], fwd_dc),
             pb_oc_ref=MutableTangent((;
@@ -220,21 +276,21 @@ function _compile_for_rule(
 end
 
 function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
-) where {Trule,Tfwd,Trvs,C}
+    ::Lifted{typeof(build_derived_rrule),Nw},
+    _interp::Lifted{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
+) where {Trule,Tfwd,Trvs,C,Nw}
     @nospecialize _sig_or_mi _sig
 
     debug_mode = primal(_debug_mode)
 
     # Cache hit: reuse compiled artifacts with fresh empty Stacks. sig is not
     # re-checked because each LazyFoRRule lives at exactly one call site in the
-    # compiled IR (inside a fixed-grad_f closure), so the inner signature is
-    # invariant for its lifetime. debug_mode is checked below because the cached rule
-    # layout differs between DebugRRule and plain DerivedRule.
+    # compiled IR (inside a fixed-grad_f closure), so the inner signature — and the
+    # outer chunk width `Nw` — are invariant for its lifetime. debug_mode is checked
+    # below because the cached rule layout differs between DebugRRule and plain DerivedRule.
     if isdefined(cache, :rule)
         if debug_mode != (cache.rule isa DebugRRule)
             error(
@@ -243,27 +299,32 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
             )
         end
         return _for_rule_cached_dual(
-            cache.rule, cache.fwd_dual_callable, cache.rvs_dual_callable, debug_mode
+            cache.rule,
+            cache.fwd_dual_callable,
+            cache.rvs_dual_callable,
+            Val(Nw),
+            debug_mode,
         )
     end
 
-    # First call: compile, populate the single-slot cache, return.
-    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
-        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+    # First call: compile (dual callables at the outer chunk width `Nw`), populate the
+    # single-slot cache, return the width-`Nw` forward V.
+    rule, fwd_dc, rvs_dc, _ = _compile_for_rule(
+        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode; chunk_size=Nw
     )
     cache.rule = rule
     cache.fwd_dual_callable = fwd_dc
     cache.rvs_dual_callable = rvs_dc
-    return Dual(rule, rule_tangent)
+    return _for_rule_dual(rule, fwd_dc, rvs_dc, Val(Nw), debug_mode)
 end
 
 function (cache::DynamicFoRRule)(
-    ::Dual{typeof(build_derived_rrule)},
-    _interp::Dual{<:MooncakeInterpreter{C}},
-    _sig_or_mi::Dual,
-    _sig::Dual,
-    _debug_mode::Dual{Bool},
-) where {C}
+    ::Lifted{typeof(build_derived_rrule),Nw},
+    _interp::Lifted{<:MooncakeInterpreter{C}},
+    _sig_or_mi::Lifted,
+    _sig::Lifted,
+    _debug_mode::Lifted{Bool},
+) where {C,Nw}
     @nospecialize _sig_or_mi _sig
 
     debug_mode = primal(_debug_mode)
@@ -274,20 +335,22 @@ function (cache::DynamicFoRRule)(
     # MethodInstance currently has a unique sig. debug_mode is included because
     # DebugRRule and DerivedRule have different field layouts — serving one to a
     # caller expecting the other causes FieldError.
-    dict_key = (primal(_sig), debug_mode)
+    # Key also on the outer chunk width `Nw`: the cached dual callables are built at a specific
+    # chunk_size, so a different width needs its own compiled artifacts.
+    dict_key = (primal(_sig), debug_mode, Nw)
 
     entry = get(cache.cache, dict_key, nothing)
     if entry !== nothing
         rule, fwd_dc, rvs_dc = entry
-        return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, debug_mode)
+        return _for_rule_cached_dual(rule, fwd_dc, rvs_dc, Val(Nw), debug_mode)
     end
 
-    # First call for this (sig, debug_mode): compile, cache, return.
-    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
-        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode
+    # First call for this (sig, debug_mode, Nw): compile at width Nw, cache, return.
+    rule, fwd_dc, rvs_dc, _ = _compile_for_rule(
+        primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode; chunk_size=Nw
     )
     cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
-    return Dual(rule, rule_tangent)
+    return _for_rule_dual(rule, fwd_dc, rvs_dc, Val(Nw), debug_mode)
 end
 
 function rrule!!(
@@ -305,35 +368,48 @@ function rrule!!(
     )
 end
 
-# Wrapper around a pre-built `Dual(rule, rule_tangent)` so forward AD sees the
-# rule with its forward-mode-compiled dual callables instead of `zero_tangent`
+# Wrapper around a pre-built `Lifted(rule, rule_tangent)` so forward AD sees the
+# rule with its forward-mode-compiled dual callables instead of `zero_dual`
 # re-deriving them over the reverse-mode-optimised primal IR (which would
-# reintroduce the bug `_compile_for_rule` exists to avoid). `tangent_type` is
-# `NoTangent`; the tangent rides inside the cached `Dual`. The type parameter
-# `D` discriminates: `D <: Dual` for derived rrules, `D === Nothing` for
-# primitives — callers branch via `for_rule isa DerivedFoRRule{Nothing}`.
-# Stale-rule caveat: the cached `Dual` is pinned to world age at prep; rebuild
-# the `HVPCache` if methods change after prep.
+# reintroduce the bug `_compile_for_rule` exists to avoid). It is non-differentiable
+# in both modes — `tangent_type` is `NoTangent`, `dual_type` is `NoDual` — the
+# tangent rides inside the cached `Lifted`. The type parameter `D` discriminates:
+# `D <: Lifted` for derived rrules, `D === Nothing` for primitives — callers branch
+# via `for_rule isa DerivedFoRRule{Nothing}`. Stale-rule caveat: the cached `Lifted`
+# is pinned to world age at prep; rebuild the `HVPCache` if methods change after prep.
 struct DerivedFoRRule{D}
     rule_dual::D
 end
-function compile_for_rule(f, x...; debug_mode::Bool=false)
+function compile_for_rule(f, x...; debug_mode::Bool=false, chunk_size::Int=1)
     sig = _typeof((f, x...))
     interp = get_interpreter(ReverseMode)
     if is_primitive(DefaultCtx, ReverseMode, sig, interp.world)
         return DerivedFoRRule{Nothing}(nothing)
     end
-    rule, _, _, rule_tangent = _compile_for_rule(interp, sig, sig, debug_mode)
-    return DerivedFoRRule(Dual(rule, rule_tangent))
+    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
+        interp, sig, sig, debug_mode; chunk_size
+    )
+    # Width 1: `lift(rule, rule_tangent)` is the forward analogue of the legacy
+    # `Dual(rule, rule_tangent)`, mirroring `LazyFoRRule` above. Width N (chunked
+    # forward-over-reverse HVP/Hessian): build the width-N forward V directly.
+    rule_dual = if chunk_size == 1
+        lift(rule, rule_tangent, IdDict())
+    else
+        _for_rule_dual(rule, fwd_dc, rvs_dc, Val(chunk_size), debug_mode)
+    end
+    return DerivedFoRRule(rule_dual)
 end
 tangent_type(::Type{<:DerivedFoRRule}) = NoTangent
+dual_type(::Val{N}, ::Type{<:DerivedFoRRule}) where {N} = NoDual
 
-get_inner_rrule(r::DerivedFoRRule{<:Dual}) = primal(r.rule_dual)
-@is_primitive MinimalCtx Tuple{typeof(get_inner_rrule),<:DerivedFoRRule{<:Dual}}
-function frule!!(::Dual{typeof(get_inner_rrule)}, r::Dual{<:DerivedFoRRule{<:Dual}})
+get_inner_rrule(r::DerivedFoRRule{<:Lifted}) = primal(r.rule_dual)
+@is_primitive MinimalCtx Tuple{typeof(get_inner_rrule),<:DerivedFoRRule{<:Lifted}}
+function frule!!(
+    ::Lifted{typeof(get_inner_rrule),Nw}, r::Lifted{<:DerivedFoRRule{<:Lifted},Nw}
+) where {Nw}
     return primal(r).rule_dual
 end
-function rrule!!(::CoDual{typeof(get_inner_rrule)}, ::CoDual{<:DerivedFoRRule{<:Dual}})
+function rrule!!(::CoDual{typeof(get_inner_rrule)}, ::CoDual{<:DerivedFoRRule{<:Lifted}})
     throw(
         ArgumentError(
             "DerivedFoRRule is forward-over-reverse only; reverse-mode " *
@@ -353,15 +429,20 @@ end
 # rules, such that the DI test will pass with no inner prep without this workaround.
 @static if VERSION >= v"1.11-"
     function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_genericmemory_owner}},
-        ::Dual{Val{Any}},
-        ::Dual{Tuple{Val{Any}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        a::Dual{<:Memory},
-    )
-        return zero_dual(ccall(:jl_genericmemory_owner, Any, (Any,), primal(a)))
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_genericmemory_owner},Nw},
+        ::Lifted{Val{Any},Nw},
+        ::Lifted{Tuple{Val{Any}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        a::Lifted{<:Memory},
+    ) where {Nw}
+        y = ccall(:jl_genericmemory_owner, Any, (Any,), primal(a))
+        # The owner of a `Memory{T}` is itself a `Memory{T}` — differentiable for `T<:IEEEFloat`
+        # (canonical V `NDualArray`, not `NoDual`). Return the canonical zero forward value (mirrors
+        # the sibling `rrule!!`'s `zero_fcodual` and main's `zero_dual`); a bare `NoDual` paired with
+        # a differentiable result violates canonical-V and yields `NoTangent()` on a lane read.
+        return zero_lifted(Val(Nw), y)
     end
     function rrule!!(
         ::CoDual{typeof(_foreigncall_)},
@@ -382,80 +463,54 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
 @static if VERSION < v"1.11-"
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_1d}},
-        ::Dual{Val{Vector{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Vector{P}}},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _n = primal(n)
-            y = ccall(:jl_alloc_array_1d, Vector{$P}, (Any, Int), Vector{$P}, _n)
-            dy = ccall(:jl_alloc_array_1d, Vector{$T}, (Any, Int), Vector{$T}, _n)
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_1d},Nw},
+        ::Lifted{Val{Vector{P}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Vector{P}},Nw},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _n = primal(n)
+        y = ccall(:jl_alloc_array_1d, Vector{P}, (Any, Int), Vector{P}, _n)
+        return Lifted{Vector{P},Nw}(y, uninit_dual(Val(Nw), y))
     end
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_2d}},
-        ::Dual{Val{Matrix{P}}},
-        ::Dual{Tuple{Val{Any},Val{Int},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Matrix{P}}},
-        m::Dual{Int},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _m, _n = primal(m), primal(n)
-            y = ccall(:jl_alloc_array_2d, Matrix{$P}, (Any, Int, Int), Matrix{$P}, _m, _n)
-            dy = ccall(:jl_alloc_array_2d, Matrix{$T}, (Any, Int, Int), Matrix{$T}, _m, _n)
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_2d},Nw},
+        ::Lifted{Val{Matrix{P}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Matrix{P}},Nw},
+        m::Lifted{Int},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _m, _n = primal(m), primal(n)
+        y = ccall(:jl_alloc_array_2d, Matrix{P}, (Any, Int, Int), Matrix{P}, _m, _n)
+        return Lifted{Matrix{P},Nw}(y, uninit_dual(Val(Nw), y))
     end
-    @generated function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{:jl_alloc_array_3d}},
-        ::Dual{Val{Array{P,3}}},
-        ::Dual{Tuple{Val{Any},Val{Int},Val{Int},Val{Int}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:ccall}},
-        ::Dual{Type{Array{P,3}}},
-        l::Dual{Int},
-        m::Dual{Int},
-        n::Dual{Int},
-        args::Vararg{Dual},
-    ) where {P}
-        T = tangent_type(P)
-        return quote
-            _l, _m, _n = primal(l), primal(m), primal(n)
-            y = ccall(
-                :jl_alloc_array_3d,
-                Array{$P,3},
-                (Any, Int, Int, Int),
-                Array{$P,3},
-                _l,
-                _m,
-                _n,
-            )
-            dy = ccall(
-                :jl_alloc_array_3d,
-                Array{$T,3},
-                (Any, Int, Int, Int),
-                Array{$T,3},
-                _l,
-                _m,
-                _n,
-            )
-            return Dual(y, dy)
-        end
+    function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{:jl_alloc_array_3d},Nw},
+        ::Lifted{Val{Array{P,3}},Nw},
+        ::Lifted{Tuple{Val{Any},Val{Int},Val{Int},Val{Int}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:ccall},Nw},
+        ::Lifted{Type{Array{P,3}},Nw},
+        l::Lifted{Int},
+        m::Lifted{Int},
+        n::Lifted{Int},
+        args::Vararg{Lifted,M},
+    ) where {Nw,P,M}
+        _l, _m, _n = primal(l), primal(m), primal(n)
+        y = ccall(
+            :jl_alloc_array_3d, Array{P,3}, (Any, Int, Int, Int), Array{P,3}, _l, _m, _n
+        )
+        return Lifted{Array{P,3},Nw}(y, uninit_dual(Val(Nw), y))
     end
 end

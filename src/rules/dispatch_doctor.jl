@@ -9,10 +9,15 @@ import ..@is_primitive
 import ..DefaultCtx
 import .._foreigncall_
 import ..CoDual
-import ..Dual
-import ..NoTangent
+import ..Lifted
 import ..NoPullback
 import ..zero_fcodual
+# `frule!!` / `rrule!!` must be imported so the definitions below add methods to
+# `Mooncake.frule!!` / `Mooncake.rrule!!` rather than creating dead module-local functions;
+# `NoDual` is the forward non-diff sentinel used by the frule body.
+import ..frule!!
+import ..rrule!!
+import ..NoDual
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
 import DispatchDoctor._Stabilization: _show_warning, _construct_pairs
@@ -50,14 +55,15 @@ import DispatchDoctor._Utils:
 }
 #! format: on
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_generating_output}},
-    ::Dual{Val{Cint}},
-    ::Dual{Tuple{}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-)
-    return Dual(ccall(:jl_generating_output, Cint, ()), NoTangent())
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_generating_output},Nw},
+    ::Lifted{Val{Cint},Nw},
+    ::Lifted{Tuple{},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+) where {Nw}
+    y = ccall(:jl_generating_output, Cint, ())
+    return Lifted{Cint,Nw}(y, NoDual())
 end
 function rrule!!(
     f::CoDual{typeof(_foreigncall_)},

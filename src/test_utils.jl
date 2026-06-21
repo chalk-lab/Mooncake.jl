@@ -91,6 +91,7 @@ using Random, Mooncake, Test
 using Mooncake:
     CoDual,
     NoTangent,
+    NoDual,
     PossiblyUninitTangent,
     Tangent,
     MutableTangent,
@@ -124,7 +125,12 @@ using Mooncake:
     can_produce_zero_rdata_from_type,
     increment_rdata!!,
     dual_type,
-    randn_dual,
+    lifted_type,
+    randn_lifted,
+    zero_lifted,
+    uninit_lifted,
+    lift,
+    unlift,
     fcodual_type,
     verify_fdata_type,
     verify_rdata_type,
@@ -152,7 +158,7 @@ using Mooncake:
     NoRData,
     rdata_type,
     rdata,
-    Dual,
+    Lifted,
     Mode,
     ForwardMode,
     ReverseMode,
@@ -351,6 +357,18 @@ function populate_address_map(primal, tangent)
     return populate_address_map_internal(AddressMap(), primal, tangent)
 end
 
+# Forward-mode V's with no slot-local address to track. The aliasing contract is
+# asymmetric (primal aliases user storage; tangent storage is slot-local), so the
+# reverse-mode address-map machinery does not apply — return `m` unchanged.
+# `ImmutableDual` / `MutableDual` recurse (handled by their own method below).
+const _NoDerivativeV = Union{
+    Mooncake.NoDual,
+    Mooncake.Nfwd.NDual,
+    Complex{<:Mooncake.Nfwd.NDual},
+    Mooncake.Nfwd.NDualArray,
+    Mooncake.Nfwd.NDualRef,
+}
+
 """
     populate_address_map_internal(m::AddressMap, primal, tangent)
 
@@ -362,6 +380,7 @@ function populate_address_map_internal(m::AddressMap, primal::P, tangent::T) whe
     isprimitivetype(P) && return m
     T === NoTangent && return m
     T === NoFData && return m
+    tangent isa _NoDerivativeV && return m
     if ismutabletype(P)
         @assert T <: MutableTangent "Expected tangent type to be a MutableTangent for mutable primal type $(P), but got $(T)."
         k = pointer_from_objref(primal)
@@ -393,12 +412,59 @@ end
 
 __get_data_field(t::Union{Tangent,MutableTangent}, n) = getfield(t.fields, n)
 __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, n)
+function __get_data_field(t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}, n)
+    getfield(t.value, n)
+end
+# parallel-arrays `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
+# `_get_lifted_field` (`:mem` → the `NDualArray` over the partials' memories;
+# `.ptr_or_offset` is a non-diff `Ptr` → `NoDual`).
+@static if VERSION >= v"1.11-rc4"
+    __get_data_field(t::Mooncake.Nfwd.NDualMemoryRef, n) = Mooncake._get_lifted_field(t, n)
+end
+
+# Forward-mode structural-lift V's recurse field-wise (tangent storage is
+# slot-local, so no address is tracked at this level). A `PossiblyUninitTangent`
+# field is unwrapped and skipped when its primal field is undefined, mirroring
+# the reverse `Tangent` path above.
+function populate_address_map_internal(
+    m::AddressMap, p, t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
+)
+    nt = t.value
+    foreach(keys(nt)) do n
+        t_field = getfield(nt, n)
+        if isdefined(p, n) && is_init(t_field)
+            populate_address_map_internal(m, getfield(p, n), val(t_field))
+        end
+        return nothing
+    end
+    return m
+end
+
+# Disambiguators only (never fire — a Tuple/non-diff primal never pairs with a struct-dual V): resolve the
+# ambiguity between the `t::Union{ImmutableDual,MutableDual}` method above (p untyped) and the p-specific
+# methods below (t untyped). Each matches one p-specific method's exact `p`-set with that dual `t`. No
+# address to track: return `m`.
+function populate_address_map_internal(
+    m::AddressMap,
+    ::Union{Tuple,NamedTuple},
+    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
+)
+    return m
+end
+function populate_address_map_internal(
+    m::AddressMap,
+    ::Union{Core.TypeName,Type,Symbol,String},
+    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
+)
+    return m
+end
 
 function populate_address_map_internal(
     m::AddressMap, p::P, t
 ) where {P<:Union{Tuple,NamedTuple}}
     t isa NoFData && return m
     t isa NoTangent && return m
+    t isa _NoDerivativeV && return m
     foreach(
         n -> populate_address_map_internal(m, getfield(p, n), getfield(t, n)), fieldnames(P)
     )
@@ -491,7 +557,7 @@ function test_frule_correctness(
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
-    ẋ = map(normalize_tangent ∘ tangent, x_ẋ)
+    ẋ = map(normalize_tangent ∘ last ∘ unlift, x_ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -504,7 +570,7 @@ function test_frule_correctness(
         length(ε_list) ≥ 2 || throw(
             ArgumentError(
                 "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
-                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+                "grid ends at 1e-8, so the smallest usable cap is 1e-7.",
             ),
         )
     end
@@ -521,13 +587,13 @@ function test_frule_correctness(
     end
 
     # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
+    x_ẋ_rule = map((x, ẋ) -> lift(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )
     y_ẏ_rule = frule(x_ẋ_rule...)
-    ẋ_ad = map(tangent, x_ẋ_rule)
-    ẏ_ad = tangent(y_ẏ_rule)
+    ẋ_ad = map(last ∘ unlift, x_ẋ_rule)
+    ẏ_ad = last(unlift(y_ẏ_rule))
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
@@ -573,6 +639,235 @@ function test_frule_correctness(
     @test any(isapprox_results)
 end
 
+# Positive allowlist for the per-lane correctness oracle: V shapes whose lane tangents lift back to
+# a valid width-1 seed and compare via `has_equal_data`. Everything else (struct-lift
+# `Mutable`/`ImmutableDual`, `Dict`, closure tangents, function wrappers, …) falls through to
+# `false` and is skipped — only the per-lane oracle, not the always-on invariant check.
+_chunk_lane_checkable(::Mooncake.Nfwd.NDual) = true
+_chunk_lane_checkable(::Mooncake.Nfwd.NDualArray) = true
+_chunk_lane_checkable(::Complex{<:Mooncake.Nfwd.NDual}) = true
+_chunk_lane_checkable(::NoDual) = true
+_chunk_lane_checkable(v::Tuple) = all(_chunk_lane_checkable, v)
+_chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
+_chunk_lane_checkable(@nospecialize(_v)) = false
+
+"""
+    test_frule(
+        rng::AbstractRNG, x...;
+        sig, frule=Mooncake.frule!!, widths=(1, 2, 3), is_primitive=true,
+        interface_only=false, perf_flag=:none, unsafe_perturb=false,
+        atol=1e-3, rtol=1e-3, max_fd_step=nothing, debug_mode=false,
+    )
+
+The width-parameterised forward-rule harness: one entry point covering every chunk width.
+
+For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
+across calls), interface (types / aliasing), finite-difference correctness, and performance.
+
+For each `N > 1` (primitive rules only) it builds the frule at chunk size `N`, seeds each
+argument with `N` independent random lane directions, runs it, and checks invariants the
+width-1 battery cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
+in-place primal, lets an inner dual's `.value` drift from the primal, or computes a
+wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
+across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
+`.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
+partials match what the width-1 frule produces when seeded with *that lane's* direction — the
+width-1 path being finite-difference-validated above, so it is the trusted per-lane oracle.
+
+Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
+is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
+at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-supplied `frule`
+is honoured only at width 1.
+
+No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
+only for primitive rules (a derived rule's width-N execution is the composition of its
+primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-level width-N
+gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
+the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
+"""
+function test_frule(
+    rng::AbstractRNG,
+    x::Vararg{Any,P};
+    sig,
+    frule=Mooncake.frule!!,
+    widths=(1, 2, 3),
+    is_primitive::Bool=true,
+    interface_only::Bool=false,
+    perf_flag::Symbol=:none,
+    unsafe_perturb::Bool=false,
+    atol=1e-3,
+    rtol=1e-3,
+    max_fd_step=nothing,
+    debug_mode::Bool=false,
+) where {P}
+    @nospecialize rng x
+    # Width-1 battery. The seeds are shared across the four checks (matching their historical
+    # sharing in `test_rule`); `CoDual`-supplied args carry their tangent across the bridge,
+    # everything else gets a random width-1 seed.
+    if 1 in widths
+        x_ẋ = map(
+            z -> z isa CoDual ? lift(primal(z), tangent(z)) : randn_lifted(Val(1), rng, z),
+            x,
+        )
+        interface_only || test_frule_reuse(x_ẋ...; frule)
+        test_frule_interface(x_ẋ...; frule, is_primitive)
+        if !interface_only
+            test_frule_correctness(
+                rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
+            )
+        end
+        test_frule_performance(perf_flag, frule, x_ẋ...)
+    end
+
+    # Chunked widths (N > 1), primitive rules only.
+    chunked_widths = filter(>(1), Tuple(widths))
+    (is_primitive && !interface_only && !isempty(chunked_widths)) || return nothing
+    base = map(z -> z isa CoDual ? primal(z) : z, x)
+    # Fresh copy for the reference primal — `f` may mutate an argument in place.
+    yp = map(_deepcopy, base)
+    y_true = yp[1](yp[2:end]...)
+    interp = get_interpreter(ForwardMode)
+    for N in chunked_widths
+        # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
+        seeds = map(p -> randn_lifted(Val(N), rng, p), map(_deepcopy, base))
+        # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
+        # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
+        # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
+        # below still runs for every shape.
+        lane_checkable = all(s -> _chunk_lane_checkable(tangent(s)), seeds)
+        # Capture the per-lane width-1 seeds *before* the width-N run, which (for in-place rules)
+        # mutates the seed primals *and partials* in place — `_deepcopy` both so the captured lane
+        # directions survive the run. Each carries lane k's input direction.
+        lane_seeds = if lane_checkable
+            [map(s -> lift(_deepcopy(primal(s)), _deepcopy(tangent(s, k))), seeds) for k in 1:N]
+        else
+            nothing
+        end
+        y_ẏ = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
+        @test has_equal_data(y_true, primal(y_ẏ))
+        @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
+        # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
+        # lane k's direction. Skipped (same allowlist) when the output is not a plain numeric dual.
+        if lane_checkable && _chunk_lane_checkable(tangent(y_ẏ))
+            for k in 1:N
+                y1 = build_frule(interp, sig; chunk_size=1)(lane_seeds[k]...)
+                @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1))
+            end
+        end
+    end
+end
+
+"""
+    test_rrule(
+        rng::AbstractRNG, x...;
+        rrule=Mooncake.rrule!!, interface_only=false, perf_flag=:none,
+        unsafe_perturb=false, output_tangent=nothing, atol=1e-3, rtol=1e-3, max_fd_step=nothing,
+    )
+
+The reverse-rule harness, symmetric to [`test_frule`](@ref): reuse (no state corruption across
+calls), interface (types / aliasing / mutation restoration), finite-difference correctness, and
+performance, all against `rrule`. Reverse mode has no chunk widths, so there is no `widths`
+parameter.
+"""
+function test_rrule(
+    rng::AbstractRNG,
+    x::Vararg{Any,P};
+    rrule=Mooncake.rrule!!,
+    interface_only::Bool=false,
+    perf_flag::Symbol=:none,
+    unsafe_perturb::Bool=false,
+    output_tangent=nothing,
+    atol=1e-3,
+    rtol=1e-3,
+    max_fd_step=nothing,
+) where {P}
+    @nospecialize rng x
+    x_x̄ = map(
+        z -> z isa CoDual ? z : (interface_only ? uninit_codual(z) : zero_codual(z)), x
+    )
+    # Isolated rng for reuse so it does not perturb correctness's rng state.
+    interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
+    test_rrule_interface(x_x̄...; rrule)
+    if !interface_only
+        test_rrule_correctness(
+            rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol, max_fd_step
+        )
+    end
+    return test_rrule_performance(perf_flag, rrule, x_x̄...)
+end
+
+# Recursively verify the canonical-V invariant at width N: every inner dual's `.value` tracks the
+# primal it shadows, with finite partials. Mirrors the `dual_type` V hierarchy; shapes with no
+# inner value to check (NoDual, type-erased wrappers, uninit fields) pass trivially. The value
+# comparison is approximate, not bit-exact: a *derived* rule may accumulate a reduction in a
+# different order for the primal slot than for the inner dual, so they can differ by a few ULPs.
+# The bugs this guards against (e.g. a scalar `.value` set to `grad * x` instead of the result)
+# drift by O(1) relative, so a loose `isapprox` separates them cleanly from rounding noise.
+# The leading `===` fast-path also accepts bit-identical values that `isapprox` rejects: a
+# partial-`:new` mutable struct leaves its inline isbits fields (e.g. a `Float64`) physically
+# present but logically uninitialized — `isdefined` cannot see this, so the seed faithfully
+# copies the garbage bits into `.value`. Garbage-vs-itself is egal even when the bits are NaN
+# (which `isapprox` reports unequal), so `===` passes it while real drift still fails both.
+_chunked_v_approx(a, b) = a === b || isapprox(a, b; atol=1e-8, rtol=1e-6)
+# The `IdDict` breaks cycles through mutable V nodes (`MutableDual`, mutable `Array`), which a
+# self-referential primal (`node.next === node`) produces; the immutable shapes can only cycle
+# back through one of those, so guarding the mutable entries alone is sufficient.
+_chunked_v_invariant(p, v) = _chunked_v_invariant(p, v, IdDict{Any,Nothing}())
+function _chunked_v_invariant(p::Base.IEEEFloat, v::Mooncake.Nfwd.NDual, ::IdDict)
+    return _chunked_v_approx(v.value, p) && all(isfinite, v.partials)
+end
+function _chunked_v_invariant(
+    p::Complex{<:Base.IEEEFloat}, v::Complex{<:Mooncake.Nfwd.NDual}, c::IdDict
+)
+    return _chunked_v_invariant(real(p), real(v), c) &&
+           _chunked_v_invariant(imag(p), imag(v), c)
+end
+function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray, ::IdDict)
+    return _chunked_v_approx(v.primal, p) && all(a -> all(isfinite, a), v.partials)
+end
+function _chunked_v_invariant(p::Tuple, v::Tuple, c::IdDict)
+    # Arity must match: a length mismatch is exactly the `dual_type` incoherence this harness
+    # exists to catch (`map` would otherwise truncate to the shorter and still pass).
+    length(p) == length(v) || return false
+    return all(map((a, b) -> _chunked_v_invariant(a, b, c), p, v))
+end
+function _chunked_v_invariant(p::NamedTuple, v::NamedTuple, c::IdDict)
+    # Keys must match exactly: a coherent `dual_type` preserves the field names, so a mismatch is a
+    # bug (and guards the `getfield(p, n)` recursion below, which would otherwise throw on a stray key).
+    keys(p) == keys(v) || return false
+    return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n), c), keys(v))
+end
+function _chunked_v_invariant(p, v::Mooncake.ImmutableDual, c::IdDict)
+    return _struct_v_invariant(p, v.value, c)
+end
+function _chunked_v_invariant(p, v::Mooncake.MutableDual, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    return _struct_v_invariant(p, v.value, c)
+end
+# An undefined primal field (partial `:new`) has no value to shadow — skip it.
+function _struct_v_invariant(p, nt::NamedTuple, c::IdDict)
+    all(
+        n -> !isdefined(p, n) || _chunked_v_invariant(getfield(p, n), getfield(nt, n), c),
+        keys(nt),
+    )
+end
+function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent, c::IdDict)
+    return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v), c)
+end
+function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+end
+# Fallthrough: `NoDual`/`NoTangent` (non-differentiable) and the type-erased
+# `FunctionWrapperTangent` have nothing to check and pass. (`Memory` is *not* here — it is an
+# `AbstractArray`, so its `NDualArray` V is checked by the method above.) The differentiable
+# `NDualRef`/`NDualMemoryRef` shapes also currently land here and pass trivially; this is a known
+# open-degradation gap, untriggered because no test value produces a top-level `Ref`/`MemoryRef`
+# dual. The check degrades open: an unhandled shape passes rather than erroring.
+_chunked_v_invariant(_p, _v, ::IdDict) = true
+
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 function test_rrule_correctness(
     rng::AbstractRNG,
@@ -608,7 +903,7 @@ function test_rrule_correctness(
         length(ε_list) ≥ 2 || throw(
             ArgumentError(
                 "max_fd_step=$max_fd_step leaves fewer than two FD steps; the fixed " *
-                "grid ends at 1e-7, so the smallest usable cap is 1e-6.",
+                "grid ends at 1e-8, so the smallest usable cap is 1e-7.",
             ),
         )
     end
@@ -699,15 +994,25 @@ function test_frule_reuse(x_ẋ...; frule)
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
     # only one side would compare different temporal points if a rule mutates inputs.
-    # Skip the deepcopy when tangent is NoTangent: such primals (e.g. Module-containing
-    # types like Core.TypeName) can't safely be deepcopied and can't be mutated either.
+    # Skip the deepcopy for a non-differentiable output: such primals (e.g.
+    # Module-containing types like Core.TypeName) can't safely be deepcopied and can't
+    # be mutated either. Reverse mode marks these `NoTangent`; forward mode marks them
+    # `NoDual` (`tangent(::Lifted)` returns the `NoDual` V), so guard on both.
     y_ẏ_a = frule(x_ẋ_a...)
-    y_primal_a = tangent(y_ẏ_a) isa NoTangent ? primal(y_ẏ_a) : _deepcopy(primal(y_ẏ_a))
+    y_primal_a = if tangent(y_ẏ_a) isa Union{NoTangent,NoDual}
+        primal(y_ẏ_a)
+    else
+        _deepcopy(primal(y_ẏ_a))
+    end
     ẏ_a = _deepcopy(tangent(y_ẏ_a))
     ẋ_a = map(_deepcopy ∘ tangent, x_ẋ_a)
 
     y_ẏ_b = frule(x_ẋ_b...)
-    y_primal_b = tangent(y_ẏ_b) isa NoTangent ? primal(y_ẏ_b) : _deepcopy(primal(y_ẏ_b))
+    y_primal_b = if tangent(y_ẏ_b) isa Union{NoTangent,NoDual}
+        primal(y_ẏ_b)
+    else
+        _deepcopy(primal(y_ẏ_b))
+    end
     ẏ_b = _deepcopy(tangent(y_ẏ_b))
     ẋ_b = map(_deepcopy ∘ tangent, x_ẋ_b)
 
@@ -769,7 +1074,7 @@ function test_rrule_reuse(rng::AbstractRNG, x_x̄...; rrule, output_tangent=noth
     @test all(map(has_equal_data, x̄_fwds_a, x̄_fwds_b))
 end
 
-function test_frule_interface(x_ẋ...; frule)
+function test_frule_interface(x_ẋ...; frule, is_primitive::Bool=true)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
@@ -788,7 +1093,7 @@ function test_frule_interface(x_ẋ...; frule)
 
     # Check that input types are valid.
     for x_ẋ_component in x_ẋ
-        @test Mooncake.verify_dual_type(x_ẋ_component)
+        @test Mooncake.verify_lifted_type(x_ẋ_component)
     end
 
     # Run the frule, check it has output a thing of the correct type, and extract results.
@@ -799,9 +1104,13 @@ function test_frule_interface(x_ẋ...; frule)
         throw(ArgumentError("rule does not run, signature is $(_typeof(x_ẋ))."))
     end
 
-    # Check that returned fdata type is correct.
-    @test y_ẏ isa Dual
-    @test Mooncake.verify_dual_type(y_ẏ)
+    # Check the output slot is a `Lifted` and (for hand-written primitive rules) carries the
+    # canonical inner V. Derived rules are skipped: the transform legitimately uses `NoDual` as a
+    # non-differentiable marker for concrete results whose `dual_type` is not `NoDual` (e.g. a
+    # `Vector{Any}` method table) — correct and handled downstream, but not the canonical V. This
+    # mirrors the `is_primitive`-gating of the chunked V invariant.
+    @test y_ẏ isa Lifted
+    is_primitive && @test Mooncake.verify_lifted_type(y_ẏ)
 end
 
 function test_rrule_interface(f_f̄, x_x̄...; rrule)
@@ -932,8 +1241,8 @@ function test_frule_performance(
         end
 
         # Test allocations in forwards-mode.
-        # On Julia 1.10, __call_rule uses Base.inferencebarrier to work around a codegen
-        # crash (julia#61368). This boxes isbits values (e.g. Dual{Float64}) at every
+        # On Julia 1.10, __call_rule forces generic dispatch (the `(rule::Any)` barrier) to work
+        # around a codegen crash (julia#61368). This boxes isbits values (e.g. NDual{Float64,1}) at every
         # nested rule callsite inside the compiled OC, producing non-zero alloc counts
         # even for correct rules. Skip this check on Julia < 1.11.
         @static if VERSION >= v"1.11-"
@@ -984,7 +1293,7 @@ function test_rrule_performance(
 
         # Test allocations in round-trip.
         # Skip on Julia < 1.11 for the same reason as the frule check above: the
-        # inferencebarrier workaround in __call_rule boxes isbits values at every
+        # `(rule::Any)` dispatch barrier in __call_rule boxes isbits values at every
         # nested rule callsite inside the compiled OC, producing spurious non-zero
         # alloc counts on Julia 1.10.
         @static if VERSION >= v"1.11-"
@@ -996,7 +1305,7 @@ function test_rrule_performance(
     end
 end
 
-__get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
+__get_primals(xs) = map(x -> x isa Union{Lifted,CoDual} ? primal(x) : x, xs)
 
 """
     test_rule(
@@ -1015,6 +1324,7 @@ __get_primals(xs) = map(x -> x isa Union{Dual,CoDual} ? primal(x) : x, xs)
         frule=nothing,
         rrule=nothing,
         max_fd_step::Union{Nothing,Real}=nothing,
+        skip_chunked::Bool=false,
     )
 
 Run standardised tests on the `rule` for `x`.
@@ -1076,7 +1386,11 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     `ε ≤ max_fd_step` are used. Each argument's tangent is unit-normalised independently,
     so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
     domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
-    the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
+    the domain. The FD grid ends at `1e-8`; the smallest usable cap is `1e-7`.
+- `skip_chunked::Bool=false`: skip the width-`N>1` chunked forward-mode check. Set this only
+    for primals whose forward rule has a known width-`N` limitation (e.g. raw-pointer rules
+    that round-trip through `unsafe_copyto!`), where the width-1 path is correct but the
+    chunked path cannot yet preserve the canonical dual representation.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1094,6 +1408,7 @@ function test_rule(
     frule=nothing,
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
+    skip_chunked::Bool=false,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1130,50 +1445,43 @@ function test_rule(
         !ismissing(rvs_interp) &&
         @test rrule == (debug_mode ? DebugRRule(rrule!!) : rrule!!)
 
-    # Generate random tangents for anything that is not already a CoDual.
-    x_ẋ = map(x -> x isa CoDual ? Dual(primal(x), tangent(x)) : randn_dual(rng, x), x)
-
-    x_x̄ = map(x -> if x isa CoDual
-        x
-    elseif interface_only
-        uninit_codual(x)
-    else
-        zero_codual(x)
-    end, x)
-
     redirector = print_results ? ((f, x) -> f()) : redirect_stdout
     ts = redirector(devnull) do
         @testset "$(typeof(x))" begin
-            # Verify rules give identical results on a second call,
-            # i.e. the rule does not corrupt its internal state across calls.
-            @testset "Reuse" begin
-                if test_fwd && !interface_only
-                    test_frule_reuse(x_ẋ...; frule)
-                end
-                if test_rvs && !interface_only
-                    # Isolated rng so Reuse doesn't perturb Correctness's rng state.
-                    test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
-                end
-            end
-
-            # Test that the interface is basically satisfied (checks types / memory addresses).
-            @testset "Interface (1)" begin
-                test_fwd && test_frule_interface(x_ẋ...; frule)
-                test_rvs && test_rrule_interface(x_x̄...; rrule)
-            end
-
-            # Test that answers are numerically correct / consistent.
-            @testset "Correctness" begin
-                if test_fwd && !interface_only
-                    test_frule_correctness(
-                        rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
+            # All forward-mode checks, every width: width-1 reuse/interface/FD-correctness/
+            # performance plus the chunked (N > 1) invariant + per-lane checks. Building the
+            # lifted seeds only here also avoids `randn_lifted`'s `dual_type` recursion on
+            # self-referential primals (e.g. a `DynamicExpressions.Node` tree) for
+            # reverse-only tests.
+            @testset "Forward" begin
+                if test_fwd
+                    test_frule(
+                        rng,
+                        x...;
+                        sig,
+                        frule,
+                        widths=(skip_chunked ? (1,) : (1, 2, 3)),
+                        is_primitive,
+                        interface_only,
+                        perf_flag,
+                        unsafe_perturb,
+                        atol,
+                        rtol,
+                        max_fd_step,
+                        debug_mode,
                     )
                 end
-                if test_rvs && !interface_only
-                    test_rrule_correctness(
+            end
+
+            # All reverse-mode checks: reuse/interface/FD-correctness/performance.
+            @testset "Reverse" begin
+                if test_rvs
+                    test_rrule(
                         rng,
-                        x_x̄...;
+                        x...;
                         rrule,
+                        interface_only,
+                        perf_flag,
                         unsafe_perturb,
                         output_tangent,
                         atol,
@@ -1183,18 +1491,14 @@ function test_rule(
                 end
             end
 
-            # Test the performance of the rule.
-            @testset "Performance" begin
-                test_fwd && test_frule_performance(perf_flag, frule, x_ẋ...)
-                test_rvs && test_rrule_performance(perf_flag, rrule, x_x̄...)
-            end
-
             # Verify that rules have been cached.
             @testset "Caching" begin
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
                     if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
-                        cache_key = (sig, debug_mode, :forward)
+                        # `:forward` rules are keyed by chunk width too; `test_rule` builds
+                        # the default width-1 rule.
+                        cache_key = (sig, debug_mode, :forward, 1)
                         k = Mooncake.ClosureCacheKey(fwd_interp.world, cache_key)
                         @test haskey(fwd_interp.oc_cache, k)
                     end
@@ -1214,44 +1518,71 @@ function test_rule(
     return ts
 end
 
-function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
-        Mooncake.hand_written_rule_test_cases(rng_ctor, v)
+# A test case's third tuple field is otherwise ignored by the runners; when it is a
+# `NamedTuple` it may carry per-case `test_rule` options: `skip_chunked` (skip the width-N>1 forward
+# check) and `skip_forward` (skip forward mode entirely — for a case forward mode cannot represent
+# coherently while reverse is correct, e.g. a differentiable pointer-to-pointer raw store, or a
+# pointer round-trip whose tangent buffer is a reverse tangent). Applies to both case kinds.
+_case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
+_case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
+
+# One driver for both case kinds: hand-written cases test the registered `frule!!`/`rrule!!`
+# directly (`is_primitive=true`); derived cases run the full AD transform over a plain Julia
+# function (`is_primitive=false`). Either kind may opt out of forward mode via `skip_forward`.
+function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool)
+    test_cases, memory = if derived
+        test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
+            Mooncake.derived_rule_test_cases(rng_ctor, v)
+        end
+    else
+        test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
+            Mooncake.hand_written_rule_test_cases(rng_ctor, v)
+        end
     end
     # GC.@preserve keeps backing objects alive for tests involving pointer-backed
     # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
+    GC.@preserve memory @testset "$mode, $f, $(_typeof(x))" for (
+        interface_only, perf_flag, opts, f, x...
     ) in test_cases
 
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-    end
-end
-
-function run_derived_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory = test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
-        Mooncake.derived_rule_test_cases(rng_ctor, v)
-    end
-    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
-    # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$mode, $f, $(typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
-    ) in test_cases
-
+        mode === ForwardMode && _case_skip_forward(opts) && continue
+        skip_chunked = _case_skip_chunked(opts)
         test_rule(
-            rng_ctor(123), f, x...; interface_only, perf_flag, is_primitive=false, mode
+            rng_ctor(123),
+            f,
+            x...;
+            interface_only,
+            perf_flag,
+            is_primitive=(!derived),
+            mode,
+            skip_chunked,
         )
     end
 end
 
 function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
-    if mode in [nothing, ForwardMode]
-        run_hand_written_rule_test_cases(rng_ctor, v, ForwardMode)
-        run_derived_rule_test_cases(rng_ctor, v, ForwardMode)
+    for m in (mode === nothing ? (ForwardMode, ReverseMode) : (mode,))
+        run_rule_test_cases(rng_ctor, v, m, false)
+        run_rule_test_cases(rng_ctor, v, m, true)
     end
-    if mode in [nothing, ReverseMode]
-        run_hand_written_rule_test_cases(rng_ctor, v, ReverseMode)
-        run_derived_rule_test_cases(rng_ctor, v, ReverseMode)
+    run_throwing_rule_test_cases(v)
+    return nothing
+end
+
+# Guard cases registered via `Mooncake.throwing_rule_test_cases`: each rule invocation must
+# throw the registered exception. The slot kind picks the rule family: `Lifted` args test
+# `frule!!` (the function slot is built at the args' width), `CoDual`s test `rrule!!`.
+function run_throwing_rule_test_cases(v::Val)
+    cases, memory = test_hook(Mooncake.throwing_rule_test_cases, v) do
+        Mooncake.throwing_rule_test_cases(v)
+    end
+    GC.@preserve memory @testset "throws $E: $f" for (E, f, args) in cases
+        if first(args) isa Lifted
+            W = Mooncake._lifted_width(first(args))
+            @test_throws E frule!!(zero_lifted(Val(W), f), args...)
+        else
+            @test_throws E rrule!!(Mooncake.zero_fcodual(f), args...)
+        end
     end
     return nothing
 end
@@ -1308,6 +1639,122 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
     @test tangent_type(primal_type) == expected_tangent_type
     @test is_foldable(tangent_type, (Type{expected_tangent_type},))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
+    return nothing
+end
+
+"""
+    test_lifted_type(primal_type, ::Val{N})
+
+Forward-mode analogue of [`test_tangent_type`](@ref). Checks that the forward representation
+type functions are well-formed for `primal_type` at chunk width `N`:
+
+- `dual_type(Val(N), primal_type)` (the inner `V`) and `lifted_type(Val(N), primal_type)` (the
+  slot) each return a `Type`;
+- the forward non-differentiable sentinel `NoDual` is used exactly when the reverse tangent is
+  `NoTangent` (`tangent_type(P) === NoTangent ⟺ dual_type === NoDual`) — catches a `NoTangent`
+  leaking into a forward slot or vice versa;
+- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`;
+- both functions are foldable and infer away — the foldability check is what surfaces a
+  world-age trap in a `@generated` `dual_type`/`lifted_type` (a sub-call baked into the
+  generator body instead of the returned expression).
+
+`P <: Type` (type-valued primals such as `Float64`, `Union{...}`) is excluded from the coherence
+check: those slots are deliberately sharpened to `Lifted{Type{X}, N}`, which is not the
+kind-widened `lifted_type` of the broad metatype (`DataType`/`Union`/`UnionAll`).
+"""
+function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
+    V = dual_type(Val(N), primal_type)
+    @test V isa Type
+    L = lifted_type(Val(N), primal_type)
+    @test L isa Type
+    @test (tangent_type(primal_type) === NoTangent) == (V === NoDual)
+    # Concrete, non-metatype primals are the hot path: assert coherence and that the type
+    # functions fold + infer away — the foldability check is what surfaces a `@generated`
+    # world-age trap (a sub-call baked into a `dual_type`/`lifted_type` generator body). A
+    # metatype / abstract primal deliberately kind-widens `lifted_type` to a `UnionAll`, which
+    # is not const-foldable, so those are exercised for runnability (the assertions above) only.
+    if isconcretetype(primal_type) && !(primal_type <: Type)
+        @test L === Lifted{primal_type,N,V}
+        @test is_foldable(dual_type, (Val{N}, Type{primal_type}))
+        @test is_foldable(lifted_type, (Val{N}, Type{primal_type}))
+        test_opt(dual_type, Tuple{Val{N},Type{primal_type}})
+        test_opt(lifted_type, Tuple{Val{N},Type{primal_type}})
+    end
+    return nothing
+end
+
+"""
+    test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+
+Forward-mode analogue of [`test_tangent`](@ref): the de-facto definition of the forward
+representation interface. If this runs without a failing test for a value `p`, then `p`'s
+forward (`Lifted` / `NDual`) representation is well-formed. It is purely representation-level
+— no rule is involved — and is the forward counterpart of `test_tangent` (`test_rule` covers
+rule correctness / finite-difference agreement separately).
+
+For each width `N ∈ widths` it checks, via [`test_lifted_type`](@ref) plus value-level
+assertions on the seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifted`):
+
+- primal aliasing — `primal(slot) === p` (the slot's primal is the user's storage, not a copy);
+- the slot has the coherent type `lifted_type(Val(N), typeof(p))`;
+- the **inner-value invariant** — every inner dual's `.value` tracks the primal it shadows, at
+  every width (`_chunked_v_invariant`). This is the check with no reverse analogue and the one
+  `test_rule` misses: it builds only width-1 seeds and checks the outer slot, not inner `.value`,
+  so a rule (or seed) that lets a scalar `.value` drift to e.g. `grad * x` passes `test_rule`
+  but fails here;
+- each per-lane accessor `tangent(slot, lane)` runs for `lane ∈ 1:N`;
+- the reverse↔forward bridge (width-1 only, the forward-over-reverse / HVP path): a reverse
+  tangent round-trips, `unlift(lift(p, ẋ)) == (p, ẋ)`.
+
+Self-referential primals are supported: both cyclic *mutable structs* and cycles through a plain
+`Array` (the array seed path is cycle-aware). `circular_vector` and the cyclic-struct entry in
+`tangent_test_cases()` exercise the two paths.
+"""
+function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+    @nospecialize rng p
+    P = typeof(p)
+    for N in widths
+        test_lifted_type(P, Val(N))
+
+        z = zero_lifted(Val(N), p)
+        u = uninit_lifted(Val(N), p)
+        r = randn_lifted(Val(N), rng, p)
+        @test z isa Lifted
+        @test u isa Lifted
+        @test r isa Lifted
+
+        # Primal aliasing: the slot wraps the user's storage, never a copy.
+        @test primal(z) === p
+        @test primal(r) === p
+
+        # Slot-type coherence. `lifted_type` kind-widens to a `UnionAll` for some primals
+        # (e.g. abstract-element containers), in which case the concrete sharpened slot is a
+        # subtype rather than an exact match. Type-valued primals are sharpened to `Type{X}`
+        # slots that do not match the broad metatype's `lifted_type` and are skipped.
+        L = lifted_type(Val(N), P)
+        if !(p isa Type)
+            isconcretetype(L) ? (@test typeof(z) === L) : (@test typeof(z) <: L)
+        end
+        @test typeof(r) === typeof(z)
+
+        # Inner-value invariant at this width — the load-bearing forward-only check.
+        @test _chunked_v_invariant(p, tangent(z))
+        @test _chunked_v_invariant(p, tangent(r))
+
+        # Per-lane accessors run for every lane.
+        for lane in 1:N
+            @test (tangent(z, lane); true)
+            @test (tangent(r, lane); true)
+        end
+    end
+
+    # Reverse↔forward bridge (width-1): a reverse tangent round-trips through lift/unlift.
+    ẋ = randn_tangent(rng, p)
+    s = lift(p, ẋ)
+    @test s isa Lifted
+    p2, ẋ2 = unlift(s)
+    @test has_equal_data(p2, p)
+    @test has_equal_data(ẋ2, ẋ)
     return nothing
 end
 
@@ -1837,6 +2284,43 @@ attention to writing rules for are
 In all cases, you may wish to consult the current implementations of `rrule!!` for these
 functions for inspiration regarding how you might implement them for your type.
 """
+# Whether the standardised field-access interaction tests (`getfield`/`lgetfield`/`_new_`/
+# `setfield!`/`lsetfield!`) in `test_rule_and_type_interactions` apply to `P`. Defaults to `true`.
+# A type whose custom tangent is not field-parallel to the primal — i.e. field `i` of the primal
+# does not correspond to field `i` of the tangent (e.g. `FunctionWrapper`, whose tangent abstracts
+# the wrapped object behind opaque closures) — does not support field-access AD and overrides this
+# to `false`; its non-field interactions are still exercised.
+supports_field_access_interactions(::Type) = true
+
+"""
+    test_rule_and_type_interactions(rng::AbstractRNG, p)
+
+Check that a collection of standard functions for which we _ought_ to have a working rrule
+for `p` work, and produce the correct answer. For example, the `rrule!!` for `typeof` should
+work correctly on any type, we should have a working rule for `getfield` for any
+struct-type, and we should have a rule for `setfield!` for any mutable struct type.
+See extended help for more info.
+
+# Extended Help
+
+The purpose of this test is to ensure that, for any given `p`, the full range of primitive
+functions that _ought_ to work on it, do indeed work on it.
+
+This is one part of the interface where some care _might_ be required. If, for some reason,
+it should _never_ be the case that e.g. for a particular `p`, `getfield` should be called,
+then it may make no sense at all to run these tests. In such cases, the author of the type
+is responsible for knowing what they are doing. Please open an issue to discuss for your
+type if you are at all unsure what to do.
+
+When defining a custom tangent type for `P`, the functions that you will need to pay
+attention to writing rules for are
+- [`Mooncake._new_`](@ref)
+- [`Mooncake.lgetfield`](@ref)
+- [`Mooncake.lsetfield!`](@ref)
+
+In all cases, you may wish to consult the current implementations of `rrule!!` for these
+functions for inspiration regarding how you might implement them for your type.
+"""
 function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
     @nospecialize rng p
 
@@ -1847,6 +2331,10 @@ function test_rule_and_type_interactions(rng::AbstractRNG, p::P) where {P}
         functions_for_structs()
     else
         functions_for_all_types()
+    end
+    if !supports_field_access_interactions(P)
+        field_access_fs = (getfield, lgetfield, Mooncake._new_, setfield!, lsetfield!)
+        fs = filter(!in(field_access_fs), fs)
     end
 
     # Run standardised tests for all functions.

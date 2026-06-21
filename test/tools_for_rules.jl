@@ -53,6 +53,10 @@ zero_tester_forward_only(x) = 0
 zero_tester_reverse_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_reverse_only),Float64} ReverseMode
 
+# A primitive with a type-valued (DataType) argument; see the regression test below.
+datatype_arg_zero_tester(::DataType) = 0
+@zero_derivative MinimalCtx Tuple{typeof(datatype_arg_zero_tester),DataType}
+
 # Test case with isbits data.
 
 bleh(x::Float64, y::Int) = x * y
@@ -248,6 +252,19 @@ end
             perf_flag=:stability_and_allocs,
         )
 
+        @testset "type-valued (DataType) argument" begin
+            # Regression: a DataType-valued argument's forward slot can be inferred as the
+            # existential `Lifted{Type{_A}} where _A`, which a naive `Lifted{<:DataType}`
+            # frule bound does not cover (`Lifted` is invariant) — inference then bakes an
+            # `unreachable` that crashes at runtime. `@zero_derivative` widens kind-typed
+            # bounds to `Type`. Was: `Base.padding` forward on Julia 1.12.
+            f_slot = Mooncake.Lifted{
+                typeof(ToolsForRulesResources.datatype_arg_zero_tester),1,Mooncake.NoDual
+            }
+            existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
+            @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
+        end
+
         @test_throws(
             r"@zero_derivative: `Vararg` may only appear as the last element of",
             Mooncake.@zero_derivative MinimalCtx Tuple{Vararg,typeof(zero_tester)}
@@ -355,7 +372,7 @@ end
                 mode=ReverseMode,
             )
             frule_sig = Tuple{
-                Dual{typeof(ToolsForRulesResources.rev_only_chainrules)},Dual{Float64}
+                Lifted{typeof(ToolsForRulesResources.rev_only_chainrules)},Lifted{Float64}
             }
             @test !hasmethod(Mooncake.frule!!, frule_sig)
         end
@@ -372,6 +389,16 @@ end
                 err = @test_throws LoadError eval(expr)
                 @test err.value.error isa ArgumentError
             end
+        end
+
+        @testset "@from_chainrules width>1 unsupported result errors loudly" begin
+            # The width-N result packing covers only scalars/dense-arrays/tuples/non-diff results;
+            # an unsupported result (e.g. a `NamedTuple`) succeeds at width 1 via the generic
+            # `lift` but must fail with a clear `ArgumentError` at width > 1, not a bare
+            # `MethodError`.
+            @test_throws ArgumentError Mooncake._lift_from_lanes(
+                (a=1.0, b=2.0), ((a=0.1, b=0.2), (a=0.3, b=0.4))
+            )
         end
 
         @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin

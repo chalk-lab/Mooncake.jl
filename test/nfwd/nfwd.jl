@@ -117,6 +117,17 @@ using Mooncake.Nfwd
         x = _d(3.0, 1.0)
         @test Nfwd.ndual_value(inv(x)) ≈ 1/3.0
         @test Nfwd.ndual_partial(inv(x), 1) ≈ -1/9.0
+
+        # At a removable singularity (x=0) the inv / `x^-1` / division paths scale by a blown-up
+        # reciprocal, so an *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
+        # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression R3-1:
+        # inv / literal `x^-1` / Real÷NDual / NDual÷NDual / NDual÷Real previously used the unguarded
+        # `_pt_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
+        z = _d2(0.0, 0.0, 1.0)
+        for d in (inv(z), z^(-1), 1.0 / z, _d2(3.0, 0.0, 1.0) / z, _d2(3.0, 0.0, 1.0) / 0.0)
+            @test Nfwd.ndual_partial(d, 1) === 0.0   # inactive lane: 0, not NaN
+            @test isinf(Nfwd.ndual_partial(d, 2))    # active lane: genuine singularity
+        end
     end
 
     @testset "power" begin
@@ -140,9 +151,27 @@ using Mooncake.Nfwd
         # real exponent (runtime Float64, uses ^(NDual, Real))
         @test Nfwd.ndual_value(x^2.0) ≈ 9.0
         @test Nfwd.ndual_partial(x^2.0, 1) ≈ 6.0
+
+        # NDual exponent with positive real base: d(b^a)/da = b^a log(b).
+        bp = 2.0^_d(3.0, 1.0)
+        @test Nfwd.ndual_value(bp) ≈ 8.0
+        @test Nfwd.ndual_partial(bp, 1) ≈ 8.0 * log(2.0)
+        # Negative real base: primal (-2.0)^3.0 is finite, but b^x is not real-differentiable
+        # in the exponent — must throw the clear local error, at any width.
+        @test_throws DomainError (-2.0)^_d(3.0, 1.0)
+        @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
+
+        # integer / literal negative exponent at x=0: dv = ±Inf, so an *inactive* (zero-partial)
+        # lane must stay 0 via the guarded scale, not become 0*Inf = NaN. The active lane keeps
+        # the genuine singular Inf. (Regression for the unguarded `_pt_scale` on these paths.)
+        zneg = _d2(0.0, 1.0, 0.0)
+        @test isinf(Nfwd.ndual_partial(zneg^(-2), 1))      # active lane: genuine singularity
+        @test Nfwd.ndual_partial(zneg^(-2), 2) === 0.0     # inactive lane: zero, not NaN
+        @test isinf(Nfwd.ndual_partial(Base.literal_pow(^, zneg, Val(-2)), 1))
+        @test Nfwd.ndual_partial(Base.literal_pow(^, zneg, Val(-2)), 2) === 0.0
 
         z1 = _d2(0.0, 1.0, 0.0)
         p1 = _d2(1.0, 0.0, 0.0)
@@ -183,6 +212,45 @@ using Mooncake.Nfwd
 
         as = mod2pi(_d(2π, 1.0))
         @test isnan(Nfwd.ndual_partial(as, 1))
+    end
+
+    @testset "rem" begin
+        # rem rounds toward zero: ∂y = -trunc(x/y), NOT -floor (they differ for negative x/y).
+        rp = rem(_d2(7.5, 1.0, 0.0), _d2(2.3, 0.0, 1.0))
+        @test Nfwd.ndual_value(rp) ≈ rem(7.5, 2.3)
+        @test Nfwd.ndual_partial(rp, 1) === 1.0
+        @test Nfwd.ndual_partial(rp, 2) ≈ -trunc(7.5 / 2.3)
+
+        # Negative ratio: -trunc(-7/3)=2, whereas the old `floor`-based coeff gave 3 (regression).
+        rn = rem(_d2(-7.0, 1.0, 0.0), _d2(3.0, 0.0, 1.0))
+        @test Nfwd.ndual_value(rn) ≈ rem(-7.0, 3.0)
+        @test Nfwd.ndual_partial(rn, 2) ≈ 2.0
+    end
+
+    @testset "complex NDualArray indexing" begin
+        # Complex-eltype NDualArray (element `Complex{NDual}`) must be indexable — previously its
+        # get/setindex! were `where {Element<:IEEEFloat}` only and threw `CanonicalIndexError`.
+        for N in (1, 2, 3)
+            p = ComplexF64[1.0 + 2.0im, 3.0 - 1.0im]
+            parts = ntuple(k -> ComplexF64[k + 0.0im, 0.0 + k * im], N)
+            a = Nfwd.NDualArray{ComplexF64,N,1,Vector{ComplexF64}}(p, parts)
+            e = a[1]
+            @test e isa Complex{NDual{Float64,N}}
+            @test e.re.value == 1.0 && e.im.value == 2.0
+            @test all(k -> e.re.partials[k] == k && e.im.partials[k] == 0.0, 1:N)
+            a[2] = e  # setindex! round-trip
+            @test a.primal[2] == 1.0 + 2.0im
+            @test all(k -> a.partials[k][2] == ComplexF64(k, 0.0), 1:N)
+        end
+
+        # The 5-param inner constructor rejects an incoherent `Wrapped` (eltype would
+        # desynchronise from what getindex returns); the coherent form still works.
+        @test_throws ArgumentError Nfwd.NDualArray{Float64,1,1,Vector{Float64},Float64}(
+            [1.0], ([0.0],)
+        )
+        @test Nfwd.NDualArray{Float64,1,1,Vector{Float64},NDual{Float64,1}}(
+            [1.0], ([0.0],)
+        ) isa Nfwd.NDualArray
     end
 
     @testset "math functions" begin

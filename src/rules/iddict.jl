@@ -121,7 +121,79 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
-function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
+
+# Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
+# value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
+# (one dict, K → tangent_type(V)) but with V replaced by `dual_type(Val(N), V)`.
+@foldable @inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+    return IdDict{K,dual_type(Val(N), V)}
+end
+@foldable @inline function lifted_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+    return Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N), V)}}
+end
+
+# Forward seed / lift / lane-accessor for the custom V `IdDict{K, dual_type(V)}`. Without these the
+# generic struct-lift fallback fires on `IdDict`'s `ht::Memory{Any}` field and builds an invalid
+# `MutableDual{Memory{Any}}`. Mirror the reverse `*_tangent_internal` per-value recursion (with the
+# same aliasing/cycle cache), the `lift` boundary, and the AbstractArray lane accessor.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $f(w::Val{N}, x::IdDict{K,V}, c::MaybeCache) where {N,K,V}
+        DV = dual_type(Val(N), V)
+        haskey(c, x) && return c[x]::IdDict{K,DV}
+        out = IdDict{K,DV}()
+        c[x] = out
+        for (k, v) in x
+            out[k] = $f(w, v, c)
+        end
+        return out
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::IdDict{K,V}, c::MaybeCache
+) where {N,K,V}
+    DV = dual_type(Val(N), V)
+    haskey(c, x) && return c[x]::IdDict{K,DV}
+    out = IdDict{K,DV}()
+    c[x] = out
+    for (k, v) in x
+        out[k] = _randn_dual_internal(w, rng, v, c)
+    end
+    return out
+end
+# Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
+@inline lift(x::IdDict{K,V}, ẋ::IdDict{K,Vt}) where {K,V,Vt} = lift(x, ẋ, IdDict())
+# Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
+# struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
+# recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict
+# terminates instead of overflowing the stack (the reverse oracle's IdDict factories all guard).
+function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::Lifted{IdDict{K,V},1}
+    DV = dual_type(Val(1), V)
+    out = IdDict{K,DV}()
+    lifted = Lifted{IdDict{K,V},1}(x, out)
+    d[x] = lifted
+    for (k, v) in x
+        out[k] = tangent(lift(v, ẋ[k], d))
+    end
+    return lifted
+end
+# Lane accessor: extract lane `l` from each value's V, producing the reverse `tangent_type` dict.
+@inline function tangent(
+    x::Lifted{IdDict{K,V},N,IdDict{K,DV}}, lane::Integer
+) where {K,V,N,DV}
+    p = primal(x)
+    v = tangent(x)
+    out = IdDict{K,tangent_type(V)}()
+    for (k, pe) in p
+        out[k] = tangent(Lifted{V,N}(pe, v[k]), lane)
+    end
+    return out
+end
+
+function frule!!(
+    ::Lifted{typeof(Base.rehash!),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, newsz::Lifted
+) where {N,K,V,Vdv}
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
     return d
@@ -133,7 +205,12 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
 end
 
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
-function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+function frule!!(
+    ::Lifted{typeof(setindex!),N},
+    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
+    val::Lifted,
+    key::Lifted,
+) where {N,K,V,Vdv}
     setindex!(primal(d), primal(val), primal(key))
     setindex!(tangent(d), tangent(val), primal(key))
     return d
@@ -172,11 +249,17 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 function frule!!(
-    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
-) where {K,V}
-    x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
-    return Dual(x, dx)
+    ::Lifted{typeof(get),N},
+    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
+    key::Lifted,
+    default::Lifted,
+) where {N,K,V,Vdv}
+    _key = primal(key)
+    # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
+    # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
+    # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
+    in(_key, keys(primal(d))) || return default
+    return Lifted{V,N}(primal(d)[_key], tangent(d)[_key])
 end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
@@ -201,8 +284,10 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
-function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
-    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+function frule!!(
+    ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, key::Lifted
+) where {N,K,V,Vdv}
+    return Lifted{V,N}(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
@@ -220,7 +305,9 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name},N}, args...
+    ) where {N}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
@@ -229,8 +316,8 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
-function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
-    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+function frule!!(::Lifted{Type{IdDict{K,V}},N}) where {N,K,V}
+    return Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,dual_type(Val(N), V)}())
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
@@ -243,6 +330,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
+        # Absent key with a default whose type differs from the dict value type V:
+        # the frule must return the `default` slot, not force `Lifted{V}` (regression).
+        (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0f0),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
         (false, :none, nothing, IdDict{Any,Any}),
     ]

@@ -19,6 +19,7 @@ import Mooncake:
     @from_rrule,
     DefaultCtx,
     MinimalCtx,
+    ReverseMode,
     @is_primitive,
     rrule!!,
     CoDual,
@@ -28,18 +29,23 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual
+    Lifted,
+    NDualArray
 
+# Direct `logsumexp(::AbstractVector{NDual})`: a scalar-then-differentiate implementation that
+# avoids the generic LogExpFunctions one-pass `reduce` over `Tuple{NDual,NDual}` accumulators. Used
+# when `logsumexp` is called on an array whose elements are already `NDual`s (e.g. inside nfwd /
+# forward-over-reverse paths), and exercised directly by the `logsumexp Inf/NaN stability` test.
+# (`logsumexp` is a ReverseMode-only primitive — see below — so forward AD differentiates its body
+# via the transform; this overload covers the `NDual`-element call that body makes.)
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
 ) where {N,T}
     return ntuple(k -> grad[k] + w * partials[k], Val(N))
 end
-
 @inline function _nf_logsumexp_scale(grad::NTuple{N,T}, inv_sw::T) where {N,T}
     return ntuple(k -> grad[k] * inv_sw, Val(N))
 end
-
 @inline function _nf_logsumexp_inf(x::AbstractVector{NDual{T,N}}, u::T) where {T,N}
     count_u = 0
     grad = ntuple(_ -> zero(T), Val(N))
@@ -51,7 +57,6 @@ end
     end
     return NDual{T,N}(u, _nf_logsumexp_scale(grad, inv(T(count_u))))
 end
-
 function NNlib.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEEFloat,N}
     isempty(x) && return NDual{T,N}(typemin(T))
     u = @inbounds x[begin].value
@@ -108,10 +113,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -148,8 +153,10 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(softmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -186,8 +193,10 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(logsumexp),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -293,6 +302,13 @@ end
 # Direct rules for bias_act!(identity, x, b) on CPU and GPU arrays.
 # bias_act! modifies x in-place (x .+= b), so we save x's primal before mutation,
 # compute in-place, return x as output, and restore x's primal in the pullback.
+#
+# Primitive in both modes over the full `SupportedArray` union. Reverse handles every shape
+# (the `rrule!!`'s `arrayify`). Forward only has a `frule!!` for plain `Array` (the canonical
+# `NDualArray` V exists only there); a wrapped/GPU `bias_act!` therefore fails forward with a
+# clear `MethodError` at the missing-frule boundary. Leaving it a forward primitive keeps that
+# loud failure rather than silently routing through the forward transform, which cannot yet
+# differentiate the mixed-wrapper broadcast in `bias_act!`'s body — use reverse mode for those.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -302,14 +318,18 @@ end
         SupportedArray{<:IEEEFloat,M} where {M},
     },
 )
+# Per-lane partial broadcast on the plain-`Array` `NDualArray` V (see the per-mode
+# `@is_primitive` above for why forward is `Array`-only).
 function frule!!(
-    ::Dual{typeof(bias_act!)},
-    ::Dual{typeof(identity)},
-    x::Dual{<:SupportedArray{<:IEEEFloat,N}},
-    b::Dual{<:SupportedArray{<:IEEEFloat,M}},
-) where {N,M}
+    ::Lifted{typeof(bias_act!),Nw},
+    ::Lifted{typeof(identity),Nw},
+    x::Lifted{Array{P,N},Nw,NDualArray{P,Nw,N,Array{P,N},NDual{P,Nw}}},
+    b::Lifted{Array{Q,M},Nw,NDualArray{Q,Nw,M,Array{Q,M},NDual{Q,Nw}}},
+) where {Nw,P<:IEEEFloat,Q<:IEEEFloat,N,M}
     primal(x) .+= primal(b)
-    tangent(x) .+= tangent(b)
+    for lane in 1:Nw
+        tangent(x).partials[lane] .+= tangent(b).partials[lane]
+    end
     return x
 end
 function rrule!!(

@@ -2,8 +2,27 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+# V for a differentiable `Ptr` is `NTuple{N, Ptr{E}}` (per-lane partial pointers,
+# E = parallel-arrays element type or the element-wise dual element); the pointer shift
+# `tangent_lane + primal(y)` is applied to each lane. Covers both the parallel-arrays
+# float case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the element-wise abstract-element case
+# (`Ptr{Real}`, V `NTuple{1,Ptr{Any}}`), matching the `rrule!!` breadth below.
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
+) where {Nw,P<:Ptr}
+    yp = primal(y)
+    new_primal = primal(x) + yp
+    new_partials = ntuple(lane -> tangent(x)[lane] + yp, Val(Nw))
+    return Lifted{P,Nw}(new_primal, new_partials)
+end
+# Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
+# reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
+# breadth (a `NoDual`-V pointer arises e.g. from the generic `bitcast` fallback).
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted{<:Integer}
+) where {Nw}
+    p = primal(x) + primal(y)
+    return Lifted{typeof(p),Nw}(p, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
     return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
@@ -20,10 +39,9 @@ end
 # Optional rule to avoid unnecessary allocations on Julia 1.10
 @zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
 
-# Logging: String-related primitive rules
+# Logging: String-related primitive rules.
 using Base: getindex, getproperty
 using Base.Threads: Atomic
-using Mooncake: zero_fcodual, MinimalCtx, @is_primitive, NoPullback, CoDual
 using Base.CoreLogging: LogLevel, handle_message, invokelatest
 import Base.CoreLogging as CoreLogging
 

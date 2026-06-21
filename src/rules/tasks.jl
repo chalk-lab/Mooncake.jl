@@ -50,16 +50,6 @@ rdata_type(::Type{TaskTangent}) = NoRData
 
 tangent(t::TaskTangent, ::NoRData) = t
 
-@inline function _get_tangent_field(t::TaskTangent, f)
-    f === :rngState0 && return NoTangent()
-    f === :rngState1 && return NoTangent()
-    f === :rngState2 && return NoTangent()
-    f === :rngState3 && return NoTangent()
-    f === :rngState4 && return NoTangent()
-    # All other Task fields (:storage, :code, :donenotify, :result, :logstate, :next,
-    # :queue, :sticky, etc.) are non-differentiable runtime infrastructure.
-    return NoTangent()
-end
 @inline function _get_fdata_field(_, t::TaskTangent, f)
     f === :rngState0 && return NoFData()
     f === :rngState1 && return NoFData()
@@ -82,11 +72,35 @@ function get_tangent_field(t::TaskTangent, f)
     return NoTangent()
 end
 
-const TaskDual = Dual{Task,TaskTangent}
 const TaskCoDual = CoDual{Task,TaskTangent}
 
-function frule!!(::Dual{typeof(lgetfield)}, x::TaskDual, ::Dual{Val{f}}) where {f}
-    return Dual(getfield(primal(x), f), _get_tangent_field(tangent(x), f))
+# Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.
+# Task support is scoped to RNG-state queries (see the top of this file), not to differentiating
+# arbitrary Task fields; the `TaskTangent` carries no lane data, so one shared `TaskTangent` per
+# slot suffices independent of width N.
+@foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
+@foldable @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
+
+# Forward seed factories: a `Task`'s V is the singleton `TaskTangent` (= its reverse tangent),
+# not a structural lift, so the generic `@generated` seed factory cannot build it (a `Task`
+# has 16 fields but no NamedTuple-backed dual). Seed it directly, mirroring reverse
+# `zero_tangent_internal` / `randn_tangent_internal`. `zero_lifted` / `randn_lifted` enter via
+# the `*_internal` family.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval @inline $f(::Val{N}, ::Task, ::MaybeCache) where {N} = TaskTangent()
+end
+@inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
+# Per-lane tangent accessor and the width-1 lift boundary for the singleton V.
+@inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
+@inline lift(x::Task, ẋ::TaskTangent) = Lifted{Task,1}(x, ẋ)
+
+function frule!!(
+    ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
+) where {N,f}
+    # Within the supported RNG-state-query scope (see the top of this file), Task field reads
+    # carry no forward derivative.
+    y = getfield(primal(x), f)
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) where {f}
     dx = x.dx
@@ -98,15 +112,27 @@ function rrule!!(::CoDual{typeof(lgetfield)}, x::TaskCoDual, ::CoDual{Val{f}}) w
     return y, mutable_lgetfield_pb!!
 end
 
-function frule!!(::Dual{typeof(getfield)}, x::TaskDual, f::Dual)
-    return Dual(getfield(primal(x), primal(f)), _get_tangent_field(tangent(x), primal(f)))
+function frule!!(
+    ::Lifted{typeof(getfield),N}, x::Lifted{Task,N,TaskTangent}, f::Lifted
+) where {N}
+    y = getfield(primal(x), primal(f))
+    return Lifted{typeof(y),N}(y, NoDual())
 end
 function rrule!!(::CoDual{typeof(getfield)}, x::TaskCoDual, f::CoDual)
     return rrule!!(zero_fcodual(lgetfield), x, zero_fcodual(Val(primal(f))))
 end
 
-function frule!!(::Dual{typeof(lsetfield!)}, task::TaskDual, name::Dual, val::Dual)
-    return lsetfield_frule(task, name, val)
+function frule!!(
+    ::Lifted{typeof(lsetfield!),N},
+    task::Lifted{Task,N,TaskTangent},
+    ::Lifted{Val{name},N},
+    val::Lifted,
+) where {N,name}
+    # Inline body — `set_tangent_field!(::TaskTangent, ::Symbol, ::NoTangent)` is
+    # a no-op (Task fields are non-differentiable), so we only mutate the
+    # user's Task primal and return the new-value slot unchanged.
+    setfield!(primal(task), name, primal(val))
+    return val
 end
 function rrule!!(::CoDual{typeof(lsetfield!)}, task::TaskCoDual, name::CoDual, val::CoDual)
     return lsetfield_rrule(task, name, val)

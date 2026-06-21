@@ -40,7 +40,7 @@ helper should extract the backing store (see `_accum_sym_logdet!`).
 convention.
 """
 function arrayify(
-    x::Union{Dual{A},CoDual{A}}
+    x::CoDual{A}
 ) where {T<:Union{IEEEFloat,BlasFloat},A<:Union{AbstractArray{T},Ptr{<:T}}}
     return arrayify(primal(x), tangent(x))
 end
@@ -108,9 +108,57 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
+# Forward-mode analogue of `arrayify(::CoDual)`. Returns the primal array and an N-tuple of
+# per-lane tangent arrays, each canonicalised to the primal's wrapper. This mirrors the reverse
+# `arrayify` wrapper methods, applied across the parallel per-lane partials: no copy — BLAS/LAPACK run on the
+# (possibly strided) views directly, and in-place writes flow back through the view into the
+# parent's partials.
+function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
+    A = primal(x)
+    return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
+end
+# `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method, applied per lane: it
+# recurses through the wrapper's V (`ImmutableDual` whose NamedTuple mirrors the wrapper's fields)
+# and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
+# `NDualArray`'s lane partial.
+@inline _arrayify_lane(::DenseArray, V::NDualArray, lane::Integer) = V.partials[lane]
+@inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
+@inline function _arrayify_lane(
+    x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
+) where {P,B,C,D,E}
+    pp = _arrayify_lane(x.parent, V.value.parent, lane)
+    return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
+end
+@inline function _arrayify_lane(
+    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer
+) where {P,B,C,D}
+    pp = _arrayify_lane(x.parent, V.value.parent, lane)
+    return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
+end
+@inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer) = adjoint(
+    _arrayify_lane(x.parent, V.value.parent, lane)
+)
+@inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer) = transpose(
+    _arrayify_lane(x.parent, V.value.parent, lane)
+)
+@inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer) = Diagonal(
+    _arrayify_lane(x.diag, V.value.diag, lane)
+)
+@inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer) = Symmetric(
+    _arrayify_lane(x.data, V.value.data, lane), Symbol(x.uplo)
+)
+# All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
+# `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
+# `arrayify(::AbstractTriangular)` and avoiding the drift that left the Unit variants uncovered.
+@inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
+    _arrayify_lane(x.data, V.value.data, lane)
+)
+@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer) where {T} = reinterpret(
+    T, _arrayify_lane(x.parent, V.value.parent, lane)
+)
+
 """
-    matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
-                          CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
+    matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})
 
 Normalize a vector or matrix primal–tangent pair into a BLAS-compatible matrix form.
 
@@ -118,20 +166,16 @@ If the primal value is a vector, it is reshaped into a column matrix of size `(l
 and the associated tangent is reshaped in the same way. If the primal value is already a
 matrix, both the primal and tangent are returned unchanged.
 """
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractVector{P}}
     x, dx = arrayify(x_dx)
     return reshape(x, :, 1), reshape(dx, :, 1)
 end
-function matrixify(
-    x_dx::Union{Dual{T},CoDual{T}}
-) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
+function matrixify(x_dx::CoDual{T}) where {P<:Union{Float16,BlasFloat},T<:AbstractMatrix{P}}
     return arrayify(x_dx)
 end
 
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
     xinds = 1:incx:(incx * n)
@@ -141,7 +185,7 @@ function viewify(
     )
 end
 function viewify(
-    n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
+    n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
     xinds = 1:incx:(incx * n)
@@ -171,49 +215,39 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    @eval @inline function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(blas_name(fname))}},
-        ::Dual, # return type
-        ::Dual, # argument types
-        ::Dual, # nreq
-        ::Dual, # calling convention
-        _n::Dual{BLAS.BlasInt},
-        _DX::Dual{Ptr{$elty}},
-        _incx::Dual{BLAS.BlasInt},
-        _DY::Dual{Ptr{$elty}},
-        _incy::Dual{BLAS.BlasInt},
-        # For complex numbers the result is stored in an extra pointer
-        $((isreal ? () : (:(_presult::Dual{Ptr{$elty}}),))...),
-        args::Vararg{Any,N},
-    ) where {N}
-        GC.@preserve args begin
-            # Load in values from pointers.
-            n, incx, incy = map(primal, (_n, _incx, _incy))
-            DX, _dDX = arrayify(_DX)
-            DY, _dDY = arrayify(_DY)
+    # Forward mode: only real `dot` (cblas returns the result by value) is handled at
+    # the foreigncall boundary. Complex `dotc`/`dotu` (which write into a scalar
+    # result `Ref`) are forward primitives at the `BLAS.dotc`/`dotu` level instead —
+    # see below. Reverse mode handles all three here.
+    if isreal
+        @eval @inline function frule!!(
+            ::Lifted{typeof(_foreigncall_),Nw},
+            ::Lifted{Val{$(blas_name(fname))}},
+            ::Lifted, # return type
+            ::Lifted, # argument types
+            ::Lifted, # nreq
+            ::Lifted, # calling convention
+            _n::Lifted{BLAS.BlasInt},
+            _DX::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incx::Lifted{BLAS.BlasInt},
+            _DY::Lifted{Ptr{$elty},Nw,NTuple{Nw,Ptr{$elty}}},
+            _incy::Lifted{BLAS.BlasInt},
+            args::Vararg{Any,M},
+        ) where {Nw,M}
+            GC.@preserve args begin
+                n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+                DX = primal(_DX)
+                DY = primal(_DY)
+                dDX_partials = tangent(_DX)
+                dDY_partials = tangent(_DY)
 
-            result = BLAS.$jlfname(n, DX, incx, DY, incy)
-            _dresult =
-                BLAS.$jlfname(n, _dDX, incx, DY, incy) +
-                BLAS.$jlfname(n, DX, incx, _dDY, incy)
-
-            # For complex numbers the result must be stored in the pointer
-            $(
-                if isreal
-                    quote
-                        Dual(result, _dresult)
-                    end
-                else
-                    quote
-                        presult, _dpresult = arrayify(_presult)
-                        Base.unsafe_store!(presult, result)
-                        Base.unsafe_store!(_dpresult, _dresult)
-
-                        Dual(nothing, NoTangent())
-                    end
+                result = BLAS.$jlfname(n, DX, incx, DY, incy)
+                dresult_lanes = ntuple(Val(Nw)) do lane
+                    return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
+                           BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
                 end
-            )
+                return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
+            end
         end
     end
     @eval @inline function rrule!!(
@@ -293,23 +327,56 @@ end
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.nrm2),Int,X,Int
+        typeof(BLAS.nrm2),Integer,X,Integer
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
+# BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
+# routine on the per-lane partial array (or Ptr) directly. Supports both
+# `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
+# V); real and complex element types both routed.
+#
+# `_blas_lane_partial` extracts a Lifted matrix/vector/Ptr slot's per-lane partial
+# in the right shape, via the wrapper-aware `_arrayify_lane`. This covers dense
+# `NDualArray`, the `NTuple{N, Ptr}` V, and the wrapper structural-lift V's
+# (SubArray/ReshapedArray/Adjoint/…), so the slot may be any `AbstractVecOrMat`.
+@inline _blas_lane_partial(x::Lifted, lane::Integer) = _arrayify_lane(
+    primal(x), tangent(x), lane
+)
+
+# nrm2 — output is real (real or complex T); per-lane dy is real.
 function frule!!(
-    ::Dual{typeof(BLAS.nrm2)},
-    n::Dual{<:Integer},
-    X_dX::Dual{<:Union{Ptr{T},AbstractArray{T}}},
-    incx::Dual{<:Integer},
-) where {T<:BlasFloat}
-    y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
-    X, dX = viewify(primal(n), X_dX, primal(incx))
-    dy = zero(y)
-    @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
+    ::Lifted{typeof(BLAS.nrm2),Nw},
+    n::Lifted,
+    X_dX::Lifted{<:Union{Ptr{T},AbstractArray{T}}},
+    incx::Lifted,
+) where {Nw,T<:BlasFloat}
+    _n = primal(n)
+    _inc = primal(incx)
+    Xp = primal(X_dX)
+    y = BLAS.nrm2(_n, Xp, _inc)
+    # `viewify`-equivalent on the primal side; per-lane partial view.
+    Xv = _viewify_one(_n, Xp, _inc)
+    R = typeof(y)  # nrm2 returns the real-valued norm.
+    dy_lanes = ntuple(Val(Nw)) do lane
+        dX_lane = _blas_lane_partial(X_dX, lane)
+        dXv = _viewify_one(_n, dX_lane, _inc)
+        s = zero(R)
+        @inbounds for i in eachindex(Xv)
+            s += real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
+        end
+        # Removable singularity at the zero vector: `s == 0` there, so `s / (2y)` is `0/0`.
+        iszero(s) ? zero(R) : s / (2 * y)
     end
-    return Dual(y, dy / 2y)
+    return Lifted{R,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
+# Shared single-side viewify: handles both Ptr and Array uniformly so the
+# Lifted bodies don't have to branch on input shape.
+@inline _viewify_one(n::Integer, x::AbstractArray, incx::Integer) = view(
+    x, 1:incx:(incx * n)
+)
+@inline _viewify_one(n::Integer, x::Ptr{T}, incx::Integer) where {T} = view(
+    unsafe_wrap(Vector{T}, x, n * incx), 1:incx:(incx * n)
+)
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
     n::CoDual{<:Integer},
@@ -325,6 +392,46 @@ function rrule!!(
     return CoDual(y, NoFData()), nrm2_pb!!
 end
 
+# dotc/dotu (complex) — forward mode only. Unlike real `dot` (which the cblas
+# routine returns by value), the complex routines write into a scalar `result =
+# Ref{T}()` passed to the ccall. The canonical NDualArray-style dual of that Ref stores a
+# `Complex{NDual{R,Nw}}`, which is not layout-compatible with the `Nw` contiguous
+# `T`-cells the foreigncall needs, so the `_foreigncall_` frule cannot land the
+# per-lane partials there. Instead we make `BLAS.dotc`/`dotu` themselves forward
+# primitives and assemble the result directly, bypassing the Ref roundtrip. The
+# JVP is linear: d(⟨x,y⟩) = ⟨dx,y⟩ + ⟨x,dy⟩ (with conjugation folded into the same
+# routine). Reverse mode is unaffected — it still descends to the `_foreigncall_`
+# rrule above.
+for (jlfname, elty) in
+    ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
+    @eval @is_primitive(
+        MinimalCtx,
+        ForwardMode,
+        Tuple{
+            typeof(BLAS.$jlfname),Integer,X,Integer,X,Integer
+        } where {X<:Union{Ptr{$elty},AbstractArray{$elty}}}
+    )
+    @eval @inline function frule!!(
+        ::Lifted{typeof(BLAS.$jlfname),Nw},
+        _n::Lifted{<:Integer},
+        _DX::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incx::Lifted{<:Integer},
+        _DY::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
+        _incy::Lifted{<:Integer},
+    ) where {Nw}
+        n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+        DX, DY = primal(_DX), primal(_DY)
+        result = BLAS.$jlfname(n, DX, incx, DY, incy)
+        dresult_lanes = ntuple(Val(Nw)) do lane
+            dX = _blas_lane_partial(_DX, lane)
+            dY = _blas_lane_partial(_DY, lane)
+            return BLAS.$jlfname(n, dX, incx, DY, incy) +
+                   BLAS.$jlfname(n, DX, incx, dY, incy)
+        end
+        return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
+    end
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -332,24 +439,23 @@ end
     } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
 )
 function frule!!(
-    ::Dual{typeof(BLAS.scal!)},
-    _n::Dual{<:Integer},
-    a_da::Dual{P},
-    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
-    _incx::Dual{<:Integer},
-) where {P<:BlasFloat}
-
-    # Extract params.
+    ::Lifted{typeof(BLAS.scal!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::Lifted,
+) where {Nw,P<:BlasFloat}
     n = primal(_n)
     incx = primal(_incx)
-    a, da = extract(a_da)
-    X, dX = arrayify(X_dX)
-
-    # Compute Frechet derivative.
-    BLAS.scal!(n, a, dX, incx)
-    BLAS.axpy!(n, da, X, incx, dX, incx)
-
-    # Perform primal computation.
+    a = primal(a_da)
+    X = primal(X_dX)
+    # Per-lane Frechet: dX_lane := a * dX_lane + da_lane * X.
+    for lane in 1:Nw
+        dX_lane = _blas_lane_partial(X_dX, lane)
+        da_lane = tangent(a_da, lane)
+        BLAS.scal!(n, a, dX_lane, incx)
+        BLAS.axpy!(n, da_lane, X, incx, dX_lane, incx)
+    end
     BLAS.scal!(n, a, X, incx)
     return X_dX
 end
@@ -400,26 +506,37 @@ end
     } where {P<:BlasFloat},
 )
 
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemv!)},
-    tA::Dual{Char},
-    alpha::Dual{P},
-    A_dA::Dual{<:AbstractVecOrMat{P}},
-    x_dx::Dual{<:AbstractVector{P}},
-    beta::Dual{P},
-    y_dy::Dual{<:AbstractVector{P}},
-) where {P<:BlasFloat}
-    A, dA = matrixify(A_dA)
-    x, dx = arrayify(x_dx)
-    y, dy = arrayify(y_dy)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-
-    _gemv!_frule_core!(primal(tA), α, dα, A, dA, x, dx, β, dβ, y, dy)
-
+function frule!!(
+    ::Lifted{typeof(BLAS.gemv!),Nw},
+    tA::Lifted{Char},
+    alpha::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractVecOrMat{P}},
+    x_dx::Lifted{<:AbstractVector{P}},
+    beta::Lifted{P,Nw},
+    y_dy::Lifted{<:AbstractVector{P}},
+) where {Nw,P<:BlasFloat}
+    _tA = primal(tA)
+    α = primal(alpha)
+    β = primal(beta)
+    # Primal arrays come straight from each Lifted slot's `primal`.
+    A = primal(A_dA) isa AbstractVector ? reshape(primal(A_dA), :, 1) : primal(A_dA)
+    x = primal(x_dx)
+    y = primal(y_dy)
+    for lane in 1:Nw
+        dα = tangent(alpha, lane)
+        dβ = tangent(beta, lane)
+        dA_l = _blas_lane_partial(A_dA, lane)
+        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
+        dx = _blas_lane_partial(x_dx, lane)
+        dy = _blas_lane_partial(y_dy, lane)
+        _gemv!_frule_core!(_tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
+    end
+    # Single primal update AFTER the lane loop (mirrors symv!/gemm/etc.). Running it once per
+    # lane would, for Nw>1, both nest the primal and let later lanes' `dβ * y[n]` term read an
+    # already-overwritten `y`. Post-loop placement guarantees every lane saw the original `y`.
+    BLAS.gemv!(_tA, α, A, x, β, y)
     return y_dy
 end
-
 @inline function _gemv!_frule_core!(
     tA::Char,
     α::P,
@@ -438,16 +555,14 @@ end
     BLAS.gemv!(tA, α, dA, x, one(P), dy)
     BLAS.gemv!(tA, α, A, dx, one(P), dy)
 
-    # Strong zero is essential here, in case `y` has undefined element values.
+    # Strong zero is essential here, in case `y` has undefined element values. Reads the ORIGINAL
+    # `y`; the primal update is hoisted to run once after the lane loop (see the frule above).
     if !iszero(dβ)
         @inbounds for n in eachindex(y)
             tmp = dβ * y[n]
             dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
         end
     end
-
-    # Primal computation.
-    BLAS.gemv!(tA, α, A, x, β, y)
     return nothing
 end
 
@@ -543,36 +658,39 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     )
 
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        x_dx::Dual{<:AbstractVector{T}},
-        beta::Dual{T},
-        y_dy::Dual{<:AbstractVector{T}},
-    ) where {T<:$elty}
-        # Extract primals.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        x_dx::Lifted{<:AbstractVector{T}},
+        beta::Lifted{T,Nw},
+        y_dy::Lifted{<:AbstractVector{T}},
+    ) where {Nw,T<:$elty}
         ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        x, dx = arrayify(x_dx)
-        y, dy = arrayify(y_dy)
-
-        # Compute Frechet derivative.
-        BLAS.$fname(ul, dα, A, x, β, dy)
-        BLAS.$fname(ul, α, dA, x, one(T), dy)
-        BLAS.$fname(ul, α, A, dx, one(T), dy)
-        if !iszero(dβ)
-            @inbounds for n in eachindex(y)
-                tmp = dβ * y[n]
-                dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        x = primal(x_dx)
+        y = primal(y_dy)
+        for lane in 1:Nw
+            dα = tangent(alpha, lane)
+            dβ = tangent(beta, lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dx = _blas_lane_partial(x_dx, lane)
+            dy = _blas_lane_partial(y_dy, lane)
+            BLAS.$fname(ul, dα, A, x, β, dy)
+            BLAS.$fname(ul, α, dA, x, one(T), dy)
+            BLAS.$fname(ul, α, A, dx, one(T), dy)
+            if !iszero(dβ)
+                @inbounds for n in eachindex(y)
+                    tmp = dβ * y[n]
+                    dy[n] = ifelse(isnan(y[n]), dy[n], tmp + dy[n])
+                end
             end
         end
-
-        # Run primal computation.
+        # Primal hoisted after the lane loop so every lane's `dβ * y[n]` reads the original `y`
+        # (running it per-lane would nest the primal and corrupt later lanes for Nw>1; see gemv!).
         BLAS.$fname(ul, α, A, x, β, y)
-
         return y_dy
     end
 
@@ -659,35 +777,31 @@ end
 )
 
 function frule!!(
-    ::Dual{typeof(BLAS.trmv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
-    # Extract primals.
+    ::Lifted{typeof(BLAS.trmv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Frechet derivative computation.
-    BLAS.trmv!(uplo, trans, diag, A, dx)
-    tmp = copy(x)
-    BLAS.trmv!(uplo, trans, diag, dA, tmp)
-    dx .+= tmp
-    if diag === 'U'
-        dx .-= x
+    A = primal(A_dA)
+    x = primal(x_dx)
+    for lane in 1:Nw
+        dA = _blas_lane_partial(A_dA, lane)
+        dx = _blas_lane_partial(x_dx, lane)
+        # Frechet: dx := A*dx + dA*x  (+ unit-diag adjustment).
+        BLAS.trmv!(uplo, trans, diag, A, dx)
+        tmp = copy(x)
+        BLAS.trmv!(uplo, trans, diag, dA, tmp)
+        dx .+= tmp
+        diag === 'U' && (dx .-= x)
     end
-
-    # Primal computation.
     BLAS.trmv!(uplo, trans, diag, A, x)
-
     return x_dx
 end
-
 function rrule!!(
     ::CoDual{typeof(BLAS.trmv!)},
     _uplo::CoDual{Char},
@@ -769,30 +883,29 @@ end
     } where {T<:BlasFloat},
 )
 function frule!!(
-    ::Dual{typeof(BLAS.trsv!)},
-    _uplo::Dual{Char},
-    _trans::Dual{Char},
-    _diag::Dual{Char},
-    A_dA::Dual{<:AbstractMatrix{T}},
-    x_dx::Dual{<:AbstractVector{T}},
-) where {T<:BlasFloat}
+    ::Lifted{typeof(BLAS.trsv!),Nw},
+    _uplo::Lifted{Char},
+    _trans::Lifted{Char},
+    _diag::Lifted{Char},
+    A_dA::Lifted{<:AbstractMatrix{T}},
+    x_dx::Lifted{<:AbstractVector{T}},
+) where {Nw,T<:BlasFloat}
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
-    A, dA = arrayify(A_dA)
-    x, dx = arrayify(x_dx)
-
-    # Primal
+    A = primal(A_dA)
+    x = primal(x_dx)
+    # Primal first — subsequent lane work needs the new `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
-
-    BLAS.trsv!(uplo, trans, diag, A, dx)
-    tmp = BLAS.trmv(uplo, trans, diag, dA, x)
-    if diag == 'U'
-        tmp .-= x
+    for lane in 1:Nw
+        dA = _blas_lane_partial(A_dA, lane)
+        dx = _blas_lane_partial(x_dx, lane)
+        BLAS.trsv!(uplo, trans, diag, A, dx)
+        tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+        diag === 'U' && (tmp .-= x)
+        BLAS.trsv!(uplo, trans, diag, A, tmp)
+        dx .-= tmp
     end
-    BLAS.trsv!(uplo, trans, diag, A, tmp)
-    dx .-= tmp
-
     return x_dx
 end
 function rrule!!(
@@ -873,45 +986,48 @@ function ifelse_nan(cond, left::P, right::P) where {P<:BlasFloat}
     return isnan(cond) * left + !isnan(cond) * right
 end
 
-@inline function frule!!(
-    ::Dual{typeof(BLAS.gemm!)},
-    transA::Dual{Char},
-    transB::Dual{Char},
-    alpha::Dual{T},
-    A_dA::Dual{<:AbstractVecOrMat{T}},
-    B_dB::Dual{<:AbstractVecOrMat{T}},
-    beta::Dual{T},
-    C_dC::Dual{<:AbstractMatrix{T}},
-) where {T<:BlasFloat}
+function frule!!(
+    ::Lifted{typeof(BLAS.gemm!),Nw},
+    transA::Lifted{Char},
+    transB::Lifted{Char},
+    alpha::Lifted{T,Nw},
+    A_dA::Lifted{<:AbstractVecOrMat{T}},
+    B_dB::Lifted{<:AbstractVecOrMat{T}},
+    beta::Lifted{T,Nw},
+    C_dC::Lifted{<:AbstractMatrix{T}},
+) where {Nw,T<:BlasFloat}
     tA = primal(transA)
     tB = primal(transB)
-    α, dα = extract(alpha)
-    β, dβ = extract(beta)
-    A, dA = matrixify(A_dA)
-    B, dB = matrixify(B_dB)
-    C, dC = arrayify(C_dC)
-
-    # Tangents (product rule)
-    # d(α*op(A)*op(B) + β*C) = dα*op(A)*op(B) + α*op(dA)*op(B) + α*op(A)*op(dB) + dβ*C + β*dC
-    BLAS.gemm!(tA, tB, α, dA, B, β, dC)      # α*op(dA)*op(B) + β*dC
-    BLAS.gemm!(tA, tB, α, A, dB, one(T), dC) # α*op(A)*op(dB) + 1*dC
-
-    if !iszero(dα)
-        BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)  # dα*op(A)*op(B) + 1*dC
-    end
-
-    if !iszero(dβ)
-        @inbounds for n in eachindex(C)
-            dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+    α = primal(alpha)
+    β = primal(beta)
+    Ap = primal(A_dA)
+    Bp = primal(B_dB)
+    Cp = primal(C_dC)
+    A = Ap isa AbstractVector ? reshape(Ap, :, 1) : Ap
+    B = Bp isa AbstractVector ? reshape(Bp, :, 1) : Bp
+    for lane in 1:Nw
+        dα = tangent(alpha, lane)
+        dβ = tangent(beta, lane)
+        dA_l = _blas_lane_partial(A_dA, lane)
+        dB_l = _blas_lane_partial(B_dB, lane)
+        dC = _blas_lane_partial(C_dC, lane)
+        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
+        dB = dB_l isa AbstractVector ? reshape(dB_l, :, 1) : dB_l
+        # Tangents (product rule).
+        BLAS.gemm!(tA, tB, α, dA, B, β, dC)
+        BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
+        if !iszero(dα)
+            BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
+        end
+        if !iszero(dβ)
+            @inbounds for n in eachindex(Cp)
+                dC[n] = ifelse_nan(Cp[n], dC[n], dC[n] + dβ * Cp[n])
+            end
         end
     end
-
-    # Primal
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
-
+    BLAS.gemm!(tA, tB, α, A, B, β, Cp)
     return C_dC
 end
-
 @inline function rrule!!(
     ::CoDual{typeof(BLAS.gemm!)},
     transA::CoDual{Char},
@@ -1018,38 +1134,39 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         } where {T<:$elty},
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        side::Dual{Char},
-        uplo::Dual{Char},
-        alpha::Dual{T},
-        A_dA::Dual{<:AbstractMatrix{T}},
-        B_dB::Dual{<:AbstractMatrix{T}},
-        beta::Dual{T},
-        C_dC::Dual{<:AbstractMatrix{T}},
-    ) where {T<:$elty}
-
-        # Extract primals.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        side::Lifted{Char},
+        uplo::Lifted{Char},
+        alpha::Lifted{T,Nw},
+        A_dA::Lifted{<:AbstractMatrix{T}},
+        B_dB::Lifted{<:AbstractMatrix{T}},
+        beta::Lifted{T,Nw},
+        C_dC::Lifted{<:AbstractMatrix{T}},
+    ) where {Nw,T<:$elty}
         s = primal(side)
         ul = primal(uplo)
-        α, dα = extract(alpha)
-        β, dβ = extract(beta)
-        A, dA = arrayify(A_dA)
-        B, dB = arrayify(B_dB)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative.
-        BLAS.$fname(s, ul, α, A, dB, β, dC)
-        BLAS.$fname(s, ul, α, dA, B, one(T), dC)
-        if !iszero(dα)
-            BLAS.$fname(s, ul, dα, A, B, one(T), dC)
-        end
-        if !iszero(dβ)
-            @inbounds for n in eachindex(C)
-                dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+        α = primal(alpha)
+        β = primal(beta)
+        A = primal(A_dA)
+        B = primal(B_dB)
+        C = primal(C_dC)
+        for lane in 1:Nw
+            dα = tangent(alpha, lane)
+            dβ = tangent(beta, lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dB = _blas_lane_partial(B_dB, lane)
+            dC = _blas_lane_partial(C_dC, lane)
+            BLAS.$fname(s, ul, α, A, dB, β, dC)
+            BLAS.$fname(s, ul, α, dA, B, one(T), dC)
+            if !iszero(dα)
+                BLAS.$fname(s, ul, dα, A, B, one(T), dC)
+            end
+            if !iszero(dβ)
+                @inbounds for n in eachindex(C)
+                    dC[n] = ifelse_nan(C[n], dC[n], dC[n] + dβ * C[n])
+                end
             end
         end
-
-        # Run primal computation.
         BLAS.$fname(s, ul, α, A, B, β, C)
         return C_dC
     end
@@ -1147,36 +1264,33 @@ for (fname, elty, relty) in (
         }
     )
     @eval function frule!!(
-        ::Dual{typeof(BLAS.$fname)},
-        _uplo::Dual{Char},
-        _t::Dual{Char},
-        α_dα::Dual{$relty},
-        A_dA::Dual{<:AbstractVecOrMat{$elty}},
-        β_dβ::Dual{$relty},
-        C_dC::Dual{<:AbstractMatrix{$elty}},
-    )
-
-        # Extract values from pairs.
+        ::Lifted{typeof(BLAS.$fname),Nw},
+        _uplo::Lifted{Char},
+        _t::Lifted{Char},
+        α_dα::Lifted{$relty,Nw},
+        A_dA::Lifted{<:AbstractVecOrMat{$elty}},
+        β_dβ::Lifted{$relty,Nw},
+        C_dC::Lifted{<:AbstractMatrix{$elty}},
+    ) where {Nw}
         uplo = primal(_uplo)
         t = primal(_t)
-        α, dα = extract(α_dα)
-        A, dA = matrixify(A_dA)
-        β, dβ = extract(β_dβ)
-        C, dC = arrayify(C_dC)
-
-        # Compute Frechet derivative.
-        BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
-        iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
-        if !iszero(dβ)
-            dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+        α = primal(α_dα)
+        A = primal(A_dA)
+        β = primal(β_dβ)
+        C = primal(C_dC)
+        for lane in 1:Nw
+            dα = tangent(α_dα, lane)
+            dβ = tangent(β_dβ, lane)
+            dA = _blas_lane_partial(A_dA, lane)
+            dC = _blas_lane_partial(C_dC, lane)
+            BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
+            iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+            if !iszero(dβ)
+                dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+            end
+            $(isherm ? :(real_diag!(dC)) : :())
         end
-        # BLAS will zero out the imaginary parts on the diagonal of C,
-        # do the same on the tangent
-        $(isherm ? :(real_diag!(dC)) : :())
-
-        # Run primal computation.
         BLAS.$fname(uplo, t, α, A, β, C)
-
         return C_dC
     end
     @eval function rrule!!(
@@ -1246,36 +1360,33 @@ end
     } where {P<:BlasFloat}
 )
 function frule!!(
-    ::Dual{typeof(BLAS.trmm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _ta::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
-
-    # Extract data.
+    ::Lifted{typeof(BLAS.trmm!),Nw},
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _ta::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
+) where {Nw,P<:BlasFloat}
     side = primal(_side)
     uplo = primal(_uplo)
     ta = primal(_ta)
     diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-    dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
-    if diag == 'U'
-        dB .-= α .* B
+    α = primal(α_dα)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    for lane in 1:Nw
+        dα = tangent(α_dα, lane)
+        dA = _blas_lane_partial(A_dA, lane)
+        dB = _blas_lane_partial(B_dB, lane)
+        BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
+        dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
+        diag === 'U' && (dB .-= α .* B)
+        if !iszero(dα)
+            dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+        end
     end
-    if !iszero(dα)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
-    end
-
-    # Compute primal.
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
     return B_dB
 end
@@ -1352,40 +1463,40 @@ end
 )
 
 function frule!!(
-    ::Dual{typeof(BLAS.trsm!)},
-    _side::Dual{Char},
-    _uplo::Dual{Char},
-    _t::Dual{Char},
-    _diag::Dual{Char},
-    α_dα::Dual{P},
-    A_dA::Dual{<:AbstractMatrix{P}},
-    B_dB::Dual{<:AbstractMatrix{P}},
-) where {P<:BlasFloat}
-
-    # Extract parameters.
+    ::Lifted{typeof(BLAS.trsm!),Nw},
+    _side::Lifted{Char},
+    _uplo::Lifted{Char},
+    _t::Lifted{Char},
+    _diag::Lifted{Char},
+    α_dα::Lifted{P,Nw},
+    A_dA::Lifted{<:AbstractMatrix{P}},
+    B_dB::Lifted{<:AbstractMatrix{P}},
+) where {Nw,P<:BlasFloat}
     side = primal(_side)
     uplo = primal(_uplo)
     trans = primal(_t)
     diag = primal(_diag)
-    α, dα = extract(α_dα)
-    A, dA = arrayify(A_dA)
-    B, dB = arrayify(B_dB)
-
-    # Compute Frechet derivative.
-    BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
-    tmp = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
-    dB .+= dα .* tmp
-
-    tmp2 = copy(tmp)
-    BLAS.trmm!(side, uplo, trans, diag, α, dA, tmp) # tmp now contains α dA inv(A) B.
-    if diag == 'U'
-        tmp .-= α .* tmp2
+    α = primal(α_dα)
+    A, dA_lanes = arrayify(A_dA)
+    B, dB_lanes = arrayify(B_dB)
+    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
+    # it and copy per lane.
+    X = copy(B)
+    trsm!(side, uplo, trans, diag, one(P), A, X)
+    @inbounds for lane in 1:Nw
+        dα_lane = tangent(α_dα, lane)
+        dA_lane = dA_lanes[lane]
+        dB_lane = dB_lanes[lane]
+        BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
+        dB_lane .+= dα_lane .* X
+        tmp = copy(X)
+        BLAS.trmm!(side, uplo, trans, diag, α, dA_lane, tmp)
+        if diag == 'U'
+            tmp .-= α .* X
+        end
+        BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
+        dB_lane .-= tmp
     end
-    BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp is now α inv(A) dA inv(A) B.
-    dB .-= tmp
-
-    # Run primal computation.
     BLAS.trsm!(side, uplo, trans, diag, α, A, B)
     return B_dB
 end
@@ -1801,6 +1912,33 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     # 1.10 fails to infer part of a matmat product in the pullback
                     perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (false, perf_flag, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
+                end
+            end
+        end...,
+    )
+
+    # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
+    # α·B·A + β·C for side='R' (A is N×N); A is symmetric (symm!) / Hermitian (hemm!), read through
+    # the `uplo` triangle. These BLAS level-3 ops had no test_rule coverage (Task G).
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123462)
+            fs = P <: BlasComplexFloat ? (BLAS.symm!, BLAS.hemm!) : (BLAS.symm!,)
+            map_prod(
+                fs, ['L', 'R'], uplos, [1, 3], [1, 2], dαs
+            ) do (f, side, ul, M, N, dα)
+                P <: BlasRealFloat && imag(dα) != 0 && return []
+                R = side == 'L' ? M : N
+                As = blas_matrices(rng, P, R, R)
+                Bs = blas_matrices(rng, P, M, N)
+                Cs = blas_matrices(rng, P, M, N)
+                return map(As, Bs, Cs) do A, B, C
+                    α_dα = CoDual(randn(rng, P), P(dα))
+                    β_dβ = CoDual(randn(rng, P), randn(rng, P))
+                    # 1.10 fails to infer part of a matmat product in the pullback
+                    perf_flag = VERSION < v"1.11-" ? :none : :stability
+                    (false, perf_flag, nothing, f, side, ul, α_dα, A, B, β_dβ, C)
                 end
             end
         end...,

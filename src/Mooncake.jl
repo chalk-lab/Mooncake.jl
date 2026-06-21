@@ -52,30 +52,11 @@ DispatchDoctor.register_macro!(
 function _foreigncall_ end
 
 """
-    frule!!(f::Dual, x::Dual...)
+    frule!!(f::Lifted, x::Lifted...)
 
-Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+Performs AD in forward mode, possibly modifying the inputs, and returns a `Lifted`.
 """
 function frule!! end
-
-"""
-    _fcache_derivative_chunked!!(
-        cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
-    )
-
-Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
-forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
-  user provides chunk tangents.
-- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `_fcache_derivative_chunked!!` and accumulates the lane
-  contributions into gradient buffers.
-
-The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
-"""
-function _fcache_derivative_chunked!! end
 
 """
     build_primitive_frule(sig::Type{<:Tuple})
@@ -172,11 +153,20 @@ build_primitive_rrule(::Type{<:Tuple}) = rrule!!
 @stable default_mode = "disable" default_union_limit = 2 begin
 include("utils.jl")
 include(joinpath("tangents", "tangents.jl"))
-include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
-include("debug_mode.jl")
 include("stack.jl")
+
+# Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
+# seed factories) before the interpreter — `interpreter/forward_mode.jl`
+# dispatches on `Lifted{P, N, V}` (any chunk width N).
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: NDual, NDualArray, NDualRef, NDualEltype, _scalar_ndual, _nfwd_dual_partial
+@static if VERSION >= v"1.11-rc4"
+    using .Nfwd: NDualMemoryRef
+end
+include(joinpath("tangents", "lifted.jl"))
+include("debug_mode.jl")
 
 @unstable begin
 include(joinpath("interpreter", "bbcode.jl"))
@@ -193,12 +183,24 @@ include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
 include("tools_for_rules.jl")
+
+"""
+    throwing_rule_test_cases(v::Val{group})
+
+Registry of rule guard cases for a test group: rule invocations that must fail loudly on
+unsupported input. Returns `(cases, memory)`, where each case is a tuple
+`(E, f, args::Tuple)`: `E` is the expected exception type, `f` the primal callable, and
+`args` the fully built argument slots — `Lifted` slots test `frule!!`, `CoDual`s test
+`rrule!!`. Slots are built by hand because guards typically reject exactly the
+non-canonical shapes the seeding utilities cannot produce. Keep pointer-backing objects
+alive in `memory`. `TestUtils.run_rule_test_cases` runs these via `@test_throws`
+alongside the group's other registries.
+"""
+throwing_rule_test_cases(::Val) = Any[], Any[]
+
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
-include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual
-include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
@@ -240,7 +242,7 @@ end
 #! format: on
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
-@public Dual
+@public Lifted
 
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse

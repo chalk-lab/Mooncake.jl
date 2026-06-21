@@ -80,6 +80,7 @@ foo_throws(e) = throw(e)
             AssertionError,
             Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(AssertionError("hello")))
         )
+        # The forward `throw` rule re-raise is registered in `throwing_rule_test_cases(:builtins)`.
 
         # Derived rule throws the correct exception.
         rule_arg = Mooncake.build_rrule(Tuple{typeof(foo_throws),ArgumentError})
@@ -148,6 +149,26 @@ end
     val_a, grad_a = value_and_gradient!!(cache_a, f_atomic_pointerset, 3.0)
     @test val_a ≈ 6.0
     @test grad_a[2] ≈ 2.0
+end
+
+@testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
+    # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
+    # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
+    # threw a MethodError. The NoDual fallback must wrap it and return a NoDual-V Lifted.
+    # Use a `Vector{UInt8}` (not `Memory`, which is Julia 1.11+) so this runs on the LTS too; `buf`
+    # is kept alive for the duration of the testset, so `p` stays valid.
+    buf = UInt8[1, 2, 3, 4]
+    p = pointer(buf)
+    for N in (1, 2)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), unsafe_wrap),
+            Mooncake.zero_lifted(Val(N), Array),
+            Mooncake.zero_lifted(Val(N), p),
+            Mooncake.zero_lifted(Val(N), (4,)),
+        )
+        @test Mooncake.tangent(out) isa Mooncake.NoDual
+        @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
+    end
 end
 
 @testset "NaN handling in builtins rrules" begin

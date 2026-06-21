@@ -95,12 +95,12 @@ end
         Tuple{typeof(low_level_gradient),typeof(rule),typeof(quadratic),Float64},
     )
     result = frule(
-        zero_dual(low_level_gradient),
-        zero_dual(rule),
-        zero_dual(quadratic),
-        Mooncake.Dual(5.0, 1.0),
+        Mooncake.lift(low_level_gradient, Mooncake.NoTangent()),
+        Mooncake.lift(rule, Mooncake.NoTangent()),
+        Mooncake.lift(quadratic, Mooncake.NoTangent()),
+        Mooncake.lift(5.0, 1.0),
     )
-    @test tangent(result) == 6 * 5.0
+    @test last(Mooncake.unlift(result)) ≈ 30.0
 
     # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).
     # See: https://github.com/chalk-lab/Mooncake.jl/issues/916

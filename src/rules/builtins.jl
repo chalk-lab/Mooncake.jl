@@ -90,7 +90,9 @@ import ..Mooncake:
     rrule!!,
     frule!!,
     CoDual,
-    Dual,
+    Lifted,
+    NDual,
+    NoDual,
     primal,
     tangent,
     zero_tangent,
@@ -113,7 +115,10 @@ import ..Mooncake:
     NoTangent,
     Mode,
     extract,
-    nan_tangent_guard
+    nan_tangent_guard,
+    NDualArray,
+    NDualEltype,
+    _scalar_ndual
 
 using Core.Intrinsics: atomic_pointerref
 
@@ -158,18 +163,20 @@ macro inactive_intrinsic(name)
         function rrule!!(f::CoDual{typeof($name)}, args::Vararg{Any,N}) where {N}
             return Mooncake.zero_adjoint(f, args...)
         end
-        function frule!!(f::Dual{typeof($name)}, args::Vararg{Dual,N}) where {N}
-            f_primal = primal(f)
-            args_primal = map(primal, args)
-            return zero_dual(f_primal(args_primal...))
+        function frule!!(
+            f::Mooncake.Lifted{typeof($name)}, args::Vararg{Mooncake.Lifted,M}
+        ) where {M}
+            return Mooncake.zero_derivative(f, args...)
         end
     end
     return esc(expr)
 end
 
 @intrinsic abs_float
-function frule!!(::Dual{typeof(abs_float)}, x)
-    return Dual(abs_float(primal(x)), sign(primal(x)) * tangent(x))
+function frule!!(
+    ::Lifted{typeof(abs_float),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(abs_float(primal(x)), sign(primal(x)) * tangent(x))
 end
 function rrule!!(::CoDual{typeof(abs_float)}, x)
     abs_float_pullback!!(dy) = NoRData(), sign(primal(x)) * dy
@@ -178,8 +185,10 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
-function frule!!(::Dual{typeof(add_float)}, a, b)
-    return Dual(add_float(primal(a), primal(b)), add_float(tangent(a), tangent(b)))
+function frule!!(
+    ::Lifted{typeof(add_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(add_float(primal(a), primal(b)), tangent(a) + tangent(b))
 end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
@@ -188,10 +197,10 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
-function frule!!(::Dual{typeof(add_float_fast)}, a, b)
-    c = add_float_fast(primal(a), primal(b))
-    dc = add_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(add_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(add_float_fast(primal(a), primal(b)), tangent(a) + tangent(b))
 end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
@@ -214,12 +223,60 @@ end
 # computation in the pullback. Downstream rules write directly into 
 # the tangent memory pointed to by tangent_arr.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_wrap),<:Type{<:Array},Ptr,Any}
+# V for `Ptr{T}` is `NTuple{Nw, Ptr{T}}`; wrap each lane's per-lane Ptr
+# into the corresponding lane of the canonical NDualArray V.
 function frule!!(
-    ::Dual{typeof(unsafe_wrap)}, ::Dual{<:Type{<:Array}}, p::Dual{<:Ptr{T}}, dims::Dual
-) where {T}
-    primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
-    tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
-    return Dual(primal_arr, tangent_arr)
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    dims::Lifted,
+) where {Nw,T<:NDualEltype}
+    _dims = primal(dims)
+    primal_arr = unsafe_wrap(Array, primal(p), _dims)
+    p_partials = tangent(p)
+    partials = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
+    D = ndims(primal_arr)
+    return Lifted{Array{T,D},Nw}(
+        primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, partials)
+    )
+end
+# Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are
+# themselves differentiable pointers, so the canonical V is the element-wise
+# `Array{NTuple{Nw,Ptr{R}}, D}` (each element holds that pointer's Nw per-lane shadow Ptrs),
+# not the `NDualArray` parallel-arrays form above (which only applies to `NDualEltype` elements). Wrap each
+# lane's shadow pointer into its own array, then interleave element-wise into the V.
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    p::Lifted{Ptr{Ptr{R}},Nw,NTuple{Nw,Ptr{Ptr{R}}}},
+    dims::Lifted,
+) where {Nw,R<:NDualEltype}
+    _dims = primal(dims)
+    primal_arr = unsafe_wrap(Array, primal(p), _dims)
+    p_partials = tangent(p)
+    lane_arrays = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
+    D = ndims(primal_arr)
+    v = similar(primal_arr, NTuple{Nw,Ptr{R}})
+    @inbounds for i in eachindex(primal_arr, v)
+        v[i] = ntuple(lane -> lane_arrays[lane][i], Val(Nw))
+    end
+    return Lifted{Array{Ptr{R},D},Nw}(primal_arr, v)
+end
+
+# Non-differentiable pointer element: `dual_type(Ptr{T}) === NoDual` when `T` is non-differentiable
+# (e.g. `Ptr{UInt8}` from String/IO wrapping, `Ptr{Int}`), so the lifted pointer's V is `NoDual` and
+# the wrapped array's element type is non-differentiable too — its canonical V is `NoDual`. The broad
+# `@is_primitive` covers every `Ptr` and the reverse rule handles all `T`, so without this the forward
+# rule's method coverage is narrower than its `@is_primitive` (a MethodError at call time). Mirrors the
+# `NoDual` fallbacks on the sibling pointer rules (pointerref/pointerset/unsafe_copyto!).
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    dims::Lifted,
+) where {Nw}
+    arr = unsafe_wrap(Array, primal(p), primal(dims))
+    return Lifted{typeof(arr),Nw}(arr, NoDual())
 end
 
 function rrule!!(
@@ -243,9 +300,54 @@ end
 # atomic_pointerreplace
 
 @intrinsic atomic_pointerset
-function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
+# The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
+# is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
+# `atomic_pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a
+# coherent `Ptr{Ptr{Float64}}` alike — and the element-wise `Ptr{S≠T}` shape is excluded. A
+# non-differentiable element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the
+# primal; `tangent_type(T)` folds at specialisation so the branch is compile-time.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    x::Lifted,
+    order::Lifted,
+) where {Nw,T}
+    _order = primal(order)
+    atomic_pointerset(primal(p), primal(x), _order)
+    if tangent_type(T) !== NoTangent
+        p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            atomic_pointerset(p_partials[lane], tangent(x, lane), _order)
+        end
+    end
+    return p
+end
+# Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    x::Lifted,
+    order::Lifted,
+) where {Nw}
     atomic_pointerset(primal(p), primal(x), primal(order))
-    atomic_pointerset(tangent(p), tangent(x), primal(order))
+    return p
+end
+# Element-wise per-lane V (`NTuple{Nw,Ptr{S}}` with `S !== Ptr{T}`): see the matching
+# `pointerset` guard — the array-of-pointers store is unsupported, so fail loudly for a
+# differentiable element rather than raise a raw `MethodError`.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted,
+    order::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "atomic_pointerset into a differentiable `Ptr{$T}` with an element-wise " *
+            "array-of-duals per-lane V; the array-of-pointers store is unsupported.",
+        ),
+    )
+    atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
@@ -271,7 +373,7 @@ end
 # atomic_pointerswap
 
 @intrinsic bitcast
-function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
+function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
     if T <: IEEEFloat
         msg =
             "It is not permissible to bitcast to a differentiable type during AD, as " *
@@ -281,14 +383,34 @@ function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
             "its implementation to avoid the bitcast."
         throw(ArgumentError(msg))
     end
-    _x = primal(x)
-    v = bitcast(T, _x)
-    if T <: Ptr && _x isa Ptr
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
-    else
-        dv = NoTangent()
+    v = bitcast(T, primal(x))
+    # Non-Ptr or NoDual-V bitcast: no forward derivative to carry.
+    return Lifted{typeof(v),Nw}(v, NoDual())
+end
+# Ptr→Ptr bitcast of a per-lane `NTuple{Nw,Ptr}` V: re-type each lane's pointer.
+# (`T` is already the full target `Ptr` type, e.g. `Ptr{ComplexF64}` — not wrapped
+# again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
+# the generic frule above, which throws (it must not be silently bypassed here).
+# Two lane element types keep their type instead of re-typing to the target:
+#  - an element-wise dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose element stride
+#    differs from the re-typed primal pointer's, so a downstream `unsafe_copyto!` must copy it;
+#  - an objref tangent-object address (`Ptr{tangent_type(Nothing)}`, from `pointer_from_objref`)
+#    must NOT be re-typed into a fake-coherent `Ptr{<:IEEEFloat}` per-lane-partial pointer — kept
+#    distinct, a subsequent `pointerref` correctly hits the loud incoherent-V throw rather than
+#    reading bytes off the interleaved `MutableDual`.
+# Other (raw/scalar) lanes (`Ptr{Nothing}`, `Ptr{<:IEEEFloat}`) re-type to the target.
+@inline function frule!!(
+    ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
+) where {Nw,T<:Ptr,P<:Ptr}
+    lanes = ntuple(Val(Nw)) do k
+        p = tangent(x)[k]
+        if eltype(typeof(p)) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
+            p
+        else
+            bitcast(T, p)
+        end
     end
-    return Dual(v, dv)
+    return Lifted{T,Nw}(bitcast(T, primal(x)), lanes)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -346,8 +468,9 @@ function Mooncake._is_primitive(
 )
     return true
 end
-function frule!!(::Dual{typeof(__cglobal)}, args...)
-    return Mooncake.uninit_dual(__cglobal(map(primal, args)...))
+function frule!!(::Lifted{typeof(__cglobal),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = __cglobal(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(__cglobal)}, args...)
     return Mooncake.uninit_fcodual(__cglobal(map(primal, args)...)), NoPullback(f, args...)
@@ -365,14 +488,20 @@ end
 @inactive_intrinsic checked_usub_int
 
 @intrinsic copysign_float
-function frule!!(::Dual{typeof(copysign_float)}, x, y)
+function frule!!(
+    ::Lifted{typeof(copysign_float),N}, x::Lifted{T,N,NDual{T,N}}, y::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
     z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(x)) * sign(primal(y)) * tangent(x)
-    return Dual(z, dz)
+    # d copysign(x,y)/dx = sign(x) * sign(y). Scale only the partials and set V.value to `z`.
+    # A naive `sign(y) * tangent(x)` both drops the sign(x) factor (wrong derivative for x<0)
+    # and scales the inner NDual's `.value` to `sign(y) * x_p` (≠ z), breaking V.value === primal.
+    s = sign(primal(x)) * sign(primal(y))
+    return Lifted{T,N}(z, NDual{T,N}(z, s .* tangent(x).partials))
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
+    # d copysign(x,y)/dx = sign(x) * sign(y); the derivative w.r.t. y is zero.
     copysign_float_pullback!!(dz) = NoRData(), dz * sign(_x) * sign(_y), zero_rdata(_y)
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
@@ -383,12 +512,10 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
-function frule!!(::Dual{typeof(div_float)}, a, b)
-    c = div_float(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float(da, primal(b)) - div_float(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(div_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(div_float(primal(a), primal(b)), tangent(a) / tangent(b))
 end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
@@ -399,12 +526,10 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
-function frule!!(::Dual{typeof(div_float_fast)}, a, b)
-    c = div_float_fast(primal(a), primal(b))
-    da = tangent(a)
-    db = tangent(b)
-    dc = div_float_fast(da, primal(b)) - div_float_fast(primal(a) * db, primal(b)^2)
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(div_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(div_float_fast(primal(a), primal(b)), tangent(a) / tangent(b))
 end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
@@ -423,10 +548,15 @@ end
 @inactive_intrinsic floor_llvm
 
 @intrinsic fma_float
-function frule!!(::Dual{typeof(fma_float)}, x, y, z)
-    a = fma_float(primal(x), primal(y), primal(z))
-    da = fma_float(tangent(x), primal(y), fma_float(primal(x), tangent(y), tangent(z)))
-    return Dual(a, da)
+function frule!!(
+    ::Lifted{typeof(fma_float),N},
+    x::Lifted{T,N,NDual{T,N}},
+    y::Lifted{T,N,NDual{T,N}},
+    z::Lifted{T,N,NDual{T,N}},
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(
+        fma_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
+    )
 end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
@@ -437,9 +567,10 @@ end
 
 @intrinsic fpext
 function frule!!(
-    ::Dual{typeof(fpext)}, ::Dual{Type{Pext}}, x::Dual{P}
-) where {Pext<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fpext(Pext, primal(x)), fpext(Pext, tangent(x)))
+    ::Lifted{typeof(fpext),N}, ::Lifted{Type{Pext},N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,Pext<:IEEEFloat,P<:IEEEFloat}
+    # NDual{Pext,N}(::NDual{P,N}) is the cross-precision constructor.
+    return Lifted{Pext,N}(fpext(Pext, primal(x)), NDual{Pext,N}(tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(fpext)}, ::CoDual{Type{Pext}}, x::CoDual{P}
@@ -454,9 +585,9 @@ end
 
 @intrinsic fptrunc
 function frule!!(
-    ::Dual{typeof(fptrunc)}, ::Dual{Type{Ptrunc}}, x::Dual{P}
-) where {Ptrunc<:IEEEFloat,P<:IEEEFloat}
-    return Dual(fptrunc(Ptrunc, primal(x)), fptrunc(Ptrunc, tangent(x)))
+    ::Lifted{typeof(fptrunc),N}, ::Lifted{Type{Ptrunc},N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,Ptrunc<:IEEEFloat,P<:IEEEFloat}
+    return Lifted{Ptrunc,N}(fptrunc(Ptrunc, primal(x)), NDual{Ptrunc,N}(tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(fptrunc)}, ::CoDual{Type{Ptrunc}}, x::CoDual{P}
@@ -477,10 +608,11 @@ end
 
 @static if VERSION >= v"1.12.0-rc2"
     @intrinsic max_float
-    function frule!!(::Dual{typeof(max_float)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(max_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+    ) where {N,T<:IEEEFloat}
         p = max_float(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
@@ -498,10 +630,13 @@ end
     end
 
     @intrinsic max_float_fast
-    function frule!!(::Dual{typeof(max_float_fast)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(max_float_fast),N},
+        a::Lifted{T,N,NDual{T,N}},
+        b::Lifted{T,N,NDual{T,N}},
+    ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) > primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -519,10 +654,11 @@ end
     end
 
     @intrinsic min_float
-    function frule!!(::Dual{typeof(min_float)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(min_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+    ) where {N,T<:IEEEFloat}
         p = min_float(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
@@ -540,10 +676,13 @@ end
     end
 
     @intrinsic min_float_fast
-    function frule!!(::Dual{typeof(min_float_fast)}, a::Dual, b::Dual)
+    function frule!!(
+        ::Lifted{typeof(min_float_fast),N},
+        a::Lifted{T,N,NDual{T,N}},
+        b::Lifted{T,N,NDual{T,N}},
+    ) where {N,T<:IEEEFloat}
         p = min_float_fast(primal(a), primal(b))
-        t = ifelse(primal(a) < primal(b), tangent(a), tangent(b))
-        return Dual(p, t)
+        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
     end
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -562,10 +701,10 @@ end
 end
 
 @intrinsic mul_float
-function frule!!(::Dual{typeof(mul_float)}, a, b)
-    p = mul_float(primal(a), primal(b))
-    dp = add_float(mul_float(primal(a), tangent(b)), mul_float(primal(b), tangent(a)))
-    return Dual(p, dp)
+function frule!!(
+    ::Lifted{typeof(mul_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(mul_float(primal(a), primal(b)), tangent(a) * tangent(b))
 end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
@@ -575,10 +714,10 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
-function frule!!(::Dual{typeof(mul_float_fast)}, a, b)
-    c = mul_float_fast(primal(a), primal(b))
-    dc = mul_float_fast(primal(a), tangent(b)) + mul_float_fast(tangent(a), primal(b))
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(mul_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(mul_float_fast(primal(a), primal(b)), tangent(a) * tangent(b))
 end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
@@ -590,11 +729,15 @@ end
 @inactive_intrinsic mul_int
 
 @intrinsic muladd_float
-function frule!!(::Dual{typeof(muladd_float)}, x, y, z)
-    a = muladd_float(primal(x), primal(y), primal(z))
-    dz = tangent(z)
-    da = muladd_float(tangent(x), primal(y), muladd_float(primal(x), tangent(y), dz))
-    return Dual(a, da)
+function frule!!(
+    ::Lifted{typeof(muladd_float),N},
+    x::Lifted{T,N,NDual{T,N}},
+    y::Lifted{T,N,NDual{T,N}},
+    z::Lifted{T,N,NDual{T,N}},
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(
+        muladd_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
+    )
 end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)
@@ -609,7 +752,11 @@ end
 @inactive_intrinsic ne_int
 
 @intrinsic neg_float
-frule!!(::Dual{typeof(neg_float)}, x) = Dual(neg_float(primal(x)), neg_float(tangent(x)))
+function frule!!(
+    ::Lifted{typeof(neg_float),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(neg_float(primal(x)), -tangent(x))
+end
 function rrule!!(::CoDual{typeof(neg_float)}, x)
     _x = primal(x)
     neg_float_pullback!!(dy) = NoRData(), -dy
@@ -617,8 +764,10 @@ function rrule!!(::CoDual{typeof(neg_float)}, x)
 end
 
 @intrinsic neg_float_fast
-function frule!!(::Dual{typeof(neg_float_fast)}, x)
-    return Dual(neg_float_fast(primal(x)), neg_float_fast(tangent(x)))
+function frule!!(
+    ::Lifted{typeof(neg_float_fast),N}, x::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(neg_float_fast(primal(x)), -tangent(x))
 end
 function rrule!!(::CoDual{typeof(neg_float_fast)}, x)
     _x = primal(x)
@@ -631,10 +780,71 @@ end
 @inactive_intrinsic or_int
 
 @intrinsic pointerref
-function frule!!(::Dual{typeof(pointerref)}, x, y, z)
+# Load scalar via primal Ptr; load each lane's tangent scalar via that lane's partial Ptr; pack into
+# the canonical inner V — `NDual` for a real element, `Complex{NDual}` for a complex one (the inner
+# representation of a complex scalar is `Complex{NDual}`, never `NDual{Complex}`), via `_scalar_ndual`.
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    y::Lifted,
+    z::Lifted,
+) where {Nw,T<:NDualEltype}
+    _y = primal(y)
+    _z = primal(z)
+    a = pointerref(primal(x), _y, _z)
+    x_partials = tangent(x)
+    da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
+    return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
+end
+# Non-differentiable pointer (V === NoDual): the element type is not an `NDualEltype`
+# (e.g. `Ptr{UInt64}`, `Ptr{Ptr{Float64}}`), so the loaded value carries no derivative.
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted, z::Lifted
+) where {Nw}
     a = pointerref(primal(x), primal(y), primal(z))
-    da = pointerref(tangent(x), primal(y), primal(z))
-    return Dual(a, da)
+    return Lifted{typeof(a),Nw}(a, NoDual())
+end
+# A non-differentiable `Ptr` can carry an incoherent per-lane `NTuple{Nw,Ptr}` V (its canonical
+# V is `NoDual`) when it is produced by an upstream `unsafe_convert`/`bitcast` chain — e.g.
+# `_getindex_ra` reading a byte out of a reinterpreted integer array does `Ptr{UInt8}(unsafe_convert(
+# Ref{UInt32}, …))`. The load of a non-differentiable element carries no derivative, so collapse
+# to `NoDual`. The `T <: NDualEltype` frule above serves the scalar differentiable case (it packs
+# the canonical inner V from per-lane partial pointers). Two differentiable cases reach here with an
+# incoherent V and fail loudly: a non-scalar element (e.g. `Ptr{Ptr{Float64}}`, whose load is a
+# `Ptr{Float64}` with a per-lane-pointer V, not a scalar dual); and a raw scalar load through
+# `pointer_from_objref` of a general mutable struct, whose objref tangent-address lanes
+# (`Ptr{tangent_type(Nothing)}`) are not the canonical per-lane-partial shape (see the
+# `pointer_from_objref` rule). `Ref` itself is handled correctly — its forward tangent (`NDualRef`)
+# keeps a parallel partials buffer with primal-identical layout, so its branch above packs a dual.
+#
+# To LIFT the general mutable-struct case (make a forward raw scalar load correct, matching reverse):
+# the struct's forward tangent must keep its per-lane partials in a parallel buffer with
+# primal-identical layout (as `NDualRef` does for `Ref` and `NDualArray` for `Array`), so a
+# same-offset pointer lands the partials. Today a mutable struct's tangent is a `MutableDual` that
+# interleaves the value and partials in one object, with no parallel partials buffer to point at.
+# The principled lift is a per-struct primal-shaped partials shadow (correct by construction); best
+# done opt-in, since making it the default mutable-struct tangent regresses chunked struct-field math.
+# A pointer shortcut that reads through the interleaving is rejected: it hardcodes the `NDual` layout.
+function frule!!(
+    ::Lifted{typeof(pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    y::Lifted,
+    z::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "Forward-mode AD cannot take a raw scalar load (`pointerref`/`unsafe_load`) of a " *
+            "differentiable `Ptr{$T}` whose per-lane tangent is not the canonical " *
+            "`NTuple{$Nw,Ptr{$T}}` per-lane-partial shape. This typically arises from " *
+            "`pointerref`/`unsafe_load` through `pointer_from_objref` of a mutable struct: its " *
+            "forward tangent interleaves the value and partials in one object (no separate parallel " *
+            "partials storage at the object's address), so the load cannot recover the derivative. " *
+            "Use reverse mode, hold the value in a `Ref` or `Array` (whose forward tangents keep a " *
+            "parallel partials buffer), or write a custom forward tangent for the struct.",
+        ),
+    )
+    a = pointerref(primal(x), primal(y), primal(z))
+    return Lifted{typeof(a),Nw}(a, NoDual())
 end
 function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _x = primal(x)
@@ -654,9 +864,61 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
 end
 
 @intrinsic pointerset
-function frule!!(::Dual{typeof(pointerset)}, p, x, idx, z)
+# The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
+# is the identity on the leaf float/`Ptr` element types reaching here), so the per-lane
+# `pointerset(partial::Ptr{T}, tangent::T, …)` typechecks for float scalars and a coherent
+# `Ptr{Ptr{Float64}}` alike — and the element-wise `Ptr{S≠T}` shape is excluded. A non-differentiable
+# element (incoherent per-lane V, e.g. `Ptr{UInt8}`) writes only the primal; `tangent_type(T)`
+# folds at specialisation so the branch is compile-time.
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {Nw,T}
+    _idx = primal(idx)
+    _z = primal(z)
+    pointerset(primal(p), primal(x), _idx, _z)
+    if tangent_type(T) !== NoTangent
+        p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
+        end
+    end
+    return p
+end
+# Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{<:Ptr,Nw,NoDual},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {Nw}
     pointerset(primal(p), primal(x), primal(idx), primal(z))
-    pointerset(tangent(p), tangent(x), primal(idx), primal(z))
+    return p
+end
+# An element-wise per-lane V (`NTuple{Nw,Ptr{S}}` with partial element `S !== Ptr{T}`) reaches
+# here when the destination is an array of differentiable pointers (e.g.
+# `pointer(::Vector{Ptr{Float64}})`, whose tangent buffer holds `Tuple{Ptr{Float64}}`
+# elements, not bare `Ptr{Float64}`). Writing a bare lane tangent through that pointer
+# would corrupt the element-wise stride, so fail loudly — the array-of-pointers store is
+# unsupported. The parallel-arrays `NTuple{Nw,Ptr{T}}` frule above is strictly more specific.
+function frule!!(
+    ::Lifted{typeof(pointerset),Nw},
+    p::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    x::Lifted,
+    idx::Lifted,
+    z::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "pointerset into a differentiable `Ptr{$T}` with an element-wise array-of-duals per-lane V; " *
+            "the array-of-pointers store is unsupported.",
+        ),
+    )
+    pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
 function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
@@ -689,11 +951,13 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
-function frule!!(::Dual{typeof(sqrt_llvm)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
+function frule!!(
+    ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
+) where {Nw,T<:IEEEFloat}
+    # NDual.sqrt overload (Nfwd.jl) applies _pt_guarded_scale — the NDual
+    # analogue of nan_tangent_guard — so the singular `sqrt(0)` case has
+    # zeroed partials instead of NaN.
+    return Lifted{T,Nw}(sqrt_llvm(primal(x)), sqrt(tangent(x)))
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
@@ -705,11 +969,10 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
 end
 
 @intrinsic sqrt_llvm_fast
-function frule!!(::Dual{typeof(sqrt_llvm_fast)}, x)
-    _x, dx = extract(x)
-    y = sqrt_llvm_fast(_x)
-    dy = nan_tangent_guard(dx, dx / (2 * y))
-    return Dual(y, dy)
+function frule!!(
+    ::Lifted{typeof(sqrt_llvm_fast),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
+) where {Nw,T<:IEEEFloat}
+    return Lifted{T,Nw}(sqrt_llvm_fast(primal(x)), sqrt(tangent(x)))
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
@@ -723,10 +986,10 @@ end
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
-function frule!!(::Dual{typeof(sub_float)}, a, b)
-    c = sub_float(primal(a), primal(b))
-    dc = sub_float(tangent(a), tangent(b))
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(sub_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(sub_float(primal(a), primal(b)), tangent(a) - tangent(b))
 end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
@@ -736,10 +999,10 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
-function frule!!(::Dual{typeof(sub_float_fast)}, a, b)
-    c = sub_float_fast(primal(a), primal(b))
-    dc = sub_float_fast(tangent(a), tangent(b))
-    return Dual(c, dc)
+function frule!!(
+    ::Lifted{typeof(sub_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+) where {N,T<:IEEEFloat}
+    return Lifted{T,N}(sub_float_fast(primal(a), primal(b)), tangent(a) - tangent(b))
 end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
@@ -795,13 +1058,20 @@ end
 __vec_to_tuple(v::Vector) = Tuple(v)
 
 @is_primitive MinimalCtx Tuple{typeof(__vec_to_tuple),Vector}
-function frule!!(::Dual{typeof(__vec_to_tuple)}, v::Dual{<:Vector})
+# The tangent V is either the parallel-arrays `NDualArray` (for `Vector{<:IEEEFloat}`) or a
+# plain `Vector` of per-element Vs (element-wise); both are `AbstractVector`, so `Tuple`
+# iterates either into the per-element tangent tuple. (`__vec_to_tuple` itself is
+# the `::Vector`-only primal helper and does not accept an NDualArray.) The
+# `<:AbstractVector` V bound also excludes non-differentiable (`NoDual`) vectors.
+@inline function frule!!(
+    ::Lifted{typeof(__vec_to_tuple),Nw}, v::Lifted{<:Vector,Nw,<:AbstractVector}
+) where {Nw}
     x = __vec_to_tuple(primal(v))
-    if tangent_type(_typeof(x)) == NoTangent
-        return zero_dual(x)
-    else
-        return Dual(x, __vec_to_tuple(tangent(v)))
-    end
+    # An all-non-differentiable splat (e.g. a permutation `Vector{Int}`, whose V is
+    # `Vector{NoDual}`) yields a tuple with `dual_type === NoDual`; build whole `NoDual`
+    # to match, not the element-wise `Tuple{NoDual,…}` the consumer slot would reject.
+    dual_type(Val(Nw), typeof(x)) === NoDual && return Lifted{typeof(x),Nw}(x, NoDual())
+    return Lifted{typeof(x),Nw}(x, Tuple(tangent(v)))
 end
 
 function rrule!!(::CoDual{typeof(__vec_to_tuple)}, v::CoDual{<:Vector})
@@ -832,13 +1102,20 @@ end
 # Core._setsuper!
 # Core._structtype
 
+# `Core.SimpleVector`'s forward V is an array-of-structures `Vector{Any}` holding each
+# element's forward V (`NoDual` for the usual non-differentiable elements — DataType, Symbol,
+# … — or a real inner V like `NDual`/`NDualArray` for a differentiable element), mirroring the
+# reverse `tangent_type(SimpleVector) === Vector{Any}`. Keeping the V coherent with what the
+# `svec` / `_svec_ref` frules build avoids the OpaqueClosure return typeassert-reject in
+# forward-over-reverse, where `svec` sparams (all non-differentiable) flow through rule
+# construction as an all-`NoDual` `Vector{Any}`.
+@foldable @inline dual_type(::Val{N}, ::Type{Core.SimpleVector}) where {N} = Vector{Any}
 function frule!!(
-    ::Dual{typeof(Core._svec_ref)}, v::Dual{Core.SimpleVector}, _ind::Dual{Int}
-)
+    ::Lifted{typeof(Core._svec_ref),Nw}, v::Lifted{Core.SimpleVector}, _ind::Lifted{Int}
+) where {Nw}
     ind = primal(_ind)
     pv = Core._svec_ref(primal(v), ind)
-    tv = getindex(tangent(v), ind)
-    return Dual(pv, tv)
+    return Lifted{typeof(pv),Nw}(pv, tangent(v)[ind])
 end
 function rrule!!(
     f::CoDual{typeof(Core._svec_ref)}, _v::CoDual{Core.SimpleVector}, _ind::CoDual{Int}
@@ -866,12 +1143,53 @@ function _svec_ref_rrule(f, _v, _ind, pv, tv)
     end
 end
 
-function frule!!(f::Dual{typeof(svec)}, args::Vararg{Any,N}) where {N}
-    primal_output = svec(map(primal, args)...)
-    # Tangent type for `SimpleVector` is `Vector{Any}`
-    dual_output = collect(Any, map(tangent, args))
-    return Dual(primal_output, dual_output)
+# The output `SimpleVector`'s forward V is the per-element `Vector{Any}` of each arg's V, so a
+# differentiable element (e.g. a float read back out by `_svec_ref`) keeps its derivative.
+function frule!!(f::Lifted{typeof(svec),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    primal_output = svec(tuple_map(primal, args)...)
+    return Lifted{Core.SimpleVector,Nw}(primal_output, Any[tangent(a) for a in args])
 end
+
+# Forward seed/lift/accessor/unlift for the `Vector{Any}` V (per-element forward V), mirroring
+# the reverse `Vector{Any}` machinery. Each element recurses through its own V.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $f(::Val{N}, v::Core.SimpleVector, c::MaybeCache) where {N}
+        return Any[$f(Val(N), v[i], c) for i in 1:length(v)]
+    end
+end
+function _randn_dual_internal(
+    ::Val{N}, rng::AbstractRNG, v::Core.SimpleVector, c::MaybeCache
+) where {N}
+    return Any[_randn_dual_internal(Val(N), rng, v[i], c) for i in 1:length(v)]
+end
+# Cache-free factories: without these, the generic fieldcount-0 fallback returns
+# `NTuple{N, Vector{Any}}` for a `SimpleVector`, mismatching `dual_type === Vector{Any}`.
+for f in (:zero_dual, :uninit_dual)
+    @eval function $f(::Val{N}, v::Core.SimpleVector) where {N}
+        return Any[$f(Val(N), v[i]) for i in 1:length(v)]
+    end
+end
+function randn_dual(::Val{N}, rng::AbstractRNG, v::Core.SimpleVector) where {N}
+    return Any[randn_dual(Val(N), rng, v[i]) for i in 1:length(v)]
+end
+function tangent(x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer) where {N}
+    p = primal(x)
+    v = tangent(x)
+    return Any[tangent(Lifted{typeof(p[i]),N}(p[i], v[i]), lane) for i in 1:length(p)]
+end
+function lift(v::Core.SimpleVector, ẋ::Vector{Any})
+    return Lifted{Core.SimpleVector,1}(
+        v, Any[tangent(lift(v[i], ẋ[i])) for i in 1:length(v)]
+    )
+end
+function _unlift_seed(x::Lifted{Core.SimpleVector,1,Vector{Any}}, cache::IdDict)
+    p = primal(x)
+    v = tangent(x)
+    return Any[_unlift_seed(Lifted{typeof(p[i]),1}(p[i], v[i]), cache) for i in 1:length(p)]
+end
+@inline unlift(x::Lifted{Core.SimpleVector,1,Vector{Any}}) = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+)
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)
@@ -889,8 +1207,8 @@ function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
 end
 
 @static if VERSION > v"1.12-"
-    function frule!!(f::Dual{typeof(Core._svec_len)}, v)
-        return zero_dual(Core._svec_len(primal(v)))
+    function frule!!(f::Lifted{typeof(Core._svec_len)}, v::Lifted)
+        return Mooncake.zero_derivative(f, v)
     end
     function rrule!!(f::CoDual{typeof(Core._svec_len)}, v)
         return zero_fcodual(Core._svec_len(primal(v))), NoPullback(f, v)
@@ -898,26 +1216,28 @@ end
 end
 
 # Core._typebody!
-function frule!!(::Dual{typeof(Core._typevar)}, args...)
-    return zero_dual(Core._typevar(map(primal, args)...))
+function frule!!(::Lifted{typeof(Core._typevar),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = Core._typevar(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core._typevar)}, args...)
     return zero_fcodual(Core._typevar(map(primal, args)...)), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(Core.apply_type)}, args...)
-    return zero_dual(Core.apply_type(map(primal, args)...))
+function frule!!(::Lifted{typeof(Core.apply_type),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    y = Core.apply_type(tuple_map(primal, args)...)
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
     T = Core.apply_type(tuple_map(primal, args)...)
     return CoDual{_typeof(T),NoFData}(T, NoFData()), NoPullback(f, args...)
 end
 
-function frule!!(::Dual{typeof(compilerbarrier)}, setting::Dual{Symbol}, v::Dual)
-    return Dual(
-        compilerbarrier(primal(setting), primal(v)),
-        compilerbarrier(primal(setting), tangent(v)),
-    )
+function frule!!(
+    ::Lifted{typeof(compilerbarrier),Nw}, setting::Lifted{Symbol,Nw}, v::Lifted{P,Nw,V}
+) where {Nw,P,V}
+    s = primal(setting)
+    return Lifted{P,Nw}(compilerbarrier(s, primal(v)), compilerbarrier(s, tangent(v)))
 end
 function rrule!!(::CoDual{typeof(compilerbarrier)}, setting::CoDual{Symbol}, val::CoDual)
     compilerbarrier_pb(dout) = NoRData(), NoRData(), dout
@@ -928,9 +1248,14 @@ end
 # Core.finalizer
 # Core.get_binding_type
 
-function frule!!(::Dual{typeof(Core.ifelse)}, cond::Dual{Bool}, a::Dual, b::Dual)
-    _cond = primal(cond)
-    return Dual(ifelse(_cond, primal(a), primal(b)), ifelse(_cond, tangent(a), tangent(b)))
+# `Core.ifelse` is a non-short-circuiting scalar select; both branches arrive as
+# already-evaluated slots, so the JVP is just the selected slot. This covers any
+# branch types (matching the reverse rrule's `a::A, b::B` breadth) and stays
+# type-stable when the branches share a type.
+@inline function frule!!(
+    ::Lifted{typeof(Core.ifelse),Nw}, cond::Lifted{Bool,Nw}, a::Lifted, b::Lifted
+) where {Nw}
+    return primal(cond) ? a : b
 end
 function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
     _cond = primal(cond)
@@ -967,28 +1292,64 @@ end
 const StandardTangentType = Union{Tuple,NamedTuple,Tangent,MutableTangent,NoTangent}
 const StandardFDataType = Union{Tuple,NamedTuple,FData,MutableTangent,NoFData}
 
-function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual
-) where {P}
+# 2-arg `getfield(x, name)`: shares `lgetfield`'s generic Lifted-body helper
+# (`_get_lifted_field` in misc.jl), which covers tuples, named-tuples, and structs (the body
+# calls it directly rather than routing through the `lgetfield` frule — see below). Kept here
+# rather than memory.jl so it is available on Julia 1.10 (array_legacy path), where the
+# forward-over-reverse HVP public interface needs it.
+function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {Nw}
+    # Extract the field directly rather than routing through `lgetfield(x, Val(primal(name)))`:
+    # `Val(runtime_name)` is type-unstable (the parameter is a runtime value), so the routed
+    # form constructed an abstract-`P` `Lifted{Val{...}}` and ran the `lgetfield` frule via
+    # runtime dispatch. Mirrors the 3-arg `getfield` frule below.
     _name = primal(name)
+    y = getfield(primal(x), _name)
+    P = _typeof(primal(x))
     if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name))
+        # A non-differentiable parent yields a non-differentiable field, but its forward V is
+        # the field's *canonical* zero V — `NoDual` for the usual scalars, yet `Vector{Any}`
+        # for a `SimpleVector` field (e.g. `getfield(::DataType, :parameters)`). Blanket
+        # `NoDual()` here produced a non-canonical `Lifted{SimpleVector,…,NoDual}` that the svec
+        # consumers reject. `uninit_lifted` builds the canonical slot (mirrors the reverse
+        # `uninit_fcodual` used by the corresponding `rrule!!`).
+        return uninit_lifted(Val(Nw), y)
     else
-        return Dual(getfield(primal(x), _name), _get_tangent_field(tangent(x), _name))
+        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
 end
 function frule!!(
-    ::Dual{typeof(getfield)}, x::Dual{P,<:StandardTangentType}, name::Dual, inbounds::Dual
-) where {P}
+    ::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted, inbounds::Lifted
+) where {Nw}
     _name = primal(name)
     _inbounds = primal(inbounds)
+    y = getfield(primal(x), _name, _inbounds)
+    P = _typeof(primal(x))
     if tangent_type(P) == NoTangent
-        return uninit_dual(getfield(primal(x), _name, _inbounds))
+        # See the 2-arg `getfield` frule: canonical zero V (handles a `SimpleVector` field
+        # whose V is `Vector{Any}`, not `NoDual`).
+        return uninit_lifted(Val(Nw), y)
     else
-        y = getfield(primal(x), _name, _inbounds)
-        dy = _get_tangent_field(tangent(x), _name, _inbounds)
-        return Dual(y, dy)
+        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
     end
+end
+# `Ref{P<:NDualEltype}` (`NDualRef` V): the generic `_get_lifted_field` path above has no
+# `NDualRef` method, so rebuild the scalar inner V from the parallel partials buffer, mirroring the
+# literal-name `lgetfield` Ref branch in misc.jl (the read counterpart of the `setfield!` Ref frule).
+# Runtime name is `:x` (or its index `1`), the Ref's only field. Covers real and complex elements.
+function frule!!(
+    ::Lifted{typeof(getfield),Nw}, x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef}, name::Lifted
+) where {Nw,P<:NDualEltype}
+    v = getfield(primal(x), primal(name))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+end
+function frule!!(
+    ::Lifted{typeof(getfield),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+    name::Lifted,
+    inbounds::Lifted,
+) where {Nw,P<:NDualEltype}
+    v = getfield(primal(x), primal(name), primal(inbounds))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
 end
 function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
@@ -1067,10 +1428,61 @@ is_homogeneous_and_immutable(::Any) = false
 
 # replacefield!
 
-function frule!!(::Dual{typeof(setfield!)}, value::Dual, name::Dual, x::Dual)
-    literal_name = zero_dual(Val(primal(name)))
-    return frule!!(zero_dual(lsetfield!), value, literal_name, x)
+function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted, name::Lifted, x::Lifted
+) where {Nw}
+    nm = primal(name)
+    setfield!(primal(value), nm, primal(x))
+    # Normalise an integer field index to its symbol name for the symbol-keyed `MutableDual` V
+    # backing `NamedTuple` (the primal `setfield!` above already accepts the integer index).
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    _setfield_tangent!(tangent(value), sym, tangent(x))
+    return x
 end
+# Array `.ref`/`.size` mutation (e.g. resize) via the runtime-name `setfield!` can't use
+# the `_setfield_tangent!` path — the parallel-arrays `NDualArray` V is immutable. Delegate to the
+# `lsetfield!` array frule (which updates the V via the partials/memref-aliasing), with the
+# positional field index normalised to the symbol it dispatches on (`1`→`:ref`, `2`→`:size`).
+@inline function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Array}, name::Lifted, x::Lifted
+) where {Nw}
+    nm = primal(name)
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    return frule!!(
+        zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
+    )
+end
+# A `RefValue`'s V is `NDualRef` (an immutable wrapper over per-lane partials, no `:x` field), so
+# the `_setfield_tangent!` path's generic `setproperty!` fallback would throw. Delegate to the Ref
+# `lsetfield!` frule (which writes the partials), like the Array branch — `RefValue`'s only field
+# is `:x` (index 1).
+@inline function frule!!(
+    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Base.RefValue}, name::Lifted, x::Lifted
+) where {Nw}
+    nm = primal(name)
+    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
+    return frule!!(
+        zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
+    )
+end
+# A `MutableDual` struct V stores fields in its backing `value` NamedTuple (the
+# same path `lsetfield!` takes), so merge there — `setproperty!` on the
+# `MutableDual` itself would hit its single `value` field. A non-diff V (`NoDual`)
+# has nothing to write; any other V (e.g. a `MutableDualTangentView`) routes
+# through `setproperty!`, which delegates to the parent.
+@inline _setfield_tangent!(::Union{NoDual,NoTangent}, _, _) = nothing
+@inline function _setfield_tangent!(tv::MutableDual, nm, vx)
+    nt = getfield(tv, :value)
+    v_i = _coerce_backing_field(fieldtype(typeof(nt), nm), vx)
+    # `convert` to the stored NamedTuple type: `setfield!` is strict (no implicit convert) and
+    # `NamedTuple` is invariant in its `Tuple` parameter, so for a struct with an abstract field
+    # (e.g. `Foo.x::Real` -> dual field `@NamedTuple{x}`, x::Any) the `merge` narrows to
+    # `@NamedTuple{x::NDual}`, which is NOT `isa @NamedTuple{x}` — a bare `setfield!` would throw.
+    # `convert` rebuilds it at the field's (possibly abstract) element type.
+    setfield!(tv, :value, convert(typeof(nt), merge(nt, NamedTuple{(nm,)}((v_i,)))))
+    return nothing
+end
+@inline _setfield_tangent!(tv, nm, vx) = (setproperty!(tv, nm, vx); nothing)
 function rrule!!(::CoDual{typeof(setfield!)}, value::CoDual, name::CoDual, x::CoDual)
     literal_name = uninit_fcodual(Val(primal(name)))
     return rrule!!(uninit_fcodual(lsetfield!), value, literal_name, x)
@@ -1078,15 +1490,17 @@ end
 
 # swapfield!
 
-frule!!(::Dual{typeof(throw)}, args::Dual...) = throw(map(primal, args)...)
+function frule!!(::Lifted{typeof(throw),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    throw(tuple_map(primal, args)...)
+end
 function rrule!!(::CoDual{typeof(throw)}, args::CoDual...)
     throw(map(primal, args)...), _ -> (NoRData(), map(_ -> NoRData(), args)...)
 end
 
 # Only defined in v1.12+
 @static if isdefined(Core, :throw_methoderror)
-    frule!!(::Dual{typeof(Core.throw_methoderror)}, args::Dual...) = Core.throw_methoderror(
-        map(primal, args)...
+    frule!!(::Lifted{typeof(Core.throw_methoderror),Nw}, args::Vararg{Lifted,M}) where {Nw,M} = Core.throw_methoderror(
+        tuple_map(primal, args)...
     )
     function rrule!!(::CoDual{typeof(Core.throw_methoderror)}, args::CoDual...)
         return (
@@ -1096,8 +1510,10 @@ end
     end
 end
 
-function frule!!(::Dual{typeof(Core.throw_inexacterror)}, args::Dual...)
-    Core.throw_inexacterror(map(primal, args)...)
+function frule!!(
+    ::Lifted{typeof(Core.throw_inexacterror),Nw}, args::Vararg{Lifted,M}
+) where {Nw,M}
+    return Core.throw_inexacterror(tuple_map(primal, args)...)
 end
 function rrule!!(::CoDual{typeof(Core.throw_inexacterror)}, args::CoDual...)
     return (
@@ -1118,12 +1534,17 @@ end
 
 @inline tuple_pullback(dy::NoRData) = NoRData()
 
-function frule!!(f::Dual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
-    primal_output = tuple(map(primal, args)...)
-    if tangent_type(_typeof(primal_output)) == NoTangent
-        return zero_dual(primal_output)
+function frule!!(f::Lifted{typeof(tuple),Nw}, args::Vararg{Lifted,M}) where {Nw,M}
+    primal_output = tuple(tuple_map(primal, args)...)
+    # Derive the slot `P` from the value's own type, not `_typeof`: `_typeof`
+    # sharpens a `Type`-valued element to `Type{X}`, but a tuple *value* always
+    # types that slot as `DataType` — so the sharpened tuple type is unsatisfiable
+    # by any value. Mirrors reverse-mode `tuple`'s `zero_fcodual(primal_output)`.
+    P_out = typeof(primal_output)
+    if dual_type(Val(Nw), _typeof(primal_output)) === NoDual
+        return Lifted{P_out,Nw}(primal_output, NoDual())
     else
-        return Dual(primal_output, tuple(map(tangent, args)...))
+        return Lifted{P_out,Nw}(primal_output, tuple_map(tangent, args))
     end
 end
 
@@ -1140,8 +1561,10 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
     end
 end
 
-function frule!!(::Dual{typeof(typeassert)}, x::Dual, type::Dual)
-    return Dual(typeassert(primal(x), primal(type)), tangent(x))
+function frule!!(
+    ::Lifted{typeof(typeassert),Nw}, x::Lifted{P,Nw,V}, type::Lifted
+) where {Nw,P,V}
+    return Lifted{P,Nw}(typeassert(primal(x), primal(type)), tangent(x))
 end
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
     typeassert_pullback(dy) = NoRData(), dy, NoRData()
@@ -1284,12 +1707,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, IntrinsicsWrappers.floor_llvm, 4.1),
         (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0, 4.0, 3.0),
         (false, :stability, nothing, IntrinsicsWrappers.fma_float, 5.0f0, 4.0f0, 3.0f0),
-        (true, :stability_and_allocs, nothing, IntrinsicsWrappers.fpext, Float64, 5.0f0),
+        # `interface_only=false` so FD validates the cross-precision partial-passthrough derivative
+        # (interface-only gates only the FD checks, not the perf checks, so it silently skipped
+        # derivative validation). Perf flags retained: the rules are type-stable here (fpext also
+        # zero-alloc) — the `Type` argument does not trip the stability probe.
+        (false, :stability_and_allocs, nothing, IntrinsicsWrappers.fpext, Float64, 5.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.1, 4.0),
         (false, :stability, nothing, IntrinsicsWrappers.fpiseq, 4.0f1, 4.0f0),
         (false, :stability, nothing, IntrinsicsWrappers.fptosi, UInt32, 4.1),
         (false, :stability, nothing, IntrinsicsWrappers.fptoui, Int32, 4.1),
-        (true, :stability, nothing, IntrinsicsWrappers.fptrunc, Float32, 5.0),
+        (false, :stability, nothing, IntrinsicsWrappers.fptrunc, Float32, 5.0),
         (true, :stability, nothing, IntrinsicsWrappers.have_fma, Float64),
         (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.1, 4.0),
         (false, :stability, nothing, IntrinsicsWrappers.le_float, 4.0f1, 4.0f0),
@@ -1499,6 +1926,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, _range, setfield!, MutableFoo(5.0, randn(5)), 2, randn(5)),
         (false, :none, _range, setfield!, NonDifferentiableFoo(5, false), 1, 4),
         (false, :none, _range, setfield!, NonDifferentiableFoo(5, true), 2, false),
+        # runtime-name setfield! on a Ref (V is NDualRef): delegates to the lsetfield! frule.
+        (false, :none, _range, setfield!, Ref(5.0), :x, 4.0),
+        (false, :none, _range, setfield!, Ref(5.0), 1, 4.0),
+        # runtime-name getfield on a Ref (V is NDualRef) — the read counterpart; rebuilds the
+        # scalar V via _scalar_ndual. Real + complex element, by name and by index.
+        (false, :none, _range, getfield, Ref(5.0), :x),
+        (false, :none, _range, getfield, Ref(5.0), 1),
+        (false, :none, _range, getfield, Ref(5.0), :x, false),
+        (false, :none, _range, getfield, Ref(1.0 + 2.0im), :x),
         # swapfield! -- NEEDS IMPLEMENTING AND TESTING
         (false, :stability_and_allocs, nothing, tuple, 5.0, 4.0),
         (false, :stability_and_allocs, nothing, tuple, randn(5), 5.0),
@@ -1616,10 +2052,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> (pointerset(pointer(x), UInt8(3), 2, 1); x),
             rand(UInt8, 5),
         ),
+        # Reverse only: a `pointerset`/`atomic_pointerset` into a `Vector{Ptr{Float64}}` stores a
+        # differentiable pointer into an array of differentiable pointers — its forward per-lane
+        # tangent is an array-of-structs of pointers, which the forward `pointerset` rule rejects
+        # loudly (same limitation class as `f_pointerset`). Reverse mode is correct.
         (
             true,
             :none,
-            nothing,
+            (skip_forward=true,),
             (x, v) ->
                 unsafe_wrap(Array, pointerset(pointer(x), pointer(v), 1, 1), length(x)),
             CoDual(c, dc),
@@ -1628,7 +2068,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (
             true,
             :none,
-            nothing,
+            (skip_forward=true,),
             (x, v) -> unsafe_wrap(
                 Array,
                 Core.Intrinsics.atomic_pointerset(pointer(x), pointer(v), :monotonic),
@@ -1637,12 +2077,36 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             CoDual(c, dc),
             CoDual(c_new_val, dc_new_val),
         ),
-        (true, :none, nothing, f_pointerset, CoDual(3.0, 1.0)),
-        (true, :none, nothing, f_atomic_pointerset, CoDual(3.0, 1.0)),
+        # Reverse only: a differentiable pointer-to-pointer raw store (`pointerset`/
+        # `atomic_pointerset` into a `Ptr{Ptr{Float64}}`) cannot be done in forward mode — the
+        # destination's per-lane tangent is an array-of-structs of pointers, so the forward rule
+        # fails loudly (it silently produced a wrong derivative before the loud guard). Reverse mode
+        # is correct (see the explicit value_and_gradient!! testset in test/rules/builtins.jl).
+        (true, :none, (skip_forward=true,), f_pointerset, CoDual(3.0, 1.0)),
+        (true, :none, (skip_forward=true,), f_atomic_pointerset, CoDual(3.0, 1.0)),
         (false, :none, nothing, getindex, randn(5), [1, 1]),
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
     ]
     return test_cases, Any[]
+end
+
+function throwing_rule_test_cases(::Val{:builtins})
+    # atomic_pointerset through a differentiable element with an element-wise (incoherent)
+    # per-lane V must hit the loud guard, mirroring pointerset.
+    xv = [1.0]
+    ptr = pointer(xv)
+    pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
+    cases = Any[
+        (
+            ArgumentError,
+            IntrinsicsWrappers.atomic_pointerset,
+            (pslot, zero_lifted(Val(1), 2.0), zero_lifted(Val(1), :monotonic)),
+        ),
+        # Forward `throw` rule must re-raise (the reverse rule is covered by the `throw` rrule cases).
+        (ArgumentError, throw, (zero_lifted(Val(1), ArgumentError("hello")),)),
+        (AssertionError, throw, (zero_lifted(Val(1), AssertionError("hello")),)),
+    ]
+    return cases, Any[xv]
 end

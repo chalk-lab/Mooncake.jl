@@ -600,17 +600,23 @@ _copy(x::Type) = x
 # test_utils.jl) once https://github.com/JuliaLang/julia/issues/61368 is fixed and
 # Julia 1.10 support is dropped.
 #
-# Julia 1.10 codegen bug (julia#61368 / #51016): jl_compile_workqueue crashes in
-# emit_specsig_oc_call when compiling an OC body that transitively calls another OC
-# type whose CodeInstance has been invalidated (null specfun) by a world-counter advance
-# (e.g. from loading DispatchDoctor or defining new methods).
+# Julia 1.10 codegen bug (julia#51016 / #61368): the code generator crashes in
+# emit_specsig_oc_call when emitting a specsig OpaqueClosure call that either has a dead /
+# `Union{}`-typed argument position (#51016) or targets a nested OC whose CodeInstance has been
+# invalidated (null specfun) by a world-counter advance — e.g. loading DispatchDoctor or
+# defining new methods (#61368). Both are fixed upstream by #51017 (Julia 1.11+).
 #
-# Fix: __call_rule type-erases rule via Base.inferencebarrier on Julia 1.10 so the
-# compiled code calls through jl_apply_generic (which never invokes emit_specsig_oc_call).
-# The @noinline wrapper ensures this erased call is a separate compilation unit. On Julia
-# 1.11+ the bug is absent and __call_rule is a direct call. The type-erasure causes
-# isbits argument boxing at each nested rule callsite (jl_apply_generic requires boxed
-# args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
+# Fix: __call_rule forces generic dispatch on Julia 1.10, so the compiled code calls via
+# jl_apply_generic, which never reaches emit_specsig_oc_call. Three controls make this
+# deterministic — where the previous `Base.inferencebarrier` hint did NOT (it only blocked
+# inference, leaving the method free to re-specialise on the concrete callee and recover the
+# specsig call): `@nospecialize` compiles a single `rule::Any` method (no per-callee
+# specialisation); the explicit `(rule::Any)` cast forbids codegen from emitting a specsig call
+# against an abstract callee; `@noinline` stops the cast being inlined into a site where the
+# concrete type is visible again. The OpaqueClosure method additionally guards `args isa A` so a
+# runtime argument mismatch throws a clean TypeError rather than segfaulting. On Julia 1.11+ the
+# bug is absent and __call_rule is a direct call. Generic dispatch boxes isbits arguments at each
+# nested rule callsite, so zero-allocation performance checks are skipped on Julia < 1.11.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
 #   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
@@ -633,8 +639,11 @@ _copy(x::Type) = x
 #   Base.Experimental.@opaque (x::Float64) -> w(x)  # crash: workqueue compiles
 #                                 # Wrapper::call, reaches typeof(inner) with null specfun
 @static if VERSION < v"1.11-"
-    @noinline __call_rule_erased!(rule, args) = rule(args...)
-    @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+    @noinline __call_rule(@nospecialize(rule), args) = (rule::Any)(args...)
+    @noinline function __call_rule(oc::Core.OpaqueClosure{A}, args::Tuple) where {A}
+        args isa A || throw(TypeError(:opaque_closure, "", A, Tuple{map(typeof, args)...}))
+        return (oc::Any)(args...)
+    end
 else
     @inline __call_rule(rule, args) = rule(args...)
 end

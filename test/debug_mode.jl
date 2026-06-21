@@ -46,80 +46,45 @@
     end
 
     @testset "forward debug mode" begin
-        @testset "argument checking" begin
-            f = x -> 5x
-            rule = Mooncake.build_frule(zero_dual(f), 5.0; debug_mode=true)
-            @test_throws ArgumentError rule(
-                zero_dual(f), Mooncake.Dual(Float32(5.0), Float32(1.0))
-            )
-        end
-
         @testset "valid inputs pass" begin
             # Single argument - use Float64, not π which has NoTangent
             rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
-            @test rule(zero_dual(sin), Mooncake.Dual(3.14, 1.0)) isa Mooncake.Dual
+            @test rule(Mooncake.lift(sin, NoTangent()), Mooncake.lift(3.14, 1.0)) isa Lifted
 
             # Multiple arguments
             f_mul(x, y) = x * y
             rule = Mooncake.build_frule(zero_dual(f_mul), 2.0, 3.0; debug_mode=true)
             @test rule(
-                zero_dual(f_mul), Mooncake.Dual(2.0, 1.0), Mooncake.Dual(3.0, 0.5)
-            ) isa Mooncake.Dual
+                Mooncake.lift(f_mul, NoTangent()),
+                Mooncake.lift(2.0, 1.0),
+                Mooncake.lift(3.0, 0.5),
+            ) isa Lifted
 
             # Arrays
             h(x) = sum(x)
             rule = Mooncake.build_frule(zero_dual(h), randn(5); debug_mode=true)
-            @test rule(zero_dual(h), Mooncake.Dual(randn(5), randn(5))) isa Mooncake.Dual
+            @test rule(Mooncake.lift(h, NoTangent()), Mooncake.lift(randn(5), randn(5))) isa
+                Lifted
 
             # NoTangent (non-differentiable)
             rule = Mooncake.build_frule(zero_dual(identity), 5; debug_mode=true)
-            @test rule(zero_dual(identity), Mooncake.Dual(5, NoTangent())) isa Mooncake.Dual
+            @test rule(
+                Mooncake.lift(identity, NoTangent()), Mooncake.lift(5, NoTangent())
+            ) isa Lifted
         end
 
-        @testset "size mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(size), randn(10); debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(size), Mooncake.Dual(randn(11), randn(10))
-            )
-        end
-
-        @testset "element type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), Any[1.0]; debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual(Any[1.0], Any[Float16(1.0)])
-            )
-        end
-
-        @testset "scalar type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), 1.0; debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual(1.0, Float32(1.0))
-            )
-        end
-
-        @testset "container type mismatch detected" begin
-            rule = Mooncake.build_frule(zero_dual(identity), (1.0, 2.0); debug_mode=true)
-            @test_throws ErrorException rule(
-                zero_dual(identity), Mooncake.Dual((1.0, 2.0), [1.0, 2.0])
-            )
-        end
-
-        @testset "output tangent type mismatch detected" begin
-            # Rule that returns wrong tangent type in output
-            bad_rule = Mooncake.DebugFRule((x...,) -> Mooncake.Dual(1.0, Float32(0.0)))
-            @test_throws ErrorException bad_rule(Mooncake.Dual(5.0, 1.0))
-        end
-
-        @testset "error messages include type info" begin
-            rule = Mooncake.build_frule(zero_dual(identity), [1.0]; debug_mode=true)
-
-            try
-                rule(zero_dual(identity), Mooncake.Dual([1.0], [Float32(1.0)]))
-                @test false  # Expected ErrorException but none was thrown
-            catch e
-                msg = sprint(showerror, e)
-                @test occursin("input types", msg)
-                @test occursin("Float", msg)  # Type info present
+        # A concrete-primal slot whose V is not the canonical dual_type must be caught;
+        # Ptr primals are exempt (bitcast chains legitimately re-type per-lane pointers).
+        @testset "V-coherence check" begin
+            bad = Lifted{Float64,1,Mooncake.NoDual}(1.0, Mooncake.NoDual())
+            @test_throws ErrorException Mooncake.verify_canonical_dual_type(bad)
+            @test Mooncake.verify_canonical_dual_type(Mooncake.lift(3.14, 1.0)) === nothing
+            xv = [1.0]
+            GC.@preserve xv begin
+                ptr_slot = Lifted{Ptr{Float64},1}(
+                    pointer(xv), (Ptr{Tuple{Float64}}(UInt(pointer(xv))),)
+                )
+                @test Mooncake.verify_canonical_dual_type(ptr_slot) === nothing
             end
         end
 

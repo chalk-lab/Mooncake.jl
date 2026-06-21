@@ -17,6 +17,14 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
+# Degree-of-freedom count (forward gradient/Jacobian seeding) of a MistyClosure tangent: only
+# the differentiable `captures_tangent` carries scalar DOFs. `dual_callable` is the compiled
+# dual rule (an OpaqueClosure/MistyClosure), not a tangent — walking it generically recurses
+# unboundedly into compiled IR (e.g. via the HVP `grad_f`), so it is skipped.
+@inline dof(t::MistyClosureTangent, seen::IdDict{Any,Any}) = dof(
+    getfield(t, :captures_tangent), seen
+)
+
 # Build a forward-mode rule for a MistyClosure using its original world age.
 #
 # We cannot use the current world age because the MistyClosure's IR (p.ir[]) has a
@@ -31,7 +39,7 @@ end
 # We pass skip_world_age_check=true since build_frule's safety check would incorrectly
 # reject our intentionally-older interpreter.
 #
-function _dual_mc(p::MistyClosure)
+function _dual_mc(p::MistyClosure, chunk_size::Int=1)
     @static if VERSION > v"1.12-"
         # Use the IR's valid_worlds.max_world instead of oc.world to avoid world age mismatch.
         # The oc.world can be slightly newer than valid_worlds.max_world if methods were
@@ -42,10 +50,42 @@ function _dual_mc(p::MistyClosure)
         mc_world = UInt(p.oc.world)
     end
     interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
-    return build_frule(interp, p; skip_world_age_check=true)
+    return build_frule(interp, p; skip_world_age_check=true, chunk_size)
 end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
+
+# Forward-mode V for a MistyClosure is its `MistyClosureTangent` — NOT the
+# generic structural lift of the closure's IR. In the *forward* slot the
+# `captures_tangent` field holds the already-lifted forward captures slot
+# (`Lifted{captures, V}`), built here at lift time rather than per `frule!!`
+# call. Building once is required for forward-over-reverse: a reverse rule's
+# `fwds_oc` and `pb_oc` share their captures, so they must share the forward
+# tangent buffer — which they do when both are lifted within one operation that
+# threads the aliasing cache `c` (keyed by the primal captures identity). The
+# `dual_callable` is the forward rule built by `_dual_mc`.
+@foldable @inline dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} =
+    MistyClosureTangent
+lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
+function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict})
+    lifted_captures = _lift_mc_captures(x.oc.captures, ẋ.captures_tangent, c)
+    return Lifted{typeof(x),1,MistyClosureTangent}(
+        x, MistyClosureTangent(lifted_captures, ẋ.dual_callable)
+    )
+end
+@inline _lift_mc_captures(captures, ct, ::Nothing) = lift(captures, ct)
+@inline _lift_mc_captures(captures, ct, c::IdDict) = get!(
+    () -> lift(captures, ct, c), c, captures
+)
+
+# Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
+# DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged.
+@inline function tangent(
+    x::Lifted{P,N,MistyClosureTangent}, lane::Integer
+) where {P<:MistyClosure,N}
+    v = x.value
+    return MistyClosureTangent(tangent(v.captures_tangent, lane), v.dual_callable)
+end
 
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(zero_tangent_internal(p.oc.captures, d), _dual_mc(p))
@@ -53,6 +93,32 @@ end
 
 function randn_tangent_internal(rng::AbstractRNG, p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(randn_tangent_internal(rng, p.oc.captures, d), _dual_mc(p))
+end
+
+# Forward-mode cache-aware seed factories. Like Complex/Memory, a MistyClosure has
+# fields but its own canonical V (`MistyClosureTangent`), not the generic structural
+# lift — so the cache-aware `_*_dual_internal` must build the tangent here rather than
+# recurse into the closure's internals (the `OpaqueClosure`'s `Ptr` and `captures::Any`
+# fields, which have no coherent V). Mirrors the reverse factories above; the forward
+# `captures_tangent` is a `Lifted` slot (as built by `lift`), cached by captures identity
+# so a reverse rule's shared `fwds_oc`/`pb_oc` captures get one tangent buffer.
+for internal in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $internal(w::Val{N}, p::MistyClosure, d::MaybeCache) where {N}
+        cap = p.oc.captures
+        haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p, N))
+        lc = Lifted{typeof(cap),N}(cap, $internal(w, cap, d))
+        d[cap] = lc
+        return MistyClosureTangent(lc, _dual_mc(p, N))
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, p::MistyClosure, d::MaybeCache
+) where {N}
+    cap = p.oc.captures
+    haskey(d, cap) && return MistyClosureTangent(d[cap], _dual_mc(p, N))
+    lc = Lifted{typeof(cap),N}(cap, _randn_dual_internal(w, rng, cap, d))
+    d[cap] = lc
+    return MistyClosureTangent(lc, _dual_mc(p, N))
 end
 
 function increment_internal!!(c::IncCache, t::T, s::T) where {T<:MistyClosureTangent}
@@ -194,9 +260,13 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
-function frule!!(f::Dual{<:MistyClosure}, x::Dual...)
-    dual_captures = Dual(primal(f).oc.captures, tangent(f).captures_tangent)
-    return tangent(f).dual_callable(dual_captures, x...)
+# The forward-slot `captures_tangent` already holds the lifted (and, in
+# forward-over-reverse, shared) forward captures slot built at lift time, so
+# forward it directly to the `_dual_mc`-built callable. Re-lifting here would
+# allocate a fresh, unshared buffer and silently zero the HVP.
+function frule!!(f::Lifted{<:MistyClosure,N}, x::Vararg{Lifted,M}) where {N,M}
+    t = tangent(f)
+    return t.dual_callable(t.captures_tangent, x...)
 end
 function rrule!!(f::CoDual{<:MistyClosure}, x::CoDual...)
     msg =

@@ -73,27 +73,19 @@ fcache = MC.prepare_derivative_cache(g, x_eval; config=MC.Config(chunk_size=2))
 val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 ```
 
-Passing `Config(chunk_size=2)` caps the forward chunk width used by this public cache path
-when it dispatches to `NfwdMooncake`. If `Nfwd` is not used, changing `chunk_size` is not
-useful. Leaving `chunk_size=nothing` keeps Mooncake's default heuristic. Cache
-construction stays passive, but a later `value_and_gradient!!` or
-`value_and_derivative!!` call may still fail at runtime if `nfwd` turns out not to
-support the function. In that case, rebuild the cache with `Config(enable_nfwd=false)` to
-force the `frule!!` (aka ir-based forward) path instead. `show(cache)` / `repr(cache)`
-also report whether the prepared `ForwardCache` is currently using `nfwd`.
-
-When a public cache path dispatches to `NfwdMooncake`, `value_and_gradient!!` remains the
-higher-level Mooncake interface. It may need to bridge richer user-facing inputs, such as
-custom structs, to the scalar/array/tuple nfwd signatures used internally, and it also
-does the usual cache checks and tangent zeroing. That extra interface work adds some
-overhead relative to calling `NfwdMooncake.build_rrule(...)(...)` directly on a supported
-nfwd signature over `IEEEFloat` / `Complex{<:IEEEFloat}` scalars, dense arrays with those
-element types, and tuples thereof.
+Passing `Config(chunk_size=2)` caps the forward chunk width `W`: the cache builds a native
+width-`W` `frule!!` that evaluates `W` directional derivatives per pass, and the gradient
+sweep runs `ceil(dof / W)` passes. Leaving `chunk_size=nothing` keeps Mooncake's default
+heuristic (`min(dof, 8)`). Chunking only applies to packable inputs — a non-differentiable
+`f` whose arguments are all `IEEEFloat` scalars or arrays; any other input shape (structs,
+tuples, complex element types, a differentiable `f`, …) is pinned to width 1 regardless of
+`chunk_size`. Cache construction stays passive (it transforms IR but does not
+run the function). `show(cache)` / `repr(cache)` report the resolved `chunk_size` and
+whether a width-`W` chunk rule was built (`chunk=true` once `dof > 1`).
 
 Separately, the Hessian path exposed by `prepare_hessian_cache` /
 `value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient
-closure. It does not currently use the public `NfwdMooncake` fast path, even though the
-outer layer is forward mode.
+closure.
 
 ## Jacobian example
 
@@ -121,7 +113,7 @@ julia> Mooncake.value_and_jacobian!!(cache, f, x)
 Mooncake.Config
 Mooncake.value_and_derivative!!
 Mooncake.value_and_gradient!!(::Mooncake.Cache, f::F, x::Vararg{Any, N}) where {F, N}
-Mooncake.value_and_gradient!!(::Mooncake.ForwardCache, f::F, x::Vararg{Any, N}) where {F, N}
+Mooncake.value_and_gradient!!(::Mooncake.FCache, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.value_and_jacobian!!
 Mooncake.value_and_pullback!!(::Mooncake.Cache, ȳ, f::F, x::Vararg{Any, N}) where {F, N}
 Mooncake.prepare_derivative_cache
