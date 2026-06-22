@@ -135,13 +135,16 @@ end
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
     setindex!(primal(d), primal(val), primal(key))
-    # Coerce via V so the tangent slot gets tangent_type(V), not tangent_type(typeof(val)).
-    tv = if tangent_type(V) == tangent_type(typeof(primal(val)))
-        tangent(val)
+    # `setindex!` above stored `convert(V, val)`, so the tangent slot is `tangent_type(V)`, not
+    # `tangent_type(typeof(val))`: NoTangent slot, zero for a non-diff value, else `tangent(val)`.
+    dslot = if tangent_type(V) == NoTangent
+        NoTangent()
+    elseif tangent_type(typeof(primal(val))) == NoTangent
+        zero_tangent(primal(d)[primal(key)])
     else
-        zero_tangent(convert(V, primal(val)))
+        tangent(val)
     end
-    setindex!(tangent(d), tv, primal(key))
+    setindex!(tangent(d), dslot, primal(key))
     return d
 end
 function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) where {K,V}
@@ -153,20 +156,32 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
     end
 
     setindex!(primal(d), primal(val), k)
-    # Coerce via V so the tangent slot gets tangent_type(V), not tangent_type(typeof(val)).
-    setindex!(tangent(d), zero_tangent(convert(V, primal(val))), k)
+    # `setindex!` above stored `convert(V, val)`, so the slot is `tangent_type(V)`. For a
+    # matched/abstract `V` the two-argument `zero_tangent` reuses `val`'s fdata to preserve
+    # aliasing for mutable values; a non-diff slot/value takes a fresh slot-typed zero.
+    dslot = if tangent_type(V) == NoTangent
+        NoTangent()
+    elseif tangent_type(typeof(primal(val))) == NoTangent
+        zero_tangent(primal(d)[k])
+    else
+        zero_tangent(primal(val), tangent(val))
+    end
+    setindex!(tangent(d), dslot, k)
 
     dval = lazy_zero_rdata(primal(val))
     dkey = lazy_zero_rdata(primal(key))
     function setindex_pb!!(::NoRData)
 
-        # If V and typeof(val) differ in differentiability, their rdata types don't match; val gets zero gradient.
-        _dval =
-            if rdata_type(tangent_type(V)) == rdata_type(tangent_type(typeof(primal(val))))
-                increment!!(instantiate(dval), rdata(tangent(d)[k]))
-            else
-                zero_rdata(primal(val))
-            end
+        # Map the slot cotangent back to `val`: zero if either side is non-diff, a direct
+        # increment for matched/abstract `V`, else undo the widening (`fptrunc` for floats).
+        S = tangent_type(typeof(primal(val)))
+        _dval = if tangent_type(V) == NoTangent || S == NoTangent
+            instantiate(dval)
+        elseif S <: tangent_type(V)
+            increment!!(instantiate(dval), rdata(tangent(d)[k]))
+        else
+            increment!!(instantiate(dval), convert(rdata_type(S), rdata(tangent(d)[k])))
+        end
 
         # Restore previous state if necessary.
         if restore_state
@@ -205,7 +220,8 @@ function rrule!!(
             dd[k] = increment_rdata!!(dd[k], dy)
             _rdefault = instantiate(rdefault)
         else
-            _rdefault = increment_rdata!!(instantiate(rdefault), dy)
+            # Key absent: `y === default`, so `dy` is exactly `default`'s cotangent.
+            _rdefault = dy
         end
         return NoRData(), NoRData(), instantiate(dkey), _rdefault
     end
@@ -253,11 +269,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :stability, nothing, Base.rehash!, IdDict(true => 5.0, false => 4.0), 10),
         (false, :none, nothing, setindex!, IdDict(true => 5.0, false => 4.0), 3.0, false),
         (false, :none, nothing, setindex!, IdDict(true => 5.0), 3.0, false),
-        # type-mismatched stores (typeof(val) ≠ V)
+        # type-mismatched stores (typeof(val) ≠ V): non-diff/diff slots, mutable & abstract
+        # values (aliasing), and a floating-point width change (fpext/fptrunc).
         (false, :none, nothing, setindex!, IdDict(:a => 1.0), 2, :b),
+        # interface_only: the finite-difference perturbation would break `convert(Int, ...)`.
         (true, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
+        (false, :none, nothing, setindex!, IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]), [3.0, 4.0], :b),
+        (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
+        (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
+        (false, :none, nothing, setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
+        # `get` returning a default (absent key) whose rdata type differs from its tangent type.
+        (false, :none, nothing, get, IdDict{Symbol,Vector{Float64}}(:a => [1.0]), :b, [2.0, 3.0]),
+        # interface_only: the non-differentiable default carries no derivative.
+        (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
         (false, :none, nothing, IdDict{Any,Any}),
     ]
