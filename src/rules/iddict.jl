@@ -274,14 +274,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict(:a => 1.0), 2, :b),
         # interface_only: the finite-difference perturbation would break `convert(Int, ...)`.
         (true, :none, nothing, setindex!, IdDict(:a => 1), 3.0, :b),
-        (false, :none, nothing, setindex!, IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]), [3.0, 4.0], :b),
+        (
+            false,
+            :none,
+            nothing,
+            setindex!,
+            IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
+            [3.0, 4.0],
+            :b,
+        ),
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.
-        (false, :none, nothing, get, IdDict{Symbol,Vector{Float64}}(:a => [1.0]), :b, [2.0, 3.0]),
+        (
+            false,
+            :none,
+            nothing,
+            get,
+            IdDict{Symbol,Vector{Float64}}(:a => [1.0]),
+            :b,
+            [2.0, 3.0],
+        ),
         # interface_only: the non-differentiable default carries no derivative.
         (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
