@@ -133,17 +133,37 @@ end
         for g in [x -> sum(x .^ 2), x -> prod(x), x -> sum(exp.(x))]
             Mooncake.prepare_gradient_cache(g, randn(10))
         end
-        n_before = length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache)
+        n_before = length(Mooncake.get_interpreter(Mooncake.ReverseMode).oc_cache)
         @test n_before > 0
 
         cache = Mooncake.prepare_gradient_cache(
             f, x; config=Mooncake.Config(empty_cache=true)
         )
-        @test length(Mooncake.GLOBAL_INTERPRETERS[Mooncake.ReverseMode].oc_cache) < n_before
+        @test length(Mooncake.get_interpreter(Mooncake.ReverseMode).oc_cache) < n_before
 
         # AD still correct after clearing.
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
+    end
+
+    @testset "get_interpreter caches per world" begin
+        # Repeated requests for the same world must return the same interpreter, so that
+        # Lazy/Dynamic rules rebuilding at a pinned world share one compiled-rule cache
+        # rather than recompiling from scratch each time.
+        w = Base.get_world_counter()
+        i1 = Mooncake.get_interpreter(ReverseMode, w)
+        i2 = Mooncake.get_interpreter(ReverseMode, w)
+        @test i1 === i2  # same world -> shared interpreter and its oc_cache
+        @test Mooncake.get_interpreter(ForwardMode, w) !== i1  # keyed by mode too
+
+        # The cache is bounded: requesting more distinct worlds than MAX_CACHED_WORLDS
+        # evicts the oldest.
+        for _ in 1:(Mooncake.MAX_CACHED_WORLDS + 2)
+            @eval $(gensym())() = nothing  # bump the world age
+            Mooncake.get_interpreter(ReverseMode, Base.get_world_counter())
+        end
+        n = count(k -> k[1] === ReverseMode, keys(Mooncake.GLOBAL_INTERPRETERS))
+        @test n <= Mooncake.MAX_CACHED_WORLDS
     end
 end

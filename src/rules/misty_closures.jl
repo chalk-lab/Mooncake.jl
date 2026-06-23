@@ -41,7 +41,7 @@ function _dual_mc(p::MistyClosure)
     else
         mc_world = UInt(p.oc.world)
     end
-    interp = MooncakeInterpreter(DefaultCtx, ForwardMode; world=mc_world)
+    interp = get_interpreter(ForwardMode, mc_world)
     return build_frule(interp, p; skip_world_age_check=true)
 end
 

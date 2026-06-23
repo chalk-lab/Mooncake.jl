@@ -15,6 +15,19 @@ struct ClosureCacheKey
     key::Any
 end
 
+# Build an `oc_cache` key from a build subject, debug flag, and differentiation mode. A
+# `Core.MethodInstance` subject is collapsed to its signature so that the same method reached
+# statically (via an `:invoke`, keyed by `MethodInstance`) and dynamically (keyed by a `Type`
+# signature) shares one cache entry instead of compiling twice. Other subjects -- `Type`
+# signatures and `MistyClosure`s, whose IR is not determined by their signature alone -- are
+# keyed by identity/equality as-is.
+function ClosureCacheKey(
+    world_age::UInt, @nospecialize(sig_or_mi), debug_mode::Bool, mode::Symbol
+)
+    subject = sig_or_mi isa Core.MethodInstance ? sig_or_mi.specTypes : sig_or_mi
+    return ClosureCacheKey(world_age, (subject, debug_mode, mode))
+end
+
 struct MooncakeCache
     dict::IdDict{Core.MethodInstance,Core.CodeInstance}
 end
@@ -328,40 +341,47 @@ end
 """
     const GLOBAL_INTERPRETERS
 
-Cached interpreters. Should only be accessed via `get_interpreter`.
+Cached interpreters, keyed by `(mode, world)`. Should only be accessed via `get_interpreter`.
+Bounded to the `MAX_CACHED_WORLDS` most-recent worlds per mode (see `get_interpreter`).
 """
-const GLOBAL_INTERPRETERS = Dict(
-    ForwardMode => MooncakeInterpreter(DefaultCtx, ForwardMode),
-    ReverseMode => MooncakeInterpreter(DefaultCtx, ReverseMode),
-)
+const GLOBAL_INTERPRETERS = Dict{Tuple{Type,UInt},MooncakeInterpreter}()
+
+# Guards mutation of `GLOBAL_INTERPRETERS`, which Lazy/Dynamic rules may hit concurrently
+# during multithreaded AD.
+const INTERPRETER_CACHE_LOCK = ReentrantLock()
+
+# Number of distinct world ages to retain per mode (the current world plus pinned older worlds
+# at which Lazy/Dynamic rules rebuild). Sized generously so interleaved computations pinned to
+# several worlds do not evict an interpreter whose `oc_cache` is still in use.
+const MAX_CACHED_WORLDS = 16
 
 """
-    get_interpreter(mode::Type{<:Mode})
+    get_interpreter(mode::Type{<:Mode}, world::UInt=Base.get_world_counter())
 
-Returns a `MooncakeInterpreter` appropriate for the current world age. Will use a cached
-interpreter if one already exists for the current world age, otherwise creates a new one.
+Returns a `MooncakeInterpreter` for `mode` pinned to `world` (the current world age by
+default). Interpreters are cached by `(mode, world)`, so repeated calls at the same world --
+including the pinned older worlds at which Lazy/Dynamic rules rebuild -- reuse one
+interpreter and share its compiled-rule cache rather than recompiling from scratch.
 
 This should be prefered over constructing a `MooncakeInterpreter` directly.
 """
-function get_interpreter(mode::Type{<:Mode})
-    if GLOBAL_INTERPRETERS[mode].world != Base.get_world_counter()
-        GLOBAL_INTERPRETERS[mode] = MooncakeInterpreter(DefaultCtx, mode)
+function get_interpreter(mode::Type{<:Mode}, world::UInt=Base.get_world_counter())
+    key = (mode, world)
+    @lock INTERPRETER_CACHE_LOCK begin
+        cached = get(GLOBAL_INTERPRETERS, key, nothing)
+        cached === nothing || return cached
+
+        # Evict the oldest worlds for this mode so the cache stays bounded. World ages
+        # increase monotonically, so the smallest retained world is the oldest.
+        worlds = sort!(UInt[w for (m, w) in keys(GLOBAL_INTERPRETERS) if m === mode])
+        while length(worlds) >= MAX_CACHED_WORLDS
+            delete!(GLOBAL_INTERPRETERS, (mode, popfirst!(worlds)))
+        end
+
+        interp = MooncakeInterpreter(DefaultCtx, mode; world)
+        GLOBAL_INTERPRETERS[key] = interp
+        return interp
     end
-    return GLOBAL_INTERPRETERS[mode]
-end
-
-"""
-    get_interpreter(mode::Type{<:Mode}, world::UInt)
-
-Returns a `MooncakeInterpreter` for `mode` pinned to `world`. When `world` is the current
-world age this is equivalent to `get_interpreter(mode)` (served from the process-wide cache).
-A non-current `world` (e.g. when a Lazy/Dynamic rule rebuilds at its stored prediction world)
-yields a fresh, uncached interpreter, leaving the shared current-world cache untouched.
-"""
-function get_interpreter(mode::Type{<:Mode}, world::UInt)
-    world == Base.get_world_counter() && return get_interpreter(mode)
-    # Pinned older world (Lazy/Dynamic rule rebuild): fresh, never cached.
-    return MooncakeInterpreter(DefaultCtx, mode; world)
 end
 
 """
