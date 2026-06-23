@@ -59,11 +59,11 @@ _model_name(f::MultiHeadAttention) = "MultiHeadAttention($(f.q_proj.in_dims))"
 const TEST_MODELS = Any[
     (false, _gpu_enabled, Dense(2, 4), randn(sr(1), P, 2, 3)),
     # tests for https://github.com/chalk-lab/Mooncake.jl/issues/563
-    # MultiHeadAttention → LuxLib.batched_matmul → Base.permutedims is not yet
-    # differentiable on GPU; requires an explicit rule for permutedims(::CuArray).
+    # MooncakeCUDAExt now has an explicit rrule!! for Base.permutedims(::CuArray),
+    # which is called by LuxLib.batched_matmul in the MultiHeadAttention path.
     (
         true,
-        _gpu_disabled,
+        _gpu_enabled,
         MultiHeadAttention(4; attention_dropout_probability=0.1f0),
         randn(sr(1), P, 4, 4, 1),
     ),

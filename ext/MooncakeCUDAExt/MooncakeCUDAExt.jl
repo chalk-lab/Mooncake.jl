@@ -1379,25 +1379,77 @@ function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
     )
 end
 
-# vcat / hcat / cat on CuArrays are not yet supported — give a clear error rather than
-# letting Mooncake attempt to trace through opaque CUDA memory kernels.
-for (_fn, _supports_kwargs) in ((:vcat, false), (:hcat, false), (:cat, true))
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Vararg{Union{CuArray,Number}}})
-    if _supports_kwargs
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...; kwargs...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
-        @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...; kwargs...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
-    else
-        @eval frule!!(::Dual{typeof($_fn)}, args::Dual...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
-        @eval rrule!!(::CoDual{typeof($_fn)}, args::CoDual...) = _throw_gpu_argument_error(
-            "Mooncake: $($_fn) on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
+# vcat / hcat / cat on CuArrays.
+# frule:    tangent of concatenation = concatenation of tangents (concat is linear).
+# pullback: selectdim returns a view (no allocation per slice); running-offset loop
+#           avoids pre-allocating an offsets array.
+@inline function _cu_concat_pb!(fdatas, dy_out, dim)
+    offset = 0
+    for i in eachindex(fdatas)
+        n = size(fdatas[i], dim)
+        fdatas[i] .+= selectdim(dy_out, dim, (offset + 1):(offset + n))
+        offset += n
     end
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{CuMaybeComplexArray}})
+function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuMaybeComplexArray}...)
+    return Dual(vcat(map(primal, args)...), vcat(map(tangent, args)...))
+end
+function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeComplexArray}...)
+    primals = map(primal, args)
+    fdatas = map(tangent, args)
+    out = vcat(primals...)
+    dy_out = zero(out)
+    pb!!(::NoRData) =
+        (_cu_concat_pb!(fdatas, dy_out, 1); (NoRData(), map(_ -> NoRData(), args)...))
+    return CoDual(out, dy_out), pb!!
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{CuMaybeComplexArray}})
+function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuMaybeComplexArray}...)
+    return Dual(hcat(map(primal, args)...), hcat(map(tangent, args)...))
+end
+function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeComplexArray}...)
+    primals = map(primal, args)
+    fdatas = map(tangent, args)
+    out = hcat(primals...)
+    dy_out = zero(out)
+    pb!!(::NoRData) =
+        (_cu_concat_pb!(fdatas, dy_out, 2); (NoRData(), map(_ -> NoRData(), args)...))
+    return CoDual(out, dy_out), pb!!
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuMaybeComplexArray}}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(cat)},
+    args::Dual{<:CuMaybeComplexArray}...,
+)
+    pkw = primal(kw)
+    return Dual(cat(map(primal, args)...; pkw...), cat(map(tangent, args)...; pkw...))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(cat)},
+    args::CoDual{<:CuMaybeComplexArray}...,
+)
+    pkw = primal(kw)
+    dim = pkw.dims
+    primals = map(primal, args)
+    fdatas = map(tangent, args)
+    out = cat(primals...; pkw...)
+    dy_out = zero(out)
+    pb!!(::NoRData) = (
+        _cu_concat_pb!(fdatas, dy_out, dim);
+        (NoRData(), NoRData(), NoRData(), map(_ -> NoRData(), args)...)
+    )
+    return CoDual(out, dy_out), pb!!
 end
 
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
@@ -2679,6 +2731,30 @@ function rrule!!(
     end
 
     return dest, materialize!_pb!!
+end
+
+# Rules for `permutedims(x, perm)` on CuArrays.
+# frule:    permute the tangent with the same permutation — permutedims is linear.
+# pullback: permute the output cotangent with the inverse permutation.
+@is_primitive(MinimalCtx, Tuple{typeof(permutedims),CuMaybeComplexArray,Any})
+function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:CuMaybeComplexArray}, perm::Dual)
+    px, dx = arrayify(x)
+    pperm = primal(perm)
+    return Dual(permutedims(px, pperm), permutedims(dx, pperm))
+end
+function rrule!!(
+    ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeComplexArray}, perm::CoDual
+)
+    px, dx = arrayify(x)
+    pperm = primal(perm)
+    y = permutedims(px, pperm)
+    dy_out = zero(y)
+    iperm = invperm(pperm)
+    function permutedims_pb!!(::NoRData)
+        dx .+= permutedims(dy_out, iperm)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), permutedims_pb!!
 end
 
 end

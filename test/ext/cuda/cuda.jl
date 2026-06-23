@@ -213,6 +213,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _cu_cx_slice_adj_mul(x, cy) = real(sum(cu(x[:, 1])' * cy))
         _bcast_cx_mixed(x, y) = sum(abs2, x .^ 2 .+ y)
         _vcat_cu_sum(x, y) = sum(vcat(x, y))
+        _hcat_cu_sum(x, y) = sum(hcat(x, y))
+        _cat_cu_sum(d) = (x, y) -> sum(cat(x, y; dims=d))
+        _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -559,6 +562,75 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4),
             ),
+            # vcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8),
+                _rand(rng, Float32, 4),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8, 3),
+                _rand(rng, Float32, 4, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float64, 6),
+                _rand(rng, Float64, 6),
+            ),
+            # hcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float64, 4, 3),
+                _rand(rng, Float64, 4, 2),
+            ),
+            # cat on CuArrays (dims kwarg)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(2),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            # permutedims on CuArrays
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1, 3)),
+                _rand(rng, Float32, 4, 6, 3),
+            ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
                                         test_cases
@@ -886,17 +958,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 x = _rand(rng, Float32, 4)
                 y = CuArray(randn(rng, ComplexF32, 4))
                 @test_throws r"GPU broadcast over arrays with mixed element types" value_and_gradient!!(
-                    prepare_gradient_cache(f, x, y), f, x, y
-                )
-            end
-
-            # vcat/hcat/cat on CuArrays are not yet differentiable — explicit rules throw
-            # rather than letting Mooncake trace into opaque CUDA memory kernels.
-            @testset "vcat CuArray not differentiable" begin
-                f = _vcat_cu_sum
-                x = _rand(rng, Float32, 4)
-                y = _rand(rng, Float32, 4)
-                @test_throws r"vcat on CuArray is not yet differentiable" value_and_gradient!!(
                     prepare_gradient_cache(f, x, y), f, x, y
                 )
             end
