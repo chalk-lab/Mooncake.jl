@@ -22,13 +22,11 @@ const _gpu_disabled = false
 #   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
 #      explicit rules:
 #        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
-#        • Base.permutedims(::CuArray) — called by LuxLib.batched_matmul in the
-#          MultiHeadAttention path; needs an explicit rule
-#        • GroupNorm / InstanceNorm — call varm or similar statistics functions;
-#          same scalar-closure GPU sum issue as LayerNorm
+#        • Base.permutedims(::CuArray) — fixed in MooncakeCUDAExt; MHA now enabled
+#        • SkipConnection with vcat — fixed in MooncakeCUDAExt; now enabled
+#        • GroupNorm / InstanceNorm — call Statistics.varm; needs an rrule!! for varm
 #        • StatefulRecurrentCell (RNN/LSTM/GRU) — state mutation (setfield! on cell)
 #          not yet differentiable on GPU
-#        • SkipConnection with vcat — CPU/GPU tangent mismatch in vcat
 #      Fix: add an rrule!! or @zero_derivative for the operator (see fill!,
 #      unsafe_copyto! in MooncakeCUDAExt.jl for the pattern).
 #
@@ -111,7 +109,7 @@ const TEST_MODELS = Any[
     ),
     (false, _gpu_enabled, Maxout(() -> Dense(5 => 4, tanh), 3), randn(sr(12), P, 5, 2)),
     (false, _gpu_enabled, Bilinear((2, 2) => 3), randn(sr(13), P, 2, 3)),
-    (false, _gpu_enabled, SkipConnection(Dense(2 => 2), vcat), randn(sr(14), P, 2, 3)),  # vcat: CPU/GPU tangent mismatch
+    (false, _gpu_enabled, SkipConnection(Dense(2 => 2), vcat), randn(sr(14), P, 2, 3)),
     (
         false,
         _gpu_enabled,
