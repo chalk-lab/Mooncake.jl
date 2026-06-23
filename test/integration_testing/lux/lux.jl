@@ -111,7 +111,7 @@ const TEST_MODELS = Any[
     ),
     (false, _gpu_enabled, Maxout(() -> Dense(5 => 4, tanh), 3), randn(sr(12), P, 5, 2)),
     (false, _gpu_enabled, Bilinear((2, 2) => 3), randn(sr(13), P, 2, 3)),
-    (false, _gpu_disabled, SkipConnection(Dense(2 => 2), vcat), randn(sr(14), P, 2, 3)),  # vcat: CPU/GPU tangent mismatch
+    (false, _gpu_enabled, SkipConnection(Dense(2 => 2), vcat), randn(sr(14), P, 2, 3)),  # vcat: CPU/GPU tangent mismatch
     (
         false,
         _gpu_enabled,
