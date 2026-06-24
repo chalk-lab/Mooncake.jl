@@ -664,7 +664,9 @@ end
                 length(blk.insts)
             end
             sentinel = (Int32(123), Int32(45), Int32(6))
-            inst = CC.NewInstruction(nothing, Any, CC.NoCallInfo(), sentinel, CC.IR_FLAG_REFINED)
+            inst = CC.NewInstruction(
+                nothing, Any, CC.NoCallInfo(), sentinel, CC.IR_FLAG_REFINED
+            )
             blocks[1] = CFGBlock(
                 blk.id,
                 Mooncake.insert_before_terminator(
