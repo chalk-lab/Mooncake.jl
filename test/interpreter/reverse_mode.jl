@@ -538,7 +538,7 @@ end
 
 # --- Working-IR layer (CFGBlock etc.) ---
 # The working IR lives in src/interpreter/reverse_mode.jl (shared primitives in
-# ir_utils.jl), so its tests live here too (merged from the former cfg_blocks.jl).
+# ir_utils.jl), so its tests live here too (merged from the former bbcode.jl).
 module CFGBlocksTestCases
 test_phi_node(x::Ref{Union{Float32,Float64}}) = sin(x[])
 end
@@ -645,6 +645,44 @@ end
         out = lower_cfg_blocks_to_ir(blocks, ir; argtypes=custom)
         @test out.argtypes isa Vector{Any}
         @test out.argtypes == Any[typeof(sin), Float64]
+    end
+    @static if VERSION > v"1.12-"
+        @testset "codelocs consistent after instruction insertion" begin
+            # In 1.12+, codelocs (and stmts.line) pack 3 Int32 per instruction, so an
+            # n-instruction IRCode has 3n entries that must stay aligned across the round-trip
+            # even when instructions are inserted (regression test for Mooncake.jl#1216).
+            ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
+            n_orig = length(ir.stmts)
+            orig_ir_codelocs = copy(ir.debuginfo.codelocs)
+            blocks = _ircode_to_cfg_blocks(ir)
+
+            # Insert a recognisable instruction before the first block's terminator.
+            blk = blocks[1]
+            insert_idx = if isnothing(Mooncake.terminator(blk))
+                length(blk.insts) + 1
+            else
+                length(blk.insts)
+            end
+            sentinel = (Int32(123), Int32(45), Int32(6))
+            inst = CC.NewInstruction(nothing, Any, CC.NoCallInfo(), sentinel, CC.IR_FLAG_REFINED)
+            blocks[1] = CFGBlock(
+                blk.id,
+                Mooncake.insert_before_terminator(
+                    Mooncake.collect_stmts(blk), Mooncake.IDInstPair[(ID(), inst)]
+                ),
+            )
+            new_ir = lower_cfg_blocks_to_ir(blocks, ir)
+            n = length(new_ir.stmts)
+            insert_range = (3insert_idx - 2):(3insert_idx)
+
+            @test n == n_orig + 1
+            @test length(new_ir.stmts.line) == 3n
+            @test length(new_ir.debuginfo.codelocs) == 3n
+            @test Tuple(new_ir.stmts.line[insert_range]) == sentinel
+            # Conversion must not mutate the source `ir`'s debug info.
+            @test new_ir.debuginfo.codelocs !== ir.debuginfo.codelocs
+            @test ir.debuginfo.codelocs == orig_ir_codelocs
+        end
     end
     @testset "control_flow_graph" begin
         ir = Base.code_ircode_by_type(Tuple{typeof(sin),Float64})[1][1]

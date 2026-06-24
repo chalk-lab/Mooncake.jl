@@ -74,11 +74,13 @@ Once the forward and reverse CFGs are assembled, `lower_cfg_blocks_to_ir` turns 
 coherent compiler `IRCode`. This step
 handles the mechanical reconstruction work in one place:
 
-- canonicalizing the local CFG
-- pruning unreachable blocks
+- removing redundant double edges
 - lowering switch-style control flow into compiler-compatible terminators
 - rebuilding SSA numbering and block numbering
 - constructing a fresh `Core.Compiler.IRCode`
+
+(Unreachable-block pruning is done separately by `_remove_unreachable_cfg_blocks!` during CFG
+assembly, not here.)
 
 After that, [`generate_ir`](@ref Mooncake.generate_ir) can run the usual optimization pass on
 both results and wrap them into opaque closures for the final derived reverse rule.

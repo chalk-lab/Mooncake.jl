@@ -232,7 +232,7 @@ For example, consider
 julia> using Mooncake: ID # to improve printing
 
 julia> blocks[3].insts[1]
-Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (0, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (9, 2, 1), 0x00002478)
 ```
 This is the first instruction of the third basic block.
 The first field is a call to `Base.add_int`, the second field is `Int64` (we promise that the other fields are just copies of the corresponding data from the `Core.Compiler.InstructionStream` in the original `IRCode` representation of this IR).
@@ -323,7 +323,7 @@ share the underlying `insts` arrays). A `CFGBlock` is immutable, but its `insts`
 julia> blocks_copy = copy.(blocks);
 
 julia> old_inst = blocks_copy[3].insts[2]
-Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (3, 0, 0), 0x00002478)
+Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (13, 3, 1), 0x00002478)
 
 julia> new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
 :((Core.Intrinsics.add_int)(ID(1), ID(5)))
@@ -439,11 +439,11 @@ julia> lower_cfg_blocks_to_ir(blocks_copy, ir)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #4 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 └──      goto #2
-  4 ─      return %2
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2
 ```
 We see here that `IRCode` and the `CFGBlock` representation involve similar levels of complexity to insert an instruction.
 
@@ -481,13 +481,13 @@ julia> lower_cfg_blocks_to_ir(blocks_copy, ir)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 └──      goto #2
-  4 ─        dynamic (println)(%2)::Any
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+2 4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-  5 ─      return %2
+8 5 ─      return %2
 ```
 Observe that, in this case, rather than creating `new_bb` and then inserting instructions into it, we simply create the block _with_ the instructions.
 This programming style is often more convenient.
@@ -526,14 +526,14 @@ julia> new_ir = lower_cfg_blocks_to_ir(blocks_copy, ir)
   │   %3 = φ (#1 => 0, #3 => %7)::Int64
   │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
   └──      goto #5 if not %4
-5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
-6 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
-7 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
-8 │   %9 =   dynamic (iseven)(%2)::Any
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+2 │   %9 =   dynamic (iseven)(%2)::Any
   └──      goto #2 if not %9
   4 ─        dynamic (println)(%2)::Any
   └──      goto #2
-  5 ─      return %2
+8 5 ─      return %2
 ```
 Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the `ID` associated to the instruction which computes the conditional appears in the `IDGotoIfNot` instruction.
 

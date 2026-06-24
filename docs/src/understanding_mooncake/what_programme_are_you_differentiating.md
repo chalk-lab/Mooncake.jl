@@ -192,7 +192,7 @@ that new value, producing ``(W, X, Y, XW)``.
     \operatorname{ret}(W, X, Y, \hat{Y}, \varepsilon, l) :=&\, l \nonumber
 \end{align}
 ```
-In words, our mathematical model for `linear_regression_loss` is the composition of four differentiable functions. The first three map from a tuple containing all variables seen so far, to a tuple containing the same variables _and_ the value returned by the operation being modeled, and the fourth simply reads off the elements of the final tuple which were passed in as arguments, and the return value.
+In words, our mathematical model for `linear_regression_loss` is the composition of four differentiable functions. The first three map from a tuple containing all variables seen so far, to a tuple containing the same variables _and_ the value returned by the operation being modeled, and the fourth simply reads off the final element of the tuple, namely the return value.
 
 In general, we model the ``n``th Julia `function` _call_ with a function ``\varphi_n`` mapping from a tuple of ``D`` elements to a tuple of ``D + 1`` elements, of the form
 ```math

@@ -334,7 +334,23 @@ Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`
 """
 function new_inst_vec(x::CC.InstructionStream)
     stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
-    return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    @static if VERSION > v"1.12-"
+        # In Julia 1.12+, x.line is a flat Vector{Int32} of length 3n (3 codeloc values per
+        # instruction). Construct each NewInstruction with its proper Tuple{Int32,Int32,Int32}
+        # line field by reading the 3 entries for instruction i at positions 3i-2, 3i-1, 3i.
+        n = length(stmt)
+        return [
+            NewInstruction(
+                stmt[i],
+                x.type[i],
+                x.info[i],
+                (x.line[3i - 2], x.line[3i - 1], x.line[3i]),
+                x.flag[i],
+            ) for i in 1:n
+        ]
+    else
+        return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+    end
 end
 
 # Maps from positional names (SSAValues for nodes, Integers for basic blocks) to IDs.
@@ -429,15 +445,13 @@ function lower_cfg_blocks_to_ir(blks::Vector{CFGBlock}, ir::IRCode; argtypes=ir.
     cfg = control_flow_graph(blks)
     insts = _lines_to_blocks(insts, cfg)
     @static if VERSION > v"1.12-"
-        lines = CC.copy(ir.debuginfo.codelocs)
-        n = length(insts)
-        if length(lines) > 3n
-            resize!(lines, 3n)
-        elseif length(lines) < 3n
-            for _ in (length(lines) + 1):3n
-                push!(lines, 0)
-            end
-        end
+        # Reconstruct codelocs from each instruction's own line field (a Tuple{Int32,Int32,Int32}
+        # in Julia 1.12+). This is always 3n entries by construction, regardless of how many
+        # instructions were added or removed while assembling the AD blocks, keeping the debug
+        # info aligned with the instruction stream (see Mooncake.jl#1216).
+        lines = Int32[v for inst in insts for v in inst.line]
+        debuginfo = CC.copy(ir.debuginfo)
+        debuginfo.codelocs = lines
         return IRCode(
             CC.InstructionStream(
                 Any[x.stmt for x in insts],
@@ -447,7 +461,7 @@ function lower_cfg_blocks_to_ir(blks::Vector{CFGBlock}, ir::IRCode; argtypes=ir.
                 UInt32[x.flag for x in insts],
             ),
             cfg,
-            CC.copy(ir.debuginfo),
+            debuginfo,
             Any[argtypes...],
             CC.copy(ir.meta),
             CC.copy(ir.sptypes),
