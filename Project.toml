@@ -50,7 +50,6 @@ MooncakeLogExpFunctionsExt = "LogExpFunctions"
 MooncakeLuxLibExt = ["LuxLib", "MLDataDevices", "Static"]
 MooncakeLuxLibSLEEFPiratesExtension = ["LuxLib", "SLEEFPirates"]
 MooncakeLuxLibNNlibExt = ["LuxLib", "NNlib"]
-MooncakeNNlibCUDAExt = ["NNlib", "CUDA"]
 MooncakeNNlibExt = ["NNlib", "LinearAlgebra"]
 MooncakeSpecialFunctionsExt = "SpecialFunctions"
 

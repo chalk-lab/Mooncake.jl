@@ -168,7 +168,7 @@ const TEST_MODELS = [
         "ConvTranspose((3, 3), 3 => 2)",
     ),
     (_gpu_disabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
-    (_gpu_enabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),
+    (_gpu_disabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),
     (
         _gpu_enabled,
         first ∘ MultiHeadAttention(16),
