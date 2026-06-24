@@ -744,6 +744,40 @@ The pullback exit block is responsible for:
 These blocks are worth calling out explicitly because they explain why the generated forward and
 reverse CFGs do not look like simple block-for-block reversals of the primal CFG.
 
+### Lazy zero-rdata: typed zeros for untouched arguments
+
+The two bullets above — the forward entry initializing placeholders, the pullback exit
+materializing zeros — are the two halves of one mechanism.
+
+**Purpose.** The pullback must return a cotangent for *every* argument, including arguments (or
+sub-fields of arguments) that the forward pass never reads and which therefore accumulate no
+reverse data. For those it must still produce a correctly *typed* zero rdata, so the returned
+cotangent tuple has the type the caller expects.
+
+**Why a placeholder is needed.** For many types the zero rdata is recoverable from the type
+alone (`zero_rdata_from_type(P)`; the zero rdata of `Float64` is `0.0`). But some types cannot —
+the canonical case is a struct with an abstractly-typed field, where the concrete zero depends
+on the runtime value. The forward pass is the only point at which a concrete instance of each
+argument is guaranteed to exist, so the typed-zero fallback must be captured *there*, on the way
+in — an untouched argument has no value left to inspect by the time the pullback runs.
+
+**Mechanism.** On the forward entry, `__assemble_lazy_zero_rdata` builds one `LazyZeroRData` per
+argument and stores the tuple in a `Ref` held in the captures (the `lazy_zero_rdata_ref_id`).
+`LazyZeroRData{P,Tdata}` has two regimes:
+
+- **lazy** (`Tdata == Nothing`): the zero is type-derivable, so it stores nothing — a singleton
+  value — and `instantiate` recomputes the zero from `P` at pullback exit;
+- **eager**: the zero is not type-derivable, so the instance-dependent `zero_rdata(p)` is
+  computed on the forward pass and stored, and `instantiate` simply returns it.
+
+At the pullback exit, any argument that received no contribution is filled in by calling
+`instantiate` on its placeholder. (The same `instantiate` path is also used at rule boundaries:
+`RRuleZeroWrapper`/`RRuleWrapperPb` do `increment!!(dy, instantiate(l))` to turn a placeholder
+`ZeroRData` into a real typed zero before it can reach a rule.) Because the lazy case is a
+singleton, the common path stores nothing and is optimized away — see
+[Writing Custom Tangent Types](@ref) for the `fdata`/`rdata` split this builds on, and
+`src/tangents/fwds_rvs_data.jl` for the definitions.
+
 ## Forward-to-Reverse Communication
 
 Forward and reverse code do not communicate through a single channel. The current design uses
@@ -825,6 +859,27 @@ In short, the three communication mechanisms are:
 1. captures shared by both closures for static build-time data
 2. per-block comms stacks for dynamic forward values such as pullback objects
 3. the block stack for replaying dynamic control flow on the reverse pass
+
+### Captures hold containers; their contents flow at runtime
+
+Mechanisms 2 and 3 ride on top of mechanism 1, so it is worth being precise about what is
+actually captured. Each piece of bookkeeping follows one pattern — the container is captured
+shared state, while its contents are produced on the forward pass and consumed on the reverse
+pass:
+
+| Concern | Captured (container, in shared-data tuple) | Runtime contents (produced fwd, consumed rev) |
+|---|---|---|
+| Dynamic control flow | block stack | block IDs taken, on data-dependent paths only |
+| Cross-pass forward values | comms stack(s), one per block | tuples of forward values, chiefly pullback objects |
+| Unused-argument zeros | lazy-zero-rdata `Ref` | typed zeros (eager case) / nothing (lazy, type-derivable case) |
+
+The containers are fixed once, when the closures are built; their contents are never capture
+slots of their own. The contents travel through the shared container *by reference* — the
+forward and reverse closures hold the *same* stack object, so a `push!` on the forward side is
+visible to the `pop!` on the reverse side. Where a container's element type is a singleton — a
+stateless pullback, a statically-determined control-flow edge, a type-derivable zero — the
+container collapses to nothing (e.g. a `SingletonStack`) and nothing is stored, which is how the
+design preserves the primal's allocation profile.
 
 ## Concept-to-Helper Map
 
