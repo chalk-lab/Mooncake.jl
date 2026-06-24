@@ -1,6 +1,6 @@
 # Reverse-Mode Design
 
-Last checked: 20/06/2026, Julia v1.10 / v1.11 / v1.12.
+Last checked: 24/06/2026, Julia v1.10 / v1.11 / v1.12.
 
 This page gives a high-level map of how Mooncake's reverse-mode transform is structured.
 It is aimed at readers who want to understand the main ideas before reading the implementation.
@@ -646,6 +646,70 @@ to `bb2`. No stack traffic is needed for that edge.
 
 This optimization matters because dynamic control-flow logging is only needed where the forward
 execution path loses information that the pullback must recover later.
+
+### MWE 5: Multiple return points
+
+The MWEs above all deal with interior control flow: which predecessor edge the reverse pass takes
+back inside the function. The block stack plays one more role: deciding *where the pullback
+starts*. The forward pass leaves through whichever `return` actually ran, so the pullback must
+enter at the reverse counterpart of that same block.
+
+With a single `return` this is static: there is only one exit block (a primal block ending in a
+`return`), so the pullback entry can hard-code it. But a primal with more than one reachable
+`return`, for example an early return, has several exit blocks:
+
+```text
+bb1:
+    if cond goto bb2 else bb3
+
+bb2:
+    return y2
+
+bb3:
+    return y3
+```
+
+`bb1` is the unique predecessor of both `bb2` and `bb3`, so it is never logged. But `bb2` and
+`bb3` are both reachable return blocks, and as soon as there is more than one of them neither is a
+unique predecessor: control can leave the function through either. So each logs its ID on the
+way out:
+
+```text
+fwd_bb1:
+    branch on primal(cond)
+
+fwd_bb2:
+    push!(block_stack, bb2)
+    return codual(y2)
+
+fwd_bb3:
+    push!(block_stack, bb3)
+    return codual(y3)
+```
+
+At the moment the forward pass returns, the top of the block stack is therefore the ID of the
+return block that actually fired. The pullback entry block pops it and dispatches to the matching
+reverse block. This is the same `make_switch_stmts` used for join blocks, only applied to the set
+of exit blocks rather than to one block's predecessors:
+
+```text
+pullback_entry:
+    ... load shared data, create reverse-data refs ...
+    prev = pop!(block_stack)
+    if prev == bb2
+        goto rvs_bb2
+    else
+        goto rvs_bb3
+```
+
+From that entry point the reverse pass proceeds as usual: `rvs_bb2` (or `rvs_bb3`) accumulates the
+return cotangent into the right reverse-data reference, then jumps to `rvs_bb1`, its unique
+predecessor, with no further stack traffic.
+
+This is why `make_switch_stmts` is told whether there is exactly one exit block: with a single
+return it emits a static jump and skips the pop entirely. The forward pass keys its push off the
+same unique-exit test, so neither side touches the block stack unless there is genuine ambiguity
+about which return ran.
 
 ## Entry and Exit Blocks
 
