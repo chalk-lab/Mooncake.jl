@@ -1067,6 +1067,20 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(cpu2, tcpu2),
                     Mooncake.Dual(gpu2, tgpu2),
                 )
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu2, tgpu2),
+                    Mooncake.Dual(cpu2, tcpu2),
+                )
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu2, tcpu2),
+                    Mooncake.Dual(gpu2, tgpu2),
+                )
             end
         end
     else
