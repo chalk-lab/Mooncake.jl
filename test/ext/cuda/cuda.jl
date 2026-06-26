@@ -998,6 +998,31 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     prepare_gradient_cache(f, x, cy), f, x, cy
                 )
             end
+
+            @testset "mixed GPU/CPU cat guards" begin
+                gpu1 = _rand(rng, Float32, 4)
+                cpu1 = _host_rand(rng, Float32, 4)
+                gpu2 = _rand(rng, Float32, 4, 3)
+                cpu2 = _host_rand(rng, Float32, 4, 3)
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu1), _vcat_cu_sum, gpu1, cpu1
+                )
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, cpu1, gpu1), _vcat_cu_sum, cpu1, gpu1
+                )
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu2), _hcat_cu_sum, gpu2, cpu2
+                )
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_hcat_cu_sum, cpu2, gpu2), _hcat_cu_sum, cpu2, gpu2
+                )
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_cat_cu_sum(1), gpu2, cpu2), _cat_cu_sum(1), gpu2, cpu2
+                )
+                @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
+                    prepare_gradient_cache(_cat_cu_sum(1), cpu2, gpu2), _cat_cu_sum(1), cpu2, gpu2
+                )
+            end
         end
     else
         println("Tests are skipped because no CUDA device was found.")

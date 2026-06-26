@@ -1452,6 +1452,90 @@ function rrule!!(
     return CoDual(out, dy_out), pb!!
 end
 
+# Guards: mixed GPU/CPU arguments. The all-CuArray rules above are more specific in
+# Julia dispatch and win for pure-GPU calls. These fire when one argument is a CuArray
+# and the other is a plain CPU array, giving a clear error instead of an opaque CUDA
+# failure. Covers the two-argument case (the common Flux/Lux pattern).
+@noinline function _throw_mixed_cat_error(fn)
+    _throw_gpu_argument_error(
+        "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU (Array) " *
+        "arguments. All arrays must be on the same device as mixing causes hidden " *
+        "GPU-to-CPU copies in the pullback which hurt performance. " *
+        "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
+    )
+end
+
+for _fn in (:vcat, :hcat)
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeComplexArray,AbstractArray})
+    @eval function frule!!(
+        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeComplexArray}, ::Dual{<:AbstractArray}
+    )
+        _throw_mixed_cat_error($_fn)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeComplexArray}, ::CoDual{<:AbstractArray}
+    )
+        _throw_mixed_cat_error($_fn)
+    end
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),AbstractArray,CuMaybeComplexArray})
+    @eval function frule!!(
+        ::Dual{typeof($_fn)}, ::Dual{<:AbstractArray}, ::Dual{<:CuMaybeComplexArray}
+    )
+        _throw_mixed_cat_error($_fn)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof($_fn)}, ::CoDual{<:AbstractArray}, ::CoDual{<:CuMaybeComplexArray}
+    )
+        _throw_mixed_cat_error($_fn)
+    end
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeComplexArray,AbstractArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    ::Dual{typeof(cat)},
+    ::Dual{<:CuMaybeComplexArray},
+    ::Dual{<:AbstractArray},
+)
+    _throw_mixed_cat_error(cat)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(cat)},
+    ::CoDual{<:CuMaybeComplexArray},
+    ::CoDual{<:AbstractArray},
+)
+    _throw_mixed_cat_error(cat)
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),AbstractArray,CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    ::Dual{typeof(cat)},
+    ::Dual{<:AbstractArray},
+    ::Dual{<:CuMaybeComplexArray},
+)
+    _throw_mixed_cat_error(cat)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(cat)},
+    ::CoDual{<:AbstractArray},
+    ::CoDual{<:CuMaybeComplexArray},
+)
+    _throw_mixed_cat_error(cat)
+end
+
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
 # than at the individual cuBLAS primitive level (gemm!, gemv!, gemmEx!, symm!, ...).
 # This gives broad coverage of the LinearAlgebra.mul! dispatch chain with just two
