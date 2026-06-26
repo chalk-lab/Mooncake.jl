@@ -1459,8 +1459,8 @@ end
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
         "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU (Array) " *
-        "arguments. All arrays must be on the same device as mixing causes hidden " *
-        "GPU-to-CPU copies in the pullback which hurt performance. " *
+        "arguments. All arrays must be on the same device : mixing causes hidden " *
+        "GPU-to-CPU copies during backpropagation which hurts performance. " *
         "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
     )
 end

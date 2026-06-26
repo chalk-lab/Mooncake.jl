@@ -1004,23 +1004,68 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 cpu1 = _host_rand(rng, Float32, 4)
                 gpu2 = _rand(rng, Float32, 4, 3)
                 cpu2 = _host_rand(rng, Float32, 4, 3)
+                tgpu1 = Mooncake.zero_tangent(gpu1)
+                tcpu1 = Mooncake.zero_tangent(cpu1)
+                tgpu2 = Mooncake.zero_tangent(gpu2)
+                tcpu2 = Mooncake.zero_tangent(cpu2)
+
+                # rrule!! (reverse-mode) guards
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu1), _vcat_cu_sum, gpu1, cpu1
+                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu1),
+                    _vcat_cu_sum,
+                    gpu1,
+                    cpu1,
                 )
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_vcat_cu_sum, cpu1, gpu1), _vcat_cu_sum, cpu1, gpu1
+                    prepare_gradient_cache(_vcat_cu_sum, cpu1, gpu1),
+                    _vcat_cu_sum,
+                    cpu1,
+                    gpu1,
                 )
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu2), _hcat_cu_sum, gpu2, cpu2
+                    prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu2),
+                    _hcat_cu_sum,
+                    gpu2,
+                    cpu2,
                 )
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_hcat_cu_sum, cpu2, gpu2), _hcat_cu_sum, cpu2, gpu2
+                    prepare_gradient_cache(_hcat_cu_sum, cpu2, gpu2),
+                    _hcat_cu_sum,
+                    cpu2,
+                    gpu2,
                 )
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_cat_cu_sum(1), gpu2, cpu2), _cat_cu_sum(1), gpu2, cpu2
+                    prepare_gradient_cache(_cat_cu_sum(1), gpu2, cpu2),
+                    _cat_cu_sum(1),
+                    gpu2,
+                    cpu2,
                 )
                 @test_throws r"mixed GPU.*CPU" value_and_gradient!!(
-                    prepare_gradient_cache(_cat_cu_sum(1), cpu2, gpu2), _cat_cu_sum(1), cpu2, gpu2
+                    prepare_gradient_cache(_cat_cu_sum(1), cpu2, gpu2),
+                    _cat_cu_sum(1),
+                    cpu2,
+                    gpu2,
+                )
+                # frule!! (forward-mode) guards
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu1, tcpu1),
+                )
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu1, tcpu1),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu2, tgpu2),
+                    Mooncake.Dual(cpu2, tcpu2),
+                )
+                @test_throws r"mixed GPU.*CPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu2, tcpu2),
+                    Mooncake.Dual(gpu2, tgpu2),
                 )
             end
         end
