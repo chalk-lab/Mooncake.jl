@@ -216,6 +216,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
+        # Wrappers for Statistics.varm GPU rule tests.
+        _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
+        _varm_sum_d2(x, m) = sum(varm(x, m; dims=2, corrected=true))
+        # Wrappers for Statistics.mean GPU rule tests.
+        _mean_sum_d1(x) = sum(mean(x; dims=1))
+        _mean_sum_d2(x) = sum(mean(x; dims=2))
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -1344,6 +1350,56 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 # else should fail loudly rather than silently misbehave.
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim(1.0)
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim((1, 2.0))
+            end
+        end
+
+        @testset "Statistics.varm GPU rule" begin
+            # varm(x, m; dims, corrected) — used by LayerNorm / GroupNorm / InstanceNorm
+            # via LuxLib.Impl.mean_var → var → varm. Test both frule!! and rrule!! through
+            # wrapper functions; is_primitive=false because the wrapper is not a primitive.
+            @testset "dims=1, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                test_rule(
+                    StableRNG(1), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=2, corrected=true (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 4, 1)
+                test_rule(
+                    StableRNG(2), _varm_sum_d2, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1, corrected=false (Float64)" begin
+                x = _rand(rng, Float64, 4, 3)
+                m = _rand(rng, Float64, 1, 3)
+                test_rule(
+                    StableRNG(3), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+        end
+
+        @testset "Statistics.mean GPU rule" begin
+            # mean(x; dims) on CuArrays. GPUArrays._mean calls sum(Fix1(*,λ), x; dims)
+            # which Mooncake cannot trace. Explicit primitive computes sum(x; dims) / n.
+            @testset "dims=1 (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(4), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=2 (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(5), _mean_sum_d2, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1 (Float64)" begin
+                x = _rand(rng, Float64, 4, 3)
+                test_rule(
+                    StableRNG(6), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
             end
         end
     else
