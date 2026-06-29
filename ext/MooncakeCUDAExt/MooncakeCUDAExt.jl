@@ -31,6 +31,7 @@ using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
+import Statistics: mean, varm
 import Mooncake:
     MinimalCtx,
     DefaultCtx,
@@ -2754,7 +2755,7 @@ function rrule!!(
 end
 
 # mean(x; dims) on CuArrays. GPUArrays overrides Statistics._mean to call
-# sum(Base.Fix1(*,λ), x; dims) — a mapreduce with a captured Float32 scalar — which
+# sum(Base.Fix1(*,λ), x; dims) : a mapreduce with a captured Float32 scalar which
 # Mooncake cannot trace (hits cufunction Base.@lock try/finally). Treated as a
 # primitive: μ = sum(x; dims) / n, ∂x = ∂μ / n (broadcast).
 

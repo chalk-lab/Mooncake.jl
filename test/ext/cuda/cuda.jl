@@ -946,7 +946,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
 
         @testset "Statistics.varm GPU rule" begin
-            # varm(x, m; dims, corrected) — used by LayerNorm / GroupNorm / InstanceNorm
+            # varm(x, m; dims, corrected) : used by LayerNorm / GroupNorm / InstanceNorm
             # via LuxLib.Impl.mean_var → var → varm. Test both frule!! and rrule!! through
             # wrapper functions; is_primitive=false because the wrapper is not a primitive.
             @testset "dims=1, corrected=false (Float32)" begin
