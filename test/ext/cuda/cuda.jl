@@ -78,7 +78,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
-        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1e-3)
+        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)
         _bcast_sum_sin(x) = sum(sin.(x))
         _bcast_sum_pow7(x) = sum(x .^ 7)
         _bcast_sum_log(x) = sum(log.(x))
@@ -212,7 +212,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # They are used in the "unsupported operations" testset below.
         _cu_cx_slice_adj_mul(x, cy) = real(sum(cu(x[:, 1])' * cy))
         _bcast_cx_mixed(x, y) = sum(abs2, x .^ 2 .+ y)
-        _vcat_cu_sum(x, y) = sum(vcat(x, y))
+        _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _hcat_cu_sum(x, y) = sum(hcat(x, y))
         _cat_cu_sum(d) = (x, y) -> sum(cat(x, y; dims=d))
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
@@ -295,7 +295,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     _rand(rng, ComplexF64, 16, 32),
                     _rand(rng, ComplexF64, 16, 8),
                     _rand(rng, ComplexF64, 8, 32),
-                )]
+                ),]
             else
                 []
             end)...,
@@ -1080,6 +1080,89 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(cat, Mooncake.NoTangent()),
                     Mooncake.Dual(cpu2, tcpu2),
                     Mooncake.Dual(gpu2, tgpu2),
+                )
+
+                # N-arg (3-arg) mixed guards: GPU-first and CPU-first variants.
+                cpu1b = _host_rand(rng, Float32, 4)
+                tcpu1b = Mooncake.zero_tangent(cpu1b)
+                @test_throws r"mixed GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu1, cpu1b),
+                    _vcat_cu_sum,
+                    gpu1,
+                    cpu1,
+                    cpu1b,
+                )
+                @test_throws r"mixed GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, cpu1, gpu1, cpu1b),
+                    _vcat_cu_sum,
+                    cpu1,
+                    gpu1,
+                    cpu1b,
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu1, tcpu1),
+                    Mooncake.Dual(cpu1b, tcpu1b),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu1, tcpu1),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu1b, tcpu1b),
+                )
+                # GPU at position 3: previously missed by positional guards, now caught by
+                # _throw_if_any_cu scanning all positions via dispatch.
+                @test_throws r"mixed GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, cpu1, cpu1b, gpu1),
+                    _vcat_cu_sum,
+                    cpu1,
+                    cpu1b,
+                    gpu1,
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu1, tcpu1),
+                    Mooncake.Dual(cpu1b, tcpu1b),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+
+                # Scalar (Number) mixing guards.
+                s = 1.0f0
+                ts = zero(s)
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
                 )
             end
         end

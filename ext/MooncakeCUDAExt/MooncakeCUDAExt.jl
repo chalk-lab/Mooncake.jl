@@ -191,7 +191,7 @@ end
 # immutable structs does not apply here — construct a null device pointer directly.
 function zero_tangent_internal(x::CuPtr{T}, ::MaybeCache) where {T}
     tangent_type(T) === NoTangent && return NoTangent()
-    CuPtr{tangent_type(T)}(UInt64(0))
+    return CuPtr{tangent_type(T)}(UInt64(0))
 end
 
 # unsafe_convert(::Type{CuPtr{T}}, x::CuArray{T}):
@@ -446,7 +446,7 @@ tangent_type(::Type{<:CuArray{<:Union{Integer,Bool}}}, ::Type{NoRData}) = NoTang
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
 function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
-    (x, dx)
+    return (x, dx)
 end
 
 function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
@@ -1390,6 +1390,18 @@ end
         fdatas[i] .+= selectdim(dy_out, dim, (offset + 1):(offset + n))
         offset += n
     end
+    return nothing
+end
+
+_unwrap_cat_dim(d::Integer) = d
+_unwrap_cat_dim(::Val{N}) where {N} = N
+function _unwrap_cat_dim(d)
+    throw(
+        ArgumentError(
+            "Mooncake: cat requires dims to be an Integer or Val{N}; " *
+            "got dims=$(d). Tuple dims are not supported in the backward pass.",
+        ),
+    )
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{CuMaybeComplexArray}})
@@ -1440,7 +1452,7 @@ function rrule!!(
     args::CoDual{<:CuMaybeComplexArray}...,
 )
     pkw = primal(kw)
-    dim = pkw.dims
+    dim = _unwrap_cat_dim(pkw.dims)
     primals = map(primal, args)
     fdatas = map(tangent, args)
     out = cat(primals...; pkw...)
@@ -1452,39 +1464,121 @@ function rrule!!(
     return CoDual(out, dy_out), pb!!
 end
 
-# Guards: mixed GPU/CPU arguments. The all-CuArray rules above are more specific in
-# Julia dispatch and win for pure-GPU calls. These fire when one argument is a CuArray
-# and the other is a plain CPU array, giving a clear error instead of an opaque CUDA
-# failure. Covers the two-argument case (the common Flux/Lux pattern).
+# Mixed-device guards and CPU fallbacks for vcat/hcat/cat.
+# The Vararg{CuMaybeComplexArray} rules above are the hot path for pure-GPU calls.
+# The rules below handle everything else: mixed GPU/CPU inputs throw a clear error
+# (rather than an opaque CUDA failure from cufunction's try/finally block), and
+# pure-CPU inputs get a correct explicit pullback via _cu_concat_pb!.
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
-        "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU (Array) " *
+        "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU " *
         "arguments. All arrays must be on the same device; mixing causes hidden " *
         "GPU-to-CPU copies during backpropagation which hurt performance. " *
         "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
     )
 end
 
+# Dispatch-based scanner: finds a CuMaybeComplexArray at any argument position.
+# Julia specialises each call on the concrete primal types, so no isa checks are needed.
+# Pure-GPU calls never reach here — Vararg{CuMaybeComplexArray} is more specific and wins.
+@inline _throw_if_any_cu(fn, ::CuMaybeComplexArray, _...) = _throw_mixed_cat_error(fn)
+@inline _throw_if_any_cu(fn, ::AbstractArray, rest...) = _throw_if_any_cu(fn, rest...)
+@inline _throw_if_any_cu(fn) = nothing
+
+# Vararg{AbstractArray} rules for vcat, hcat, and cat. These are less specific than the
+# Vararg{CuMaybeComplexArray} rules above, so pure-GPU calls still dispatch to those rules.
+# For mixed GPU/CPU calls _throw_if_any_cu detects the CuArray at any position and throws.
+# For pure-CPU calls the rules compute correct pullbacks using the same _cu_concat_pb! helper.
+@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{AbstractArray}})
+function frule!!(::Dual{typeof(vcat)}, args::Dual{<:AbstractArray}...)
+    primals = map(primal, args)
+    _throw_if_any_cu(vcat, primals...)
+    return Dual(vcat(primals...), vcat(map(tangent, args)...))
+end
+function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:AbstractArray}...)
+    primals = map(primal, args)
+    _throw_if_any_cu(vcat, primals...)
+    fdatas = map(tangent, args)
+    out = vcat(primals...)
+    dy_out = zero(out)
+    pb!!(::NoRData) =
+        (_cu_concat_pb!(fdatas, dy_out, 1); (NoRData(), map(_ -> NoRData(), args)...))
+    return CoDual(out, dy_out), pb!!
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{AbstractArray}})
+function frule!!(::Dual{typeof(hcat)}, args::Dual{<:AbstractArray}...)
+    primals = map(primal, args)
+    _throw_if_any_cu(hcat, primals...)
+    return Dual(hcat(primals...), hcat(map(tangent, args)...))
+end
+function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:AbstractArray}...)
+    primals = map(primal, args)
+    _throw_if_any_cu(hcat, primals...)
+    fdatas = map(tangent, args)
+    out = hcat(primals...)
+    dy_out = zero(out)
+    pb!!(::NoRData) =
+        (_cu_concat_pb!(fdatas, dy_out, 2); (NoRData(), map(_ -> NoRData(), args)...))
+    return CoDual(out, dy_out), pb!!
+end
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{AbstractArray}},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(cat)},
+    args::Dual{<:AbstractArray}...,
+)
+    primals = map(primal, args)
+    _throw_if_any_cu(cat, primals...)
+    pkw = primal(kw)
+    return Dual(cat(primals...; pkw...), cat(map(tangent, args)...; pkw...))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(cat)},
+    args::CoDual{<:AbstractArray}...,
+)
+    primals = map(primal, args)
+    _throw_if_any_cu(cat, primals...)
+    pkw = primal(kw)
+    dim = _unwrap_cat_dim(pkw.dims)
+    fdatas = map(tangent, args)
+    out = cat(primals...; pkw...)
+    dy_out = zero(out)
+    pb!!(::NoRData) = (
+        _cu_concat_pb!(fdatas, dy_out, dim);
+        (NoRData(), NoRData(), NoRData(), map(_ -> NoRData(), args)...)
+    )
+    return CoDual(out, dy_out), pb!!
+end
+
+# GPU+scalar guards: Number <: AbstractArray is false so the Vararg{AbstractArray} rules
+# above do not cover vcat/hcat/cat mixing a CuArray with a scalar operand.
 for _fn in (:vcat, :hcat)
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeComplexArray,AbstractArray})
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeComplexArray,Number})
     @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeComplexArray}, ::Dual{<:AbstractArray}
+        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeComplexArray}, ::Dual{<:Number}
     )
         _throw_mixed_cat_error($_fn)
     end
     @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeComplexArray}, ::CoDual{<:AbstractArray}
+        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeComplexArray}, ::CoDual{<:Number}
     )
         _throw_mixed_cat_error($_fn)
     end
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),AbstractArray,CuMaybeComplexArray})
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Number,CuMaybeComplexArray})
     @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:AbstractArray}, ::Dual{<:CuMaybeComplexArray}
+        ::Dual{typeof($_fn)}, ::Dual{<:Number}, ::Dual{<:CuMaybeComplexArray}
     )
         _throw_mixed_cat_error($_fn)
     end
     @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:AbstractArray}, ::CoDual{<:CuMaybeComplexArray}
+        ::CoDual{typeof($_fn)}, ::CoDual{<:Number}, ::CoDual{<:CuMaybeComplexArray}
     )
         _throw_mixed_cat_error($_fn)
     end
@@ -1492,14 +1586,14 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeComplexArray,AbstractArray},
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeComplexArray,Number},
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
     ::Dual{<:CuMaybeComplexArray},
-    ::Dual{<:AbstractArray},
+    ::Dual{<:Number},
 )
     _throw_mixed_cat_error(cat)
 end
@@ -1508,20 +1602,20 @@ function rrule!!(
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
     ::CoDual{<:CuMaybeComplexArray},
-    ::CoDual{<:AbstractArray},
+    ::CoDual{<:Number},
 )
     _throw_mixed_cat_error(cat)
 end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),AbstractArray,CuMaybeComplexArray},
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Number,CuMaybeComplexArray},
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
-    ::Dual{<:AbstractArray},
+    ::Dual{<:Number},
     ::Dual{<:CuMaybeComplexArray},
 )
     _throw_mixed_cat_error(cat)
@@ -1530,7 +1624,7 @@ function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
-    ::CoDual{<:AbstractArray},
+    ::CoDual{<:Number},
     ::CoDual{<:CuMaybeComplexArray},
 )
     _throw_mixed_cat_error(cat)
@@ -2045,14 +2139,14 @@ end
 # `slot` (1-indexed, out of N total slots).  Non-differentiable types (Int, Bool, …)
 # pass through unchanged so NDual arithmetic still works (e.g. x .^ 7).
 @inline function _gpu_bcast_dual(x::T, slot::Int, ::Val{N}) where {T<:IEEEFloat,N}
-    NDual{T,N}(x, ntuple(j -> T(j == slot), Val(N)))
+    return NDual{T,N}(x, ntuple(j -> T(j == slot), Val(N)))
 end
 @inline _gpu_bcast_dual(x, ::Int, ::Any) = x  # non-differentiable: pass through
 
 @inline function _gpu_bcast_dual(
     x::Complex{ET}, slot_re::Int, slot_im::Int, ::Val{N}
 ) where {ET<:IEEEFloat,N}
-    Complex(
+    return Complex(
         NDual{ET,N}(real(x), ntuple(j -> ET(j == slot_re), Val(N))),
         NDual{ET,N}(imag(x), ntuple(j -> ET(j == slot_im), Val(N))),
     )
@@ -2094,7 +2188,7 @@ end
 # One fused GPU kernel: evaluates f and all partial derivatives simultaneously.
 # Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
 function _gpu_broadcast_dual(f::F, args...) where {F}
-    ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
+    return ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
 
 # Map each broadcast leaf arg to a representative scalar element so that
@@ -2116,7 +2210,7 @@ end
 end
 
 @inline function _gpu_extract_partial_slots(out, n_slots::Int)
-    [broadcast(o -> Nfwd._nfwd_dual_partial(o, k), out) for k in 1:n_slots]
+    return [broadcast(o -> Nfwd._nfwd_dual_partial(o, k), out) for k in 1:n_slots]
 end
 
 @inline function _gpu_decode_ndual_meta(out, flat_pargs; extract_partials::Bool=false)
@@ -2310,20 +2404,20 @@ end
 # Reverse mode: accumulate `contrib` (same shape as broadcast output) into leaf fdata.
 # Unbroadcast before accumulating so that broadcast-expanded inputs get the correct shape.
 @inline function _leaf_accum_fdata!(pa::CuMaybeComplexArray, fd::CuArray, contrib)
-    fd .+= _unbroadcast(contrib, size(pa))
+    return fd .+= _unbroadcast(contrib, size(pa))
 end
 @inline function _leaf_accum_fdata!(
     pa::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
 )
-    _fields(fd).parent .+= adjoint(_unbroadcast(contrib, size(pa)))
+    return _fields(fd).parent .+= adjoint(_unbroadcast(contrib, size(pa)))
 end
 @inline function _leaf_accum_fdata!(
     pa::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
 )
-    _fields(fd).parent .+= transpose(_unbroadcast(contrib, size(pa)))
+    return _fields(fd).parent .+= transpose(_unbroadcast(contrib, size(pa)))
 end
 @inline function _leaf_accum_fdata!(_, diff::_GpuBroadcastCastDiff, contrib)
-    _leaf_accum_fdata!(
+    return _leaf_accum_fdata!(
         diff.primal_arg, diff.diff_arg, _gpu_cast_back_like(diff.primal_arg, contrib)
     )
 end
@@ -2414,7 +2508,7 @@ function _gpu_collect_scalar_map(bc::Broadcasted, scalar_index::Ref{Int})
 end
 
 function _gpu_collect_scalar_map_args(args::Tuple, scalar_index::Ref{Int})
-    ntuple(length(args)) do i
+    return ntuple(length(args)) do i
         a = args[i]
         if a isa Broadcasted
             _gpu_collect_scalar_map(a, scalar_index)
@@ -2452,7 +2546,7 @@ end
 function _gpu_fill_args_rdata(
     zargs::Tuple, args::Tuple, scalar_map::Tuple, scalar_grads::AbstractVector
 )
-    ntuple(length(args)) do i
+    return ntuple(length(args)) do i
         za = zargs[i]
         a = args[i]
         scalar_meta = scalar_map[i]
