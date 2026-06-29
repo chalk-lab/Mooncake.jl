@@ -180,8 +180,11 @@ const TEST_MODELS = Any[
         Chain(Conv((3, 3), 2 => 6, tanh), BatchNorm(6)),
         randn(sr(28), P, 6, 6, 2, 2),
     ),
-    # GroupNorm GPU AD is disabled: calls varm → sum(centralizedabs2fun(m), x); same
-    # scalar-closure GPU sum issue as LayerNorm.
+    # GroupNorm calls varm via LuxLib.Impl.mean_var → var → varm. 2D inputs (sr(29),
+    # sr(30)) are disabled on GPU: LuxLib's groupnorm_affine_normalize_internal! CUDA
+    # kernel calls rsqrt which does not support the complex-valued perturbations used by
+    # Mooncake's correctness checker, causing a DomainError during the Correctness test.
+    # 4D spatial inputs (sr(31), sr(32)) use a different kernel path and are unaffected.
     (
         false,
         _gpu_disabled,
@@ -191,44 +194,44 @@ const TEST_MODELS = Any[
     (false, _gpu_disabled, Chain(Dense(2, 4), GroupNorm(4, 2)), randn(sr(30), P, 2, 3)),
     (
         false,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6), GroupNorm(6, 3)),
         randn(sr(31), P, 6, 6, 2, 2),
     ),
     (
         false,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6, tanh), GroupNorm(6, 3)),
         randn(sr(32), P, 6, 6, 2, 2),
     ),
-    # LayerNorm calls varm → sum(centralizedabs2fun(m), x); requires a GPU rrule!! for
-    # Statistics.varm and/or other methods before GPU AD can be supported.
+    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
+    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
     (
         false,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 3, gelu), LayerNorm((1, 1, 3))),
         randn(sr(33), P, 4, 4, 2, 2),
     ),
-    # InstanceNorm GPU AD is disabled: same varm / scalar-closure GPU sum issue as
-    # GroupNorm and LayerNorm.
-    (false, _gpu_disabled, InstanceNorm(6), randn(sr(34), P, 6, 6, 2, 2)),
+    # InstanceNorm calls varm via the same path as GroupNorm and LayerNorm. Enabled by
+    # the Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    (false, _gpu_enabled, InstanceNorm(6), randn(sr(34), P, 6, 6, 2, 2)),
     (
         false,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6), InstanceNorm(6)),
         randn(sr(35), P, 6, 6, 2, 2),
     ),
     (
         false,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6, tanh), InstanceNorm(6)),
         randn(sr(36), P, 6, 6, 2, 2),
     ),
     # From Flux TEST_MODELS: Scale with non-default activation (abs2)
     (false, _gpu_enabled, Scale(4, abs2), randn(sr(37), P, 4, 3)),
-    # LayerNorm calls varm → sum(centralizedabs2fun(m), x); requires a GPU rrule!! for
-    # Statistics.varm and/or other methods before GPU AD can be supported.
-    (false, _gpu_disabled, LayerNorm(2), randn(sr(38), P, 2, 10)),
+    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
+    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    (false, _gpu_enabled, LayerNorm(2), randn(sr(38), P, 2, 10)),
     # From Flux TEST_MODELS: standalone BatchNorm — same batchnorm_cudnn! issue.
     (true, _gpu_disabled, BatchNorm(2), randn(sr(39), P, 2, 10)),
     # From Flux TEST_MODELS: Float64 parameters and inputs

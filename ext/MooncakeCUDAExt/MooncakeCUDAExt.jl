@@ -2681,4 +2681,130 @@ function rrule!!(
     return dest, materialize!_pb!!
 end
 
+# varm(x, m; corrected, dims) on CuArrays. Norm layers (LayerNorm, GroupNorm,
+# InstanceNorm) call LuxLib.Impl.mean_var → var → varm. The generic varm path
+# uses mapreduce with a closure over the differentiable CuArray m, which hits
+# _check_gpu_sum_f. Treated as a primitive here with the adjoint computed directly:
+#   ∂x = 2(x − m) / (n − corrected) · dσ²,  ∂m = −sum(∂x; dims)
+
+import Statistics: mean, varm
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(Core.kwcall),NamedTuple,typeof(varm),CuMaybeComplexArray,CuMaybeComplexArray
+    },
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(varm)},
+    x::Dual{<:CuMaybeComplexArray},
+    m::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px = primal(x)
+    dx = tangent(x)
+    pm = primal(m)
+    dm = tangent(m)
+    corrected = get(pkw, :corrected, true)
+    _dims = if pkw.dims isa Integer
+        (pkw.dims,)
+    elseif pkw.dims isa Colon
+        ntuple(identity, ndims(px))
+    else
+        pkw.dims
+    end
+    n = prod(d -> size(px, d), _dims)
+    diff = px .- pm
+    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
+    dσ² = sum(diff .* (dx .- dm); dims=_dims) .* (eltype(px)(2) / (n - Int(corrected)))
+    return Dual(σ², dσ²)
+end
+
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(varm)},
+    x::CoDual{<:CuMaybeComplexArray},
+    m::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    pm, dm = arrayify(m)
+    corrected = get(pkw, :corrected, true)
+    _dims = if pkw.dims isa Integer
+        (pkw.dims,)
+    elseif pkw.dims isa Colon
+        ntuple(identity, ndims(px))
+    else
+        pkw.dims
+    end
+    n = prod(d -> size(px, d), _dims)
+    coeff = eltype(px)(2) / (n - Int(corrected))
+    diff = px .- pm
+    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
+    dσ² = zero(σ²)
+    function varm_pb!!(::NoRData)
+        dx .+= coeff .* dσ² .* diff
+        dm .-= coeff .* dσ² .* sum(diff; dims=_dims)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(σ², dσ²), varm_pb!!
+end
+
+# mean(x; dims) on CuArrays. GPUArrays overrides Statistics._mean to call
+# sum(Base.Fix1(*,λ), x; dims) — a mapreduce with a captured Float32 scalar — which
+# Mooncake cannot trace (hits cufunction Base.@lock try/finally). Treated as a
+# primitive: μ = sum(x; dims) / n, ∂x = ∂μ / n (broadcast).
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(mean)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px = primal(x)
+    dx = tangent(x)
+    _dims = if pkw.dims isa Integer
+        (pkw.dims,)
+    elseif pkw.dims isa Colon
+        ntuple(identity, ndims(px))
+    else
+        pkw.dims
+    end
+    n = prod(d -> size(px, d), _dims)
+    μ = sum(px; dims=_dims) ./ n
+    dμ = sum(dx; dims=_dims) ./ n
+    return Dual(μ, dμ)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(mean)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    _dims = if pkw.dims isa Integer
+        (pkw.dims,)
+    elseif pkw.dims isa Colon
+        ntuple(identity, ndims(px))
+    else
+        pkw.dims
+    end
+    n = prod(d -> size(px, d), _dims)
+    μ = sum(px; dims=_dims) ./ n
+    dμ = zero(μ)
+    function mean_pb!!(::NoRData)
+        dx .+= dμ ./ n
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(μ, dμ), mean_pb!!
+end
+
 end
