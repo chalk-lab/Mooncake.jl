@@ -13,7 +13,7 @@ using Mooncake.TestUtils:
     test_rule,
     test_frule_interface,
     test_rrule_interface
-using LinearAlgebra
+using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
