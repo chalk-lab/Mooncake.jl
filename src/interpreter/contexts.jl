@@ -154,9 +154,7 @@ Observe that `is_primitive` returns `false` for the world age prior to declaring
 primitive, but `true` afterwards. For more information on Julia's world age mechanism, see
 https://docs.julialang.org/en/v1/manual/methods/#Redefining-Methods .
 """
-function is_primitive(
-    ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
-) where {Tsig<:Tuple}
+function is_primitive(ctx::Type{MinimalCtx}, mode::Type{<:Mode}, sig, world::UInt)
     @nospecialize sig
     try
         Base.invoke_in_world(world, _is_primitive, ctx, mode, sig)::Bool
@@ -170,9 +168,7 @@ function is_primitive(
     end
 end
 
-function is_primitive(
-    ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig::Type{Tsig}, world::UInt
-) where {Tsig<:Tuple}
+function is_primitive(ctx::Type{DefaultCtx}, mode::Type{<:Mode}, sig, world::UInt)
     @nospecialize sig
     # This function returns `true` if the method is a primitive in either 
     # `DefaultCtx` _or_ `MinimalCtx`.

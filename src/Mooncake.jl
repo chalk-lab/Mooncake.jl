@@ -109,7 +109,7 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-build_primitive_frule(::Type{<:Tuple}) = frule!!
+build_primitive_frule(@nospecialize(sig::Type)) = frule!!
 
 """
     rrule!!(f::CoDual, x::CoDual...)
@@ -166,7 +166,7 @@ callable `struct` with type parameters which are the result of this computation.
 context, the motivation for using this function is the same as that of using staged
 programming (e.g. via `@generated` functions) more generally.
 """
-build_primitive_rrule(::Type{<:Tuple}) = rrule!!
+build_primitive_rrule(@nospecialize(sig::Type)) = rrule!!
 
 #! format: off
 @stable default_mode = "disable" default_union_limit = 2 begin
@@ -179,9 +179,6 @@ include("debug_mode.jl")
 include("stack.jl")
 
 @unstable begin
-include(joinpath("interpreter", "bbcode.jl"))
-using .BasicBlockCode
-
 include(joinpath("interpreter", "contexts.jl"))
 include(joinpath("interpreter", "abstract_interpretation.jl"))
 include(joinpath("interpreter", "patch_for_319.jl"))
