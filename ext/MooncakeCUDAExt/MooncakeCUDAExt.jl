@@ -2688,8 +2688,6 @@ end
 # _check_gpu_sum_f. Treated as a primitive here with the adjoint computed directly:
 #   ∂x = 2(x − m) / (n − corrected) · dσ²,  ∂m = −sum(∂x; dims)
 
-import Statistics: mean, varm
-
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -2709,12 +2707,13 @@ function frule!!(
     pm = primal(m)
     dm = tangent(m)
     corrected = get(pkw, :corrected, true)
-    _dims = if pkw.dims isa Integer
-        (pkw.dims,)
-    elseif pkw.dims isa Colon
+    _raw_dims = get(pkw, :dims, :)
+    _dims = if _raw_dims isa Integer
+        (_raw_dims,)
+    elseif _raw_dims isa Colon
         ntuple(identity, ndims(px))
     else
-        pkw.dims
+        _raw_dims
     end
     n = prod(d -> size(px, d), _dims)
     diff = px .- pm
@@ -2734,30 +2733,30 @@ function rrule!!(
     px, dx = arrayify(x)
     pm, dm = arrayify(m)
     corrected = get(pkw, :corrected, true)
-    _dims = if pkw.dims isa Integer
-        (pkw.dims,)
-    elseif pkw.dims isa Colon
+    _raw_dims = get(pkw, :dims, :)
+    _dims = if _raw_dims isa Integer
+        (_raw_dims,)
+    elseif _raw_dims isa Colon
         ntuple(identity, ndims(px))
     else
-        pkw.dims
+        _raw_dims
     end
     n = prod(d -> size(px, d), _dims)
     coeff = eltype(px)(2) / (n - Int(corrected))
     diff = px .- pm
+    sum_diff = sum(diff; dims=_dims)
     σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
     dσ² = zero(σ²)
     function varm_pb!!(::NoRData)
         dx .+= coeff .* dσ² .* diff
-        dm .-= coeff .* dσ² .* sum(diff; dims=_dims)
+        dm .-= coeff .* dσ² .* sum_diff
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(σ², dσ²), varm_pb!!
 end
 
-# mean(x; dims) on CuArrays. GPUArrays overrides Statistics._mean to call
-# sum(Base.Fix1(*,λ), x; dims) : a mapreduce with a captured Float32 scalar which
-# Mooncake cannot trace (hits cufunction Base.@lock try/finally). Treated as a
-# primitive: μ = sum(x; dims) / n, ∂x = ∂μ / n (broadcast).
+# mean(x; dims) on CuArrays — GPUArrays._mean dispatches through
+# sum(Fix1(*,λ), x; dims), a mapreduce with a captured scalar Mooncake can't trace.
 
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
