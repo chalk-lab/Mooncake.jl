@@ -116,7 +116,19 @@ function Mooncake.rrule!!(
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        dx .+= dy .- sum(dy; dims=1) .* exp.(y)
+        # NNlib 0.9.37 introduced ∇logsoftmax!(dx, dy, y) with a cuDNN backend for GPU
+        # (1.5–3.4× faster for dims=1; https://github.com/FluxML/NNlib.jl/pull/718).
+        # On older NNlib we inline the formula directly: calling ∇logsoftmax_data would
+        # allocate a full N-element intermediate (within_gradient is always false in
+        # Mooncake, so its fast path never fires), whereas the inlined broadcast fuses
+        # directly into dx with only a small sum allocation.
+        @static if pkgversion(NNlib) >= v"0.9.37"
+            tmp = similar(dx)
+            NNlib.∇logsoftmax!(tmp, dy, y; dims=1)
+            dx .+= tmp
+        else
+            dx .+= dy .- sum(dy; dims=1) .* exp.(y)
+        end
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -135,7 +147,14 @@ function Mooncake.rrule!!(
     function logsoftmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        dx .+= dy .- sum(dy; dims) .* exp.(y)
+        # See logsoftmax_pb!! comment above for the version split rationale.
+        @static if pkgversion(NNlib) >= v"0.9.37"
+            tmp = similar(dx)
+            NNlib.∇logsoftmax!(tmp, dy, y; dims)
+            dx .+= tmp
+        else
+            dx .+= dy .- sum(dy; dims) .* exp.(y)
+        end
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -156,9 +175,20 @@ function Mooncake.rrule!!(
     function softmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        # mapreduce fuses the elementwise multiply into the reduction kernel, avoiding
-        # materialising dy.*y as a full intermediate array (vs sum(dy .* y; dims=1)).
-        dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims=1)
+        # NNlib 0.9.37 introduced ∇softmax!(dx, dy, y) with a cuDNN backend for GPU
+        # (1.5–3.4× faster for dims=1; https://github.com/FluxML/NNlib.jl/pull/718).
+        # On older NNlib we inline the formula: calling ∇softmax_data would allocate a
+        # full N-element intermediate and fire 4 GPU kernels (within_gradient is always
+        # false in Mooncake so its fast path never fires). mapreduce fuses the multiply
+        # into the reduction without materialising dy.*y, giving 2 kernels + M-element
+        # allocation only.
+        @static if pkgversion(NNlib) >= v"0.9.37"
+            tmp = similar(dx)
+            NNlib.∇softmax!(tmp, dy, y; dims=1)
+            dx .+= tmp
+        else
+            dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims=1)
+        end
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -177,9 +207,14 @@ function Mooncake.rrule!!(
     function softmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        # mapreduce fuses the elementwise multiply into the reduction kernel, avoiding
-        # materialising dy.*y as a full intermediate array (vs sum(dy .* y; dims)).
-        dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims)
+        # See softmax_pb!! comment above for the version split rationale.
+        @static if pkgversion(NNlib) >= v"0.9.37"
+            tmp = similar(dx)
+            NNlib.∇softmax!(tmp, dy, y; dims)
+            dx .+= tmp
+        else
+            dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims)
+        end
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
