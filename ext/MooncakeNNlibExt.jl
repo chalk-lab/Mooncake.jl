@@ -4,15 +4,7 @@ using NNlib, Random, Mooncake
 import NNlib.GPUArraysCore: AbstractGPUArray
 using Base: IEEEFloat
 using LinearAlgebra
-using NNlib:
-    conv,
-    depthwiseconv,
-    ∇logsoftmax_data,
-    ∇softmax_data,
-    logsoftmax,
-    softmax,
-    logsumexp,
-    dropout
+using NNlib: conv, depthwiseconv, logsoftmax, softmax, logsumexp, dropout
 using Mooncake.Nfwd: NDual
 
 import Mooncake:
@@ -123,7 +115,8 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        dx .+= dy .- sum(dy; dims=1) .* exp.(y)
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -141,7 +134,8 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        dx .+= dy .- sum(dy; dims) .* exp.(y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -161,7 +155,10 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        # mapreduce fuses the elementwise multiply into the reduction kernel, avoiding
+        # materialising dy.*y as a full intermediate array (vs sum(dy .* y; dims=1)).
+        dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims=1)
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -179,7 +176,10 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        # mapreduce fuses the elementwise multiply into the reduction kernel, avoiding
+        # materialising dy.*y as a full intermediate array (vs sum(dy .* y; dims)).
+        dx .+= dy .* y .- y .* mapreduce(*, +, dy, y; dims)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
