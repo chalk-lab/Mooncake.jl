@@ -1395,6 +1395,8 @@ end
 
 _unwrap_cat_dim(d::Integer) = d
 _unwrap_cat_dim(::Val{N}) where {N} = N
+# Tuple dims would require partitioning each input along multiple independent axes;
+# not supported — the user should call cat(...; dims=d) once per axis instead.
 function _unwrap_cat_dim(d)
     throw(
         ArgumentError(
@@ -1464,11 +1466,14 @@ function rrule!!(
     return CoDual(out, dy_out), pb!!
 end
 
-# Mixed-device guards and CPU fallbacks for vcat/hcat/cat.
+# GPU+scalar guards for vcat/hcat/cat.
 # The Vararg{CuMaybeComplexArray} rules above are the hot path for pure-GPU calls.
-# The rules below handle everything else: mixed GPU/CPU inputs throw a clear error
-# (rather than an opaque CUDA failure from cufunction's try/finally block), and
-# pure-CPU inputs get a correct explicit pullback via _cu_concat_pb!.
+# CPU-only vcat/hcat/cat falls through to the interpreter, which handles it correctly.
+# Mixed GPU+CPU array calls fail at the primal level (Julia/CUDA type-mismatch error)
+# before any kernel is invoked, so no explicit guard is needed there.
+# The rules below guard the remaining edge case: a CuArray mixed with a Number operand
+# (Number <: AbstractArray is false, so the Vararg{CuMaybeComplexArray} rule does not
+# cover that).
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
         "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU " *
@@ -1477,88 +1482,6 @@ end
         "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
     )
 end
-
-# Dispatch-based scanner: finds a CuMaybeComplexArray at any argument position.
-# Julia specialises each call on the concrete primal types, so no isa checks are needed.
-# Pure-GPU calls never reach here — Vararg{CuMaybeComplexArray} is more specific and wins.
-@inline _throw_if_any_cu(fn, ::CuMaybeComplexArray, _...) = _throw_mixed_cat_error(fn)
-@inline _throw_if_any_cu(fn, ::AbstractArray, rest...) = _throw_if_any_cu(fn, rest...)
-@inline _throw_if_any_cu(fn) = nothing
-
-# Vararg{AbstractArray} rules for vcat, hcat, and cat. These are less specific than the
-# Vararg{CuMaybeComplexArray} rules above, so pure-GPU calls still dispatch to those rules.
-# For mixed GPU/CPU calls _throw_if_any_cu detects the CuArray at any position and throws.
-# For pure-CPU calls the rules compute correct pullbacks using the same _cu_concat_pb! helper.
-@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{AbstractArray}})
-function frule!!(::Dual{typeof(vcat)}, args::Dual{<:AbstractArray}...)
-    primals = map(primal, args)
-    _throw_if_any_cu(vcat, primals...)
-    return Dual(vcat(primals...), vcat(map(tangent, args)...))
-end
-function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:AbstractArray}...)
-    primals = map(primal, args)
-    _throw_if_any_cu(vcat, primals...)
-    fdatas = map(tangent, args)
-    out = vcat(primals...)
-    dy_out = zero(out)
-    pb!!(::NoRData) =
-        (_cu_concat_pb!(fdatas, dy_out, 1); (NoRData(), map(_ -> NoRData(), args)...))
-    return CoDual(out, dy_out), pb!!
-end
-
-@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{AbstractArray}})
-function frule!!(::Dual{typeof(hcat)}, args::Dual{<:AbstractArray}...)
-    primals = map(primal, args)
-    _throw_if_any_cu(hcat, primals...)
-    return Dual(hcat(primals...), hcat(map(tangent, args)...))
-end
-function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:AbstractArray}...)
-    primals = map(primal, args)
-    _throw_if_any_cu(hcat, primals...)
-    fdatas = map(tangent, args)
-    out = hcat(primals...)
-    dy_out = zero(out)
-    pb!!(::NoRData) =
-        (_cu_concat_pb!(fdatas, dy_out, 2); (NoRData(), map(_ -> NoRData(), args)...))
-    return CoDual(out, dy_out), pb!!
-end
-
-@is_primitive(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{AbstractArray}},
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    kw::Dual{<:NamedTuple},
-    ::Dual{typeof(cat)},
-    args::Dual{<:AbstractArray}...,
-)
-    primals = map(primal, args)
-    _throw_if_any_cu(cat, primals...)
-    pkw = primal(kw)
-    return Dual(cat(primals...; pkw...), cat(map(tangent, args)...; pkw...))
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    kw::CoDual{<:NamedTuple},
-    ::CoDual{typeof(cat)},
-    args::CoDual{<:AbstractArray}...,
-)
-    primals = map(primal, args)
-    _throw_if_any_cu(cat, primals...)
-    pkw = primal(kw)
-    dim = _unwrap_cat_dim(pkw.dims)
-    fdatas = map(tangent, args)
-    out = cat(primals...; pkw...)
-    dy_out = zero(out)
-    pb!!(::NoRData) = (
-        _cu_concat_pb!(fdatas, dy_out, dim);
-        (NoRData(), NoRData(), NoRData(), map(_ -> NoRData(), args)...)
-    )
-    return CoDual(out, dy_out), pb!!
-end
-
-# GPU+scalar guards: Number <: AbstractArray is false so the Vararg{AbstractArray} rules
-# above do not cover vcat/hcat/cat mixing a CuArray with a scalar operand.
 for _fn in (:vcat, :hcat)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeComplexArray,Number})
     @eval function frule!!(
@@ -1584,6 +1507,7 @@ for _fn in (:vcat, :hcat)
     end
 end
 
+# cat(; dims=...) goes through Core.kwcall so cannot be included in the loop above.
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeComplexArray,Number},
