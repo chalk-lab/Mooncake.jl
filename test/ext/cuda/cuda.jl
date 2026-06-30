@@ -78,7 +78,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
-        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1e-3)
+        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)
         _bcast_sum_sin(x) = sum(sin.(x))
         _bcast_sum_pow7(x) = sum(x .^ 7)
         _bcast_sum_log(x) = sum(log.(x))
@@ -212,7 +212,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # They are used in the "unsupported operations" testset below.
         _cu_cx_slice_adj_mul(x, cy) = real(sum(cu(x[:, 1])' * cy))
         _bcast_cx_mixed(x, y) = sum(abs2, x .^ 2 .+ y)
-        _vcat_cu_sum(x, y) = sum(vcat(x, y))
+        _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
+        _hcat_cu_sum(x, y) = sum(hcat(x, y))
+        _cat_cu_sum(d) = (x, y) -> sum(cat(x, y; dims=d))
+        _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -292,7 +295,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     _rand(rng, ComplexF64, 16, 32),
                     _rand(rng, ComplexF64, 16, 8),
                     _rand(rng, ComplexF64, 8, 32),
-                )]
+                ),]
             else
                 []
             end)...,
@@ -558,6 +561,75 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4),
+            ),
+            # vcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8),
+                _rand(rng, Float32, 4),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8, 3),
+                _rand(rng, Float32, 4, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float64, 6),
+                _rand(rng, Float64, 6),
+            ),
+            # hcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float64, 4, 3),
+                _rand(rng, Float64, 4, 2),
+            ),
+            # cat on CuArrays (dims kwarg)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(2),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            # permutedims on CuArrays
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1, 3)),
+                _rand(rng, Float32, 4, 6, 3),
             ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
@@ -890,17 +962,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
 
-            # vcat/hcat/cat on CuArrays are not yet differentiable — explicit rules throw
-            # rather than letting Mooncake trace into opaque CUDA memory kernels.
-            @testset "vcat CuArray not differentiable" begin
-                f = _vcat_cu_sum
-                x = _rand(rng, Float32, 4)
-                y = _rand(rng, Float32, 4)
-                @test_throws r"vcat on CuArray is not yet differentiable" value_and_gradient!!(
-                    prepare_gradient_cache(f, x, y), f, x, y
-                )
-            end
-
             # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
             @testset "scalar getindex CuArray not differentiable" begin
                 f = x -> x[1]
@@ -935,6 +996,51 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 cy = _rand(rng, ComplexF64, 3, 3)
                 @test_throws r"GPU gemv with mismatched element types" value_and_gradient!!(
                     prepare_gradient_cache(f, x, cy), f, x, cy
+                )
+            end
+
+            @testset "mixed GPU/CPU cat guards" begin
+                gpu1 = _rand(rng, Float32, 4)
+                gpu2 = _rand(rng, Float32, 4, 3)
+                tgpu1 = Mooncake.zero_tangent(gpu1)
+                tgpu2 = Mooncake.zero_tangent(gpu2)
+
+                # Scalar (Number) mixing guards.
+                s = 1.0f0
+                ts = zero(s)
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, ts),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(s, ts),
+                    Mooncake.Dual(gpu1, tgpu1),
                 )
             end
         end

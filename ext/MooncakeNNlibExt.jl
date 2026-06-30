@@ -123,7 +123,8 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        dx .+= dy .- sum(dy; dims=1) .* exp.(y)
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -141,7 +142,8 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        dx .+= dy .- sum(dy; dims) .* exp.(y)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -161,7 +163,10 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        tmp = dy .* y
+        tmp .-= y .* sum(tmp; dims=1)
+        dx .+= tmp
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -179,7 +184,10 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        tmp = dy .* y
+        tmp .-= y .* sum(tmp; dims)
+        dx .+= tmp
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!

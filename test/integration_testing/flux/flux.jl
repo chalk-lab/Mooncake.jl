@@ -150,11 +150,11 @@ const TEST_MODELS = [
         "Maxout(Dense(5 => 4, tanh), 3)",
     ),
     (
-        _gpu_disabled,
+        _gpu_enabled,
         SkipConnection(Dense(2 => 2), vcat),
         randn(Float32, 2, 3),
         "SkipConnection(Dense(2 => 2), vcat)",
-    ),  # vcat tangent mixes CPU/GPU: Illegal conversion of CUDA.DeviceMemory to Ptr{Float32}
+    ),
     (
         _gpu_enabled,
         Flux.Bilinear((2, 2) => 3),
@@ -167,16 +167,14 @@ const TEST_MODELS = [
         rand(Float32, 5, 5, 3, 1),
         "ConvTranspose((3, 3), 3 => 2)",
     ),
-    # LayerNorm calls varm → sum(centralizedabs2fun(m), x); requires a GPU rrule!! for
-    # Statistics.varm and/or other methods before GPU AD can be supported.
     (_gpu_disabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
-    (_gpu_disabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),  # batchnorm_cudnn! not yet differentiable (category 1)
+    (_gpu_disabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),
     (
-        _gpu_disabled,
+        _gpu_enabled,
         first ∘ MultiHeadAttention(16),
         randn32(16, 20, 2),
         "MultiHeadAttention(16)",
-    ),  # MultiHeadAttention → LuxLib.batched_matmul → Base.permutedims not yet differentiable (category 1)
+    ),
     (_gpu_enabled, RNN(3 => 2), randn(Float32, 3, 2), "RNN(3 => 2)"),
     (_gpu_enabled, LSTM(3 => 5), randn(Float32, 3, 2), "LSTM(3 => 5)"),
     (_gpu_enabled, GRU(3 => 5), randn(Float32, 3, 10), "GRU(3 => 5)"),
