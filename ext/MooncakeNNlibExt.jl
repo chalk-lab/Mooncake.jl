@@ -116,7 +116,7 @@ function Mooncake.rrule!!(
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        # TODO: Drop the fallback once Mooncake only supports NNlib >= 0.9.37.
+        # TODO: Drop the fallback once NNlib >= 0.9.37 is more widely supported.
         # Until then, use the public softmax backpass API when available and delegate
         # NNlib < 0.9.37 to the legacy `_data` helpers.
         # See https://github.com/chalk-lab/Mooncake.jl/pull/1229 for more context.
