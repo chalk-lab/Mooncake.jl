@@ -118,7 +118,8 @@ function Mooncake.rrule!!(
         dy = tangent(res)
         # TODO: Drop the fallback once Mooncake only supports NNlib >= 0.9.37.
         # Until then, use the public softmax backpass API when available and delegate
-        # NNlib < 0.9.37 to the legacy `_data` helpers rather than owning the formulas here.
+        # NNlib < 0.9.37 to the legacy `_data` helpers.
+        # See https://github.com/chalk-lab/Mooncake.jl/pull/1229 for more context.
         @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
             dx .+= NNlib.∇logsoftmax(dy, y; dims=1)
         else
