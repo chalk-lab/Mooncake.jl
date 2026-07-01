@@ -4,15 +4,7 @@ using NNlib, Random, Mooncake
 import NNlib.GPUArraysCore: AbstractGPUArray
 using Base: IEEEFloat
 using LinearAlgebra
-using NNlib:
-    conv,
-    depthwiseconv,
-    ∇logsoftmax_data,
-    ∇softmax_data,
-    logsoftmax,
-    softmax,
-    logsumexp,
-    dropout
+using NNlib: conv, depthwiseconv, logsoftmax, softmax, logsumexp, dropout
 using Mooncake.Nfwd: NDual
 
 import Mooncake:
@@ -123,7 +115,16 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        # TODO: Drop the fallback once NNlib >= 0.9.37 is more widely supported.
+        # Until then, use the public softmax backpass API when available and delegate
+        # NNlib < 0.9.37 to the legacy `_data` helpers.
+        # See https://github.com/chalk-lab/Mooncake.jl/pull/1229 for more context.
+        @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
+            dx .+= NNlib.∇logsoftmax(dy, y; dims=1)
+        else
+            dx .+= NNlib.∇logsoftmax_data(dy, y; dims=1)
+        end
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -141,7 +142,12 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function logsoftmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇logsoftmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
+            dx .+= NNlib.∇logsoftmax(dy, y; dims)
+        else
+            dx .+= NNlib.∇logsoftmax_data(dy, y; dims)
+        end
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -161,7 +167,12 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims=1)
+        dy = tangent(res)
+        @static if hasmethod(NNlib.∇softmax, Tuple{AbstractArray,AbstractArray})
+            dx .+= NNlib.∇softmax(dy, y; dims=1)
+        else
+            dx .+= NNlib.∇softmax_data(dy, y; dims=1)
+        end
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -179,7 +190,12 @@ function Mooncake.rrule!!(
     res = zero_fcodual(y)
     function softmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
-        dx .+= ∇softmax_data(tangent(res), y; dims)
+        dy = tangent(res)
+        @static if hasmethod(NNlib.∇softmax, Tuple{AbstractArray,AbstractArray})
+            dx .+= NNlib.∇softmax(dy, y; dims)
+        else
+            dx .+= NNlib.∇softmax_data(dy, y; dims)
+        end
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
