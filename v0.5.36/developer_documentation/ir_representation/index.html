@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>IR Representations and Code Transformations · Mooncake.jl</title><meta name="title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="og:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta property="twitter:title" content="IR Representations and Code Transformations · Mooncake.jl"/><meta name="description" content="Documentation for Mooncake.jl."/><meta property="og:description" content="Documentation for Mooncake.jl."/><meta property="twitter:description" content="Documentation for Mooncake.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.svg" alt="Mooncake.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">Mooncake.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Mooncake.jl</a></li><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../interface/">Interface</a></li><li><span class="tocitem">Understanding Mooncake.jl</span><ul><li><a class="tocitem" href="../../understanding_mooncake/introduction/">Introduction</a></li><li><a class="tocitem" href="../../understanding_mooncake/algorithmic_differentiation/">Algorithmic Differentiation</a></li><li><a class="tocitem" href="../../understanding_mooncake/rule_system/">Mooncake.jl&#39;s Rule System</a></li><li><a class="tocitem" href="../../understanding_mooncake/what_programme_are_you_differentiating/">What Programme Are You Differentiating?</a></li></ul></li><li><span class="tocitem">Utilities</span><ul><li><a class="tocitem" href="../../utilities/defining_rules/">Defining Rules</a></li><li><a class="tocitem" href="../../utilities/debug_mode/">Debug Mode</a></li><li><a class="tocitem" href="../../utilities/debugging_and_mwes/">Debugging and MWEs</a></li></ul></li><li><span class="tocitem">Developer Documentation</span><ul><li><a class="tocitem" href="../running_tests_locally/">Running Tests Locally</a></li><li><a class="tocitem" href="../developer_tools/">Developer Tools</a></li><li><a class="tocitem" href="../tangents/">Tangents</a></li><li><a class="tocitem" href="../custom_tangent_type/">Writing Custom Tangent Types</a></li><li><a class="tocitem" href="../scalar_rules_via_ndual/">Scalar And Low-Dimensional Rules Via <code>NDual</code></a></li><li class="is-active"><a class="tocitem" href>IR Representations and Code Transformations</a><ul class="internal"><li><a class="tocitem" href="#Julia&#39;s-SSA-form-IR"><span>Julia&#39;s SSA-form IR</span></a></li><li><a class="tocitem" href="#Julia-Compiler&#39;s-IR-Datastructure"><span>Julia Compiler&#39;s IR Datastructure</span></a></li><li><a class="tocitem" href="#An-Alternative-IR-Datastructure"><span>An Alternative IR Datastructure</span></a></li><li><a class="tocitem" href="#Code-Transformations"><span>Code Transformations</span></a></li><li><a class="tocitem" href="#Summary-2"><span>Summary</span></a></li><li><a class="tocitem" href="#Docstrings"><span>Docstrings</span></a></li></ul></li><li><a class="tocitem" href="../forwards_mode_design/">Forwards-Mode Design</a></li><li><a class="tocitem" href="../reverse_mode_design/">Reverse-Mode Design</a></li><li><a class="tocitem" href="../misc_internals_notes/">Misc. Internals Notes</a></li><li><a class="tocitem" href="../advanced_debugging/">Advanced Debugging</a></li><li><a class="tocitem" href="../internal_docstrings/">Internal Docstrings</a></li></ul></li><li><a class="tocitem" href="../../known_limitations/">Known Limitations</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Developer Documentation</a></li><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>IR Representations and Code Transformations</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/chalk-lab/Mooncake.jl/blob/main/docs/src/developer_documentation/ir_representation.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="IR-Representations-and-Code-Transformations"><a class="docs-heading-anchor" href="#IR-Representations-and-Code-Transformations">IR Representations and Code Transformations</a><a id="IR-Representations-and-Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#IR-Representations-and-Code-Transformations" title="Permalink"></a></h1><p>Mooncake.jl works by transforming Julia&#39;s SSA-form (static single assignment) Intermediate Representation (IR), so a good understanding of Julia&#39;s IR is needed to understand Mooncake. Furthermore, Mooncake holds Julia&#39;s IR in a different data structure than the one usually used when producing code for reverse-mode AD. We discuss both data structures below, and provide examples of the kinds of transformations which must be applied to Julia&#39;s IR in order to implement AD, contrasting the two different data structures.</p><p>Please note that Julia&#39;s SSA-form IR typically changes representation slightly between minor versions of Julia, as it&#39;s not part of the public interface of the language. The information below is accurate on version 1.11.4, but you might well find that things are slightly different on different versions.</p><h2 id="Julia&#39;s-SSA-form-IR"><a class="docs-heading-anchor" href="#Julia&#39;s-SSA-form-IR">Julia&#39;s SSA-form IR</a><a id="Julia&#39;s-SSA-form-IR-1"></a><a class="docs-heading-anchor-permalink" href="#Julia&#39;s-SSA-form-IR" title="Permalink"></a></h2><h3 id="Straight-Line-Code"><a class="docs-heading-anchor" href="#Straight-Line-Code">Straight-Line Code</a><a id="Straight-Line-Code-1"></a><a class="docs-heading-anchor-permalink" href="#Straight-Line-Code" title="Permalink"></a></h3><p>You can find the IR associated to a given signature using <code>Base.code_ircode_by_type</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; function foo(x)
+           y = sin(x)
+           z = cos(y)
+           return z
+       end
+foo (generic function with 1 method)
+
+julia&gt; signature = Tuple{typeof(foo), Float64}
+Tuple{typeof(foo), Float64}
+
+julia&gt; Base.code_ircode_by_type(signature)[1][1]
+2 1 ─ %1 =    invoke sin(_2::Float64)::Float64
+3 │   %2 =    invoke cos(%1::Float64)::Float64
+4 └──      return %2</code></pre><p>What you can see here is that the calls to <code>sin</code> and <code>cos</code> in the original function are associated to a number, denoted <code>%1</code> and <code>%2</code>. We refers to these as the &quot;ssa&quot;s associated to each statement. Each statement is associated to a single ssa, and this association is determined by where it appears in the list of statements – the first statement is associated to <code>%1</code>, the second to <code>%2</code>, and so on. You will also notice that the argument <code>x</code> has been replaced with a <code>_2</code> in the first statement – in general, all uses of the <code>n</code>th argument are indicated by <code>_n</code> (the first argument is the function itself). The final statement requires no explanation.</p><p>Note that this IR is obtained after both type inference and various Julia-level optimisation passes. This means that the type information is available for each statement. For example, the <code>::Float64</code> at the end of the first and second statements indicates that the type of <code>%1</code> and <code>%2</code> is always <code>Float64</code>. The types are also displayed at uses – the call to <code>sin</code> involves <code>_2::Float64</code>, not just <code>_2</code>.</p><p>Additionally notice that the statements are <code>invoke</code> statements, rather than just call statements. In Julia&#39;s IR, an <code>invoke</code> statement represents static dispatch to a particular <code>MethodInstance</code> – i.e. running type inference + optimisation passes has determined enough about the argument types to make it possible to know exactly which <code>MethodInstance</code> of <code>sin</code> and <code>cos</code> to call. This is a very common occurrence in type-stable code.</p><h3 id="Control-Flow"><a class="docs-heading-anchor" href="#Control-Flow">Control Flow</a><a id="Control-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Control-Flow" title="Permalink"></a></h3><p>The above is straight-line code – it does not involve any control flow. Julia has several statements which are involved in handling control flow. For example</p><pre><code class="language-julia-repl hljs">julia&gt; function bar(x)
+           if x &gt; 0
+               return x
+           else
+               return 5x
+           end
+       end
+bar (generic function with 1 method)
+
+julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar),Float64})[1][1]
+2 1 ─ %1 = intrinsic Base.lt_float(0.0, _2)::Bool
+  │   %2 = intrinsic Base.or_int(%1, false)::Bool
+  └──      goto #3 if not %2
+3 2 ─      return _2
+5 3 ─ %5 = intrinsic Base.mul_float(5.0, _2)::Float64
+  └──      return %5</code></pre><p>In this example we see the statement <code>goto #3 if not %2</code>. This should be read as &quot;jump to basic block 3 if %2 is <code>false</code>&quot;. The second half of that statement should be clear, but to understand the first half requires knowing what a basic block is:</p><pre><code class="language-julia hljs">  1 ─
+  │  
+  └──
+  2 ─
+  3 ─
+  └──</code></pre><p>Here, everything is removed from the above example except for information about the basic block structure. To first approximation, each basic block is a sequence of statements which <em>must</em> always execute one after the other. Once all statements in a basic block have run, we typically either jump to another basic block, or hit a <code>return</code> statement. In this example, we have three basic blocks – you can see this from the numbers <code>1</code>, <code>2</code>, and <code>3</code>. The first basic block comprises three statements, the second only one statement, and the third two statements. Another way to investigate this structure is to look at the control-flow graph associated to the IR:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.code_ircode_by_type(Tuple{typeof(bar),Float64})[1][1].cfg
+CFG with 3 blocks:
+  bb 1 (stmts 1:3) → bb 3, 2
+  bb 2 (stmt 4)
+  bb 3 (stmts 5:6)</code></pre><p>For example, the above states that &quot;bb&quot; (basic block) 1 comprises statements 1 to 3, and has successor blocks 2 and 3 (ie. once the statements in basic block 1 have executed, we know for certain that either those in block 2 or block 3 will run next). Blocks 2 and 3 have no successors, because they both end in a <code>return</code> statement. The predecessors of each basic block (the blocks which could possibly have run immediately prior to a given block) are also stored in the blocks of the <code>CFG</code>, even though this is not printed – you should have a play around with this data structure to see what is in there.</p><p>Additionally, note that <code>Base.lt_float</code> (used to check if one floating point number is less than another) and <code>Base.or_int</code> do not appear as <code>invoke</code> statements – this is because they are not generic Julia functions. Rather, they are Julia intrinsics:</p><pre><code class="language-julia-repl hljs">julia&gt; Base.lt_float
+lt_float (intrinsic function #33)</code></pre><p>These intrinsics have special handling in the compiler. Either way, the overall point is to be aware that these kinds of low-level intrinsics exist, and appear regularly in Julia IR.</p><h3 id="Simple-Loops-and-Phi-Nodes"><a class="docs-heading-anchor" href="#Simple-Loops-and-Phi-Nodes">Simple Loops and Phi-Nodes</a><a id="Simple-Loops-and-Phi-Nodes-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Loops-and-Phi-Nodes" title="Permalink"></a></h3><p>Finally, we shall consider a simple loop:</p><pre><code class="language-julia-repl hljs">julia&gt; function my_factorial(x::Int)
+           n = 0
+           s = 1
+           while n &lt; x
+               n += 1
+               s *= n
+           end
+           return s
+       end
+my_factorial (generic function with 1 method)
+
+julia&gt; ir = Base.code_ircode_by_type(Tuple{typeof(my_factorial), Int})[1][1]
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>There are a few new intrinsics that we have not seen previously (<code>Base.slt_int</code> (used to check whether one int is strictly less than another), <code>Base.add_int</code>, and <code>Base.mul_int</code>). Additionally, there is the node <code>goto #2</code>, which simply states that control flow should jump to basic block 2 whenever it is hit.</p><p>The most interesting additional nodes, however, are the two <code>φ</code> (phi) nodes. These are a defining feature of SSA-form IR. Consider the first <code>φ</code> node:</p><pre><code class="language-julia hljs">%2 = φ (#1 =&gt; 1, #3 =&gt; %7)</code></pre><p>means ssa <code>%2</code> takes value <code>1</code> if the previous basic block was <code>#1</code>, and whatever value is currently associated to ssa <code>%7</code> if the previous basic block was <code>#3</code>. It is helpful to step through this code in your head: upon calling <code>my_factorial</code> we enter basic block <code>#1</code>, and proceed directly to basic block <code>#2</code>. Therefore, on the first iteration, <code>%2</code> takes value <code>1</code>. We never return to basic block <code>#1</code>, so all subsequent visits to this <code>φ</code> node will result in <code>%2</code> taking the value associated to <code>%7</code>. You should convince yourself that <code>%2</code> corresponds to the value of <code>s</code> at each iteration, and <code>%3</code> corresponds to the value of <code>n</code> at each iteration.</p><h3 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h3><p>Julia&#39;s SSA-form IR comprises a sequence of statements, which can be broken down into a collection of basic blocks. Each basic block begins with a (potentially empty) collection of phi nodes, followed by a sequence of statements, and potentially finished by a <em>terminator</em> (goto, goto-if-not, return). Control flow is dictated by the terminators at the end of basic blocks – if there is no terminator then we &quot;fall through&quot; to the next basic block.</p><h2 id="Julia-Compiler&#39;s-IR-Datastructure"><a class="docs-heading-anchor" href="#Julia-Compiler&#39;s-IR-Datastructure">Julia Compiler&#39;s IR Datastructure</a><a id="Julia-Compiler&#39;s-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Compiler&#39;s-IR-Datastructure" title="Permalink"></a></h2><p>The Julia compiler represents the IR associated to a signature via a <code>struct</code> called <code>Core.Compiler.IRCode</code>. The statements are given by the <code>stmts</code> field, which is a <code>Core.Compiler.InstructionStream</code>. An <code>InstructionStream</code> is a collection of 5 <code>Vector</code>s, each of which have the same length. The properties of the <code>n</code>th statement in the <code>IR</code> are given by the <code>n</code>th element of each of these vectors. For example, the <code>stmt</code> field contains the statement itself, the <code>type</code> field contains the inferred type associated to the statement. We&#39;ll skip the rest for now. For example, the statements associated to the <code>my_factorial</code> function above can be retrieved as follows:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.stmt
+9-element Vector{Any}:
+ nothing
+ :(φ (%1 =&gt; 1, %3 =&gt; %7))
+ :(φ (%1 =&gt; 0, %3 =&gt; %6))
+ :(Base.slt_int(%3, _2))
+ :(goto %4 if not %4)
+ :(Base.add_int(%3, 1))
+ :(Base.mul_int(%2, %6))
+ :(goto %2)
+ :(return %2)</code></pre><p>The types can be accessed in a similar way:</p><pre><code class="language-julia-repl hljs">julia&gt; ir.stmts.type
+9-element Vector{Any}:
+ Nothing
+ Int64
+ Int64
+ Bool
+ Any
+ Int64
+ Int64
+ Any
+ Any</code></pre><p>As seen in <a href="#Control-Flow">Control Flow</a>, the control flow graph (CFG) is represented as a separate data structure, stored in the <code>cfg</code> field of the <code>IRCode</code>. The argument types associated to the signature are stored in the <code>argtypes</code> field of the <code>IRCode</code>.</p><h2 id="An-Alternative-IR-Datastructure"><a class="docs-heading-anchor" href="#An-Alternative-IR-Datastructure">An Alternative IR Datastructure</a><a id="An-Alternative-IR-Datastructure-1"></a><a class="docs-heading-anchor-permalink" href="#An-Alternative-IR-Datastructure" title="Permalink"></a></h2><p><code>IRCode</code> is a perfectly good way to represent Julia&#39;s IR the vast majority of the time. For example, it suffices for the code transformations required for forwards-mode AD. However, IR transformations involving multiple changes to the control flow structure of a programme are needed in reverse-mode, and are prohibitively awkward to undertake using <code>IRCode</code>. Mooncake&#39;s implementation of reverse-mode AD instead makes use of a custom representation of Julia&#39;s IR: a vector of basic blocks, each a <a href="../internal_docstrings/#Mooncake.CFGBlock"><code>Mooncake.CFGBlock</code></a>. We emphasise that this represents the <em>same</em> thing under the hood, it is just represented in memory in a slightly different way, such that certain kinds of transformations are straightforward to implement.</p><p>You can construct a <code>Vector{CFGBlock}</code> from an <code>IRCode</code>, and convert it back:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake: CFGBlock, _ircode_to_cfg_blocks, lower_cfg_blocks_to_ir
+
+julia&gt; blocks = _ircode_to_cfg_blocks(ir);
+
+julia&gt; blocks isa Vector{CFGBlock}
+true
+
+julia&gt; lower_cfg_blocks_to_ir(blocks, ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic Base.mul_int(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>A <code>Vector{CFGBlock}</code> does not display itself nicely, so to look at it we must either inspect the blocks, or convert it back to an <code>IRCode</code> (which <em>does</em> print nicely) via <a href="../internal_docstrings/#Mooncake.lower_cfg_blocks_to_ir-Tuple{Vector{Mooncake.CFGBlock}, Compiler.IRCode}"><code>Mooncake.lower_cfg_blocks_to_ir</code></a>. Note that <code>lower_cfg_blocks_to_ir</code> takes the original <code>IRCode</code> as a second argument: the block vector holds only the statements, so the remaining IR metadata (argument types, sptypes, debug info, ...) is supplied from there.</p><p>Instead of storing all of the statements in a single vector (and the types in their own vector, etc), each <code>Mooncake.CFGBlock</code> stores all statements associated to a particular basic block.</p><pre><code class="language-julia-repl hljs">julia&gt; typeof(blocks)
+Vector{CFGBlock} (alias for Array{CFGBlock, 1})</code></pre><p>Each <code>CFGBlock</code> has a field <code>insts</code>, containing the statements associated to that basic block. This is stored as a <code>Vector{Core.Compiler.NewInstruction}</code>, because <code>Core.Compiler.NewInstruction</code> contains the 5 fields that define an instruction in <code>IRCode</code> (you should compare the fields of a <code>Core.Compiler.NewInstruction</code> with those of <code>Core.Compiler.InstructionStream</code> to see the correspondence). For example, consider</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake: ID # to improve printing
+
+julia&gt; blocks[3].insts[1]
+Compiler.NewInstruction(:(Base.add_int(ID(2), 1)), Int64, Compiler.NoCallInfo(), (9, 2, 1), 0x00002478)</code></pre><p>This is the first instruction of the third basic block. The first field is a call to <code>Base.add_int</code>, the second field is <code>Int64</code> (we promise that the other fields are just copies of the corresponding data from the <code>Core.Compiler.InstructionStream</code> in the original <code>IRCode</code> representation of this IR).</p><p>The other structural difference is that the <code>Vector{CFGBlock}</code> representation has no field containing the control-flow graph. Instead, the control-flow graph is represented implicitly by the order of the blocks and their terminators. The upside of this is that any transformations which modify the CFG are automatically reflected in the blocks – there is no need to perform any book-keeping to ensure that the CFG is kept in sync with the instructions. This saves both time and memory when inserting new basic blocks – when basic block structure changes, a scan of the entire <code>IRCode</code> is required to modify any statements which refer to a given block, and yields code simplifications. The downside is that the CFG must be computed whenever we need to know about it. As a resut, neither <code>IRCode</code> nor the <code>Vector{CFGBlock}</code> representation of the CFG is strictly better than the other. To extract CFG-related information from a <code>Vector{CFGBlock}</code>, see <a href="../internal_docstrings/#Mooncake._compute_cfg_successors-Tuple{Vector{Mooncake.CFGBlock}}"><code>Mooncake._compute_cfg_successors</code></a>, <a href="../internal_docstrings/#Mooncake._compute_cfg_predecessors-Tuple{Vector{Mooncake.CFGBlock}}"><code>Mooncake._compute_cfg_predecessors</code></a>, and <a href="../internal_docstrings/#Mooncake.control_flow_graph-Tuple{Vector{Mooncake.CFGBlock}}"><code>Mooncake.control_flow_graph</code></a>.</p><p>The final major difference between <code>IRCode</code> and the <code>CFGBlock</code> representation is that all ssa values in an <code>IRCode</code> (<code>%1</code>, <code>%2</code>, <code>%n</code>, etc) are replaced with unique <code>ID</code>s. The <code>ID</code> associated to a statement is stored separately from the statement in the <code>inst_ids</code> field of a <code>CFGBlock</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; blocks[3].inst_ids
+3-element Vector{ID}:
+ ID(5)
+ ID(6)
+ ID(7)</code></pre><p>There is exactly one <code>ID</code> per instruction, and it is an error to have the same <code>ID</code> associated to multiple instructions. Similarly, while the number associated to a basic block in <code>IRCode</code> is a function of the number of basic blocks which precede it, the <code>ID</code> of a basic block in the <code>CFGBlock</code> representation is stored in its <code>id</code> field:</p><pre><code class="language-julia-repl hljs">julia&gt; blocks[3].id
+ID(11)</code></pre><p>As a result of this, all references to ssa values and basic block numbers in <code>IRCode</code> are replaced with <code>ID</code>s in the <code>CFGBlock</code> representation. The purpose of this is to guarantee that the &quot;name&quot; of a basic block and an instruction does not change when you insert new basic blocks and new instructions. We shall see how this is useful in the examples below.</p><h2 id="Code-Transformations"><a class="docs-heading-anchor" href="#Code-Transformations">Code Transformations</a><a id="Code-Transformations-1"></a><a class="docs-heading-anchor-permalink" href="#Code-Transformations" title="Permalink"></a></h2><p>In what follows, we look at a few transformations of Julia&#39;s IR, and see how these can be undertaken using both <code>IRCode</code> and the <code>CFGBlock</code> representation. The purpose is two-fold:</p><ol><li>to enable readers to understand the code used to implement Mooncake, and</li><li>to highlight the relative merits of <code>IRCode</code> vs the <code>CFGBlock</code> representation.</li></ol><h3 id="Replacing-Instructions"><a class="docs-heading-anchor" href="#Replacing-Instructions">Replacing Instructions</a><a id="Replacing-Instructions-1"></a><a class="docs-heading-anchor-permalink" href="#Replacing-Instructions" title="Permalink"></a></h3><p>This is a very simple code transformation. It is used in both forwards-mode and reverse-mode in Mooncake to replace calls of the form</p><pre><code class="language-julia hljs">f(x, y, z)</code></pre><p>with calls of the form</p><pre><code class="language-julia hljs">frule!!(f, x, y, z)</code></pre><p>This kind of transformation is performed in basically the same way for both <code>IRCode</code> and the <code>CFGBlock</code> representation. For example, the <code>mul_int</code> statement associated to ssa <code>%7</code> can be replaced with an <code>add_int</code> statement as follows:</p><pre><code class="language-julia-repl hljs">julia&gt; using Core: SSAValue
+
+julia&gt; const CC = Core.Compiler;
+
+julia&gt; new_ir = Core.Compiler.copy(ir);
+
+julia&gt; old_stmt = new_ir.stmts.stmt[7]
+:(Base.mul_int(%2, %6))
+
+julia&gt; new_stmt = Expr(:call, Base.add_int, old_stmt.args[2:end]...)
+:((Core.Intrinsics.add_int)(%2, %6))
+
+julia&gt; # new_ir[SSAValue(7)][:stmt] = new_stmt
+       CC.setindex!(CC.getindex(new_ir, SSAValue(7)), new_stmt, :stmt);
+
+julia&gt; new_ir
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>Observe that ssa <code>7</code> has been replaced with the new <code>:call</code> to <code>add_int</code>. Unfortunately, in order to avoid committing type-piracy against <code>Core.Compiler</code>, we cannot currently write <code>new_ir[SSAValue(7)][:stmt]</code>. (<code>CC.getindex</code> is a different function from <code>Base.getindex</code> – the same is true for <code>CC.setindex!</code> vs <code>Base.setindex!</code>). In general, I would recommend defining helper functions to improve the DRYness of your code.</p><p>The same transformation can be performed on the <code>CFGBlock</code> representation. We first copy each block with <code>copy.(blocks)</code> (copying the vector alone via <code>copy(blocks)</code> would be shallow and share the underlying <code>insts</code> arrays). A <code>CFGBlock</code> is immutable, but its <code>insts</code> field is a <code>Vector</code>, so on the copy we can replace an element of it in place:</p><pre><code class="language-julia-repl hljs">julia&gt; blocks_copy = copy.(blocks);
+
+julia&gt; old_inst = blocks_copy[3].insts[2]
+Compiler.NewInstruction(:(Base.mul_int(ID(1), ID(5))), Int64, Compiler.NoCallInfo(), (13, 3, 1), 0x00002478)
+
+julia&gt; new_stmt = Expr(:call, Base.add_int, old_inst.stmt.args[2:end]...)
+:((Core.Intrinsics.add_int)(ID(1), ID(5)))
+
+julia&gt; blocks_copy[3].insts[2] = CC.NewInstruction(old_inst; stmt=new_stmt);
+
+julia&gt; lower_cfg_blocks_to_ir(blocks_copy, ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>As you can see, in both cases we wind up with the same <code>IRCode</code> at the end.</p><h3 id="Inserting-New-Instructions"><a class="docs-heading-anchor" href="#Inserting-New-Instructions">Inserting New Instructions</a><a id="Inserting-New-Instructions-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Instructions" title="Permalink"></a></h3><p>Inserting entirely new instructions into the IR requires a little more thought, but is ultimately very straightforward using either <code>IRCode</code> or the <code>CFGBlock</code> representation.</p><p>First, <code>IRCode</code>. Suppose that we wish to insert another instruction immediately before the first <code>add_int</code> instruction which multiplies <code>%3</code> by 2 before adding <code>1</code> to it in <code>#3</code>. In <code>IRCode</code>, this kind of modification requires some care, because naively inserting an instruction between the 5th and 6th line changes the name of all instructions from the 6th onwards. Consequently, we need to replace all existing uses of e.g. <code>%6</code> with uses of <code>%7</code>, etc. Happily, <code>IRCode</code> has a mechanism to achieve just this.</p><pre><code class="language-julia-repl hljs">julia&gt; ni = CC.NewInstruction(Expr(:call, Base.mul_int, SSAValue(3), 2), Int)
+Compiler.NewInstruction(:((Core.Intrinsics.mul_int)(%3, 2)), Int64, Compiler.NoCallInfo(), nothing, nothing)
+
+julia&gt; new_ssa = CC.insert_node!(new_ir, SSAValue(6), ni)
+:(%10)
+
+julia&gt; new_ir
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─      intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6 = intrinsic Base.add_int(%3, 1)::Int64
+6 │   %7 = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p><code>CC.insert_node!(ir, ssa, new_inst)</code> inserts <code>new_inst</code> into <code>ir</code> immediately before <code>ssa</code>, and attaches it to the same basic block as <code>ssa</code> resides. It returns an <code>SSAValue</code>, which is the &quot;name&quot; associated to the inserted instruction in the IR. Here, we see it has inserted the instruction to multiply <code>%3</code> by <code>2</code> immediately before <code>%6</code>. However, observe that the <code>IRCode</code> has not changed the name associated to the subsequent <code>add_int</code> instruction – it still assigns to <code>%6</code>, despite not being the 6th statement in the IR anymore. This is achieved via <code>IRCode</code>&#39;s <code>new_nodes</code> field – upon calling <code>CC.insert_node!</code>, rather than inserting the instruction directly into the <code>InstructionStream</code>, this list is appended to. We can do this as many times as we like, and then call <code>CC.compact!</code> at the end to handle all of the book-keeping involved in inserting all of the statements, updating all ssa uses where required, and updating the <code>cfg</code> field of the IR.</p><p>Also observe that the inserted statement is printed without a <code>%10 =</code> at the start of it – this is because there are not (yet) any uses of <code>%10</code>, so <code>IRCode</code> does not print it out (presumably in order to reduce visual noise).</p><p>To conclude this transformation, we replace the first argument of the <code>add_int</code> instruction with the new ssa returned by <code>insert_node!</code>, and then call <code>CC.compact!</code> to process all of the nodes currently in the <code>new_nodes</code> list, and produce a valid <code>IRCode</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; stmt = CC.getindex(CC.getindex(new_ir, SSAValue(6)), :stmt)
+:(Base.add_int(%3, 1))
+
+julia&gt; stmt.args[2] = new_ssa;
+
+julia&gt; new_ir
+  1 ─       nothing::Nothing
+4 2 ┄ %2  = φ (#1 =&gt; 1, #3 =&gt; %7)::Int64
+  │   %3  = φ (#1 =&gt; 0, #3 =&gt; %6)::Int64
+  │   %4  = intrinsic Base.slt_int(%3, _2)::Bool
+  └──       goto #4 if not %4
+5 3 ─ %10 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %6  = intrinsic Base.add_int(%10, 1)::Int64
+6 │   %7  = intrinsic (Core.Intrinsics.add_int)(%2, %6)::Int64
+7 └──       goto #2
+8 4 ─       return %2
+
+julia&gt; new_ir = CC.compact!(new_ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+5 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+  │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>Observe that, before <code>compact!</code>-ing, the first instruction in basic block <code>#3</code> is still labelled as being <code>%10</code>. After <code>compact!</code>-ing, we have standard sequentially-labelled IR again. Note that the above is exactly the kind of thing that we do in our implementation of forwards-mode AD – all insertions of nodes are performed in a single pass over the <code>IRCode</code>, and <code>CC.compact!</code> is called once at the end.</p><p>Performing this transformation using the <code>CFGBlock</code> representation is similarly straightforward. Since the <code>ID</code> associated to an instruction does not change when you insert another instruction, you just need to build a new block with the extra instruction (and its <code>ID</code>) spliced in, update the next instruction (as before), and you&#39;re done. Because a <code>CFGBlock</code> is immutable, &quot;inserting&quot; means constructing a replacement block:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake: ID, new_inst
+
+julia&gt; new_id = ID(); # this produces a new unique `ID`.
+
+julia&gt; blk = blocks_copy[3];
+
+julia&gt; target_id = blk.insts[1].stmt.args[2]; # find `ID` of argument to add_int.
+
+julia&gt; ni = new_inst(Expr(:call, Base.mul_int, target_id, 2), Int);
+
+julia&gt; blocks_copy[3] = CFGBlock(blk.id, vcat(new_id, blk.inst_ids), vcat(ni, blk.insts));
+
+julia&gt; blocks_copy[3].insts[2].stmt.args[2] = new_id;
+
+julia&gt; lower_cfg_blocks_to_ir(blocks_copy, ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #4 if not %4
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+8 4 ─      return %2</code></pre><p>We see here that <code>IRCode</code> and the <code>CFGBlock</code> representation involve similar levels of complexity to insert an instruction.</p><h3 id="Inserting-New-Basic-Blocks"><a class="docs-heading-anchor" href="#Inserting-New-Basic-Blocks">Inserting New Basic Blocks</a><a id="Inserting-New-Basic-Blocks-1"></a><a class="docs-heading-anchor-permalink" href="#Inserting-New-Basic-Blocks" title="Permalink"></a></h3><p>This is the situation in which the design of the <code>CFGBlock</code> representation shines vs <code>IRCode</code>. <code>IRCode</code> does not, at present, really have much to say about transformations which change control flow. It is, however, straightforward using a <code>Vector{CFGBlock}</code>. Suppose that we wish to modify the above to display the value of <code>%2</code> if it is even on any given iteration. Since this involves control flow, it necessarily requires at least one additional basic block.</p><p>We do this in two steps. We first insert an additional basic block between blocks <code>#3</code> and <code>#4</code> which always prints out the value of <code>%2</code>, and then goes to block <code>#2</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; using Mooncake: CFGBlock, new_inst, IDGotoNode, IDGotoIfNot
+
+julia&gt; block_2_id = blocks_copy[2].id;
+
+julia&gt; new_bb_id = ID();
+
+julia&gt; new_bb = CFGBlock(
+           new_bb_id,
+           ID[ID(), ID()],
+           CC.NewInstruction[
+               new_inst(Expr(:call, println, CC.SSAValue(2))),
+               new_inst(IDGotoNode(block_2_id)),
+           ],
+       );
+
+julia&gt; insert!(blocks_copy, 4, new_bb);
+
+julia&gt; lower_cfg_blocks_to_ir(blocks_copy, ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #5 if not %4
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+7 └──      goto #2
+2 4 ─        dynamic (println)(%2)::Any
+  └──      goto #2
+8 5 ─      return %2</code></pre><p>Observe that, in this case, rather than creating <code>new_bb</code> and then inserting instructions into it, we simply create the block <em>with</em> the instructions. This programming style is often more convenient. Additionally note that we create an <code>ID</code> for each statement in the new basic block. These <code>ID</code>s are never actually used anywhere, but the <code>CFGBlock</code> representation requires that each instruction be associated to an <code>ID</code>, so we must create them.</p><p>Additionally, note the usage of an <a href="../internal_docstrings/#Mooncake.IDGotoNode"><code>Mooncake.IDGotoNode</code></a>. This is exactly the same thing as a <code>Core.Compiler.GotoNode</code>, except it contains an <code>ID</code> stating which basic block to jump to, rather than an <code>Int</code>. Similarly, the <a href="../internal_docstrings/#Mooncake.IDGotoIfNot"><code>Mooncake.IDGotoIfNot</code></a> is a direct translation of <code>Core.Compiler.GotoIfNot</code>, with the <code>dest</code> field being an <code>ID</code> rather than an <code>Int</code>.</p><p>Furthermore, note that the <code>goto if not</code> instruction at the end of basic block <code>#2</code> now (correctly) jumps to basic block <code>#5</code>, whereas before it jumped to block <code>#4</code>. That is, by virtue of the fact that the <code>ID</code> associated to each basic block remains unchanged in the <code>CFGBlock</code> representation, all pre-existing control flow relationships have remained the same. Moreover, we did not have to write any book-keeping code to ensure that this update happened correctly.</p><p>Now that we&#39;ve created the new basic block, we modify block <code>#3</code> to fall-through to the new block if <code>%2</code> is even, and to jump straight back to block <code>#2</code> if not:</p><pre><code class="language-julia-repl hljs">julia&gt; blk = blocks_copy[3];
+
+julia&gt; cond_id = ID();
+
+julia&gt; target_id = blocks_copy[2].inst_ids[1];
+
+julia&gt; cond_inst = new_inst(Expr(:call, iseven, target_id));
+
+julia&gt; blocks_copy[3] = CFGBlock(
+           blk.id,
+           vcat(blk.inst_ids[1:(end - 1)], cond_id, blk.inst_ids[end]),
+           vcat(blk.insts[1:(end - 1)], cond_inst, blk.insts[end]),
+       );
+
+julia&gt; blocks_copy[3].insts[end] = new_inst(IDGotoIfNot(cond_id, block_2_id));
+
+julia&gt; new_ir = lower_cfg_blocks_to_ir(blocks_copy, ir)
+  1 ─      nothing::Nothing
+4 2 ┄ %2 = φ (#1 =&gt; 1, #3 =&gt; %8)::Int64
+  │   %3 = φ (#1 =&gt; 0, #3 =&gt; %7)::Int64
+  │   %4 = intrinsic Base.slt_int(%3, _2)::Bool
+  └──      goto #5 if not %4
+2 3 ─ %6 = intrinsic (Core.Intrinsics.mul_int)(%3, 2)::Int64
+5 │   %7 = intrinsic Base.add_int(%6, 1)::Int64
+6 │   %8 = intrinsic (Core.Intrinsics.add_int)(%2, %7)::Int64
+2 │   %9 =   dynamic (iseven)(%2)::Any
+  └──      goto #2 if not %9
+  4 ─        dynamic (println)(%2)::Any
+  └──      goto #2
+8 5 ─      return %2</code></pre><p>Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the <code>ID</code> associated to the instruction which computes the conditional appears in the <code>IDGotoIfNot</code> instruction.</p><h3 id="Run-the-new-code"><a class="docs-heading-anchor" href="#Run-the-new-code">Run the new code</a><a id="Run-the-new-code-1"></a><a class="docs-heading-anchor-permalink" href="#Run-the-new-code" title="Permalink"></a></h3><p>As ever, we can construct a <code>Core.OpaqueClosure</code> using <code>IRCode</code> in order to produce something runnable. Since <code>new_ir</code> originated as method IR, its first argument type still corresponds to the function object rather than the opaque-closure environment tuple. For a zero-capture opaque closure, we therefore first rewrite <code>argtypes[1]</code> to <code>Tuple{}</code>:</p><pre><code class="language-julia-repl hljs">julia&gt; new_ir.argtypes[1] = Tuple{};
+
+julia&gt; oc = Core.OpaqueClosure(new_ir; do_compile=true)
+(::Int64)-&gt;◌::Int64
+
+julia&gt; oc(1000)
+2
+12
+58
+248
+1014
+2037</code></pre><p>Exactly what <code>oc</code> is computing is neither here nor there. The point is that we&#39;ve successfully inserted a new basic block into Julia&#39;s IR, and produced a callable from it.</p><h2 id="Summary-2"><a class="docs-heading-anchor" href="#Summary-2">Summary</a><a class="docs-heading-anchor-permalink" href="#Summary-2" title="Permalink"></a></h2><p>We have reviewed the two representations of Julia IR used in Mooncake. Where possible, we always use <code>IRCode</code> – as discussed, forwards-mode AD exclusively uses <code>IRCode</code>. The <code>CFGBlock</code> representation is basically only needed when undertaking transformations which involve changes to basic block structure – the insertion of new basic blocks, and the modification of terminators in a way which changes the predecessors / successors of a given block being the primary sources of these kinds of changes. Reverse-mode AD makes extensive use of such transformations, so the <code>CFGBlock</code> representation is currently important there.</p><p>There are efforts such as <a href="https://github.com/JuliaLang/julia/pull/45305">this PR</a> to augment <code>IRCode</code> with the capability to manipulate the CFG structure in a convenient manner. Ideally these efforts will succeed, then we can do away with the <code>CFGBlock</code> representation.</p><h3 id="Comparison-with-Alternative-Approaches"><a class="docs-heading-anchor" href="#Comparison-with-Alternative-Approaches">Comparison with Alternative Approaches</a><a id="Comparison-with-Alternative-Approaches-1"></a><a class="docs-heading-anchor-permalink" href="#Comparison-with-Alternative-Approaches" title="Permalink"></a></h3><p>It&#39;s worth noting that other automatic differentiation systems have taken different approaches to IR manipulation. For example, <a href="https://github.com/JuliaDiff/Diffractor.jl">Diffractor.jl</a> uses an &quot;Optics&quot; approach for IR transformations.</p><p>For readers interested in learning more about Julia&#39;s IR representation beyond what&#39;s covered here, the <a href="https://github.com/JuliaTeachingCTU/Scientific-Programming-in-Julia/blob/2023W/docs/src/lecture_09/ircode.md">Scientific Programming in Julia course materials</a> provide additional valuable context.</p><h2 id="Docstrings"><a class="docs-heading-anchor" href="#Docstrings">Docstrings</a><a id="Docstrings-1"></a><a class="docs-heading-anchor-permalink" href="#Docstrings" title="Permalink"></a></h2><p>The working-IR types and helpers (<code>CFGBlock</code>, <code>ID</code>, <code>_ircode_to_cfg_blocks</code>, <code>lower_cfg_blocks_to_ir</code>, ...) are documented in <a href="../internal_docstrings/#Internal-Docstrings">Internal Docstrings</a>.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../scalar_rules_via_ndual/">« Scalar And Low-Dimensional Rules Via <code>NDual</code></a><a class="docs-footer-nextpage" href="../forwards_mode_design/">Forwards-Mode Design »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 1 July 2026 22:25">Wednesday 1 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
