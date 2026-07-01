@@ -167,9 +167,9 @@ const TEST_MODELS = [
         rand(Float32, 5, 5, 3, 1),
         "ConvTranspose((3, 3), 3 => 2)",
     ),
-    # LayerNorm calls varm → sum(centralizedabs2fun(m), x); requires a GPU rrule!! for
-    # Statistics.varm and/or other methods before GPU AD can be supported.
-    (_gpu_disabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
+    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
+    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    (_gpu_enabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
     (_gpu_disabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),  # batchnorm_cudnn! not yet differentiable (category 1)
     (
         _gpu_disabled,
