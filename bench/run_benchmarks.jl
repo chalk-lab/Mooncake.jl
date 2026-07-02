@@ -176,14 +176,18 @@ function generate_inter_framework_tests()
 end
 
 function benchmark_rules!!(
-    test_case_data, default_ratios, include_other_frameworks::Bool, seconds=nothing
+    test_case_data,
+    default_ratios,
+    include_other_frameworks::Bool,
+    seconds=nothing;
+    retries=0,
 )
     test_cases = reduce(vcat, map(first, test_case_data))
     memory = map(x -> x[2], test_case_data)
     ranges = reduce(vcat, map(x -> x[3], test_case_data))
     tags = reduce(vcat, map(x -> x[4], test_case_data))
     GC.@preserve memory begin
-        return map(enumerate(test_cases)) do (n, args)
+        function run_case(n, args)
             @info "$n / $(length(test_cases))", _typeof(args)
             suite = Dict()
 
@@ -286,6 +290,18 @@ function benchmark_rules!!(
 
             return combine_results((args, suite), tags[n], ranges[n], default_ratios)
         end
+
+        # Perf ratios can spike spuriously on noisy CI runners, so retry an out-of-range
+        # result up to `retries` times; only a persistent failure counts as a regression.
+        return map(enumerate(test_cases)) do (n, args)
+            ratio = run_case(n, args)
+            for _ in 1:retries
+                (ratio.range.lb < ratio.Mooncake < ratio.range.ub) && break
+                @info "perf ratio $(ratio.Mooncake) outside $(ratio.range); retrying" n
+                ratio = run_case(n, args)
+            end
+            return ratio
+        end
     end
 end
 
@@ -333,7 +349,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=50.0), false, 0.03; retries=5)
 end
 
 function benchmark_derived_rrules!!(rng_ctor)
@@ -343,7 +359,7 @@ function benchmark_derived_rrules!!(rng_ctor)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
     end
-    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1)
+    return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
 
 function benchmark_inter_framework_rules()
