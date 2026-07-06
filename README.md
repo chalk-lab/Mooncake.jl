@@ -64,3 +64,5 @@ val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 ```
 
 You should expect that `MC.prepare_*_cache` take a little time to run, but that subsequent gradient and hessian calls using the prepared caches are fast. For details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). 
+
+The gradient interface `prepare_gradient_cache` / `value_and_gradient!!` requires `f` to return a real scalar (`Union{Float16, Float32, Float64}`); for other outputs, such as arrays, use `prepare_pullback_cache` / `value_and_pullback!!`, which accept any output if you supply the seed cotangent yourself. Any prepared cache fixes the type and size of each input (calls error if a later `x` differs) and reuses its pre-allocated gradient buffers in place, so copy any gradient you need to keep before calling again. For varying input sizes, skip the cache and call `value_and_pullback!!(rule, ȳ, f, x...)` on a `rule` from `build_rrule`: it re-allocates tangents each call, requiring only the input types to stay fixed. Since that `rule` is reusable, you can also build your own cache on top of it that resizes on demand.
