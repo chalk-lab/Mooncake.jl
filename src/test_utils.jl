@@ -495,7 +495,7 @@ function test_frule_correctness(
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Use finite differences to estimate Frechet derivative. Compute the estimate at a range
+    # Use finite differences to estimate Fréchet derivative. Compute the estimate at a range
     # of different step sizes. We'll just require that one of them ends up being close to
     # what AD gives.
     ε_list = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
@@ -520,7 +520,7 @@ function test_frule_correctness(
         )
     end
 
-    # Use AD to compute Frechet derivative at ẋ.
+    # Use AD to compute Fréchet derivative at ẋ.
     x_ẋ_rule = map((x, ẋ) -> dual_type(_typeof(x))(_deepcopy(x), ẋ), x, ẋ)
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
@@ -1066,8 +1066,8 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     info on when you might wish to set it to `true`.
 - `output_tangent=nothing`: final output tangent to initialize reverse mode with for testing
     the correctness of reverse rules.
-- `atol=1e-3`: absolute tolerance for correctness check of the Frechet derivatives.
-- `rtol=1e-3`: relative tolerance for correctness check of the Frechet derivatives.
+- `atol=1e-3`: absolute tolerance for correctness check of the Fréchet derivatives.
+- `rtol=1e-3`: relative tolerance for correctness check of the Fréchet derivatives.
 - `frule=nothing`: if provided, use this callable as the forward rule instead of building one
     from the interpreter. Useful for testing a hand-written `frule!!` directly.
 - `rrule=nothing`: if provided, use this callable as the reverse rule instead of building one

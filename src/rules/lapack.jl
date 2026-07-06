@@ -67,7 +67,7 @@ end
 function _getrf_fwd(A_dA, ipiv, info)
     A, dA = arrayify(A_dA)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
@@ -120,7 +120,7 @@ function frule!!(
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     LAPACK.trtrs!(uplo, trans, diag, A, dB)
     tmp = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, tmp) # tmp now contains inv(A) B.
@@ -201,7 +201,7 @@ function frule!!(
     # Run primal computation.
     LAPACK.getrs!(trans, A, ipiv, B)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
@@ -311,7 +311,7 @@ function frule!!(
     A, dA = arrayify(A_dA)
     ipiv = primal(_ipiv)
 
-    # Compute part of Frechet derivative.
+    # Compute part of Fréchet derivative.
     L = UnitLowerTriangular(A)
     dL_plus_I = UnitLowerTriangular(dA)
     U = UpperTriangular(A)
@@ -324,7 +324,7 @@ function frule!!(
     # Perform primal computation.
     LAPACK.getri!(A, ipiv)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     dA .= (-A * tmp2 * A)
 
     return A_dA
@@ -376,7 +376,7 @@ function frule!!(
     # Run primal computation.
     _, info = LAPACK.potrf!(uplo, A)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     if uplo == 'L'
         L = LowerTriangular(A)
         tmp = LowerTriangular(ldiv!(L, Symmetric(dA, :L) / L'))
@@ -479,7 +479,7 @@ function frule!!(
     # Run primal computation.
     LAPACK.potrs!(uplo, A, B)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     if uplo == 'L'
         L = LowerTriangular(A)
         dL = LowerTriangular(dA)

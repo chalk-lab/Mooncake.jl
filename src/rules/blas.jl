@@ -345,7 +345,7 @@ function frule!!(
     a, da = extract(a_da)
     X, dX = arrayify(X_dX)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     BLAS.scal!(n, a, dX, incx)
     BLAS.axpy!(n, da, X, incx, dX, incx)
 
@@ -559,7 +559,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         x, dx = arrayify(x_dx)
         y, dy = arrayify(y_dy)
 
-        # Compute Frechet derivative.
+        # Compute Fréchet derivative.
         BLAS.$fname(ul, dα, A, x, β, dy)
         BLAS.$fname(ul, α, dA, x, one(T), dy)
         BLAS.$fname(ul, α, A, dx, one(T), dy)
@@ -673,7 +673,7 @@ function frule!!(
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
-    # Frechet derivative computation.
+    # Fréchet derivative computation.
     BLAS.trmv!(uplo, trans, diag, A, dx)
     tmp = copy(x)
     BLAS.trmv!(uplo, trans, diag, dA, tmp)
@@ -1037,7 +1037,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         B, dB = arrayify(B_dB)
         C, dC = arrayify(C_dC)
 
-        # Compute Frechet derivative.
+        # Compute Fréchet derivative.
         BLAS.$fname(s, ul, α, A, dB, β, dC)
         BLAS.$fname(s, ul, α, dA, B, one(T), dC)
         if !iszero(dα)
@@ -1164,7 +1164,7 @@ for (fname, elty, relty) in (
         β, dβ = extract(β_dβ)
         C, dC = arrayify(C_dC)
 
-        # Compute Frechet derivative.
+        # Compute Fréchet derivative.
         BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
         iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
         if !iszero(dβ)
@@ -1265,7 +1265,7 @@ function frule!!(
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
     dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
     if diag == 'U'
@@ -1371,7 +1371,7 @@ function frule!!(
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
 
-    # Compute Frechet derivative.
+    # Compute Fréchet derivative.
     BLAS.trsm!(side, uplo, trans, diag, α, A, dB)
     tmp = copy(B)
     trsm!(side, uplo, trans, diag, one(P), A, tmp) # tmp now contains inv(A) B.
