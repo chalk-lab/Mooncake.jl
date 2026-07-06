@@ -79,6 +79,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
         _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)
+        _rand_int32 = (rng, size...) -> CuArray(rand(rng, Int32(1):Int32(9), size...))
         _bcast_sum_sin(x) = sum(sin.(x))
         _bcast_sum_pow7(x) = sum(x .^ 7)
         _bcast_sum_log(x) = sum(log.(x))
@@ -213,9 +214,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _cu_cx_slice_adj_mul(x, cy) = real(sum(cu(x[:, 1])' * cy))
         _bcast_cx_mixed(x, y) = sum(abs2, x .^ 2 .+ y)
         _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
-        _hcat_cu_sum(x, y) = sum(hcat(x, y))
-        _cat_cu_sum(d) = (x, y) -> sum(cat(x, y; dims=d))
+        _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
+        _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
+        # `sum` on Integer/Bool CuArrays hits Mooncake's mapreduce catch-all guard, a
+        # separate pre-existing limitation unrelated to vcat/hcat/cat/permutedims. So
+        # the Integer-eltype tests below check `cat` directly, without a sum wrapper.
+        _cat_cu_id(d) = (xs...) -> cat(xs...; dims=d)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -621,6 +626,79 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float32, 4, 3),
                 _rand(rng, Float32, 4, 2),
             ),
+            # cat on CuArrays (Tuple dims kwarg: block-diagonal concatenation)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 5),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, Float64, 3, 2),
+                _rand(rng, Float64, 5, 4),
+            ),
+            # vcat/hcat/cat on Adjoint/Transpose/SubArray wrapping a CuArray, and on
+            # mixes of these with each other and with bare CuArrays. Each argument is
+            # canonicalised independently via `arrayify`, so any combination works.
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                adjoint(_rand(rng, Float32, 3, 4)),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                transpose(_rand(rng, Float32, 3, 4)),
+                transpose(_rand(rng, Float32, 3, 4)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                view(_rand(rng, Float32, 8, 3), 1:4, :),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                transpose(_rand(rng, Float32, 3, 4)),
+                view(_rand(rng, Float32, 4, 2), :, :),
+            ),
+            # N-arg cat/hcat mixing three different wrapper types (plus a bare CuArray
+            # for cat) in one call. Exercises Vararg{CuMaybeWrappedArray} matching each
+            # argument independently rather than requiring a uniform type.
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1),
+                _rand(rng, Float32, 4, 3),
+                adjoint(_rand(rng, Float32, 3, 2)),
+                transpose(_rand(rng, Float32, 3, 5)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                adjoint(_rand(rng, Float32, 3, 4)),
+                transpose(_rand(rng, Float32, 2, 4)),
+                view(_rand(rng, Float32, 4, 6), :, 1:5),
+            ),
             # permutedims on CuArrays
             (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
             (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
@@ -628,8 +706,46 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 false,
                 :none,
                 false,
+                _permutedims_sum((2, 1)),
+                adjoint(_rand(rng, Float32, 3, 4)),
+            ),
+            (
+                false,
+                :none,
+                false,
                 _permutedims_sum((2, 1, 3)),
                 _rand(rng, Float32, 4, 6, 3),
+            ),
+            # vcat/hcat/cat/permutedims on Integer/Bool-eltype CuArrays (e.g. batches of
+            # labels/indices/masks). tangent_type is NoTangent for these, so the rules
+            # are `@zero_derivative` and tested directly (is_primitive=true) rather than
+            # via a sum-reducing wrapper, since sum on an Integer CuArray separately hits
+            # Mooncake's mapreduce catch-all guard (an unrelated pre-existing limitation).
+            (false, :none, true, vcat, _rand_int32(rng, 4, 3), _rand_int32(rng, 2, 3)),
+            (false, :none, true, hcat, _rand_int32(rng, 4, 3), _rand_int32(rng, 4, 2)),
+            (
+                false,
+                :none,
+                true,
+                permutedims,
+                _rand_int32(rng, 8, 4),
+                (2, 1),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_id(1),
+                _rand_int32(rng, 4, 3),
+                _rand_int32(rng, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                true,
+                vcat,
+                CuArray(rand(rng, Bool, 4, 3)),
+                CuArray(rand(rng, Bool, 2, 3)),
             ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
@@ -1041,6 +1157,66 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(cat, Mooncake.NoTangent()),
                     Mooncake.Dual(s, ts),
                     Mooncake.Dual(gpu1, tgpu1),
+                )
+
+                # Array/array mixing guards (any N args, any argument order). This is
+                # the `_is_primitive`-based guard, not a plain `@is_primitive` signature,
+                # so also check `is_primitive` itself resolves correctly for pure-GPU
+                # (true, via the more specific rule above), pure-CPU (false, falls
+                # through to the interpreter unaffected), and mixed (true) cases.
+                cpu_vec = _host_rand(rng, Float32, 4)
+                tcpu_vec = zero(cpu_vec)
+                cpu_mat = _host_rand(rng, Float32, 4, 2)
+                tcpu_mat = zero(cpu_mat)
+                gpu3 = _rand(rng, Float32, 3)
+                tgpu3 = Mooncake.zero_tangent(gpu3)
+                wc = Base.get_world_counter()
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(gpu1),typeof(gpu3)},
+                    wc,
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(cpu_vec),typeof(cpu_vec)},
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(gpu1),typeof(cpu_vec)},
+                    wc,
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                    Mooncake.Dual(gpu1, tgpu1),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu2, tgpu2),
+                    Mooncake.Dual(cpu_mat, tcpu_mat),
+                )
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                )
+                # N-arg: CPU array sandwiched between two GPU arrays.
+                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                    Mooncake.Dual(gpu3, tgpu3),
                 )
             end
         end

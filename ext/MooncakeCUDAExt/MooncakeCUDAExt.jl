@@ -108,6 +108,20 @@ const CuGpuSumFArray = Union{
     Transpose{<:IEEEFloat,<:CuFloatArray},
 }
 
+# vcat/hcat/cat/permutedims also accept these wrapper types (Julia's own methods for
+# them already handle it at the primal level). Each argument is canonicalised via
+# `Mooncake.arrayify`, which already has generic overloads for Adjoint/Transpose/
+# SubArray (see `src/rules/blas.jl`): they recurse into `.parent` and re-wrap the
+# tangent in the same wrapper type. Without this, these wrapper types fall through to
+# the interpreter and hit the same untraceable `cufunction` try/finally the rules
+# below exist to avoid.
+const CuMaybeWrappedArray = Union{
+    CuMaybeComplexArray,
+    Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},
+    Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},
+    SubArray{T,N,P} where {T<:CuFloatOrComplex,N,P<:CuMaybeComplexArray},
+}
+
 @inline _nopb(::Val{N}) where {N} = NoPullback(ntuple(_ -> NoRData(), N))
 @noinline _throw_gpu_argument_error(msg::AbstractString) = throw(ArgumentError(msg))
 
@@ -1379,11 +1393,12 @@ function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
     )
 end
 
-# vcat / hcat / cat on CuArrays.
+# vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that
+# includes and why).
 # frule:    tangent of concatenation = concatenation of tangents (concat is linear).
 # pullback: selectdim returns a view (no allocation per slice); running-offset loop
 #           avoids pre-allocating an offsets array.
-@inline function _cu_concat_pb!(fdatas, dy_out, dim)
+@inline function _cu_concat_pb!(fdatas, dy_out, dim::Integer)
     offset = 0
     for i in eachindex(fdatas)
         n = size(fdatas[i], dim)
@@ -1393,26 +1408,48 @@ end
     return nothing
 end
 
+# `dims` a Tuple of K distinct dimensions: cat(A, B, ...; dims=(d1, d2, ...)) builds a
+# block-diagonal result, growing every listed dimension simultaneously for each array
+# and zero-filling elsewhere. Each input's gradient is the rectangular sub-block of
+# dy_out obtained by slicing every listed dimension by its own running offset, and
+# taking the full range on every dimension not in `dims` (inputs must already agree in
+# size there, per `cat`'s own requirements).
+@inline function _cu_concat_pb!(fdatas, dy_out, dims::NTuple{K,Integer}) where {K}
+    offsets = ntuple(_ -> 0, Val(K))
+    nd = Val(ndims(dy_out))
+    for i in eachindex(fdatas)
+        fi = fdatas[i]
+        ranges = ntuple(nd) do d
+            k = findfirst(==(d), dims)
+            k === nothing ? Colon() : (offsets[k] + 1):(offsets[k] + size(fi, d))
+        end
+        fi .+= view(dy_out, ranges...)
+        offsets = ntuple(k -> offsets[k] + size(fi, dims[k]), Val(K))
+    end
+    return nothing
+end
+
 _unwrap_cat_dim(d::Integer) = d
 _unwrap_cat_dim(::Val{N}) where {N} = N
-# Tuple dims would require partitioning each input along multiple independent axes;
-# not supported — the user should call cat(...; dims=d) once per axis instead.
+_unwrap_cat_dim(d::Tuple{Vararg{Integer}}) = d
 function _unwrap_cat_dim(d)
     throw(
         ArgumentError(
-            "Mooncake: cat requires dims to be an Integer or Val{N}; " *
-            "got dims=$(d). Tuple dims are not supported in the backward pass.",
+            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple of " *
+            "Integers; got dims=$(d).",
         ),
     )
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{CuMaybeComplexArray}})
-function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuMaybeComplexArray}...)
-    return Dual(vcat(map(primal, args)...), vcat(map(tangent, args)...))
+@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{CuMaybeWrappedArray}})
+function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuMaybeWrappedArray}...)
+    pairs = map(arrayify, args)
+    return Dual(vcat(map(first, pairs)...), vcat(map(last, pairs)...))
 end
-function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeComplexArray}...)
-    primals = map(primal, args)
-    fdatas = map(tangent, args)
+function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
+    pairs = map(arrayify, args)
+    primals = map(first, pairs)
+    fdatas = map(last, pairs)
     out = vcat(primals...)
     dy_out = zero(out)
     pb!!(::NoRData) =
@@ -1420,13 +1457,15 @@ function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeComplexArray}...)
     return CoDual(out, dy_out), pb!!
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{CuMaybeComplexArray}})
-function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuMaybeComplexArray}...)
-    return Dual(hcat(map(primal, args)...), hcat(map(tangent, args)...))
+@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{CuMaybeWrappedArray}})
+function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuMaybeWrappedArray}...)
+    pairs = map(arrayify, args)
+    return Dual(hcat(map(first, pairs)...), hcat(map(last, pairs)...))
 end
-function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeComplexArray}...)
-    primals = map(primal, args)
-    fdatas = map(tangent, args)
+function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
+    pairs = map(arrayify, args)
+    primals = map(first, pairs)
+    fdatas = map(last, pairs)
     out = hcat(primals...)
     dy_out = zero(out)
     pb!!(::NoRData) =
@@ -1436,27 +1475,29 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuMaybeComplexArray}}
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuMaybeWrappedArray}}
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
-    args::Dual{<:CuMaybeComplexArray}...,
+    args::Dual{<:CuMaybeWrappedArray}...,
 )
     pkw = primal(kw)
-    return Dual(cat(map(primal, args)...; pkw...), cat(map(tangent, args)...; pkw...))
+    pairs = map(arrayify, args)
+    return Dual(cat(map(first, pairs)...; pkw...), cat(map(last, pairs)...; pkw...))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
-    args::CoDual{<:CuMaybeComplexArray}...,
+    args::CoDual{<:CuMaybeWrappedArray}...,
 )
     pkw = primal(kw)
     dim = _unwrap_cat_dim(pkw.dims)
-    primals = map(primal, args)
-    fdatas = map(tangent, args)
+    pairs = map(arrayify, args)
+    primals = map(first, pairs)
+    fdatas = map(last, pairs)
     out = cat(primals...; pkw...)
     dy_out = zero(out)
     pb!!(::NoRData) = (
@@ -1466,14 +1507,22 @@ function rrule!!(
     return CoDual(out, dy_out), pb!!
 end
 
-# GPU+scalar guards for vcat/hcat/cat.
-# The Vararg{CuMaybeComplexArray} rules above are the hot path for pure-GPU calls.
-# CPU-only vcat/hcat/cat falls through to the interpreter, which handles it correctly.
-# Mixed GPU+CPU array calls fail at the primal level (Julia/CUDA type-mismatch error)
-# before any kernel is invoked, so no explicit guard is needed there.
-# The rules below guard the remaining edge case: a CuArray mixed with a Number operand
-# (Number <: AbstractArray is false, so the Vararg{CuMaybeComplexArray} rule does not
-# cover that).
+# vcat/hcat/cat on Integer-eltype CuArrays (includes Bool, since Bool<:Integer), e.g.
+# concatenating batches of labels/indices/masks. The tangent for Integer arrays is
+# always NoTangent, so there is nothing to accumulate in the backward pass. Without
+# this rule, such calls still fall through to the interpreter and hit the same
+# untraceable `cufunction` try/finally as the float/complex case, simply because they
+# appear inside a differentiated function. Only the pure-integer case is covered;
+# mixing Integer with Float/Complex CuArrays in one call is not, since the output
+# there is not itself derivative-free.
+const CuIntArray = CuArray{<:Integer}
+
+@zero_derivative(MinimalCtx, Tuple{typeof(vcat),Vararg{CuIntArray}})
+@zero_derivative(MinimalCtx, Tuple{typeof(hcat),Vararg{CuIntArray}})
+@zero_derivative(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuIntArray}}
+)
+
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
         "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU " *
@@ -1482,26 +1531,93 @@ end
         "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
     )
 end
+
+# N-arg mixed CPU/GPU device guard for vcat/hcat/cat.
+#
+# Vararg{CuMaybeWrappedArray} and Vararg{CuIntArray} above are strict subtypes of
+# Vararg{AbstractArray} below, so Julia's method specificity picks them for pure-GPU
+# calls; this guard is never consulted then. Pure-CPU calls do reach it, but
+# has_gpu=false there, so it returns false and they fall through to the interpreter
+# unaffected (this is what keeps CPU code, e.g. NNlib's softmax, working). Only
+# genuinely mixed CPU+GPU calls (any N, any order) make `_is_primitive` return true,
+# at which point frule!!/rrule!! below throw a clear error instead of the opaque
+# `cufunction` crash.
+#
+# `@is_primitive` can't express this: a plain declaration is always primitive for its
+# whole signature, but this decision has to depend on the concrete argument types, so
+# `_is_primitive` is implemented directly instead.
+#
+# Known gap: an all-GPU call mixing CuMaybeWrappedArray with CuIntArray (e.g.
+# vcat(float_cuarray, int32_cuarray), no CPU array) has has_cpu=false, so neither this
+# guard nor either uniform-type rule above fires. That is a different (GPU-side
+# dtype) axis of mixing than the CPU/GPU device mixing this guard targets.
+_cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray || T <: CuIntArray
+
 for _fn in (:vcat, :hcat)
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeComplexArray,Number})
+    @eval @generated function Mooncake._is_primitive(
+        ::Type{MinimalCtx}, ::Type{<:Mooncake.Mode}, ::Type{T}
+    ) where {T<:Tuple{typeof($_fn),Vararg{AbstractArray}}}
+        arg_types = T.parameters[2:end]
+        has_gpu = any(_cu_isa_gpu_side, arg_types)
+        has_cpu = any(t -> !_cu_isa_gpu_side(t), arg_types)
+        return has_gpu && has_cpu
+    end
+    @eval function frule!!(::Dual{typeof($_fn)}, ::Dual{<:AbstractArray}...)
+        _throw_mixed_cat_error($_fn)
+    end
+    @eval function rrule!!(::CoDual{typeof($_fn)}, ::CoDual{<:AbstractArray}...)
+        _throw_mixed_cat_error($_fn)
+    end
+end
+
+@generated function Mooncake._is_primitive(
+    ::Type{MinimalCtx}, ::Type{<:Mooncake.Mode}, ::Type{T}
+) where {T<:Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{AbstractArray}}}
+    arg_types = T.parameters[4:end]
+    has_gpu = any(_cu_isa_gpu_side, arg_types)
+    has_cpu = any(t -> !_cu_isa_gpu_side(t), arg_types)
+    return has_gpu && has_cpu
+end
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    ::Dual{typeof(cat)},
+    ::Dual{<:AbstractArray}...,
+)
+    _throw_mixed_cat_error(cat)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(cat)},
+    ::CoDual{<:AbstractArray}...,
+)
+    _throw_mixed_cat_error(cat)
+end
+
+# GPU+scalar guards for vcat/hcat/cat.
+# The rules above handle mixed GPU/CPU *array* combinations; Number <: AbstractArray is
+# false, so a CuArray mixed with a Number operand needs its own guard here.
+for _fn in (:vcat, :hcat)
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeWrappedArray,Number})
     @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeComplexArray}, ::Dual{<:Number}
+        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeWrappedArray}, ::Dual{<:Number}
     )
         _throw_mixed_cat_error($_fn)
     end
     @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeComplexArray}, ::CoDual{<:Number}
+        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeWrappedArray}, ::CoDual{<:Number}
     )
         _throw_mixed_cat_error($_fn)
     end
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Number,CuMaybeComplexArray})
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Number,CuMaybeWrappedArray})
     @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:Number}, ::Dual{<:CuMaybeComplexArray}
+        ::Dual{typeof($_fn)}, ::Dual{<:Number}, ::Dual{<:CuMaybeWrappedArray}
     )
         _throw_mixed_cat_error($_fn)
     end
     @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:Number}, ::CoDual{<:CuMaybeComplexArray}
+        ::CoDual{typeof($_fn)}, ::CoDual{<:Number}, ::CoDual{<:CuMaybeWrappedArray}
     )
         _throw_mixed_cat_error($_fn)
     end
@@ -1510,13 +1626,13 @@ end
 # cat(; dims=...) goes through Core.kwcall so cannot be included in the loop above.
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeComplexArray,Number},
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeWrappedArray,Number},
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
-    ::Dual{<:CuMaybeComplexArray},
+    ::Dual{<:CuMaybeWrappedArray},
     ::Dual{<:Number},
 )
     _throw_mixed_cat_error(cat)
@@ -1525,7 +1641,7 @@ function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
-    ::CoDual{<:CuMaybeComplexArray},
+    ::CoDual{<:CuMaybeWrappedArray},
     ::CoDual{<:Number},
 )
     _throw_mixed_cat_error(cat)
@@ -1533,14 +1649,14 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Number,CuMaybeComplexArray},
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Number,CuMaybeWrappedArray},
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
     ::Dual{<:Number},
-    ::Dual{<:CuMaybeComplexArray},
+    ::Dual{<:CuMaybeWrappedArray},
 )
     _throw_mixed_cat_error(cat)
 end
@@ -1549,7 +1665,7 @@ function rrule!!(
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
     ::CoDual{<:Number},
-    ::CoDual{<:CuMaybeComplexArray},
+    ::CoDual{<:CuMaybeWrappedArray},
 )
     _throw_mixed_cat_error(cat)
 end
@@ -2835,17 +2951,18 @@ function rrule!!(
     return dest, materialize!_pb!!
 end
 
-# Rules for `permutedims(x, perm)` on CuArrays.
+# Rules for `permutedims(x, perm)` on CuArrays, and on Adjoint/Transpose/SubArray
+# wrapping a CuArray (via `arrayify`, same convention as vcat/hcat/cat above).
 # frule:    permute the tangent with the same permutation — permutedims is linear.
 # pullback: permute the output cotangent with the inverse permutation.
-@is_primitive(MinimalCtx, Tuple{typeof(permutedims),CuMaybeComplexArray,Any})
-function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:CuMaybeComplexArray}, perm::Dual)
+@is_primitive(MinimalCtx, Tuple{typeof(permutedims),CuMaybeWrappedArray,Any})
+function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:CuMaybeWrappedArray}, perm::Dual)
     px, dx = arrayify(x)
     pperm = primal(perm)
     return Dual(permutedims(px, pperm), permutedims(dx, pperm))
 end
 function rrule!!(
-    ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeComplexArray}, perm::CoDual
+    ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeWrappedArray}, perm::CoDual
 )
     px, dx = arrayify(x)
     pperm = primal(perm)
@@ -2858,5 +2975,11 @@ function rrule!!(
     end
     return CoDual(y, dy_out), permutedims_pb!!
 end
+
+# permutedims on Integer-eltype CuArrays, same rationale as the vcat/hcat/cat Integer
+# rules above: NoTangent, nothing to accumulate, but it still needs its own primitive
+# or it falls through to the interpreter and hits the same untraceable `cufunction`
+# try/finally.
+@zero_derivative(MinimalCtx, Tuple{typeof(permutedims),CuIntArray,Any})
 
 end
