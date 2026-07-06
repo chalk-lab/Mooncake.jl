@@ -48,7 +48,7 @@ function _model_name(f::Chain)
 end
 _model_name(f::StatefulRecurrentCell) = "StatefulRecurrentCell($(_model_name(f.cell)))"
 function _model_name(f::Maxout)
-    "Maxout($(_model_name(first(values(f.layers)))), $(length(f.layers)))"
+    return "Maxout($(_model_name(first(values(f.layers)))), $(length(f.layers)))"
 end
 _model_name(f::SkipConnection) = "SkipConnection($(_model_name(f.layers)), $(f.connection))"
 _model_name(f::MultiHeadAttention) = "MultiHeadAttention($(f.q_proj.in_dims))"

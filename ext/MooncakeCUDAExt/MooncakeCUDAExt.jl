@@ -197,9 +197,8 @@ end
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
-@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
-    tangent_type(P)
-}
+@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} =
+    CuRefValue{tangent_type(P)}
 
 # CuPtr{T} wraps a device address (an integer).  The generic zero_tangent_internal for
 # immutable structs does not apply here — construct a null device pointer directly.
@@ -619,14 +618,13 @@ end
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
-@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), NoTangent()
-)
-@inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) = CoDual(
-    _cu_lgetfield_primal(x_primal, name, order), NoFData()
-)
+@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) =
+    Dual(_cu_lgetfield_primal(x_primal, name, order), NoTangent())
+@inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) =
+    CoDual(_cu_lgetfield_primal(x_primal, name, order), NoFData())
 @inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
+    _cu_lgetfield_primal(x_primal, name, order),
+    _cu_lgetfield_data_tangent(x_tangent, name),
 )
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
@@ -699,20 +697,20 @@ const _SCALAR_IDX_MSG =
     "https://github.com/chalk-lab/Mooncake.jl."
 @is_primitive(MinimalCtx, Tuple{typeof(getindex),CuArray,Integer})
 function frule!!(::Dual{typeof(getindex)}, x::Dual{<:CuArray}, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(::CoDual{typeof(getindex)}, x::CoDual{<:CuArray}, i::CoDual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(setindex!),CuArray,Any,Integer})
 function frule!!(::Dual{typeof(setindex!)}, x::Dual{<:CuArray}, v::Dual, i::Dual{<:Integer})
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 function rrule!!(
     ::CoDual{typeof(setindex!)}, x::CoDual{<:CuArray}, v::CoDual, i::CoDual{<:Integer}
 )
-    _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 
 # Vector indexing: y = x[idx] where idx is a vector of integers (gather).
@@ -796,12 +794,14 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
-    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    )
-    @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-    )
+    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) =
+        _throw_gpu_argument_error(
+            "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+        )
+    @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) =
+        _throw_gpu_argument_error(
+            "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+        )
 end
 
 # Rules for `prod(x)` on GPU arrays.
@@ -920,13 +920,13 @@ function rrule!!(
 end
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
 function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
 end
 function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray}; kwargs...)
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
@@ -1363,14 +1363,14 @@ end
 # Mooncake attempt to trace into an opaque CUDA reduction kernel.
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
 function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
 end
 function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
@@ -1379,14 +1379,14 @@ end
 
 @is_primitive(MinimalCtx, Tuple{typeof(reduce),Any,CuArray})
 function frule!!(::Dual{typeof(reduce)}, op::Dual, x::Dual{<:CuArray})
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
 end
 function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
-    _throw_gpu_argument_error(
+    return _throw_gpu_argument_error(
         "Mooncake: reduce on CuArray only supports op=+ (sum) or op=* (prod); " *
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
@@ -1433,7 +1433,7 @@ _unwrap_cat_dim(d::Integer) = d
 _unwrap_cat_dim(::Val{N}) where {N} = N
 _unwrap_cat_dim(d::Tuple{Vararg{Integer}}) = d
 function _unwrap_cat_dim(d)
-    throw(
+    return throw(
         ArgumentError(
             "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple of " *
             "Integers; got dims=$(d).",
@@ -1507,22 +1507,6 @@ function rrule!!(
     return CoDual(out, dy_out), pb!!
 end
 
-# vcat/hcat/cat on Integer-eltype CuArrays (includes Bool, since Bool<:Integer), e.g.
-# concatenating batches of labels/indices/masks. The tangent for Integer arrays is
-# always NoTangent, so there is nothing to accumulate in the backward pass. Without
-# this rule, such calls still fall through to the interpreter and hit the same
-# untraceable `cufunction` try/finally as the float/complex case, simply because they
-# appear inside a differentiated function. Only the pure-integer case is covered;
-# mixing Integer with Float/Complex CuArrays in one call is not, since the output
-# there is not itself derivative-free.
-const CuIntArray = CuArray{<:Integer}
-
-@zero_derivative(MinimalCtx, Tuple{typeof(vcat),Vararg{CuIntArray}})
-@zero_derivative(MinimalCtx, Tuple{typeof(hcat),Vararg{CuIntArray}})
-@zero_derivative(
-    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuIntArray}}
-)
-
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
         "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU " *
@@ -1534,24 +1518,19 @@ end
 
 # N-arg mixed CPU/GPU device guard for vcat/hcat/cat.
 #
-# Vararg{CuMaybeWrappedArray} and Vararg{CuIntArray} above are strict subtypes of
-# Vararg{AbstractArray} below, so Julia's method specificity picks them for pure-GPU
-# calls; this guard is never consulted then. Pure-CPU calls do reach it, but
-# has_gpu=false there, so it returns false and they fall through to the interpreter
-# unaffected (this is what keeps CPU code, e.g. NNlib's softmax, working). Only
-# genuinely mixed CPU+GPU calls (any N, any order) make `_is_primitive` return true,
-# at which point frule!!/rrule!! below throw a clear error instead of the opaque
-# `cufunction` crash.
+# Vararg{CuMaybeWrappedArray} above is a strict subtype of Vararg{AbstractArray}
+# below with a matching function-argument type (both `Dual{typeof(vcat)}`, no `<:`),
+# so Julia's method specificity picks it for pure-GPU calls; this guard is never
+# consulted then. Pure-CPU calls do reach this guard, but has_gpu=false there, so it
+# returns false and they fall through to the interpreter unaffected (this is what
+# keeps CPU code, e.g. NNlib's softmax, working). Only genuinely mixed CPU+GPU calls
+# (any N, any order) make `_is_primitive` return true, at which point frule!!/rrule!!
+# below throw a clear error instead of the opaque `cufunction` crash.
 #
 # `@is_primitive` can't express this: a plain declaration is always primitive for its
 # whole signature, but this decision has to depend on the concrete argument types, so
 # `_is_primitive` is implemented directly instead.
-#
-# Known gap: an all-GPU call mixing CuMaybeWrappedArray with CuIntArray (e.g.
-# vcat(float_cuarray, int32_cuarray), no CPU array) has has_cpu=false, so neither this
-# guard nor either uniform-type rule above fires. That is a different (GPU-side
-# dtype) axis of mixing than the CPU/GPU device mixing this guard targets.
-_cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray || T <: CuIntArray
+_cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
 
 for _fn in (:vcat, :hcat)
     @eval @generated function Mooncake._is_primitive(
@@ -1584,7 +1563,7 @@ function frule!!(
     ::Dual{typeof(cat)},
     ::Dual{<:AbstractArray}...,
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1592,7 +1571,7 @@ function rrule!!(
     ::CoDual{typeof(cat)},
     ::CoDual{<:AbstractArray}...,
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 
 # GPU+scalar guards for vcat/hcat/cat.
@@ -1635,7 +1614,7 @@ function frule!!(
     ::Dual{<:CuMaybeWrappedArray},
     ::Dual{<:Number},
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1644,7 +1623,7 @@ function rrule!!(
     ::CoDual{<:CuMaybeWrappedArray},
     ::CoDual{<:Number},
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 
 @is_primitive(
@@ -1658,7 +1637,7 @@ function frule!!(
     ::Dual{<:Number},
     ::Dual{<:CuMaybeWrappedArray},
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1667,7 +1646,7 @@ function rrule!!(
     ::CoDual{<:Number},
     ::CoDual{<:CuMaybeWrappedArray},
 )
-    _throw_mixed_cat_error(cat)
+    return _throw_mixed_cat_error(cat)
 end
 
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
@@ -2235,14 +2214,12 @@ end
 # _nfwd_input_dof counts per-broadcast-element DOFs.
 @inline _gpu_rep_element(x::CuFloatOrComplex) = x
 @inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
-@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
-    Complex{T}
-)
+@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} =
+    zero(Complex{T})
 @inline _gpu_rep_element(::Any) = ()
 
-@inline _gpu_total_slots(flat_pargs) = Nfwd._nfwd_input_dof(
-    map(_gpu_rep_element, flat_pargs)
-)
+@inline _gpu_total_slots(flat_pargs) =
+    Nfwd._nfwd_input_dof(map(_gpu_rep_element, flat_pargs))
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
     dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
@@ -2394,12 +2371,10 @@ end
 # Forward mode: return the effective tangent seen by the broadcast kernel for leaf pa.
 # For Adjoint/Transpose, raw_t is a Tangent{@NamedTuple{parent::CuArray}}; extract parent.
 @inline _leaf_effective_tangent(::CuMaybeComplexArray, t::CuArray) = t
-@inline _leaf_effective_tangent(::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = adjoint(
-    _fields(t).parent
-)
-@inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = transpose(
-    _fields(t).parent
-)
+@inline _leaf_effective_tangent(::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) =
+    adjoint(_fields(t).parent)
+@inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) =
+    transpose(_fields(t).parent)
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
 @inline _leaf_effective_tangent(::IEEEFloat, t) = t
 @inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
@@ -2435,7 +2410,7 @@ function _unbroadcast(dx::CuArray, sz::Tuple)
     size(dx) == sz && return dx
     # Collect reduction dims as a Tuple (stack-allocated) to avoid filter's heap Vector.
     reduce_dims = ntuple(ndims(dx)) do d
-        d > length(sz) || sz[d] == 1 ? d : 0
+        return d > length(sz) || sz[d] == 1 ? d : 0
     end
     reduce_dims = filter(!iszero, reduce_dims)  # Tuple filter — no heap alloc
     return isempty(reduce_dims) ? reshape(dx, sz) : reshape(sum(dx; dims=reduce_dims), sz)
@@ -2476,9 +2451,8 @@ end
 @inline function _gpu_bcast_leaves(bc_prepared, bc_primal, td)
     return _gpu_bcast_leaves_args(bc_prepared.args, bc_primal.args, _fields(td).args)
 end
-@inline _gpu_bcast_leaves(bc_prepared, _, ::Union{NoTangent,NoFData}) = _gpu_bcast_leaves_nots(
-    bc_prepared.args
-)
+@inline _gpu_bcast_leaves(bc_prepared, _, ::Union{NoTangent,NoFData}) =
+    _gpu_bcast_leaves_nots(bc_prepared.args)
 @inline _gpu_bcast_leaves_nots(::Tuple{}) = ((), ())
 @inline function _gpu_bcast_leaves_nots(args::Tuple)
     a1 = first(args)
@@ -2491,9 +2465,8 @@ end
     end
 end
 @inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}, ::Tuple{}) = ((), ())
-@inline _gpu_bcast_leaves_args(args_prepared::Tuple, ::Tuple, ::Tuple{}) = _gpu_bcast_leaves_nots(
-    args_prepared
-)
+@inline _gpu_bcast_leaves_args(args_prepared::Tuple, ::Tuple, ::Tuple{}) =
+    _gpu_bcast_leaves_nots(args_prepared)
 @inline function _gpu_cast_diff_arg(bc::Broadcasted, td)
     return _gpu_broadcast_cast_diff(bc.f, first(bc.args), first(_fields(td).args))
 end
@@ -2975,11 +2948,5 @@ function rrule!!(
     end
     return CoDual(y, dy_out), permutedims_pb!!
 end
-
-# permutedims on Integer-eltype CuArrays, same rationale as the vcat/hcat/cat Integer
-# rules above: NoTangent, nothing to accumulate, but it still needs its own primitive
-# or it falls through to the interpreter and hits the same untraceable `cufunction`
-# try/finally.
-@zero_derivative(MinimalCtx, Tuple{typeof(permutedims),CuIntArray,Any})
 
 end

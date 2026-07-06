@@ -79,7 +79,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
         _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)
-        _rand_int32 = (rng, size...) -> CuArray(rand(rng, Int32(1):Int32(9), size...))
         _bcast_sum_sin(x) = sum(sin.(x))
         _bcast_sum_pow7(x) = sum(x .^ 7)
         _bcast_sum_log(x) = sum(log.(x))
@@ -195,9 +194,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # non-differentiable (tangent_type(Bool)=NoTangent), so gradient flows
         # through x only.  Verifies that Bool CuArray views don't crash AD.
         # Uses eltype(x) conversion to work for any float precision.
-        _view_bool_gate_sum(x) = sum(
-            x .* eltype(x).(view(x .> zero(eltype(x)), 1:length(x)))
-        )
+        _view_bool_gate_sum(x) =
+            sum(x .* eltype(x).(view(x .> zero(eltype(x)), 1:length(x))))
         # Helpers for non-default memory types.
         _rand_unified =
             (rng, sz...) ->
@@ -217,10 +215,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
-        # `sum` on Integer/Bool CuArrays hits Mooncake's mapreduce catch-all guard, a
-        # separate pre-existing limitation unrelated to vcat/hcat/cat/permutedims. So
-        # the Integer-eltype tests below check `cat` directly, without a sum wrapper.
-        _cat_cu_id(d) = (xs...) -> cat(xs...; dims=d)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -715,37 +709,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 false,
                 _permutedims_sum((2, 1, 3)),
                 _rand(rng, Float32, 4, 6, 3),
-            ),
-            # vcat/hcat/cat/permutedims on Integer/Bool-eltype CuArrays (e.g. batches of
-            # labels/indices/masks). tangent_type is NoTangent for these, so the rules
-            # are `@zero_derivative` and tested directly (is_primitive=true) rather than
-            # via a sum-reducing wrapper, since sum on an Integer CuArray separately hits
-            # Mooncake's mapreduce catch-all guard (an unrelated pre-existing limitation).
-            (false, :none, true, vcat, _rand_int32(rng, 4, 3), _rand_int32(rng, 2, 3)),
-            (false, :none, true, hcat, _rand_int32(rng, 4, 3), _rand_int32(rng, 4, 2)),
-            (
-                false,
-                :none,
-                true,
-                permutedims,
-                _rand_int32(rng, 8, 4),
-                (2, 1),
-            ),
-            (
-                false,
-                :none,
-                false,
-                _cat_cu_id(1),
-                _rand_int32(rng, 4, 3),
-                _rand_int32(rng, 2, 3),
-            ),
-            (
-                false,
-                :none,
-                true,
-                vcat,
-                CuArray(rand(rng, Bool, 4, 3)),
-                CuArray(rand(rng, Bool, 2, 3)),
             ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
