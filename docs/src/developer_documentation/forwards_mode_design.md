@@ -15,7 +15,7 @@ This document
 
 Loosely, a rule for a function simultaneously
 1. performs the same computation as the original function, and
-1. computes the Frechet derivative.
+1. computes the Fréchet derivative.
 
 This is best explained through a worked example.
 Consider a function call

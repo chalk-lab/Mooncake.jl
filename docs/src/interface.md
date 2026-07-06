@@ -1,13 +1,12 @@
 # Interface
 
-This is the public interface that day-to-day users of AD are expected to interact with if
-for some reason DifferentiationInterface.jl does not suffice.
-If you have not tried using Mooncake.jl via DifferentiationInterface.jl, please do so.
-See [Tutorial](@ref) for more info.
+This page covers Mooncake.jl's public API in detail, including options that go
+beyond the [Tutorial](@ref): friendly tangents for `struct`s, per-argument tangent zeroing
+via `args_to_zero`, and the full set of prepare/run docstrings.
 
 ## Example
 
-Here's a simple example demonstrating how to use Mooncake.jl's native API:
+Here's a simple example demonstrating how to use Mooncake.jl's API:
 
 ```@example interface
 import Mooncake as MC

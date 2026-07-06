@@ -2035,7 +2035,7 @@ end
 """
     value_and_derivative!!(cache::ForwardCache, f::Dual, x::Vararg{Dual,N})
 
-Returns a `Dual` containing the result of applying forward-mode AD to compute the (Frechet)
+Returns a `Dual` containing the result of applying forward-mode AD to compute the (Fréchet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
@@ -2068,7 +2068,7 @@ end
 """
     value_and_derivative!!(cache::ForwardCache, (f, df), (x, dx), ...)
 
-Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
 
 Tuples are used as inputs and outputs instead of `Dual` numbers to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 

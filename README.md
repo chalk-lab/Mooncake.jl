@@ -39,7 +39,7 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 Check that you're running a version of Julia that Mooncake.jl supports.
 See the `SUPPORT_POLICY.md` file for more info.
 
-There are several ways to interact with `Mooncake.jl`. To interact directly with `Mooncake.jl`, use Mooncake's native API, which allows reuse of prepared caches for repeated gradient and Hessian evaluations:
+You can use `Mooncake.jl`'s API to prepare a cache once and then reuse it for fast, repeated gradient and Hessian evaluations, like this:
 
 ```julia
 import Mooncake as MC
@@ -63,6 +63,4 @@ val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # H    : ∇²f(x) (n×n matrix)
 ```
 
-You should expect that `MC.prepare_*_cache` take a little time to run, but that subsequent gradient and hessian calls using the prepared caches are fast. For details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). 
-
-The gradient interface `prepare_gradient_cache` / `value_and_gradient!!` requires `f` to return a real scalar (`Union{Float16, Float32, Float64}`); for other outputs, such as arrays, use `prepare_pullback_cache` / `value_and_pullback!!`, which accept any output if you supply the seed cotangent yourself. Any prepared cache fixes the type and size of each input (calls error if a later `x` differs) and reuses its pre-allocated gradient buffers in place, so copy any gradient you need to keep before calling again. For varying input sizes, skip the cache and call `value_and_pullback!!(rule, ȳ, f, x...)` on a `rule` from `build_rrule`: it re-allocates tangents each call, requiring only the input types to stay fixed. Since that `rule` is reusable, you can also build your own cache on top of it that resizes on demand.
+You should expect the `MC.prepare_*_cache` functions to take a little time to run, but subsequent gradient and Hessian calls that reuse the prepared caches are fast. One thing to keep in mind: `value_and_gradient!!` requires `f` to return a real scalar; for non-scalar outputs such as arrays use `value_and_pullback!!`, and for inputs whose size varies between calls use `build_rrule` without a cache. See the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) for details, and the [tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients) for how to choose an interface, reuse caches, and handle varying input sizes.
