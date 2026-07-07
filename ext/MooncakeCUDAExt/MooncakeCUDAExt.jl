@@ -115,11 +115,20 @@ const CuGpuSumFArray = Union{
 # tangent in the same wrapper type. Without this, these wrapper types fall through to
 # the interpreter and hit the same untraceable `cufunction` try/finally the rules
 # below exist to avoid.
+#
+# The SubArray branch is bounded to `LinearAlgebra.BlasFloat`, not the wider
+# `CuFloatOrComplex` used for Adjoint/Transpose: `arrayify`'s `SubArray` method
+# (`src/rules/blas.jl`) is itself bounded to `BlasFloat`, which excludes `Float16`/
+# `Complex{Float16}`, unlike its Adjoint/Transpose/Symmetric siblings there. Claiming
+# the wider bound here would let e.g. `vcat(view(cu_f16_vec, 1:4), y)` through as
+# primitive, only for it to fail inside the rule with a misdirected "unexpected array
+# type in `Mooncake.arrayify`" error instead of falling through to the interpreter like
+# any other genuinely-unsupported case.
 const CuMaybeWrappedArray = Union{
     CuMaybeComplexArray,
     Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},
     Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},
-    SubArray{T,N,P} where {T<:CuFloatOrComplex,N,P<:CuMaybeComplexArray},
+    SubArray{T,N,P} where {T<:LinearAlgebra.BlasFloat,N,P<:CuMaybeComplexArray},
 }
 
 @inline _nopb(::Val{N}) where {N} = NoPullback(ntuple(_ -> NoRData(), N))
@@ -1441,7 +1450,9 @@ function _unwrap_cat_dim(d)
     )
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(vcat),Vararg{CuMaybeWrappedArray}})
+@is_primitive(
+    MinimalCtx, Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
+)
 function frule!!(::Dual{typeof(vcat)}, args::Dual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
     return Dual(vcat(map(first, pairs)...), vcat(map(last, pairs)...))
@@ -1457,7 +1468,9 @@ function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     return CoDual(out, dy_out), pb!!
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(hcat),Vararg{CuMaybeWrappedArray}})
+@is_primitive(
+    MinimalCtx, Tuple{typeof(hcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
+)
 function frule!!(::Dual{typeof(hcat)}, args::Dual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
     return Dual(hcat(map(first, pairs)...), hcat(map(last, pairs)...))
@@ -1475,7 +1488,13 @@ end
 
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{CuMaybeWrappedArray}}
+    Tuple{
+        typeof(Core.kwcall),
+        NamedTuple,
+        typeof(cat),
+        CuMaybeWrappedArray,
+        Vararg{CuMaybeWrappedArray},
+    },
 )
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
@@ -1509,22 +1528,26 @@ end
 
 @noinline function _throw_mixed_cat_error(fn)
     _throw_gpu_argument_error(
-        "Mooncake: cannot differentiate $fn with mixed GPU (CuArray) and CPU " *
-        "arguments. All arrays must be on the same device; mixing causes hidden " *
-        "GPU-to-CPU copies during backpropagation which hurt performance. " *
-        "Use `gpu(array)` (CUDA.jl / MLDataDevices.jl) to move CPU arrays to the GPU.",
+        "Mooncake: cannot differentiate $fn with a mix of GPU (CuArray) and non-GPU " *
+        "arguments. Without this check, this would previously crash with an opaque " *
+        "CUDA kernel error instead. Likely causes: (a) some arguments are still on " *
+        "the CPU, or are plain Numbers: move arrays to the GPU with `gpu(array)` " *
+        "(CUDA.jl / MLDataDevices.jl); or (b) a GPU array is wrapped in a type not " *
+        "yet recognised here (e.g. `Diagonal`), so it isn't detected as GPU.",
     )
 end
 
-# N-arg mixed CPU/GPU device guard for vcat/hcat/cat.
+# Mixed CPU/GPU device guard for vcat/hcat/cat, covering array/array and array/scalar
+# mixing together, at any arity and any argument order.
 #
-# Vararg{CuMaybeWrappedArray} above is a strict subtype of Vararg{AbstractArray}
-# below with a matching function-argument type (both `Dual{typeof(vcat)}`, no `<:`),
-# so Julia's method specificity picks it for pure-GPU calls; this guard is never
-# consulted then. Pure-CPU calls do reach this guard, but has_gpu=false there, so it
-# returns false and they fall through to the interpreter unaffected (this is what
-# keeps CPU code, e.g. NNlib's softmax, working). Only genuinely mixed CPU+GPU calls
-# (any N, any order) make `_is_primitive` return true, at which point frule!!/rrule!!
+# Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}} above is a strict
+# subtype of Tuple{typeof(vcat),Vararg{Union{AbstractArray,Number}}} below with a
+# matching function-argument type (both `Dual{typeof(vcat)}`, no `<:`), so Julia's
+# method specificity picks it for pure-GPU calls; this guard is never consulted then.
+# Pure-CPU calls do reach this guard, but has_gpu=false there, so it returns false and
+# they fall through to the interpreter unaffected (this is what keeps CPU code, e.g.
+# NNlib's softmax, working). Only genuinely mixed CPU+GPU calls (any N, any order,
+# arrays or scalars) make `_is_primitive` return true, at which point frule!!/rrule!!
 # below throw a clear error instead of the opaque `cufunction` crash.
 #
 # `@is_primitive` can't express this: a plain declaration is always primitive for its
@@ -1532,36 +1555,58 @@ end
 # `_is_primitive` is implemented directly instead.
 _cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
 
+# `any_matches_primitive` (src/interpreter/abstract_interpretation.jl) feeds the type of
+# every call site in differentiated code into `_is_primitive`, including splatted calls
+# of runtime-determined length (e.g. `vcat(xs...)` in RNN-style code), whose relevant
+# type parameter is a `Core.TypeofVararg`, not a `Type`, and calls with an imprecise
+# eltype, where `T` itself is a `UnionAll` rather than a concrete `DataType`. A
+# `@generated` version of this check crashes on both: `T.parameters` on a `UnionAll`
+# throws, and `Core.TypeofVararg` isn't a `Type` so `_cu_isa_gpu_side` errors inside the
+# generator. Mooncake's own ambiguity-workaround then silently turns that error into an
+# incorrect `true`, misclassifying pure-CPU splatted calls as needing this guard. A
+# plain (non-`@generated`) method sidesteps this: bail out to `false` (conservative,
+# falls through to the pre-existing behaviour) on a non-`DataType` `T` or on any
+# `Core.TypeofVararg` parameter, instead of crashing or misclassifying.
+function _cu_mixed_device_is_primitive(T::Type, from::Int)
+    T isa DataType || return false
+    has_gpu = false
+    has_other = false
+    for t in T.parameters[from:end]
+        t isa Core.TypeofVararg && return false
+        _cu_isa_gpu_side(t) ? (has_gpu = true) : (has_other = true)
+    end
+    return has_gpu && has_other
+end
+
 for _fn in (:vcat, :hcat)
-    @eval @generated function Mooncake._is_primitive(
+    @eval function Mooncake._is_primitive(
         ::Type{MinimalCtx}, ::Type{<:Mooncake.Mode}, ::Type{T}
-    ) where {T<:Tuple{typeof($_fn),Vararg{AbstractArray}}}
-        arg_types = T.parameters[2:end]
-        has_gpu = any(_cu_isa_gpu_side, arg_types)
-        has_cpu = any(t -> !_cu_isa_gpu_side(t), arg_types)
-        return has_gpu && has_cpu
+    ) where {T<:Tuple{typeof($_fn),Vararg{Union{AbstractArray,Number}}}}
+        return _cu_mixed_device_is_primitive(T, 2)
     end
-    @eval function frule!!(::Dual{typeof($_fn)}, ::Dual{<:AbstractArray}...)
-        _throw_mixed_cat_error($_fn)
+    @eval function frule!!(::Dual{typeof($_fn)}, ::Dual{<:Union{AbstractArray,Number}}...)
+        return _throw_mixed_cat_error($_fn)
     end
-    @eval function rrule!!(::CoDual{typeof($_fn)}, ::CoDual{<:AbstractArray}...)
-        _throw_mixed_cat_error($_fn)
+    @eval function rrule!!(
+        ::CoDual{typeof($_fn)}, ::CoDual{<:Union{AbstractArray,Number}}...
+    )
+        return _throw_mixed_cat_error($_fn)
     end
 end
 
-@generated function Mooncake._is_primitive(
+# cat(; dims=...) goes through Core.kwcall so cannot share the loop above.
+function Mooncake._is_primitive(
     ::Type{MinimalCtx}, ::Type{<:Mooncake.Mode}, ::Type{T}
-) where {T<:Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{AbstractArray}}}
-    arg_types = T.parameters[4:end]
-    has_gpu = any(_cu_isa_gpu_side, arg_types)
-    has_cpu = any(t -> !_cu_isa_gpu_side(t), arg_types)
-    return has_gpu && has_cpu
+) where {
+    T<:Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Vararg{Union{AbstractArray,Number}}}
+}
+    return _cu_mixed_device_is_primitive(T, 4)
 end
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(cat)},
-    ::Dual{<:AbstractArray}...,
+    ::Dual{<:Union{AbstractArray,Number}}...,
 )
     return _throw_mixed_cat_error(cat)
 end
@@ -1569,61 +1614,9 @@ function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(cat)},
-    ::CoDual{<:AbstractArray}...,
+    ::CoDual{<:Union{AbstractArray,Number}}...,
 )
     return _throw_mixed_cat_error(cat)
-end
-
-# GPU+scalar guards for vcat/hcat/cat.
-# The rules above handle mixed GPU/CPU *array* combinations; Number <: AbstractArray is
-# false, so a CuArray mixed with a Number operand needs its own guard here.
-for _fn in (:vcat, :hcat)
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuMaybeWrappedArray,Number})
-    @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:CuMaybeWrappedArray}, ::Dual{<:Number}
-    )
-        _throw_mixed_cat_error($_fn)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:CuMaybeWrappedArray}, ::CoDual{<:Number}
-    )
-        _throw_mixed_cat_error($_fn)
-    end
-    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Number,CuMaybeWrappedArray})
-    @eval function frule!!(
-        ::Dual{typeof($_fn)}, ::Dual{<:Number}, ::Dual{<:CuMaybeWrappedArray}
-    )
-        _throw_mixed_cat_error($_fn)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof($_fn)}, ::CoDual{<:Number}, ::CoDual{<:CuMaybeWrappedArray}
-    )
-        _throw_mixed_cat_error($_fn)
-    end
-end
-
-# cat(; dims=...) goes through Core.kwcall so cannot share the vcat/hcat loop above;
-# it gets its own loop over the two GPU/scalar argument orderings instead.
-for (A, B) in ((:CuMaybeWrappedArray, :Number), (:Number, :CuMaybeWrappedArray))
-    @eval @is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),$A,$B})
-    @eval function frule!!(
-        ::Dual{typeof(Core.kwcall)},
-        ::Dual{<:NamedTuple},
-        ::Dual{typeof(cat)},
-        ::Dual{<:$A},
-        ::Dual{<:$B},
-    )
-        return _throw_mixed_cat_error(cat)
-    end
-    @eval function rrule!!(
-        ::CoDual{typeof(Core.kwcall)},
-        ::CoDual{<:NamedTuple},
-        ::CoDual{typeof(cat)},
-        ::CoDual{<:$A},
-        ::CoDual{<:$B},
-    )
-        return _throw_mixed_cat_error(cat)
-    end
 end
 
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather

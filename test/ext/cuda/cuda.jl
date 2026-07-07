@@ -1141,132 +1141,37 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
 
             @testset "mixed GPU/CPU cat guards" begin
+                # One unified Vararg{Union{AbstractArray,Number}} guard per function
+                # covers array/scalar mixing at any arity/order, so each check below
+                # (reachability, is_primitive, N-arg) targets a distinct property
+                # instead of re-testing the same compiled method.
                 gpu1 = _rand(rng, Float32, 4)
                 gpu2 = _rand(rng, Float32, 4, 3)
                 tgpu1 = Mooncake.zero_tangent(gpu1)
                 tgpu2 = Mooncake.zero_tangent(gpu2)
-
-                # Scalar (Number) mixing guards.
-                s = 1.0f0
-                ts = zero(s)
-
-                # First confirm the guard is actually reachable via the real
-                # differentiation entry point. The isolated frule!!/rrule!! calls below
-                # only prove the method throws once invoked, not that Mooncake's
-                # dispatch ever routes a real call there. This matches the convention
-                # used for every other "should throw" guard in this file (see e.g.
-                # "scalar getindex CuArray not differentiable" above).
-                @test_throws r"mixed GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_vcat_cu_sum, gpu1, s), _vcat_cu_sum, gpu1, s
-                )
-                @test_throws r"mixed GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_hcat_cu_sum, gpu1, s), _hcat_cu_sum, gpu1, s
-                )
-                @test_throws r"mixed GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
-                )
-
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(s, ts),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(s, ts),
-                    Mooncake.Dual(gpu1, tgpu1),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(s, ts),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(s, ts),
-                    Mooncake.Dual(gpu1, tgpu1),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
-                    Mooncake.Dual(cat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(s, ts),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
-                    Mooncake.Dual(cat, Mooncake.NoTangent()),
-                    Mooncake.Dual(s, ts),
-                    Mooncake.Dual(gpu1, tgpu1),
-                )
-
-                # rrule!! is a separate method definition from frule!! (not implemented
-                # in terms of it), so it needs its own check that it actually throws.
-                # Each `for _fn in (:vcat, :hcat)` @eval-loop iteration compiles its own
-                # method instance from the shared source text, so vcat and hcat must
-                # each be checked individually; testing one does not exercise the other,
-                # despite the identical source. The (Array, Number) ordering for each is
-                # already proven reachable end-to-end above (value_and_gradient!! on
-                # _vcat_cu_sum/_hcat_cu_sum/_cat_cu_sum(1) with (gpu1, s)), which is a
-                # strictly stronger check than calling the same method directly with the
-                # same arguments. So only the (Number, Array) ordering, not covered
-                # there, needs its own direct check here.
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.rrule!!(
-                    Mooncake.CoDual(vcat, Mooncake.NoFData()),
-                    Mooncake.CoDual(s, Mooncake.NoFData()),
-                    Mooncake.CoDual(gpu1, tgpu1),
-                )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.rrule!!(
-                    Mooncake.CoDual(hcat, Mooncake.NoFData()),
-                    Mooncake.CoDual(s, Mooncake.NoFData()),
-                    Mooncake.CoDual(gpu1, tgpu1),
-                )
-                # cat's guard goes through Core.kwcall, a structurally different
-                # signature (NamedTuple in the second slot) from vcat/hcat, so it gets
-                # its own check for the (Number, Array) ordering not already covered
-                # end-to-end above.
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.rrule!!(
-                    Mooncake.CoDual(Core.kwcall, Mooncake.NoFData()),
-                    Mooncake.CoDual((dims=1,), Mooncake.NoFData()),
-                    Mooncake.CoDual(cat, Mooncake.NoFData()),
-                    Mooncake.CoDual(s, Mooncake.NoFData()),
-                    Mooncake.CoDual(gpu1, tgpu1),
-                )
-
-                # Array/array mixing guards (any N args, any argument order). This is
-                # the `_is_primitive`-based guard, not a plain `@is_primitive` signature,
-                # so also check `is_primitive` itself resolves correctly for pure-GPU
-                # (true, via the more specific rule above), pure-CPU (false, falls
-                # through to the interpreter unaffected), and mixed (true) cases.
                 cpu_vec = _host_rand(rng, Float32, 4)
                 tcpu_vec = zero(cpu_vec)
                 cpu_mat = _host_rand(rng, Float32, 4, 2)
                 tcpu_mat = zero(cpu_mat)
                 gpu3 = _rand(rng, Float32, 3)
                 tgpu3 = Mooncake.zero_tangent(gpu3)
+                s = 1.0f0
                 wc = Base.get_world_counter()
 
-                # Same reasoning as the scalar-mixing case above: confirm the guard is
-                # reachable through the real differentiation entry point, not just
-                # directly callable in isolation.
-                @test_throws r"mixed GPU" value_and_gradient!!(
+                @test_throws r"mix of GPU" value_and_gradient!!(
                     prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu_vec),
                     _vcat_cu_sum,
                     gpu1,
                     cpu_vec,
                 )
-                @test_throws r"mixed GPU" value_and_gradient!!(
+                @test_throws r"mix of GPU" value_and_gradient!!(
                     prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu_mat),
                     _hcat_cu_sum,
                     gpu2,
                     cpu_mat,
                 )
-                @test_throws r"mixed GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_cat_cu_sum(1), gpu1, cpu_vec),
-                    _cat_cu_sum(1),
-                    gpu1,
-                    cpu_vec,
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
                 )
 
                 @test Mooncake.is_primitive(
@@ -1287,10 +1192,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Tuple{typeof(vcat),typeof(gpu1),typeof(cpu_vec)},
                     wc,
                 )
-                # hcat's `_is_primitive` is generated by the same `for _fn in (:vcat,
-                # :hcat)` loop as vcat's, but the loop compiles one method instance per
-                # `_fn` from that shared source. So hcat's instance is not exercised
-                # just because vcat's is checked above, and needs its own check.
                 @test Mooncake.is_primitive(
                     Mooncake.MinimalCtx,
                     Mooncake.Mode,
@@ -1309,9 +1210,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Tuple{typeof(hcat),typeof(gpu2),typeof(cpu_mat)},
                     wc,
                 )
-                # Same pure-GPU / pure-CPU / mixed checks for cat (via Core.kwcall) —
-                # cat's `_is_primitive` is a separately hand-written method, so it can
-                # diverge independently and gets its own check too.
                 @test Mooncake.is_primitive(
                     Mooncake.MinimalCtx,
                     Mooncake.Mode,
@@ -1348,51 +1246,50 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     },
                     wc,
                 )
-                # This guard is a single Vararg{AbstractArray} method whose body ignores
-                # its arguments. Unlike the scalar guard's two distinct
-                # (Array,Number)/(Number,Array) signatures, swapping argument order here
-                # calls the exact same compiled method, so only one ordering is checked
-                # directly (frule has no end-to-end reachability test to lean on
-                # instead, since value_and_gradient!! is reverse-mode only).
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
                     Mooncake.Dual(vcat, Mooncake.NoTangent()),
                     Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                    Mooncake.Dual(s, zero(s)),
                 )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(hcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu2, tgpu2),
-                    Mooncake.Dual(cpu_mat, tcpu_mat),
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
+                    Mooncake.CoDual(hcat, Mooncake.NoFData()),
+                    Mooncake.CoDual(gpu2, tgpu2),
+                    Mooncake.CoDual(cpu_mat, tcpu_mat),
                 )
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
                     Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
                     Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
                     Mooncake.Dual(cat, Mooncake.NoTangent()),
                     Mooncake.Dual(gpu1, tgpu1),
                     Mooncake.Dual(cpu_vec, tcpu_vec),
                 )
-                # N-arg: CPU array sandwiched between two GPU arrays.
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(cpu_vec, tcpu_vec),
-                    Mooncake.Dual(gpu3, tgpu3),
-                )
 
-                # The 2-arg vcat/hcat/cat array/array guard cases are already proven
-                # end-to-end above (value_and_gradient!! on _vcat_cu_sum/_hcat_cu_sum/
-                # _cat_cu_sum(1)). Since this guard is a single Vararg{AbstractArray}
-                # method whose body ignores its arguments, that is exactly the same
-                # compiled method regardless of argument order, making a direct 2-arg
-                # call here redundant. The one thing not covered end-to-end is whether
-                # the Vararg match still fires for N > 2 args, so that's the only case
-                # checked directly here.
-                @test_throws r"mixed GPU" _MooncakeCUDAExt.rrule!!(
+                # N-arg: CPU array sandwiched between two GPU arrays.
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
                     Mooncake.CoDual(vcat, Mooncake.NoFData()),
                     Mooncake.CoDual(gpu1, tgpu1),
                     Mooncake.CoDual(cpu_vec, tcpu_vec),
                     Mooncake.CoDual(gpu3, tgpu3),
                 )
+            end
+
+            @testset "regression: pure-CPU splatted vcat/hcat/cat with CUDA loaded" begin
+                # Regression for a review finding: `_is_primitive` used to be
+                # `@generated`, which crashed/misclassified splatted calls (unknown
+                # arity -> `Vararg` type) as needing this guard even with no GPU
+                # arrays involved; fixed calls here need a fixed arity, so they don't.
+                _splat_vcat_sum(xs) = sum(vcat(xs...))
+                _splat_hcat_sum(xs) = sum(hcat(xs...))
+                _splat_cat_sum(xs) = sum(cat(xs...; dims=1))
+                xs = [_host_rand(rng, 3) for _ in 1:3]
+                for f in (_splat_vcat_sum, _splat_hcat_sum, _splat_cat_sum)
+                    val, (_, dxs) = value_and_gradient!!(
+                        prepare_gradient_cache(f, xs), f, xs
+                    )
+                    @test val ≈ f(xs)
+                    @test length(dxs) == length(xs)
+                end
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
