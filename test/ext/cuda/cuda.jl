@@ -772,6 +772,17 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _permutedims_sum((2, 1, 3)),
                 _rand(rng, Float32, 4, 6, 3),
             ),
+            # cat with dims beyond either 2-D input's own ndims (new trailing axis).
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(3),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 3),
+            ),
+            # hcat of two bare CuVectors, not matrices.
+            (false, :none, false, _hcat_cu_sum, _rand(rng, Float32, 5), _rand(rng, Float32, 5)),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
                                         test_cases
@@ -1290,6 +1301,27 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     @test val ≈ f(xs)
                     @test length(dxs) == length(xs)
                 end
+            end
+
+            @testset "Float16 support" begin
+                # Bare Float16 CuArrays are supported; checks the analytic gradient
+                # (ones) rather than finite differences, unreliable at this precision.
+                x16 = _rand(rng, Float16, 4)
+                y16 = _rand(rng, Float16, 4)
+                val, (_, dx, dy) = value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, x16, y16), _vcat_cu_sum, x16, y16
+                )
+                @test val ≈ sum(vcat(x16, y16))
+                @test all(==(one(Float16)), Array(dx))
+                @test all(==(one(Float16)), Array(dy))
+
+                # Float16 SubArrays are excluded from CuMaybeWrappedArray (Finding 3);
+                # confirm this now falls through cleanly instead of erroring.
+                f_view(x, y) = sum(vcat(view(x, 1:2), y))
+                val2, _ = value_and_gradient!!(
+                    prepare_gradient_cache(f_view, x16, y16), f_view, x16, y16
+                )
+                @test val2 ≈ f_view(x16, y16)
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
