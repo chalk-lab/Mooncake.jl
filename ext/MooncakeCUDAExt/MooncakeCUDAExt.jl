@@ -197,8 +197,9 @@ end
 @foldable rdata_type(::Type{CuPtr{T}}) where {T} = NoRData
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
-@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} =
-    CuRefValue{tangent_type(P)}
+@unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
+    tangent_type(P)
+}
 
 # CuPtr{T} wraps a device address (an integer).  The generic zero_tangent_internal for
 # immutable structs does not apply here — construct a null device pointer directly.
@@ -618,13 +619,14 @@ end
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
-@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) =
-    Dual(_cu_lgetfield_primal(x_primal, name, order), NoTangent())
-@inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) =
-    CoDual(_cu_lgetfield_primal(x_primal, name, order), NoFData())
+@inline _cudataref_lgetfield_fwd(x_primal, name, order=nothing) = Dual(
+    _cu_lgetfield_primal(x_primal, name, order), NoTangent()
+)
+@inline _cudataref_lgetfield_rev(x_primal, name, order=nothing) = CoDual(
+    _cu_lgetfield_primal(x_primal, name, order), NoFData()
+)
 @inline _cuarray_lgetfield_fwd(x_primal, x_tangent, name, order=nothing) = Dual(
-    _cu_lgetfield_primal(x_primal, name, order),
-    _cu_lgetfield_data_tangent(x_tangent, name),
+    _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_tangent(x_tangent, name)
 )
 @inline _cuarray_lgetfield_rev(x_primal, x_fdata, name, order=nothing) = CoDual(
     _cu_lgetfield_primal(x_primal, name, order), _cu_lgetfield_data_fdata(x_fdata, name)
@@ -794,14 +796,12 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
-    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) =
-        _throw_gpu_argument_error(
-            "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
-    @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) =
-        _throw_gpu_argument_error(
-            "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
-        )
+    @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
+        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+    )
+    @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
+        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+    )
 end
 
 # Rules for `prod(x)` on GPU arrays.
@@ -1602,51 +1602,28 @@ for _fn in (:vcat, :hcat)
     end
 end
 
-# cat(; dims=...) goes through Core.kwcall so cannot be included in the loop above.
-@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),CuMaybeWrappedArray,Number},
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    ::Dual{typeof(cat)},
-    ::Dual{<:CuMaybeWrappedArray},
-    ::Dual{<:Number},
-)
-    return _throw_mixed_cat_error(cat)
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(cat)},
-    ::CoDual{<:CuMaybeWrappedArray},
-    ::CoDual{<:Number},
-)
-    return _throw_mixed_cat_error(cat)
-end
-
-@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),Number,CuMaybeWrappedArray},
-)
-function frule!!(
-    ::Dual{typeof(Core.kwcall)},
-    ::Dual{<:NamedTuple},
-    ::Dual{typeof(cat)},
-    ::Dual{<:Number},
-    ::Dual{<:CuMaybeWrappedArray},
-)
-    return _throw_mixed_cat_error(cat)
-end
-function rrule!!(
-    ::CoDual{typeof(Core.kwcall)},
-    ::CoDual{<:NamedTuple},
-    ::CoDual{typeof(cat)},
-    ::CoDual{<:Number},
-    ::CoDual{<:CuMaybeWrappedArray},
-)
-    return _throw_mixed_cat_error(cat)
+# cat(; dims=...) goes through Core.kwcall so cannot share the vcat/hcat loop above;
+# it gets its own loop over the two GPU/scalar argument orderings instead.
+for (A, B) in ((:CuMaybeWrappedArray, :Number), (:Number, :CuMaybeWrappedArray))
+    @eval @is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(cat),$A,$B})
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        ::Dual{<:NamedTuple},
+        ::Dual{typeof(cat)},
+        ::Dual{<:$A},
+        ::Dual{<:$B},
+    )
+        return _throw_mixed_cat_error(cat)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        ::CoDual{<:NamedTuple},
+        ::CoDual{typeof(cat)},
+        ::CoDual{<:$A},
+        ::CoDual{<:$B},
+    )
+        return _throw_mixed_cat_error(cat)
+    end
 end
 
 # Rules are written at the `generic_matmatmul!` / `generic_matvecmul!` level rather
@@ -2214,12 +2191,14 @@ end
 # _nfwd_input_dof counts per-broadcast-element DOFs.
 @inline _gpu_rep_element(x::CuFloatOrComplex) = x
 @inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
-@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} =
-    zero(Complex{T})
+@inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
+    Complex{T}
+)
 @inline _gpu_rep_element(::Any) = ()
 
-@inline _gpu_total_slots(flat_pargs) =
-    Nfwd._nfwd_input_dof(map(_gpu_rep_element, flat_pargs))
+@inline _gpu_total_slots(flat_pargs) = Nfwd._nfwd_input_dof(
+    map(_gpu_rep_element, flat_pargs)
+)
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
     dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
@@ -2371,10 +2350,12 @@ end
 # Forward mode: return the effective tangent seen by the broadcast kernel for leaf pa.
 # For Adjoint/Transpose, raw_t is a Tangent{@NamedTuple{parent::CuArray}}; extract parent.
 @inline _leaf_effective_tangent(::CuMaybeComplexArray, t::CuArray) = t
-@inline _leaf_effective_tangent(::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) =
-    adjoint(_fields(t).parent)
-@inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) =
-    transpose(_fields(t).parent)
+@inline _leaf_effective_tangent(::Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = adjoint(
+    _fields(t).parent
+)
+@inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = transpose(
+    _fields(t).parent
+)
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
 @inline _leaf_effective_tangent(::IEEEFloat, t) = t
 @inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
@@ -2451,8 +2432,9 @@ end
 @inline function _gpu_bcast_leaves(bc_prepared, bc_primal, td)
     return _gpu_bcast_leaves_args(bc_prepared.args, bc_primal.args, _fields(td).args)
 end
-@inline _gpu_bcast_leaves(bc_prepared, _, ::Union{NoTangent,NoFData}) =
-    _gpu_bcast_leaves_nots(bc_prepared.args)
+@inline _gpu_bcast_leaves(bc_prepared, _, ::Union{NoTangent,NoFData}) = _gpu_bcast_leaves_nots(
+    bc_prepared.args
+)
 @inline _gpu_bcast_leaves_nots(::Tuple{}) = ((), ())
 @inline function _gpu_bcast_leaves_nots(args::Tuple)
     a1 = first(args)
@@ -2465,8 +2447,9 @@ end
     end
 end
 @inline _gpu_bcast_leaves_args(::Tuple{}, ::Tuple{}, ::Tuple{}) = ((), ())
-@inline _gpu_bcast_leaves_args(args_prepared::Tuple, ::Tuple, ::Tuple{}) =
-    _gpu_bcast_leaves_nots(args_prepared)
+@inline _gpu_bcast_leaves_args(args_prepared::Tuple, ::Tuple, ::Tuple{}) = _gpu_bcast_leaves_nots(
+    args_prepared
+)
 @inline function _gpu_cast_diff_arg(bc::Broadcasted, td)
     return _gpu_broadcast_cast_diff(bc.f, first(bc.args), first(_fields(td).args))
 end
