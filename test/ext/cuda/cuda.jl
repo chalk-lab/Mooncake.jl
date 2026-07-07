@@ -782,7 +782,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float32, 4, 3),
             ),
             # hcat of two bare CuVectors, not matrices.
-            (false, :none, false, _hcat_cu_sum, _rand(rng, Float32, 5), _rand(rng, Float32, 5)),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float32, 5),
+                _rand(rng, Float32, 5),
+            ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
                                         test_cases
