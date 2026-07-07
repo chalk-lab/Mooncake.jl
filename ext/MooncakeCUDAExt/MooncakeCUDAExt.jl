@@ -1555,18 +1555,11 @@ end
 # `_is_primitive` is implemented directly instead.
 _cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
 
-# `any_matches_primitive` (src/interpreter/abstract_interpretation.jl) feeds the type of
-# every call site in differentiated code into `_is_primitive`, including splatted calls
-# of runtime-determined length (e.g. `vcat(xs...)` in RNN-style code), whose relevant
-# type parameter is a `Core.TypeofVararg`, not a `Type`, and calls with an imprecise
-# eltype, where `T` itself is a `UnionAll` rather than a concrete `DataType`. A
-# `@generated` version of this check crashes on both: `T.parameters` on a `UnionAll`
-# throws, and `Core.TypeofVararg` isn't a `Type` so `_cu_isa_gpu_side` errors inside the
-# generator. Mooncake's own ambiguity-workaround then silently turns that error into an
-# incorrect `true`, misclassifying pure-CPU splatted calls as needing this guard. A
-# plain (non-`@generated`) method sidesteps this: bail out to `false` (conservative,
-# falls through to the pre-existing behaviour) on a non-`DataType` `T` or on any
-# `Core.TypeofVararg` parameter, instead of crashing or misclassifying.
+# `any_matches_primitive` feeds every call site's type into `_is_primitive`, including
+# splatted calls (`Core.TypeofVararg`, not a `Type`) and imprecise-eltype calls
+# (`UnionAll`). A `@generated` version crashes on both, which Mooncake's own ambiguity
+# workaround then silently turns into an incorrect `true`. This plain method instead
+# bails out to `false` (conservative) on either case.
 function _cu_mixed_device_is_primitive(T::Type, from::Int)
     T isa DataType || return false
     has_gpu = false
