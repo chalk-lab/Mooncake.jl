@@ -121,6 +121,12 @@ in place on every call. That in-place reuse is what makes repeated calls fast â€
 gradient *is* the cache's own buffer, so a later call overwrites it; take a copy if you need to
 keep a result:
 
+```@meta
+DocTestSetup = quote
+    using Mooncake: NoTangent
+end
+```
+
 ```jldoctest interface-varying
 julia> using Mooncake
 
@@ -150,6 +156,10 @@ julia> rule = Mooncake.build_rrule(f, [1.0, 2.0, 3.0]);   # depends on input typ
 
 julia> Mooncake.value_and_gradient!!(rule, f, [1.0, 2.0])   # one rule, any length
 (5.0, (NoTangent(), [2.0, 4.0]))
+```
+
+```@meta
+DocTestSetup = nothing
 ```
 
 Reusing just the rule allocates fresh gradient buffers on each call, which a prepared cache avoids.

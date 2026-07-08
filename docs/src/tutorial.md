@@ -59,11 +59,9 @@ val, grad = Mooncake.value_and_gradient!!(cache, g, x, a, b)
 ```
 
 !!! note "Varying input sizes"
-    A prepared cache is tied to each input's *type and size*, so a later call raises an error
-    if an input's size changes. When your input sizes vary, build a reusable rule with
-    `Mooncake.build_rrule` and reuse it across sizes — this allocates fresh buffers each call,
-    unlike a prepared cache. See [Reusing a cache, and varying input sizes](@ref) in the
-    interface docs.
+    A prepared cache is tied to each input's *type and size*, so a call with a
+    differently sized input errors. If your sizes vary, build a reusable rule with
+    `Mooncake.build_rrule` instead — see [Reusing a cache, and varying input sizes](@ref).
 
 ### Friendly tangents
 

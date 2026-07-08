@@ -199,7 +199,9 @@ We emphasise that this represents the _same_ thing under the hood, it is just re
 
 You can construct a `Vector{CFGBlock}` from an `IRCode`, and convert it back:
 ```jldoctest my_factorial
-julia> using Mooncake: CFGBlock, _ircode_to_cfg_blocks, lower_cfg_blocks_to_ir
+julia> using Mooncake: CFGBlock, _ircode_to_cfg_blocks, lower_cfg_blocks_to_ir, seed_id!
+
+julia> seed_id!(); # reset the global ID counter so the IDs below are deterministic
 
 julia> blocks = _ircode_to_cfg_blocks(ir);
 
