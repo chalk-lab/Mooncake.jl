@@ -31,6 +31,8 @@ using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
+# Statistics is a weakdep triggering this extension alongside CUDA; always loaded
+# transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
 import Statistics: mean, varm
 import Mooncake:
     MinimalCtx,
@@ -2300,7 +2302,10 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         a = bc.args[i]
         ta = targs[i]
         if a isa Broadcasted
-            if ta isa Union{NoTangent,NoFData}
+            # Scalars always report NoFData (their grad flows via RData), even when
+            # differentiable — so also require zero DOF before collapsing, or a
+            # differentiable scalar leaf here silently drops out of flat_pargs.
+            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
                 Base.Broadcast.materialize(a)
             else
                 a_prepared = _premat_nondiff_args(a, ta)
@@ -2944,20 +2949,24 @@ function frule!!(
     dm = tangent(m)
     corrected = get(pkw, :corrected, true)
     _raw_dims = get(pkw, :dims, :)
-    _dims = if _raw_dims isa Integer
-        (_raw_dims,)
-    elseif _raw_dims isa Colon
-        ntuple(identity, ndims(px))
-    else
-        _raw_dims
-    end
-    n = prod(d -> size(px, d), _dims)
     diff = px .- pm
-    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
     # real(conj(diff)*...) is the JVP for both real and complex diff (σ² is always
     # real, so dσ² must be too). conj/real are dot-called so they fuse into one kernel
     # with the subtraction/product, instead of allocating a separate array just to
     # support the complex case.
+    if _raw_dims isa Colon
+        # Statistics._varm(A, m, corrected, ::Colon) always returns a scalar, regardless
+        # of m's shape (m need not equal size(x); it broadcasts, as elsewhere in this file).
+        n = length(px)
+        σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
+        dσ² =
+            sum(real.(conj.(diff) .* (dx .- dm))) *
+            (real(eltype(px))(2) / (n - Int(corrected)))
+        return Dual(σ², dσ²)
+    end
+    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
+    n = prod(d -> size(px, d), _dims)
+    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
     dσ² =
         sum(real.(conj.(diff) .* (dx .- dm)); dims=_dims) .*
         (real(eltype(px))(2) / (n - Int(corrected)))
@@ -2976,16 +2985,27 @@ function rrule!!(
     pm, dm = arrayify(m)
     corrected = get(pkw, :corrected, true)
     _raw_dims = get(pkw, :dims, :)
-    _dims = if _raw_dims isa Integer
-        (_raw_dims,)
-    elseif _raw_dims isa Colon
-        ntuple(identity, ndims(px))
-    else
-        _raw_dims
+    diff = px .- pm
+    if _raw_dims isa Colon
+        # Scalar output (see frule!! above): σ² gets NoFData, and the pullback receives
+        # its cotangent functionally rather than via a pre-accumulated fdata mutation.
+        # m may be a smaller (broadcast) shape than x, so reduce diff back down to m's
+        # shape for its gradient, same idea as sum(diff; dims=_dims) below.
+        n = length(px)
+        coeff = real(eltype(px))(2) / (n - Int(corrected))
+        m_reduce_dims = Tuple(d for d in 1:ndims(px) if size(pm, d) != size(px, d))
+        sum_diff = isempty(m_reduce_dims) ? diff : sum(diff; dims=m_reduce_dims)
+        σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
+        function varm_colon_pb!!(dσ²)
+            dx .+= coeff * dσ² .* diff
+            dm .-= coeff * dσ² .* sum_diff
+            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return CoDual(σ², NoFData()), varm_colon_pb!!
     end
+    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
     n = prod(d -> size(px, d), _dims)
     coeff = real(eltype(px))(2) / (n - Int(corrected))
-    diff = px .- pm
     sum_diff = sum(diff; dims=_dims)
     σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
     dσ² = zero(σ²)

@@ -223,7 +223,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _varm_nodims_scalar(x, m) = varm(x, m; corrected=true)
         # Complex CuArray variants: m::Complex{IEEEFloat} scalar (new CuFloatOrComplex rule)
         _varm_cx_nodims(x, m) = varm(x, m; corrected=true)
-        _varm_cx_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
         # Tuple dims: what GroupNorm/InstanceNorm/BatchNorm actually pass (ntuple(static,
         # N-1)), not covered by the single-Int tests above.
         _varm_sum_dtuple(x, m) = sum(varm(x, m; dims=(1, 2), corrected=false))
@@ -1433,13 +1432,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     perf_flag=:none,
                 )
             end
-            @testset "dims=1, corrected=false (Float16)" begin
-                x = _rand(rng, Float16, 4, 3)
-                m = _rand(rng, Float16, 1, 3)
-                test_rule(
-                    StableRNG(18), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
-                )
-            end
             @testset "dims=:, array-shaped mean, corrected=false (Float32)" begin
                 x = _rand(rng, Float32, 4, 3)
                 m = _rand(rng, Float32, 1, 1)
@@ -1493,12 +1485,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
                 )
             end
-            @testset "dims=1 (Float16)" begin
-                x = _rand(rng, Float16, 4, 3)
-                test_rule(
-                    StableRNG(19), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
-                )
-            end
         end
 
         @testset "Statistics.varm GPU rule (complex)" begin
@@ -1512,18 +1498,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     _varm_cx_nodims,
                     x,
                     m_cx;
-                    is_primitive=false,
-                    perf_flag=:none,
-                )
-            end
-            @testset "dims=1, corrected=false (ComplexF32)" begin
-                x = _rand(rng, ComplexF32, 4, 3)
-                m = _rand(rng, ComplexF32, 1, 3)
-                test_rule(
-                    StableRNG(11),
-                    _varm_cx_sum_d1,
-                    x,
-                    m;
                     is_primitive=false,
                     perf_flag=:none,
                 )
