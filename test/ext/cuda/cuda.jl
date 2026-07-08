@@ -219,9 +219,28 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # Wrappers for Statistics.varm GPU rule tests.
         _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
         _varm_sum_d2(x, m) = sum(varm(x, m; dims=2, corrected=true))
+        # no-dims path: varm(x, m_scalar; corrected), m::IEEEFloat scalar mean
+        _varm_nodims_scalar(x, m) = varm(x, m; corrected=true)
+        # Complex CuArray variants: m::Complex{IEEEFloat} scalar (new CuFloatOrComplex rule)
+        _varm_cx_nodims(x, m) = varm(x, m; corrected=true)
+        _varm_cx_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
+        # Tuple dims: what GroupNorm/InstanceNorm/BatchNorm actually pass (ntuple(static,
+        # N-1)), not covered by the single-Int tests above.
+        _varm_sum_dtuple(x, m) = sum(varm(x, m; dims=(1, 2), corrected=false))
+        # UnitRange dims: default LayerNorm(shape) passes `1:(N-M)` here, not a Tuple.
+        _varm_sum_drange(x, m) = sum(varm(x, m; dims=1:2, corrected=false))
+        # dims=: with an array m (not scalar, unlike _varm_nodims_scalar above): the only
+        # test that hits the array-mean rule's own Colon branch.
+        _varm_sum_dcolon_arraymean(x, m) = sum(varm(x, m; dims=:, corrected=false))
         # Wrappers for Statistics.mean GPU rule tests.
         _mean_sum_d1(x) = sum(mean(x; dims=1))
         _mean_sum_d2(x) = sum(mean(x; dims=2))
+        _mean_sum_dtuple(x) = sum(mean(x; dims=(1, 2)))
+        _mean_sum_drange(x) = sum(mean(x; dims=1:2))
+        _mean_nodims(x) = mean(x; dims=:)
+        # Complex CuArray mean variants
+        _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
+        _mean_cx_sum_d1(x) = real(sum(mean(x; dims=1)))
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -1378,6 +1397,61 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     StableRNG(3), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
                 )
             end
+            @testset "no dims, scalar mean (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m_scalar = randn(StableRNG(8), Float32)
+                test_rule(
+                    StableRNG(8),
+                    _varm_nodims_scalar,
+                    x,
+                    m_scalar;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=(1,2) tuple, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                m = _rand(rng, Float32, 1, 1, 2)
+                test_rule(
+                    StableRNG(14),
+                    _varm_sum_dtuple,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=1:2 UnitRange, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                m = _rand(rng, Float32, 1, 1, 2)
+                test_rule(
+                    StableRNG(16),
+                    _varm_sum_drange,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=1, corrected=false (Float16)" begin
+                x = _rand(rng, Float16, 4, 3)
+                m = _rand(rng, Float16, 1, 3)
+                test_rule(
+                    StableRNG(18), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=:, array-shaped mean, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 1)
+                test_rule(
+                    StableRNG(20),
+                    _varm_sum_dcolon_arraymean,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
         end
 
         @testset "Statistics.mean GPU rule" begin
@@ -1399,6 +1473,76 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 x = _rand(rng, Float64, 4, 3)
                 test_rule(
                     StableRNG(6), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=: scalar output (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(9), _mean_nodims, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=(1,2) tuple (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                test_rule(
+                    StableRNG(15), _mean_sum_dtuple, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1:2 UnitRange (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                test_rule(
+                    StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1 (Float16)" begin
+                x = _rand(rng, Float16, 4, 3)
+                test_rule(
+                    StableRNG(19), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+        end
+
+        @testset "Statistics.varm GPU rule (complex)" begin
+            # m::Complex{IEEEFloat} scalar: new CuFloatOrComplex rule covering complex arrays.
+            # σ² = sum(abs2(x-m))/n is always real (Float32); varm returns Float32 scalar.
+            @testset "no dims, scalar mean (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                m_cx = randn(StableRNG(10), ComplexF32)
+                test_rule(
+                    StableRNG(10),
+                    _varm_cx_nodims,
+                    x,
+                    m_cx;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=1, corrected=false (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                m = _rand(rng, ComplexF32, 1, 3)
+                test_rule(
+                    StableRNG(11),
+                    _varm_cx_sum_d1,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+        end
+
+        @testset "Statistics.mean GPU rule (complex)" begin
+            # mean(x::CuArray{ComplexF32}; dims=:) → ComplexF32 scalar;
+            # mean(x::CuArray{ComplexF32}; dims=1) → CuArray{ComplexF32}.
+            @testset "dims=: scalar output (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                test_rule(
+                    StableRNG(12), _mean_cx_nodims, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1 (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                test_rule(
+                    StableRNG(13), _mean_cx_sum_d1, x; is_primitive=false, perf_flag=:none
                 )
             end
         end
