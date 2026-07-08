@@ -116,18 +116,18 @@ const CuGpuSumFArray = Union{
 # the interpreter and hit the same untraceable `cufunction` try/finally the rules
 # below exist to avoid.
 #
-# The SubArray branch is bounded to `LinearAlgebra.BlasFloat`, not the wider
-# `CuFloatOrComplex` used for Adjoint/Transpose: `arrayify`'s `SubArray` method
-# (`src/rules/blas.jl`) is itself bounded to `BlasFloat`, which excludes `Float16`/
-# `Complex{Float16}`, unlike its Adjoint/Transpose/Symmetric siblings there. Claiming
-# the wider bound here would let e.g. `vcat(view(cu_f16_vec, 1:4), y)` through as
-# primitive, only for it to fail inside the rule with a misdirected "unexpected array
-# type in `Mooncake.arrayify`" error instead of falling through to the interpreter like
-# any other genuinely-unsupported case.
+# Adjoint/Transpose and SubArray use different bounds because their `arrayify` methods
+# do: Adjoint/Transpose go through the generic `Union{IEEEFloat,BlasFloat}` method
+# (real `Float16` ok, `Complex{Float16}` not), while the SubArray method is bounded to
+# `BlasFloat` alone (excludes `Float16` entirely, real or complex). A wider bound here
+# than `arrayify` supports would let e.g. `vcat(view(cu_f16_mat, 1:2, :), y)` (a
+# strided view, which stays a genuine `SubArray`) through as primitive, only to fail
+# inside the rule with a misdirected `arrayify` error instead of falling through to the
+# interpreter like any other unsupported case.
 const CuMaybeWrappedArray = Union{
     CuMaybeComplexArray,
-    Adjoint{<:CuFloatOrComplex,<:CuMaybeComplexArray},
-    Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray},
+    Adjoint{<:Union{IEEEFloat,LinearAlgebra.BlasFloat},<:CuMaybeComplexArray},
+    Transpose{<:Union{IEEEFloat,LinearAlgebra.BlasFloat},<:CuMaybeComplexArray},
     SubArray{T,N,P} where {T<:LinearAlgebra.BlasFloat,N,P<:CuMaybeComplexArray},
 }
 

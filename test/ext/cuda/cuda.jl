@@ -1322,13 +1322,21 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test all(==(one(Float16)), Array(dx))
                 @test all(==(one(Float16)), Array(dy))
 
-                # Float16 SubArrays are excluded from CuMaybeWrappedArray (Finding 3);
-                # confirm this now falls through cleanly instead of erroring.
-                f_view(x, y) = sum(vcat(view(x, 1:2), y))
-                val2, _ = value_and_gradient!!(
-                    prepare_gradient_cache(f_view, x16, y16), f_view, x16, y16
+                # Float16 SubArrays are excluded from CuMaybeWrappedArray (Finding 3). A
+                # strided view stays a genuine SubArray (unlike the contiguous 1-D view
+                # above, which CUDA.jl collapses to a plain CuArray), and since it isn't
+                # a primitive here, the N-arg mixed-device guard doesn't recognise it as
+                # GPU either, so this errors there with "mix of GPU" instead of falling
+                # through to the interpreter's untraceable `cufunction` try/finally.
+                x16_mat = _rand(rng, Float16, 4, 3)
+                y16_mat = _rand(rng, Float16, 2, 3)
+                f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(f_view, x16_mat, y16_mat),
+                    f_view,
+                    x16_mat,
+                    y16_mat,
                 )
-                @test val2 ≈ f_view(x16, y16)
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
