@@ -730,7 +730,7 @@ It is used for performance optimizations if you can guarantee that the initial c
     Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
     across calls and can silently corrupt gradients — including those of *other* arguments, since
     reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
-    from `b`'s). It is safe only when the argument holds no differentiable data
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
     (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
     qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
 
@@ -846,7 +846,7 @@ It is used for performance optimizations if you can guarantee that the initial c
     Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
     across calls and can silently corrupt gradients — including those of *other* arguments, since
     reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
-    from `b`'s). It is safe only when the argument holds no differentiable data
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
     (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
     qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
 
