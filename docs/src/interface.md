@@ -114,6 +114,56 @@ julia> Mooncake.value_and_jacobian!!(cache, f, x)
 ([7.0, 6.0], [4.0 1.0; 3.0 2.0])
 ```
 
+## Reusing a cache, and varying input sizes
+
+A prepared cache preallocates its gradient buffers, and `value_and_gradient!!` writes into them
+in place on every call. That in-place reuse is what makes repeated calls fast — the returned
+gradient *is* the cache's own buffer, so a later call overwrites it; take a copy if you need to
+keep a result:
+
+```@meta
+DocTestSetup = quote
+    using Mooncake: NoTangent
+end
+```
+
+```jldoctest interface-varying
+julia> using Mooncake
+
+julia> f(x) = sum(abs2, x);
+
+julia> cache = Mooncake.prepare_gradient_cache(f, [1.0, 2.0, 3.0]);
+
+julia> val, grad = Mooncake.value_and_gradient!!(cache, f, [1.0, 2.0, 3.0])
+(14.0, (NoTangent(), [2.0, 4.0, 6.0]))
+```
+
+Calling again on a new same-shaped input overwrites that earlier `grad`:
+
+```jldoctest interface-varying
+julia> _, grad2 = Mooncake.value_and_gradient!!(cache, f, [4.0, 5.0, 6.0]);
+
+julia> grad2[2], grad[2] === grad2[2]   # new gradient; same buffer, mutated in place
+([8.0, 10.0, 12.0], true)
+```
+
+Because a cache is bound to the type and size of each input, reusing it with a differently sized
+input raises an error. When your input sizes vary, skip the cache and build a reusable `rule` once;
+the rule depends only on the input *types*, so one rule handles every size:
+
+```jldoctest interface-varying
+julia> rule = Mooncake.build_rrule(f, [1.0, 2.0, 3.0]);   # depends on input type, not size
+
+julia> Mooncake.value_and_gradient!!(rule, f, [1.0, 2.0])   # one rule, any length
+(5.0, (NoTangent(), [2.0, 4.0]))
+```
+
+```@meta
+DocTestSetup = nothing
+```
+
+Reusing just the rule allocates fresh gradient buffers on each call, which a prepared cache avoids.
+
 ## API Reference
 
 ```@docs; canonical=true
