@@ -43,12 +43,10 @@ val, grad = MC.value_and_gradient!!(cache, g, x_eval)
 ```
 The gradient wrt. `x` is now the NamedTuple `(x1 = 2.0, x2 = 4.0)`.
 
-In addition, there is an optional tuple-typed argument `args_to_zero` that specifies
-a true/false value for each argument (e.g., `g`, `x_eval`), allowing tangent
-zeroing to be skipped on a per-argument basis when the value is constant. 
-Note that the first true/false entry specifies whether to zero the tangent of `g`;
-zeroing `g`'s tangent is not always necessary, but is sometimes required for
-non-constant callable objects.
+In addition, there is an optional tuple-typed argument `args_to_zero` that specifies a true/false value for each argument (e.g., `g`, `x_eval`), allowing tangent zeroing to be skipped on a per-argument basis.
+A `false` entry means that argument's cotangent is not reset when the cache is reused, so stale values from the previous call can silently corrupt gradients — including those of *other* arguments, since reverse-mode rules propagate cotangents between them.
+Passing `false` is therefore only guaranteed safe for arguments that carry no differentiable data (`tangent_type(typeof(arg)) === NoTangent`); an argument being conceptually constant is *not* sufficient (see [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238)).
+The first entry corresponds to `g` itself: `false` is safe below because `g` is a plain function with no fields, but a closure capturing differentiable data must use `true`.
 
 ```@example interface
 cache = MC.prepare_gradient_cache(g, x_eval; config=MC.Config(friendly_tangents=true))
