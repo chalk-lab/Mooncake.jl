@@ -521,6 +521,14 @@ For types with custom copy semantics, overload this function (see `Core.SimpleVe
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
 
+# Compiled callables retain reflection/IR objects whose reference graph is cyclic
+# (e.g. Method.specializations <-> MethodInstance.def), so field-by-field descent
+# never terminates. They are never differentiable, so return them as-is — this lets
+# the friendly `prepare_hvp_cache` path copy a gradient closure that captures a
+# compiled rule without overflowing.
+_copy_output(x::Core.OpaqueClosure) = x
+_copy_output(x::MistyClosure) = x
+
 _copy_output(x::SimpleVector) = Core.svec([map(_copy_output, x_sub) for x_sub in x]...)
 
 # Array, Memory

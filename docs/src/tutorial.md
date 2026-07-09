@@ -58,19 +58,10 @@ val, grad = Mooncake.value_and_gradient!!(cache, g, x, a, b)
 (val, grad)
 ```
 
-!!! note "Choosing an interface, and varying input sizes"
-    `value_and_gradient!!` needs `f` to return a real scalar
-    (`Union{Float16, Float32, Float64}`). If `f` returns something else, such as an array,
-    reach for [`Mooncake.prepare_pullback_cache`](@ref) / `Mooncake.value_and_pullback!!`
-    instead; these accept any output, as long as you supply the matching seed cotangent `ȳ`
-    yourself (see [Pullbacks](@ref) below).
-
-    A prepared cache is tied to the type *and* size of each input, so a later call errors if
-    an input's size changes. When your input sizes vary from call to call, skip the cache:
-    build a reusable `rule` with `Mooncake.build_rrule`, then call
-    `value_and_pullback!!(rule, ȳ, f, x...)`. This allocates fresh tangents every call and
-    only requires the input *types* to stay fixed. If you like, you can build your own
-    resize-on-demand cache on top of such a rule.
+!!! note "Varying input sizes"
+    A prepared cache is tied to each input's *type and size*, so a call with a
+    differently sized input errors. If your sizes vary, build a reusable rule with
+    `Mooncake.build_rrule` instead — see [Reusing a cache, and varying input sizes](@ref).
 
 ### Friendly tangents
 
