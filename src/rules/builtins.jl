@@ -554,9 +554,11 @@ function frule!!(
     y::Lifted{T,N,NDual{T,N}},
     z::Lifted{T,N,NDual{T,N}},
 ) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(
-        fma_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
-    )
+    # Use the fused `fma(::NDual, …)` overload so the inner `.value` is the single-rounding `fma`
+    # result and matches the primal; a non-fused `x*y + z` rounds twice and drifts under cancellation
+    # (inner-value invariant). Read the primal back from the dual rather than recomputing.
+    dy = fma(tangent(x), tangent(y), tangent(z))
+    return Lifted{T,N}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(fma_float)}, x, y, z)
     _x = primal(x)
@@ -735,9 +737,11 @@ function frule!!(
     y::Lifted{T,N,NDual{T,N}},
     z::Lifted{T,N,NDual{T,N}},
 ) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(
-        muladd_float(primal(x), primal(y), primal(z)), tangent(x) * tangent(y) + tangent(z)
-    )
+    # Use the `muladd(::NDual, …)` overload so the inner `.value` matches the `muladd_float` primal;
+    # a non-fused `x*y + z` rounds twice and can drift from the (possibly fused) primal. Read the
+    # primal back from the dual rather than recomputing (inner-value invariant).
+    dy = muladd(tangent(x), tangent(y), tangent(z))
+    return Lifted{T,N}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(muladd_float)}, x, y, z)
     _x = primal(x)

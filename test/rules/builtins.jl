@@ -190,3 +190,22 @@ end
         @test all(map(isone, grad[3:end]...))
     end
 end
+
+@testset "fma_float/muladd_float forward inner-value invariant under cancellation" begin
+    # The forward frule's inner NDual `.value` must equal the single-rounding primal exactly, even
+    # under cancellation where a non-fused `x*y + z` rounds twice and drifts. `test_rule`'s value
+    # check is only approximate, so it cannot express this ~1e-17 drift — hence a direct assertion.
+    a = 1.0 + 2.0^-27
+    b = a
+    z = -(a * b)
+    for f in
+        (Mooncake.IntrinsicsWrappers.fma_float, Mooncake.IntrinsicsWrappers.muladd_float)
+        slot = Mooncake.frule!!(
+            Mooncake.lift(f, Mooncake.NoTangent()),
+            Mooncake.lift(a, 1.0),
+            Mooncake.lift(b, 0.0),
+            Mooncake.lift(z, 0.0),
+        )
+        @test Mooncake.tangent(slot).value == Mooncake.primal(slot)
+    end
+end
