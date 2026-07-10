@@ -115,8 +115,6 @@ import ..Mooncake:
     extract,
     nan_tangent_guard
 
-using Core.Intrinsics: atomic_pointerref
-
 struct MissingIntrinsicWrapperException <: Exception
     msg::String
 end
@@ -239,8 +237,32 @@ end
 
 # atomic_fence
 # atomic_pointermodify
-# atomic_pointerref
 # atomic_pointerreplace
+
+# Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
+@intrinsic atomic_pointerref
+function frule!!(::Dual{typeof(atomic_pointerref)}, x, order)
+    a = atomic_pointerref(primal(x), primal(order))
+    da = atomic_pointerref(tangent(x), primal(order))
+    return Dual(a, da)
+end
+function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
+    _x = primal(x)
+    _order = primal(order)
+    dx = tangent(x)
+    a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, _order)))
+    if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
+        return a, NoPullback((NoRData(), NoRData(), NoRData()))
+    else
+        function atomic_pointerref_pullback!!(da)
+            atomic_pointerset(
+                dx, increment_rdata!!(atomic_pointerref(dx, _order), da), _order
+            )
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, atomic_pointerref_pullback!!
+    end
+end
 
 @intrinsic atomic_pointerset
 function frule!!(::Dual{typeof(atomic_pointerset)}, p, x, order)
@@ -1213,8 +1235,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         ),
         # atomic_fence -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
-        # atomic_pointerref -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(p, dp),
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(pointer(c), pointer(dc)),
+            :monotonic,
+        ),
         (
             true,
             :stability,
