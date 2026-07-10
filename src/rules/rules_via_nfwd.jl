@@ -72,18 +72,47 @@ end
 # nfwd-backed primitive rule registrations
 # ===========================================================================
 
+# ── native-reverse unary scalar rules (no NDual/Nfwd dependency) ───────────────
+# Reverse mode uses closed-form derivative factors dispatched through `_unary_deriv` instead of
+# seeding an `NDual` and running the forward primal. The factors mirror the `NDual` overloads in
+# `Nfwd.jl` (which the forward frule still uses); `y === f(x)` is reused where the factor needs it.
+# Removable singularities (`log`/`sqrt` have ±Inf factors at the domain edge) are handled by the
+# `_rev_contract` cotangent guard, the reverse analogue of the forward `_pt_guarded_scale`.
+@inline _unary_deriv(::typeof(exp), x, y) = y
+@inline _unary_deriv(::typeof(exp2), x, y) = y * oftype(y, log(2))
+@inline _unary_deriv(::typeof(exp10), x, y) = y * oftype(y, log(10))
+@inline _unary_deriv(::typeof(expm1), x, y) = exp(x)
+@inline _unary_deriv(::typeof(log), x, y) = inv(x)
+@inline _unary_deriv(::typeof(log2), x, y) = inv(x * oftype(x, log(2)))
+@inline _unary_deriv(::typeof(log10), x, y) = inv(x * oftype(x, log(10)))
+@inline _unary_deriv(::typeof(log1p), x, y) = inv(one(x) + x)
+@inline _unary_deriv(::typeof(sqrt), x, y) = inv(2 * y)
+@inline _unary_deriv(::typeof(cbrt), x, y) = inv(3 * y^2)
+
+for f in (exp, exp2, exp10, expm1, log, log2, log10, log1p, sqrt, cbrt)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
+        # Forward: the `$f(::NDual)` overload in Nfwd.jl propagates partials and sets the result's
+        # `.value` to `$f(primal(x))` (inner-value invariant); read the primal back from `dy`.
+        function frule!!(
+            ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            dy = $f(tangent(x))
+            y = _nfwd_out_value(dy)
+            return Lifted{_typeof(y),N}(y, dy)
+        end
+        # Reverse: native closed-form pullback — no NDual seeding.
+        function rrule!!(::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
+            _x = primal(x)
+            y = $f(_x)
+            pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, _unary_deriv($f, _x, y)))
+            return zero_fcodual(y), pb!!
+        end
+    end
+end
+
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
-    exp,
-    exp2,
-    exp10,
-    expm1,
-    log,
-    log10,
-    log2,
-    log1p,
-    sqrt,
-    cbrt,
     sin,
     cos,
     cospi,
