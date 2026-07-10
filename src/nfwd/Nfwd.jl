@@ -51,9 +51,10 @@ julia> ndual_partials(y)  # (d/dx₁, d/dx₂)
 (2.0, 4.0)
 ```
 
-`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers; the primitive
-reverse-mode core in `src/rules/rules_via_nfwd.jl` packages that machinery into the
-primitive `rrule!!`s defined there.
+`Nfwd.jl` provides the N-wide dual arithmetic and signature helpers used by the scalar
+primitive **forward** `frule!!`s in `src/rules/low_level_maths.jl` (which run the `f(::NDual)`
+overloads). The matching reverse `rrule!!`s there are direct native analytic pullbacks and do
+not use this module.
 """
 module Nfwd
 

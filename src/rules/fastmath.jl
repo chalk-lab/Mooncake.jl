@@ -1,5 +1,5 @@
 function hand_written_rule_test_cases(rng_ctor, ::Val{:fastmath})
-    # The nfwd-backed scalar fastmath rules live in `rules_via_nfwd.jl`; this
+    # The nfwd-backed scalar fastmath rules live in `low_level_maths.jl`; this
     # test set only keeps the remaining fastmath-specific cases local.
     test_cases = reduce(
         vcat,
