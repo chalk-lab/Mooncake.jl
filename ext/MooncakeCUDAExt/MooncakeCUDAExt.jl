@@ -506,9 +506,9 @@ function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexA
     return x
 end
 __increment_should_allocate(::Type{<:CuMaybeComplexArray}) = true
-# Use `fill!` (which has Mooncake rules), not `x .= 0`: under HVP `set_to_zero!!` is
-# itself differentiated, and the broadcast inlines to a raw kernel launch that forward
-# mode traces into `cufunction`; `fill!` dispatches to its frule!! instead.
+# Use `fill!` (has Mooncake rules), not `x .= 0`: under HVP `set_to_zero!!` is itself
+# differentiated, and the broadcast inlines to a raw kernel launch forward mode traces
+# into `cufunction`; `fill!` dispatches to its frule!! instead.
 set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = fill!(x, 0)
 
 function _add_to_primal_internal(
@@ -2176,12 +2176,11 @@ function _gpu_broadcast_dual(f::F, args...) where {F}
     return ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
 
-# Single forward-over-reverse (HVP/Hessian) chokepoint. The NDual-based GPU rules
+# Single forward-over-reverse (HVP/Hessian) chokepoint: the NDual-based GPU rules
 # (`sum(f, x)`, `materialize`, `materialize!`) all launch their kernel through
-# `_gpu_broadcast_dual`, which is only ever *traced* under forward-over-reverse.
-# Tracing it would nest `NDual` over `NDual`, which is not permitted and raises
-# an error (perturbation confusion) — so intercept here. One primitive covers
-# every NDual rule.
+# `_gpu_broadcast_dual`, traced only under forward-over-reverse. Tracing it nests
+# `NDual` over `NDual`, which raises an error (perturbation confusion) — so
+# intercept here; one primitive covers every NDual rule.
 @is_primitive MinimalCtx Tuple{typeof(_gpu_broadcast_dual),Vararg}
 function frule!!(::Dual{typeof(_gpu_broadcast_dual)}, ::Vararg{Dual})
     return _throw_gpu_argument_error(
