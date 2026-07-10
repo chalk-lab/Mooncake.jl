@@ -274,8 +274,47 @@ function rrule!!(::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), tanpi_pb!!
 end
 
+# ── native-reverse fixed-arity scalar rules ───────────────────────────────────
+# Closed-form gradient pair per binary primitive, dispatched through `_binary_deriv(f, x1, x2, y)`.
+@inline function _binary_deriv(::typeof(atan), a, b, y)
+    r2 = a^2 + b^2
+    return (b / r2, -a / r2)
+end
+@inline function _binary_deriv(::typeof(Base.FastMath.atan_fast), a, b, y)
+    r2 = a^2 + b^2
+    return (b / r2, -a / r2)
+end
+# log(b, a) = log(a)/log(b): d/db = -log(b,a)/(b·log(b)), d/da = 1/(a·log(b)).
+@inline function _binary_deriv(::typeof(log), b, a, y)
+    lb = log(b)
+    return (-y / (b * lb), inv(a * lb))
+end
+
+for f in (atan, Base.FastMath.atan_fast, log)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
+        function frule!!(
+            ::Lifted{typeof($f),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            dy = $f(tangent(x1), tangent(x2))
+            return Lifted{P,N}(dy.value, dy)
+        end
+        # Native reverse: closed-form gradient pair, no NDual seeding.
+        function rrule!!(
+            ::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
+        ) where {P<:IEEEFloat}
+            a = primal(x1)
+            b = primal(x2)
+            y = $f(a, b)
+            g1, g2 = _binary_deriv($f, a, b, y)
+            pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, g1), _rev_contract(ȳ, g2))
+            return zero_fcodual(y), pb!!
+        end
+    end
+end
+
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
-for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
+for f in (^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
