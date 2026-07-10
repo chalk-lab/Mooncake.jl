@@ -66,33 +66,56 @@ end
 # Both also wrap Vectors, giving a (1, N) row shape. There the parent's tangent is a Vector,
 # not a matrix, so permutedims! doesn't apply; copyto! is used instead, since a (1, N)
 # buffer's memory layout matches the underlying vector's exactly.
+#
+# Adjoint conjugates for complex T (matching adjoint(_dx) in this file's arrayify methods), while Transpose doesn't.
+# This was confirmed against Zygote where without conj!, complex Adjoint gradients come
+# back with the wrong sign on the imaginary part.
+#
+# Constrained to T<:Union{IEEEFloat,BlasFloat}: without this, e.g. Transpose{Int} would
+# also match here and return AsCustomised instead of AsRaw, breaking the existing
+# regression test for #1149 (non-differentiable element types have no gradient to
+# reconstruct, so they should fall through to the default AsRaw path).
 
-function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Adjoint{T}) where {T}
+function Mooncake.friendly_tangent_cache(
+    x::LinearAlgebra.Adjoint{T}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
 end
-function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Transpose{T}) where {T}
+function Mooncake.friendly_tangent_cache(
+    x::LinearAlgebra.Transpose{T}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
 end
 
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Adjoint{T,<:AbstractVector}, tangent
-) where {T}
+    tangent_as_friendly::AbstractMatrix{T},
+    ::LinearAlgebra.Adjoint{T,<:AbstractVector},
+    tangent,
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    copyto!(tangent_as_friendly, val(tangent.fields.parent))
+    return conj!(tangent_as_friendly)
+end
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T},
+    ::LinearAlgebra.Adjoint{T,<:AbstractMatrix},
+    tangent,
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
+    return conj!(tangent_as_friendly)
+end
+
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T},
+    ::LinearAlgebra.Transpose{T,<:AbstractVector},
+    tangent,
+) where {T<:Union{IEEEFloat,BlasFloat}}
     return copyto!(tangent_as_friendly, val(tangent.fields.parent))
 end
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Adjoint{T,<:AbstractMatrix}, tangent
-) where {T}
-    return permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
-end
-
-@unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Transpose{T,<:AbstractVector}, tangent
-) where {T}
-    return copyto!(tangent_as_friendly, val(tangent.fields.parent))
-end
-@unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Transpose{T,<:AbstractMatrix}, tangent
-) where {T}
+    tangent_as_friendly::AbstractMatrix{T},
+    ::LinearAlgebra.Transpose{T,<:AbstractMatrix},
+    tangent,
+) where {T<:Union{IEEEFloat,BlasFloat}}
     return permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
 end
 

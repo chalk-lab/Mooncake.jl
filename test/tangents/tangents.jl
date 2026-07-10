@@ -342,6 +342,27 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.tangent_to_friendly!!(A, tx) == permutedims(tx_parent)
     end
 
+    # Complex correctness checks for Adjoint/Transpose.
+    @testset "Adjoint (complex)" begin
+        A = LinearAlgebra.Adjoint(randn(ComplexF64, 3, 2))
+        tx_parent = randn(ComplexF64, 3, 2)
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        dest = Mooncake.friendly_tangent_cache(A).buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == tx_parent'
+        @test Mooncake.tangent_to_friendly!!(A, tx) == tx_parent'
+    end
+
+    @testset "Transpose (complex)" begin
+        A = LinearAlgebra.Transpose(randn(ComplexF64, 3, 2))
+        tx_parent = randn(ComplexF64, 3, 2)
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        dest = Mooncake.friendly_tangent_cache(A).buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == permutedims(tx_parent)
+        @test Mooncake.tangent_to_friendly!!(A, tx) == permutedims(tx_parent)
+    end
+
     @testset "tangent_to_friendly!! routing" begin
         s = 3.0
         S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0])
@@ -448,6 +469,12 @@ using DispatchDoctor: allow_unstable
 
     @testset "friendly_tangent_cache Transpose{Int} returns AsRaw (#1149)" begin
         A = transpose([1, 2])
+        @test Mooncake.friendly_tangent_cache(A) isa
+            Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
+    end
+
+    @testset "friendly_tangent_cache Adjoint{Int} returns AsRaw" begin
+        A = adjoint([1, 2])
         @test Mooncake.friendly_tangent_cache(A) isa
             Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
     end
