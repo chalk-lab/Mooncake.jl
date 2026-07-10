@@ -1325,9 +1325,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
 
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(s, zero(s)),
+                    Mooncake.lift(vcat, Mooncake.NoTangent()),
+                    Mooncake.lift(gpu1, tgpu1),
+                    Mooncake.lift(s, zero(s)),
                 )
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
                     Mooncake.CoDual(hcat, Mooncake.NoFData()),
@@ -1335,11 +1335,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.CoDual(cpu_mat, tcpu_mat),
                 )
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
-                    Mooncake.Dual(cat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                    Mooncake.lift(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.lift((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.lift(cat, Mooncake.NoTangent()),
+                    Mooncake.lift(gpu1, tgpu1),
+                    Mooncake.lift(cpu_vec, tcpu_vec),
                 )
 
                 # N-arg: CPU array sandwiched between two GPU arrays.
