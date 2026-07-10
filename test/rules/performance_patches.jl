@@ -27,4 +27,31 @@
             rtol=5e-2,
         )
     end
+
+    # Regression (#177/#180): the `_kron!` `@is_primitive` declarations must be per-mode. The
+    # `BlasFloat` widening exists only for the forward wrapper frule; if it leaks into reverse (as it
+    # did when declared with the two-arg, both-modes `@is_primitive`) then complex `_kron!` becomes a
+    # reverse primitive while the reverse rrule is real-only → complex reverse `MethodError`. Likewise
+    # narrowing reverse to `BlasFloat` dropped wrapped-Float16's reverse primitive status that `main`
+    # had. Reverse is now `IEEEFloat` (no complex, with Float16); forward is dense-`IEEEFloat` +
+    # wrapped-`BlasFloat`.
+    @testset "_kron! is_primitive is per-mode (complex derived, Float16 reverse kept)" begin
+        W = Base.get_world_counter()
+        ksig(T) = Tuple{typeof(LinearAlgebra._kron!),Matrix{T},Matrix{T},Matrix{T}}
+        # Complex: forward primitive (wrapped-BlasFloat frule), reverse derived (no complex rrule).
+        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ForwardMode, ksig(ComplexF64), W)
+        @test !Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, ksig(ComplexF64), W)
+        # Float16: primitive in both modes (dense forward frule; real reverse rrule via arrayify).
+        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ForwardMode, ksig(Float16), W)
+        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, ksig(Float16), W)
+
+        # #177: complex reverse-mode kron must run (via derived mode), not `MethodError`.
+        fc(A, B) = sum(abs2, kron(A, B))
+        Ac = ComplexF64[1 2; 3 4]
+        Bc = ComplexF64[0.5 0; 0 2]
+        cache = Mooncake.prepare_gradient_cache(fc, Ac, Bc)
+        v, g = Mooncake.value_and_gradient!!(cache, fc, Ac, Bc)
+        @test v ≈ sum(abs2, kron(Ac, Bc))
+        @test any(!iszero, g[2])
+    end
 end

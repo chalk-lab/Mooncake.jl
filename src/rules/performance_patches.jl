@@ -62,17 +62,26 @@ function rrule!!(
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
-# Dense inputs (all `Array{T,2}`) are a primitive for every real `IEEEFloat`, including Float16:
-# the dense frule below reads the `NDualArray` partials directly and never touches `arrayify`.
-# Wrapped inputs (Triangular/Symmetric/Adjoint/…) go through the `arrayify` fallback, which only
-# supports `BlasFloat`, so they are a primitive only for `BlasFloat`; a Float16 wrapped input is left
-# non-primitive and handled by derived forward mode rather than crashing inside `arrayify`.
-@is_primitive DefaultCtx Tuple{
+# Forward mode is split by input shape. Dense inputs (all `Array{T,2}`) are a primitive for every
+# real `IEEEFloat`, including Float16: the dense frule below reads the `NDualArray` partials directly
+# and never touches `arrayify`. Wrapped inputs (Triangular/Symmetric/Adjoint/…) go through the
+# `arrayify` fallback, which only supports `BlasFloat`, so they are a primitive only for `BlasFloat`;
+# a Float16 wrapped input is left non-primitive and handled by derived forward mode rather than
+# crashing inside `arrayify`. Both are `ForwardMode`-only: the `BlasFloat` widening exists purely for
+# the forward wrapper frule and must not touch reverse, whose rrule is real (`IEEEFloat`) only —
+# marking complex `_kron!` a reverse primitive would route complex reverse to a `MethodError`.
+@is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),Array{T,2},Array{T,2},Array{T,2}
 } where {T<:IEEEFloat}
-@is_primitive DefaultCtx Tuple{
+@is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:BlasFloat}
+# Reverse mode: dense and wrapped, real `IEEEFloat` only (incl. Float16, which the reverse `arrayify`/
+# `matrixify` handle for dense and Triangular/Symmetric/Adjoint/Transpose). Matches the reverse rrule
+# coverage below exactly; complex stays derived, as on `main`.
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
+} where {T<:IEEEFloat}
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
 function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
