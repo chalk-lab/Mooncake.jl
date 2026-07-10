@@ -279,6 +279,26 @@ function frule!!(
     return Lifted{typeof(arr),Nw}(arr, NoDual())
 end
 
+# `unsafe_wrap` guard: a differentiable pointer element that is neither a scalar float/complex
+# (handled above via the parallel-arrays `NDualArray` V) nor a pointer-to-scalar (the `Ptr{Ptr{R}}`
+# element-wise V above) has a per-lane `NTuple{Nw,Ptr}` V that would wrap into an unsupported
+# array-of-duals element type. The broad `@is_primitive` covers every `Ptr` and the reverse rule
+# handles all `T`, so fail loudly for this incoherent-differentiable case rather than raise a raw
+# `MethodError` — mirroring the sibling pointerref/pointerset/atomic_pointerset guards.
+function frule!!(
+    ::Lifted{typeof(unsafe_wrap),Nw},
+    ::Lifted{<:Type{<:Array},Nw},
+    ::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    ::Lifted,
+) where {Nw,T}
+    throw(
+        ArgumentError(
+            "unsafe_wrap of a differentiable `Ptr{$T}` whose element is neither a scalar " *
+            "float/complex nor a pointer-to-scalar: the array-of-duals element V is unsupported.",
+        ),
+    )
+end
+
 function rrule!!(
     ::CoDual{typeof(unsafe_wrap)},
     ::CoDual{<:Type{<:Array}},

@@ -171,6 +171,26 @@ end
     end
 end
 
+@testset "unsafe_wrap forward rule on an incoherent differentiable pointer" begin
+    # Regression (#182): a differentiable pointer element that is neither a scalar float/complex nor
+    # a pointer-to-scalar (e.g. `Ptr{Tuple{Float64,Float64}}`) has a per-lane `NTuple{Nw,Ptr}` V that
+    # matches none of the coherent frules — it hit a raw `MethodError` even though the broad
+    # `@is_primitive` covers it and the reverse rule handles all `T`. Must fail loudly (ArgumentError),
+    # mirroring the sibling pointerref/pointerset guards.
+    S = Tuple{Float64,Float64}
+    p = Ptr{S}(0)
+    for N in (1, 2)
+        v = ntuple(_ -> Ptr{Mooncake.tangent_type(S)}(0), N)
+        slot = Mooncake.Lifted{Ptr{S},N,typeof(v)}(p, v)
+        @test_throws ArgumentError Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), unsafe_wrap),
+            Mooncake.zero_lifted(Val(N), Array),
+            slot,
+            Mooncake.zero_lifted(Val(N), (2,)),
+        )
+    end
+end
+
 @testset "NaN handling in builtins rrules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
