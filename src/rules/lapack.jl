@@ -153,7 +153,7 @@ function rrule!!(
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
     B, dB = arrayify(_B)
-    # Keep `copy` uninlined so forward-over-reverse AD can use its forward rule.
+    # Keep `copy` in the IR so forward-over-reverse AD can dispatch to its `frule!!`.
     B_copy = Base.@noinline copy(B)
 
     # Run primal.
