@@ -620,6 +620,16 @@ tangent(p::CuMaybeComplexArray, ::NoRData) = p
 function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
     return (x, dx)
 end
+# Forward-mode `arrayify` for GPU arrays. The generic `arrayify(::Lifted)` (blas.jl) is bounded to
+# `BlasFloat`, excluding Float16/ComplexF16, but the concat/permutedims frules admit them via
+# `CuMaybeWrappedArray`. Delegate to the eltype-agnostic `_arrayify_lane` recursion — which handles a
+# dense `CuArray`'s `NDualArray` V and the Adjoint/Transpose/SubArray wrappers alike, with no
+# `BlasFloat` bound — mirroring the reverse `arrayify(::A,::A)` above. More specific than the generic
+# method on the array type, so it also takes `BlasFloat` GPU arrays (no ambiguity, same result).
+function arrayify(x::Lifted{<:CuMaybeWrappedArray,N}) where {N}
+    A = Mooncake.primal(x)
+    return A, ntuple(lane -> Mooncake._arrayify_lane(A, Mooncake.tangent(x), lane), Val(N))
+end
 
 function zero_tangent_internal(x::CuMaybeComplexArray, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::tangent_type(typeof(x))

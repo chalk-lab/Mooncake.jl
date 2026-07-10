@@ -818,6 +818,44 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             )
         end
 
+        # Regression (#178): the forward vcat/hcat/cat/permutedims frules canonicalise each argument
+        # via `arrayify(::Lifted)`. The generic `arrayify` is bounded to `BlasFloat`, so Float16 and
+        # ComplexF16 `CuArray`s (admitted by `CuMaybeWrappedArray`) `MethodError`ed until the CUDA ext
+        # added an eltype-agnostic forward `arrayify`. `test_rule`'s finite differences are unusable at
+        # Float16/ComplexF16 precision, so verify directly: these ops are linear, so the forward JVP is
+        # exactly the same rearrangement of each lane's partials. FD-free, so exact and deterministic.
+        @testset "Float16/ComplexF16 concat forward exact (#178) — $ET, width $N" for ET in
+                                                                                      (
+                Float16, ComplexF16
+            ),
+            N in (1, 2, 3)
+
+            a = CuArray(rand(StableRNG(1), ET, 4, 3))
+            b = CuArray(rand(StableRNG(2), ET, 2, 3))
+            c = CuArray(rand(StableRNG(3), ET, 4, 2))
+            xa = Mooncake.randn_lifted(Val(N), StableRNG(10), a)
+            xb = Mooncake.randn_lifted(Val(N), StableRNG(11), b)
+            xc = Mooncake.randn_lifted(Val(N), StableRNG(12), c)
+            pa, pb, pc = Mooncake.tangent(xa), Mooncake.tangent(xb), Mooncake.tangent(xc)
+
+            out_v = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), vcat), xa, xb)
+            @test Array(Mooncake.primal(out_v)) == Array(vcat(a, b))
+            out_h = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), hcat), xa, xc)
+            @test Array(Mooncake.primal(out_h)) == Array(hcat(a, c))
+            out_p = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(N), permutedims),
+                xa,
+                Mooncake.zero_lifted(Val(N), (2, 1)),
+            )
+            @test Array(Mooncake.primal(out_p)) == Array(permutedims(a, (2, 1)))
+            Vv, Vh, Vp = map(Mooncake.tangent, (out_v, out_h, out_p))
+            for k in 1:N
+                @test Array(Vv.partials[k]) == Array(vcat(pa.partials[k], pb.partials[k]))
+                @test Array(Vh.partials[k]) == Array(hcat(pa.partials[k], pc.partials[k]))
+                @test Array(Vp.partials[k]) == Array(permutedims(pa.partials[k], (2, 1)))
+            end
+        end
+
         # The `view` forward frule has two branches: contiguous indices return a CuArray
         # (NDualArray V, covered by `_view_sum` above) and non-contiguous (strided) indices
         # return a SubArray whose V is the struct lift `ImmutableDual((parent=tangent(x), …))`.
