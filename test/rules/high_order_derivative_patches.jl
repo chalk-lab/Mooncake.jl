@@ -206,6 +206,19 @@ end
         @test hvp ≈ [48.0]
     end
 
+    # Regression test for #1246.
+    @testset "triangular solve" begin
+        L = LowerTriangular([2.0 0.0; 1.0 3.0])
+        f(x) = sum(abs2, L \ x)
+        x = [1.0, 2.0]
+
+        value, grad, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
+
+        @test value ≈ 1 / 2
+        @test grad ≈ [1 / 3, 1 / 3]
+        @test H ≈ [5 / 9 -1 / 9; -1 / 9 2 / 9]
+    end
+
     @testset "cache reuse across multiple HVP calls" begin
         # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying;
         # verify the cache produces consistent results when called repeatedly with
