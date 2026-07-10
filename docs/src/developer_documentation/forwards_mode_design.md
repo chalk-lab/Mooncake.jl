@@ -15,7 +15,7 @@ This document
 
 Loosely, a rule for a function simultaneously
 1. performs the same computation as the original function, and
-1. computes the Frechet derivative.
+1. computes the Fréchet derivative.
 
 This is best explained through a worked example.
 Consider a function call
@@ -344,7 +344,7 @@ No separate "batched" transformation is needed: the forward value `V = dual_type
 The implementation of forwards-mode AD is quite dramatically simpler than that of reverse-mode AD.
 Some notable technical differences include:
 1. forwards-mode AD only makes use of the (forward) tangent system — the `Lifted` slot and its `dual_type` forward value — whereas reverse-mode also makes use of the fdata / rdata system.
-1. forwards-mode AD comprises only line-by-line transformations of the `IRCode`. In particular, it does not require the insertion of additional basic blocks, nor the modification of the successors / predecessors of any given basic block (the `GotoIfNot` rewrite inserts a node within the same block). Consequently, there is no need to make use of the `BBCode` infrastructure built up for reverse-mode AD -- everything can be straightforwardly done at the `Compiler.IRCode` level.
+1. forwards-mode AD comprises only line-by-line transformations of the `IRCode`. In particular, it does not require the insertion of additional basic blocks, nor the modification of the successors / predecessors of any given basic block (the `GotoIfNot` rewrite inserts a node within the same block). Consequently, there is no need to make use of the `CFGBlock` infrastructure built up for reverse-mode AD -- everything can be straightforwardly done at the `Compiler.IRCode` level.
 
 ## Comparison with ForwardDiff.jl
 

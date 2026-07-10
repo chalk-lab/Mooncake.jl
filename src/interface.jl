@@ -590,6 +590,14 @@ For types with custom copy semantics, overload this function (see `Core.SimpleVe
 _copy_output(x::Core.TypeName, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 _copy_output(x::Module, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
+# Compiled callables retain reflection/IR objects whose reference graph is cyclic
+# (e.g. Method.specializations <-> MethodInstance.def), so field-by-field descent
+# never terminates. They are never differentiable, so return them as-is — this lets
+# the friendly `prepare_hvp_cache` path copy a gradient closure that captures a
+# compiled rule without overflowing.
+_copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+_copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+
 function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
     return Core.svec([map(s -> _copy_output(s, c), x_sub) for x_sub in x]...)
 end
@@ -825,6 +833,14 @@ The keyword argument `args_to_zero` is a tuple of boolean values specifying whic
 It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
+!!! danger
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
+    across calls and can silently corrupt gradients — including those of *other* arguments, since
+    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
+    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
+    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
@@ -843,6 +859,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     ȳ,
     f::F,
     x::Vararg{Any,N};
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -944,6 +961,14 @@ The keyword argument `args_to_zero` is a tuple of boolean values specifying whic
 It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
+!!! danger
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
+    across calls and can silently corrupt gradients — including those of *other* arguments, since
+    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
+    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
+    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
@@ -961,6 +986,7 @@ value_and_gradient!!(cache, f, x, y)
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -1974,7 +2000,7 @@ end
 """
     value_and_derivative!!(cache::FCache, f::Lifted, x::Vararg{Lifted,N})
 
-Returns a `Lifted` containing the result of applying forward-mode AD to compute the (Frechet)
+Returns a `Lifted` containing the result of applying forward-mode AD to compute the (Fréchet)
 derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
 in `f` and `x`.
 """
@@ -2022,7 +2048,7 @@ end
 """
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 
-Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Frechet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
 
 Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
 

@@ -3,7 +3,7 @@
 @zero_derivative MinimalCtx Tuple{
     typeof(build_rrule_checks),MooncakeInterpreter,Any,Bool,Bool,Bool
 }
-@zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Type,UInt}
+@zero_derivative MinimalCtx Tuple{typeof(is_primitive),Type,Type{<:Mode},Any,UInt}
 
 @is_primitive MinimalCtx Tuple{
     typeof(build_derived_rrule),MooncakeInterpreter{C},Any,Any,Bool

@@ -74,7 +74,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
-        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1e-3)
+        _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)
         _bcast_sum_sin(x) = sum(sin.(x))
         _bcast_sum_pow7(x) = sum(x .^ 7)
         _bcast_sum_log(x) = sum(log.(x))
@@ -213,7 +213,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # They are used in the "unsupported operations" testset below.
         _cu_cx_slice_adj_mul(x, cy) = real(sum(cu(x[:, 1])' * cy))
         _bcast_cx_mixed(x, y) = sum(abs2, x .^ 2 .+ y)
-        _vcat_cu_sum(x, y) = sum(vcat(x, y))
+        _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
+        _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
+        _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
+        _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Reverse-only: `_new_(CuArray, DataRef, …)` is the reconstruction path for the
@@ -300,7 +303,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     _rand(rng, ComplexF64, 16, 32),
                     _rand(rng, ComplexF64, 16, 8),
                     _rand(rng, ComplexF64, 8, 32),
-                )]
+                ),]
             else
                 []
             end)...,
@@ -566,6 +569,234 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4),
+            ),
+            # vcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8),
+                _rand(rng, Float32, 4),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float32, 8, 3),
+                _rand(rng, Float32, 4, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, Float64, 6),
+                _rand(rng, Float64, 6),
+            ),
+            # hcat on CuArrays
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float64, 4, 3),
+                _rand(rng, Float64, 4, 2),
+            ),
+            # cat on CuArrays (dims kwarg)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(2),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 2),
+            ),
+            # cat on CuArrays (dims kwarg as Val{N}, per _unwrap_cat_dim(::Val{N}))
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(Val(1)),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 3),
+            ),
+            # cat on CuArrays (Tuple dims kwarg: block-diagonal concatenation)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 5),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, Float64, 3, 2),
+                _rand(rng, Float64, 5, 4),
+            ),
+            # cat on CuArrays (Tuple dims, N-arg: block-diagonal with 3 arrays, checking
+            # the running-offsets tuple in _cu_concat_pb! beyond the 2-arg case)
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 5),
+                _rand(rng, Float32, 3, 2),
+            ),
+            # vcat/hcat/cat/permutedims on ComplexF32/ComplexF64 CuArrays (CuMaybeWrappedArray
+            # includes complex element types via CuFloatOrComplex).
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                _rand(rng, ComplexF32, 4, 3),
+                _rand(rng, ComplexF32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, ComplexF64, 4, 3),
+                _rand(rng, ComplexF64, 4, 2),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum((1, 2)),
+                _rand(rng, ComplexF64, 3, 2),
+                _rand(rng, ComplexF64, 5, 4),
+            ),
+            # vcat/hcat/cat on Adjoint/Transpose/SubArray wrapping a CuArray, and on
+            # mixes of these with each other and with bare CuArrays. Each argument is
+            # canonicalised independently via `arrayify`, so any combination works.
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                adjoint(_rand(rng, Float32, 3, 4)),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                transpose(_rand(rng, Float32, 3, 4)),
+                transpose(_rand(rng, Float32, 3, 4)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _vcat_cu_sum,
+                view(_rand(rng, Float32, 8, 3), 1:4, :),
+                _rand(rng, Float32, 2, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                transpose(_rand(rng, Float32, 3, 4)),
+                view(_rand(rng, Float32, 4, 2), :, :),
+            ),
+            # N-arg cat/hcat mixing three different wrapper types (plus a bare CuArray
+            # for cat) in one call. Exercises Vararg{CuMaybeWrappedArray} matching each
+            # argument independently rather than requiring a uniform type.
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1),
+                _rand(rng, Float32, 4, 3),
+                adjoint(_rand(rng, Float32, 3, 2)),
+                transpose(_rand(rng, Float32, 3, 5)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                adjoint(_rand(rng, Float32, 3, 4)),
+                transpose(_rand(rng, Float32, 2, 4)),
+                view(_rand(rng, Float32, 4, 6), :, 1:5),
+            ),
+            # permutedims on CuArrays
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float32, 8, 4)),
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, Float64, 8, 4)),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1)),
+                adjoint(_rand(rng, Float32, 3, 4)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1)),
+                transpose(_rand(rng, Float32, 3, 4)),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1)),
+                view(_rand(rng, Float32, 8, 4), 1:4, :),
+            ),
+            (false, :none, false, _permutedims_sum((2, 1)), _rand(rng, ComplexF32, 8, 4)),
+            (
+                false,
+                :none,
+                false,
+                _permutedims_sum((2, 1, 3)),
+                _rand(rng, Float32, 4, 6, 3),
+            ),
+            # cat with dims beyond either 2-D input's own ndims (new trailing axis).
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(3),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 4, 3),
+            ),
+            # hcat of two bare CuVectors, not matrices.
+            (
+                false,
+                :none,
+                false,
+                _hcat_cu_sum,
+                _rand(rng, Float32, 5),
+                _rand(rng, Float32, 5),
             ),
         ]
         @testset "$(typeof(fargs))" for (interface_only, _, is_primitive, fargs...) in
@@ -949,17 +1180,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
 
-            # vcat/hcat/cat on CuArrays are not yet differentiable — explicit rules throw
-            # rather than letting Mooncake trace into opaque CUDA memory kernels.
-            @testset "vcat CuArray not differentiable" begin
-                f = _vcat_cu_sum
-                x = _rand(rng, Float32, 4)
-                y = _rand(rng, Float32, 4)
-                @test_throws r"vcat on CuArray is not yet differentiable" value_and_gradient!!(
-                    prepare_gradient_cache(f, x, y), f, x, y
-                )
-            end
-
             # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
             @testset "scalar getindex CuArray not differentiable" begin
                 f = x -> x[1]
@@ -995,6 +1215,194 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test_throws r"GPU gemv with mismatched element types" value_and_gradient!!(
                     prepare_gradient_cache(f, x, cy), f, x, cy
                 )
+            end
+
+            @testset "mixed GPU/CPU cat guards" begin
+                # One unified Vararg{Union{AbstractArray,Number}} guard per function
+                # covers array/scalar mixing at any arity/order, so each check below
+                # (reachability, is_primitive, N-arg) targets a distinct property
+                # instead of re-testing the same compiled method.
+                gpu1 = _rand(rng, Float32, 4)
+                gpu2 = _rand(rng, Float32, 4, 3)
+                tgpu1 = Mooncake.zero_tangent(gpu1)
+                tgpu2 = Mooncake.zero_tangent(gpu2)
+                cpu_vec = _host_rand(rng, Float32, 4)
+                tcpu_vec = zero(cpu_vec)
+                cpu_mat = _host_rand(rng, Float32, 4, 2)
+                tcpu_mat = zero(cpu_mat)
+                gpu3 = _rand(rng, Float32, 3)
+                tgpu3 = Mooncake.zero_tangent(gpu3)
+                s = 1.0f0
+                wc = Base.get_world_counter()
+
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu_vec),
+                    _vcat_cu_sum,
+                    gpu1,
+                    cpu_vec,
+                )
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu_mat),
+                    _hcat_cu_sum,
+                    gpu2,
+                    cpu_mat,
+                )
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
+                )
+
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(gpu1),typeof(gpu3)},
+                    wc,
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(cpu_vec),typeof(cpu_vec)},
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(vcat),typeof(gpu1),typeof(cpu_vec)},
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(hcat),typeof(gpu2),typeof(gpu2)},
+                    wc,
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(hcat),typeof(cpu_mat),typeof(cpu_mat)},
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{typeof(hcat),typeof(gpu2),typeof(cpu_mat)},
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{
+                        typeof(Core.kwcall),
+                        typeof((dims=1,)),
+                        typeof(cat),
+                        typeof(gpu1),
+                        typeof(gpu3),
+                    },
+                    wc,
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{
+                        typeof(Core.kwcall),
+                        typeof((dims=1,)),
+                        typeof(cat),
+                        typeof(cpu_vec),
+                        typeof(cpu_vec),
+                    },
+                    wc,
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx,
+                    Mooncake.Mode,
+                    Tuple{
+                        typeof(Core.kwcall),
+                        typeof((dims=1,)),
+                        typeof(cat),
+                        typeof(gpu1),
+                        typeof(cpu_vec),
+                    },
+                    wc,
+                )
+
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(s, zero(s)),
+                )
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
+                    Mooncake.CoDual(hcat, Mooncake.NoFData()),
+                    Mooncake.CoDual(gpu2, tgpu2),
+                    Mooncake.CoDual(cpu_mat, tcpu_mat),
+                )
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.Dual(cat, Mooncake.NoTangent()),
+                    Mooncake.Dual(gpu1, tgpu1),
+                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                )
+
+                # N-arg: CPU array sandwiched between two GPU arrays.
+                @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
+                    Mooncake.CoDual(vcat, Mooncake.NoFData()),
+                    Mooncake.CoDual(gpu1, tgpu1),
+                    Mooncake.CoDual(cpu_vec, tcpu_vec),
+                    Mooncake.CoDual(gpu3, tgpu3),
+                )
+            end
+
+            @testset "regression: pure-CPU splatted vcat/hcat/cat with CUDA loaded" begin
+                # Regression for a review finding: `_is_primitive` used to be
+                # `@generated`, which crashed/misclassified splatted calls (unknown
+                # arity -> `Vararg` type) as needing this guard even with no GPU
+                # arrays involved; fixed calls here need a fixed arity, so they don't.
+                _splat_vcat_sum(xs) = sum(vcat(xs...))
+                _splat_hcat_sum(xs) = sum(hcat(xs...))
+                _splat_cat_sum(xs) = sum(cat(xs...; dims=1))
+                xs = [_host_rand(rng, 3) for _ in 1:3]
+                for f in (_splat_vcat_sum, _splat_hcat_sum, _splat_cat_sum)
+                    val, (_, dxs) = value_and_gradient!!(
+                        prepare_gradient_cache(f, xs), f, xs
+                    )
+                    @test val ≈ f(xs)
+                    @test length(dxs) == length(xs)
+                end
+            end
+
+            @testset "Float16 support" begin
+                # Bare Float16 CuArrays are supported; checks the analytic gradient
+                # (ones) rather than finite differences, unreliable at this precision.
+                x16 = _rand(rng, Float16, 4)
+                y16 = _rand(rng, Float16, 4)
+                val, (_, dx, dy) = value_and_gradient!!(
+                    prepare_gradient_cache(_vcat_cu_sum, x16, y16), _vcat_cu_sum, x16, y16
+                )
+                @test val ≈ sum(vcat(x16, y16))
+                @test all(==(one(Float16)), Array(dx))
+                @test all(==(one(Float16)), Array(dy))
+
+                # Float16 SubArrays are excluded from CuMaybeWrappedArray (Finding 3). A
+                # strided view stays a genuine SubArray (unlike the contiguous 1-D view
+                # above, which CUDA.jl collapses to a plain CuArray), and since it isn't
+                # a primitive here, the N-arg mixed-device guard doesn't recognise it as
+                # GPU either, so this errors there with "mix of GPU" instead of falling
+                # through to the interpreter's untraceable `cufunction` try/finally.
+                x16_mat = _rand(rng, Float16, 4, 3)
+                y16_mat = _rand(rng, Float16, 2, 3)
+                f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
+                @test_throws r"mix of GPU" value_and_gradient!!(
+                    prepare_gradient_cache(f_view, x16_mat, y16_mat),
+                    f_view,
+                    x16_mat,
+                    y16_mat,
+                )
+            end
+
+            @testset "_unwrap_cat_dim rejects unsupported dims types" begin
+                # dims must be an Integer, Val{N}, or Tuple{Vararg{Integer}} — anything
+                # else should fail loudly rather than silently misbehave.
+                @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim(1.0)
+                @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim((1, 2.0))
             end
         end
     else

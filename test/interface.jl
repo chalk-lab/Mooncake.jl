@@ -579,6 +579,21 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test ds_copy2._n == ds2._n
             @test ds_copy2._data == ds2._data
         end
+
+        # Fix for #1242: compiled callables retain reflection/IR objects with cyclic
+        # reference graphs, so descending into their fields never terminates.
+        @testset "_copy_output compiled callables" begin
+            oc = Base.Experimental.@opaque x -> x + 1
+            @test Mooncake._copy_output(oc) === oc
+
+            # End-to-end: friendly forward-over-reverse over an array function builds
+            # a gradient closure that captures the compiled reverse rule. Copying it
+            # must not StackOverflow at prepare time.
+            f = x -> sum(abs2, x)
+            @test Mooncake.prepare_hvp_cache(
+                f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; friendly_tangents=true)
+            ) isa Mooncake.HVPCache
+        end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [
         (;),

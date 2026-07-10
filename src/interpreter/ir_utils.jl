@@ -1,3 +1,99 @@
+#
+# Shared IR primitives, used by both forward- and reverse-mode (and by `ir_utils` itself).
+# They live here, rather than alongside the reverse-mode working-IR layer in `reverse_mode.jl`,
+# because this file is loaded before `forward_mode.jl` / `reverse_mode.jl`, both of which use
+# them.
+#
+
+const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
+
+"""
+    ID()
+
+An `ID` (read: unique name) is just a wrapper around an `Int32`. Uniqueness is ensured via a
+global counter, which is incremented each time that an `ID` is created.
+
+This counter can be reset using `seed_id!` if you need to ensure deterministic `ID`s are
+produced, in the same way that seed for random number generators can be set.
+"""
+struct ID
+    id::Int32
+    function ID()
+        current_thread_id = Threads.threadid()
+        id_count = get(_id_count, current_thread_id, Int32(0))
+        _id_count[current_thread_id] = id_count + Int32(1)
+        return new(id_count)
+    end
+end
+
+Base.copy(id::ID) = id
+
+"""
+    seed_id!()
+
+Set the global counter used to ensure ID uniqueness to 0. This is useful when you want to
+ensure determinism between two runs of the same function which makes use of `ID`s.
+
+This is akin to setting the random seed associated to a random number generator globally.
+"""
+function seed_id!()
+    return global _id_count[Threads.threadid()] = 0
+end
+
+"""
+    const InstVector = Vector{NewInstruction}
+
+Note: the `CC.NewInstruction` type is used to represent instructions because it has the
+correct fields. While it is only used to represent new instructions in `Core.Compiler`, it
+is used to represent all instructions in the working-IR layer.
+"""
+const InstVector = Vector{NewInstruction}
+
+"""
+    new_inst(stmt, type=Any, flag=CC.IR_FLAG_REFINED)::NewInstruction
+
+Create a `NewInstruction` with fields:
+- `stmt` = `stmt`
+- `type` = `type`
+- `info` = `CC.NoCallInfo()`
+- `line` = `Int32(1)`
+- `flag` = `flag`
+"""
+function new_inst(@nospecialize(stmt), @nospecialize(type)=Any, flag=CC.IR_FLAG_REFINED)
+    return NewInstruction(stmt, type, CC.NoCallInfo(), Int32(1), flag)
+end
+
+"""
+    __line_numbers_to_block_numbers!(insts::Vector{Any}, cfg::CC.CFG)
+
+Converts any edges in `GotoNode`s, `GotoIfNot`s, `PhiNode`s, and `:enter` expressions which
+refer to line numbers into references to block numbers. The `cfg` provides the information
+required to perform this conversion.
+
+For context, `CodeInfo` objects have references to line numbers, while `IRCode` uses
+block numbers.
+
+This code is copied over directly from the body of `Core.Compiler.inflate_ir!`.
+"""
+function __line_numbers_to_block_numbers!(insts::Vector{Any}, cfg::CC.CFG)
+    for i in eachindex(insts)
+        stmt = insts[i]
+        if isa(stmt, GotoNode)
+            insts[i] = GotoNode(CC.block_for_inst(cfg, stmt.label))
+        elseif isa(stmt, GotoIfNot)
+            insts[i] = GotoIfNot(stmt.cond, CC.block_for_inst(cfg, stmt.dest))
+        elseif isa(stmt, PhiNode)
+            insts[i] = PhiNode(
+                Int32[CC.block_for_inst(cfg, Int(edge)) for edge in stmt.edges], stmt.values
+            )
+        elseif Meta.isexpr(stmt, :enter)
+            stmt.args[1] = CC.block_for_inst(cfg, stmt.args[1]::Int)
+            insts[i] = stmt
+        end
+    end
+    return insts
+end
+
 stmt_field_name() = @static VERSION < v"1.11" ? :inst : :stmt
 
 """

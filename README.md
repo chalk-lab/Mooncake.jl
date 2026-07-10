@@ -39,7 +39,7 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 Check that you're running a version of Julia that Mooncake.jl supports.
 See the `SUPPORT_POLICY.md` file for more info.
 
-There are several ways to interact with `Mooncake.jl`. To interact directly with `Mooncake.jl`, use Mooncake's native API, which allows reuse of prepared caches for repeated gradient and Hessian evaluations:
+You can use `Mooncake.jl`'s API to prepare a cache once and then reuse it for fast, repeated gradient and Hessian evaluations, like this:
 
 ```julia
 import Mooncake as MC
@@ -63,4 +63,4 @@ val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 # H    : ∇²f(x) (n×n matrix)
 ```
 
-You should expect that `MC.prepare_*_cache` take a little time to run, but that subsequent gradient and hessian calls using the prepared caches are fast. For details, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/). 
+You should expect the `MC.prepare_*_cache` functions to take a little time to run, but subsequent gradient and Hessian calls that reuse the prepared caches are fast. A prepared cache is tied to each input's type and size, so reusing it with a differently sized input will raise an error; for more information, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) and [tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients).

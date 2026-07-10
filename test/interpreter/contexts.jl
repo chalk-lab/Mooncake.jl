@@ -34,4 +34,24 @@ end
         @test !Mooncake.is_primitive(DefaultCtx, mode, Tuple{Tf,Real}, world)
         @test !Mooncake.is_primitive(MinimalCtx, mode, Tuple{Tf,Real}, world)
     end
+
+    # `is_primitive` must not specialise per signature: it is called once per call-node
+    # signature during the AD transform, so specialising would make compile time scale with
+    # the number of distinct signatures (issue #1222). Distinct signatures must add no new
+    # specialisation.
+    @testset "no per-signature specialisation" begin
+        nspecialisations(f) =
+            sum(methods(f); init=0) do m
+                specs = m.specializations
+                specs isa Core.MethodInstance ? 1 : count(!isnothing, specs)
+            end
+        Tf = typeof(ContextsTestModule.foo)
+        world = Base.get_world_counter()
+        Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, Tuple{Tf,Bool}, world)
+        n = nspecialisations(Mooncake.is_primitive)
+        for T in (Int8, Int16, Int32, Int64)
+            Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, Tuple{Tf,T}, world)
+        end
+        @test nspecialisations(Mooncake.is_primitive) == n
+    end
 end
