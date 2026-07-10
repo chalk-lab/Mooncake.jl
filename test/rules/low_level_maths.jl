@@ -116,6 +116,14 @@
                     Mooncake.frule!!(zero_dual(mod2pi), Mooncake.lift(T(2π), one(T))), 1
                 ),
             )
+            # Regression (#179): reverse mod2pi must also be NaN at the 2π wrap — matching forward
+            # and `main` — not a constant slope 1. `x=0` (a multiple of 2π) is the common case.
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(zero(T)))
+                @test isnan(pb(one(T))[2])
+            end
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(T(0.7)))
+                @test pb(one(T))[2] === one(T)
+            end
 
             @test tangent(
                 Mooncake.frule!!(

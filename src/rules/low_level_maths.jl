@@ -228,9 +228,14 @@ end
 @inline _unary_deriv(::typeof(Base.FastMath.exp2_fast), x, y) = y * oftype(y, log(2))
 @inline _unary_deriv(::typeof(Base.FastMath.exp10_fast), x, y) = y * oftype(y, log(10))
 @inline _unary_deriv(::typeof(Base.FastMath.atan_fast), x, y) = inv(one(x) + x^2)
-# mod2pi has local slope 1 (away from the 2π wrap); nextfloat/prevfloat are treated as
-# identity-derivative maps (they shift by one ulp).
-@inline _unary_deriv(::typeof(mod2pi), x, y) = one(x)
+# mod2pi has local slope 1 away from the 2π wrap, but NaN *at* the wrap (`x` a multiple of 2π),
+# where it is discontinuous — matching the forward `mod2pi(::NDual)` overload (`_nfwd_mod2pi_grad`)
+# and `main`'s reverse, and consistent with the `mod`/`^` discontinuity handling below. A constant
+# slope 1 here would silently disagree with forward mode at the wrap. nextfloat/prevfloat are treated
+# as identity-derivative maps (they shift by one ulp).
+@inline _unary_deriv(::typeof(mod2pi), x, y) = ifelse(
+    isinteger(x / oftype(x, 2π)), oftype(x, NaN), one(x)
+)
 @inline _unary_deriv(::typeof(nextfloat), x, y) = one(x)
 @inline _unary_deriv(::typeof(prevfloat), x, y) = one(x)
 
