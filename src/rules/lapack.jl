@@ -153,7 +153,7 @@ function rrule!!(
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
     B, dB = arrayify(_B)
-    # Keep the copy call visible to the forward-over-reverse transform.
+    # Preserve the copy primitive during forward-over-reverse AD.
     B_copy = Base.@noinline copy(B)
 
     # Run primal.
