@@ -45,6 +45,33 @@
         @test Mooncake.lsetfield!(x, Val(:b), new_b) === new_b
         @test x.b === new_b
     end
+    @testset "Ref positional field access in frule (Val(1) ≡ Val(:x))" begin
+        # A `RefValue` has a single field, so `getfield(r, 1)` and `getfield(r, :x)` are equivalent.
+        # The forward frules for `lgetfield`/`lsetfield!` on a Ref must accept the positional `Val(1)`
+        # as well as the symbolic `Val(:x)`. The transform normalises positional access, so this
+        # direct-frule coverage is not reachable through `test_rule`.
+        r = Ref(3.0)
+        rl = Mooncake.zero_lifted(Val(1), r)
+        for fld in (Val(1), Val(:x))
+            res = Mooncake.frule!!(
+                Mooncake.lift(Mooncake.lgetfield, Mooncake.NoTangent()),
+                rl,
+                Mooncake.lift(fld, Mooncake.NoTangent()),
+            )
+            @test Mooncake.primal(res) == 3.0
+        end
+        xl = Mooncake.lift(5.0, 1.0)
+        for fld in (Val(1), Val(:x))
+            r2l = Mooncake.zero_lifted(Val(1), Ref(0.0))
+            Mooncake.frule!!(
+                Mooncake.lift(Mooncake.lsetfield!, Mooncake.NoTangent()),
+                r2l,
+                Mooncake.lift(fld, Mooncake.NoTangent()),
+                xl,
+            )
+            @test Mooncake.primal(r2l)[] == 5.0
+        end
+    end
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:misc))
 end

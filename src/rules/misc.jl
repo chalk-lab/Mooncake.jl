@@ -159,7 +159,7 @@ end
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    ::Lifted{Val{:x}},
+    ::Lifted{<:Union{Val{:x},Val{1}}},
 ) where {Nw,P<:NDualEltype}
     v = getfield(primal(x), :x)
     return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
@@ -309,7 +309,7 @@ end
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    ::Lifted{Val{:x}},
+    ::Lifted{<:Union{Val{:x},Val{1}}},
     ::Lifted{Val{order}},
 ) where {Nw,P<:NDualEltype,order}
     v = getfield(primal(x), :x, order)
@@ -374,7 +374,7 @@ end
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    ::Lifted{Val{:x}},
+    ::Lifted{<:Union{Val{:x},Val{1}}},
     x::Lifted{P,Nw},
 ) where {Nw,P<:NDualEltype}
     setfield!(primal(value), :x, primal(x))
