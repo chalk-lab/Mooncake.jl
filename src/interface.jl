@@ -734,6 +734,14 @@ The keyword argument `args_to_zero` is a tuple of boolean values specifying whic
 It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
+!!! danger
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
+    across calls and can silently corrupt gradients — including those of *other* arguments, since
+    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
+    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
+    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
@@ -752,6 +760,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     ȳ,
     f::F,
     x::Vararg{Any,N};
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -841,6 +850,14 @@ The keyword argument `args_to_zero` is a tuple of boolean values specifying whic
 It contains one boolean for each element of `(f, x...)`.
 It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
 
+!!! danger
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
+    across calls and can silently corrupt gradients — including those of *other* arguments, since
+    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
+    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
+    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
+    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
 f(x, y) = sum(x .* y)
@@ -858,6 +875,7 @@ value_and_gradient!!(cache, f, x, y)
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
