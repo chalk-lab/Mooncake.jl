@@ -404,12 +404,20 @@ end
 # rrule above.
 for (jlfname, elty) in
     ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
+    # Two independent type vars (X, Y): the two array arguments need not share a concrete type
+    # (e.g. a dense `Vector` dotted with a strided `SubArray`/`Adjoint`). A single shared `X` would
+    # leave differently-typed pairs non-primitive, falling to the derived forward path that cannot
+    # land complex per-lane partials (the reason these are primitives at all) — the frule method
+    # below already binds the two arguments independently.
     @eval @is_primitive(
         MinimalCtx,
         ForwardMode,
         Tuple{
-            typeof(BLAS.$jlfname),Integer,X,Integer,X,Integer
-        } where {X<:Union{Ptr{$elty},AbstractArray{$elty}}}
+            typeof(BLAS.$jlfname),Integer,X,Integer,Y,Integer
+        } where {
+            X<:Union{Ptr{$elty},AbstractArray{$elty}},
+            Y<:Union{Ptr{$elty},AbstractArray{$elty}},
+        }
     )
     @eval @inline function frule!!(
         ::Lifted{typeof(BLAS.$jlfname),Nw},
