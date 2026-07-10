@@ -135,6 +135,11 @@ end
 @inline _unary_deriv(::typeof(deg2rad), x, y) = deg2rad(one(x))
 @inline _unary_deriv(::typeof(rad2deg), x, y) = rad2deg(one(x))
 @inline _unary_deriv(::typeof(sinc), x, y) = cosc(x)
+# FastMath scalar variants — same derivative factors as their non-fast counterparts.
+@inline _unary_deriv(::typeof(Base.FastMath.exp_fast), x, y) = y
+@inline _unary_deriv(::typeof(Base.FastMath.exp2_fast), x, y) = y * oftype(y, log(2))
+@inline _unary_deriv(::typeof(Base.FastMath.exp10_fast), x, y) = y * oftype(y, log(10))
+@inline _unary_deriv(::typeof(Base.FastMath.atan_fast), x, y) = inv(one(x) + x^2)
 
 for f in (
     exp,
@@ -188,6 +193,10 @@ for f in (
     deg2rad,
     rad2deg,
     sinc,
+    Base.FastMath.exp_fast,
+    Base.FastMath.exp2_fast,
+    Base.FastMath.exp10_fast,
+    Base.FastMath.atan_fast,
 )
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
@@ -211,16 +220,7 @@ for f in (
 end
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
-for f in (
-    mod2pi,
-    nextfloat,
-    prevfloat,
-    Base.FastMath.exp_fast,
-    Base.FastMath.exp2_fast,
-    Base.FastMath.exp10_fast,
-    Base.FastMath.atan_fast,
-    Base.FastMath.sincos,
-)
+for f in (mod2pi, nextfloat, prevfloat, Base.FastMath.sincos)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
         # `$f(::NDual)` has its own overload in Nfwd.jl that propagates partials and sets
