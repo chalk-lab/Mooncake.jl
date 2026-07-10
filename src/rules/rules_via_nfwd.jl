@@ -118,6 +118,23 @@ end
 @inline _unary_deriv(::typeof(asech), x, y) = -inv(x * sqrt(one(x) - x^2))
 @inline _unary_deriv(::typeof(acsch), x, y) = -inv(abs(x) * sqrt(one(x) + x^2))
 @inline _unary_deriv(::typeof(acoth), x, y) = inv(one(x) - x^2)
+# Degree-based trig — argument in degrees, so every factor gains the deg2rad (π/180) scale.
+@inline _unary_deriv(::typeof(sind), x, y) = deg2rad(cosd(x))
+@inline _unary_deriv(::typeof(cosd), x, y) = -deg2rad(sind(x))
+@inline _unary_deriv(::typeof(tand), x, y) = deg2rad(one(y) + y^2)
+@inline _unary_deriv(::typeof(secd), x, y) = deg2rad(y * tand(x))
+@inline _unary_deriv(::typeof(cscd), x, y) = -deg2rad(y * cotd(x))
+@inline _unary_deriv(::typeof(cotd), x, y) = -deg2rad(one(y) + y^2)
+@inline _unary_deriv(::typeof(asind), x, y) = inv(deg2rad(sqrt(one(x) - x^2)))
+@inline _unary_deriv(::typeof(acosd), x, y) = -inv(deg2rad(sqrt(one(x) - x^2)))
+@inline _unary_deriv(::typeof(atand), x, y) = inv(deg2rad(one(x) + x^2))
+@inline _unary_deriv(::typeof(asecd), x, y) = inv(deg2rad(abs(x) * sqrt(x^2 - one(x))))
+@inline _unary_deriv(::typeof(acscd), x, y) = -inv(deg2rad(abs(x) * sqrt(x^2 - one(x))))
+@inline _unary_deriv(::typeof(acotd), x, y) = -inv(deg2rad(one(x) + x^2))
+# Angle-unit conversions (constant scale) and sinc.
+@inline _unary_deriv(::typeof(deg2rad), x, y) = deg2rad(one(x))
+@inline _unary_deriv(::typeof(rad2deg), x, y) = rad2deg(one(x))
+@inline _unary_deriv(::typeof(sinc), x, y) = cosc(x)
 
 for f in (
     exp,
@@ -156,6 +173,21 @@ for f in (
     asech,
     acsch,
     acoth,
+    sind,
+    cosd,
+    tand,
+    secd,
+    cscd,
+    cotd,
+    asind,
+    acosd,
+    atand,
+    asecd,
+    acscd,
+    acotd,
+    deg2rad,
+    rad2deg,
+    sinc,
 )
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
@@ -180,21 +212,6 @@ end
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
-    sind,
-    cosd,
-    tand,
-    secd,
-    cscd,
-    cotd,
-    asind,
-    acosd,
-    atand,
-    asecd,
-    acscd,
-    acotd,
-    sinc,
-    deg2rad,
-    rad2deg,
     mod2pi,
     nextfloat,
     prevfloat,
