@@ -181,8 +181,7 @@ end
 @inline _unary_deriv(::typeof(sec), x, y) = y * tan(x)
 @inline _unary_deriv(::typeof(csc), x, y) = -y * cot(x)
 @inline _unary_deriv(::typeof(cot), x, y) = -(one(y) + y^2)
-@inline _unary_deriv(::typeof(sinpi), x, y) = oftype(x, π) * cospi(x)
-@inline _unary_deriv(::typeof(cospi), x, y) = -oftype(x, π) * sinpi(x)
+# sinpi/cospi moved to the fused `_value_and_deriv` block below (shared `sincospi`).
 # Inverse trig.
 @inline _unary_deriv(::typeof(asin), x, y) = inv(sqrt(one(x) - x^2))
 @inline _unary_deriv(::typeof(acos), x, y) = -inv(sqrt(one(x) - x^2))
@@ -205,9 +204,7 @@ end
 @inline _unary_deriv(::typeof(acsch), x, y) = -inv(abs(x) * sqrt(one(x) + x^2))
 @inline _unary_deriv(::typeof(acoth), x, y) = inv(one(x) - x^2)
 # Degree-based trig — argument in degrees, so every factor gains the deg2rad (π/180) scale.
-@inline _unary_deriv(::typeof(sind), x, y) = deg2rad(cosd(x))
-@inline _unary_deriv(::typeof(cosd), x, y) = -deg2rad(sind(x))
-@inline _unary_deriv(::typeof(tand), x, y) = deg2rad(one(y) + y^2)
+# sind/cosd/tand moved to the fused `_value_and_deriv` block below (shared `sincosd`).
 @inline _unary_deriv(::typeof(secd), x, y) = deg2rad(y * tand(x))
 @inline _unary_deriv(::typeof(cscd), x, y) = -deg2rad(y * cotd(x))
 @inline _unary_deriv(::typeof(cotd), x, y) = -deg2rad(one(y) + y^2)
@@ -251,8 +248,6 @@ for f in (
     sec,
     csc,
     cot,
-    sinpi,
-    cospi,
     asin,
     acos,
     atan,
@@ -271,9 +266,6 @@ for f in (
     asech,
     acsch,
     acoth,
-    sind,
-    cosd,
-    tand,
     secd,
     cscd,
     cotd,
@@ -315,14 +307,16 @@ for f in (
     end
 end
 
-# ── Fused value+derivative rules (task 176 pilot: sin/cos/tan) ──────────────────────────────────
+# ── Fused value+derivative rules (task 176: trig families with a shared sincos-type primitive) ───
 # `_value_and_deriv(f, x) -> (y, g)` computes the primal value `y = f(x)` and the local derivative
-# factor `g = f'(x)` from a SINGLE shared evaluation, so a fused primitive (here `sincos`) runs once
-# and both the forward frule (which scales the partials by `g`) and the reverse rrule (which
-# contracts the cotangent with `g`) reuse it. This replaces, for these functions, the old split of a
-# forward `f(::NDual)` overload (`$f(tangent(x))`) and a separate reverse `_unary_deriv` factor.
-# Notably it also fuses REVERSE mode, which previously computed `f(x)` and `f'(x)` separately
-# (e.g. `sin(x)` for the value and `cos(x)` for the factor — two transcendental calls).
+# factor `g = f'(x)` from a SINGLE shared evaluation, so a fused primitive (`sincos`/`sincosd`/
+# `sincospi`) runs once and both the forward frule (which scales the partials by `g`) and the reverse
+# rrule (which contracts the cotangent with `g`) reuse it. This replaces, for these functions, the old
+# split of a forward `f(::NDual)` overload (`$f(tangent(x))`) and a separate reverse `_unary_deriv`
+# factor. Notably it also fuses REVERSE mode, which previously computed `f(x)` and `f'(x)` with
+# separate transcendental calls (e.g. `sin(x)` for the value and `cos(x)` for the factor).
+# Only the genuine-fusion families live here; functions whose reverse factor already reuses the value
+# (exp, log, sqrt, …) stay in the generic loop above.
 @inline function _value_and_deriv(::typeof(sin), x)
     s, c = sincos(x)
     return s, c
@@ -336,7 +330,30 @@ end
     t = s / c
     return t, one(t) + t^2
 end
-for f in (sin, cos, tan)
+# Degree trig: `sincosd` shares the argument reduction; each derivative gains the deg2rad (π/180) scale.
+@inline function _value_and_deriv(::typeof(sind), x)
+    s, c = sincosd(x)
+    return s, deg2rad(c)
+end
+@inline function _value_and_deriv(::typeof(cosd), x)
+    s, c = sincosd(x)
+    return c, -deg2rad(s)
+end
+@inline function _value_and_deriv(::typeof(tand), x)
+    s, c = sincosd(x)
+    t = s / c
+    return t, deg2rad(one(t) + t^2)
+end
+# π-scaled trig: `sincospi` shares the reduction; d(sinpi)/dx = π·cospi, d(cospi)/dx = -π·sinpi.
+@inline function _value_and_deriv(::typeof(sinpi), x)
+    s, c = sincospi(x)
+    return s, oftype(x, π) * c
+end
+@inline function _value_and_deriv(::typeof(cospi), x)
+    s, c = sincospi(x)
+    return c, -oftype(x, π) * s
+end
+for f in (sin, cos, tan, sind, cosd, tand, sinpi, cospi)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
         # Forward: one `sincos`, then scale the partials by the shared derivative factor. Standard and
