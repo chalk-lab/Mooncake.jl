@@ -88,8 +88,75 @@ end
 @inline _unary_deriv(::typeof(log1p), x, y) = inv(one(x) + x)
 @inline _unary_deriv(::typeof(sqrt), x, y) = inv(2 * y)
 @inline _unary_deriv(::typeof(cbrt), x, y) = inv(3 * y^2)
+# Trigonometric and reciprocal-trig.
+@inline _unary_deriv(::typeof(sin), x, y) = cos(x)
+@inline _unary_deriv(::typeof(cos), x, y) = -sin(x)
+@inline _unary_deriv(::typeof(tan), x, y) = one(y) + y^2
+@inline _unary_deriv(::typeof(sec), x, y) = y * tan(x)
+@inline _unary_deriv(::typeof(csc), x, y) = -y * cot(x)
+@inline _unary_deriv(::typeof(cot), x, y) = -(one(y) + y^2)
+@inline _unary_deriv(::typeof(sinpi), x, y) = oftype(x, π) * cospi(x)
+@inline _unary_deriv(::typeof(cospi), x, y) = -oftype(x, π) * sinpi(x)
+# Inverse trig.
+@inline _unary_deriv(::typeof(asin), x, y) = inv(sqrt(one(x) - x^2))
+@inline _unary_deriv(::typeof(acos), x, y) = -inv(sqrt(one(x) - x^2))
+@inline _unary_deriv(::typeof(atan), x, y) = inv(one(x) + x^2)
+@inline _unary_deriv(::typeof(asec), x, y) = inv(abs(x) * sqrt(x^2 - one(x)))
+@inline _unary_deriv(::typeof(acsc), x, y) = -inv(abs(x) * sqrt(x^2 - one(x)))
+@inline _unary_deriv(::typeof(acot), x, y) = -inv(one(x) + x^2)
+# Hyperbolic and reciprocal-hyperbolic.
+@inline _unary_deriv(::typeof(sinh), x, y) = cosh(x)
+@inline _unary_deriv(::typeof(cosh), x, y) = sinh(x)
+@inline _unary_deriv(::typeof(tanh), x, y) = one(y) - y^2
+@inline _unary_deriv(::typeof(sech), x, y) = -tanh(x) * y
+@inline _unary_deriv(::typeof(csch), x, y) = -coth(x) * y
+@inline _unary_deriv(::typeof(coth), x, y) = -csch(x)^2
+# Inverse hyperbolic.
+@inline _unary_deriv(::typeof(asinh), x, y) = inv(sqrt(x^2 + one(x)))
+@inline _unary_deriv(::typeof(acosh), x, y) = inv(sqrt(x^2 - one(x)))
+@inline _unary_deriv(::typeof(atanh), x, y) = inv(one(x) - x^2)
+@inline _unary_deriv(::typeof(asech), x, y) = -inv(x * sqrt(one(x) - x^2))
+@inline _unary_deriv(::typeof(acsch), x, y) = -inv(abs(x) * sqrt(one(x) + x^2))
+@inline _unary_deriv(::typeof(acoth), x, y) = inv(one(x) - x^2)
 
-for f in (exp, exp2, exp10, expm1, log, log2, log10, log1p, sqrt, cbrt)
+for f in (
+    exp,
+    exp2,
+    exp10,
+    expm1,
+    log,
+    log2,
+    log10,
+    log1p,
+    sqrt,
+    cbrt,
+    sin,
+    cos,
+    tan,
+    sec,
+    csc,
+    cot,
+    sinpi,
+    cospi,
+    asin,
+    acos,
+    atan,
+    asec,
+    acsc,
+    acot,
+    sinh,
+    cosh,
+    tanh,
+    sech,
+    csch,
+    coth,
+    asinh,
+    acosh,
+    atanh,
+    asech,
+    acsch,
+    acoth,
+)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
         # Forward: the `$f(::NDual)` overload in Nfwd.jl propagates partials and sets the result's
@@ -113,44 +180,18 @@ end
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
 for f in (
-    sin,
-    cos,
-    cospi,
-    tan,
-    sec,
-    csc,
-    cot,
     sind,
     cosd,
     tand,
     secd,
     cscd,
     cotd,
-    sinpi,
-    asin,
-    acos,
-    atan,
-    asec,
-    acsc,
-    acot,
     asind,
     acosd,
     atand,
     asecd,
     acscd,
     acotd,
-    sinh,
-    cosh,
-    tanh,
-    sech,
-    csch,
-    coth,
-    asinh,
-    acosh,
-    atanh,
-    asech,
-    acsch,
-    acoth,
     sinc,
     deg2rad,
     rad2deg,
