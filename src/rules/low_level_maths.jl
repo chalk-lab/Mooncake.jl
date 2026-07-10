@@ -176,10 +176,8 @@ end
 @inline _unary_deriv(::typeof(log1p), x, y) = inv(one(x) + x)
 @inline _unary_deriv(::typeof(sqrt), x, y) = inv(2 * y)
 @inline _unary_deriv(::typeof(cbrt), x, y) = inv(3 * y^2)
-# Trigonometric and reciprocal-trig.
-@inline _unary_deriv(::typeof(sin), x, y) = cos(x)
-@inline _unary_deriv(::typeof(cos), x, y) = -sin(x)
-@inline _unary_deriv(::typeof(tan), x, y) = one(y) + y^2
+# Trigonometric and reciprocal-trig. (sin/cos/tan moved to the fused `_value_and_deriv` pilot below,
+# so that value and derivative share a single `sincos` call in BOTH modes — see task 176.)
 @inline _unary_deriv(::typeof(sec), x, y) = y * tan(x)
 @inline _unary_deriv(::typeof(csc), x, y) = -y * cot(x)
 @inline _unary_deriv(::typeof(cot), x, y) = -(one(y) + y^2)
@@ -250,9 +248,6 @@ for f in (
     log1p,
     sqrt,
     cbrt,
-    sin,
-    cos,
-    tan,
     sec,
     csc,
     cot,
@@ -315,6 +310,48 @@ for f in (
             _x = primal(x)
             y = $f(_x)
             pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, _unary_deriv($f, _x, y)))
+            return zero_fcodual(y), pb!!
+        end
+    end
+end
+
+# ── Fused value+derivative rules (task 176 pilot: sin/cos/tan) ──────────────────────────────────
+# `_value_and_deriv(f, x) -> (y, g)` computes the primal value `y = f(x)` and the local derivative
+# factor `g = f'(x)` from a SINGLE shared evaluation, so a fused primitive (here `sincos`) runs once
+# and both the forward frule (which scales the partials by `g`) and the reverse rrule (which
+# contracts the cotangent with `g`) reuse it. This replaces, for these functions, the old split of a
+# forward `f(::NDual)` overload (`$f(tangent(x))`) and a separate reverse `_unary_deriv` factor.
+# Notably it also fuses REVERSE mode, which previously computed `f(x)` and `f'(x)` separately
+# (e.g. `sin(x)` for the value and `cos(x)` for the factor — two transcendental calls).
+@inline function _value_and_deriv(::typeof(sin), x)
+    s, c = sincos(x)
+    return s, c
+end
+@inline function _value_and_deriv(::typeof(cos), x)
+    s, c = sincos(x)
+    return c, -s
+end
+@inline function _value_and_deriv(::typeof(tan), x)
+    s, c = sincos(x)
+    t = s / c
+    return t, one(t) + t^2
+end
+for f in (sin, cos, tan)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
+        # Forward: one `sincos`, then scale the partials by the shared derivative factor. Standard and
+        # self-contained — no dispatch through an `f(::NDual)` overload.
+        function frule!!(
+            ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            nd = tangent(x)
+            y, g = _value_and_deriv($f, nd.value)
+            return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, g)))
+        end
+        # Reverse: the same fused `_value_and_deriv`, contracted against the cotangent.
+        function rrule!!(::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
+            y, g = _value_and_deriv($f, primal(x))
+            pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, g))
             return zero_fcodual(y), pb!!
         end
     end

@@ -161,7 +161,15 @@ include("stack.jl")
 # seed factories) before the interpreter — `interpreter/forward_mode.jl`
 # dispatches on `Lifted{P, N, V}` (any chunk width N).
 include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual, NDualArray, NDualRef, NDualEltype, _scalar_ndual, _nfwd_dual_partial
+using .Nfwd:
+    NDual,
+    NDualArray,
+    NDualRef,
+    NDualEltype,
+    _scalar_ndual,
+    _nfwd_dual_partial,
+    _pt_scale,
+    _pt_guarded_scale
 @static if VERSION >= v"1.11-rc4"
     using .Nfwd: NDualMemoryRef
 end
