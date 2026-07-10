@@ -94,6 +94,15 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test p[1] === p                              # add_to_primal preserves the cycle
     end
 
+    @testset "scalar NDual _add_to_primal adds only the partials" begin
+        # Regression (#173): an inner `NDual`'s `.value` is the primal it shadows (inner-value
+        # invariant), so `_add_to_primal` must add only the partials — adding `.value` too would
+        # double-count the primal (a zero-partials V would return `2x` instead of the identity `x`).
+        x = 3.0
+        @test Mooncake._add_to_primal(x, nd(x, 0.0, 0.0)) == x        # zero partials → identity
+        @test Mooncake._add_to_primal(x, nd(x, 1.0, 2.0)) == x + 3.0  # adds sum(partials) = 3
+    end
+
     @testset "Lifted slot basics" begin
         inner = nd(3.0, 1.0, -1.0)
         slot = sl(2, 3.0, inner)

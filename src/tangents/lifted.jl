@@ -460,12 +460,13 @@ function _scale_internal(::MaybeCache, a::Float64, t::NDual{T,N}) where {T<:IEEE
 end
 
 _add_to_primal_internal(::MaybeCache, x, ::NoDual, ::Bool) = x
-# Scalar NDual: add `.value + sum(.partials)` (matches the test-framework's
-# usage where it treats NDual.value as the "primal-side" content).
+# Scalar NDual: the perturbation content is the partials; `.value` is the primal the NDual shadows
+# (inner-value invariant), which is already `x`, so adding it would double-count. Add only the
+# partials so a zero-partials V is the identity: `_add_to_primal(x, NDual(x, zeros)) == x`.
 function _add_to_primal_internal(
     ::MaybeCache, x::T, t::NDual{T,N}, ::Bool
 ) where {T<:IEEEFloat,N}
-    return x + t.value + sum(t.partials; init=zero(T))
+    return x + sum(t.partials; init=zero(T))
 end
 function _add_to_primal_internal(c::MaybeCache, x, t::ImmutableDual, unsafe::Bool)
     # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding
