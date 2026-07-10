@@ -794,7 +794,10 @@ end
         ),
     )
     v = T(b)^a.value
-    return NDual{T,N}(v, _pt_scale(a.partials, v * T(log(b))))
+    # Guard the scale so an inactive (zero-seed) lane stays exactly 0 at the removable singularity
+    # b == 0, where `log(b)` is -Inf and the unguarded `0 * -Inf` would be NaN. Mirrors the guard on
+    # `log`/`sqrt`/`cbrt`/the `pow`/`powi` rules.
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, v * T(log(b))))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 

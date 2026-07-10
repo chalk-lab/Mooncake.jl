@@ -160,6 +160,14 @@ using Mooncake.Nfwd
         # in the exponent — must throw the clear local error, at any width.
         @test_throws DomainError (-2.0)^_d(3.0, 1.0)
         @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
+        # Zero real base with an NDual exponent (b=0, positive exponent): primal is 0 and the
+        # exponent derivative b^a·log(b) is 0·(-Inf). An inactive (zero-partial) lane must stay
+        # exactly 0 via the guarded scale, not become NaN; the active lane keeps the genuine NaN.
+        # (Regression #181: this `^(::Real, ::NDual)` path used the unguarded `_pt_scale`.)
+        bz = (0.0)^_d2(2.0, 1.0, 0.0)
+        @test Nfwd.ndual_value(bz) == 0.0
+        @test Nfwd.ndual_partial(bz, 2) === 0.0   # inactive lane: 0, not NaN
+        @test isnan(Nfwd.ndual_partial(bz, 1))    # active lane: genuine singularity
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
