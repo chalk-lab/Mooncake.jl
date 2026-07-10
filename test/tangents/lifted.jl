@@ -20,6 +20,9 @@ end
 mutable struct LiftedTest_ParentField  # field name collides with the view's internals
     parent::Float64
 end
+mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
+    x::Real
+end
 mutable struct LiftedTest_MaybeInit
     x::Float64
     y::Float64
@@ -340,6 +343,15 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test pview.parent === 0.0
         pview.parent = 7.0
         @test pview.parent === 7.0
+
+        # Regression (#183): a mutable struct with an ABSTRACT field type lifts to a `MutableDual`
+        # whose backing NamedTuple is abstract (`@NamedTuple{x}`, x::Any). Writing a lane tangent
+        # narrows the merged NamedTuple to a concrete element type, which is not `isa` the stored
+        # abstract type — a bare `setfield!` throws `TypeError`. The view must `convert` back.
+        aview = tangent(zero_lifted(Val(2), LiftedTest_AbstractField(1.0)), 1)
+        @test aview.x === 0.0
+        aview.x = 4.0
+        @test aview.x === 4.0
     end
 
     @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin

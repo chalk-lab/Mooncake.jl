@@ -581,7 +581,14 @@ function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
     lane = getfield(v, :_lane)
     nt = parent.value
     new_V_i = _replace_lane_tangent(getfield(nt, name), lane, x)
-    setfield!(parent, :value, merge(nt, NamedTuple{(name,)}((new_V_i,))))
+    # `convert` to the stored NamedTuple type: `setfield!` is strict (no implicit convert) and
+    # `NamedTuple` is invariant in its `Tuple` parameter, so for a mutable struct with an abstract
+    # field (e.g. `x::Real` -> dual field NamedTuple `@NamedTuple{x}`, x::Any) the `merge` narrows to
+    # `@NamedTuple{x::NDual}`, which is NOT `isa @NamedTuple{x}` — a bare `setfield!` throws. Mirrors
+    # the writeback in `_setfield_tangent!(::MutableDual)`.
+    setfield!(
+        parent, :value, convert(typeof(nt), merge(nt, NamedTuple{(name,)}((new_V_i,))))
+    )
     return x
 end
 
