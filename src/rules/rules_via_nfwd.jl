@@ -1,43 +1,27 @@
 #
-# nfwd-backed primitive rules for scalar functions.
-#
-# Each entry registers a primitive `frule!!` / `rrule!!` for a scalar (or small fixed-arity)
-# math function by lifting its inputs into `NDual`s and running the overloaded primal directly:
-# the `f(::NDual)` methods in Nfwd.jl propagate partials, so the rules stay close to the
-# function's own definition and need no hand-coded derivative.
+# Primitive rules for scalar (and small fixed-arity) math functions.
 #
 # MinimalCtx is used throughout: several of these functions (e.g. tanpi, sincosd, sincospi)
 # contain `try`/`catch` internally, which Mooncake's IR-transform AD cannot handle. Registering
-# them as MinimalCtx primitives dispatches the nfwd rule directly, bypassing the failing transform.
+# them as MinimalCtx primitives dispatches these rules directly, bypassing the failing transform.
 #
 # Forward (`frule!!`): the input `Lifted{P,N,NDual{P,N}}` already carries the N seeded directions,
-# so the rule just runs the primal on `tangent(x)` (the inner `NDual`) and wraps the result.
+# so the rule just runs the primal on `tangent(x)` (the inner `NDual`) — the `f(::NDual)` overloads
+# in Nfwd.jl propagate the partials — and wraps the result. This is the one place these rules depend
+# on the forward-mode `Nfwd` submodule.
 #
-# Reverse (`rrule!!`): seed one `NDual` per input scalar on its own identity lane, run the primal
-# once to obtain the (tiny, fixed-arity) Jacobian in the result's `.partials`, and contract it with
-# the output cotangent in an allocation-free pullback (the result `NDual`(s) are `isbits` and
-# captured by value). This mirrors the forward rule — no separate reverse engine.
-#
-# `Nfwd` (NDual + dual arithmetic) is a separate submodule; Nfwd names not in the top-level
-# `using .Nfwd:` import list are referenced with a `Nfwd.` qualifier (e.g. `Nfwd._nfwd_pow_grad_x`).
+# Reverse (`rrule!!`): DIRECT NATIVE analytic pullbacks — no `NDual` seeding, no `Nfwd`/ChainRules
+# dependency. Closed-form derivative factors are dispatched through `_unary_deriv` / `_binary_deriv`
+# (with `_pow_grad_x`/`_pow_grad_p` for the pow family and `_pick_first_max/min` for max/min), then
+# contracted against the output cotangent via `_rev_contract`, which keeps an inactive (zero-cotangent)
+# lane exactly zero even where the local derivative is ±Inf (removable-singularity NaN guard). So
+# reverse mode here has zero dependence on forward mode.
 
-# ── Reverse-mode helpers ──────────────────────────────────────────────────────
-# Output primal value, for scalar (`NDual`) or tuple-of-`NDual` (e.g. `sincos`) results.
+# ── Forward-mode output helper ────────────────────────────────────────────────
+# Output primal value from a dual result, for scalar (`NDual`) or tuple-of-`NDual` (e.g. `sincos`)
+# results; used by the `frule!!`s to read the primal back out of the forward dual.
 @inline _nfwd_out_value(yd::NDual) = yd.value
 @inline _nfwd_out_value(yd::Tuple) = map(d -> d.value, yd)
-
-# Contract the output cotangent(s) with the output partials → `NTuple{M}` per-input gradient.
-# Scalar output: `yd::NDual{P,M}`, `ȳ::Number`. Tuple output: `yd::Tuple{NDual{P,M}...}`, `ȳ::Tuple`
-# (each component's cotangent contracts its own partials; contributions sum per input lane).
-# `_nfwd_zero_mask(ȳ, p)` zeroes the partial when the cotangent is zero, so a removable-singularity
-# `Inf` partial (e.g. d(log)/dx at 0) does not poison an unused output to `Inf*0 = NaN` (issue #807).
-@inline _contract(ȳ::Number, p) = ȳ * Nfwd._nfwd_zero_mask(ȳ, p)
-@inline _nfwd_input_grads(yd::NDual, ȳ::Number) = map(p -> _contract(ȳ, p), yd.partials)
-@inline function _nfwd_input_grads(yd::Tuple, ȳ::Tuple)
-    return reduce(
-        (a, b) -> map(+, a, b), map((d, c) -> map(p -> _contract(c, p), d.partials), yd, ȳ)
-    )
-end
 
 # Reverse-mode removable-singularity guard, native (no forward-mode/NDual dependency): a zero
 # incoming cotangent must yield an exact zero contribution even where the local derivative is ±Inf
@@ -148,6 +132,11 @@ end
 @inline _unary_deriv(::typeof(Base.FastMath.exp2_fast), x, y) = y * oftype(y, log(2))
 @inline _unary_deriv(::typeof(Base.FastMath.exp10_fast), x, y) = y * oftype(y, log(10))
 @inline _unary_deriv(::typeof(Base.FastMath.atan_fast), x, y) = inv(one(x) + x^2)
+# mod2pi has local slope 1 (away from the 2π wrap); nextfloat/prevfloat are treated as
+# identity-derivative maps (they shift by one ulp).
+@inline _unary_deriv(::typeof(mod2pi), x, y) = one(x)
+@inline _unary_deriv(::typeof(nextfloat), x, y) = one(x)
+@inline _unary_deriv(::typeof(prevfloat), x, y) = one(x)
 
 for f in (
     exp,
@@ -201,6 +190,9 @@ for f in (
     deg2rad,
     rad2deg,
     sinc,
+    mod2pi,
+    nextfloat,
+    prevfloat,
     Base.FastMath.exp_fast,
     Base.FastMath.exp2_fast,
     Base.FastMath.exp10_fast,
@@ -228,26 +220,21 @@ for f in (
 end
 
 # ── nfwd-backed unary scalar rules ─────────────────────────────────────────────
-for f in (mod2pi, nextfloat, prevfloat, Base.FastMath.sincos)
-    @eval begin
-        @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
-        # `$f(::NDual)` has its own overload in Nfwd.jl that propagates partials and sets
-        # the result's `.value` to `f(primal(x))` (inner-value invariant), so read the
-        # primal back from `dy` instead of recomputing it. `_nfwd_out_value`/`_typeof`
-        # handle tuple-returning primitives (e.g. `sincos`): dy::Tuple{NDual,NDual}.
-        function frule!!(
-            ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
-        ) where {N,P<:IEEEFloat}
-            dy = $f(tangent(x))
-            y = _nfwd_out_value(dy)
-            return Lifted{_typeof(y),N}(y, dy)
-        end
-        function rrule!!(::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
-            yd = $f(NDual{P,1}(primal(x), (one(P),)))
-            nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-            return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
-        end
+# ── FastMath.sincos (tuple output) ────────────────────────────────────────────
+@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.sincos),P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(Base.FastMath.sincos),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    tv = Base.FastMath.sincos(tangent(x))
+    return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
+end
+# Native reverse: sincos(x) = (sin(x), cos(x)); d(sin)/dx = cos(x), d(cos)/dx = -sin(x).
+function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
+    s, c = Base.FastMath.sincos(primal(x))
+    function fsincos_pb!!(ȳ)
+        return NoRData(), _rev_contract(ȳ[1], c) + _rev_contract(ȳ[2], -s)
     end
+    return zero_fcodual((s, c)), fsincos_pb!!
 end
 
 # `eps` is piecewise-constant (zero derivative). Unlike `nextfloat`/`prevfloat` it has no
