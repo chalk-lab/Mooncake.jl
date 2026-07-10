@@ -62,9 +62,17 @@ function rrule!!(
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
+# Dense inputs (all `Array{T,2}`) are a primitive for every real `IEEEFloat`, including Float16:
+# the dense frule below reads the `NDualArray` partials directly and never touches `arrayify`.
+# Wrapped inputs (Triangular/Symmetric/Adjoint/…) go through the `arrayify` fallback, which only
+# supports `BlasFloat`, so they are a primitive only for `BlasFloat`; a Float16 wrapped input is left
+# non-primitive and handled by derived forward mode rather than crashing inside `arrayify`.
+@is_primitive DefaultCtx Tuple{
+    typeof(LinearAlgebra._kron!),Array{T,2},Array{T,2},Array{T,2}
+} where {T<:IEEEFloat}
 @is_primitive DefaultCtx Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
-} where {T<:IEEEFloat}
+} where {T<:BlasFloat}
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
 function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
@@ -114,7 +122,7 @@ function Mooncake.frule!!(
     out::Lifted{<:AbstractMatrix{T},N},
     x1::Lifted{<:AbstractMatrix{T},N},
     x2::Lifted{<:AbstractMatrix{T},N},
-) where {N,T<:IEEEFloat}
+) where {N,T<:BlasFloat}
     pout, dout_s = arrayify(out)
     px1, dx1_s = arrayify(x1)
     px2, dx2_s = arrayify(x2)
