@@ -153,6 +153,7 @@ function rrule!!(
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
     B, dB = arrayify(_B)
+    # Keep the copy call visible to forward mode.
     B_copy = Base.@noinline copy(B)
 
     # Run primal.

@@ -206,6 +206,7 @@ end
         @test hvp ≈ [48.0]
     end
 
+    # Regression test for #1246.
     @testset "triangular solve" begin
         L = LowerTriangular([2.0 0.0; 1.0 3.0])
         f(x) = sum(abs2, L \ x)
