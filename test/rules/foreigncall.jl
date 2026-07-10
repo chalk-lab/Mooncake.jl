@@ -69,6 +69,31 @@ end
         end
     end
 
+    # Regression (#172): the chunked llvm.powi frule must scale partials with `_pt_guarded_scale`, so
+    # an inactive (zero-seed) lane stays exactly 0.0 even where `grad` is ±Inf (x=0, negative
+    # exponent). Unguarded `_pt_scale` gave `0 * Inf = NaN`. Mirrors the `pow_fast` guard.
+    @testset "llvm.powi inactive-lane guard at x=0 negative exponent" begin
+        fc = Mooncake._foreigncall_
+        nm = Symbol("llvm.powi.f64.i32")
+        L(T, N, v) = Lifted{T,N}(v, Mooncake.NoDual())
+        xL(N, x, parts) = Lifted{Float64,N}(x, Mooncake.Nfwd.NDual{Float64,N}(x, parts))
+        N = 2
+        r = Mooncake.frule!!(
+            L(typeof(fc), N, fc),
+            L(Val{nm}, N, Val(nm)),
+            L(Val{Float64}, N, Val(Float64)),
+            L(Tuple{Val{Float64},Val{Int32}}, N, (Val(Float64), Val(Int32))),
+            L(Val{0}, N, Val(0)),
+            L(Val{:llvmcall}, N, Val(:llvmcall)),
+            xL(N, 0.0, (1.0, 0.0)),
+            L(Int32, N, Int32(-2)),
+            L(Int32, N, Int32(-2)),
+            xL(N, 0.0, (1.0, 0.0)),
+        )
+        # Lane 2 (zero seed) must be exactly 0.0, not NaN, despite grad = ±Inf at the pole.
+        @test tangent(r).partials[2] == 0.0
+    end
+
     # Regression: the deepcopy frule must copy the whole slot in ONE deepcopy walk. Copying
     # primal and V separately severs `NDualArray.primal === primal(slot)`, so the copy's inner
     # `.value` reads a stale third array after the copied primal is mutated.
