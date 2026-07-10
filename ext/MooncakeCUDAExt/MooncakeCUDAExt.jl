@@ -1834,13 +1834,17 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
 )
-function frule!!(::Lifted{typeof(vcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...) where {Nw}
-    # Forward-mode GPU concat/permutedims (from main #1225, reverse implemented below) is not yet
-    # ported to the Lifted/NDualArray representation; reverse mode is supported. See loop follow-up.
-    return _throw_gpu_argument_error(
-        "Mooncake: forward-mode `vcat` on CuArray is not yet implemented on the Lifted branch " *
-        "(reverse mode is supported). " * _UNIMPL_MSG,
-    )
+function frule!!(
+    ::Lifted{typeof(vcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...
+) where {Nw}
+    # vcat is linear: concat the primals, and concat each lane's partials the same way. `arrayify`
+    # canonicalises each argument's primal and its per-lane partials through any wrapper (mirroring
+    # the reverse rrule below); the dense result gives a plain `NDualArray` V.
+    pairs = map(arrayify, args)
+    y = vcat(map(first, pairs)...)
+    y_partials = ntuple(k -> vcat(map(p -> p[2][k], pairs)...), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
@@ -1856,11 +1860,14 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(hcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
 )
-function frule!!(::Lifted{typeof(hcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...) where {Nw}
-    return _throw_gpu_argument_error(
-        "Mooncake: forward-mode `hcat` on CuArray is not yet implemented on the Lifted branch " *
-        "(reverse mode is supported). " * _UNIMPL_MSG,
-    )
+function frule!!(
+    ::Lifted{typeof(hcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...
+) where {Nw}
+    pairs = map(arrayify, args)
+    y = hcat(map(first, pairs)...)
+    y_partials = ntuple(k -> hcat(map(p -> p[2][k], pairs)...), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
@@ -1889,10 +1896,12 @@ function frule!!(
     ::Lifted{typeof(cat)},
     args::Lifted{<:CuMaybeWrappedArray}...,
 ) where {Nw}
-    return _throw_gpu_argument_error(
-        "Mooncake: forward-mode `cat` on CuArray is not yet implemented on the Lifted branch " *
-        "(reverse mode is supported). " * _UNIMPL_MSG,
-    )
+    pkw = primal(kw)
+    pairs = map(arrayify, args)
+    y = cat(map(first, pairs)...; pkw...)
+    y_partials = ntuple(k -> cat(map(p -> p[2][k], pairs)...; pkw...), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -3422,10 +3431,12 @@ end
 function frule!!(
     ::Lifted{typeof(permutedims),Nw}, x::Lifted{<:CuMaybeWrappedArray}, perm::Lifted
 ) where {Nw}
-    return _throw_gpu_argument_error(
-        "Mooncake: forward-mode `permutedims` on CuArray is not yet implemented on the Lifted " *
-        "branch (reverse mode is supported). " * _UNIMPL_MSG,
-    )
+    px, x_partials = arrayify(x)
+    pperm = primal(perm)
+    y = permutedims(px, pperm)
+    y_partials = ntuple(k -> permutedims(x_partials[k], pperm), Val(Nw))
+    Y = typeof(y)
+    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeWrappedArray}, perm::CoDual
