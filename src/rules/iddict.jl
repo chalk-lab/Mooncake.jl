@@ -212,12 +212,13 @@ function frule!!(
     key::Lifted,
 ) where {N,K,V,Vdv}
     setindex!(primal(d), primal(val), primal(key))
-    # `setindex!` above stored `convert(V, val)`, so the tangent slot is `tangent_type(V)`, not
-    # `tangent_type(typeof(val))`: NoTangent slot, zero for a non-diff value, else `tangent(val)`.
-    dslot = if tangent_type(V) == NoTangent
-        NoTangent()
-    elseif tangent_type(typeof(primal(val))) == NoTangent
-        zero_tangent(primal(d)[primal(key)])
+    # `setindex!` above stored `convert(V, val)`, so the dual slot is `dual_type(Val(N), V)` (= `Vdv`),
+    # not the dual type of `val`'s own type: a `NoDual` slot for a non-diff dict value, a zero dual of
+    # the stored value when the stored value is itself non-diff, else `val`'s dual.
+    dslot = if Vdv == NoDual
+        NoDual()
+    elseif dual_type(Val(N), typeof(primal(val))) == NoDual
+        zero_dual(Val(N), primal(d)[primal(key)])
     else
         tangent(val)
     end
