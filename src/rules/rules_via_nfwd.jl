@@ -22,30 +22,6 @@
 # `using .Nfwd:` import list are referenced with a `Nfwd.` qualifier (e.g. `Nfwd._nfwd_pow_grad_x`).
 
 # ── Reverse-mode helpers ──────────────────────────────────────────────────────
-# Seed M scalar inputs as width-M `NDual`s, input i carrying the i-th identity direction, so a
-# single primal evaluation produces the full M-column Jacobian in the output's `.partials`.
-# `Tuple{P,Vararg{P,Mm1}}` (≥1 element), not `NTuple{M,P}`: the latter leaves `P` unbound at M==0
-# (`Tuple{}`), which Aqua's `test_unbound_args` flags. Every caller passes ≥1 input, so requiring a
-# first element is exact; the width is `Mm1 + 1`.
-#
-# `@generated` to unroll into an explicit tuple of `NDual` constructions with literal identity
-# partials. A plain nested `ntuple` would close over the width `M` as a runtime `Int`, so the
-# inner `Val(M)` became a dynamic `Val(::Int)` — JET flagged "failed to optimize due to recursion"
-# and the uninferred result poisoned the downstream primal call (e.g. `max(::NDual,::NDual)::Any`)
-# into runtime dispatch and allocation. The generator body only builds the construction `Expr`
-# (every `one`/`zero`/`NDual` call runs at expansion's *result*, not in the generator), so it has
-# no world-age sub-dispatch trap.
-@generated function _nfwd_seed_inputs(
-    primals::Tuple{P,Vararg{P,Mm1}}
-) where {P<:IEEEFloat,Mm1}
-    M = Mm1 + 1
-    duals = map(1:M) do i
-        partials = Expr(:tuple, (i == j ? :(one(P)) : :(zero(P)) for j in 1:M)...)
-        return :(NDual{P,$M}(primals[$i], $partials))
-    end
-    return Expr(:tuple, duals...)
-end
-
 # Output primal value, for scalar (`NDual`) or tuple-of-`NDual` (e.g. `sincos`) results.
 @inline _nfwd_out_value(yd::NDual) = yd.value
 @inline _nfwd_out_value(yd::Tuple) = map(d -> d.value, yd)
@@ -389,26 +365,34 @@ function rrule!!(
     return zero_fcodual(y), pow_fast_pb!!
 end
 
-for f in (clamp,)
-    @eval begin
-        @is_primitive MinimalCtx Tuple{typeof($f),P,P,P} where {P<:IEEEFloat}
-        function frule!!(
-            ::Lifted{typeof($f),N},
-            x1::Lifted{P,N,NDual{P,N}},
-            x2::Lifted{P,N,NDual{P,N}},
-            x3::Lifted{P,N,NDual{P,N}},
-        ) where {N,P<:IEEEFloat}
-            dy = $f(tangent(x1), tangent(x2), tangent(x3))
-            return Lifted{P,N}(dy.value, dy)
-        end
-        function rrule!!(
-            ::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
-        ) where {P<:IEEEFloat}
-            yd = $f(_nfwd_seed_inputs((primal(x1), primal(x2), primal(x3)))...)
-            nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-            return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
-        end
-    end
+@is_primitive MinimalCtx Tuple{typeof(clamp),P,P,P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(clamp),N},
+    x1::Lifted{P,N,NDual{P,N}},
+    x2::Lifted{P,N,NDual{P,N}},
+    x3::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
+    dy = clamp(tangent(x1), tangent(x2), tangent(x3))
+    return Lifted{P,N}(dy.value, dy)
+end
+# Native reverse rule: clamp(a, lo, hi) = ifelse(a<=lo, lo, ifelse(a>=hi, hi, a)); the derivative is
+# 1 for whichever argument is selected and 0 for the other two (subgradient at the endpoints).
+function rrule!!(
+    ::CoDual{typeof(clamp)}, x1::CoDual{P}, x2::CoDual{P}, x3::CoDual{P}
+) where {P<:IEEEFloat}
+    a = primal(x1)
+    lo = primal(x2)
+    hi = primal(x3)
+    y = clamp(a, lo, hi)
+    below = a <= lo
+    above = (a >= hi) & !below
+    ga = ifelse(below | above, zero(P), one(P))
+    glo = ifelse(below, one(P), zero(P))
+    ghi = ifelse(above, one(P), zero(P))
+    clamp_pb!!(ȳ::P) = (
+        NoRData(), _rev_contract(ȳ, ga), _rev_contract(ȳ, glo), _rev_contract(ȳ, ghi)
+    )
+    return zero_fcodual(y), clamp_pb!!
 end
 
 # ── sincosd ───────────────────────────────────────────────────────────────────
@@ -483,9 +467,12 @@ end
 function rrule!!(
     ::CoDual{typeof(hypot)}, x::CoDual{P}, xs::Vararg{CoDual{P},M}
 ) where {P<:IEEEFloat,M}
-    yd = hypot(_nfwd_seed_inputs((primal(x), tuple_map(primal, xs)...))...)
-    nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-    return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
+    xvals = (primal(x), tuple_map(primal, xs)...)
+    h = hypot(xvals...)
+    # d hypot / dxᵢ = xᵢ / h, masked to 0 when xᵢ == 0 (also collapses the all-zero 0/0 = NaN case).
+    coeffs = map(xi -> iszero(xi) ? zero(P) : xi / h, xvals)
+    hypot_pb!!(ȳ::P) = (NoRData(), map(c -> _rev_contract(ȳ, c), coeffs)...)
+    return zero_fcodual(h), hypot_pb!!
 end
 
 # Cases for the scalar primitives defined here that no other group's registry covers
