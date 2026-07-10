@@ -207,15 +207,11 @@ end
     end
 
     @testset "triangular solve" begin
-        # The trtrs! rrule snapshots its right-hand side with copy. That typed call must
-        # survive optimisation so forward-over-reverse does not encounter raw memmove.
         L = LowerTriangular([2.0 0.0; 1.0 3.0])
         f(x) = sum(abs2, L \ x)
         x = [1.0, 2.0]
 
-        value, grad, H = value_gradient_and_hessian!!(
-            prepare_hessian_cache(f, x), f, x
-        )
+        value, grad, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
 
         @test value ≈ 1 / 2
         @test grad ≈ [1 / 3, 1 / 3]
