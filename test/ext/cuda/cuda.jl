@@ -84,6 +84,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_sum_sin_pow2(x) = sum(sin.(x .^ 2))
         _sum_f_sin(x) = sum(sin, x)
         _sum_f_exp(x) = sum(exp, x)
+        # Regression (#170/#171): a predicate `f` maps to `Bool`, so `sum(f, x)` has a
+        # non-differentiable `Int` result. Forward mode must return a zero-derivative (NoDual) V, not
+        # crash. Exercised on a dense CuArray and (via the caller passing `x'`) an Adjoint below.
+        _sum_f_pred(x) = sum(y -> y > 0.5, x)
         # complex sum(f, x) wrappers
         _sum_f_cx_abs2(x) = sum(abs2, x)
         _sum_f_cx_sin_re(x) = real(sum(sin, x))
@@ -388,6 +392,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _sum_f_sin, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, ComplexF64, 16)),
+            # sum(predicate, x): non-differentiable Int result (#170 dense, #171 adjoint)
+            (false, :none, false, _sum_f_pred, _rand(rng, 16)),
+            (false, :none, false, _sum_f_pred, _rand(rng, 4, 3)'),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
             (false, :none, false, _mapreduce_sin, _rand(rng, 16)),
             (false, :none, false, _mapreduce_exp, _rand(rng, 16)),

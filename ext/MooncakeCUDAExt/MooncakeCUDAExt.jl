@@ -1610,17 +1610,20 @@ function frule!!(
     # `out` for a cheap reduction against that lane's input tangent.
     out = _gpu_broadcast_dual(primal(f), flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
-    dy_lanes = if decoded.is_diff
-        ntuple(
-            k -> _gpu_accumulate_reduced_jvp(
-                out, (flat_px,), (x_partials[k],), decoded.primal_out
-            ),
-            Val(Nw),
-        )
-    else
-        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
-    end
     P_out = typeof(decoded.primal_out)
+    if !decoded.is_diff
+        # `f` discards the derivative (a non-differentiable mapping result, e.g. a `Bool`/`Int`-valued
+        # `f`): the reduction is non-differentiable, so return a `NoDual` V. Do NOT route a non-float
+        # `primal_out` through `_wrap_scalar_v_lanes`, which supports only float scalars. Mirrors the
+        # zero-derivative reverse rrule.
+        return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
+    end
+    dy_lanes = ntuple(
+        k -> _gpu_accumulate_reduced_jvp(
+            out, (flat_px,), (x_partials[k],), decoded.primal_out
+        ),
+        Val(Nw),
+    )
     return Lifted{P_out,Nw}(
         decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
     )
@@ -1655,17 +1658,18 @@ function frule!!(
     x_partials = tangent(x).value.parent.partials
     out = _gpu_broadcast_dual(primal(f), flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
-    dy_lanes = if decoded.is_diff
-        ntuple(
-            k -> _gpu_accumulate_reduced_jvp(
-                out, (flat_px,), (x_partials[k],), decoded.primal_out
-            ),
-            Val(Nw),
-        )
-    else
-        ntuple(_ -> zero(decoded.primal_out), Val(Nw))
-    end
     P_out = typeof(decoded.primal_out)
+    if !decoded.is_diff
+        # Non-differentiable mapping result (Bool/Int-valued `f`): return a `NoDual` V rather than
+        # routing a non-float `primal_out` through `_wrap_scalar_v_lanes`. Mirrors the dense frule.
+        return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
+    end
+    dy_lanes = ntuple(
+        k -> _gpu_accumulate_reduced_jvp(
+            out, (flat_px,), (x_partials[k],), decoded.primal_out
+        ),
+        Val(Nw),
+    )
     # Use `_wrap_scalar_v_lanes` (not a raw `NDual{P_out,Nw}`) so a complex-valued `f` (ℝ→ℂ),
     # whose `P_out === Complex{R}`, builds the canonical `Complex{NDual}` V rather than the
     # invalid `NDual{Complex,…}`. Mirrors the dense `sum(f, x)` frule above.
@@ -2695,9 +2699,15 @@ end
     ::Val{:sum}, out, flat_pargs; extract_partials::Bool=false
 )
     decoded = _gpu_decode_ndual_meta(out, flat_pargs; extract_partials)
-    primal_out = sum(
-        Nfwd._nfwd_dual_value, out; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))
-    )
+    # Differentiable output: reduce the NDual `.value`s with a matching-typed `init`. Non-differentiable
+    # output (a non-`NDual` element type, e.g. a `Bool` from a predicate `f`): reduce the array
+    # directly and let the result type promote naturally (`sum(::Bool array)::Int`). Forcing the
+    # NDual-derived `init` there mismatched the promoted accumulator and crashed the GPU reduction.
+    primal_out = if decoded.is_diff
+        sum(Nfwd._nfwd_dual_value, out; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out))))
+    else
+        sum(out)
+    end
     return (; decoded..., primal_out)
 end
 
