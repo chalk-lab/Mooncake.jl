@@ -85,6 +85,21 @@ end
     )
 end
 
+# max/min subgradient selection: `true` picks the first argument, matching Base's tie convention
+# (second arg for max, first arg for min). Pure scalar, branchless.
+@inline function _pick_first_max(a, b)
+    v = max(a, b)
+    am = isequal(v, a)
+    bm = isequal(v, b)
+    return ifelse(am & !bm, true, ifelse(bm & !am, false, false))
+end
+@inline function _pick_first_min(a, b)
+    v = min(a, b)
+    am = isequal(v, a)
+    bm = isequal(v, b)
+    return ifelse(am & !bm, true, ifelse(bm & !am, false, true))
+end
+
 # ===========================================================================
 # nfwd-backed primitive rule registrations
 # ===========================================================================
@@ -308,8 +323,24 @@ end
 end
 # x^p: d/dx and d/dp share the native pow gradients (removable-singularity limits at x==0).
 @inline _binary_deriv(::typeof(^), x, p, y) = (_pow_grad_x(x, p, y), _pow_grad_p(x, p, y))
+# mod(x, y): d/dx = 1, d/dy = -floor(x/y); both NaN at the integer-quotient discontinuities.
+@inline function _binary_deriv(::typeof(mod), x, y, out)
+    u = x / y
+    nan = oftype(u, NaN)
+    isint = isinteger(u)
+    return (ifelse(isint, nan, one(u)), ifelse(isint, nan, -floor(u)))
+end
+# max/min: subgradient (1,0) or (0,1) by which argument is selected.
+@inline function _binary_deriv(::typeof(max), a, b, out)
+    p = _pick_first_max(a, b)
+    return (ifelse(p, one(a), zero(a)), ifelse(p, zero(b), one(b)))
+end
+@inline function _binary_deriv(::typeof(min), a, b, out)
+    p = _pick_first_min(a, b)
+    return (ifelse(p, one(a), zero(a)), ifelse(p, zero(b), one(b)))
+end
 
-for f in (atan, Base.FastMath.atan_fast, log, ^)
+for f in (atan, Base.FastMath.atan_fast, log, ^, mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
@@ -328,26 +359,6 @@ for f in (atan, Base.FastMath.atan_fast, log, ^)
             g1, g2 = _binary_deriv($f, a, b, y)
             pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, g1), _rev_contract(ȳ, g2))
             return zero_fcodual(y), pb!!
-        end
-    end
-end
-
-# ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
-for f in (mod, max, min)
-    @eval begin
-        @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
-        function frule!!(
-            ::Lifted{typeof($f),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
-        ) where {N,P<:IEEEFloat}
-            dy = $f(tangent(x1), tangent(x2))
-            return Lifted{P,N}(dy.value, dy)
-        end
-        function rrule!!(
-            ::CoDual{typeof($f)}, x1::CoDual{P}, x2::CoDual{P}
-        ) where {P<:IEEEFloat}
-            yd = $f(_nfwd_seed_inputs((primal(x1), primal(x2)))...)
-            nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-            return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
         end
     end
 end
