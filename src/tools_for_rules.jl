@@ -300,6 +300,15 @@ end
 @inline _fwd_zd_arg_bound(::Type{T}) where {T} =
     (T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) ? Type : T
 
+# Collect every `Symbol` mentioned in an expression (recursing through `esc`/nested `Expr`s). Used to
+# decide whether a `@zero_derivative` argument references a `where`-clause static parameter — if it
+# does, its forward bound must not be wrapped in `_fwd_zd_arg_bound(...)` (see `_zero_derivative_impl`).
+_collect_expr_symbols!(acc::Set{Symbol}, e::Symbol) = (push!(acc, e); acc)
+function _collect_expr_symbols!(acc::Set{Symbol}, e::Expr)
+    (foreach(a -> _collect_expr_symbols!(acc, a), e.args); acc)
+end
+_collect_expr_symbols!(acc::Set{Symbol}, ::Any) = acc
+
 function _zero_derivative_impl(ctx, sig, mode)
 
     # Parse the signature, and construct the rule definition. If it is a vararg definition,
@@ -307,14 +316,24 @@ function _zero_derivative_impl(ctx, sig, mode)
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
 
-    # Forward per-arg Lifted bound. For a non-parametric signature, widen type-of-types
-    # args to `Type` via `_fwd_zd_arg_bound` (see its docstring for why). Signatures with
-    # `where` params keep the direct bound: wrapping a static parameter in a function call
-    # would break static-parameter matching.
+    # Forward per-arg Lifted bound. Widen kind-typed args (DataType/UnionAll/Union/TypeofBottom) to
+    # `Type` via `_fwd_zd_arg_bound` (see its docstring: a naive `Lifted{<:DataType}` fails to cover
+    # the existential `Lifted{Type{_A}} where _A` inference infers, baking an `unreachable`). This must
+    # also happen for `where`-parametric signatures — but only for args that do NOT reference a static
+    # parameter: `_fwd_zd_arg_bound($t)` is a function call, invalid in method-signature (type-param)
+    # position when `$t` mentions a static parameter, so those keep the direct bound. Widening a
+    # static-param-free arg is a no-op unless it is a bare kind type, so it is always safe.
     _lifted_bound = if where_params === nothing
         (t -> :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)}))
     else
-        (t -> :(Mooncake.Lifted{<:$t}))
+        where_syms = foldl(_collect_expr_symbols!, where_params; init=Set{Symbol}())
+        function (t)
+            if isempty(intersect(_collect_expr_symbols!(Set{Symbol}(), t), where_syms))
+                return :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)})
+            else
+                return :(Mooncake.Lifted{<:$t})
+            end
+        end
     end
 
     # Detect Vararg in a non-last position, which is invalid Julia and would silently

@@ -57,6 +57,14 @@ zero_tester_reverse_only(x) = 0
 datatype_arg_zero_tester(::DataType) = 0
 @zero_derivative MinimalCtx Tuple{typeof(datatype_arg_zero_tester),DataType}
 
+# Same, but with a `where`-parametric signature: the kind-typed (DataType) argument must still be
+# widened to `Type` (the static param `S` must not be), so the forward frule covers the existential
+# `Lifted{Type{_A}} where _A` inference infers. See the regression test below (#186).
+datatype_arg_zero_tester_param(::DataType, ::S) where {S<:Real} = 0
+@zero_derivative MinimalCtx Tuple{
+    typeof(datatype_arg_zero_tester_param),DataType,S
+} where {S<:Real}
+
 # Test case with isbits data.
 
 bleh(x::Float64, y::Int) = x * y
@@ -263,6 +271,23 @@ end
             }
             existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
             @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
+
+            # Regression (#186): the same widening must apply to a `where`-parametric signature — the
+            # kind-typed `DataType` arg widened to `Type`, but NOT the static parameter `S` (wrapping
+            # it in a function call would be invalid in signature position). Without the fix the frule
+            # bound was `Lifted{<:DataType}`, which does not cover the existential.
+            fp_slot = Mooncake.Lifted{
+                typeof(ToolsForRulesResources.datatype_arg_zero_tester_param),
+                1,
+                Mooncake.NoDual,
+            }
+            s_slot = Mooncake.Lifted{Float64,1,Mooncake.Nfwd.NDual{Float64,1}}
+            @test hasmethod(Mooncake.frule!!, Tuple{fp_slot,existential,s_slot})
+            # The static-parameter argument still dispatches (a concrete `S` slot matches).
+            @test hasmethod(
+                Mooncake.frule!!,
+                Tuple{fp_slot,Mooncake.Lifted{Type{Float64},1,Mooncake.NoDual},s_slot},
+            )
         end
 
         @test_throws(
