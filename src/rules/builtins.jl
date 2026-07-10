@@ -978,10 +978,12 @@ end
 function frule!!(
     ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
 ) where {Nw,T<:IEEEFloat}
-    # NDual.sqrt overload (Nfwd.jl) applies _pt_guarded_scale — the NDual
-    # analogue of nan_tangent_guard — so the singular `sqrt(0)` case has
-    # zeroed partials instead of NaN.
-    return Lifted{T,Nw}(sqrt_llvm(primal(x)), sqrt(tangent(x)))
+    # The NDual `sqrt` overload (Nfwd.jl) computes the primal `sqrt` once, stores it as the
+    # result's `.value` (inner-value invariant), and applies `_pt_guarded_scale` — the NDual
+    # analogue of `nan_tangent_guard` — so the singular `sqrt(0)` case has zeroed partials
+    # instead of NaN. Read the primal back from the dual rather than recomputing `sqrt_llvm`.
+    dy = sqrt(tangent(x))
+    return Lifted{T,Nw}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
@@ -996,7 +998,9 @@ end
 function frule!!(
     ::Lifted{typeof(sqrt_llvm_fast),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
 ) where {Nw,T<:IEEEFloat}
-    return Lifted{T,Nw}(sqrt_llvm_fast(primal(x)), sqrt(tangent(x)))
+    # Read the primal back from the dual `sqrt` rather than recomputing it (see `sqrt_llvm`).
+    dy = sqrt(tangent(x))
+    return Lifted{T,Nw}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
