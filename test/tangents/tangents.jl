@@ -287,6 +287,61 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.tangent_to_friendly!!(ST, tx) == dest
     end
 
+    # Unlike Symmetric/Hermitian/SymTridiagonal, Adjoint/Transpose aren't lossy: every entry
+    # maps to exactly one parent entry, just transposed. The friendly tangent is a plain
+    # Matrix{T} shaped like the wrapper itself.
+    @testset "Adjoint" begin
+        A = LinearAlgebra.Adjoint(randn(3, 2))
+        tx_parent = randn(3, 2)  # tangent of the parent field, so matches A.parent's shape
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        cache = Mooncake.friendly_tangent_cache(A)
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        dest = cache.buffer
+        @test size(dest) == size(A)
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == tx_parent'
+        @test Mooncake.tangent_to_friendly!!(A, tx) == tx_parent'
+    end
+
+    @testset "Transpose" begin
+        A = LinearAlgebra.Transpose(randn(3, 2))
+        tx_parent = randn(3, 2)  # tangent of the parent field, so matches A.parent's shape
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        cache = Mooncake.friendly_tangent_cache(A)
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        dest = cache.buffer
+        @test size(dest) == size(A)
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == permutedims(tx_parent)
+        @test Mooncake.tangent_to_friendly!!(A, tx) == permutedims(tx_parent)
+    end
+
+    # Adjoint/Transpose of a Vector give a (1, N) row shape. The parent's tangent is then
+    # a Vector too, so this exercises the copyto! path and not permutedims!.
+    @testset "Adjoint of a Vector" begin
+        A = LinearAlgebra.Adjoint(randn(3))
+        tx_parent = randn(3)
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        cache = Mooncake.friendly_tangent_cache(A)
+        dest = cache.buffer
+        @test size(dest) == size(A) == (1, 3)
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == tx_parent'
+        @test Mooncake.tangent_to_friendly!!(A, tx) == tx_parent'
+    end
+
+    @testset "Transpose of a Vector" begin
+        A = LinearAlgebra.Transpose(randn(3))
+        tx_parent = randn(3)
+        tx = Mooncake.build_tangent(typeof(A), tx_parent)
+        cache = Mooncake.friendly_tangent_cache(A)
+        dest = cache.buffer
+        @test size(dest) == size(A) == (1, 3)
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == permutedims(tx_parent)
+        @test Mooncake.tangent_to_friendly!!(A, tx) == permutedims(tx_parent)
+    end
+
     @testset "tangent_to_friendly!! routing" begin
         s = 3.0
         S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0])

@@ -56,6 +56,46 @@ end
     return tangent_as_friendly
 end
 
+# Adjoint/Transpose aren't lossy like Symmetric/Hermitian/SymTridiagonal: every entry maps
+# to exactly one parent entry, just transposed. The friendly tangent is a plain matrix
+# shaped like the wrapper itself, filled by permuting the parent's tangent.
+#
+# The buffer uses similar(x.parent, ...) instead of a hardcoded Matrix, so it stays on the
+# same device as the primal. A CPU buffer can't be written to from a GPU tangent.
+#
+# Both also wrap Vectors, giving a (1, N) row shape. There the parent's tangent is a Vector,
+# not a matrix, so permutedims! doesn't apply; copyto! is used instead, since a (1, N)
+# buffer's memory layout matches the underlying vector's exactly.
+
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Adjoint{T}) where {T}
+    FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
+end
+function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Transpose{T}) where {T}
+    FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
+end
+
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Adjoint{T,<:AbstractVector}, tangent
+) where {T}
+    return copyto!(tangent_as_friendly, val(tangent.fields.parent))
+end
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Adjoint{T,<:AbstractMatrix}, tangent
+) where {T}
+    return permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
+end
+
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Transpose{T,<:AbstractVector}, tangent
+) where {T}
+    return copyto!(tangent_as_friendly, val(tangent.fields.parent))
+end
+@unstable function Mooncake.tangent_to_friendly_internal!!(
+    tangent_as_friendly::AbstractMatrix{T}, ::LinearAlgebra.Transpose{T,<:AbstractMatrix}, tangent
+) where {T}
+    return permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
