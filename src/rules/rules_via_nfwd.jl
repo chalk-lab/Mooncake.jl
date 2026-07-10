@@ -63,6 +63,11 @@ end
     )
 end
 
+# Reverse-mode removable-singularity guard, native (no forward-mode/NDual dependency): a zero
+# incoming cotangent must yield an exact zero contribution even where the local derivative is ±Inf
+# (`0 * Inf` would be `NaN`). Mirrors the forward `_pt_guarded_scale` guard, applied to the cotangent.
+@inline _rev_contract(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
+
 # ===========================================================================
 # nfwd-backed primitive rule registrations
 # ===========================================================================
@@ -175,10 +180,11 @@ function frule!!(
     dy = tanpi(tangent(x))
     return Lifted{P,N}(dy.value, dy)
 end
+# Native reverse rule: tanpi(x) = tan(π·x); derivative = π·(1 + tanpi(x)²).
 function rrule!!(::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    yd = tanpi(NDual{P,1}(primal(x), (one(P),)))
-    nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-    return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
+    y = tanpi(primal(x))
+    tanpi_pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, P(π) * (one(P) + y^2)))
+    return zero_fcodual(y), tanpi_pb!!
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
@@ -258,10 +264,14 @@ function frule!!(
     tv = sincosd(tangent(x))
     return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
+# Native reverse rule: sincosd(x) = (sind(x), cosd(x)); d(sind)/dx = deg2rad(cosd(x)),
+# d(cosd)/dx = -deg2rad(sind(x)). The output is a 2-tuple, so the cotangent `ȳ` is a 2-tuple.
 function rrule!!(::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    yd = sincosd(NDual{P,1}(primal(x), (one(P),)))
-    nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-    return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
+    s, c = sincosd(primal(x))
+    function sincosd_pb!!(ȳ)
+        return NoRData(), _rev_contract(ȳ[1], deg2rad(c)) + _rev_contract(ȳ[2], -deg2rad(s))
+    end
+    return zero_fcodual((s, c)), sincosd_pb!!
 end
 
 # ── sincospi ──────────────────────────────────────────────────────────────────
@@ -273,10 +283,14 @@ function frule!!(
     tv = sincospi(tangent(x))
     return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
+# Native reverse rule: sincospi(x) = (sinpi(x), cospi(x)); d(sinpi)/dx = π·cospi(x),
+# d(cospi)/dx = -π·sinpi(x).
 function rrule!!(::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
-    yd = sincospi(NDual{P,1}(primal(x), (one(P),)))
-    nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-    return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
+    s, c = sincospi(primal(x))
+    function sincospi_pb!!(ȳ)
+        return NoRData(), _rev_contract(ȳ[1], P(π) * c) + _rev_contract(ȳ[2], -P(π) * s)
+    end
+    return zero_fcodual((s, c)), sincospi_pb!!
 end
 
 # ── modf ──────────────────────────────────────────────────────────────────────
@@ -287,10 +301,12 @@ function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     tv = modf(tangent(x))
     return Lifted{Tuple{P,P},N}(_nfwd_out_value(tv), tv)
 end
+# Native reverse rule: modf(x) = (frac, int) with frac = x - trunc(x); d(frac)/dx = 1,
+# d(int)/dx = 0 (trunc is piecewise-constant).
 function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
-    yd = modf(NDual{P,1}(primal(x), (one(P),)))
-    nfwd_pb!!(ȳ) = (NoRData(), _nfwd_input_grads(yd, ȳ)...)
-    return zero_fcodual(_nfwd_out_value(yd)), nfwd_pb!!
+    y = modf(primal(x))
+    modf_pb!!(ȳ) = (NoRData(), _rev_contract(ȳ[1], one(P)))
+    return zero_fcodual(y), modf_pb!!
 end
 
 # ── angle_fast ──────────────────────────────────────────────────────────────────
