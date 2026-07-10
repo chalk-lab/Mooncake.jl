@@ -287,9 +287,12 @@ function frule!!(
     )
     return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_partials))
 end
-# Non-differentiable element arrays (element-wise `Array{NoDual}` V, e.g. the
-# `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside `sortslices`): reshape primal and V in
-# lockstep. Mirrors the element-type-generic reverse rrule below.
+# Element-wise `Array{VE,D}` forward V — every element carries its own element dual `VE`: `NoDual`
+# for non-differentiable elements (e.g. the `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside
+# `sortslices`), and `ImmutableDual`/tuple-of-`NDual` duals for differentiable non-numeric elements
+# (structs, tuples). Reshape primal and V in lockstep, element-type-generically, mirroring the
+# reverse rrule below. (Numeric-leaf arrays use the parallel-arrays `NDualArray` V — which is not an
+# `Array` — and take the frule above instead.)
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_reshape_array},Nw},
@@ -298,14 +301,12 @@ function frule!!(
     ::Lifted, # nreq
     ::Lifted, # calling convention
     ::Lifted{Type{Array{P,M}},Nw},
-    a::Lifted{<:Array,Nw,<:AbstractArray{NoDual}},
+    a::Lifted{<:Array,Nw,<:Array{VE}},
     dims::Lifted,
-) where {Nw,P,M}
+) where {Nw,P,M,VE}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
-    v = ccall(
-        :jl_reshape_array, Array{NoDual,M}, (Any, Any, Any), Array{NoDual,M}, tangent(a), d
-    )
+    v = ccall(:jl_reshape_array, Array{VE,M}, (Any, Any, Any), Array{VE,M}, tangent(a), d)
     return Lifted{Array{P,M},Nw}(y, v)
 end
 function rrule!!(

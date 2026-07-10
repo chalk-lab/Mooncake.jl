@@ -1,5 +1,30 @@
+struct Reshape166Pair
+    a::Float64
+    b::Float64
+end
+
 @testset "foreigncall" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:foreigncall))
+
+    # Regression (#166): reshape of an array whose elements are differentiable NON-numeric types has
+    # an element-wise `Array{VE}` forward V (`Array{ImmutableDual}` for a struct, `Array{Tuple{NDual,
+    # …}}` for a tuple) — matching neither the numeric `NDualArray` frule nor the old `Array{NoDual}`
+    # one, so forward `reshape` errored while reverse (element-type-generic) worked. Covered now by
+    # the general `Array{VE}` reshape frule.
+    @testset "reshape of differentiable non-numeric element arrays" begin
+        g_struct(x) = (
+            v=[Reshape166Pair(x, 2x), Reshape166Pair(3x, 4x)];
+            r=reshape(v, 2, 1);
+            r[1, 1].a + r[2, 1].b
+        )
+        g_tuple(x) = (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2])
+        TestUtils.test_rule(
+            StableRNG(1), g_struct, 1.0; is_primitive=false, mode=Mooncake.ForwardMode
+        )
+        TestUtils.test_rule(
+            StableRNG(1), g_tuple, 1.0; is_primitive=false, mode=Mooncake.ForwardMode
+        )
+    end
 
     @testset "llvm powi via fastmath lowering" begin
         fn(x) = @fastmath x^2
