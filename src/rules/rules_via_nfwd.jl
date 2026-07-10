@@ -68,6 +68,23 @@ end
 # (`0 * Inf` would be `NaN`). Mirrors the forward `_pt_guarded_scale` guard, applied to the cotangent.
 @inline _rev_contract(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
 
+# Native pow gradients (pure scalar math, no NDual): d(x^p)/dx and d(x^p)/dp. The `x == 0` branches
+# encode the removable-singularity limits (matching the forward path): d/dx is `p·y/x` for `x≠0`,
+# else 0/1/Inf by exponent; d/dp is `y·log(x)` for `x≠0`, else 0 (p>0) or NaN (p≤0, genuinely
+# undefined). `_rev_contract` then keeps an inactive (zero-cotangent) lane exactly zero.
+@inline function _pow_grad_x(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x) || p < zero(P),
+        p * y / x,
+        ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
+    )
+end
+@inline function _pow_grad_p(x::P, p::P, y) where {P<:IEEEFloat}
+    return ifelse(
+        !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
+    )
+end
+
 # ===========================================================================
 # nfwd-backed primitive rule registrations
 # ===========================================================================
@@ -289,8 +306,10 @@ end
     lb = log(b)
     return (-y / (b * lb), inv(a * lb))
 end
+# x^p: d/dx and d/dp share the native pow gradients (removable-singularity limits at x==0).
+@inline _binary_deriv(::typeof(^), x, p, y) = (_pow_grad_x(x, p, y), _pow_grad_p(x, p, y))
 
-for f in (atan, Base.FastMath.atan_fast, log)
+for f in (atan, Base.FastMath.atan_fast, log, ^)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
@@ -314,7 +333,7 @@ for f in (atan, Base.FastMath.atan_fast, log)
 end
 
 # ── nfwd-backed fixed-arity scalar rules ──────────────────────────────────────
-for f in (^, mod, max, min)
+for f in (mod, max, min)
     @eval begin
         @is_primitive MinimalCtx Tuple{typeof($f),P,P} where {P<:IEEEFloat}
         function frule!!(
@@ -354,7 +373,7 @@ function rrule!!(
     _n = primal(n)
     y = Base.FastMath.pow_fast(_x, _n)
     function pow_fast_pb!!(dy::P)
-        return NoRData(), Nfwd._nfwd_pow_grad_x(_x, P(_n), float(y)) * dy, NoRData()
+        return NoRData(), _rev_contract(dy, _pow_grad_x(_x, P(_n), float(y))), NoRData()
     end
     return zero_fcodual(y), pow_fast_pb!!
 end
