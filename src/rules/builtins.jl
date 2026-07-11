@@ -634,7 +634,15 @@ end
         ::Lifted{typeof(max_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         p = max_float(primal(a), primal(b))
-        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
+        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `max_float` propagates
+        # NaN, so when an operand is NaN `p` is NaN even though `>` may select the other, finite
+        # operand's tangent. Take that operand's partials but force the value to `p`.
+        return Lifted{T,N}(
+            p,
+            NDual{T,N}(
+                p, ifelse(primal(a) > primal(b), tangent(a).partials, tangent(b).partials)
+            ),
+        )
     end
     function rrule!!(
         ::CoDual{typeof(max_float)}, a::CoDual{P}, b::CoDual{P}
@@ -658,7 +666,15 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        return Lifted{T,N}(p, ifelse(primal(a) > primal(b), tangent(a), tangent(b)))
+        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `max_float` propagates
+        # NaN, so when an operand is NaN `p` is NaN even though `>` may select the other, finite
+        # operand's tangent. Take that operand's partials but force the value to `p`.
+        return Lifted{T,N}(
+            p,
+            NDual{T,N}(
+                p, ifelse(primal(a) > primal(b), tangent(a).partials, tangent(b).partials)
+            ),
+        )
     end
     function rrule!!(
         ::CoDual{typeof(max_float_fast)}, a::CoDual{P}, b::CoDual{P}
@@ -680,7 +696,15 @@ end
         ::Lifted{typeof(min_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         p = min_float(primal(a), primal(b))
-        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
+        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `min_float` propagates
+        # NaN, so when an operand is NaN `p` is NaN even though `<` may select the other, finite
+        # operand's tangent. Take that operand's partials but force the value to `p`.
+        return Lifted{T,N}(
+            p,
+            NDual{T,N}(
+                p, ifelse(primal(a) < primal(b), tangent(a).partials, tangent(b).partials)
+            ),
+        )
     end
     function rrule!!(
         ::CoDual{typeof(min_float)}, a::CoDual{P}, b::CoDual{P}
@@ -704,7 +728,15 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = min_float_fast(primal(a), primal(b))
-        return Lifted{T,N}(p, ifelse(primal(a) < primal(b), tangent(a), tangent(b)))
+        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `min_float` propagates
+        # NaN, so when an operand is NaN `p` is NaN even though `<` may select the other, finite
+        # operand's tangent. Take that operand's partials but force the value to `p`.
+        return Lifted{T,N}(
+            p,
+            NDual{T,N}(
+                p, ifelse(primal(a) < primal(b), tangent(a).partials, tangent(b).partials)
+            ),
+        )
     end
     function rrule!!(
         ::CoDual{typeof(min_float_fast)}, a::CoDual{P}, b::CoDual{P}
