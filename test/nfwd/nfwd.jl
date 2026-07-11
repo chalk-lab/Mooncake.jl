@@ -341,6 +341,18 @@ using Mooncake.Nfwd
             end
         end
 
+        # Boundary singularity (#205): asin/acos/acosh/asech/asec/acsc and their degree variants
+        # have a FINITE value but an infinite derivative at x = ±1 (a removable singularity for the
+        # derivative). An *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
+        # become `Inf * 0 = NaN`; the active lane keeps the genuine singular ±Inf. lane1 active,
+        # lane2 inactive. (Regression: these paths previously used the unguarded `_pt_scale`.)
+        for f in (asin, acos, acosh, asech, asec, acsc, asind, acosd, asecd, acscd)
+            d = f(_d2(1.0, 1.0, 0.0))
+            @test isfinite(Nfwd.ndual_value(d))               # value finite at the boundary
+            @test isinf(Nfwd.ndual_partial(d, 1))             # active lane: genuine ±Inf
+            @test Nfwd.ndual_partial(d, 2) === 0.0            # inactive lane: 0, not NaN
+        end
+
         # sincos
         xs = _d(1.0, 1.0)
         sv, cv = sincos(xs)

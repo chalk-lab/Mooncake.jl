@@ -829,11 +829,20 @@ end
     s, c = sincos(a.value)
     return NDual{T,N}(s / c, _pt_scale(a.partials, inv(c)^2))
 end
+# asin/acos (and acosh/asech/asec/acsc + their degree variants below) have a finite value
+# but an infinite derivative at the domain boundary x = ±1 (a removable singularity for the
+# derivative). At those points `_pt_scale` would compute `Inf * 0` = NaN on inactive chunk
+# lanes; `_pt_guarded_scale` masks zero lanes to 0, matching the sqrt/log/inv siblings and the
+# reverse-mode `_rev_contract` oracle.
 @inline function Base.asin(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asin(a.value), _pt_scale(a.partials, inv(sqrt(one(T) - a.value^2))))
+    return NDual{T,N}(
+        asin(a.value), _pt_guarded_scale(a.partials, inv(sqrt(one(T) - a.value^2)))
+    )
 end
 @inline function Base.acos(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acos(a.value), _pt_scale(a.partials, -inv(sqrt(one(T) - a.value^2))))
+    return NDual{T,N}(
+        acos(a.value), _pt_guarded_scale(a.partials, -inv(sqrt(one(T) - a.value^2)))
+    )
 end
 @inline function Base.atan(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(atan(a.value), _pt_scale(a.partials, inv(one(T) + a.value^2)))
@@ -884,7 +893,9 @@ end
     return NDual{T,N}(asinh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
 end
 @inline function Base.acosh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acosh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 - one(T)))))
+    return NDual{T,N}(
+        acosh(a.value), _pt_guarded_scale(a.partials, inv(sqrt(a.value^2 - one(T))))
+    )
 end
 @inline function Base.atanh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(atanh(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
@@ -905,7 +916,8 @@ end
 end
 @inline function Base.asech(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        asech(a.value), _pt_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2)))
+        asech(a.value),
+        _pt_guarded_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2))),
     )
 end
 @inline function Base.acsch(a::NDual{T,N}) where {T,N}
@@ -1035,12 +1047,14 @@ end
 end
 @inline function Base.asec(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        asec(a.value), _pt_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T))))
+        asec(a.value),
+        _pt_guarded_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
     )
 end
 @inline function Base.acsc(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acsc(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T))))
+        acsc(a.value),
+        _pt_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
     )
 end
 @inline function Base.acot(a::NDual{T,N}) where {T,N}
@@ -1072,12 +1086,14 @@ end
 end
 @inline function Base.asind(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        asind(a.value), _pt_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
+        asind(a.value),
+        _pt_guarded_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
     )
 end
 @inline function Base.acosd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acosd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2)))))
+        acosd(a.value),
+        _pt_guarded_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
     )
 end
 @inline function Base.atand(a::NDual{T,N}) where {T,N}
@@ -1088,13 +1104,17 @@ end
 @inline function Base.asecd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asecd(a.value),
-        _pt_scale(a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
+        _pt_guarded_scale(
+            a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
+        ),
     )
 end
 @inline function Base.acscd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acscd(a.value),
-        _pt_scale(a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))),
+        _pt_guarded_scale(
+            a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
+        ),
     )
 end
 @inline function Base.acotd(a::NDual{T,N}) where {T,N}
