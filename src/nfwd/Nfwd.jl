@@ -1718,7 +1718,17 @@ end
 # alone (e.g. heap-allocated Array whose length is a runtime value).
 @inline _nfwd_type_dof(::Type{<:IEEEFloat}) = 1
 @inline _nfwd_type_dof(::Type{<:Complex{<:IEEEFloat}}) = 2
-@inline _nfwd_type_dof(T::Type{<:Tuple}) = sum(_nfwd_type_dof, T.parameters; init=0)
+# Propagate `nothing` (not `0 + nothing`, which would throw) when any element's size is not
+# type-determinable — e.g. a tuple containing an Array — mirroring `_nfwd_sig_dof`.
+@inline function _nfwd_type_dof(T::Type{<:Tuple})
+    total = 0
+    for P in T.parameters
+        d = _nfwd_type_dof(P)
+        d === nothing && return nothing
+        total += d
+    end
+    return total
+end
 @inline _nfwd_type_dof(::Type{<:AbstractArray}) = nothing
 @inline _nfwd_type_dof(::Type) = 0
 

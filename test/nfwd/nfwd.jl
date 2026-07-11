@@ -586,6 +586,19 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(real(sz32)) ≈ real(sin(complex(3.0f0, 4.0f0))) rtol=1e-5
     end
 
+    # Regression (#196): `_nfwd_type_dof(::Type{<:Tuple})` must propagate `nothing` (not `0 + nothing`,
+    # which throws) when a tuple element's size is not type-determinable, e.g. a tuple containing an
+    # Array. Consumers (`_nfwd_sig_dof`/`_nfwd_sig_default_chunk_size`) rely on the `nothing` fallback.
+    @testset "type-level DOF: tuple-with-array propagates nothing (#196)" begin
+        @test Nfwd._nfwd_type_dof(Tuple{Float64,Float64}) == 2
+        @test Nfwd._nfwd_type_dof(Tuple{ComplexF64,Float64}) == 3
+        @test Nfwd._nfwd_type_dof(Tuple{}) == 0
+        @test Nfwd._nfwd_type_dof(Tuple{Vector{Float64},Float64}) === nothing
+        @test Nfwd._nfwd_type_dof(Tuple{Tuple{Vector{Float64}},Float64}) === nothing
+        # Downstream consumers fall back gracefully instead of throwing.
+        @test Nfwd._nfwd_sig_dof(Tuple{typeof(identity),Vector{Float64}}) === nothing
+    end
+
     @testset "chunk mode: N=3" begin
         x = NDual{Float64,3}(2.0, (1.0, 0.0, 0.0))
         y = NDual{Float64,3}(3.0, (0.0, 1.0, 0.0))
