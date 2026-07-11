@@ -630,11 +630,18 @@ This masking ensures that missing derivatives only affect results when they are 
     It cannot support `Int` tangents, since `NaN` is only defined for
     `AbstractFloat` types.
 """
+# A NotImplemented tangent must fully poison the value. For a Complex `L`, `L(NaN)` is
+# `Complex(NaN, 0.0)` — the imaginary part stays 0.0 and would leak an unpoisoned zero gradient — so
+# NaN both components.
+@inline _notimplemented_nan(::Type{L}) where {L<:Base.IEEEFloat} = L(NaN)
+@inline _notimplemented_nan(::Type{Complex{T}}) where {T<:Base.IEEEFloat} = Complex(
+    T(NaN), T(NaN)
+)
 function notimplemented_tangent_guard(
     dy::L
 ) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
     return if _dot(dy, dy) != L(0)
-        L(NaN)
+        _notimplemented_nan(L)
     else
         L(0)
     end

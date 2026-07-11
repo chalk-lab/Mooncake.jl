@@ -353,6 +353,15 @@ end
         ]
             @test Mooncake.mooncake_tangent(p, t) isa tangent_type(typeof(p))
         end
+        # Regression (#198): a NotImplemented tangent must FULLY poison the value. For a complex
+        # tangent, `L(NaN)` gave `Complex(NaN, 0.0)` — the imaginary part leaked an unpoisoned zero.
+        @testset "notimplemented_tangent_guard poisons both complex components" begin
+            r = Mooncake.notimplemented_tangent_guard(ComplexF64(1.0, 2.0))
+            @test isnan(real(r)) && isnan(imag(r))
+            @test iszero(Mooncake.notimplemented_tangent_guard(ComplexF64(0.0, 0.0)))
+            @test isnan(Mooncake.notimplemented_tangent_guard(3.0))
+            @test iszero(Mooncake.notimplemented_tangent_guard(0.0))
+        end
         @testset "rules: $(typeof(fargs))" for fargs in Any[
             (ToolsForRulesResources.bleh, 5.0, 4),
             (ToolsForRulesResources.test_sum, ones(5)),
