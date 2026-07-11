@@ -506,7 +506,10 @@ for (name, P) in
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
         function llvm_powi_pb!!(dy::$P)
-            dx = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy
+            # Guard against `0 * ±Inf = NaN`: at x==0 with a negative exponent the local gradient is
+            # ±Inf, so an incoming zero cotangent must yield an exact zero contribution (mirrors the
+            # forward `_pt_guarded_scale` and the sibling `sqrt_llvm` reverse guard).
+            dx = nan_tangent_guard(dy, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy)
             return (
                 NoRData(),
                 NoRData(),

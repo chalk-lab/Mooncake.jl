@@ -94,6 +94,29 @@ end
         @test tangent(r).partials[2] == 0.0
     end
 
+    # Regression (#195): the REVERSE llvm.powi pullback must apply the same zero-cotangent guard, so a
+    # zero incoming cotangent yields an exact 0 even where grad is ±Inf (x=0, negative exponent).
+    # Unguarded `grad * dy` gave `Inf * 0 = NaN`.
+    @testset "llvm.powi reverse zero-cotangent guard at x=0 negative exponent" begin
+        fc = Mooncake._foreigncall_
+        nm = Symbol("llvm.powi.f64.i32")
+        zc = Mooncake.zero_codual
+        args = (
+            zc(fc),
+            zc(Val(nm)),
+            zc(Val(Float64)),
+            zc((Val(Float64), Val(Int32))),
+            zc(Val(0)),
+            zc(Val(:llvmcall)),
+        )
+        # x=0, exponent=-2 → grad = ±Inf; a zero cotangent must give dx = 0.0, not NaN.
+        _, pb = Mooncake.rrule!!(args..., zc(0.0), zc(Int32(-2)), zc(Int32(-2)), zc(0.0))
+        @test pb(0.0)[6] === 0.0
+        # A nonzero cotangent still propagates the analytic gradient (x=2, exp=3 → 3x² = 12).
+        _, pb2 = Mooncake.rrule!!(args..., zc(2.0), zc(Int32(3)), zc(Int32(3)), zc(2.0))
+        @test pb2(1.0)[6] ≈ 12.0
+    end
+
     # Regression: the deepcopy frule must copy the whole slot in ONE deepcopy walk. Copying
     # primal and V separately severs `NDualArray.primal === primal(slot)`, so the copy's inner
     # `.value` reads a stale third array after the copied primal is mutated.
