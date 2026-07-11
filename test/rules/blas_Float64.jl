@@ -63,6 +63,38 @@
         )
         @test all(iszero, tangent(r).partials)
     end
+
+    # Regression (#200): the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
+    # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
+    # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.
+    @testset "syrk! dβ*C NaN-C guard at β=0" begin
+        A = randn(StableRNG(1), 3, 2)
+        # NaN input C, β=0, dβ=1: the output tangent's upper triangle must be NaN-free.
+        rN = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(1), BLAS.syrk!),
+            Mooncake.lift('U', Mooncake.NoTangent()),
+            Mooncake.lift('N', Mooncake.NoTangent()),
+            Mooncake.lift(1.0, 0.0),
+            Mooncake.lift(A, zero(A)),
+            Mooncake.lift(0.0, 1.0),
+            Mooncake.lift(fill(NaN, 3, 3), zeros(3, 3)),
+        )
+        dN = tangent(rN)
+        @test !any(isnan, [dN[i, j].partials[1] for i in 1:3 for j in i:3])
+        # Finite C: the dβ=1 term contributes exactly C on the upper triangle.
+        C = randn(StableRNG(2), 3, 3)
+        rF = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(1), BLAS.syrk!),
+            Mooncake.lift('U', Mooncake.NoTangent()),
+            Mooncake.lift('N', Mooncake.NoTangent()),
+            Mooncake.lift(1.0, 0.0),
+            Mooncake.lift(A, zero(A)),
+            Mooncake.lift(0.0, 1.0),
+            Mooncake.lift(copy(C), zeros(3, 3)),
+        )
+        dF = tangent(rF)
+        @test dF[1, 2].partials[1] ≈ C[1, 2]
+    end
 end
 
 @testset "blas (Float64)" begin

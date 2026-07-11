@@ -1294,7 +1294,13 @@ for (fname, elty, relty) in (
             BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
             iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
             if !iszero(dβ)
-                dC .+= dβ .* (uplo == 'U' ? triu(C) : tril(C))
+                # Mask NaN input-C elements (the β==0 convention lets the caller pass an
+                # uninitialised/NaN C, which the primal overwrites) so the `dβ*C` term does not leak
+                # NaN into the tangent — matching the sibling level-3 frules (gemm!/symm!/gemv!/…).
+                Ct = uplo == 'U' ? triu(C) : tril(C)
+                for n in eachindex(dC, Ct)
+                    dC[n] = ifelse_nan(Ct[n], dC[n], dC[n] + dβ * Ct[n])
+                end
             end
             $(isherm ? :(real_diag!(dC)) : :())
         end
