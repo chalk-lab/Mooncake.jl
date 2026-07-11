@@ -231,11 +231,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # dims=: with an array m (not scalar, unlike _varm_nodims_scalar above): the only
         # test that hits the array-mean rule's own Colon branch.
         _varm_sum_dcolon_arraymean(x, m) = sum(varm(x, m; dims=:, corrected=false))
+        # Repeated dims (dims=(1,1), which a careless ntuple could produce e.g. in
+        # GroupNorm): denominator must count dim 1 once, not twice.
+        _varm_sum_ddup(x, m) = sum(varm(x, m; dims=(1, 1), corrected=false))
+        # Bare 2-arg spelling (no keyword syntax at all): bypasses Core.kwcall entirely,
+        # exercising the dedicated bare-call primitive rather than the kwcall one above.
+        _varm_bare_nodims_scalar(x, m) = varm(x, m)
         # Wrappers for Statistics.mean GPU rule tests.
         _mean_sum_d1(x) = sum(mean(x; dims=1))
         _mean_sum_d2(x) = sum(mean(x; dims=2))
         _mean_sum_dtuple(x) = sum(mean(x; dims=(1, 2)))
         _mean_sum_drange(x) = sum(mean(x; dims=1:2))
+        _mean_sum_ddup(x) = sum(mean(x; dims=(1, 1)))
         _mean_nodims(x) = mean(x; dims=:)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
@@ -1444,6 +1451,122 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     perf_flag=:none,
                 )
             end
+            @testset "repeated dims=(1,1), corrected=false (Float32)" begin
+                # Regression: denominator must count dim 1 once, not size(x,1)^2.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                test_rule(
+                    StableRNG(21), _varm_sum_ddup, x, m; is_primitive=false, perf_flag=:none
+                )
+                @test _varm_sum_ddup(x, m) ≈ _varm_sum_d1(x, m)
+            end
+            @testset "bare 2-arg spelling, no keywords (Float32)" begin
+                # Regression: `varm(x, m)` with no keyword syntax at all bypasses
+                # Core.kwcall entirely; without the dedicated bare-call primitive it
+                # falls through to Statistics' captured-mean mapreduce, which Mooncake
+                # can't trace on GPU.
+                x = _rand(rng, Float32, 4, 3)
+                m_scalar = randn(StableRNG(22), Float32)
+                test_rule(
+                    StableRNG(22),
+                    _varm_bare_nodims_scalar,
+                    x,
+                    m_scalar;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "bare 2-arg spelling, no keywords (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                m_cx = randn(StableRNG(23), ComplexF32)
+                test_rule(
+                    StableRNG(23),
+                    _varm_bare_nodims_scalar,
+                    x,
+                    m_cx;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "mixed real/complex scalar mean" begin
+                # Regression: a real-valued rdata/fdata slot must project a mismatched
+                # complex intermediate onto its real part rather than throwing
+                # InexactError on the implicit conversion.
+                @testset "complex x, real m" begin
+                    x = _rand(rng, ComplexF32, 4, 3)
+                    m = randn(StableRNG(24), Float32)
+                    test_rule(
+                        StableRNG(24),
+                        _varm_nodims_scalar,
+                        x,
+                        m;
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+                @testset "real x, complex m" begin
+                    x = _rand(rng, Float32, 4, 3)
+                    m = randn(StableRNG(25), ComplexF32)
+                    test_rule(
+                        StableRNG(25),
+                        _varm_nodims_scalar,
+                        x,
+                        m;
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+            end
+            # NOTE: no mixed real/complex *array*-mean test here (unlike scalar-mean
+            # above). GPUArrays' accelerated varm needs a shared real eltype; mixing
+            # falls through to a generic scalar-indexing path that can't run on GPU at
+            # all. That's a pre-existing Statistics.jl/GPUArrays limitation, not a
+            # Mooncake concern, so there's no ground truth to test against, and the norm
+            # layers never produce this combination anyway (x and its own mean always
+            # share an eltype).
+            @testset "empty array, scalar mean, corrected=true (Float32)" begin
+                # Regression: an empty input must give NaN, matching
+                # Statistics._varm(A, m, corrected, ::Colon) (not 0/(0-1) = -0.0). This
+                # is Statistics.jl's generic method (scalar m isn't overridden by
+                # GPUArrays), the one where the NaN guard lives. NaN is a convention
+                # override, not a true singularity (x is empty, so the unguarded value
+                # is a constant 0 regardless of m), so the gradient must be 0, not NaN;
+                # checked explicitly since frule!! and rrule!! must agree here too.
+                x = CuArray(Float32[])
+                m = 0.0f0
+                @test isnan(_varm_nodims_scalar(x, m))
+                rule = Mooncake.build_rrule(_varm_nodims_scalar, x, m)
+                out, (_, dx, dm) = Mooncake.value_and_gradient!!(
+                    rule, _varm_nodims_scalar, x, m
+                )
+                @test isnan(out)
+                @test isempty(dx)
+                @test dm == 0.0f0
+            end
+            @testset "empty array, array mean, dims=: (Float32)" begin
+                # Regression: unlike scalar-mean above, GPUArrays' own
+                # `varm(A::AbstractGPUArray, M::AbstractArray; dims, corrected)` has no
+                # empty-input guard and gives 0, not NaN; the scalar-mean NaN guard
+                # above must not be applied here.
+                x = CuArray(Float32[])
+                m = CuArray(Float32[])
+                @test _varm_sum_dcolon_arraymean(x, m) == 0.0f0
+                rule = Mooncake.build_rrule(_varm_sum_dcolon_arraymean, x, m)
+                out, _ = Mooncake.value_and_gradient!!(
+                    rule, _varm_sum_dcolon_arraymean, x, m
+                )
+                @test out == 0.0f0
+            end
+            @testset "Float16 dims=1 avoids overflow on large magnitudes" begin
+                # Regression: summing raw squares before dividing (rather than scaling
+                # by 1/(n-corrected) before reducing, as GPUArrays does) overflows Inf
+                # for representable Float16 inputs well before the true variance does.
+                x = CuArray(fill(Float16(1000), 200, 1))
+                m = CuArray(fill(Float16(999), 200, 1))
+                out = only(Array(varm(x, m; dims=1, corrected=false)))
+                @test isfinite(out)
+                @test out == Float16(1)
+            end
         end
 
         @testset "Statistics.mean GPU rule" begin
@@ -1484,6 +1607,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 test_rule(
                     StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
                 )
+            end
+            @testset "repeated dims=(1,1) (Float32)" begin
+                # Regression: denominator must count dim 1 once, not size(x,1)^2.
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(18), _mean_sum_ddup, x; is_primitive=false, perf_flag=:none
+                )
+                @test _mean_sum_ddup(x) ≈ _mean_sum_d1(x)
             end
         end
 

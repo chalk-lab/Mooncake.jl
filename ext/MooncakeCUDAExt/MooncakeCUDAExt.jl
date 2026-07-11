@@ -2929,6 +2929,14 @@ end
 # Mooncake can't trace. Split into two primitives: this one for array-valued m (dims
 # gives a CuArray output), and one below for scalar m (dims=: gives a scalar output).
 
+# A real-valued fdata/rdata slot can't hold a complex value. When exactly one of x/m
+# is complex, the true partial derivative of |x-m|² is the real part of the naive
+# complex expression below, so real slots need that projection. Dispatched on Type,
+# not applied to a materialized array, so it fuses into the caller's broadcast instead
+# of adding a separate kernel.
+_realprojector(::Type{T}) where {T<:Real} = real
+_realprojector(::Type) = identity
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -2949,27 +2957,35 @@ function frule!!(
     dm = tangent(m)
     corrected = get(pkw, :corrected, true)
     _raw_dims = get(pkw, :dims, :)
+    T = real(eltype(px))
+    if _raw_dims isa Colon
+        # Statistics._varm(A, m, corrected, ::Colon) always returns a scalar, regardless
+        # of m's shape (m need not equal size(x); it broadcasts, as elsewhere in this file).
+        # No n==0 guard needed here, unlike the scalar-mean case below: GPUArrays' own
+        # varm has none either, since summing zero terms gives 0 regardless of λ.
+        n = length(px)
+        λ = one(T) / (n - Int(corrected))
+        diff = px .- pm
+        σ² = sum(λ .* abs2.(diff))
+        dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)))
+        return Dual(σ², dσ²)
+    end
+    # Repeated dims (e.g. dims=(1,1)) must count each dimension once in the
+    # denominator, matching GPUArrays' _mean_denom. sum(...; dims=_dims) below already
+    # reduces a repeated dim only once on its own.
+    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
+    n = prod(d -> size(px, d), unique(_dims))
+    λ = one(T) / (n - Int(corrected))
     diff = px .- pm
+    # Scaling by λ before reducing, rather than summing raw squares then dividing,
+    # matches GPUArrays' own varm/mean and avoids Float16 overflow in the intermediate
+    # sum.
+    σ² = sum(λ .* abs2.(diff); dims=_dims)
     # real(conj(diff)*...) is the JVP for both real and complex diff (σ² is always
     # real, so dσ² must be too). conj/real are dot-called so they fuse into one kernel
     # with the subtraction/product, instead of allocating a separate array just to
     # support the complex case.
-    if _raw_dims isa Colon
-        # Statistics._varm(A, m, corrected, ::Colon) always returns a scalar, regardless
-        # of m's shape (m need not equal size(x); it broadcasts, as elsewhere in this file).
-        n = length(px)
-        σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
-        dσ² =
-            sum(real.(conj.(diff) .* (dx .- dm))) *
-            (real(eltype(px))(2) / (n - Int(corrected)))
-        return Dual(σ², dσ²)
-    end
-    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
-    n = prod(d -> size(px, d), _dims)
-    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
-    dσ² =
-        sum(real.(conj.(diff) .* (dx .- dm)); dims=_dims) .*
-        (real(eltype(px))(2) / (n - Int(corrected)))
+    dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)); dims=_dims)
     return Dual(σ², dσ²)
 end
 
@@ -2985,40 +3001,86 @@ function rrule!!(
     pm, dm = arrayify(m)
     corrected = get(pkw, :corrected, true)
     _raw_dims = get(pkw, :dims, :)
-    diff = px .- pm
+    T = real(eltype(px))
     if _raw_dims isa Colon
-        # Scalar output (see frule!! above): σ² gets NoFData, and the pullback receives
-        # its cotangent functionally rather than via a pre-accumulated fdata mutation.
-        # m may be a smaller (broadcast) shape than x, so reduce diff back down to m's
-        # shape for its gradient, same idea as sum(diff; dims=_dims) below.
+        # Scalar output: σ² gets NoFData, and the pullback receives its cotangent
+        # functionally rather than via a pre-accumulated fdata mutation. No n==0 guard
+        # needed: see the matching note in frule!! above.
         n = length(px)
-        coeff = real(eltype(px))(2) / (n - Int(corrected))
+        λ = one(T) / (n - Int(corrected))
+        coeff = 2λ
+        diff = px .- pm
+        # m may be a smaller (broadcast) shape than x, so reduce diff back down to m's
+        # shape for its gradient.
         m_reduce_dims = Tuple(d for d in 1:ndims(px) if size(pm, d) != size(px, d))
         sum_diff = isempty(m_reduce_dims) ? diff : sum(diff; dims=m_reduce_dims)
-        σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
+        σ² = sum(λ .* abs2.(diff))
         function varm_colon_pb!!(dσ²)
-            dx .+= coeff * dσ² .* diff
-            dm .-= coeff * dσ² .* sum_diff
+            dx .+= _realprojector(eltype(dx)).(coeff * dσ² .* diff)
+            dm .-= _realprojector(eltype(dm)).(coeff * dσ² .* sum_diff)
             return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
         end
         return CoDual(σ², NoFData()), varm_colon_pb!!
     end
     _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
-    n = prod(d -> size(px, d), _dims)
-    coeff = real(eltype(px))(2) / (n - Int(corrected))
+    n = prod(d -> size(px, d), unique(_dims))
+    λ = one(T) / (n - Int(corrected))
+    coeff = 2λ
+    diff = px .- pm
     sum_diff = sum(diff; dims=_dims)
-    σ² = sum(abs2, diff; dims=_dims) ./ (n - Int(corrected))
+    σ² = sum(λ .* abs2.(diff); dims=_dims)
     dσ² = zero(σ²)
     function varm_pb!!(::NoRData)
-        dx .+= coeff .* dσ² .* diff
-        dm .-= coeff .* dσ² .* sum_diff
+        dx .+= _realprojector(eltype(dx)).(coeff .* dσ² .* diff)
+        dm .-= _realprojector(eltype(dm)).(coeff .* dσ² .* sum_diff)
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(σ², dσ²), varm_pb!!
 end
 
+# NOTE: no bare `varm(x, m::AbstractArray)` primitive here, unlike the scalar-m case
+# below. GPUArrays' override, `varm(A::AbstractGPUArray, M::AbstractArray; dims,
+# corrected=true)`, has no default for `dims`, so this 2-arg spelling always throws
+# `UndefKeywordError` even without AD. A rule here would make AD succeed where the
+# real function throws.
+
 # varm(x, m::scalar; corrected): the no-dims case, m from mean(x; dims=:). Same
 # closure-mapreduce problem as above, but m here is a plain scalar, not an array.
+
+function _varm_scalar_colon_frule(px, dx, pm, dm, corrected::Bool)
+    T = real(eltype(px))
+    n = length(px)
+    # n==0: σ² is forced to NaN to match Statistics.jl's convention (empty variance is
+    # undefined), but that override doesn't make the derivative w.r.t. x/m undefined —
+    # for empty x the unguarded expression is already a constant 0 regardless of m, so
+    # the tangent is 0, not NaN, matching nan_tangent_guard's convention elsewhere in
+    # this file and the rrule below.
+    n == 0 && return T(NaN), zero(T)
+    λ = one(T) / (n - Int(corrected))
+    diff = px .- pm
+    # abs2 maps complex elements to Float32, so σ² is always real.
+    σ² = sum(λ .* abs2.(diff))
+    # conj/real fused with the subtraction/product, same reasoning as the array-mean
+    # frule!! above.
+    dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)))
+    return σ², dσ²
+end
+
+function _varm_scalar_colon_rrule(px, dx, pm, corrected::Bool)
+    T = real(eltype(px))
+    n = length(px)
+    n == 0 && return T(NaN), (_ -> zero(pm))
+    λ = one(T) / (n - Int(corrected))
+    coeff = 2λ
+    diff = px .- pm
+    sum_diff = sum(diff)
+    σ² = sum(λ .* abs2.(diff))
+    function pb!!(dσ²)
+        dx .+= _realprojector(eltype(dx)).(coeff * dσ² .* diff)
+        return typeof(pm)(_realprojector(typeof(pm))(-coeff * dσ² * sum_diff))
+    end
+    return σ², pb!!
+end
 
 @is_primitive(
     MinimalCtx,
@@ -3032,19 +3094,10 @@ function frule!!(
     m::Dual{<:CuFloatOrComplex},
 )
     pkw = primal(kw)
-    px = primal(x)
-    dx = tangent(x)
-    pm = primal(m)
-    dm = tangent(m)
     corrected = get(pkw, :corrected, true)
-    n = length(px)
-    diff = px .- pm
-    # abs2 maps complex elements to Float32, so σ² is always real.
-    σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
-    # conj/real fused with the subtraction/product, same reasoning as the array-mean
-    # frule!! above.
-    dσ² =
-        sum(real.(conj.(diff) .* (dx .- dm))) * (real(eltype(px))(2) / (n - Int(corrected)))
+    σ², dσ² = _varm_scalar_colon_frule(
+        primal(x), tangent(x), primal(m), tangent(m), corrected
+    )
     return Dual(σ², dσ²)
 end
 
@@ -3059,18 +3112,35 @@ function rrule!!(
     px, dx = arrayify(x)
     pm = primal(m)
     corrected = get(pkw, :corrected, true)
-    n = length(px)
-    diff = px .- pm
-    coeff = real(eltype(px))(2) / (n - Int(corrected))
-    sum_diff = sum(diff)
-    σ² = sum(abs2, diff) / real(eltype(px))(n - Int(corrected))
+    σ², pb!! = _varm_scalar_colon_rrule(px, dx, pm, corrected)
     function varm_scalar_mean_pb!!(dσ²)
-        dx .+= coeff * dσ² .* diff
-        return NoRData(),
-        NoRData(), NoRData(), NoRData(),
-        typeof(pm)(-coeff * dσ² * sum_diff)
+        dm_rdata = pb!!(dσ²)
+        return NoRData(), NoRData(), NoRData(), NoRData(), dm_rdata
     end
     return CoDual(σ², NoFData()), varm_scalar_mean_pb!!
+end
+
+# Bare `varm(x, m::scalar)`: same Core.kwcall bypass as the array-m case above;
+# Statistics.jl's `varm(A::AbstractArray, m; corrected=true) = _varm(A, m, corrected,
+# :)` has no `dims` kwarg at all, so this spelling is always the Colon case.
+@is_primitive(MinimalCtx, Tuple{typeof(varm),CuMaybeComplexArray,CuFloatOrComplex})
+function frule!!(
+    ::Dual{typeof(varm)}, x::Dual{<:CuMaybeComplexArray}, m::Dual{<:CuFloatOrComplex}
+)
+    σ², dσ² = _varm_scalar_colon_frule(primal(x), tangent(x), primal(m), tangent(m), true)
+    return Dual(σ², dσ²)
+end
+function rrule!!(
+    ::CoDual{typeof(varm)}, x::CoDual{<:CuMaybeComplexArray}, m::CoDual{<:CuFloatOrComplex}
+)
+    px, dx = arrayify(x)
+    pm = primal(m)
+    σ², pb!! = _varm_scalar_colon_rrule(px, dx, pm, true)
+    function varm_scalar_bare_pb!!(dσ²)
+        dm_rdata = pb!!(dσ²)
+        return NoRData(), NoRData(), dm_rdata
+    end
+    return CoDual(σ², NoFData()), varm_scalar_bare_pb!!
 end
 
 # mean(x; dims) on CuArrays, real and complex. GPUArrays' _mean uses a mapreduce with
@@ -3091,15 +3161,16 @@ function frule!!(
     dx = tangent(x)
     raw_dims = get(pkw, :dims, :)
     if raw_dims isa Colon
-        n = length(px)
-        μ = sum(px) / eltype(px)(n)
-        dμ = sum(dx) / eltype(px)(n)
+        λ = eltype(px)(inv(length(px)))
+        μ = sum(λ .* px)
+        dμ = sum(λ .* dx)
         return Dual(μ, dμ)
     end
     _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    n = prod(d -> size(px, d), _dims)
-    μ = sum(px; dims=_dims) ./ n
-    dμ = sum(dx; dims=_dims) ./ n
+    n = prod(d -> size(px, d), unique(_dims))
+    λ = eltype(px)(inv(n))
+    μ = sum(λ .* px; dims=_dims)
+    dμ = sum(λ .* dx; dims=_dims)
     return Dual(μ, dμ)
 end
 function rrule!!(
@@ -3113,23 +3184,29 @@ function rrule!!(
     raw_dims = get(pkw, :dims, :)
     if raw_dims isa Colon
         # scalar output: pullback receives scalar rdata
-        n = length(px)
-        μ = sum(px) / eltype(px)(n)
+        λ = eltype(px)(inv(length(px)))
+        μ = sum(λ .* px)
         function mean_scalar_pb!!(dμ)
-            dx .+= dμ / eltype(px)(n)
+            dx .+= dμ * λ
             return NoRData(), NoRData(), NoRData(), NoRData()
         end
         return CoDual(μ, NoFData()), mean_scalar_pb!!
     end
     _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
-    n = prod(d -> size(px, d), _dims)
-    μ = sum(px; dims=_dims) ./ n
+    n = prod(d -> size(px, d), unique(_dims))
+    λ = eltype(px)(inv(n))
+    μ = sum(λ .* px; dims=_dims)
     dμ = zero(μ)
     function mean_array_pb!!(::NoRData)
-        dx .+= dμ ./ n
+        dx .+= dμ .* λ
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(μ, dμ), mean_array_pb!!
 end
+
+# NOTE: no bare `mean(x)` primitive here, unlike scalar-mean `varm` above. `mean`'s
+# Colon branch is just `sum(A)/length(A)`, with no closure over a differentiable
+# value, so ordinary decomposition already differentiates it correctly (confirmed via
+# `value_and_gradient!!`). A dedicated primitive would only duplicate that path.
 
 end
