@@ -71,6 +71,28 @@ using Mooncake.Nfwd
         @test r3 isa NDual{Float64,1}
         @test Nfwd.ndual_value(r3) ≈ 4.0
         @test Nfwd.ndual_partial(r3, 1) ≈ 2.0
+
+        # Regression (#208/#209/#210): `/(Real, NDual)` and the two `atan(·, ·)` Real/NDual
+        # methods promoted the value to `S = promote_type(T, R)` but left the partials at `T`,
+        # so a wider-float Real operand fed a type-`S` scale into `_pt_scale`/`_pt_guarded_scale`
+        # (which require matching types) → MethodError instead of the promised NDual{S,N}. The
+        # partials must promote to `S` too, mirroring the `+`/`-`/`*` methods above.
+        w32 = NDual{Float32,2}(1.0f0, (1.0f0, 0.0f0))
+        q = 2.0 / w32                       # d(2/x)/dx = -2/x² = -2 at x=1
+        @test q isa NDual{Float64,2}
+        @test Nfwd.ndual_value(q) === 2.0
+        @test Nfwd.ndual_partial(q, 1) ≈ -2.0
+        @test iszero(Nfwd.ndual_partial(q, 2))   # inactive lane 0 (sign of zero is an IEEE artifact)
+        ay = atan(w32, 2.0)                 # ∂atan(y,x)/∂y = x/(x²+y²) = 2/5
+        @test ay isa NDual{Float64,2}
+        @test Nfwd.ndual_value(ay) ≈ atan(1.0, 2.0)
+        @test Nfwd.ndual_partial(ay, 1) ≈ 0.4
+        @test iszero(Nfwd.ndual_partial(ay, 2))
+        ax = atan(2.0, w32)                 # ∂atan(y,x)/∂x = -y/(x²+y²) = -2/5
+        @test ax isa NDual{Float64,2}
+        @test Nfwd.ndual_value(ax) ≈ atan(2.0, 1.0)
+        @test Nfwd.ndual_partial(ax, 1) ≈ -0.4
+        @test iszero(Nfwd.ndual_partial(ax, 2))
     end
 
     @testset "arithmetic" begin

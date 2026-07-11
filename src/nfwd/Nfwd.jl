@@ -640,7 +640,10 @@ end
 @inline function Base.:/(c::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     vi = inv(S(x.value))
-    return NDual{S,N}(S(c) * vi, _pt_guarded_scale(x.partials, -(S(c) * vi * vi)))
+    # Promote the partials to `S` too (the value is already `S`), so the guarded scale sees
+    # matching types — mirrors the `+`/`-`/`*` Real/NDual methods.
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    return NDual{S,N}(S(c) * vi, _pt_guarded_scale(sp, -(S(c) * vi * vi)))
 end
 
 # Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
@@ -866,7 +869,8 @@ end
 @inline function Base.atan(y::NDual{T,N}, x::R) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y.value)^2 + S(x)^2
-    return NDual{S,N}(atan(S(y.value), S(x)), _pt_scale(y.partials, S(x) / r2))
+    sp = ntuple(i -> S(y.partials[i]), Val(N))
+    return NDual{S,N}(atan(S(y.value), S(x)), _pt_scale(sp, S(x) / r2))
 end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
@@ -875,7 +879,8 @@ end
 @inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2
-    return NDual{S,N}(atan(S(y), S(x.value)), _pt_scale(x.partials, -S(y) / r2))
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    return NDual{S,N}(atan(S(y), S(x.value)), _pt_scale(sp, -S(y) / r2))
 end
 
 # Hyperbolic
