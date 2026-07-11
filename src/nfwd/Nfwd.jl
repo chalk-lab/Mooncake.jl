@@ -1712,7 +1712,9 @@ end
 const _NFWD_PREFERRED_CHUNK_SIZE = 8
 
 @inline function _nfwd_default_chunk_size(x::Tuple)
-    return max(1, min(sum(_nfwd_input_dof, x), _NFWD_PREFERRED_CHUNK_SIZE))
+    # `init=0` so an empty args tuple (e.g. a zero-argument callable) yields chunk size 1 rather than
+    # throwing on an empty reduction — matching `_nfwd_input_dof(::Tuple)`, which also passes `init=0`.
+    return max(1, min(sum(_nfwd_input_dof, x; init=0), _NFWD_PREFERRED_CHUNK_SIZE))
 end
 
 # Type-level DOF: returns the number of differentiable scalar components for a

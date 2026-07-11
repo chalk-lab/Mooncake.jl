@@ -601,6 +601,9 @@ using Mooncake.Nfwd
         @test Nfwd._nfwd_type_dof(Tuple{Tuple{Vector{Float64}},Float64}) === nothing
         # Downstream consumers fall back gracefully instead of throwing.
         @test Nfwd._nfwd_sig_dof(Tuple{typeof(identity),Vector{Float64}}) === nothing
+        # Regression (#204): `_nfwd_default_chunk_size(())` (empty args, e.g. a zero-arg callable) must
+        # return 1, not throw on an empty reduction (`sum` needs `init=0`).
+        @test Nfwd._nfwd_default_chunk_size(()) == 1
     end
 
     @testset "chunk mode: N=3" begin
