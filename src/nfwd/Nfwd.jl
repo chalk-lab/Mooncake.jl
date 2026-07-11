@@ -794,10 +794,12 @@ end
         ),
     )
     v = T(b)^a.value
-    # Guard the scale so an inactive (zero-seed) lane stays exactly 0 at the removable singularity
-    # b == 0, where `log(b)` is -Inf and the unguarded `0 * -Inf` would be NaN. Mirrors the guard on
-    # `log`/`sqrt`/`cbrt`/the `pow`/`powi` rules.
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, v * T(log(b))))
+    # d(b^a)/da = b^a·log(b). At b>0 this is `v*log(b)`; at the removable singularity b==0 the naive
+    # `v*log(b)` is `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent
+    # (b^a→0 dominates log(b)→-Inf). `_nfwd_pow_grad_p` encodes exactly this: `v*log(b)` for b>0, and
+    # for b==0 → 0 (positive exponent) / NaN (nonpositive, genuinely undefined). `_pt_guarded_scale`
+    # additionally keeps an inactive (zero-seed) lane 0 in that genuinely-NaN case.
+    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_p(T(b), a.value, v)))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 

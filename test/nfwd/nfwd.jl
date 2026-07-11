@@ -160,14 +160,18 @@ using Mooncake.Nfwd
         # in the exponent — must throw the clear local error, at any width.
         @test_throws DomainError (-2.0)^_d(3.0, 1.0)
         @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
-        # Zero real base with an NDual exponent (b=0, positive exponent): primal is 0 and the
-        # exponent derivative b^a·log(b) is 0·(-Inf). An inactive (zero-partial) lane must stay
-        # exactly 0 via the guarded scale, not become NaN; the active lane keeps the genuine NaN.
-        # (Regression #181: this `^(::Real, ::NDual)` path used the unguarded `_pt_scale`.)
+        # Zero real base with an NDual exponent, POSITIVE exponent (b=0, a=2): primal is 0, and
+        # d(b^a)/da = b^a·log(b) has the removable-singularity limit 0 (b^a→0 dominates log(b)→-Inf).
+        # BOTH lanes must be 0 — the naive `v*log(b) = 0·(-Inf)` gave NaN in active lanes (#197); the
+        # inactive lane was already guarded (#181). `_nfwd_pow_grad_p` now yields the 0 limit.
         bz = (0.0)^_d2(2.0, 1.0, 0.0)
         @test Nfwd.ndual_value(bz) == 0.0
-        @test Nfwd.ndual_partial(bz, 2) === 0.0   # inactive lane: 0, not NaN
-        @test isnan(Nfwd.ndual_partial(bz, 1))    # active lane: genuine singularity
+        @test Nfwd.ndual_partial(bz, 1) === 0.0   # active lane: removable-singularity limit (#197)
+        @test Nfwd.ndual_partial(bz, 2) === 0.0   # inactive lane: guarded (#181)
+        # b=0 with a NONpositive exponent is genuinely undefined → NaN (active), guarded 0 (inactive).
+        bz_neg = (0.0)^_d2(-1.0, 1.0, 0.0)
+        @test isnan(Nfwd.ndual_partial(bz_neg, 1))
+        @test Nfwd.ndual_partial(bz_neg, 2) === 0.0
         # real exponent b=0.0: d(x^0)/dx = 0 everywhere, including x=0 (no NaN)
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
