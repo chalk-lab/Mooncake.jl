@@ -141,6 +141,16 @@ function CRC.rrule(::typeof(test_add), x, y)
 end
 @from_rrule DefaultCtx Tuple{typeof(test_add),T,T} where {T<:IEEEFloat} false
 
+# Test case whose rrule returns a ZeroTangent for a differentiable argument (a common CRC idiom for a
+# structurally-zero gradient slot). Regression (#194): increment_and_get_rdata! must handle
+# CRC.ZeroTangent (zero increment) rather than throwing the generic ArgumentError.
+test_zerotangent(x::Float64, y::Float64) = x^2
+function CRC.rrule(::typeof(test_zerotangent), x::Float64, y::Float64)
+    test_zerotangent_pb(dz::Float64) = CRC.NoTangent(), 2x * dz, CRC.ZeroTangent()
+    return x^2, test_zerotangent_pb
+end
+@from_rrule DefaultCtx Tuple{typeof(test_zerotangent),Float64,Float64} false
+
 # Test case for rule with non-differentiable kwargs.
 test_kwargs(x; y::Bool=false) = y ? x : 2x
 
@@ -364,6 +374,18 @@ end
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
             @test_throws ArgumentError pb!!(5.0)
+        end
+        @testset "ZeroTangent gradient slot (#194)" begin
+            # A CRC pullback returning ZeroTangent() for a differentiable arg must apply a zero
+            # increment, not throw. Previously increment_and_get_rdata! had no ZeroTangent method.
+            f = ToolsForRulesResources.test_zerotangent
+            out, pb!! = Mooncake.rrule!!(
+                zero_fcodual(f), zero_fcodual(3.0), zero_fcodual(5.0)
+            )
+            @test primal(out) == 9.0
+            _, dx, dy = pb!!(1.0)
+            @test dx == 6.0        # d(x^2)/dx = 2x = 6 at x=3
+            @test iszero(dy)       # ZeroTangent slot → zero gradient, no crash
         end
         @testset "forward mode only" begin
             world = Base.get_world_counter()
