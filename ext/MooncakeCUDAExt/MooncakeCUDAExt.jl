@@ -2937,6 +2937,22 @@ end
 _realprojector(::Type{T}) where {T<:Real} = real
 _realprojector(::Type) = identity
 
+# Shared by the array-mean Colon branch below and the scalar-mean case further down;
+# same formula works at n==0 too (an empty diff sums to 0, whatever λ is). Only the
+# scalar-mean case overrides n==0 to NaN; see its own guard below for why.
+function _varm_core_frule(px, dx, pm, dm, corrected::Bool)
+    T = real(eltype(px))
+    n = length(px)
+    λ = one(T) / (n - Int(corrected))
+    diff = px .- pm
+    # abs2 always gives a real result, so σ² and its tangent dσ² are too; real(conj(diff)*...)
+    # is the JVP for both real and complex diff. conj/real are dot-called so they fuse into
+    # one kernel with the subtraction/product, avoiding a separate array for the complex case.
+    σ² = sum(λ .* abs2.(diff))
+    dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)))
+    return σ², dσ²
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -2963,11 +2979,7 @@ function frule!!(
         # of m's shape (m need not equal size(x); it broadcasts, as elsewhere in this file).
         # No n==0 guard needed here, unlike the scalar-mean case below: GPUArrays' own
         # varm has none either, since summing zero terms gives 0 regardless of λ.
-        n = length(px)
-        λ = one(T) / (n - Int(corrected))
-        diff = px .- pm
-        σ² = sum(λ .* abs2.(diff))
-        dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)))
+        σ², dσ² = _varm_core_frule(px, dx, pm, dm, corrected)
         return Dual(σ², dσ²)
     end
     # Repeated dims (e.g. dims=(1,1)) must count each dimension once in the
@@ -3048,22 +3060,12 @@ end
 # closure-mapreduce problem as above, but m here is a plain scalar, not an array.
 
 function _varm_scalar_colon_frule(px, dx, pm, dm, corrected::Bool)
-    T = real(eltype(px))
-    n = length(px)
-    # n==0: σ² is forced to NaN to match Statistics.jl's convention (empty variance is
-    # undefined), but that override doesn't make the derivative w.r.t. x/m undefined —
-    # for empty x the unguarded expression is already a constant 0 regardless of m, so
-    # the tangent is 0, not NaN, matching nan_tangent_guard's convention elsewhere in
-    # this file and the rrule below.
-    n == 0 && return T(NaN), zero(T)
-    λ = one(T) / (n - Int(corrected))
-    diff = px .- pm
-    # abs2 maps complex elements to Float32, so σ² is always real.
-    σ² = sum(λ .* abs2.(diff))
-    # conj/real fused with the subtraction/product, same reasoning as the array-mean
-    # frule!! above.
-    dσ² = sum((2λ) .* real.(conj.(diff) .* (dx .- dm)))
-    return σ², dσ²
+    # σ² is forced to NaN at n==0 to match Statistics.jl's convention (empty variance is
+    # undefined). That's an override, not a true singularity: for empty x the unguarded
+    # expression is a constant 0 regardless of m, so the tangent stays 0, matching
+    # nan_tangent_guard's convention elsewhere in this file and the rrule below.
+    length(px) == 0 && return real(eltype(px))(NaN), zero(real(eltype(px)))
+    return _varm_core_frule(px, dx, pm, dm, corrected)
 end
 
 function _varm_scalar_colon_rrule(px, dx, pm, corrected::Bool)
