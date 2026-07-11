@@ -450,7 +450,12 @@ for name in (:jl_get_world_counter, :jl_matching_methods)
         args::Vararg{Lifted,M},
     ) where {Nw,M}
         y = _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
-        return Lifted{typeof(y),Nw}(y, NoDual())
+        # Canonical zero-derivative forward result. `jl_get_world_counter` returns a `UInt64`
+        # (`dual_type` is `NoDual`), but `jl_matching_methods` returns a `Vector{Any}` whose
+        # canonical `dual_type` is `Vector{Any}` — hardcoding `NoDual` there would be a
+        # non-canonical V (tangent_type is not `NoTangent`). `zero_lifted` yields the right
+        # shape for both.
+        return zero_lifted(Val(Nw), y)
     end
     @eval function rrule!!(
         f::CoDual{typeof(_foreigncall_)},

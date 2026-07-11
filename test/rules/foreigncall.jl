@@ -26,6 +26,28 @@ end
         )
     end
 
+    # Regression (#211): the jl_get_world_counter/jl_matching_methods frule returns
+    # `zero_lifted(Val(Nw), y)` so the forward V is CANONICAL. jl_matching_methods returns a
+    # `Vector{Any}` (tangent_type is `Vector{Any}`, NOT `NoTangent`), so hardcoding `NoDual` was a
+    # non-canonical V; the world counter (`UInt`) legitimately duals to `NoDual`. This asserts the
+    # shape the rule's `zero_lifted` guarantees for both (the registered `Base._methods_by_ftype`
+    # case above exercises the rule end-to-end but can't distinguish `NoDual` from the zero
+    # `Vector{Any}` dual, since both yield a zero derivative).
+    @testset "world-counter / matching-methods canonical V (width $N)" for N in (1, 2)
+        w = Base.get_world_counter()
+        yw = w                                                   # jl_get_world_counter → UInt
+        ym = Base._methods_by_ftype(Tuple{typeof(sin),Float64}, -1, w)  # jl_matching_methods → Vector{Any}
+        # world counter: genuinely non-differentiable → NoDual is the canonical V.
+        @test Mooncake.dual_type(Val(N), typeof(yw)) === Mooncake.NoDual
+        @test tangent(Mooncake.zero_lifted(Val(N), yw)) isa Mooncake.NoDual
+        # matching methods: canonical V is Vector{Any}, NOT NoDual (the bug hardcoded NoDual).
+        @test Mooncake.dual_type(Val(N), typeof(ym)) !== Mooncake.NoDual
+        rm = Mooncake.zero_lifted(Val(N), ym)  # exactly what the fixed frule returns
+        @test primal(rm) === ym
+        @test tangent(rm) isa Mooncake.dual_type(Val(N), typeof(ym))
+        @test !(tangent(rm) isa Mooncake.NoDual)
+    end
+
     @testset "llvm powi via fastmath lowering" begin
         fn(x) = @fastmath x^2
         cache = prepare_gradient_cache(fn, 3.0)
