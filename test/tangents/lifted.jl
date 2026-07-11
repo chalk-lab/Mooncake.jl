@@ -23,6 +23,9 @@ end
 mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
     x::Real
 end
+struct LiftedTest_RefContainer  # immutable struct holding a Ref (reverse tangent field = MutableTangent)
+    r::Base.RefValue{Float64}
+end
 mutable struct LiftedTest_MaybeInit
     x::Float64
     y::Float64
@@ -270,6 +273,27 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test a[2] === nd(2.0, -0.5, 1.0)  # lazy getindex
         a[1] = nd(9.0, 7.0, -7.0)          # setindex! writes both channels
         @test x[1] === 9.0 && a.partials[1][1] === 7.0 && a.partials[2][1] === -7.0
+    end
+
+    # Regression (#193): the per-lane tangent of a `Ref{<:IEEEFloat}` (NDualRef V) must be the
+    # reverse-oracle shape — a `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}` (a `Ref` is a
+    # mutable struct) — NOT the bare lane partial. Returning the scalar diverged from `unlift`/the
+    # reverse oracle and made struct-recursion field extraction (which converts each field into its
+    # declared reverse tangent) throw a convert `MethodError` for a `Ref`-valued field.
+    @testset "NDualRef per-lane tangent is reverse-shaped (#193)" begin
+        # Bare Ref: per-lane shape must equal the width-1 unlift (reverse) shape.
+        sref = zero_lifted(Val(2), Ref(3.0))
+        Tt = Mooncake.tangent_type(Base.RefValue{Float64})
+        @test tangent(sref, 1) isa Tt
+        @test tangent(sref, 2) isa Tt
+        _, t1 = unlift(zero_lifted(Val(1), Ref(3.0)))
+        @test typeof(tangent(sref, 1)) === typeof(t1)
+        # Immutable struct with a Ref field: field extraction must not throw and must yield the
+        # declared reverse Tangent shape.
+        s2 = zero_lifted(Val(1), LiftedTest_RefContainer(Ref(2.5)))
+        tv = tangent(s2, 1)
+        @test tv isa Tangent
+        @test getfield(tv, :fields).r isa Tt
     end
 
     @static if VERSION >= v"1.11-rc4"

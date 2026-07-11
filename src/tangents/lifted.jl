@@ -195,7 +195,17 @@ end
 @inline function tangent(
     x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
 ) where {P<:NDualEltype,N}
-    return tangent(x).partials[][lane]
+    # A `Ref` is a mutable struct, so its reverse tangent (and the width-1 `_unlift_seed` result) is a
+    # `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}`, NOT a bare scalar. Return that shape so
+    # this leaf accessor mirrors the reverse oracle and struct-recursion field extraction (which
+    # `convert`s each field into its declared reverse tangent type) works for a `Ref`-valued field.
+    p = primal(x)
+    Tt = tangent_type(typeof(p))
+    Ft = fieldtype(fieldtype(Tt, :fields), :x)
+    part = tangent(x).partials[][lane]
+    shell = Tt()
+    shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
+    return shell
 end
 # `NDualMemoryRef` / `MemoryRef` / `Core.memoryref` are 1.11+; gate to avoid an
 # `UndefVarError` at precompile on 1.10.
