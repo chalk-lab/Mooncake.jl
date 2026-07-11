@@ -64,6 +64,37 @@
         @test all(iszero, tangent(r).partials)
     end
 
+    # Regression (#206): the nrm2 REVERSE pullback has the same removable singularity — at the
+    # zero vector `y == 0`, so `dX .+= X .* (dy / y)` was `0 * Inf = NaN`. The gradient x/‖x‖ is
+    # taken as 0 there (matching the frule). Non-zero inputs must still give x/‖x‖.
+    @testset "nrm2 reverse zero-vector gradient" begin
+        fn(x) = BLAS.nrm2(x)
+        _, g0 = value_and_gradient!!(prepare_gradient_cache(fn, zeros(3)), fn, zeros(3))
+        @test all(iszero, g0[2])              # was all-NaN
+        @test !any(isnan, g0[2])
+        x = [3.0, 4.0]
+        _, g = value_and_gradient!!(prepare_gradient_cache(fn, x), fn, x)
+        @test g[2] ≈ x ./ 5                   # x/‖x‖ still correct off the singularity
+    end
+
+    # Regression (#207): gemm!'s frule!!/rrule!! only cover a matrix C, so the @is_primitive C slot
+    # must be AbstractMatrix (not AbstractVecOrMat) to stay in lockstep with the rule methods — a
+    # vector-C gemm! must NOT be declared primitive (else a MethodError instead of a clean fallback).
+    @testset "gemm! is_primitive C-slot lockstep" begin
+        w = Base.get_world_counter()
+        gemm = typeof(BLAS.gemm!)
+        vecC = Tuple{
+            gemm,Char,Char,Float64,Matrix{Float64},Vector{Float64},Float64,Vector{Float64}
+        }
+        matC = Tuple{
+            gemm,Char,Char,Float64,Matrix{Float64},Vector{Float64},Float64,Matrix{Float64}
+        }
+        for mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+            @test !Mooncake.is_primitive(Mooncake.MinimalCtx, mode, vecC, w)  # vector C: not primitive
+            @test Mooncake.is_primitive(Mooncake.MinimalCtx, mode, matC, w)   # matrix C: primitive
+        end
+    end
+
     # Regression (#200): the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
     # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
     # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.

@@ -386,7 +386,10 @@ function rrule!!(
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
     function nrm2_pb!!(dy)
-        dX .+= X .* (dy / y)
+        # Removable singularity at the zero vector: there `y == 0` (all Xᵢ == 0), so
+        # `X * (dy / y)` would be `0 * Inf = NaN`. The gradient x/‖x‖ is taken as 0
+        # there, matching the frule's `iszero(s)` guard.
+        iszero(y) || (dX .+= X .* (dy / y))
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, NoFData()), nrm2_pb!!
@@ -975,6 +978,10 @@ end
 # LEVEL 3
 #
 
+# A and B may be vectors (the rules reshape them to matrices), but the output C must be a
+# matrix: both frule!! and rrule!! take `C::AbstractMatrix{T}`. Keeping the C slot at the
+# broader `AbstractVecOrMat{T}` would declare a vector-C `gemm!` primitive with no matching
+# rule method, giving a `MethodError` at call time instead of falling back to recursion.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -985,7 +992,7 @@ end
         AbstractVecOrMat{T},
         AbstractVecOrMat{T},
         T,
-        AbstractVecOrMat{T},
+        AbstractMatrix{T},
     } where {T<:BlasFloat},
 )
 
