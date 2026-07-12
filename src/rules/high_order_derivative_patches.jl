@@ -215,7 +215,7 @@ function _for_rule_dual(rule, fwd_dc, rvs_dc, ::Val{N}, debug_mode::Bool) where 
 end
 
 # First-call compilation helper: build a DerivedRule (+ dual callables + tangent) for
-# (interp, sig_or_mi, sig, debug_mode). Returns (rule, fwd_dc, rvs_dc, rule_tangent).
+# (interp, sig_or_mi, sig, debug_mode). Returns (rule, fwd_dc, rvs_dc).
 function _compile_for_rule(
     interp::MooncakeInterpreter{C}, sig_or_mi, sig, debug_mode::Bool; chunk_size::Int=1
 ) where {C}
@@ -247,32 +247,23 @@ function _compile_for_rule(
     # raw_rule_tangent (fwds_oc / pb_oc_ref fields). Callers that cache (rule, fwd_dc,
     # rvs_dc) and later call _for_rule_cached_dual must use _copy to get fresh Stacks
     # and a new independent tangent — do not reuse these objects directly.
-    fwd_dc, rvs_dc, raw_rule_tangent = let
+    fwd_dc, rvs_dc = let
         interp_forward = MooncakeInterpreter(C, ForwardMode; world=interp.world)
         optimized_fwd_ir = optimise_ir!(dri.fwd_ir; interp=interp_forward)
         optimized_rvs_ir = optimise_ir!(dri.rvs_ir; interp=interp_forward)
         fwd_oc = misty_closure(dri.fwd_ret_type, optimized_fwd_ir, dri.shared_data...)
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
-        captures_tangent = zero_tangent((fwd_oc.oc.captures, rvs_oc.oc.captures))
         fwd_dc = build_frule(
             interp_forward, fwd_oc; skip_world_age_check=true, debug_mode, chunk_size
         )
         rvs_dc = build_frule(
             interp_forward, rvs_oc; skip_world_age_check=true, debug_mode, chunk_size
         )
-        tangent = Tangent((;
-            fwds_oc=MistyClosureTangent(captures_tangent[1], fwd_dc),
-            pb_oc_ref=MutableTangent((;
-                x=PossiblyUninitTangent(MistyClosureTangent(captures_tangent[2], rvs_dc))
-            )),
-            nargs=NoTangent(),
-        ))
-        fwd_dc, rvs_dc, tangent
+        fwd_dc, rvs_dc
     end
 
     rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
-    rule_tangent = debug_mode ? Tangent((; rule=raw_rule_tangent)) : raw_rule_tangent
-    return rule, fwd_dc, rvs_dc, rule_tangent
+    return rule, fwd_dc, rvs_dc
 end
 
 function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
@@ -309,7 +300,7 @@ function (cache::LazyFoRRule{Trule,Tfwd,Trvs})(
 
     # First call: compile (dual callables at the outer chunk width `Nw`), populate the
     # single-slot cache, return the width-`Nw` forward V.
-    rule, fwd_dc, rvs_dc, _ = _compile_for_rule(
+    rule, fwd_dc, rvs_dc = _compile_for_rule(
         primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode; chunk_size=Nw
     )
     cache.rule = rule
@@ -346,7 +337,7 @@ function (cache::DynamicFoRRule)(
     end
 
     # First call for this (sig, debug_mode, Nw): compile at width Nw, cache, return.
-    rule, fwd_dc, rvs_dc, _ = _compile_for_rule(
+    rule, fwd_dc, rvs_dc = _compile_for_rule(
         primal(_interp), primal(_sig_or_mi), primal(_sig), debug_mode; chunk_size=Nw
     )
     cache.cache[dict_key] = (rule, fwd_dc, rvs_dc)
@@ -386,18 +377,12 @@ function compile_for_rule(f, x...; debug_mode::Bool=false, chunk_size::Int=1)
     if is_primitive(DefaultCtx, ReverseMode, sig, interp.world)
         return DerivedFoRRule{Nothing}(nothing)
     end
-    rule, fwd_dc, rvs_dc, rule_tangent = _compile_for_rule(
-        interp, sig, sig, debug_mode; chunk_size
-    )
-    # Width 1: `lift(rule, rule_tangent)` is the forward analogue of the legacy
-    # `Dual(rule, rule_tangent)`, mirroring `LazyFoRRule` above. Width N (chunked
-    # forward-over-reverse HVP/Hessian): build the width-N forward V directly.
-    rule_dual = if chunk_size == 1
-        lift(rule, rule_tangent, IdDict())
-    else
-        _for_rule_dual(rule, fwd_dc, rvs_dc, Val(chunk_size), debug_mode)
-    end
-    return DerivedFoRRule(rule_dual)
+    rule, fwd_dc, rvs_dc = _compile_for_rule(interp, sig, sig, debug_mode; chunk_size)
+    # Build the width-`chunk_size` forward V directly from the dual callables (uniform across
+    # widths, including width 1 — see `_for_rule_dual`). The FoR `captures_tangent` is zero, so
+    # this reproduces the width-1 `lift(rule, rule_tangent)` V without materialising a reverse
+    # tangent.
+    return DerivedFoRRule(_for_rule_dual(rule, fwd_dc, rvs_dc, Val(chunk_size), debug_mode))
 end
 tangent_type(::Type{<:DerivedFoRRule}) = NoTangent
 dual_type(::Val{N}, ::Type{<:DerivedFoRRule}) where {N} = NoDual
