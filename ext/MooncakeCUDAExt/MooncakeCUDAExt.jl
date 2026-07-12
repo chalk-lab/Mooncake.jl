@@ -82,15 +82,10 @@ import Mooncake:
     Lifted,
     NoDual,
     dual_type,
-    lifted_type,
     Nfwd,
     ImmutableDual,
     MutableDual,
     zero_lifted,
-    _zero_dual_internal,
-    _uninit_dual_internal,
-    _randn_dual_internal,
-    MaybeCache,
     _typeof
 
 import Mooncake.TestUtils:
@@ -1046,36 +1041,13 @@ end
 # Note: undefined when any element of x is zero (gradient is skipped in that case).
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
 function frule!!(
-    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
 ) where {Nw}
     px = primal(x)
     y = prod(px)
-    R = eltype(px)
     x_partials = tangent(x).partials
-    dy_lanes = ntuple(Val(Nw)) do k
-        iszero(y) ? zero(R) : y * sum(x_partials[k] ./ px)
-    end
-    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
-end
-function frule!!(
-    ::Lifted{typeof(prod),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
-) where {Nw}
-    px = primal(x)
-    y = prod(px)
-    Y = typeof(y)
-    R = real(eltype(px))
-    x_partials = tangent(x).partials
-    dy_lanes = ntuple(Val(Nw)) do k
-        iszero(y) ? zero(Y) : y * sum(x_partials[k] ./ px)
-    end
-    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
-    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
-    return Lifted{Y,Nw}(
-        y,
-        Complex{NDual{R,Nw}}(
-            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
-        ),
-    )
+    dy_lanes = ntuple(k -> iszero(y) ? zero(y) : y * sum(x_partials[k] ./ px), Val(Nw))
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -1217,32 +1189,13 @@ end
 # See also `src/rules/performance_patches`.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),CuMaybeComplexArray})
 function frule!!(
-    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuFloatArray,Nw,<:NDualArray}
+    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
 ) where {Nw}
     px = primal(x)
     y = sum(px)
-    R = eltype(px)
     x_partials = tangent(x).partials
     dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
-    return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
-end
-function frule!!(
-    ::Lifted{typeof(sum),Nw}, x::Lifted{<:CuComplexArray,Nw,<:NDualArray}
-) where {Nw}
-    px = primal(x)
-    y = sum(px)
-    Y = typeof(y)
-    R = real(eltype(px))
-    x_partials = tangent(x).partials
-    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
-    re_parts = ntuple(k -> real(dy_lanes[k]), Val(Nw))
-    im_parts = ntuple(k -> imag(dy_lanes[k]), Val(Nw))
-    return Lifted{Y,Nw}(
-        y,
-        Complex{NDual{R,Nw}}(
-            NDual{R,Nw}(real(y), re_parts), NDual{R,Nw}(imag(y), im_parts)
-        ),
-    )
+    return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     _, dx = arrayify(x)
@@ -1610,24 +1563,18 @@ end
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
 # Width-`Nw` forward rule for `sum(f, x)` on real/complex CuArrays.
-function frule!!(
-    ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
-) where {Nw}
-    _check_gpu_sum_f(primal(f))
-    flat_px = primal(x)
-    x_partials = tangent(x).partials
-    # One dual broadcast computes f and df/dx for every element; each lane then reuses
-    # `out` for a cheap reduction against that lane's input tangent.
-    out = _gpu_broadcast_dual(primal(f), flat_px)
+# Shared width-N `sum(f, x)` forward body: one dual broadcast computes f and df/dx for every
+# element, then each lane reuses `out` for a cheap reduction against that lane's input tangent.
+# `flat_px`/`x_partials` are extracted per V shape by the callers (dense NDualArray vs the
+# Transpose/Adjoint ImmutableDual parent). A non-differentiable mapping result (e.g. a Bool/Int-valued
+# `f`) yields a `NoDual` V — a non-float `primal_out` must NOT go through `_wrap_scalar_v_lanes`
+# (float-only). Mirrors the zero-derivative reverse rrule.
+@inline function _gpu_sum_f_lifted(::Val{Nw}, pf, flat_px, x_partials) where {Nw}
+    _check_gpu_sum_f(pf)
+    out = _gpu_broadcast_dual(pf, flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
     P_out = typeof(decoded.primal_out)
-    if !decoded.is_diff
-        # `f` discards the derivative (a non-differentiable mapping result, e.g. a `Bool`/`Int`-valued
-        # `f`): the reduction is non-differentiable, so return a `NoDual` V. Do NOT route a non-float
-        # `primal_out` through `_wrap_scalar_v_lanes`, which supports only float scalars. Mirrors the
-        # zero-derivative reverse rrule.
-        return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
-    end
+    decoded.is_diff || return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
     dy_lanes = ntuple(
         k -> _gpu_accumulate_reduced_jvp(
             out, (flat_px,), (x_partials[k],), decoded.primal_out
@@ -1637,6 +1584,12 @@ function frule!!(
     return Lifted{P_out,Nw}(
         decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
     )
+end
+
+function frule!!(
+    ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
+) where {Nw}
+    return _gpu_sum_f_lifted(Val(Nw), primal(f), primal(x), tangent(x).partials)
 end
 
 # Wrap a scalar primal `y` with per-lane partials `dy_lanes` into the canonical
@@ -1663,28 +1616,8 @@ function frule!!(
         <:ImmutableDual,
     },
 ) where {Nw}
-    _check_gpu_sum_f(primal(f))
-    flat_px = parent(primal(x))
-    x_partials = tangent(x).value.parent.partials
-    out = _gpu_broadcast_dual(primal(f), flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
-    P_out = typeof(decoded.primal_out)
-    if !decoded.is_diff
-        # Non-differentiable mapping result (Bool/Int-valued `f`): return a `NoDual` V rather than
-        # routing a non-float `primal_out` through `_wrap_scalar_v_lanes`. Mirrors the dense frule.
-        return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
-    end
-    dy_lanes = ntuple(
-        k -> _gpu_accumulate_reduced_jvp(
-            out, (flat_px,), (x_partials[k],), decoded.primal_out
-        ),
-        Val(Nw),
-    )
-    # Use `_wrap_scalar_v_lanes` (not a raw `NDual{P_out,Nw}`) so a complex-valued `f` (ℝ→ℂ),
-    # whose `P_out === Complex{R}`, builds the canonical `Complex{NDual}` V rather than the
-    # invalid `NDual{Complex,…}`. Mirrors the dense `sum(f, x)` frule above.
-    return Lifted{P_out,Nw}(
-        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
+    return _gpu_sum_f_lifted(
+        Val(Nw), primal(f), parent(primal(x)), tangent(x).value.parent.partials
     )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
@@ -3210,10 +3143,8 @@ end
 # the existing `_prepare_gpu_broadcast` / `_gpu_bcast_leaves` helpers consume).
 # `lane` selects the chunk slot, so each lane reuses the single dual-broadcast
 # kernel for an independent JVP.
-@inline _bc_tangent(::Mooncake.NoDual, _, _) = NoTangent()
-@inline _bc_tangent(::Mooncake.NoTangent, _, _) = NoTangent()
-@inline _bc_tangent(::Tuple{Mooncake.NoTangent}, _, _) = NoTangent()
-@inline _bc_tangent(::Tuple{Mooncake.NoDual}, _, _) = NoTangent()
+@inline _bc_tangent(::Union{Mooncake.NoDual,Mooncake.NoTangent}, _, _) = NoTangent()
+@inline _bc_tangent(::Tuple{<:Union{Mooncake.NoDual,Mooncake.NoTangent}}, _, _) = NoTangent()
 @inline _bc_tangent(v::Nfwd.NDual{T,N}, _, lane) where {T,N} = v.partials[lane]
 @inline _bc_tangent(v::Nfwd.NDualArray{T,N}, _, lane) where {T,N} = v.partials[lane]
 @inline function _bc_tangent(v::Complex{Nfwd.NDual{R,N}}, _, lane) where {R,N}
