@@ -654,31 +654,17 @@ end
 # `NDualMemoryRef` frules above. Forward-over-reverse exercises this path for the
 # reverse rule's `Vector{Tuple{pullback}}` pullback storage.
 @static if VERSION >= v"1.11-rc4"
-    @inline function frule!!(
-        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:MemoryRef,Nw,<:MemoryRef}
-    ) where {Nw}
-        yp = memoryrefnew(primal(x))
-        yt = memoryrefnew(tangent(x))
-        return Lifted{typeof(yp),Nw}(yp, yt)
-    end
-    # Element-wise `memoryrefnew(::Memory)`: the V is the element-wise `Memory`; project it to the
-    # matching element-wise `MemoryRef` V (1-arg `memoryrefnew` makes a ref to the start).
-    @inline function frule!!(
-        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Memory,Nw,<:Memory}
-    ) where {Nw}
-        yp = memoryrefnew(primal(x))
-        yt = memoryrefnew(tangent(x))
-        return Lifted{typeof(yp),Nw}(yp, yt)
-    end
+    # `memoryrefnew` over a differentiable V (`MemoryRef`/element-wise `Memory`): thread the primal
+    # and the parallel V ref/memory in lockstep. One vararg method covers the 1-arg (ref-to-start)
+    # and trailing-index forms for both `MemoryRef`-V and `Memory`-V slots (the no-arg case is K=0).
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
-        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        x::Lifted{<:Union{Memory,MemoryRef},Nw,<:Union{Memory,MemoryRef}},
         args::Vararg{Lifted,K},
     ) where {Nw,K}
         a = map(primal, args)
-        return Lifted{typeof(memoryrefnew(primal(x), a...)),Nw}(
-            memoryrefnew(primal(x), a...), memoryrefnew(tangent(x), a...)
-        )
+        yp = memoryrefnew(primal(x), a...)
+        return Lifted{typeof(yp),Nw}(yp, memoryrefnew(tangent(x), a...))
     end
     @inline function frule!!(
         ::Lifted{typeof(memoryrefget),Nw},
@@ -770,21 +756,15 @@ end
     # whole-buffer slot inside the reverse rule's own storage during forward-over-reverse. These
     # methods are therefore exercised only through forward-over-reverse HVP/Hessian tests, not the
     # per-rule battery; that is intentional, not a coverage gap.
-    @inline function frule!!(
-        ::Lifted{typeof(memoryrefnew),Nw}, x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual}
-    ) where {Nw}
-        yp = memoryrefnew(primal(x))
-        return Lifted{typeof(yp),Nw}(yp, NoDual())
-    end
+    # `memoryrefnew` over a non-differentiable (`NoDual`-V) `Memory`/`MemoryRef`: thread only the
+    # primal, keep a `NoDual` result V. One vararg method covers the 1-arg and trailing-index forms
+    # (the no-arg case is K=0), so there is no zero-vararg overlap to disambiguate.
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
-        x::Lifted{<:MemoryRef,Nw,NoDual},
-        i::Lifted,
+        x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual},
         args::Vararg{Lifted,K},
     ) where {Nw,K}
-        # `i` (the index) makes this the >=1-trailing-arg `memoryrefnew(ref, i, …)` form, disjoint from
-        # the 1-arg method above (which overlapped at the zero-vararg `MemoryRef` case -> ambiguity).
-        yp = memoryrefnew(primal(x), primal(i), map(primal, args)...)
+        yp = memoryrefnew(primal(x), map(primal, args)...)
         return Lifted{typeof(yp),Nw}(yp, NoDual())
     end
     @inline function frule!!(
