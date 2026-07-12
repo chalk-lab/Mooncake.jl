@@ -128,9 +128,9 @@ tangent(f::IdDict, ::NoRData) = f
 @foldable @inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
     return IdDict{K,dual_type(Val(N), V)}
 end
-@foldable @inline function lifted_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
-    return Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N), V)}}
-end
+# No `lifted_type(::IdDict)` method needed: the generic concrete-struct `lifted_type` returns
+# `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `IdDict{K,V}` uses the `dual_type` above
+# and yields exactly `Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N),V)}}`.
 
 # Forward seed / lift / lane-accessor for the custom V `IdDict{K, dual_type(V)}`. Without these the
 # generic struct-lift fallback fires on `IdDict`'s `ht::Memory{Any}` field and builds an invalid
@@ -161,7 +161,7 @@ function _randn_dual_internal(
     return out
 end
 # Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
-@inline lift(x::IdDict{K,V}, ẋ::IdDict{K,Vt}) where {K,V,Vt} = lift(x, ẋ, IdDict())
+@inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, IdDict())
 # Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
 # struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
 # recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict
