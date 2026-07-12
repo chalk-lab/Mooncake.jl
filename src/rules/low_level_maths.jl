@@ -145,15 +145,11 @@ end
 # (second arg for max, first arg for min). Pure scalar, branchless.
 @inline function _pick_first_max(a, b)
     v = max(a, b)
-    am = isequal(v, a)
-    bm = isequal(v, b)
-    return ifelse(am & !bm, true, ifelse(bm & !am, false, false))
+    return isequal(v, a) & !isequal(v, b)
 end
 @inline function _pick_first_min(a, b)
     v = min(a, b)
-    am = isequal(v, a)
-    bm = isequal(v, b)
-    return ifelse(am & !bm, true, ifelse(bm & !am, false, true))
+    return isequal(v, a) | !isequal(v, b)
 end
 
 # ===========================================================================
@@ -222,7 +218,7 @@ end
 @inline _unary_deriv(::typeof(Base.FastMath.exp_fast), x, y) = y
 @inline _unary_deriv(::typeof(Base.FastMath.exp2_fast), x, y) = y * oftype(y, log(2))
 @inline _unary_deriv(::typeof(Base.FastMath.exp10_fast), x, y) = y * oftype(y, log(10))
-@inline _unary_deriv(::typeof(Base.FastMath.atan_fast), x, y) = inv(one(x) + x^2)
+@inline _unary_deriv(::typeof(Base.FastMath.atan_fast), x, y) = _unary_deriv(atan, x, y)
 # mod2pi has local slope 1 away from the 2π wrap, but NaN *at* the wrap (`x` a multiple of 2π),
 # where it is discontinuous — matching the forward `mod2pi(::NDual)` overload (`_nfwd_mod2pi_grad`)
 # and `main`'s reverse, and consistent with the `mod`/`^` discontinuity handling below. A constant
@@ -430,10 +426,10 @@ end
     r2 = a^2 + b^2
     return (b / r2, -a / r2)
 end
-@inline function _binary_deriv(::typeof(Base.FastMath.atan_fast), a, b, y)
-    r2 = a^2 + b^2
-    return (b / r2, -a / r2)
-end
+# fastmath variant: same derivative formula as `atan` (fastmath only affects the primal).
+@inline _binary_deriv(::typeof(Base.FastMath.atan_fast), a, b, y) = _binary_deriv(
+    atan, a, b, y
+)
 # log(b, a) = log(a)/log(b): d/db = -log(b,a)/(b·log(b)), d/da = 1/(a·log(b)).
 @inline function _binary_deriv(::typeof(log), b, a, y)
     lb = log(b)
