@@ -97,7 +97,7 @@ function frule!!(
     for lane in 1:N
         Base._deletebeg!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: delete primal and the element-wise tangent `Array` in lockstep. Covers both
 # differentiable non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g.
@@ -108,7 +108,7 @@ function frule!!(
     d_p = primal(d)
     Base._deletebeg!(primal(a), d_p)
     Base._deletebeg!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -142,7 +142,7 @@ function frule!!(
     for lane in 1:N
         Base._deleteend!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
 # non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g. `Vector{Int}`
@@ -153,7 +153,7 @@ function frule!!(
     d_p = primal(d)
     Base._deleteend!(primal(a), d_p)
     Base._deleteend!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -196,7 +196,7 @@ function frule!!(
     for lane in 1:N
         Base._deleteat!(tangent(a).partials[lane], i_p, d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
 # non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
@@ -211,7 +211,7 @@ function frule!!(
     d_p = primal(delta)
     Base._deleteat!(primal(a), i_p, d_p)
     Base._deleteat!(tangent(a), i_p, d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
@@ -251,7 +251,7 @@ function frule!!(
     for lane in 1:N
         Base._growbeg!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
 # non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
@@ -262,7 +262,7 @@ function frule!!(
     d_p = primal(d)
     Base._growbeg!(primal(a), d_p)
     Base._growbeg!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
@@ -291,7 +291,7 @@ function frule!!(
     for lane in 1:N
         Base._growend!(tangent(a).partials[lane], d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers vectors of differentiable
 # non-float elements (e.g. the `Vector{Tuple{pullback}}` grown by reverse rules under
@@ -303,7 +303,7 @@ function frule!!(
     d_p = primal(d)
     Base._growend!(primal(a), d_p)
     Base._growend!(tangent(a), d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
@@ -334,7 +334,7 @@ function frule!!(
     for lane in 1:N
         Base._growat!(tangent(a).partials[lane], i_p, d_p)
     end
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
 # non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
@@ -346,7 +346,7 @@ function frule!!(
     d_p = primal(d)
     Base._growat!(primal(a), i_p, d_p)
     Base._growat!(tangent(a), i_p, d_p)
-    return Lifted{Nothing,N}(nothing, NoDual())
+    return zero_lifted(Val(N), nothing)
 end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
@@ -705,8 +705,7 @@ function isbits_arrayset_rrule(
 end
 
 function frule!!(::Lifted{typeof(Core.arraysize),N}, X::Lifted, dim::Lifted) where {N}
-    y = Core.arraysize(primal(X), primal(dim))
-    return Lifted{typeof(y),N}(y, NoDual())
+    return zero_lifted(Val(N), Core.arraysize(primal(X), primal(dim)))
 end
 function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
     return zero_fcodual(Core.arraysize(primal(X), primal(dim))), NoPullback(f, X, dim)
