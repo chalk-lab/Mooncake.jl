@@ -11,9 +11,7 @@ function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
 ) where {Nw,P<:Ptr}
     yp = primal(y)
-    new_primal = primal(x) + yp
-    new_partials = ntuple(lane -> tangent(x)[lane] + yp, Val(Nw))
-    return Lifted{P,Nw}(new_primal, new_partials)
+    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x, lane) + yp, Val(Nw)))
 end
 # Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
 # reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
