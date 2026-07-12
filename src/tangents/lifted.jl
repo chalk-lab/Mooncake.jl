@@ -1246,9 +1246,8 @@ end
     return Lifted{typeof(x),1}(x, NamedTuple{names}(field_Vs))
 end
 
-@inline function uninit_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
-    return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
-end
+# A scalar float's uninit seed is the zero seed (a bits partial can't be read as garbage).
+@inline uninit_dual(w::Val{N}, x::T) where {N,T<:IEEEFloat} = zero_dual(w, x)
 
 @inline function randn_dual(::Val{N}, rng::AbstractRNG, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> randn(rng, T), Val(N)))
@@ -1273,18 +1272,11 @@ end
 # the user's array and whose `partials` is slot-local — no aliasing with the
 # user's array. The zero-init path uses `zero(::Array)` for each lane.
 
-@inline function zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return NDualArray{T,N,D,A}(x)
+@inline function zero_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
+    return NDualArray{E,N,D,A}(x)
 end
-@inline function zero_dual(::Val{N}, x::A) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
-    return NDualArray{Complex{R},N,D,A}(x)
-end
-
-@inline function uninit_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return NDualArray{T,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
-end
-@inline function uninit_dual(::Val{N}, x::A) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
-    return NDualArray{Complex{R},N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
+@inline function uninit_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
+    return NDualArray{E,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
 end
 
 # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` factories above): fresh
@@ -1292,9 +1284,9 @@ end
 @inline function zero_dual(::Val{N}, ::Base.RefValue{P}) where {N,P<:NDualEltype}
     return NDualRef{P,N}()
 end
-@inline function uninit_dual(::Val{N}, ::Base.RefValue{P}) where {N,P<:NDualEltype}
-    return NDualRef{P,N}()
-end
+@inline uninit_dual(w::Val{N}, r::Base.RefValue{P}) where {N,P<:NDualEltype} = zero_dual(
+    w, r
+)
 
 # A `Ptr` has no numeric partials to zero (its V is `NTuple{N,Ptr}` of pointers, never a float
 # tangent that could be read as garbage), so its zero forward seed is the uninitialised one — and
@@ -1304,15 +1296,8 @@ end
 
 @inline function randn_dual(
     ::Val{N}, rng::AbstractRNG, x::A
-) where {N,T<:IEEEFloat,D,A<:Array{T,D}}
-    return NDualArray{T,N,D,A}(x, ntuple(_ -> randn(rng, T, size(x)), Val(N)))
-end
-@inline function randn_dual(
-    ::Val{N}, rng::AbstractRNG, x::A
-) where {N,R<:IEEEFloat,D,A<:Array{Complex{R},D}}
-    return NDualArray{Complex{R},N,D,A}(
-        x, ntuple(_ -> randn(rng, Complex{R}, size(x)), Val(N))
-    )
+) where {N,E<:NDualEltype,D,A<:Array{E,D}}
+    return NDualArray{E,N,D,A}(x, ntuple(_ -> randn(rng, E, size(x)), Val(N)))
 end
 @inline function randn_dual(
     ::Val{N}, rng::AbstractRNG, ::Base.RefValue{P}
