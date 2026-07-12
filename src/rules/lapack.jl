@@ -757,10 +757,9 @@ function frule!!(
     S = primal(_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
-    if iszero(d)
-        zero_parts = ntuple(_ -> zero(P), Val(Nw))
-        return Lifted{P,Nw}(d, _scalar_ndual(d, zero_parts))
-    end
+    # Singular S: the gradient is zero (approximate); the canonical zero forward dual has inner
+    # value `d` and zero partials.
+    iszero(d) && return zero_lifted(Val(Nw), d)
     Sinv = inv(F)
     # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
     dy_lanes = ntuple(k -> d * dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
@@ -807,18 +806,14 @@ function frule!!(
     F = bunchkaufman(S; check=false)
     ld, s = logabsdet(F)
     y = (ld, s)
-    zero_parts = ntuple(_ -> zero(P), Val(Nw))
+    # The sign `s` always has zero derivative; a singular S (s==0) zeros `ld`'s derivative too.
     if iszero(s)
-        ld_v = _scalar_ndual(ld, zero_parts)
-        s_v = _scalar_ndual(s, zero_parts)
-        return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
+        return Lifted{typeof(y),Nw}(y, (zero_dual(Val(Nw), ld), zero_dual(Val(Nw), s)))
     end
     Sinv = inv(F)
     # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
     ld_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
-    ld_v = _scalar_ndual(ld, ld_lanes)
-    s_v = _scalar_ndual(s, zero_parts)
-    return Lifted{typeof(y),Nw}(y, (ld_v, s_v))
+    return Lifted{typeof(y),Nw}(y, (_scalar_ndual(ld, ld_lanes), zero_dual(Val(Nw), s)))
 end
 function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
