@@ -264,7 +264,7 @@ end
 # forward-over-reverse, shared) forward captures slot built at lift time, so
 # forward it directly to the `_dual_mc`-built callable. Re-lifting here would
 # allocate a fresh, unshared buffer and silently zero the HVP.
-function frule!!(f::Lifted{<:MistyClosure,N}, x::Vararg{Lifted,M}) where {N,M}
+function frule!!(f::Lifted{<:MistyClosure}, x::Vararg{Lifted})
     t = tangent(f)
     return t.dual_callable(t.captures_tangent, x...)
 end
