@@ -478,12 +478,17 @@ function _add_to_primal_internal(
 ) where {T<:IEEEFloat,N}
     return x + sum(t.partials; init=zero(T))
 end
-function _add_to_primal_internal(c::MaybeCache, x, t::ImmutableDual, unsafe::Bool)
-    # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding
-    # each field's V back to the corresponding primal field. This mirrors
-    # what `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)`
-    # does for reverse-mode tangents in src/tangents/tangents.jl.
-    return _add_to_primal_internal_struct(c, x, t.value, unsafe)
+@unstable function _add_to_primal_internal(c::MaybeCache, x, t::ImmutableDual, unsafe::Bool)
+    # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding each field's V back to
+    # the corresponding primal field. This mirrors what
+    # `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)` does for reverse-mode tangents
+    # in src/tangents/tangents.jl. `_new_` rebuilds both mutable and immutable structs.
+    nt = t.value
+    isempty(propertynames(nt)) && return x
+    new_fields = map(keys(nt)) do name
+        return _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
+    end
+    return _new_(typeof(x), new_fields...)
 end
 # Mutable structs may be self-referential, so use the two-pass scheme of the
 # reverse-mode `MutableTangent` overload: const fields (which cannot cycle back)
@@ -513,16 +518,6 @@ function _add_to_primal_internal(
     end
     return p′
 end
-@unstable function _add_to_primal_internal_struct(c, x, nt::NamedTuple, unsafe)
-    isempty(propertynames(nt)) && return x
-    names = keys(nt)
-    new_fields = map(names) do name
-        return _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
-    end
-    # Rebuild via _new_ to handle both mutable and immutable structs.
-    return _new_(typeof(x), new_fields...)
-end
-
 # `NDualMemoryRef` (and its constructor) now lives in `src/nfwd/Nfwd.jl`.
 # Mooncake-namespace method extensions follow.
 
@@ -1037,11 +1032,8 @@ end
 # chunk seeds are built internally via `basis_lifted!!` + `Lifted{P, N}(primal, value)`
 # with the appropriate width-N V.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
-@inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:Array{T,D}}
-    return Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
-end
-@inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}}
-    return Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+@inline function lift(x::A, ẋ::A) where {E<:NDualEltype,D,A<:Array{E,D}}
+    return Lifted{A,1}(x, NDualArray{E,1,D,A}(x, (ẋ,)))
 end
 @inline function lift(x::Complex{R}, ẋ::Complex{R}) where {R<:IEEEFloat}
     re = NDual{R,1}(real(x), (real(ẋ),))
@@ -1076,16 +1068,10 @@ end
     # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the NDualArray,
     # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
     # field is lifted under forward-over-reverse, or a Memory primal is seeded.
-    @inline function lift(x::A, ẋ::A) where {T<:IEEEFloat,A<:Memory{T}}
-        return Lifted{A,1}(x, NDualArray{T,1,1,A}(x, (ẋ,)))
+    @inline function lift(x::A, ẋ::A) where {E<:NDualEltype,A<:Memory{E}}
+        return Lifted{A,1}(x, NDualArray{E,1,1,A}(x, (ẋ,)))
     end
-    @inline function lift(x::A, ẋ::A) where {R<:IEEEFloat,A<:Memory{Complex{R}}}
-        return Lifted{A,1}(x, NDualArray{Complex{R},1,1,A}(x, (ẋ,)))
-    end
-    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {T<:IEEEFloat,A<:Memory{T}} = lift(
-        x, ẋ
-    )
-    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {R<:IEEEFloat,A<:Memory{Complex{R}}} = lift(
+    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {E<:NDualEltype,A<:Memory{E}} = lift(
         x, ẋ
     )
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
@@ -1209,10 +1195,7 @@ end
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they
 # match the element-wise overload below by element type, so give them cache-threading
 # passthroughs that keep the more-specific terminal behaviour.
-@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {T<:IEEEFloat,D,A<:Array{T,D}} = lift(
-    x, ẋ
-)
-@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {R<:IEEEFloat,D,A<:Array{Complex{R},D}} = lift(
+@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {E<:NDualEltype,D,A<:Array{E,D}} = lift(
     x, ẋ
 )
 # Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
@@ -1967,98 +1950,46 @@ end
 # the canonical entry point (bits-element dense zero-init).
 
 @static if VERSION >= v"1.11-rc4"
-    @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
-        return NDualMemoryRef{T,N,Memory{T}}(p)
+    # MemoryRef / Memory seed factories for `NDualEltype` elements (real `IEEEFloat` and
+    # `Complex{IEEEFloat}`). `MemoryRef{E}` duals to `NDualMemoryRef`; `Memory{E} <:
+    # AbstractArray{E,1}` duals to the standard `NDualArray`. One method per (factory × container)
+    # covers both element kinds — `randn(rng, E, len)` and `Memory{E}(undef, …)` work for real and
+    # complex `E`. These stay strictly more specific than the generic element-wise `@generated`
+    # factories below, keeping the seed coherent with `dual_type` and the reverse `zero_tangent`
+    # oracle (a bare complex `MemoryRef`/`Memory` would otherwise fall through to the generic path,
+    # whose element-wise Memory V mismatches the `NDualArray`/`NDualMemoryRef` these types dual to).
+    # `uninit`/`randn` for MemoryRef mirror the `NDualMemoryRef` zero-init constructor: per-lane
+    # partial MemoryRefs into a fresh `Memory{E}` at `p`'s offset.
+    @inline function zero_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
+        return NDualMemoryRef{E,N,Memory{E}}(p)
     end
-    # `NDualMemoryRef{IEEEFloat}` uninit/randn: per-lane partial MemoryRefs into
-    # fresh `Memory{T}` at `p`'s offset (mirrors the `NDualMemoryRef` zero-init
-    # constructor + `zero_dual` above). The general `@generated` below is for
-    # non-float elements; it `memoryref`s an element-wise Memory V, which would fail on the
-    # `NDualArray` that `uninit_dual(Memory{IEEEFloat})` returns.
-    # `MemoryRef{Complex}` has its own `dual_type` -> `NDualMemoryRef` overload (above) and is
-    # seedable in reverse mode (`zero_tangent`), so without matching forward factories
-    # `zero_lifted`/`uninit_lifted`/`randn_lifted` of a bare complex `MemoryRef` fell to the generic
-    # `@generated` factory below and threw a confusing nested `memoryref` `MethodError` (the generic
-    # path `memoryref`s an element-wise Memory V, but `Memory{Complex}`'s V is an `NDualArray`). The
-    # complex factories below mirror the float ones (substituting `Complex{R}`) so the seed is
-    # coherent with `dual_type` and the reverse oracle.
-    @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T<:IEEEFloat}
+    @inline function uninit_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)
-        return NDualMemoryRef{T,N,Memory{T}}(
-            p, ntuple(_ -> _memoryref_at(Memory{T}(undef, len), offset), Val(N))
+        return NDualMemoryRef{E,N,Memory{E}}(
+            p, ntuple(_ -> _memoryref_at(Memory{E}(undef, len), offset), Val(N))
         )
     end
     @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, p::MemoryRef{T}
-    ) where {N,T<:IEEEFloat}
+        ::Val{N}, rng::AbstractRNG, p::MemoryRef{E}
+    ) where {N,E<:NDualEltype}
         offset = Core.memoryrefoffset(p)
         len = length(p.mem)
-        return NDualMemoryRef{T,N,Memory{T}}(
-            p, ntuple(_ -> _memoryref_at(Memory{T}(randn(rng, T, len)), offset), Val(N))
+        return NDualMemoryRef{E,N,Memory{E}}(
+            p, ntuple(_ -> _memoryref_at(Memory{E}(randn(rng, E, len)), offset), Val(N))
         )
     end
-    # Complex `MemoryRef` factories: identical shape to the float ones with element `Complex{R}`
-    # (`Complex{R} <: NDualEltype`, so `NDualMemoryRef{Complex{R},…}` is valid). Keeps forward
-    # seeding coherent with `dual_type(MemoryRef{Complex})` and the reverse `zero_tangent`.
-    @inline function zero_dual(::Val{N}, p::MemoryRef{Complex{R}}) where {N,R<:IEEEFloat}
-        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(p)
+    @inline function zero_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
+        return NDualArray{E,N,1,Memory{E}}(m)
     end
-    @inline function uninit_dual(::Val{N}, p::MemoryRef{Complex{R}}) where {N,R<:IEEEFloat}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
-        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(
-            p, ntuple(_ -> _memoryref_at(Memory{Complex{R}}(undef, len), offset), Val(N))
-        )
+    @inline function uninit_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
+        return NDualArray{E,N,1,Memory{E}}(m, ntuple(_ -> similar(m), Val(N)))
     end
     @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, p::MemoryRef{Complex{R}}
-    ) where {N,R<:IEEEFloat}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
-        return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}(
-            p,
-            ntuple(
-                _ -> _memoryref_at(Memory{Complex{R}}(randn(rng, Complex{R}, len)), offset),
-                Val(N),
-            ),
-        )
-    end
-    # Memory{T} is `<: AbstractArray{T, 1}`, so its canonical V is the
-    # standard NDualArray. `zero(::Memory{T})` returns a fresh Memory{T},
-    # so the existing `NDualArray{T, N, 1, Memory{T}}(p)` constructor works
-    # via `ntuple(_ -> zero(p), Val(N))`.
-    @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T}}(m)
-    end
-    @inline function zero_dual(::Val{N}, m::Memory{Complex{R}}) where {N,R<:IEEEFloat}
-        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(m)
-    end
-    # `uninit_dual` / `randn_dual` mirror `zero_dual` above (`NDualArray` for scalar-float
-    # elements). `similar(::Memory)` is a fresh same-eltype Memory; `randn` content
-    # comes via the `Memory{T}(::Vector)` constructor (`randn` itself returns an
-    # Array). Without these, a `Memory{T}` slot falls through to the generic-struct
-    # seed and tries to build `Memory`/`Int` from a tuple of field seeds.
-    @inline function uninit_dual(::Val{N}, m::Memory{T}) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T}}(m, ntuple(_ -> similar(m), Val(N)))
-    end
-    @inline function uninit_dual(::Val{N}, m::Memory{Complex{R}}) where {N,R<:IEEEFloat}
-        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(
-            m, ntuple(_ -> similar(m), Val(N))
-        )
-    end
-    @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, m::Memory{T}
-    ) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T}}(
-            m, ntuple(_ -> Memory{T}(randn(rng, T, length(m))), Val(N))
-        )
-    end
-    @inline function randn_dual(
-        ::Val{N}, rng::AbstractRNG, m::Memory{Complex{R}}
-    ) where {N,R<:IEEEFloat}
-        return NDualArray{Complex{R},N,1,Memory{Complex{R}}}(
-            m, ntuple(_ -> Memory{Complex{R}}(randn(rng, Complex{R}, length(m))), Val(N))
+        ::Val{N}, rng::AbstractRNG, m::Memory{E}
+    ) where {N,E<:NDualEltype}
+        return NDualArray{E,N,1,Memory{E}}(
+            m, ntuple(_ -> Memory{E}(randn(rng, E, length(m))), Val(N))
         )
     end
     # Element-wise (non-float differentiable element) `Memory` / `MemoryRef` seeds,
