@@ -396,8 +396,8 @@ end
 @inline function frule!!(
     ::Lifted{typeof(Base.eps),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    y = eps(primal(x))
-    return Lifted{P,N}(y, NDual{P,N}(y, ntuple(_ -> zero(P), Val(N))))
+    # eps has zero derivative; the canonical zero forward dual has inner value `y`, zero partials.
+    return zero_lifted(Val(N), eps(primal(x)))
 end
 function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
     eps_pb!!(::P) = (NoRData(), zero(P))
