@@ -1,10 +1,8 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
-function frule!!(
-    ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
-) where {Nw,P<:BlasFloat}
-    A, dA_lanes = arrayify(A_dA)
-    _, ipiv, info = LAPACK.getrf!(A)
+# Shared width-N Fréchet-derivative body for the `getrf!` frules (plain and `Core.kwcall`),
+# which differ only in the primal call. `A`/`dA_lanes` come from `arrayify(A_dA)` and `A` is
+# already overwritten by the in-place `getrf!`.
+function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) where {Nw}
     L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
@@ -15,6 +13,15 @@ function frule!!(
     end
     y = (A, ipiv, info)
     return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(LAPACK.getrf!),AbstractMatrix{<:BlasFloat}})
+function frule!!(
+    ::Lifted{typeof(LAPACK.getrf!),Nw}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
+) where {Nw,P<:BlasFloat}
+    A, dA_lanes = arrayify(A_dA)
+    _, ipiv, info = LAPACK.getrf!(A)
+    return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
 end
 function rrule!!(
     ::CoDual{typeof(LAPACK.getrf!)}, _A::CoDual{<:AbstractMatrix{P}}
@@ -49,16 +56,7 @@ function frule!!(
     check = primal(_kwargs).check
     A, dA_lanes = arrayify(A_dA)
     _, ipiv, info = LAPACK.getrf!(A; check)
-    L = UnitLowerTriangular(A)
-    U = UpperTriangular(A)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
-    @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
-        dA_lane .= L * tril(F, -1) + triu(F) * U
-    end
-    y = (A, ipiv, info)
-    return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
+    return _getrf_fwd(A_dA, A, dA_lanes, ipiv, info)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
