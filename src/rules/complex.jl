@@ -64,18 +64,9 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-# `lgetfield(::Complex, ::Val)` is already a primitive via the generic
-# `Tuple{typeof(lgetfield),Any,Val}` declaration in `misc.jl`; this Complex-specific frule only
-# refines the forward V, so it needs no `@is_primitive` of its own.
-function frule!!(
-    ::Lifted{typeof(lgetfield),N},
-    x::Lifted{Complex{P},N,Complex{NDual{P,N}}},
-    ::Lifted{Val{FieldName},N},
-) where {N,P<:IEEEFloat,FieldName}
-    y = getfield(primal(x), FieldName)
-    dy = getfield(tangent(x), FieldName)
-    return Lifted{P,N}(y, dy)
-end
+# `lgetfield(::Complex, ::Val)` forward mode is handled by the generic `lgetfield` frule in
+# `misc.jl` via the `_get_lifted_field(::Complex, name)` dispatch entry (which refines the
+# forward V to the field's `NDual`), so no Complex-specific frule is needed here.
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     obj_cd::CoDual{<:CF,<:CF},

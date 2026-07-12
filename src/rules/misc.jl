@@ -166,16 +166,18 @@ end
 end
 
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
-# A `PossiblyUninitTangent` backing field is unwrapped: the caller has already
-# read the primal field (so it is defined), hence the PUT is initialised.
-@inline _maybe_val(x::PossiblyUninitTangent) = val(x)
-@inline _maybe_val(x) = x
 @inline _coerce_backing_field(::Type{F}, v) where {F<:PossiblyUninitTangent} = F(v)
 @inline _coerce_backing_field(::Type, v) = v
-@inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = _maybe_val(
+# A `PossiblyUninitTangent` backing field is unwrapped via `val` (the caller has already read the
+# primal field, so the PUT is initialised); any other field passes through unchanged.
+@inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = val(
     getfield(getfield(V, :value), name)
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
+# Complex slots (V `Complex{NDual}`): route field reads here so the generic `lgetfield` frule
+# refines the forward V without a Complex-specific method — `getfield(Complex{NDual}, :re/:im)` is
+# the field's `NDual`. Mirrors the reverse-mode `getfield` path.
+@inline _get_lifted_field(V::Complex, name) = getfield(V, name)
 # NDualArray is the parallel-arrays wrapper for `Array{T,D}` slots (not a struct lift).
 # Sub-field access into the underlying primal struct happens in inlined
 # `Array` / `Memory` code; project to the matching parallel-arrays per-lane V so the
