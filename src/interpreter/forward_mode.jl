@@ -288,7 +288,7 @@ end
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt, ::Val{N}=Val(1))::Union{Lifted,Int}
+    const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int}
 
 Build a width-`N` `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose
 derivative is zero, so its tangent must be zeroed (an uninitialised array tangent would leak
@@ -300,9 +300,7 @@ it is not, then the `Lifted` is put into captures, and its location in `captures
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(
-    captures::Vector{Any}, stmt, (::Val{N})=Val(1)
-)::Union{Lifted,Int} where {N}
+function const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int} where {N}
     v = get_const_primal_value(stmt)
     x = zero_lifted(Val(N), v)
     if safe_for_literal(v)
@@ -631,7 +629,7 @@ end
     return __call_rule(rule.rule, args)
 end
 
-function dual_ret_type(primal_ir::IRCode, (::Val{N})=Val(1)) where {N}
+function dual_ret_type(primal_ir::IRCode, ::Val{N}) where {N}
     return lifted_type(Val(N), compute_ir_rettype(primal_ir))
 end
 
