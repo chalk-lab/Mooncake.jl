@@ -1297,6 +1297,11 @@ for (fname, elty, relty) in (
         A = primal(A_dA)
         β = primal(β_dβ)
         C = primal(C_dC)
+        # NaN-masking reference triangle of the input C: the β==0 convention lets the caller pass an
+        # uninitialised/NaN C (overwritten by the primal below), so the `dβ*C` term must not leak NaN
+        # into the tangent — matching the sibling level-3 frules (gemm!/symm!/gemv!/…). Lane-invariant
+        # and C is untouched until after the loop, so compute it once here rather than per lane.
+        Ct = uplo == 'U' ? triu(C) : tril(C)
         for lane in 1:Nw
             dα = tangent(α_dα, lane)
             dβ = tangent(β_dβ, lane)
@@ -1305,10 +1310,6 @@ for (fname, elty, relty) in (
             BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
             iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
             if !iszero(dβ)
-                # Mask NaN input-C elements (the β==0 convention lets the caller pass an
-                # uninitialised/NaN C, which the primal overwrites) so the `dβ*C` term does not leak
-                # NaN into the tangent — matching the sibling level-3 frules (gemm!/symm!/gemv!/…).
-                Ct = uplo == 'U' ? triu(C) : tril(C)
                 for n in eachindex(dC, Ct)
                     dC[n] = ifelse_nan(Ct[n], dC[n], dC[n] + dβ * Ct[n])
                 end
