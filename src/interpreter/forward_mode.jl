@@ -572,7 +572,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     width::Int
     world::UInt
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, width::Int=1)
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, width::Int)
         interp = get_interpreter(ForwardMode)
         return new{mi.specTypes,frule_type(interp, mi;debug_mode,chunk_size=width)}(
             debug_mode, mi, width, interp.world
@@ -662,7 +662,7 @@ struct DynamicFRule{V}
     world::UInt
 end
 
-function DynamicFRule(debug_mode::Bool, width::Int=1)
+function DynamicFRule(debug_mode::Bool, width::Int)
     return DynamicFRule(
         Dict{Any,Any}(), debug_mode, width, get_interpreter(ForwardMode).world
     )
