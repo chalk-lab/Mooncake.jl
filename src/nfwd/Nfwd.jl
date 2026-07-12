@@ -2111,27 +2111,19 @@ struct NDualArray{Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped} 
     end
 end
 
-# 4-parameter outer constructors fill in `Wrapped` from `Element`.
+# 4-parameter outer constructor fills in `Wrapped` from `Element` via `_wrapped_eltype`
+# (the same helper the inner constructor validates against): `NDual{Element,N}` for real
+# `Element`, `Complex{NDual{T,N}}` for `Element === Complex{T}`.
 @inline function NDualArray{Element,N,D,A}(
     p::A, ts::NTuple{N,A}
-) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A,NDual{Element,N}}(p, ts)
-end
-@inline function NDualArray{Element,N,D,A}(
-    p::A, ts::NTuple{N,A}
-) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A,Complex{NDual{T,N}}}(p, ts)
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N))}(p, ts)
 end
 
 # Zero-init seed: allocate fresh slot-local partials matching the primal.
 @inline function NDualArray{Element,N,D,A}(
     p::A
-) where {Element<:IEEEFloat,N,D,A<:AbstractArray{Element,D}}
-    return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
-end
-@inline function NDualArray{Element,N,D,A}(
-    p::A
-) where {T<:IEEEFloat,Element<:Complex{T},N,D,A<:AbstractArray{Element,D}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
     return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
 end
 
