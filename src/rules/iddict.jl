@@ -192,8 +192,8 @@ end
 end
 
 function frule!!(
-    ::Lifted{typeof(Base.rehash!),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, newsz::Lifted
-) where {N,K,V,Vdv}
+    ::Lifted{typeof(Base.rehash!),N}, d::Lifted{<:IdDict,N}, newsz::Lifted
+) where {N}
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
     return d
@@ -277,11 +277,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 function frule!!(
-    ::Lifted{typeof(get),N},
-    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
-    key::Lifted,
-    default::Lifted,
-) where {N,K,V,Vdv}
+    ::Lifted{typeof(get),N}, d::Lifted{IdDict{K,V},N}, key::Lifted, default::Lifted
+) where {N,K,V}
     _key = primal(key)
     # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
     # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
@@ -314,8 +311,8 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
 function frule!!(
-    ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}}, key::Lifted
-) where {N,K,V,Vdv}
+    ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N}, key::Lifted
+) where {N,K,V}
     return Lifted{V,N}(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
 end
 function rrule!!(
