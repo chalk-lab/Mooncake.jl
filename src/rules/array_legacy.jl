@@ -554,8 +554,7 @@ end
     typeof(complex),Array{P,D}
 } where {P<:IEEEFloat,D}
 function frule!!(
-    ::Lifted{typeof(complex),N},
-    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
+    ::Lifted{typeof(complex),N}, x::Lifted{Array{P,D},N,<:NDualArray}
 ) where {N,P<:IEEEFloat,D}
     y = complex(primal(x))  # y = x + 0im
     parts = ntuple(k -> complex(tangent(x).partials[k]), Val(N))  # d(complex(x)) = complex(dx)

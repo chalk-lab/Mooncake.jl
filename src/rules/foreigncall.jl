@@ -10,7 +10,7 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
-function frule!!(::Lifted{typeof(_foreigncall_),Nw}, args...) where {Nw}
+function frule!!(::Lifted{typeof(_foreigncall_)}, args...)
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
