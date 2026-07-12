@@ -517,6 +517,10 @@ end
     } where {P<:BlasFloat},
 )
 
+# Present a vector operand to the level-3 BLAS kernels as a single-column matrix (used by the
+# gemv!/gemm! Lifted frules for both the primal arrays and the per-lane partials).
+@inline _as_col(v) = v isa AbstractVector ? reshape(v, :, 1) : v
+
 function frule!!(
     ::Lifted{typeof(BLAS.gemv!),Nw},
     tA::Lifted{Char},
@@ -530,14 +534,14 @@ function frule!!(
     α = primal(alpha)
     β = primal(beta)
     # Primal arrays come straight from each Lifted slot's `primal`.
-    A = primal(A_dA) isa AbstractVector ? reshape(primal(A_dA), :, 1) : primal(A_dA)
+    A = _as_col(primal(A_dA))
     x = primal(x_dx)
     y = primal(y_dy)
     for lane in 1:Nw
         dα = tangent(alpha, lane)
         dβ = tangent(beta, lane)
         dA_l = _blas_lane_partial(A_dA, lane)
-        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
+        dA = _as_col(dA_l)
         dx = _blas_lane_partial(x_dx, lane)
         dy = _blas_lane_partial(y_dy, lane)
         _gemv!_frule_core!(_tA, α, dα, A, dA, x, dx, β, dβ, y, dy)
@@ -1018,16 +1022,16 @@ function frule!!(
     Ap = primal(A_dA)
     Bp = primal(B_dB)
     Cp = primal(C_dC)
-    A = Ap isa AbstractVector ? reshape(Ap, :, 1) : Ap
-    B = Bp isa AbstractVector ? reshape(Bp, :, 1) : Bp
+    A = _as_col(Ap)
+    B = _as_col(Bp)
     for lane in 1:Nw
         dα = tangent(alpha, lane)
         dβ = tangent(beta, lane)
         dA_l = _blas_lane_partial(A_dA, lane)
         dB_l = _blas_lane_partial(B_dB, lane)
         dC = _blas_lane_partial(C_dC, lane)
-        dA = dA_l isa AbstractVector ? reshape(dA_l, :, 1) : dA_l
-        dB = dB_l isa AbstractVector ? reshape(dB_l, :, 1) : dB_l
+        dA = _as_col(dA_l)
+        dB = _as_col(dB_l)
         # Tangents (product rule).
         BLAS.gemm!(tA, tB, α, dA, B, β, dC)
         BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
