@@ -1294,8 +1294,8 @@ function rrule!!(f::CoDual{typeof(Core.apply_type)}, args...)
 end
 
 function frule!!(
-    ::Lifted{typeof(compilerbarrier),Nw}, setting::Lifted{Symbol,Nw}, v::Lifted{P,Nw,V}
-) where {Nw,P,V}
+    ::Lifted{typeof(compilerbarrier),Nw}, setting::Lifted{Symbol,Nw}, v::Lifted{P,Nw}
+) where {Nw,P}
     s = primal(setting)
     return Lifted{P,Nw}(compilerbarrier(s, primal(v)), compilerbarrier(s, tangent(v)))
 end
@@ -1617,8 +1617,8 @@ function rrule!!(f::CoDual{typeof(tuple)}, args::Vararg{Any,N}) where {N}
 end
 
 function frule!!(
-    ::Lifted{typeof(typeassert),Nw}, x::Lifted{P,Nw,V}, type::Lifted
-) where {Nw,P,V}
+    ::Lifted{typeof(typeassert),Nw}, x::Lifted{P,Nw}, type::Lifted
+) where {Nw,P}
     return Lifted{P,Nw}(typeassert(primal(x), primal(type)), tangent(x))
 end
 function rrule!!(::CoDual{typeof(typeassert)}, x::CoDual, type::CoDual)
