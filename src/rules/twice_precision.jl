@@ -74,11 +74,9 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 ) where {N,P<:IEEEFloat}
     return NTuple{N,TwicePrecision{P}}
 end
-@foldable @inline function lifted_type(
-    ::Val{N}, ::Type{TwicePrecision{P}}
-) where {N,P<:IEEEFloat}
-    return Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}
-end
+# No `lifted_type(::Type{TwicePrecision})` override needed: the generic concrete-struct
+# `lifted_type` returns `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `TwicePrecision{P}`
+# uses the `dual_type` above and yields `Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}`.
 
 # Forward seed/lift/unlift for the custom V `NTuple{N, TWP{P}}` (one TWP partial per lane),
 # mirroring reverse `zero_tangent_internal` / `randn_tangent_internal`. The generic

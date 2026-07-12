@@ -219,7 +219,7 @@ function Mooncake.frule!!(
     y = kron(px1, px2)
     partials = ntuple(k -> kron(dx1s[k], px2) + kron(px1, dx2s[k]), Val(N))
     A = typeof(y)
-    return Lifted{A,N}(y, NDualArray{T,N,2,A,NDual{T,N}}(y, partials))
+    return Lifted{A,N}(y, NDualArray{T,N,2,A}(y, partials))
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})

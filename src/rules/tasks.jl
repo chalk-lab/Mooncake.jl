@@ -79,7 +79,8 @@ const TaskCoDual = CoDual{Task,TaskTangent}
 # arbitrary Task fields; the `TaskTangent` carries no lane data, so one shared `TaskTangent` per
 # slot suffices independent of width N.
 @foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
-@foldable @inline lifted_type(::Val{N}, ::Type{Task}) where {N} = Lifted{Task,N,TaskTangent}
+# No `lifted_type(::Type{Task})` override needed: the generic concrete-struct `lifted_type` returns
+# `Lifted{Task,N,dual_type(Val(N),Task)}` = `Lifted{Task,N,TaskTangent}`.
 
 # Forward seed factories: a `Task`'s V is the singleton `TaskTangent` (= its reverse tangent),
 # not a structural lift, so the generic `@generated` seed factory cannot build it (a `Task`
