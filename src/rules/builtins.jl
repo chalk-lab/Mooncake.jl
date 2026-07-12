@@ -1503,21 +1503,16 @@ end
 # the `_setfield_tangent!` path — the parallel-arrays `NDualArray` V is immutable. Delegate to the
 # `lsetfield!` array frule (which updates the V via the partials/memref-aliasing), with the
 # positional field index normalised to the symbol it dispatches on (`1`→`:ref`, `2`→`:size`).
+# `RefValue` shares the Array path: its V is `NDualRef` (an immutable wrapper over per-lane
+# partials, no `:x` field), so the `_setfield_tangent!` path's `setproperty!` fallback would throw.
+# Both delegate to the corresponding `lsetfield!` frule (which updates the V via the
+# partials/memref-aliasing), with the positional field index normalised to the symbol it dispatches
+# on (Array `1`→`:ref`, `2`→`:size`; `RefValue`'s only field is `:x`, index 1).
 @inline function frule!!(
-    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Array}, name::Lifted, x::Lifted
-) where {Nw}
-    nm = primal(name)
-    sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
-    return frule!!(
-        zero_lifted(Val(Nw), lsetfield!), value, zero_lifted(Val(Nw), Val(sym)), x
-    )
-end
-# A `RefValue`'s V is `NDualRef` (an immutable wrapper over per-lane partials, no `:x` field), so
-# the `_setfield_tangent!` path's generic `setproperty!` fallback would throw. Delegate to the Ref
-# `lsetfield!` frule (which writes the partials), like the Array branch — `RefValue`'s only field
-# is `:x` (index 1).
-@inline function frule!!(
-    ::Lifted{typeof(setfield!),Nw}, value::Lifted{<:Base.RefValue}, name::Lifted, x::Lifted
+    ::Lifted{typeof(setfield!),Nw},
+    value::Lifted{<:Union{Array,Base.RefValue}},
+    name::Lifted,
+    x::Lifted,
 ) where {Nw}
     nm = primal(name)
     sym = nm isa Integer ? fieldname(typeof(primal(value)), nm) : nm
