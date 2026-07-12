@@ -1228,7 +1228,9 @@ function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
     doffs::Lifted{<:Integer},
-    src::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
+    # Covers both a GPU src and a host-Array src (cross-device copy) — the body dispatches the inner
+    # `unsafe_copyto!` on the runtime element/device types, so one method serves both @is_primitives.
+    src::Lifted{<:Union{CuMaybeComplexArray,Array},Nw,<:NDualArray},
     soffs::Lifted{<:Integer},
     n::Lifted{<:Integer},
 ) where {Nw}
@@ -1277,23 +1279,7 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
-function frule!!(
-    ::Lifted{typeof(unsafe_copyto!),Nw},
-    dest::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
-    doffs::Lifted{<:Integer},
-    src::Lifted{<:Array,Nw,<:NDualArray},
-    soffs::Lifted{<:Integer},
-    n::Lifted{<:Integer},
-) where {Nw}
-    doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
-    unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
-    dest_partials = tangent(dest).partials
-    src_partials = tangent(src).partials
-    @inbounds for lane in 1:Nw
-        unsafe_copyto!(dest_partials[lane], doffs_v, src_partials[lane], soffs_v, n_v)
-    end
-    return dest
-end
+# (host-Array-src forward mode is served by the merged `unsafe_copyto!` frule above.)
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
@@ -2901,15 +2887,11 @@ function _gpu_collect_scalar_map(bc::Broadcasted)
     return scalar_map, scalar_index[] - 1
 end
 
-function _gpu_collect_scalar_map(bc::Broadcasted, scalar_index::Ref{Int})
-    return _gpu_collect_scalar_map_args(bc.args, scalar_index)
-end
-
 function _gpu_collect_scalar_map_args(args::Tuple, scalar_index::Ref{Int})
     return ntuple(length(args)) do i
         a = args[i]
         if a isa Broadcasted
-            _gpu_collect_scalar_map(a, scalar_index)
+            _gpu_collect_scalar_map_args(a.args, scalar_index)
         elseif a isa CuFloatOrComplex
             idx = scalar_index[]
             scalar_index[] += 1
