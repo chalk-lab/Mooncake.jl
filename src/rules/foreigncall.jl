@@ -331,18 +331,18 @@ end
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_array_isassigned},Nw},
-    ::Lifted{RT,Nw},
-    ::Lifted{AT,Nw},
-    ::Lifted{nreq,Nw},
-    ::Lifted{calling_convention,Nw},
+    ::Lifted,  # return type (Cint)
+    ::Lifted,  # arg types
+    ::Lifted,  # nreq
+    ::Lifted,  # calling convention
     a::Lifted,
     ii::Lifted,
     args...,
-) where {Nw,RT,AT,nreq,calling_convention}
+) where {Nw}
     GC.@preserve args begin
         y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
     end
-    return Lifted{Cint,Nw}(y, NoDual())
+    return zero_lifted(Val(Nw), y)
 end
 
 function rrule!!(
@@ -373,7 +373,7 @@ function frule!!(
     b::Lifted,
 ) where {Nw}
     y = ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
-    return Lifted{typeof(y),Nw}(y, NoDual())
+    return zero_lifted(Val(Nw), y)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
