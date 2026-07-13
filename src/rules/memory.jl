@@ -873,20 +873,28 @@ end
 @generated function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P}
-    MemV = dual_type(Val(Nw), Memory{P})
-    MemV === NoDual && return :(Lifted{Memory{P},Nw}(Memory{P}(undef, primal(n)), NoDual()))
+    # `isbitstype(P)` is world-independent (structural), so it stays in the generator body. But
+    # `dual_type(Val(Nw), Memory{P})` MUST be emitted into the RETURNED expression, not computed
+    # here: a generator-body call bakes its resolution at this generator's first-expansion world,
+    # so an extension's `dual_type` (e.g. CUDA's `CuArray → NDualArray`) loaded afterwards can never
+    # take effect — under forward-over-reverse the element `P` can be a reverse-pullback closure
+    # capturing `CuArray`s, and the baked generic recursion then descends into `CuPtr{Nothing}` and
+    # errors. In the returned expression `dual_type` resolves at the call world (extension visible),
+    # and stays `@foldable`-folded to a concrete type, so `MemV`/the `NoDual` branch remain stable.
     fill_expr = if isbitstype(P)
         :(@inbounds for i in eachindex(dv)
-            dv[i] = zero_dual(Val(Nw), x[i])
+            dv[i] = zero_dual(Val($Nw), x[i])
         end)
     else
         nothing
     end
     return quote
-        x = Memory{P}(undef, primal(n))
-        dv = $MemV(undef, primal(n))
+        x = Memory{$P}(undef, primal(n))
+        MemV = dual_type(Val($Nw), Memory{$P})
+        MemV === NoDual && return Lifted{Memory{$P},$Nw}(x, NoDual())
+        dv = MemV(undef, primal(n))
         $fill_expr
-        return Lifted{Memory{P},Nw}(x, dv)
+        return Lifted{Memory{$P},$Nw}(x, dv)
     end
 end
 @static if VERSION >= v"1.12-"
