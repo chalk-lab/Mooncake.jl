@@ -96,7 +96,12 @@ function build_frule(
             interp.world, (sig_or_mi, debug_mode, :forward, chunk_size)
         )
         if haskey(interp.oc_cache, oc_cache_key)
-            return interp.oc_cache[oc_cache_key]
+            # Mirror reverse-mode `build_derived_rrule`: return an independent copy so each
+            # retrieval gets its own mutable OpaqueClosure-capture state (a `DynamicFRule`'s
+            # `cache::Dict`, a `LazyFRule`'s rebuilt `rule`). Returning the shared cached
+            # object would race under threads / nested AD, which is exactly what the forward
+            # `_copy` machinery (and reverse's eager copy) exist to prevent.
+            return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
             dual_ir, captures, info = generate_dual_ir(

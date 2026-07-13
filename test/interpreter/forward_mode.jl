@@ -21,6 +21,10 @@ stale_fwd_lazy(x) = stale_fwd_callee(x)
 const STALE_FWD_FNS = Function[stale_fwd_callee]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
+# Dynamic dispatch (`inferencebarrier` hides the callee) so the derived rule captures a
+# `DynamicFRule` with a mutable `cache` Dict — used by the cache-hit `_copy` regression below.
+fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
+
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
@@ -84,5 +88,23 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
         )
         @test Mooncake.primal(lazy_out) === 3.0f0
         @test Mooncake.primal(dyn_out) === 3.0f0
+    end
+
+    # A cache hit must return an independent copy (as reverse `build_derived_rrule` does),
+    # not the shared cached object: otherwise two builds share one `DynamicFRule.cache`
+    # Dict and race under threads / nested AD.
+    @testset "cache-hit returns an independent rule copy (D10)" begin
+        interp = Mooncake.MooncakeInterpreter(ForwardMode)
+        sig = Tuple{typeof(fwd_cache_dyn),Float64}
+        r1 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)
+        r2 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)  # cache HIT
+        dyn1 = only(
+            filter(c -> c isa Mooncake.DynamicFRule, collect(r1.fwd_oc.oc.captures))
+        )
+        dyn2 = only(
+            filter(c -> c isa Mooncake.DynamicFRule, collect(r2.fwd_oc.oc.captures))
+        )
+        @test dyn1 !== dyn2
+        @test dyn1.cache !== dyn2.cache
     end
 end;
