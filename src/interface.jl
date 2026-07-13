@@ -2299,8 +2299,15 @@ true
     )
 end
 
-function _make_hessian_buffers(::Type{T}, n::Int) where {T}
-    return (; H=zeros(T, n, n), grad=zeros(T, n), v=zeros(T, n))
+function _make_hessian_buffers(::Type{T}, x::AbstractVector) where {T}
+    # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array input
+    # (e.g. `CuArray`) gets device-resident buffers; for a `Vector{T}` input this is identical to
+    # host `zeros`. The chunked/width-1 sweeps write `H`/`grad`/`v` in place (broadcast + `copyto!`),
+    # so a device-resident `x` yields a device-resident gradient and Hessian.
+    n = length(x)
+    return (;
+        H=fill!(similar(x, T, n, n), zero(T)), grad=zero_tangent(x), v=zero_tangent(x)
+    )
 end
 
 @noinline _throw_not_hessian_cache() = throw(
@@ -2455,7 +2462,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.grad_tangent,
         base.fwd_cache,
         base.output_spec,
-        (_make_hessian_buffers(T, length(x1)), chunked),
+        (_make_hessian_buffers(T, x1), chunked),
     )
 end
 

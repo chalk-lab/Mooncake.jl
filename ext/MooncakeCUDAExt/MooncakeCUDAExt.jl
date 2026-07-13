@@ -385,6 +385,51 @@ function rrule!!(
     _nopb(Val(3))
 end
 
+# Chunked-Hessian basis seeding for device-resident arrays. The generic
+# `_basis_seed!!(::NDualArray)` writes each lane's one-hot with scalar `setindex!`, which a
+# CuArray forbids. Each lane consumes one degree of freedom per element (numbered by `cursor`
+# in `eachindex` order, i.e. column-major linear for a dense CuArray), so lane `k`'s partial is
+# a one-hot at linear position `slots[k] - base`. Zero the lane and write that single element
+# host→device via a 1-element `copyto!` — no scalar indexing.
+function Mooncake._basis_seed!!(
+    v::NDualArray{T,N,D,A}, slots::NTuple{N,Int}, cursor, dict
+) where {T<:IEEEFloat,N,D,A<:CuArray}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    n = length(v.primal)
+    base = cursor[]
+    onehot = [one(T)]
+    for k in 1:N
+        p = v.partials[k]
+        fill!(p, zero(T))
+        hot = slots[k] - base
+        1 <= hot <= n && copyto!(p, hot, onehot, 1, 1)
+    end
+    cursor[] += n
+    return v
+end
+# Complex device arrays consume two degrees of freedom per element (real then imaginary).
+function Mooncake._basis_seed!!(
+    v::NDualArray{Complex{R},N,D,A}, slots::NTuple{N,Int}, cursor, dict
+) where {R<:IEEEFloat,N,D,A<:CuArray}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    n = length(v.primal)
+    base = cursor[]
+    for k in 1:N
+        p = v.partials[k]
+        fill!(p, zero(Complex{R}))
+        off = slots[k] - base
+        if 1 <= off <= 2n
+            j = cld(off, 2)
+            val = isodd(off) ? Complex(one(R), zero(R)) : Complex(zero(R), one(R))
+            copyto!(p, j, [val], 1, 1)
+        end
+    end
+    cursor[] += 2n
+    return v
+end
+
 # CuPtr arithmetic: (p::CuPtr{T}) + (n::Integer) offsets a device pointer by n bytes.
 # For differentiable T the tangent is also a CuPtr; it must be offset by the same amount
 # since primal and tangent arrays are laid out identically.
@@ -2590,7 +2635,7 @@ const _GPU_SECOND_ORDER_MSG =
     "Gradient and JVP are unaffected; for HVP/Hessian, use array-level ops " *
     "(`sum(x)`, `dot`, matmul)."
 @is_primitive MinimalCtx Tuple{typeof(_gpu_broadcast_dual),Vararg}
-function frule!!(::Dual{typeof(_gpu_broadcast_dual)}, ::Vararg{Dual})
+function frule!!(::Lifted{typeof(_gpu_broadcast_dual)}, ::Vararg{Lifted})
     return _throw_gpu_argument_error(_GPU_SECOND_ORDER_MSG)
 end
 function rrule!!(::CoDual{typeof(_gpu_broadcast_dual)}, ::Vararg{CoDual})
