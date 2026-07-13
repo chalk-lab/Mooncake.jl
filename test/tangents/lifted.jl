@@ -76,7 +76,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
     # `Base._stable_typeof` P (`Type{T}` for type-valued primals, matching rule dispatch).
-    sl(N, p, v=NoTangent()) = Lifted{Base._stable_typeof(p),N}(p, v)
+    sl(N, p, v=NoDual()) = Lifted{Base._stable_typeof(p),N}(p, v)
     nd(v::T, parts::Vararg{T,N}) where {T,N} = NDual{T,N}(v, parts)
 
     @testset "cyclic MutableDual tangent arithmetic" begin

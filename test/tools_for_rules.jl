@@ -357,7 +357,8 @@ end
         # tangent, `L(NaN)` gave `Complex(NaN, 0.0)` — the imaginary part leaked an unpoisoned zero.
         @testset "notimplemented_tangent_guard poisons both complex components" begin
             r = Mooncake.notimplemented_tangent_guard(ComplexF64(1.0, 2.0))
-            @test isnan(real(r)) && isnan(imag(r))
+            @test isnan(real(r))
+            @test isnan(imag(r))
             @test iszero(Mooncake.notimplemented_tangent_guard(ComplexF64(0.0, 0.0)))
             @test isnan(Mooncake.notimplemented_tangent_guard(3.0))
             @test iszero(Mooncake.notimplemented_tangent_guard(0.0))

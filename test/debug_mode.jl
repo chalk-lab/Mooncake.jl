@@ -73,6 +73,18 @@
             ) isa Lifted
         end
 
+        @testset "argument checking" begin
+            # Mirrors the reverse analogue: `verify_args` (the signature-subtype check that runs
+            # first in the DebugFRule pipeline) prevents a segfault when the call's primal types do
+            # not match the rule signature. Build a Float64 rule, then drive it through the wrapper
+            # with a Float32 slot and confirm the loud `ArgumentError` fires end-to-end.
+            f = x -> 5x
+            rule = Mooncake.build_frule(zero_dual(f), 5.0; debug_mode=true)
+            @test_throws ArgumentError rule(
+                Mooncake.lift(f, NoTangent()), Mooncake.lift(5.0f0, 1.0f0)
+            )
+        end
+
         # A concrete-primal slot whose V is not the canonical dual_type must be caught;
         # Ptr primals are exempt (bitcast chains legitimately re-type per-lane pointers).
         @testset "V-coherence check" begin

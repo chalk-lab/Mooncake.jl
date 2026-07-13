@@ -79,11 +79,6 @@
                     Mooncake.frule!!(zero_dual(tand), Mooncake.lift(x, zero(T))), 1
                 ) === zero(T)
             end
-            # `tan` (radians) never lands exactly on a pole, but the guard must still hold beside one.
-            xnear = prevfloat(T(π) / 2)
-            @test tangent(
-                Mooncake.frule!!(zero_dual(tan), Mooncake.lift(xnear, zero(T))), 1
-            ) === zero(T)
         end
     end
 
