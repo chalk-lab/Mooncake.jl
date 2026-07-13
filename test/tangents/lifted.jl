@@ -572,6 +572,14 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
             end
             z = zero_lifted(Val(1), x)
             @test Mooncake._add_to_primal(primal(z), tangent(z), true).x === 3.0
+            # D9: with `unsafe=false`, reconstruction goes through the public constructor. Both
+            # fields are present here, but `LiftedTest_MaybeInit` has only a 1-arg constructor, so
+            # `P(x, y)` fails and a diagnostic `AddToPrimalException` is thrown — the reverse-oracle
+            # contract (cf. the reverse test in tangents.jl). The pre-D9 `_new_` path bypassed the
+            # constructor and would silently succeed, so this pins the `unsafe` half of the fix.
+            @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(
+                primal(z), tangent(z), false
+            )
         end
         @testset "heap uninit field (FieldUndefined)" begin
             x = LiftedTest_MaybeInitHeap(3.0)  # `y::Vector` genuinely undefined
@@ -581,6 +589,14 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
                 @test xp isa LiftedTest_MaybeInitHeap
                 @test xp.x != 3.0
                 @test !isdefined(xp, :y)  # undefined field stays undefined, matching reverse
+            end
+            # D9: here `y` maps to `FieldUndefined`, so `__construct_type` calls the 1-arg
+            # `P(x)` — which exists — and `unsafe=false` succeeds, leaving `y` undefined.
+            let z = randn_lifted(Val(1), Xoshiro(3), x)
+                r = Mooncake._add_to_primal(primal(z), tangent(z), false)
+                @test r isa LiftedTest_MaybeInitHeap
+                @test !isdefined(r, :y)
+                @test r.x != 3.0
             end
         end
     end
