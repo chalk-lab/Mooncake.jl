@@ -412,10 +412,10 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
     # `test_rule` (both modes, widths 1-3, FD) plus the per-lane oracle, so no bespoke
     # one-to-one parallel testset is needed here.
 
-    # low_level_maths.jl scalar primitives are registry-covered: exp/log/sin/.../hypot in
-    # Val{:low_level_maths}, tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf in
-    # Val{:rules_via_nfwd}. test_rule's per-lane oracle already checks per-lane partials for these
-    # numeric-dual primitives, so the explicit-seed direct `sin` check added nothing.
+    # low_level_maths.jl scalar primitives are registry-covered under Val{:low_level_maths}
+    # (exp/log/sin/.../hypot plus tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf). test_rule's
+    # per-lane oracle already checks per-lane partials for these numeric-dual primitives, so the
+    # explicit-seed direct `sin` check added nothing.
 
     # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
     # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via

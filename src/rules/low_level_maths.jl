@@ -31,86 +31,6 @@
 # analytic pullbacks (no NDual/Nfwd/ChainRules dependency).
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
-    test_cases = vcat(
-        map([Float32, Float64]) do P
-            cases = [
-                (sqrt, P(0.5)),
-                (cbrt, P(0.4)),
-                (log, P(0.1)),
-                (log10, P(0.1)),
-                (log2, P(0.15)),
-                (log1p, P(0.95)),
-                (exp, P(1.1)),
-                (exp2, P(1.12)),
-                (exp10, P(0.55)),
-                (expm1, P(-0.3)),
-                (sin, P(1.1)),
-                (cos, P(1.1)),
-                (tan, P(0.5)),
-                (sec, P(-0.4)),
-                (csc, P(0.3)),
-                (cot, P(0.1)),
-                (sind, P(181.1)),
-                (cosd, P(-181.3)),
-                (tand, P(93.5)),
-                (secd, P(33.5)),
-                (cscd, P(-0.5)),
-                (cotd, P(5.1)),
-                (sinpi, P(13.2)),
-                (cospi, P(-33.2)),
-                (asin, P(0.77)),
-                (acos, P(0.53)),
-                (atan, P(0.77)),
-                (asec, P(2.55)),
-                (acsc, P(1.03)),
-                (acot, P(101.5)),
-                (asind, P(0.23)),
-                (acosd, P(0.55)),
-                (atand, P(1.45)),
-                (asecd, P(1.1)),
-                (acscd, P(1.33)),
-                (acotd, P(0.99)),
-                (sinh, P(-3.56)),
-                (cosh, P(3.4)),
-                (tanh, P(0.25)),
-                (sech, P(0.11)),
-                (csch, P(-0.77)),
-                (coth, P(0.22)),
-                (asinh, P(1.45)),
-                (acosh, P(1.56)),
-                (atanh, P(-0.44)),
-                (asech, P(0.75)),
-                (acsch, P(0.32)),
-                (acoth, P(1.05)),
-                (sinc, P(0.36)),
-                (deg2rad, P(185.4)),
-                (rad2deg, P(0.45)),
-                (mod2pi, P(0.1)),
-                (mod, P(7.5), P(2.3)),
-                (mod, P(10.2), P(3.1)),
-                (^, P(4.0), P(5.0)),
-                (atan, P(4.3), P(0.23)),
-                (hypot, P(4.0), P(5.0)),
-                (hypot, P(4.0), P(5.0), P(6.0)),
-                (log, P(2.3), P(3.76)),
-                (max, P(1.5), P(0.5)),
-                (max, P(0.45), P(1.1)),
-                (min, P(1.5), P(0.5)),
-                (min, P(0.45), P(1.1)),
-                (Base.eps, P(5.0)),
-                (nextfloat, P(0.25)),
-                (prevfloat, P(1.1)),
-            ]
-            return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
-        end...,
-    )
-    memory = Any[]
-    return test_cases, memory
-end
-
-derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
-
 # Forward (NDual) + native-reverse analytic rules for scalar/fixed-arity math primitives.
 
 # Reverse-mode removable-singularity guard, native (no forward-mode/NDual dependency): a zero
@@ -1280,8 +1200,82 @@ function rrule!!(
     return zero_fcodual(h), hypot_pb
 end
 
-function hand_written_rule_test_cases(rng_ctor, ::Val{:rules_via_nfwd})
-    (
+# Registered test cases for the whole `:low_level_maths` group, at the end of the file after every
+# rule definition. The scalar-math primitives that route through the `Nfwd` NDual forward overloads
+# (tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf) live here too — no other group covers them.
+function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
+    test_cases = vcat(
+        map([Float32, Float64]) do P
+            cases = [
+                (sqrt, P(0.5)),
+                (cbrt, P(0.4)),
+                (log, P(0.1)),
+                (log10, P(0.1)),
+                (log2, P(0.15)),
+                (log1p, P(0.95)),
+                (exp, P(1.1)),
+                (exp2, P(1.12)),
+                (exp10, P(0.55)),
+                (expm1, P(-0.3)),
+                (sin, P(1.1)),
+                (cos, P(1.1)),
+                (tan, P(0.5)),
+                (sec, P(-0.4)),
+                (csc, P(0.3)),
+                (cot, P(0.1)),
+                (sind, P(181.1)),
+                (cosd, P(-181.3)),
+                (tand, P(93.5)),
+                (secd, P(33.5)),
+                (cscd, P(-0.5)),
+                (cotd, P(5.1)),
+                (sinpi, P(13.2)),
+                (cospi, P(-33.2)),
+                (asin, P(0.77)),
+                (acos, P(0.53)),
+                (atan, P(0.77)),
+                (asec, P(2.55)),
+                (acsc, P(1.03)),
+                (acot, P(101.5)),
+                (asind, P(0.23)),
+                (acosd, P(0.55)),
+                (atand, P(1.45)),
+                (asecd, P(1.1)),
+                (acscd, P(1.33)),
+                (acotd, P(0.99)),
+                (sinh, P(-3.56)),
+                (cosh, P(3.4)),
+                (tanh, P(0.25)),
+                (sech, P(0.11)),
+                (csch, P(-0.77)),
+                (coth, P(0.22)),
+                (asinh, P(1.45)),
+                (acosh, P(1.56)),
+                (atanh, P(-0.44)),
+                (asech, P(0.75)),
+                (acsch, P(0.32)),
+                (acoth, P(1.05)),
+                (sinc, P(0.36)),
+                (deg2rad, P(185.4)),
+                (rad2deg, P(0.45)),
+                (mod2pi, P(0.1)),
+                (mod, P(7.5), P(2.3)),
+                (mod, P(10.2), P(3.1)),
+                (^, P(4.0), P(5.0)),
+                (atan, P(4.3), P(0.23)),
+                (hypot, P(4.0), P(5.0)),
+                (hypot, P(4.0), P(5.0), P(6.0)),
+                (log, P(2.3), P(3.76)),
+                (max, P(1.5), P(0.5)),
+                (max, P(0.45), P(1.1)),
+                (min, P(1.5), P(0.5)),
+                (min, P(0.45), P(1.1)),
+                (Base.eps, P(5.0)),
+                (nextfloat, P(0.25)),
+                (prevfloat, P(1.1)),
+            ]
+            return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
+        end...,
         Any[
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
@@ -1291,7 +1285,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:rules_via_nfwd})
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
             (false, :stability_and_allocs, nothing, modf, 1.7),
         ],
-        Any[],
     )
+    memory = Any[]
+    return test_cases, memory
 end
-derived_rule_test_cases(rng_ctor, ::Val{:rules_via_nfwd}) = Any[], Any[]
+
+derived_rule_test_cases(rng_ctor, ::Val{:low_level_maths}) = Any[], Any[]
