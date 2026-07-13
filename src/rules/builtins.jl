@@ -250,13 +250,16 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
-    a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, _order)))
+    # Tangent bookkeeping uses :monotonic throughout: the primal ordering may be valid
+    # for loads only (e.g. :acquire), so reusing it for the pullback's store would
+    # throw a ConcurrencyViolationError. Only the primal load keeps the user's ordering.
+    a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
     else
         function atomic_pointerref_pullback!!(da)
             atomic_pointerset(
-                dx, increment_rdata!!(atomic_pointerref(dx, _order), da), _order
+                dx, increment_rdata!!(atomic_pointerref(dx, :monotonic), da), :monotonic
             )
             return NoRData(), NoRData(), NoRData()
         end
@@ -273,20 +276,24 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    old_value = atomic_pointerref(_p, _order)
-    old_tangent = atomic_pointerref(tangent(p), _order)
+    # Bookkeeping loads/stores use :monotonic throughout: the primal ordering may be
+    # valid for stores only (e.g. :release), so reusing it for the save/restore loads
+    # would throw a ConcurrencyViolationError. Only the primal store keeps the user's
+    # ordering.
+    old_value = atomic_pointerref(_p, :monotonic)
+    old_tangent = atomic_pointerref(tangent(p), :monotonic)
     dp = tangent(p)
     function atomic_pointerset_pullback!!(::NoRData)
-        dx_r = atomic_pointerref(dp, _order)
-        atomic_pointerset(_p, old_value, _order)
-        atomic_pointerset(dp, old_tangent, _order)
+        dx_r = atomic_pointerref(dp, :monotonic)
+        atomic_pointerset(_p, old_value, :monotonic)
+        atomic_pointerset(dp, old_tangent, :monotonic)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
 
     atomic_pointerset(_p, primal(x), _order)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), _order)
+    atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -1256,10 +1263,37 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             true,
             :stability,
             nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(q, dq),
+            :monotonic,
+        ),
+        # Load-only ordering: the pullback's tangent store must not reuse it.
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(p, dp),
+            :acquire,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
             IntrinsicsWrappers.atomic_pointerset,
             CoDual(p, dp),
             1.0,
             :monotonic,
+        ),
+        # Store-only ordering: the rule's save/restore loads must not reuse it.
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(p, dp),
+            1.0,
+            :release,
         ),
         (
             true,
