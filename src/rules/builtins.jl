@@ -120,8 +120,6 @@ import ..Mooncake:
     NDualEltype,
     _scalar_ndual
 
-using Core.Intrinsics: atomic_pointerref
-
 struct MissingIntrinsicWrapperException <: Exception
     msg::String
 end
@@ -316,8 +314,70 @@ end
 
 # atomic_fence
 # atomic_pointermodify
-# atomic_pointerref
 # atomic_pointerreplace
+
+# Atomic analogue of `pointerref`/`pointerset` below; keep the pullbacks in sync.
+@intrinsic atomic_pointerref
+# Load scalar via primal Ptr; load each lane's tangent scalar via that lane's partial Ptr; pack into
+# the canonical inner V via `_scalar_ndual`. Mirrors the `pointerref` frule below (same load, with an
+# atomic ordering in place of the index/alignment arguments).
+function frule!!(
+    ::Lifted{typeof(atomic_pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,NTuple{Nw,Ptr{T}}},
+    order::Lifted,
+) where {Nw,T<:NDualEltype}
+    _order = primal(order)
+    a = atomic_pointerref(primal(x), _order)
+    x_partials = tangent(x)
+    da_lanes = ntuple(lane -> atomic_pointerref(x_partials[lane], _order), Val(Nw))
+    return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
+end
+# Non-differentiable pointer (V === NoDual): the loaded value carries no derivative.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerref),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, order::Lifted
+) where {Nw}
+    a = atomic_pointerref(primal(x), primal(order))
+    return Lifted{typeof(a),Nw}(a, NoDual())
+end
+# Incoherent per-lane `NTuple{Nw,Ptr}` V on a non-differentiable element collapses to `NoDual`; a
+# differentiable element here (a raw atomic load through a non-canonical tangent layout, e.g. via
+# `pointer_from_objref` of a mutable struct) fails loudly, mirroring the `pointerref` guard below.
+function frule!!(
+    ::Lifted{typeof(atomic_pointerref),Nw},
+    x::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    order::Lifted,
+) where {Nw,T}
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "Forward-mode AD cannot take a raw atomic load (`atomic_pointerref`) of a " *
+            "differentiable `Ptr{$T}` whose per-lane tangent is not the canonical " *
+            "`NTuple{$Nw,Ptr{$T}}` per-lane-partial shape. Use reverse mode, or hold the value " *
+            "in a `Ref`/`Array` whose forward tangent keeps a parallel partials buffer.",
+        ),
+    )
+    a = atomic_pointerref(primal(x), primal(order))
+    return Lifted{typeof(a),Nw}(a, NoDual())
+end
+function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
+    _x = primal(x)
+    _order = primal(order)
+    dx = tangent(x)
+    # Tangent bookkeeping uses :monotonic throughout: the primal ordering may be valid
+    # for loads only (e.g. :acquire), so reusing it for the pullback's store would
+    # throw a ConcurrencyViolationError. Only the primal load keeps the user's ordering.
+    a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
+    if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
+        return a, NoPullback((NoRData(), NoRData(), NoRData()))
+    else
+        function atomic_pointerref_pullback!!(da)
+            atomic_pointerset(
+                dx, increment_rdata!!(atomic_pointerref(dx, :monotonic), da), :monotonic
+            )
+            return NoRData(), NoRData(), NoRData()
+        end
+        return a, atomic_pointerref_pullback!!
+    end
+end
 
 @intrinsic atomic_pointerset
 # The V is exactly `NTuple{Nw,Ptr{T}}` (partial element `=== Ptr{T}`, since `tangent_type`
@@ -373,20 +433,24 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    old_value = atomic_pointerref(_p, _order)
-    old_tangent = atomic_pointerref(tangent(p), _order)
+    # Bookkeeping loads/stores use :monotonic throughout: the primal ordering may be
+    # valid for stores only (e.g. :release), so reusing it for the save/restore loads
+    # would throw a ConcurrencyViolationError. Only the primal store keeps the user's
+    # ordering.
+    old_value = atomic_pointerref(_p, :monotonic)
+    old_tangent = atomic_pointerref(tangent(p), :monotonic)
     dp = tangent(p)
     function atomic_pointerset_pullback!!(::NoRData)
-        dx_r = atomic_pointerref(dp, _order)
-        atomic_pointerset(_p, old_value, _order)
-        atomic_pointerset(dp, old_tangent, _order)
+        dx_r = atomic_pointerref(dp, :monotonic)
+        atomic_pointerset(_p, old_value, :monotonic)
+        atomic_pointerset(dp, old_tangent, :monotonic)
         return NoRData(), NoRData(), rdata(dx_r), NoRData()
     end
 
     atomic_pointerset(_p, primal(x), _order)
     # zero_tangent(primal(x), tangent(x)) is used to correctly handle
     # Ptr types, whose tangent is purely fdata (a Ptr) with NoRData.
-    atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), _order)
+    atomic_pointerset(dp, zero_tangent(primal(x), tangent(x)), :monotonic)
     return p, atomic_pointerset_pullback!!
 end
 
@@ -1691,8 +1755,40 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         ),
         # atomic_fence -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointermodify -- NEEDS IMPLEMENTING AND TESTING
-        # atomic_pointerref -- NEEDS IMPLEMENTING AND TESTING
         # atomic_pointerreplace -- NEEDS IMPLEMENTING AND TESTING
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(p, dp),
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(pointer(c), pointer(dc)),
+            :monotonic,
+        ),
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(q, dq),
+            :monotonic,
+        ),
+        # Load-only ordering: the pullback's tangent store must not reuse it.
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerref,
+            CoDual(p, dp),
+            :acquire,
+        ),
         (
             true,
             :stability,
@@ -1701,6 +1797,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             CoDual(p, dp),
             1.0,
             :monotonic,
+        ),
+        # Store-only ordering: the rule's save/restore loads must not reuse it.
+        (
+            true,
+            :stability,
+            nothing,
+            IntrinsicsWrappers.atomic_pointerset,
+            CoDual(p, dp),
+            1.0,
+            :release,
         ),
         (
             true,

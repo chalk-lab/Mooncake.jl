@@ -1450,6 +1450,32 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim((1, 2.0))
             end
         end
+
+        # Forward-over-reverse (HVP): works for non-elementwise ops; NDual-based
+        # elementwise rules error loudly (perturbation confusion).
+        @testset "forward-over-reverse (HVP)" begin
+            x = _rand(rng, Float32, 8)
+            v = _rand(rng, Float32, 8)
+            # sum(x) is linear ⇒ hvp = 0.
+            _, g, h = value_and_hvp!!(prepare_hvp_cache(sum, x), sum, v, x)
+            @test isapprox(Array(g), ones(Float32, 8); rtol=1.0f-4)
+            @test isapprox(Array(h), zeros(Float32, 8); atol=1.0f-5)
+            # dot(x, x) has Hessian 2I ⇒ hvp = 2v.
+            dotsq = z -> dot(z, z)
+            _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
+            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
+            # Full Hessian: buffers are device-resident, no scalar indexing.
+            hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
+            _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
+            @test H isa CuMatrix{Float32}
+            @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
+            # NDual-based elementwise rules error loudly under forward-over-reverse.
+            for f in (z -> sum(abs2, z), z -> sum(abs2.(z)))
+                @test_throws r"not yet supported" value_and_hvp!!(
+                    prepare_hvp_cache(f, x), f, v, x
+                )
+            end
+        end
     else
         println("Tests are skipped because no CUDA device was found.")
     end

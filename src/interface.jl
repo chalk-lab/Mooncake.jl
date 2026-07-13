@@ -2386,7 +2386,9 @@ vector. Validation is eager and raises `ArgumentError` here rather than at evalu
 The cache pre-allocates the Hessian, gradient, and basis-direction buffers that
 [`value_gradient_and_hessian!!`](@ref) writes into, so subsequent calls do not allocate
 fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if
-you need to retain previous results.
+you need to retain previous results. Buffers are allocated to match the input's array
+type: GPU-array inputs (e.g. `CuArray`) produce a device-resident gradient and Hessian
+(use `Array(H)` to move the result to the host).
 
 Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function. The
 Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward pass
@@ -2847,15 +2849,20 @@ H
         return value, g, H
     end
     local value
+    # One-hot writes via a reused host buffer + `copyto!`: `v[i] = x` is GPU scalar
+    # indexing (errors on CuArray), while `copyto!` serves both Vector and CuArray.
+    e = Vector{T}(undef, 1)
     for i in 1:n
-        v[i] = one(T)
+        e[1] = one(T)
+        copyto!(v, i, e, 1, 1)
         fval, grad_alias, hvp = value_and_hvp!!(cache, f, v, x1)
         if i == 1
             value = fval
             g .= grad_alias
         end
         @inbounds @views H[:, i] .= hvp
-        v[i] = zero(T)
+        e[1] = zero(T)
+        copyto!(v, i, e, 1, 1)
     end
     return value, g, H
 end
