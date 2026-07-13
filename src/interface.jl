@@ -2767,9 +2767,8 @@ H
         return fval, g, H
     end
     local value
-    # One-hot writes go through a 1-element host buffer: `v[i] = x` is scalar
-    # indexing (an error for GPU arrays), while `copyto!` has host→device methods,
-    # so the same code serves Vector and CuArray.
+    # One-hot writes via a reused host buffer + `copyto!`: `v[i] = x` is GPU scalar
+    # indexing (errors on CuArray), while `copyto!` serves both Vector and CuArray.
     e = Vector{T}(undef, 1)
     for i in 1:n
         e[1] = one(T)
@@ -2824,9 +2823,7 @@ end
     end
     local value
     first_iter = true
-    # One-hot writes go through a 1-element host buffer: `v[i] = x` is scalar
-    # indexing (an error for GPU arrays), while `copyto!` has host→device methods,
-    # so the same code serves Vector and CuArray.
+    # One-hot writes via a reused host buffer + `copyto!` (see single-arg method above).
     e = Vector{T}(undef, 1)
     for argidx in 1:nargs
         v_i = v[argidx]

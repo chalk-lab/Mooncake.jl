@@ -499,6 +499,10 @@ function TestUtils.has_equal_data_internal(
     size(x) != size(y) && return false
     return Array(x) == Array(y)
 end
+# The array-array bookkeeping broadcasts here and below (`x .+= y`, `t .= x`, `x .= t`)
+# need no `set_to_zero!!`-style `fill!` workaround: they form `Broadcasted{CuArrayStyle}`,
+# so under HVP they hit the `materialize!` rule and route to the `_gpu_broadcast_dual`
+# chokepoint (a clear error), never a raw kernel escaping to `cufunction`.
 function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexArray}
     (x === y || haskey(c, x)) && return x
     c[x] = true
