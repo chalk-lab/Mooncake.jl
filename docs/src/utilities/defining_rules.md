@@ -136,3 +136,13 @@ struct recursion builds a `NamedTuple` of per-field friendly gradients.
 The existing overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
 `LinearAlgebra.SymTridiagonal` in `src/rules/linear_algebra.jl` follow exactly this
 pattern and serve as reference implementations.
+
+`Symmetric`/`Hermitian` only store one triangle of the full matrix, so their tangent has no
+slot for the un-stored half. `LinearAlgebra.Adjoint`/`Transpose` have no such gap: every
+entry maps to exactly one parent entry, just transposed (and, for `Adjoint`, conjugated).
+Their overloads in the same file therefore take a different approach: they
+reconstruct the friendly gradient via `arrayify` (`src/rules/blas.jl`), the same
+canonicalisation utility the differentiation rules themselves use, rather than accessing
+`tangent.fields` directly. This lets the conversion handle any parent type `arrayify`
+already recurses through (plain arrays, views, `Diagonal`, other `Adjoint`/`Transpose`
+wrappers, ...) instead of assuming the parent's tangent is always a plain array.

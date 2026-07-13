@@ -56,20 +56,21 @@ end
     return tangent_as_friendly
 end
 
-# Adjoint/Transpose aren't lossy like Symmetric/Hermitian/SymTridiagonal: every entry maps
-# to exactly one parent entry, just transposed. The friendly tangent is a plain matrix
-# shaped like the wrapper itself, filled by permuting the parent's tangent.
+# Symmetric/Hermitian/SymTridiagonal only store one triangle (or the diagonals) of the
+# full matrix, so their tangent has no slot for the un-stored half. Adjoint/Transpose have
+# no such gap: every logical entry maps to exactly one parent entry, just transposed. The
+# friendly tangent is a plain matrix shaped like the wrapper itself, reconstructed via
+# `arrayify` (src/rules/blas.jl, the same canonicalisation the differentiation rules use),
+# so parent types it already recurses through (SubArray, Diagonal, nested Adjoint/Transpose,
+# ...) are handled automatically rather than reimplemented here.
 #
 # The buffer uses similar(x.parent, ...) instead of a hardcoded Matrix, so it stays on the
 # same device as the primal. A CPU buffer can't be written to from a GPU tangent.
 #
-# Both also wrap Vectors, giving a (1, N) row shape. There the parent's tangent is a Vector,
-# not a matrix, so permutedims! doesn't apply; copyto! is used instead, since a (1, N)
-# buffer's memory layout matches the underlying vector's exactly.
-#
-# Adjoint conjugates for complex T (matching adjoint(_dx) in this file's arrayify methods), while Transpose doesn't.
-# This was confirmed against Zygote where without conj!, complex Adjoint gradients come
-# back with the wrong sign on the imaginary part.
+# `.=` (not permutedims!/copyto!) broadcasts from the lazy adjoint/transpose view arrayify
+# returns, so vector parents ((1, N) row shape) and matrix parents are both handled by the
+# same method, and Adjoint's conjugation for complex T falls out of the broadcast for free
+# (matching adjoint(_dx) in arrayify) instead of needing a separate conj! call.
 #
 # Constrained to T<:Union{IEEEFloat,BlasFloat}: without this, e.g. Transpose{Int} would
 # also match here and return AsCustomised instead of AsRaw, breaking the existing
@@ -77,46 +78,16 @@ end
 # reconstruct, so they should fall through to the default AsRaw path).
 
 function Mooncake.friendly_tangent_cache(
-    x::LinearAlgebra.Adjoint{T}
-) where {T<:Union{IEEEFloat,BlasFloat}}
-    FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
-end
-function Mooncake.friendly_tangent_cache(
-    x::LinearAlgebra.Transpose{T}
+    x::LinearAlgebra.AdjOrTrans{T}
 ) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
 end
 
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T},
-    ::LinearAlgebra.Adjoint{T,<:AbstractVector},
-    tangent,
+    tangent_as_friendly::AbstractMatrix{T}, x::LinearAlgebra.AdjOrTrans{T}, tangent
 ) where {T<:Union{IEEEFloat,BlasFloat}}
-    copyto!(tangent_as_friendly, val(tangent.fields.parent))
-    return conj!(tangent_as_friendly)
-end
-@unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T},
-    ::LinearAlgebra.Adjoint{T,<:AbstractMatrix},
-    tangent,
-) where {T<:Union{IEEEFloat,BlasFloat}}
-    permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
-    return conj!(tangent_as_friendly)
-end
-
-@unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T},
-    ::LinearAlgebra.Transpose{T,<:AbstractVector},
-    tangent,
-) where {T<:Union{IEEEFloat,BlasFloat}}
-    return copyto!(tangent_as_friendly, val(tangent.fields.parent))
-end
-@unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::AbstractMatrix{T},
-    ::LinearAlgebra.Transpose{T,<:AbstractMatrix},
-    tangent,
-) where {T<:Union{IEEEFloat,BlasFloat}}
-    return permutedims!(tangent_as_friendly, val(tangent.fields.parent), (2, 1))
+    _, dx = arrayify(x, tangent)
+    return tangent_as_friendly .= dx
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:linear_algebra})

@@ -1386,6 +1386,7 @@ caches instead.
 | Mutable struct with fields and standard `MutableTangent` | `FriendlyTangentCache{AsMutableFields}` — per-field `NamedTuple` at runtime *(non-composite, internal mode)* |
 | `AbstractDict` | `FriendlyTangentCache{AsPrimal}` *(non-composite)* |
 | `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
+| `LinearAlgebra.Adjoint` / `Transpose` (of an `IEEEFloat`/`BlasFloat`-eltype array) | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
 | Everything else (Julia primitive types, float arrays, non-differentiable arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{AsRaw}` *(non-composite)* |
 
 Override to opt a type into a non-composite mode with a custom buffer:
@@ -1395,8 +1396,8 @@ Mooncake.friendly_tangent_cache(x::MyMatrix{T}) where {T} =
     Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}(Matrix{T}(undef, size(x)...))
 ```
 
-Overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
-`LinearAlgebra.SymTridiagonal` live in `src/rules/linear_algebra.jl`.
+Overloads for `LinearAlgebra.Symmetric`, `Hermitian`, `SymTridiagonal`, `Adjoint`, and
+`Transpose` live in `src/rules/linear_algebra.jl`.
 
 !!! warning
     Mutable structs whose fields form a self-referential cycle (e.g. a linked-list node

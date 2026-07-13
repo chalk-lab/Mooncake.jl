@@ -363,6 +363,124 @@ using DispatchDoctor: allow_unstable
         @test Mooncake.tangent_to_friendly!!(A, tx) == permutedims(tx_parent)
     end
 
+    # Regression: the reconstruction goes through `arrayify` (src/rules/blas.jl), which
+    # recurses through parent types it already has a method for, rather than assuming the
+    # parent's own tangent is a plain array. Before this, a non-Array parent (SubArray,
+    # Diagonal, or another Adjoint/Transpose) crashed inside permutedims!/copyto! with a
+    # MethodError, since the parent's tangent was itself a nested Tangent, not an array.
+    @testset "Adjoint of a SubArray (view)" begin
+        P = view(randn(4, 3), :, 1:2)
+        A = LinearAlgebra.Adjoint(P)
+        tx_parent_data = randn(4, 3)
+        tx_P = Mooncake.build_tangent(
+            typeof(P), tx_parent_data, NoTangent(), NoTangent(), NoTangent()
+        )
+        tx = Mooncake.build_tangent(typeof(A), tx_P)
+        cache = Mooncake.friendly_tangent_cache(A)
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        dest = cache.buffer
+        @test size(dest) == size(A)
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        expected = (tx_parent_data[P.indices...])'
+        @test dest == expected
+        @test Mooncake.tangent_to_friendly!!(A, tx) == expected
+    end
+
+    @testset "Transpose of a Diagonal (raw constructor)" begin
+        # transpose(::Diagonal)/adjoint(::Diagonal) simplify to the Diagonal itself, so the
+        # raw type constructor is needed to actually get a Transpose{...,<:Diagonal} wrapper.
+        v = randn(3)
+        D = LinearAlgebra.Diagonal(v)
+        A = LinearAlgebra.Transpose(D)
+        tx_diag_data = randn(3)
+        tx_D = Mooncake.build_tangent(typeof(D), tx_diag_data)
+        tx = Mooncake.build_tangent(typeof(A), tx_D)
+        cache = Mooncake.friendly_tangent_cache(A)
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        dest = cache.buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        @test dest == LinearAlgebra.Diagonal(tx_diag_data)
+        @test Mooncake.tangent_to_friendly!!(A, tx) == LinearAlgebra.Diagonal(tx_diag_data)
+    end
+
+    @testset "nested Adjoint(Transpose(...))" begin
+        B = randn(3, 3)
+        T = LinearAlgebra.Transpose(B)
+        A = LinearAlgebra.Adjoint(T)
+        tx_B = randn(3, 3)
+        tx_T = Mooncake.build_tangent(typeof(T), tx_B)
+        tx = Mooncake.build_tangent(typeof(A), tx_T)
+        dest = Mooncake.friendly_tangent_cache(A).buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        # Adjoint(Transpose(B)) == B for real B, so the tangent map is the identity too.
+        @test dest == tx_B
+        @test Mooncake.tangent_to_friendly!!(A, tx) == tx_B
+    end
+
+    @testset "nested Transpose(Adjoint(...)) (complex)" begin
+        B = randn(ComplexF64, 3, 3)
+        Ad = LinearAlgebra.Adjoint(B)
+        A = LinearAlgebra.Transpose(Ad)
+        tx_B = randn(ComplexF64, 3, 3)
+        tx_Ad = Mooncake.build_tangent(typeof(Ad), tx_B)
+        tx = Mooncake.build_tangent(typeof(A), tx_Ad)
+        dest = Mooncake.friendly_tangent_cache(A).buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        # Transpose(Adjoint(B))[i,j] == conj(B[i,j]), so the tangent map conjugates too.
+        @test dest == conj.(tx_B)
+        @test Mooncake.tangent_to_friendly!!(A, tx) == conj.(tx_B)
+    end
+
+    @testset "Adjoint of degenerate-length Vectors" begin
+        # Boundary conditions for the (1, N) row-shape broadcast path: N=0 and N=1.
+        for v in (Float64[], [1.0])
+            A = LinearAlgebra.Adjoint(v)
+            tx = Mooncake.build_tangent(typeof(A), copy(v))
+            dest = Mooncake.friendly_tangent_cache(A).buffer
+            @test size(dest) == size(A)
+            @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+            @test dest == v'
+        end
+    end
+
+    @testset "Transpose of a Symmetric (raw constructor)" begin
+        # Composes with Symmetric, an already-supported wrapper that only stores half its
+        # matrix (unlike SubArray/Diagonal, which store everything). Symmetric always
+        # presents a fully mirrored dense matrix when read, so transpose(Symmetric(...)) is
+        # a no-op on values even though the raw storage itself isn't symmetric.
+        S = LinearAlgebra.Symmetric(randn(3, 3))
+        A = LinearAlgebra.Transpose(S)
+        tx_S_data = randn(3, 3)
+        tx_S = Mooncake.build_tangent(typeof(S), tx_S_data, NoTangent())
+        tx = Mooncake.build_tangent(typeof(A), tx_S)
+        cache = Mooncake.friendly_tangent_cache(A)
+        @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
+        dest = cache.buffer
+        @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
+        expected = Matrix(LinearAlgebra.Symmetric(tx_S_data, Symbol(S.uplo)))
+        @test dest == expected
+        @test Mooncake.tangent_to_friendly!!(A, tx) == expected
+    end
+
+    @testset "Transpose of an arrayify-unsupported parent throws clearly" begin
+        # No AsRaw fallback guard is used here: a parent type with no arrayify method
+        # throws arrayify's own clear error instead, rather than silently degrading or
+        # crashing with a confusing MethodError.
+        struct MyWeirdArrayForFriendlyTangentTest{T} <: AbstractMatrix{T}
+            data::Matrix{T}
+        end
+        Base.size(x::MyWeirdArrayForFriendlyTangentTest) = size(x.data)
+        w = MyWeirdArrayForFriendlyTangentTest(randn(3, 3))
+        A = LinearAlgebra.Transpose(w)
+        tx_w = Mooncake.Tangent((; data=randn(3, 3)))
+        tx = Mooncake.build_tangent(typeof(A), tx_w)
+        dest = Mooncake.friendly_tangent_cache(A).buffer
+        err = @test_throws ErrorException Mooncake.tangent_to_friendly_internal!!(
+            dest, A, tx
+        )
+        @test occursin("A new method of `Mooncake.arrayify` is needed", err.value.msg)
+    end
+
     @testset "tangent_to_friendly!! routing" begin
         s = 3.0
         S = LinearAlgebra.Symmetric([1.0 2.0; 999.0 4.0])
