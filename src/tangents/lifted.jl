@@ -2017,49 +2017,40 @@ end
     # mirroring the element-wise array factory and `dual_type`: a per-element V memory,
     # built element-wise; a non-diff element gives `NoDual`. The IEEEFloat
     # overloads above are more specific and provide the `NDualArray` optimisation.
-    @generated function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
-        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
-        return quote
-            v = Memory{dual_type(Val($N), T)}(undef, length(m))
-            @inbounds for i in eachindex(m)
-                isassigned(m, i) && (v[i] = zero_dual(Val($N), m[i]))
-            end
-            return v
+    # Plain functions (not `@generated`), like the element-wise Array factories above: `dual_type`
+    # is `@foldable`, so it resolves at the caller's world (extension overloads stay visible) and
+    # folds to a concrete element type, keeping these type-stable and allocation-free.
+    @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
+        v = Memory{dual_type(Val(N), T)}(undef, length(m))
+        @inbounds for i in eachindex(m)
+            isassigned(m, i) && (v[i] = zero_dual(Val(N), m[i]))
         end
+        return v
     end
-    @generated function uninit_dual(::Val{N}, m::Memory{T}) where {N,T}
-        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
-        return quote
-            v = Memory{dual_type(Val($N), T)}(undef, length(m))
-            @inbounds for i in eachindex(m)
-                isassigned(m, i) && (v[i] = uninit_dual(Val($N), m[i]))
-            end
-            return v
+    @inline function uninit_dual(::Val{N}, m::Memory{T}) where {N,T}
+        v = Memory{dual_type(Val(N), T)}(undef, length(m))
+        @inbounds for i in eachindex(m)
+            isassigned(m, i) && (v[i] = uninit_dual(Val(N), m[i]))
         end
+        return v
     end
-    @generated function randn_dual(::Val{N}, rng::AbstractRNG, m::Memory{T}) where {N,T}
-        dual_type(Val(N), Memory{T}) === NoDual && return :(NoDual())
-        return quote
-            v = Memory{dual_type(Val($N), T)}(undef, length(m))
-            @inbounds for i in eachindex(m)
-                isassigned(m, i) && (v[i] = randn_dual(Val($N), rng, m[i]))
-            end
-            return v
+    @inline function randn_dual(::Val{N}, rng::AbstractRNG, m::Memory{T}) where {N,T}
+        v = Memory{dual_type(Val(N), T)}(undef, length(m))
+        @inbounds for i in eachindex(m)
+            isassigned(m, i) && (v[i] = randn_dual(Val(N), rng, m[i]))
         end
+        return v
     end
-    @generated function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
-        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
-        return :(_memoryref_at(zero_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
+    @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+        return _memoryref_at(zero_dual(Val(N), p.mem), Core.memoryrefoffset(p))
     end
     # `MemoryRef`'s V is built via `memoryref` over the `.mem`'s V (a plain
     # `MemoryRef` can't be constructed field-wise from a raw `Ptr`), so mirror
     # `zero_dual` rather than fall through to the generic struct seed.
-    @generated function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
-        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
-        return :(_memoryref_at(uninit_dual(Val($N), p.mem), Core.memoryrefoffset(p)))
+    @inline function uninit_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
+        return _memoryref_at(uninit_dual(Val(N), p.mem), Core.memoryrefoffset(p))
     end
-    @generated function randn_dual(::Val{N}, rng::AbstractRNG, p::MemoryRef{T}) where {N,T}
-        dual_type(Val(N), MemoryRef{T}) === NoDual && return :(NoDual())
-        return :(_memoryref_at(randn_dual(Val($N), rng, p.mem), Core.memoryrefoffset(p)))
+    @inline function randn_dual(::Val{N}, rng::AbstractRNG, p::MemoryRef{T}) where {N,T}
+        return _memoryref_at(randn_dual(Val(N), rng, p.mem), Core.memoryrefoffset(p))
     end
 end
