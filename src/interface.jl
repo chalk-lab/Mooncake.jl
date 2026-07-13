@@ -2337,16 +2337,24 @@ true
 end
 
 function _make_hessian_buffers(::Type{T}, xs::Tuple) where {T}
+    # Allocate `v`/`grad` as the input's tangent type and `H` via `similar` so that
+    # GPU-array inputs get device-resident buffers; for `Vector{T}` inputs this is
+    # identical to host `zeros`.
     if length(xs) == 1
-        n = length(xs[1])
-        return (; H=zeros(T, n, n), grad=zeros(T, n), v=zeros(T, n))
+        x = xs[1]
+        n = length(x)
+        H = fill!(similar(x, n, n), zero(T))
+        return (; H, grad=zero_tangent(x), v=zero_tangent(x))
     end
     ns = tuple_map(length, xs)
     nargs = length(xs)
-    # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]
-    H_blocks = ntuple(k -> ntuple(j -> zeros(T, ns[k], ns[j]), nargs), nargs)
-    grads = tuple_map(ni -> zeros(T, ni), ns)
-    vs = tuple_map(ni -> zeros(T, ni), ns)
+    # H_blocks[k][j] = ∂²f/∂xk∂xj, shape ns[k] × ns[j]; block (k, j) receives columns
+    # of the arg-k HVP, so it lives on arg k's device.
+    H_blocks = ntuple(
+        k -> ntuple(j -> fill!(similar(xs[k], ns[k], ns[j]), zero(T)), nargs), nargs
+    )
+    grads = tuple_map(zero_tangent, xs)
+    vs = tuple_map(zero_tangent, xs)
     return (; H_blocks, grads, vs)
 end
 
@@ -2446,7 +2454,9 @@ validation is eager and raises `ArgumentError` here rather than at evaluation ti
 The cache pre-allocates the Hessian, gradient, and basis-direction buffers that
 [`value_gradient_and_hessian!!`](@ref) writes into, so subsequent calls do not allocate
 fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if
-you need to retain previous results.
+you need to retain previous results. Buffers are allocated to match the input's array
+type: GPU-array inputs (e.g. `CuArray`) produce a device-resident gradient and Hessian
+(use `Array(H)` to move the result to the host).
 
 Hessian computation uses forward-over-reverse AD: one forward-mode pass per input
 dimension over the reverse-mode gradient function.
@@ -2690,6 +2700,9 @@ matrix.
 `H_blocks[k][j]` is the `nk × nj` matrix `∂²f/∂xk∂xj`. The return structure differs
 from the single-argument case.
 
+The gradient and Hessian match the input's array type: GPU-array inputs (e.g.
+`CuArray`) yield device-resident results (use `Array(H)` to move them to the host).
+
 Uses forward-over-reverse AD: one forward-mode pass per total input dimension.
 
 !!! info
@@ -2754,15 +2767,21 @@ H
         return fval, g, H
     end
     local value
+    # One-hot writes go through a 1-element host buffer: `v[i] = x` is scalar
+    # indexing (an error for GPU arrays), while `copyto!` has host→device methods,
+    # so the same code serves Vector and CuArray.
+    e = Vector{T}(undef, 1)
     for i in 1:n
-        v[i] = one(T)
+        e[1] = one(T)
+        copyto!(v, i, e, 1, 1)
         fval, grad_alias, hvp = value_and_hvp!!(cache, f, v, x1)
         if i == 1
             value = fval
             g .= grad_alias
         end
         @inbounds @views H[:, i] .= hvp
-        v[i] = zero(T)
+        e[1] = zero(T)
+        copyto!(v, i, e, 1, 1)
     end
     return value, g, H
 end
@@ -2805,10 +2824,15 @@ end
     end
     local value
     first_iter = true
+    # One-hot writes go through a 1-element host buffer: `v[i] = x` is scalar
+    # indexing (an error for GPU arrays), while `copyto!` has host→device methods,
+    # so the same code serves Vector and CuArray.
+    e = Vector{T}(undef, 1)
     for argidx in 1:nargs
         v_i = v[argidx]
         for i in 1:ns[argidx]
-            v_i[i] = one(T)
+            e[1] = one(T)
+            copyto!(v_i, i, e, 1, 1)
             fval, gs_alias, hvps = value_and_hvp!!(cache, f, v, all_xs...)
             if first_iter
                 value = fval
@@ -2816,7 +2840,8 @@ end
                 first_iter = false
             end
             tuple_map((Hk, hk) -> (@inbounds @views Hk[argidx][:, i] .= hk), H_blocks, hvps)
-            v_i[i] = zero(T)
+            e[1] = zero(T)
+            copyto!(v_i, i, e, 1, 1)
         end
     end
     return value, grads, H_blocks

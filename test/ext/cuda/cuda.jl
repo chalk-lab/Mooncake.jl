@@ -1360,6 +1360,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             dotsq = z -> dot(z, z)
             _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
             @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
+            # Full Hessian: buffers are device-resident, no scalar indexing.
+            hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
+            _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
+            @test H isa CuMatrix{Float32}
+            @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
             # NDual-based elementwise rules error loudly under forward-over-reverse.
             for f in (z -> sum(abs2, z), z -> sum(abs2.(z)))
                 @test_throws r"not yet supported" value_and_hvp!!(
