@@ -1001,10 +1001,9 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-struct FCache{R,IT<:Union{Nothing,Tuple},OP,FG,GW,CF,S<:Tuple,IS,GS,JB}
+struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     single_rule::R
     input_tangents::IT
-    output_primal::OP
     friendly_gradients::FG
     gradient_workspace::GW
     gradient_chunk_size::Int
@@ -1036,7 +1035,7 @@ end
 
 @inline function _forward_cache_output_summary(cache::FCache)
     # The forward output shape is unknown at prepare time, so it is always inferred from the rule's
-    # return type (`FCache.output_primal` is vestigially `nothing` — see its construction sites).
+    # return type.
     lifted_arg_types = Tuple{
         map(
             spec -> lifted_type(Val(1), typeof(spec).parameters[1]),
@@ -1373,7 +1372,6 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
     else
         nothing
     end
-    output_primal = nothing
     # Preallocated seed for the zero-allocation single-float-vector gradient path: a width-W
     # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus the
     # inert `f_seed`. `nothing` for every other shape, which uses the generic gradient path.
@@ -1442,9 +1440,8 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
         end
     end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
-    # float-vector input qualifies. The output shape is unknown here (`output_primal` is only
-    # populated under `friendly_tangents`), so hold a `Ref` that the first `value_and_jacobian!!`
-    # call sizes and fills once the output vector is known.
+    # float-vector input qualifies. The output shape is unknown here, so hold a `Ref` that the
+    # first `value_and_jacobian!!` call sizes and fills once the output vector is known.
     jacobian_buffer = let args = Base.tail(fx)
         if gradient_seed !== nothing && length(args) == 1 && eltype(only(args)) <: IEEEFloat
             Base.RefValue{Union{Nothing,Matrix{eltype(only(args))}}}(nothing)
@@ -1458,7 +1455,6 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
         return FCache(
             rule,
             input_tangents,
-            output_primal,
             _copy_output(fx),
             gradient_workspace,
             gradient_chunk_size,
@@ -1473,7 +1469,6 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
     return FCache(
         rule,
         nothing,
-        output_primal,
         nothing,
         # Lazy gradient workspace, kept concretely typed (not `Ref{Any}`, which would make
         # cached forward gradients inference-opaque) without evaluating `zero_tangent` on the
@@ -2036,8 +2031,8 @@ The arguments in `x` are returned to their original state: if `f` mutates them i
     `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
 """
 @inline function value_and_derivative!!(
-    cache::FCache{R,IT,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,IT<:Tuple,OP,FG,GW,CF,S,M}
+    cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
+) where {R,IT<:Tuple,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     input_friendly_tangents = tuple_map(last, fx)
@@ -2062,8 +2057,8 @@ The arguments in `x` are returned to their original state: if `f` mutates them i
 end
 
 @inline function value_and_derivative!!(
-    cache::FCache{R,Nothing,OP,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
-) where {R,OP,FG,GW,CF,S<:Tuple,M}
+    cache::FCache{R,Nothing,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
+) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     input_tangents = tuple_map(last, fx)
@@ -2866,8 +2861,8 @@ end
 # zero-arg overloads (Aqua detects the ambiguity without this more-specific method). The validate
 # always throws an arity `PreparedCacheError` (`input_specs` has the `f` entry, no args given).
 function value_and_derivative!!(
-    cache::FCache{R,Nothing,OP,FG,GW,CF,S}
-) where {R,OP,FG,GW,CF,S<:Tuple}
+    cache::FCache{R,Nothing,FG,GW,CF,S}
+) where {R,FG,GW,CF,S<:Tuple}
     return _validate_prepared_cache(cache.input_specs, ())
 end
 
