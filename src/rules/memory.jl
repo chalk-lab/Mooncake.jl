@@ -901,21 +901,23 @@ end
     @generated function frule!!(
         ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
     ) where {Nw,P}
-        MemV = dual_type(Val(Nw), Memory{P})
-        MemV === NoDual &&
-            return :(Lifted{Memory{P},Nw}(Core.memorynew(Memory{P}, primal(n)), NoDual()))
+        # Emit `dual_type(Val(Nw), Memory{P})` into the RETURNED expression, not the generator
+        # body — same world-age reason as the `Memory{P}(undef, n)` frule above. `isbitstype(P)`
+        # is structural (world-independent) and stays here.
         fill_expr = if isbitstype(P)
             :(@inbounds for i in eachindex(dv)
-                dv[i] = zero_dual(Val(Nw), x[i])
+                dv[i] = zero_dual(Val($Nw), x[i])
             end)
         else
             nothing
         end
         return quote
-            x = Core.memorynew(Memory{P}, primal(n))
-            dv = $MemV(undef, primal(n))
+            x = Core.memorynew(Memory{$P}, primal(n))
+            MemV = dual_type(Val($Nw), Memory{$P})
+            MemV === NoDual && return Lifted{Memory{$P},$Nw}(x, NoDual())
+            dv = MemV(undef, primal(n))
             $fill_expr
-            return Lifted{Memory{P},Nw}(x, dv)
+            return Lifted{Memory{$P},$Nw}(x, dv)
         end
     end
 end
