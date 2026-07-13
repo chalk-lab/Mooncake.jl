@@ -1767,7 +1767,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (
             true,
             :stability,
-            nothing,
+            # `Ptr{Ptr{Float64}}` atomic load: reverse handles the pointer-to-pointer, but forward
+            # mode cannot represent a raw atomic load of a differentiable pointer element (no coherent
+            # tangent source — the frule throws by design, mirroring `pointerref`). Reverse-only.
+            (skip_forward=true,),
             IntrinsicsWrappers.atomic_pointerref,
             CoDual(pointer(c), pointer(dc)),
             :monotonic,

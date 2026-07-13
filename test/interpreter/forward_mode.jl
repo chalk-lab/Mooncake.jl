@@ -98,13 +98,20 @@ fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
         sig = Tuple{typeof(fwd_cache_dyn),Float64}
         r1 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)
         r2 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)  # cache HIT
-        dyn1 = only(
-            filter(c -> c isa Mooncake.DynamicFRule, collect(r1.fwd_oc.oc.captures))
-        )
-        dyn2 = only(
-            filter(c -> c isa Mooncake.DynamicFRule, collect(r2.fwd_oc.oc.captures))
-        )
-        @test dyn1 !== dyn2
-        @test dyn1.cache !== dyn2.cache
+        dyns1 = filter(c -> c isa Mooncake.DynamicFRule, collect(r1.fwd_oc.oc.captures))
+        dyns2 = filter(c -> c isa Mooncake.DynamicFRule, collect(r2.fwd_oc.oc.captures))
+        # The `Base.inferencebarrier` in `fwd_cache_dyn` only forces a captured `DynamicFRule` on
+        # Julia ≥ 1.11; 1.10 resolves it with no top-level dynamic-rule capture (empty
+        # `oc.captures`), so the shared-`cache` scenario cannot arise there (the frule still runs
+        # correctly). Assert the independent-copy invariant where a `DynamicFRule` is captured; the
+        # `else` guards that the empty case only occurs pre-1.11, so a future regression fails loudly.
+        if !isempty(dyns1)
+            dyn1 = only(dyns1)
+            dyn2 = only(dyns2)
+            @test dyn1 !== dyn2
+            @test dyn1.cache !== dyn2.cache
+        else
+            @test VERSION < v"1.11"
+        end
     end
 end;
