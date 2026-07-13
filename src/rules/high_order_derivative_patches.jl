@@ -83,6 +83,15 @@ mutable struct DynamicFoRRule
     DynamicFoRRule() = new(Dict{Tuple{Any,Bool,Int},Tuple{Any,Any,Any}}())
 end
 
+# `build_frule` returns `_copy(cached_rule)` on a cache hit, recursing into the OpaqueClosure
+# captures. A forward-over-reverse (HVP/Hessian) forward rule captures these FoR constructor
+# caches, so they need `_copy` giving fresh, independent mutable state (mirroring
+# `_copy(::DynamicFRule)` / `_copy(::LazyFRule)`): an empty cache / an uninitialised lazy shell
+# that rebuilds on first use. Without these they fall to the generic `_copy(x) = copy(x)` and
+# raise a `MethodError` on the cache-hit path.
+_copy(::DynamicFoRRule) = DynamicFoRRule()
+_copy(::P) where {P<:LazyFoRRule} = P()
+
 @generated function __build_primitive_frule(
     sig::Type{<:Tuple{typeof(build_derived_rrule),MooncakeInterpreter{C},SMI,S,Bool}}
 ) where {C,SMI,S}

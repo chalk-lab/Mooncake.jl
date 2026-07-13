@@ -236,6 +236,21 @@ end
         end
     end
 
+    @testset "_copy of FoR constructor caches (cache-hit rebuild)" begin
+        # `build_frule` returns `_copy(cached_rule)` on a cache hit and recurses into the
+        # OpaqueClosure captures; a forward-over-reverse rule captures these FoR constructor
+        # caches, so they need `_copy` giving fresh independent state. Without it the HVP
+        # cache-hit path raises `MethodError: no method matching copy(::DynamicFoRRule)`.
+        d = Mooncake.DynamicFoRRule()
+        d.cache[(Tuple{typeof(sum),Vector{Float64}}, false, 1)] = (1, 2, 3)
+        dc = Mooncake._copy(d)
+        @test dc isa Mooncake.DynamicFoRRule
+        @test dc !== d
+        @test isempty(dc.cache)  # fresh, independent cache
+        l = Mooncake.LazyFoRRule{Any,Any,Any}()
+        @test Mooncake._copy(l) isa Mooncake.LazyFoRRule{Any,Any,Any}
+    end
+
     @testset "primitive f (DerivedFoRRule{Nothing} path)" begin
         # When `f` is itself a reverse-mode primitive, `compile_for_rule` returns
         # `DerivedFoRRule{Nothing}` and `grad_f` routes through `value_and_gradient!!`
