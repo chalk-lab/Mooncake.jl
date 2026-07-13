@@ -457,8 +457,8 @@ end
         ::Lifted{Val{:ccall},Nw},
         ::Lifted{Type{Vector{P}},Nw},
         n::Lifted{Int},
-        args::Vararg{Lifted,M},
-    ) where {Nw,P,M}
+        args::Vararg{Lifted},
+    ) where {Nw,P}
         _n = primal(n)
         y = ccall(:jl_alloc_array_1d, Vector{P}, (Any, Int), Vector{P}, _n)
         return Lifted{Vector{P},Nw}(y, uninit_dual(Val(Nw), y))
@@ -473,8 +473,8 @@ end
         ::Lifted{Type{Matrix{P}},Nw},
         m::Lifted{Int},
         n::Lifted{Int},
-        args::Vararg{Lifted,M},
-    ) where {Nw,P,M}
+        args::Vararg{Lifted},
+    ) where {Nw,P}
         _m, _n = primal(m), primal(n)
         y = ccall(:jl_alloc_array_2d, Matrix{P}, (Any, Int, Int), Matrix{P}, _m, _n)
         return Lifted{Matrix{P},Nw}(y, uninit_dual(Val(Nw), y))
@@ -490,8 +490,8 @@ end
         l::Lifted{Int},
         m::Lifted{Int},
         n::Lifted{Int},
-        args::Vararg{Lifted,M},
-    ) where {Nw,P,M}
+        args::Vararg{Lifted},
+    ) where {Nw,P}
         _l, _m, _n = primal(l), primal(m), primal(n)
         y = ccall(
             :jl_alloc_array_3d, Array{P,3}, (Any, Int, Int, Int), Array{P,3}, _l, _m, _n
