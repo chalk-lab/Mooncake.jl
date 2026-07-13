@@ -684,9 +684,9 @@ end
         ::Lifted{Val{ordering}},
         ::Lifted{Val{boundscheck}},
     ) where {Nw,ordering,boundscheck}
-        return Lifted{typeof(lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))),Nw}(
-            lmemoryrefget(primal(x), Val(ordering), Val(boundscheck)),
-            lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck)),
+        y = lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))
+        return Lifted{typeof(y),Nw}(
+            y, lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck))
         )
     end
     @inline function frule!!(
