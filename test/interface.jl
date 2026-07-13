@@ -586,13 +586,26 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             oc = Base.Experimental.@opaque x -> x + 1
             @test Mooncake._copy_output(oc) === oc
 
-            # End-to-end: friendly forward-over-reverse over an array function builds
-            # a gradient closure that captures the compiled reverse rule. Copying it
-            # must not StackOverflow at prepare time.
-            f = x -> sum(abs2, x)
-            @test Mooncake.prepare_hvp_cache(
-                f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; friendly_tangents=true)
-            ) isa Mooncake.HVPCache
+            # End-to-end: friendly forward-over-reverse over a genuinely non-primitive array
+            # function (`sum(x.^2)` broadcasts, unlike the primitive `sum(abs2, x)`) builds a
+            # gradient closure that captures the compiled reverse rule. `friendly_tangents=true`
+            # must (a) prepare without descending into that rule's reflection graph, and (b)
+            # evaluate HVP/Hessian correctly — the inner forward cache is always non-friendly, so
+            # the flag does not change results. Regression for the two HVP/Hessian friendly bugs.
+            x = [1.0, 2.0, 3.0]
+            v = [1.0, 0.0, 0.0]
+            for f in (x -> sum(x .^ 2), x -> sum(abs2, x)), ft in (false, true)
+                cfg = Mooncake.Config(; friendly_tangents=ft)
+                hvp_cache = Mooncake.prepare_hvp_cache(f, x; config=cfg)
+                @test hvp_cache isa Mooncake.HVPCache
+                _, g, h = Mooncake.value_and_hvp!!(hvp_cache, f, v, x)
+                @test g ≈ 2 .* x
+                @test h ≈ 2 .* v
+                hess_cache = Mooncake.prepare_hessian_cache(f, x; config=cfg)
+                @test hess_cache isa Mooncake.HVPCache
+                _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, f, x)
+                @test H ≈ 2 * LinearAlgebra.I(3)
+            end
         end
     end
     @testset "forwards mode ($kwargs)" for kwargs in [

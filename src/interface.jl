@@ -2257,10 +2257,17 @@ true
     # widths can never diverge). The width-W Hessian variant (from `prepare_hessian_cache`) gets a
     # width-W `chunk_rule` matching its width-W for_rule. `empty_cache=false`: any global-cache reset
     # already happened in `prepare_gradient_cache` above; re-clearing here would invalidate it.
+    # The inner forward cache differentiates `grad_f` (a compiled reverse-gradient closure), not user
+    # data: its only inputs are `grad_f`, its internal `grad_tangent`, and the direction `v`, all
+    # already internal tangents. It must stay non-friendly regardless of `config.friendly_tangents`.
+    # Threading the flag in would (a) make `prepare_derivative_cache` `_copy_output` `grad_f`, whose
+    # captured compiled rule reaches `Method`/`Core.MethodInstance` reflection and errors, and
+    # (b) route `value_and_hvp!!` through the friendly tuple path, which mis-treats `grad_tangent` as
+    # a primal-shaped tangent. `friendly_tangents` governs the reverse output-tangent contract only;
+    # HVP/Hessian take no user output tangent, so the flag does not affect their result shape.
     fwd_config = Config(;
         config.debug_mode,
         config.silence_debug_messages,
-        config.friendly_tangents,
         chunk_size=fwd_chunk_size,
         empty_cache=false,
     )
