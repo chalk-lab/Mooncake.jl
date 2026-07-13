@@ -841,7 +841,7 @@ function frule!!(::Lifted{typeof(sin),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     v = nd.value
     s, c = sincos(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, c)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, c)))
 end
 function rrule!!(::CoDual{typeof(sin)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -857,7 +857,7 @@ function frule!!(::Lifted{typeof(cos),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     v = nd.value
     s, c = sincos(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, -s)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -s)))
 end
 function rrule!!(::CoDual{typeof(cos)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -874,7 +874,7 @@ function frule!!(::Lifted{typeof(tan),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     s, c = sincos(v)
     t = s / c
     y = t
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, one(t) + t^2)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, one(t) + t^2)))
 end
 function rrule!!(::CoDual{typeof(tan)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -891,7 +891,7 @@ function frule!!(::Lifted{typeof(sind),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     v = nd.value
     s, c = sincosd(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, deg2rad(c))))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, deg2rad(c))))
 end
 function rrule!!(::CoDual{typeof(sind)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -907,7 +907,7 @@ function frule!!(::Lifted{typeof(cosd),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     v = nd.value
     s, c = sincosd(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, -deg2rad(s))))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -deg2rad(s))))
 end
 function rrule!!(::CoDual{typeof(cosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -924,7 +924,9 @@ function frule!!(::Lifted{typeof(tand),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     s, c = sincosd(v)
     t = s / c
     y = t
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, deg2rad(one(t) + t^2))))
+    return Lifted{P,N}(
+        y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, deg2rad(one(t) + t^2)))
+    )
 end
 function rrule!!(::CoDual{typeof(tand)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -943,7 +945,7 @@ function frule!!(
     v = nd.value
     s, c = sincospi(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, oftype(v, π) * c)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, oftype(v, π) * c)))
 end
 function rrule!!(::CoDual{typeof(sinpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
@@ -961,7 +963,7 @@ function frule!!(
     v = nd.value
     s, c = sincospi(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_scale(nd.partials, -oftype(v, π) * s)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -oftype(v, π) * s)))
 end
 function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)

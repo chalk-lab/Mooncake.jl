@@ -72,6 +72,25 @@
         end
     end
 
+    @testset "fused trig forward pole guard (inactive lane stays 0, not NaN)" begin
+        # `tand(90)` hits an EXACT Float64 pole: `cosd(90) == 0` (90 is representable, unlike π/2
+        # in radians), so `tand(90) = Inf` and its derivative `1 + tand^2 = Inf`. The fused-family
+        # frule!! must scale partials with `_pt_guarded_scale`, so an inactive (zero-seed) lane
+        # stays exactly 0 rather than 0*Inf = NaN — matching main's forward robustness.
+        for T in (Float32, Float64)
+            for x in (T(90), T(270))
+                @test tangent(
+                    Mooncake.frule!!(zero_dual(tand), Mooncake.lift(x, zero(T))), 1
+                ) === zero(T)
+            end
+            # `tan` (radians) never lands exactly on a pole, but the guard must still hold beside one.
+            xnear = prevfloat(T(π) / 2)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(tan), Mooncake.lift(xnear, zero(T))), 1
+            ) === zero(T)
+        end
+    end
+
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
             @test tangent(
