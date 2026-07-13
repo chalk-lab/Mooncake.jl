@@ -1762,6 +1762,12 @@ end
 @inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
     NoDual(), c
 )
+# A `Ptr` lane carries no addressable tangent (its per-lane `NTuple{N,Ptr}` V is a bitcast
+# placeholder), so it is 0-dof like `NoDual`: leave it unchanged and don't advance the cursor.
+# Matches the `Ptr` exemption in `verify_lifted_type` and keeps the dof / seed walks in step
+# (the reverse tangent of a `Ptr` also contributes 0 dof). Reached when the `NTuple{N,Ptr}` V
+# dispatches through the `::Tuple` methods to each `Ptr` element.
+@inline _basis_seed_isbits(v::Ptr, _slots::NTuple{N,Int}, c::Int) where {N} = (v, c)
 @inline function _basis_seed_isbits(v::NDual{T,N}, slots::NTuple{N,Int}, c::Int) where {T,N}
     c += 1
     return (NDual{T,N}(v.value, ntuple(k -> c == slots[k] ? one(T) : zero(T), Val(N))), c)
@@ -1800,6 +1806,9 @@ end
 end
 
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
+# `Ptr` lane: 0-dof placeholder (see the isbits terminal above) — return it unchanged and
+# do not advance the cursor.
+_basis_seed!!(v::Ptr, _slots, _cursor, _dict) = v
 function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}
     cursor[] += 1
     c = cursor[]

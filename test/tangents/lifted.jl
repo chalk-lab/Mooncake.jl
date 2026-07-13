@@ -526,6 +526,14 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
                 @test collect(tangent(b).partials[1].mem) == [0.0 + 1.0im, 0.0 + 0.0im]
             end
         end
+
+        # A differentiable-eltype `Ptr` field's V is `NTuple{N,Ptr}`, which dispatches through
+        # the `::Tuple` basis-seed methods to a bare `Ptr`. That lane has no addressable tangent
+        # (0 dof, like `NoDual`); previously it MethodError'd for lack of a terminal `Ptr` method.
+        let b = bl((Ptr{Float64}(0), 2.0), (1,))  # only the Float64 field carries a dof
+            @test tangent(b)[1] === (Ptr{Float64}(0),)  # Ptr lane left unchanged
+            @test tangent(b)[2].partials[1] == 1.0      # Float64 lane seeded hot
+        end
     end
 
     @testset "lift preserves cross-field array aliasing (D3)" begin
