@@ -525,15 +525,6 @@ end
     @inline primal(a::NDualMemoryRef) = a.primal
     @inline tangent(a::NDualMemoryRef) = a.partials
     @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials)
-
-    # Element access via Core.memoryref* — `MemoryRef` is not AbstractArray.
-    @inline function _memoryrefget_ndual(
-        a::NDualMemoryRef{Element,N}, order::Symbol, boundscheck::Bool
-    ) where {Element<:IEEEFloat,N}
-        v = Core.memoryrefget(a.primal, order, boundscheck)
-        parts = ntuple(k -> Core.memoryrefget(a.partials[k], order, boundscheck), Val(N))
-        return NDual{Element,N}(v, parts)
-    end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -827,6 +818,13 @@ end
 # coerce field storage into the declared backing NamedTuple so a differentiable
 # value flowing into an `Any`-typed field still yields `V === dual_type(Val(N), P)`.
 @foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
+    # Deliberately does NOT distribute over `Union` the way reverse-mode `tangent_type`
+    # union-splits: a non-concrete `P` (including any `Union`) widens to `Any`. `Lifted` is
+    # invariant in its primal parameter, so a slot annotated `Lifted{Union{A,B},N,V}` cannot
+    # hold the runtime `Lifted{A,...}`/`Lifted{B,...}` values an IR join actually produces —
+    # a union-distributed `V === Union{dual_type(A),dual_type(B)}` would let `PiNode`s /
+    # OpaqueClosures lower a valid branch to `unreachable`. The `Any` widening keeps the slot
+    # type sound; concrete leaves recover the exact `V` when the seed factories feed `typeof(x)`.
     isconcretetype(P) || return Any
     # The `NoDual` (non-differentiable) decision keys off `tangent_type(P)`, which an
     # extension may override (e.g. CUDA's `CuPtr`/`CuArray`). Emit that call in the RETURNED

@@ -314,7 +314,6 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
             @test primal(a) === p && tangent(a) === a.partials
             @test unpack_ndual(a) === (a.primal, a.partials)
             @test all(iszero, a.partials[1].mem) && all(iszero, a.partials[2].mem)
-            @test Mooncake._memoryrefget_ndual(a, :not_atomic, false) === nd(1.0, 0.0, 0.0)
             @test primal(zero_lifted(Val(2), p)) === p
 
             # Empty backing memory: `zero_dual` must not `BoundsError` on the unguarded
