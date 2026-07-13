@@ -478,17 +478,27 @@ function _add_to_primal_internal(
 ) where {T<:IEEEFloat,N}
     return x + sum(t.partials; init=zero(T))
 end
-@unstable function _add_to_primal_internal(c::MaybeCache, x, t::ImmutableDual, unsafe::Bool)
+@unstable function _add_to_primal_internal(
+    c::MaybeCache, x::P, t::ImmutableDual, unsafe::Bool
+) where {P}
     # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding each field's V back to
-    # the corresponding primal field. This mirrors what
-    # `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)` does for reverse-mode tangents
-    # in src/tangents/tangents.jl. `_new_` rebuilds both mutable and immutable structs.
+    # the corresponding primal field. Mirrors reverse-mode
+    # `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)` in src/tangents/tangents.jl,
+    # including its non-always-init-field handling: a `PossiblyUninitTangent`-wrapped field is
+    # unwrapped via `is_init`/`val`, an undefined field maps to `FieldUndefined()`, and the result
+    # is built through `__construct_type` so the `unsafe` flag / inner-constructor invariants and
+    # the `AddToPrimalException` diagnostic are honoured (rather than always calling `_new_`).
     nt = t.value
     isempty(propertynames(nt)) && return x
-    new_fields = map(keys(nt)) do name
-        return _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
+    fields = map(fieldnames(P)) do name
+        tf = getfield(nt, name)
+        isdefined(x, name) &&
+            is_init(tf) &&
+            return _add_to_primal_internal(c, getfield(x, name), val(tf), unsafe)
+        !isdefined(x, name) && !is_init(tf) && return FieldUndefined()
+        throw(error("unable to handle undefined-ness"))
     end
-    return _new_(typeof(x), new_fields...)
+    return __construct_type(P, unsafe, fields...)::P
 end
 # Mutable structs may be self-referential, so use the two-pass scheme of the
 # reverse-mode `MutableTangent` overload: const fields (which cannot cycle back)
@@ -500,21 +510,31 @@ function _add_to_primal_internal(
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::P
     nt = t.value
+    # Mirror reverse-mode `_add_to_primal_internal(::MutableTangent)`: unwrap
+    # `PossiblyUninitTangent` fields via `is_init`/`val`, map undefined fields to
+    # `FieldUndefined()`, and build through `__construct_type` so `unsafe` is honoured.
     init_fields = map(fieldnames(P)) do name
-        return if isconst(P, name)
-            _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe)
+        tf = getfield(nt, name)
+        if isdefined(x, name) && is_init(tf) && isconst(P, name)
+            return _add_to_primal_internal(c, getfield(x, name), val(tf), unsafe)
+        elseif isdefined(x, name) && is_init(tf) && !isconst(P, name)
+            return getfield(x, name)
+        elseif !isdefined(x, name) && !is_init(tf)
+            return FieldUndefined()
         else
-            getfield(x, name)
+            throw(error("unable to handle undefined-ness"))
         end
     end
-    p′ = _new_(P, init_fields...)::P
+    p′ = __construct_type(P, unsafe, init_fields...)::P
     c[key] = p′
     for name in fieldnames(P)
-        isconst(P, name) || setfield!(
-            p′,
-            name,
-            _add_to_primal_internal(c, getfield(x, name), getfield(nt, name), unsafe),
-        )
+        tf = getfield(nt, name)
+        isdefined(x, name) &&
+            is_init(tf) &&
+            !isconst(P, name) &&
+            setfield!(
+                p′, name, _add_to_primal_internal(c, getfield(x, name), val(tf), unsafe)
+            )
     end
     return p′
 end

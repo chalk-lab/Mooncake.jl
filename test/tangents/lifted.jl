@@ -31,6 +31,11 @@ mutable struct LiftedTest_MaybeInit
     y::Float64
     LiftedTest_MaybeInit(x::Float64) = new(x)
 end
+mutable struct LiftedTest_MaybeInitHeap  # non-bitstype field genuinely undefined via 1-arg ctor
+    x::Float64
+    y::Vector{Float64}
+    LiftedTest_MaybeInitHeap(x::Float64) = new(x)
+end
 abstract type LiftedTest_AbsScalar end
 struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
     μ::Float64
@@ -515,6 +520,35 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
                 m .= [1.0 + 0.0im, 2.0 + 0.0im]
                 b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
                 @test collect(tangent(b).partials[1].mem) == [0.0 + 1.0im, 0.0 + 0.0im]
+            end
+        end
+    end
+
+    @testset "_add_to_primal with non-always-init struct fields (D4/D9)" begin
+        # Forward `_add_to_primal` must handle a `PossiblyUninitTangent`-wrapped field the way
+        # reverse mode does: unwrap an initialised PUT via `is_init`/`val`, map an undefined
+        # field to `FieldUndefined()`, and reconstruct through `__construct_type` (honouring
+        # `unsafe`). Previously it hand-rolled the field loop with `_new_` and MethodError'd on
+        # the PUT (bitstype field) or hit `UndefRefError` (genuinely-undefined heap field).
+        @testset "bitstype uninit field (PUT initialised)" begin
+            x = LiftedTest_MaybeInit(3.0)  # `y` is bitstype ⇒ isdefined, PUT carries a value
+            for N in (1, 2, 3)
+                r = randn_lifted(Val(N), Xoshiro(1), x)
+                xp = Mooncake._add_to_primal(primal(r), tangent(r), true)
+                @test xp isa LiftedTest_MaybeInit
+                @test xp.x != 3.0
+            end
+            z = zero_lifted(Val(1), x)
+            @test Mooncake._add_to_primal(primal(z), tangent(z), true).x === 3.0
+        end
+        @testset "heap uninit field (FieldUndefined)" begin
+            x = LiftedTest_MaybeInitHeap(3.0)  # `y::Vector` genuinely undefined
+            for N in (1, 2, 3)
+                r = randn_lifted(Val(N), Xoshiro(2), x)
+                xp = Mooncake._add_to_primal(primal(r), tangent(r), true)
+                @test xp isa LiftedTest_MaybeInitHeap
+                @test xp.x != 3.0
+                @test !isdefined(xp, :y)  # undefined field stays undefined, matching reverse
             end
         end
     end
