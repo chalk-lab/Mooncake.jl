@@ -38,9 +38,9 @@
             dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
         end
-    elseif isprimitivetype(P) || fieldcount(P) == 0
-        # Fieldless / primitive: no differentiable content, so V is `NoDual`.
-        # (`isprimitivetype` / `fieldcount` are world-independent — fine in the body.)
+    elseif fieldcount(P) == 0
+        # Fieldless (incl. every primitive type — `fieldcount` returns 0 for them): no
+        # differentiable content, so V is `NoDual`. (`fieldcount` is world-independent here.)
         return quote
             y = _new_(P, tuple_map(primal, x)...)
             return Lifted{P,Nw}(y, NoDual())
