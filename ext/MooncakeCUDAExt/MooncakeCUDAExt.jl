@@ -502,6 +502,10 @@ function TestUtils.has_equal_data_internal(
     size(x) != size(y) && return false
     return Array(x) == Array(y)
 end
+# The array-array bookkeeping broadcasts here and below (`x .+= y`, `t .= x`, `x .= t`)
+# need no `set_to_zero!!`-style `fill!` workaround: they form `Broadcasted{CuArrayStyle}`,
+# so under HVP they hit the `materialize!` rule and route to the `_gpu_broadcast_dual`
+# chokepoint (a clear error), never a raw kernel escaping to `cufunction`.
 function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexArray}
     (x === y || haskey(c, x)) && return x
     c[x] = true
@@ -509,7 +513,10 @@ function increment_internal!!(c::IncCache, x::A, y::A) where {A<:CuMaybeComplexA
     return x
 end
 __increment_should_allocate(::Type{<:CuMaybeComplexArray}) = true
-set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = x .= 0
+# Use `fill!` (has Mooncake rules), not `x .= 0`: under HVP `set_to_zero!!` is itself
+# differentiated, and the broadcast inlines to a raw kernel launch whose forward-mode
+# trace descends into `cufunction`; `fill!` dispatches to its frule!! instead.
+set_to_zero_internal!!(::Mooncake.SetToZeroCache, x::CuMaybeComplexArray) = fill!(x, 0)
 
 function _add_to_primal_internal(
     c::MaybeCache, x::P, y::P, unsafe::Bool
@@ -2174,6 +2181,27 @@ end
 # Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
 function _gpu_broadcast_dual(f::F, args...) where {F}
     return ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
+end
+
+# Single second-order chokepoint: the NDual-based GPU rules (`sum(f, x)`,
+# `materialize`, `materialize!`) all launch their kernel through
+# `_gpu_broadcast_dual`, traced only when nested AD differentiates a rule body.
+# Tracing it nests `NDual` over `NDual`, which raises an error (perturbation
+# confusion) — so intercept here; one primitive covers every NDual rule. Both modes
+# get a throwing rule so the unsupported reverse-over-* direction fails with the
+# same clear message rather than a missing-rule MethodError.
+const _GPU_SECOND_ORDER_MSG =
+    "Mooncake: HVP / Hessian over a custom CUDA kernel (broadcasting, or " *
+    "`sum(f, x)`-style mapped reductions) is not yet supported — the kernel is a " *
+    "foreign call with no Julia IR to differentiate through at second order. " *
+    "Gradient and JVP are unaffected; for HVP/Hessian, use array-level ops " *
+    "(`sum(x)`, `dot`, matmul)."
+@is_primitive MinimalCtx Tuple{typeof(_gpu_broadcast_dual),Vararg}
+function frule!!(::Dual{typeof(_gpu_broadcast_dual)}, ::Vararg{Dual})
+    return _throw_gpu_argument_error(_GPU_SECOND_ORDER_MSG)
+end
+function rrule!!(::CoDual{typeof(_gpu_broadcast_dual)}, ::Vararg{CoDual})
+    return _throw_gpu_argument_error(_GPU_SECOND_ORDER_MSG)
 end
 
 # Map each broadcast leaf arg to a representative scalar element so that
