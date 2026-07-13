@@ -36,6 +36,10 @@ mutable struct LiftedTest_MaybeInitHeap  # non-bitstype field genuinely undefine
     y::Vector{Float64}
     LiftedTest_MaybeInitHeap(x::Float64) = new(x)
 end
+struct LiftedTest_TwoArrays  # two fields that may alias one mutable (non-float-eltype) array
+    p::Vector{Vector{Float64}}
+    q::Vector{Vector{Float64}}
+end
 abstract type LiftedTest_AbsScalar end
 struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
     μ::Float64
@@ -521,6 +525,26 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
                 b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
                 @test collect(tangent(b).partials[1].mem) == [0.0 + 1.0im, 0.0 + 0.0im]
             end
+        end
+    end
+
+    @testset "lift preserves cross-field array aliasing (D3)" begin
+        # A top-level 2-arg `lift` of an aggregate (Tuple / NamedTuple / immutable struct)
+        # must thread one shared cache so two fields aliasing the same mutable array get one
+        # shared V, matching reverse `zero_tangent_internal`. Previously each field upgraded
+        # `nothing` to its own IdDict, producing independent Vs (a silently-wrong JVP).
+        # Uses a non-float element type (`Vector{Vector{Float64}}`): float arrays alias via
+        # the shared reverse tangent regardless, so they can't exhibit the bug.
+        a = [[1.0], [2.0]]
+        let vt = tangent(lift((a, a), zero_tangent((a, a))))
+            @test vt[1] === vt[2]
+        end
+        let vn = tangent(lift((p=a, q=a), zero_tangent((p=a, q=a))))
+            @test vn.p === vn.q
+        end
+        let x = LiftedTest_TwoArrays(a, a)
+            v = tangent(lift(x, zero_tangent(x))).value
+            @test v.p === v.q
         end
     end
 

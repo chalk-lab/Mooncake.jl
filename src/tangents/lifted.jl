@@ -1179,7 +1179,12 @@ end
 @inline lift(x::P, ẋ::Tangent) where {P} = lift(x, ẋ, nothing)
 @inline function lift(x::P, ẋ::Tangent, c::Union{Nothing,IdDict}) where {P}
     backing = fieldtype(dual_type(Val(1), P), 1)
-    return Lifted{P,1}(x, ImmutableDual(_lift_backing(x, ẋ.fields, backing, c)))
+    # A top-level call arrives with `c === nothing`; upgrade it to a shared `IdDict` so that
+    # mutable children (e.g. an `Array` field) aliased across fields dedup to one V, matching
+    # the reverse `zero_tangent_internal` aliasing invariant. (Immutable structs can't cycle
+    # back to themselves, so — unlike the mutable-struct lift — no self-registration is needed.)
+    d = c === nothing ? IdDict() : c
+    return Lifted{P,1}(x, ImmutableDual(_lift_backing(x, ẋ.fields, backing, d)))
 end
 @inline lift(x::P, ẋ::MutableTangent) where {P} = lift(x, ẋ, nothing)
 @inline function lift(x::P, ẋ::MutableTangent, c::Union{Nothing,IdDict}) where {P}
@@ -1253,14 +1258,18 @@ end
 # values back into `lift`.
 @inline lift(x::Tuple, ẋ::Tuple) = lift(x, ẋ, nothing)
 @inline function lift(x::Tuple, ẋ::Tuple, c::Union{Nothing,IdDict})
-    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, c)), x, ẋ)
+    # Thread a shared cache through the elements so aliased mutable elements dedup to one V
+    # (reverse aliasing invariant); upgrade a top-level `nothing` like the aggregate lifts above.
+    d = c === nothing ? IdDict() : c
+    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, d)), x, ẋ)
     return Lifted{typeof(x),1}(x, field_Vs)
 end
 @inline lift(x::NamedTuple, ẋ::NamedTuple) = lift(x, ẋ, nothing)
 @inline function lift(
     x::NamedTuple{names}, ẋ::NamedTuple, c::Union{Nothing,IdDict}
 ) where {names}
-    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, c)), values(x), values(ẋ))
+    d = c === nothing ? IdDict() : c
+    field_Vs = map((xi, vi) -> tangent(lift(xi, vi, d)), values(x), values(ẋ))
     return Lifted{typeof(x),1}(x, NamedTuple{names}(field_Vs))
 end
 
