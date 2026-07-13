@@ -386,8 +386,16 @@ If the set already contains a newly visited address, it errors out indicating an
 Also errors out if `y` is or contains a Pointer.
 It is called internally by [`__exclude_unsupported_output(y)`](@ref).
 """
+# For an isbits `T` (guaranteed by the caller) this terminates, since isbits types cannot be
+# self-referential: true iff `T` is a `Ptr` or transitively contains a `Ptr` field. Lets the
+# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits struct
+# to the loud Ptr-in-output guard below (otherwise the "output may not contain a pointer" guarantee
+# fails silently, because a `Ptr` — and a struct whose fields are all bits — is itself isbits).
+_isbits_contains_ptr(::Type{<:Ptr}) = true
+_isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes(T))
+
 function __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
-    isbitstype(T) && return nothing
+    isbitstype(T) && !_isbits_contains_ptr(T) && return nothing
     if objectid(y) in address_set
         throw_circular_reference_or_alias_error(y)
     end
@@ -599,7 +607,9 @@ _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict
 _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
 function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
-    return Core.svec([map(s -> _copy_output(s, c), x_sub) for x_sub in x]...)
+    # Copy each element via its own `_copy_output` dispatch (arrays, structs, type values, …); the
+    # sibling `_copy_to_output!!(::SimpleVector)` copies element-wise the same way.
+    return Core.svec([_copy_output(x_sub, c) for x_sub in x]...)
 end
 
 # Array, Memory. Only reference-element arrays can participate in a cycle, so the
@@ -627,7 +637,8 @@ function _copy_output(
     return map(s -> _copy_output(s, c), x)::typeof(x)
 end
 
-# mutable composite types, bitstype
+# Generic fallback: bitstypes, zero-field opaque types (e.g. Symbol/String), and mutable or
+# immutable non-bits structs.
 function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
     isbitstype(P) && return x
     # nfields(x) not nfields(P): the latter counts fields of the
@@ -717,7 +728,7 @@ end
 function __exclude_unsupported_output_internal!(
     y::Union{Tuple,NamedTuple}, address_set::Set{UInt}
 )
-    map(Base.Fix2(__exclude_unsupported_output_internal!, address_set), y)
+    foreach(Base.Fix2(__exclude_unsupported_output_internal!, address_set), y)
     return nothing
 end
 
@@ -736,7 +747,10 @@ of `(f, x...)` alias the same mutable storage.
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
 !!! note
-    Calls `f(x...)` once during cache preparation.
+    Evaluates `f(x...)` twice during cache preparation: once on a deepcopy of the arguments to
+    validate the output, and once during the differentiated pass. Non-reversible side effects
+    (e.g. I/O such as printing) therefore occur twice; in-place mutations of the arguments are
+    restored by the reverse pass and net to a single observable change.
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
 
@@ -760,19 +774,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            InputSpec(typeof(x), size(x))
-        else
-            InputSpec(typeof(x), ())
-        end
-    end
+    input_specs = map(_input_spec, fx)
     output_primal = primal(y)
-    output_spec = if output_primal isa AbstractArray
-        InputSpec(typeof(output_primal), size(output_primal))
-    else
-        InputSpec(typeof(output_primal), ())
-    end
+    output_spec = _input_spec(output_primal)
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
@@ -899,25 +903,15 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            InputSpec(typeof(x), size(x))
-        else
-            InputSpec(typeof(x), ())
-        end
-    end
+    input_specs = map(_input_spec, fx)
     output_primal = primal(y)
-    output_spec = if output_primal isa AbstractArray
-        InputSpec(typeof(output_primal), size(output_primal))
-    else
-        InputSpec(typeof(output_primal), ())
-    end
+    output_spec = _input_spec(output_primal)
     # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient Cache is
     # also a well-formed pullback Cache. `_copy_output` suffices for the isbits scalar output — no
     # `_copy_to_output!!` fill needed (and the gradient run path never reads it anyway).
     y_cache = _copy_output(primal(y))
     if config.friendly_tangents
-        dests = tuple(map(friendly_tangent_cache, fx)...)
+        dests = map(friendly_tangent_cache, fx)
         return Cache(rule, y_cache, tangents, dests, nothing, input_specs, output_spec)
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
@@ -1041,27 +1035,16 @@ end
 @inline _dual_primal_type(::Type{<:Lifted{Y}}) where {Y} = Y
 
 @inline function _forward_cache_output_summary(cache::FCache)
-    output_primal = getfield(cache, :output_primal)
-    return if !isnothing(output_primal)
-        _cache_spec_summary(
-            if output_primal isa AbstractArray
-                InputSpec(typeof(output_primal), size(output_primal))
-            else
-                InputSpec(typeof(output_primal), ())
-            end,
-        )
-    else
-        lifted_arg_types = Tuple{
-            map(
-                spec -> lifted_type(Val(1), typeof(spec).parameters[1]),
-                getfield(cache, :input_specs),
-            )...,
-        }
-        output_type = Core.Compiler.return_type(
-            getfield(cache, :single_rule), lifted_arg_types
-        )
-        _cache_type_summary(_dual_primal_type(output_type))
-    end
+    # The forward output shape is unknown at prepare time, so it is always inferred from the rule's
+    # return type (`FCache.output_primal` is vestigially `nothing` — see its construction sites).
+    lifted_arg_types = Tuple{
+        map(
+            spec -> lifted_type(Val(1), typeof(spec).parameters[1]),
+            getfield(cache, :input_specs),
+        )...,
+    }
+    output_type = Core.Compiler.return_type(getfield(cache, :single_rule), lifted_arg_types)
+    return _cache_type_summary(_dual_primal_type(output_type))
 end
 
 function Base.show(io::IO, cache::FCache)
@@ -1114,6 +1097,10 @@ struct InputSpec{T,S}
 end
 
 InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
+
+# Prepared-cache spec for one primal: array inputs record their size, everything else records `()`.
+@inline _input_spec(x) =
+    x isa AbstractArray ? InputSpec(typeof(x), size(x)) : InputSpec(typeof(x), ())
 
 @inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_size_summary(T, "size $(spec.size)")))"
 
@@ -1219,27 +1206,14 @@ end
     end
     return total
 end
-@inline function dof(t::Tuple, seen::IdDict{Any,Any})
-    total = 0
-    for ti in t
-        total += dof(ti, seen)
-    end
-    return total
-end
-@inline function dof(t::NamedTuple, seen::IdDict{Any,Any})
-    total = 0
-    for ti in values(t)
-        total += dof(ti, seen)
-    end
-    return total
-end
 @inline function dof(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
     return is_init(t) ? dof(val(t), seen) : 0
 end
-# Generic fallback for any other tangent struct — `Tangent`/`MutableTangent` (whose single
-# `fields` NamedTuple recurses), but also `MistyClosureTangent` and other custom/closure
-# tangents from e.g. the HVP `grad_f`. Walk its fields with mutable-node dedup so aliased and
-# cyclic tangents are handled uniformly.
+# Generic fallback for tuples, named tuples, and any tangent struct — `Tangent`/`MutableTangent`
+# (whose single `fields` NamedTuple recurses), but also `MistyClosureTangent` and other
+# custom/closure tangents from e.g. the HVP `grad_f`. Walk its fields with mutable-node dedup so
+# aliased and cyclic tangents are handled uniformly (tuples/named-tuples are immutable and
+# fully-initialised, so `fieldcount`/`getfield` recursion matches element iteration).
 @inline function dof(t::P, seen::IdDict{Any,Any}) where {P}
     if Base.ismutabletype(P)
         haskey(seen, t) && return 0
@@ -1376,13 +1350,7 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    input_specs = map(fx) do x
-        if x isa AbstractArray
-            InputSpec(typeof(x), size(x))
-        else
-            InputSpec(typeof(x), ())
-        end
-    end
+    input_specs = map(_input_spec, fx)
     # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
     # type-generic, so structs, tuples, complex, and differentiable `f` batch `W` directional
     # derivatives per pass through the generic chunked gradient path just like float arrays.
@@ -1761,14 +1729,19 @@ function value_and_gradient!!(
     # guaranteed by the packability gate, so this is a free isbits rewrap.
     f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
     z = zero(T)
-    for i in 1:N
-        fill!(grad_bufs[i], z)
-    end
     total_dof = sum(length, xs)
     # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field is the
     # authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
     W = cache.gradient_chunk_size
-    y = z
+    # Bind `y` from the primal below (not a fabricated `zero(T)`), so the return type stays concrete
+    # even when `f`'s output float type differs from the input eltype. The scatter writes every
+    # gradient position exactly once per sweep, so `grad_bufs` needs no pre-zeroing.
+    local y
+    if total_dof == 0
+        # Zero-DOF (empty) input: run the primal once so `y` is the true value, not a fabricated zero.
+        y = primal(value_and_derivative!!(cache, f_seed, arg_seeds...))
+        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    end
     s = 1
     while s <= total_dof
         # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales the
@@ -1801,7 +1774,7 @@ function value_and_gradient!!(
             for lane in 1:W
                 slot = s + lane - 1
                 if slot <= total_dof && off < slot <= off + len
-                    gb[slot - off] += tangent(output, lane)
+                    gb[slot - off] = tangent(output, lane)
                 end
             end
             off += len
@@ -1957,7 +1930,9 @@ end
     g::T, coeffs::NTuple{W}, s, tot, c::Int
 ) where {T<:IEEEFloat,W}
     c += 1
-    return (s <= c <= min(s + W - 1, tot) ? T(coeffs[c - s + 1]) : g, c)
+    # `c` never exceeds `tot`, so the `min(…, tot)` upper clamp can never bind (matches the array
+    # path `_scatter_chunk!`, which omits it). `tot` stays threaded uniformly through the family.
+    return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
 @inline _scatter_isbits(::Tuple{}, _coeffs, _s, _tot, c::Int) = ((), c)
 @inline function _scatter_isbits(g::Tuple, coeffs, s, tot, c::Int)
@@ -2702,14 +2677,11 @@ end
         return y, J
     end
 
-    ȳ[1] = one(Ty)
-    y, pb = value_and_pullback!!(cache, ȳ, f, x)
-    @inbounds J[1, :] .= pb[2]
-    ȳ[1] = zero(Ty)
-
-    @inbounds for row in 2:length(ȳ)
+    local y
+    @inbounds for row in 1:length(ȳ)
         ȳ[row] = one(Ty)
-        _, pb = value_and_pullback!!(cache, ȳ, f, x)
+        val, pb = value_and_pullback!!(cache, ȳ, f, x)
+        row == 1 && (y = val)
         J[row, :] .= pb[2]
         ȳ[row] = zero(Ty)
     end
@@ -2848,8 +2820,6 @@ H
             "input vector has length $n but cache was prepared for length $(length(v)); rebuild via `prepare_hessian_cache`",
         ),
     )
-    # Reset `v` in case a prior call threw between `v[i] = one(T)` and `v[i] = zero(T)`.
-    fill!(v, zero(T))
     if n == 0
         fval, _, _ = value_and_hvp!!(cache, f, v, x1)
         return fval, g, H
@@ -2863,6 +2833,9 @@ H
         return value, g, H
     end
     local value
+    # Reset `v` in case a prior call threw between `v[i] = one(T)` and `v[i] = zero(T)`. Only the
+    # width-1 sweep touches `v`; the chunked path builds its own seed, so this stays out of it.
+    fill!(v, zero(T))
     # One-hot writes via a reused host buffer + `copyto!`: `v[i] = x` is GPU scalar
     # indexing (errors on CuArray), while `copyto!` serves both Vector and CuArray.
     e = Vector{T}(undef, 1)
