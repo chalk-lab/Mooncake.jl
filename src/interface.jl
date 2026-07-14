@@ -292,7 +292,6 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
 end
 
 @inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
-@inline _cache_x_input_specs(cache::Cache) = Base.tail(getfield(cache, :input_specs))
 
 # Human-readable size/shape category for a cached argument's type, used only by `show`.
 # `sizestr` is spliced into the array branch: a concrete `InputSpec` knows the size, while
@@ -350,7 +349,9 @@ function Base.show(io::IO, ::MIME"text/plain", cache::Cache)
         _cache_input_count(cache),
     )
     _cache_print_io_summary(
-        io, _cache_x_input_specs(cache), _cache_spec_summary(getfield(cache, :output_spec))
+        io,
+        Base.tail(getfield(cache, :input_specs)),
+        _cache_spec_summary(getfield(cache, :output_spec)),
     )
 end
 
@@ -1789,8 +1790,7 @@ function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEF
     copyto!(v.primal, x)
     return nothing
 end
-_refresh_seed!(v::Union{ImmutableDual,MutableDual}, x) = _refresh_fields!(v.value, x)
-_refresh_seed!(v::NamedTuple, x) = _refresh_fields!(v, x)
+_refresh_seed!(v::Union{ImmutableDual,MutableDual}, x) = _refresh_seed!(v.value, x)
 @generated function _refresh_seed!(v::Tuple, x::Tuple)
     return Expr(
         :block,
@@ -1798,7 +1798,7 @@ _refresh_seed!(v::NamedTuple, x) = _refresh_fields!(v, x)
         :(nothing),
     )
 end
-@generated function _refresh_fields!(v::NamedTuple{ns}, x) where {ns}
+@generated function _refresh_seed!(v::NamedTuple{ns}, x) where {ns}
     return Expr(
         :block,
         (
@@ -2263,11 +2263,12 @@ true
     )
 end
 
-function _make_hessian_buffers(::Type{T}, x::AbstractVector) where {T}
+function _make_hessian_buffers(x::AbstractVector)
     # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array input
     # (e.g. `CuArray`) gets device-resident buffers; for a `Vector{T}` input this is identical to
     # host `zeros`. The chunked/width-1 sweeps write `H`/`grad`/`v` in place (broadcast + `copyto!`),
     # so a device-resident `x` yields a device-resident gradient and Hessian.
+    T = eltype(x)
     n = length(x)
     return (;
         H=fill!(similar(x, T, n, n), zero(T)), grad=zero_tangent(x), v=zero_tangent(x)
@@ -2390,7 +2391,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
     x1 = only(x)
-    T = _validate_hessian_argument(x1)
+    _validate_hessian_argument(x1)
     base = prepare_hvp_cache(f, x1; config)
     # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose FoR
     # rule's dual callables are width W, alongside the width-1 `base` used by `value_and_hvp!!`.
@@ -2426,7 +2427,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.grad_tangent,
         base.fwd_cache,
         base.output_spec,
-        (_make_hessian_buffers(T, x1), chunked),
+        (_make_hessian_buffers(x1), chunked),
     )
 end
 
