@@ -24,7 +24,7 @@ function __value_and_pullback!!(
     return v, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(rdata(ȳ)))
 end
 
-function __verify_sig(rule::DerivedRule{<:Any,sig}, fx::Tfx) where {sig,Tfx}
+function __verify_sig(rule::DerivedRule{<:Any,sig}, fx) where {sig}
     Pfx = typeof(__unflatten_codual_varargs(_isva(rule), fx, rule.nargs))
     if sig != Pfx
         msg = "signature of arguments, $Pfx, not equal to signature required by rule, $sig."
@@ -156,7 +156,15 @@ There are lots of ways to get this wrong though, so we generally advise against 
 """
 # Returns NoCache when all primals are bits types (no mutable aliasing possible).
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
-_friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict{Any,Any}()
+_friendly_cache(fx::Tuple) = isbitstype(typeof(fx)) ? NoCache() : IdDict{Any,Any}()
+
+# Convert the internal tangents `native` back to friendly (primal-shaped) tangents, sharing one
+# aliasing cache across the tuple. Shared by the four (pullback/gradient) × (rule/cached) friendly
+# branches below.
+@inline function _to_friendly(dests, fx, native)
+    c = _friendly_cache(fx)
+    return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, native)
+end
 
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
@@ -166,11 +174,7 @@ _friendly_cache(fx::Tuple) = all(isbitstype ∘ typeof, fx) ? NoCache() : IdDict
     if friendly_tangents
         ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
         value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
-        dests = map(friendly_tangent_cache, fx)
-        c = _friendly_cache(fx)
-        friendly_pb = tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, pb
-        )
+        friendly_pb = _to_friendly(map(friendly_tangent_cache, fx), fx, pb)
         return value, friendly_pb
     end
     return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
@@ -204,11 +208,7 @@ value_and_gradient!!(rule, f, x, y)
 ) where {R,N}
     if friendly_tangents
         value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
-        dests = map(friendly_tangent_cache, fx)
-        c = _friendly_cache(fx)
-        friendly_gradient = tuple_map(
-            (d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, gradient
-        )
+        friendly_gradient = _to_friendly(map(friendly_tangent_cache, fx), fx, gradient)
         return value, friendly_gradient
     end
     return __value_and_gradient!!(rule, __create_coduals(fx)...)
@@ -775,8 +775,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
     input_specs = map(_input_spec, fx)
-    output_primal = primal(y)
-    output_spec = _input_spec(output_primal)
+    output_spec = _input_spec(primal(y))
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
@@ -877,10 +876,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     value, pb = __value_and_pullback!!(
         cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
     )
-    c = _friendly_cache(fx)
-    friendly_pb = tuple_map(
-        (d, p, t) -> tangent_to_friendly!!(d, p, t, c), getfield(cache, :dests), fx, pb
-    )
+    friendly_pb = _to_friendly(getfield(cache, :dests), fx, pb)
     return value, friendly_pb
 end
 
@@ -904,8 +900,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     input_specs = map(_input_spec, fx)
-    output_primal = primal(y)
-    output_spec = _input_spec(output_primal)
+    output_spec = _input_spec(primal(y))
     # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient Cache is
     # also a well-formed pullback Cache. `_copy_output` suffices for the isbits scalar output — no
     # `_copy_to_output!!` fill needed (and the gradient run path never reads it anyway).
@@ -991,13 +986,7 @@ value_and_gradient!!(cache, f, x, y)
         return __value_and_gradient!!(cache.rule, coduals...)
     end
     value, gradient = __value_and_gradient!!(cache.rule, coduals...)
-    c = _friendly_cache(fx)
-    friendly_gradient = tuple_map(
-        (d, p, t) -> tangent_to_friendly!!(d, p, t, c),
-        getfield(cache, :dests),
-        fx,
-        gradient,
-    )
+    friendly_gradient = _to_friendly(getfield(cache, :dests), fx, gradient)
     return value, friendly_gradient
 end
 
@@ -1176,8 +1165,9 @@ end
 # the count equals `length`/`2length`.
 @inline dof(t) = dof(t, IdDict{Any,Any}())
 @inline dof(::NoTangent, ::IdDict{Any,Any}) = 0
-@inline dof(t::IEEEFloat, ::IdDict{Any,Any}) = Nfwd._nfwd_input_dof(t)
-@inline dof(t::Complex{<:IEEEFloat}, ::IdDict{Any,Any}) = Nfwd._nfwd_input_dof(t)
+@inline function dof(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
+    return Nfwd._nfwd_input_dof(t)
+end
 # `Union{}`-eltype arrays (e.g. an empty `Memory{Union{}}` reached while walking a closure
 # tangent like the HVP `grad_f`'s `MistyClosureTangent`) carry no differentiable content; 0.
 # More specific than the float/complex-array and generic-array methods, so no ambiguity.
@@ -1799,8 +1789,7 @@ function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEF
     copyto!(v.primal, x)
     return nothing
 end
-_refresh_seed!(v::ImmutableDual, x) = _refresh_fields!(v.value, x)
-_refresh_seed!(v::MutableDual, x) = _refresh_fields!(v.value, x)
+_refresh_seed!(v::Union{ImmutableDual,MutableDual}, x) = _refresh_fields!(v.value, x)
 _refresh_seed!(v::NamedTuple, x) = _refresh_fields!(v, x)
 @generated function _refresh_seed!(v::Tuple, x::Tuple)
     return Expr(
@@ -1915,32 +1904,30 @@ end
 # derivative w.r.t. dof `s + k - 1`; the gradient mirrors the input structure (recursive
 # coherence), so a single dof-ordered walk sets each leaf scalar directly. Pure isbits rebuild
 # with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
-@inline function _isbits_scatter(ng, out, ::Val{W}, total_dof, s) where {W}
+@inline function _isbits_scatter(ng, out, ::Val{W}, s) where {W}
     coeffs = ntuple(lane -> tangent(out, lane), Val(W))
-    g, _ = _scatter_isbits(ng, coeffs, s, total_dof, 0)
+    g, _ = _scatter_isbits(ng, coeffs, s, 0)
     return g
 end
-@inline _scatter_isbits(g::NoTangent, _coeffs, _s, _tot, c::Int) = (g, c)
-@inline function _scatter_isbits(
-    g::T, coeffs::NTuple{W}, s, tot, c::Int
-) where {T<:IEEEFloat,W}
+@inline _scatter_isbits(g::NoTangent, _coeffs, _s, c::Int) = (g, c)
+@inline function _scatter_isbits(g::T, coeffs::NTuple{W}, s, c::Int) where {T<:IEEEFloat,W}
     c += 1
-    # `c` never exceeds `tot`, so the `min(…, tot)` upper clamp can never bind (matches the array
-    # path `_scatter_chunk!`, which omits it). `tot` stays threaded uniformly through the family.
+    # A scalar leaf consumes one dof; write the active lane's coefficient at this cursor position when
+    # it falls in the current chunk `[s, s+W-1]` (matches the array path `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
-@inline _scatter_isbits(::Tuple{}, _coeffs, _s, _tot, c::Int) = ((), c)
-@inline function _scatter_isbits(g::Tuple, coeffs, s, tot, c::Int)
-    h, c = _scatter_isbits(first(g), coeffs, s, tot, c)
-    t, c = _scatter_isbits(Base.tail(g), coeffs, s, tot, c)
+@inline _scatter_isbits(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
+@inline function _scatter_isbits(g::Tuple, coeffs, s, c::Int)
+    h, c = _scatter_isbits(first(g), coeffs, s, c)
+    t, c = _scatter_isbits(Base.tail(g), coeffs, s, c)
     return ((h, t...), c)
 end
-@inline function _scatter_isbits(g::NamedTuple{names}, coeffs, s, tot, c::Int) where {names}
-    t, c = _scatter_isbits(values(g), coeffs, s, tot, c)
+@inline function _scatter_isbits(g::NamedTuple{names}, coeffs, s, c::Int) where {names}
+    t, c = _scatter_isbits(values(g), coeffs, s, c)
     return (NamedTuple{names}(t), c)
 end
-@inline function _scatter_isbits(g::Tangent, coeffs, s, tot, c::Int)
-    inner, c = _scatter_isbits(g.fields, coeffs, s, tot, c)
+@inline function _scatter_isbits(g::Tangent, coeffs, s, c::Int)
+    inner, c = _scatter_isbits(g.fields, coeffs, s, c)
     return (typeof(g)(inner), c)
 end
 
@@ -1957,11 +1944,11 @@ function _isbits_gradient!!(
     first_out = _isbits_chunk(cache, input_primals, templates, Val(W), 1)
     y = primal(first_out)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    native_gradients = _isbits_scatter(native_gradients, first_out, Val(W), total_dof, 1)
+    native_gradients = _isbits_scatter(native_gradients, first_out, Val(W), 1)
     s = 1 + W
     while s <= total_dof
         out = _isbits_chunk(cache, input_primals, templates, Val(W), s)
-        native_gradients = _isbits_scatter(native_gradients, out, Val(W), total_dof, s)
+        native_gradients = _isbits_scatter(native_gradients, out, Val(W), s)
         s += W
     end
     return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -2150,17 +2137,17 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
     )
 end
 
-@inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
+@inline function _assert_matching_tangent_shape(primal, tangent)
     if applicable(axes, primal) && applicable(axes, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument $arg_index must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
+                "Tangent direction for argument 1 must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
             ),
         )
     elseif applicable(length, primal) && applicable(length, tangent)
         length(primal) == length(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument $arg_index must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
+                "Tangent direction for argument 1 must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
             ),
         )
     end
@@ -2344,7 +2331,7 @@ true
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
     _validate_prepared_cache(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
-    _assert_matching_tangent_shape(x1, v, 1)
+    _assert_matching_tangent_shape(x1, v)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
     )
@@ -2403,7 +2390,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
     x1 = only(x)
-    T = _validate_hessian_argument(x1, 1)
+    T = _validate_hessian_argument(x1)
     base = prepare_hvp_cache(f, x1; config)
     # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose FoR
     # rule's dual callables are width W, alongside the width-1 `base` used by `value_and_hvp!!`.
@@ -2443,16 +2430,16 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     )
 end
 
-function _validate_hessian_argument(x, i::Int)
+function _validate_hessian_argument(x)
     x isa AbstractVector || throw(
         ArgumentError(
-            "Hessian computation only supports AbstractVector inputs; argument $i has type $(typeof(x))",
+            "Hessian computation only supports AbstractVector inputs; argument 1 has type $(typeof(x))",
         ),
     )
     T = eltype(x)
     T <: IEEEFloat || throw(
         ArgumentError(
-            "Hessian computation only supports AbstractVector inputs with IEEEFloat element types; argument $i has eltype $T",
+            "Hessian computation only supports AbstractVector inputs with IEEEFloat element types; argument 1 has eltype $T",
         ),
     )
     return T
@@ -2684,7 +2671,7 @@ end
     return y, J
 end
 
-@unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f::F, x) where {F}
+@unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f, x)
     # Reached only for inputs the methods above reject (`x` is not a dense
     # `AbstractVector{<:IEEEFloat}`). `_validate_jacobian_argument` always throws
     # a specific message here; the explicit throw documents that this fallback
@@ -2698,7 +2685,7 @@ end
     )
 end
 
-@unstable function value_and_jacobian!!(cache, f::F, x) where {F}
+@unstable function value_and_jacobian!!(cache, f, x)
     throw(ArgumentError("value_and_jacobian!! only supports cache types Cache and FCache"))
 end
 
@@ -2803,7 +2790,7 @@ H
     hb = cache.hess_buffers
     hb === nothing && _throw_not_hessian_cache()
     buf, chunked = hb
-    T = _validate_hessian_argument(x1, 1)
+    T = _validate_hessian_argument(x1)
     H = buf.H
     g = buf.grad
     v = buf.v
