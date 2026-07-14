@@ -31,6 +31,9 @@ using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using Base.Broadcast: Broadcasted
+# Statistics is a weakdep triggering this extension alongside CUDA; always loaded
+# transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
+import Statistics: mean, varm
 import Mooncake:
     MinimalCtx,
     DefaultCtx,
@@ -2327,7 +2330,10 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         a = bc.args[i]
         ta = targs[i]
         if a isa Broadcasted
-            if ta isa Union{NoTangent,NoFData}
+            # Scalars always report NoFData (their grad flows via RData), even when
+            # differentiable — so also require zero DOF before collapsing, or a
+            # differentiable scalar leaf here silently drops out of flat_pargs.
+            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
                 Base.Broadcast.materialize(a)
             else
                 a_prepared = _premat_nondiff_args(a, ta)
@@ -2945,5 +2951,320 @@ function rrule!!(
     end
     return CoDual(y, dy_out), permutedims_pb!!
 end
+
+# varm(x, m; corrected, dims) on CuArrays. LayerNorm/GroupNorm/InstanceNorm reach this
+# via LuxLib.Impl.mean_var → var → varm; the no-dims path uses a mapreduce closure
+# Mooncake can't trace. Split into two primitives: this one for array-valued m (dims
+# gives a CuArray output), and one below for scalar m (dims=: gives a scalar output).
+#
+# Two conventions hold throughout the varm/mean rules below. First, the primal value
+# comes from calling the real function — rules execute natively, so the mapreduce
+# closure only blocks tracing — which inherits the primal's kwarg validation,
+# NaN-on-empty convention, and exact value arithmetic. Second, each hand-rolled
+# derivative uses the same arithmetic as its own primal method — λ-prescaled where
+# the primal λ-prescales, divide-after-sum where it divides after — so value and
+# derivative degrade identically in Float16 edge cases.
+
+# A real-valued fdata/rdata slot can't hold a complex value. When exactly one of x/m
+# is complex, the true partial derivative of |x-m|² is the real part of the naive
+# complex expression below, so real slots need that projection. Dispatched on Type,
+# not applied to a materialized array, so it fuses into the caller's broadcast instead
+# of adding a separate kernel.
+_realprojector(::Type{T}) where {T<:Real} = real
+_realprojector(::Type) = identity
+
+# Real eltypes only, unlike the scalar-m rules below: GPUArrays' accelerated method
+# is `varm(A::AbstractGPUArray{<:Real}, M::AbstractArray{<:Real}; dims, corrected)`.
+# Complex arrays fall through to Statistics' generic centralize_sumabs2!, which
+# scalar-indexes and cannot run on GPU, so a rule covering them would make AD succeed
+# where the primal throws. Mixed real precisions need no tie here, unlike scalar-m
+# below: this method has no n==0 type bifurcation, so its output type is always
+# concrete.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(varm),CuFloatArray,CuFloatArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(varm)},
+    x::Dual{<:CuFloatArray},
+    m::Dual{<:CuFloatArray},
+)
+    pkw = primal(kw)
+    px = primal(x)
+    dx = tangent(x)
+    pm = primal(m)
+    dm = tangent(m)
+    σ² = varm(px, pm; pkw...)
+    # `dims` has no default in GPUArrays' method, so the call above has already thrown
+    # unless it is present; `corrected` does default to true there.
+    _raw_dims = pkw.dims
+    corrected = get(pkw, :corrected, true)
+    T = eltype(px)
+    # As in the primal: λ-prescale before reducing (a raw product sum could overflow
+    # Float16), with λ inverted in Float64 then converted. `one(T) / n` would convert
+    # n to T first, turning n > 65504 into Inf16 and silently zeroing every Float16
+    # gradient.
+    if _raw_dims isa Colon
+        λ = convert(T, inv(length(px) - Int(corrected)))
+        return Dual(σ², sum((2λ) .* (px .- pm) .* (dx .- dm)))
+    end
+    # The denominator mirrors GPUArrays' _mean_denom: a repeated dim (dims=(1,1))
+    # counts once, and `init=1` keeps an empty dims=() from throwing on the empty
+    # prod. sum(...; dims) already deduplicates repeated dims on its own.
+    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
+    n = prod(d -> size(px, d), unique(_dims); init=1)
+    λ = convert(T, inv(n - Int(corrected)))
+    return Dual(σ², sum((2λ) .* (px .- pm) .* (dx .- dm); dims=_dims))
+end
+
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(varm)},
+    x::CoDual{<:CuFloatArray},
+    m::CoDual{<:CuFloatArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    pm, dm = arrayify(m)
+    σ² = varm(px, pm; pkw...)
+    _raw_dims = pkw.dims  # required by GPUArrays' method; validated by the call above
+    corrected = get(pkw, :corrected, true)
+    T = eltype(px)
+    diff = px .- pm
+    _dims = _raw_dims isa Integer ? (_raw_dims,) : _raw_dims
+    # Same denominator and Float64-inverted λ as the frule above. Assigned once,
+    # outside the branch, so the pullbacks capture coeff as a typed closure field
+    # rather than a Core.Box.
+    n = _dims isa Colon ? length(px) : prod(d -> size(px, d), unique(_dims); init=1)
+    coeff = 2 * convert(T, inv(n - Int(corrected)))
+    # Either operand may be broadcast-expanded against the other in the primal, so
+    # the pullbacks form the elementwise gradient g at the broadcast shape, then
+    # unbroadcast it back to each operand's own shape. Forming g before any reduction
+    # also covers empty x: g is empty and the unbroadcast sums give clean zeros,
+    # instead of coeff(=Inf at n==0, corrected=false) * 0 = NaN.
+    if _dims isa Colon
+        # Scalar output: σ² gets NoFData, and the pullback receives its cotangent
+        # functionally rather than via a pre-accumulated fdata mutation.
+        function varm_colon_pb!!(dσ²)
+            g = coeff * dσ² .* diff
+            dx .+= _unbroadcast(g, size(px))
+            dm .-= _unbroadcast(g, size(pm))
+            return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return CoDual(σ², NoFData()), varm_colon_pb!!
+    end
+    dσ² = zero(σ²)
+    function varm_pb!!(::NoRData)
+        # dσ² varies along the non-reduced dims, so it must sit inside the
+        # unbroadcast reductions rather than factoring out.
+        g = coeff .* dσ² .* diff
+        dx .+= _unbroadcast(g, size(px))
+        dm .-= _unbroadcast(g, size(pm))
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(σ², dσ²), varm_pb!!
+end
+
+# NOTE: no bare `varm(x, m::AbstractArray)` primitive here, unlike the scalar-m case
+# below. GPUArrays' override, `varm(A::AbstractGPUArray, M::AbstractArray; dims,
+# corrected=true)`, has no default for `dims`, so for the Real eltypes these rules
+# cover, this 2-arg spelling always throws `UndefKeywordError` even without AD. A
+# rule here would make AD succeed where the real function throws.
+
+# varm(x, m::scalar; corrected): the no-dims case, m from mean(x; dims=:). Same
+# closure-mapreduce problem as above, but m here is a plain scalar, not an array.
+# Complex x/m are supported here, unlike the array-m rules above: the primal path is
+# Statistics' generic scalar-m mapreduce, which GPUArrays handles for any eltype.
+
+# JVP for the scalar-m Colon case, shared by the kwcall and bare rules. The primal is
+# Statistics' generic `centralize_sumabs2(A, m) / (n - Int(corrected))`, which divides
+# AFTER summing in T/Int promotion arithmetic. The tangent does the same: this method
+# also runs (traced) on the CPU, and a CUDA-only rule must not give it a different
+# derivative — at Float16 n > 65504 the promoted denominator is Inf16, zeroing the
+# quotient on both backends.
+function _varm_scalar_colon_tangent(px, dx, pm, dm, corrected::Bool)
+    # n == 0: the primal takes Statistics' constant-NaN branch, so the derivative is
+    # the zero map (dividing the empty sum by 0 would instead manufacture a NaN).
+    n = length(px)
+    n == 0 && return zero(real(eltype(px)))
+    # real(conj(diff)*...) is the JVP for both real and complex diff (σ² is always
+    # real, so dσ² must be too). conj/real are dot-called so they fuse into one kernel
+    # with the subtraction/product, instead of allocating a separate array just to
+    # support the complex case.
+    return 2 * sum(real.(conj.(px .- pm) .* (dx .- dm))) / (n - Int(corrected))
+end
+
+# Pullback for the scalar-m Colon case, with the same divide-after arithmetic as the
+# tangent above. coeff is applied elementwise BEFORE reducing, as in the array-m
+# pullbacks: a precomputed raw sum(diff) can overflow Float16 to Inf while coeff is
+# zeroed by its Inf16-promoted denominator, turning m's cotangent into 0 * Inf = NaN
+# where the CPU-traced pullback gives 0. The same ordering makes n == 0 guard-free:
+# g is then empty, so both cotangents reduce to clean zeros even though
+# coeff = dσ² / 0 = Inf at corrected=false.
+function _varm_scalar_colon_pb(px, dx, pm, corrected::Bool)
+    denom = length(px) - Int(corrected)
+    diff = px .- pm
+    function pb!!(dσ²)
+        coeff = 2 * (dσ² / denom)
+        g = coeff .* diff
+        dx .+= _realprojector(eltype(dx)).(g)
+        return typeof(pm)(_realprojector(typeof(pm))(-sum(g)))
+    end
+    return pb!!
+end
+
+# Scalar m must share x's underlying precision. With e.g. Float32 data and a Float64
+# mean, Statistics' scalar-m varm infers Union{Float32,Float64} (the n==0 branch
+# types σ² off x alone; the main branch promotes with m), and Mooncake's rule builder
+# cannot handle a Union-typed primitive output. Only same-precision combinations —
+# all concretely typed — are claimed as primitives; mismatched ones fail loudly in
+# the interpreter instead.
+#
+# The tie takes four explicit eltype combinations. In a single
+# `Tuple{..., CuArray{<:Union{P,Complex{P}}}, Union{P,Complex{P}}} where P`, P never
+# occurs twice covariantly, so it is not diagonal and subtyping may bind it to a
+# Union — e.g. P = Union{Float32,Float64} — letting mixed precision match anyway.
+# The invariant occurrence CuArray{P} pins P to one concrete eltype. The
+# frule!!/rrule!! methods below keep broad signatures; they are only reached for
+# claimed primitives.
+for A in (:(CuArray{P}), :(CuArray{Complex{P}})), M in (:P, :(Complex{P}))
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{typeof(Core.kwcall),NamedTuple,typeof(varm),$A,$M} where {P<:IEEEFloat},
+    )
+    @eval @is_primitive(MinimalCtx, Tuple{typeof(varm),$A,$M} where {P<:IEEEFloat})
+end
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(varm)},
+    x::Dual{<:CuMaybeComplexArray},
+    m::Dual{<:CuFloatOrComplex},
+)
+    pkw = primal(kw)
+    px = primal(x)
+    pm = primal(m)
+    # Statistics' scalar-m method has no dims kwarg, so a stray dims=1 throws here
+    # exactly as it does without AD.
+    σ² = varm(px, pm; pkw...)
+    corrected = get(pkw, :corrected, true)
+    dσ² = _varm_scalar_colon_tangent(px, tangent(x), pm, tangent(m), corrected)
+    return Dual(σ², dσ²)
+end
+
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(varm)},
+    x::CoDual{<:CuMaybeComplexArray},
+    m::CoDual{<:CuFloatOrComplex},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    pm = primal(m)
+    σ² = varm(px, pm; pkw...)
+    corrected = get(pkw, :corrected, true)
+    pb!! = _varm_scalar_colon_pb(px, dx, pm, corrected)
+    function varm_scalar_mean_pb!!(dσ²)
+        return NoRData(), NoRData(), NoRData(), NoRData(), pb!!(dσ²)
+    end
+    return CoDual(σ², NoFData()), varm_scalar_mean_pb!!
+end
+
+# Bare `varm(x, m::scalar)`: a kwarg-less call dispatches straight to varm rather
+# than through Core.kwcall, so it needs its own rules. Statistics.jl's
+# `varm(A::AbstractArray, m; corrected=true) = _varm(A, m, corrected, :)` has no
+# `dims` kwarg, so this spelling is always the Colon case with corrected=true. Its
+# @is_primitive declarations live in the loop above so the precision tie is stated
+# once.
+function frule!!(
+    ::Dual{typeof(varm)}, x::Dual{<:CuMaybeComplexArray}, m::Dual{<:CuFloatOrComplex}
+)
+    px = primal(x)
+    pm = primal(m)
+    σ² = varm(px, pm)
+    dσ² = _varm_scalar_colon_tangent(px, tangent(x), pm, tangent(m), true)
+    return Dual(σ², dσ²)
+end
+function rrule!!(
+    ::CoDual{typeof(varm)}, x::CoDual{<:CuMaybeComplexArray}, m::CoDual{<:CuFloatOrComplex}
+)
+    px, dx = arrayify(x)
+    pm = primal(m)
+    σ² = varm(px, pm)
+    pb!! = _varm_scalar_colon_pb(px, dx, pm, true)
+    varm_scalar_bare_pb!!(dσ²) = (NoRData(), NoRData(), pb!!(dσ²))
+    return CoDual(σ², NoFData()), varm_scalar_bare_pb!!
+end
+
+# mean(x; dims) on CuArrays, real and complex. GPUArrays' _mean uses a mapreduce with
+# a captured scalar Mooncake can't trace. dims=: returns a scalar (NoFData tangent);
+# an explicit dims returns a CuArray.
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mean),CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(mean)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px = primal(x)
+    dx = tangent(x)
+    μ = mean(px; pkw...)
+    raw_dims = get(pkw, :dims, :)
+    if raw_dims isa Colon
+        # The primal's Colon branch is sum(A)/length(A); dividing after summing keeps
+        # the gradient identical to the traced bare-mean decomposition (at Float16
+        # n > 65504 both give exactly zero, where a λ-prescale would not). n == 0:
+        # the primal is a constant NaN, so the JVP is the zero map, consistent with
+        # the rrule — 0/0 would manufacture a NaN tangent.
+        n = length(px)
+        return Dual(μ, n == 0 ? zero(μ) : sum(dx) / n)
+    end
+    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
+    n = prod(d -> size(px, d), unique(_dims); init=1)
+    λ = eltype(px)(inv(n))
+    return Dual(μ, sum(λ .* dx; dims=_dims))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(mean)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    μ = mean(px; pkw...)
+    raw_dims = get(pkw, :dims, :)
+    _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
+    # Assigned once, outside the branch, so the pullbacks capture n un-boxed.
+    n = _dims isa Colon ? length(px) : prod(d -> size(px, d), unique(_dims); init=1)
+    if _dims isa Colon
+        # Scalar output: pullback receives scalar rdata. Same divide-after
+        # arithmetic as the frule above.
+        function mean_scalar_pb!!(dμ)
+            dx .+= dμ / n
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return CoDual(μ, NoFData()), mean_scalar_pb!!
+    end
+    λ = eltype(px)(inv(n))
+    dμ = zero(μ)
+    function mean_array_pb!!(::NoRData)
+        dx .+= dμ .* λ
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(μ, dμ), mean_array_pb!!
+end
+
+# NOTE: no bare `mean(x)` primitive here, unlike scalar-m `varm` above. `mean`'s
+# Colon branch is just `sum(A)/length(A)`, with no closure over a differentiable
+# value, so ordinary decomposition already differentiates it correctly.
 
 end
