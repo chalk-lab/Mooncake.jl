@@ -377,6 +377,14 @@ function __exclude_func_with_unsupported_output(fx)
     return __exclude_unsupported_output(_y)
 end
 
+# For an isbits `T` (guaranteed by the caller) this terminates, since isbits types cannot be
+# self-referential: true iff `T` is a `Ptr` or transitively contains a `Ptr` field. Lets the
+# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits struct
+# to the loud Ptr-in-output guard below (otherwise the "output may not contain a pointer" guarantee
+# fails silently, because a `Ptr` — and a struct whose fields are all bits — is itself isbits).
+_isbits_contains_ptr(::Type{<:Ptr}) = true
+_isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes(T))
+
 """
     __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
 
@@ -386,14 +394,6 @@ If the set already contains a newly visited address, it errors out indicating an
 Also errors out if `y` is or contains a Pointer.
 It is called internally by [`__exclude_unsupported_output(y)`](@ref).
 """
-# For an isbits `T` (guaranteed by the caller) this terminates, since isbits types cannot be
-# self-referential: true iff `T` is a `Ptr` or transitively contains a `Ptr` field. Lets the
-# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits struct
-# to the loud Ptr-in-output guard below (otherwise the "output may not contain a pointer" guarantee
-# fails silently, because a `Ptr` — and a struct whose fields are all bits — is itself isbits).
-_isbits_contains_ptr(::Type{<:Ptr}) = true
-_isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes(T))
-
 function __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
     isbitstype(T) && !_isbits_contains_ptr(T) && return nothing
     if objectid(y) in address_set
