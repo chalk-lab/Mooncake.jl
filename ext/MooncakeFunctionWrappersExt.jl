@@ -278,10 +278,15 @@ function randn_tangent_internal(
 end
 
 # Forward seed factories: build the width-N forward V. The wrapped object's width-N forward slot
-# (with N independent lane directions) comes from the matching lifted seed factory on `obj`.
+# is built through the threaded seed cache `d` (not `zero_lifted`/`uninit_lifted`/`randn_lifted`,
+# which spin up a fresh cache) so that a captured object aliased elsewhere in the same seed shares
+# one tangent buffer — matching the reverse `zero_tangent_internal`/`randn_tangent_internal` factories
+# above and the `MistyClosure` forward factories.
 function _zero_dual_internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
-    t = _function_wrapper_forward_tangent(R, A, zero_lifted(Val(N), p.obj[]), Val(N))
+    obj = p.obj[]
+    slot = Lifted{typeof(obj),N}(obj, _zero_dual_internal(Val(N), obj, d))
+    t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
     d[p] = t
     return t
 end
@@ -289,7 +294,9 @@ function _uninit_dual_internal(
     ::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache
 ) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
-    t = _function_wrapper_forward_tangent(R, A, uninit_lifted(Val(N), p.obj[]), Val(N))
+    obj = p.obj[]
+    slot = Lifted{typeof(obj),N}(obj, _uninit_dual_internal(Val(N), obj, d))
+    t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
     d[p] = t
     return t
 end
@@ -297,7 +304,9 @@ function _randn_dual_internal(
     ::Val{N}, rng::AbstractRNG, p::FunctionWrapper{R,A}, d::MaybeCache
 ) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
-    t = _function_wrapper_forward_tangent(R, A, randn_lifted(Val(N), rng, p.obj[]), Val(N))
+    obj = p.obj[]
+    slot = Lifted{typeof(obj),N}(obj, _randn_dual_internal(Val(N), rng, obj, d))
+    t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
     d[p] = t
     return t
 end
