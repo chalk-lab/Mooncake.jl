@@ -168,8 +168,8 @@ using .Nfwd:
     NDualEltype,
     _scalar_ndual,
     _nfwd_dual_partial,
-    _pt_scale,
-    _pt_guarded_scale
+    _fwd_scale,
+    _fwd_guarded_scale
 @static if VERSION >= v"1.11-rc4"
     using .Nfwd: NDualMemoryRef
 end

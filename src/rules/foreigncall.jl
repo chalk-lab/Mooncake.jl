@@ -487,11 +487,11 @@ for (name, P) in
         # the inner NDual, scaling `.value` to `grad * x_p` and breaking the V.value === primal
         # invariant (mirrors the `pow_fast` frule in low_level_maths.jl).
         grad = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y))
-        # `_pt_guarded_scale` (not `_pt_scale`) so an inactive (zero-seed) lane stays exactly zero
+        # `_fwd_guarded_scale` (not `_fwd_scale`) so an inactive (zero-seed) lane stays exactly zero
         # even where `grad` is `±Inf` (e.g. `x == 0` with a negative exponent) — `0 * Inf` would be
         # `NaN`. Mirrors the `pow_fast` NDual overload's guard.
         return Lifted{$P,Nw}(
-            y, NDual{$P,Nw}(y, Nfwd._pt_guarded_scale(tangent(x).partials, grad))
+            y, NDual{$P,Nw}(y, Nfwd._fwd_guarded_scale(tangent(x).partials, grad))
         )
     end
 
@@ -513,7 +513,7 @@ for (name, P) in
         function llvm_powi_pb!!(dy::$P)
             # Guard against `0 * ±Inf = NaN`: at x==0 with a negative exponent the local gradient is
             # ±Inf, so an incoming zero cotangent must yield an exact zero contribution (mirrors the
-            # forward `_pt_guarded_scale` and the sibling `sqrt_llvm` reverse guard).
+            # forward `_fwd_guarded_scale` and the sibling `sqrt_llvm` reverse guard).
             dx = nan_tangent_guard(dy, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy)
             return (
                 NoRData(),

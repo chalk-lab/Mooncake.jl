@@ -35,8 +35,8 @@
 
 # Reverse-mode removable-singularity guard, native (no forward-mode/NDual dependency): a zero
 # incoming cotangent must yield an exact zero contribution even where the local derivative is ±Inf
-# (`0 * Inf` would be `NaN`). Mirrors the forward `_pt_guarded_scale` guard, applied to the cotangent.
-@inline _rev_contract(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
+# (`0 * Inf` would be `NaN`). Mirrors the forward `_fwd_guarded_scale` guard, applied to the cotangent.
+@inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
 
 # ---- unary scalar rules ----
 @is_primitive MinimalCtx Tuple{typeof(exp),P} where {P<:IEEEFloat}
@@ -48,7 +48,7 @@ end
 function rrule!!(::CoDual{typeof(exp)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = exp(_x)
-    exp_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y))
+    exp_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y))
     return zero_fcodual(y), exp_pb
 end
 
@@ -61,7 +61,7 @@ end
 function rrule!!(::CoDual{typeof(exp2)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = exp2(_x)
-    exp2_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y * oftype(y, log(2))))
+    exp2_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(2))))
     return zero_fcodual(y), exp2_pb
 end
 
@@ -76,7 +76,7 @@ end
 function rrule!!(::CoDual{typeof(exp10)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = exp10(_x)
-    exp10_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y * oftype(y, log(10))))
+    exp10_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(10))))
     return zero_fcodual(y), exp10_pb
 end
 
@@ -91,7 +91,7 @@ end
 function rrule!!(::CoDual{typeof(expm1)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = expm1(_x)
-    expm1_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, exp(_x)))
+    expm1_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, exp(_x)))
     return zero_fcodual(y), expm1_pb
 end
 
@@ -104,7 +104,7 @@ end
 function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = log(_x)
-    log_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(_x)))
+    log_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x)))
     return zero_fcodual(y), log_pb
 end
 
@@ -117,7 +117,7 @@ end
 function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = log2(_x)
-    log2_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(_x * oftype(_x, log(2)))))
+    log2_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x * oftype(_x, log(2)))))
     return zero_fcodual(y), log2_pb
 end
 
@@ -132,7 +132,7 @@ end
 function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = log10(_x)
-    log10_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(_x * oftype(_x, log(10)))))
+    log10_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x * oftype(_x, log(10)))))
     return zero_fcodual(y), log10_pb
 end
 
@@ -147,7 +147,7 @@ end
 function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = log1p(_x)
-    log1p_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(one(_x) + _x)))
+    log1p_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x)))
     return zero_fcodual(y), log1p_pb
 end
 
@@ -160,7 +160,7 @@ end
 function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = sqrt(_x)
-    sqrt_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(2 * y)))
+    sqrt_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(2 * y)))
     return zero_fcodual(y), sqrt_pb
 end
 
@@ -173,7 +173,7 @@ end
 function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cbrt(_x)
-    cbrt_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(3 * y^2)))
+    cbrt_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(3 * y^2)))
     return zero_fcodual(y), cbrt_pb
 end
 
@@ -186,7 +186,7 @@ end
 function rrule!!(::CoDual{typeof(sec)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = sec(_x)
-    sec_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y * tan(_x)))
+    sec_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * tan(_x)))
     return zero_fcodual(y), sec_pb
 end
 
@@ -199,7 +199,7 @@ end
 function rrule!!(::CoDual{typeof(csc)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = csc(_x)
-    csc_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -y * cot(_x)))
+    csc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -y * cot(_x)))
     return zero_fcodual(y), csc_pb
 end
 
@@ -212,7 +212,7 @@ end
 function rrule!!(::CoDual{typeof(cot)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cot(_x)
-    cot_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -(one(y) + y^2)))
+    cot_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -(one(y) + y^2)))
     return zero_fcodual(y), cot_pb
 end
 
@@ -225,7 +225,7 @@ end
 function rrule!!(::CoDual{typeof(asin)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asin(_x)
-    asin_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(sqrt(one(_x) - _x^2))))
+    asin_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(one(_x) - _x^2))))
     return zero_fcodual(y), asin_pb
 end
 
@@ -238,7 +238,7 @@ end
 function rrule!!(::CoDual{typeof(acos)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acos(_x)
-    acos_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(sqrt(one(_x) - _x^2))))
+    acos_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(sqrt(one(_x) - _x^2))))
     return zero_fcodual(y), acos_pb
 end
 
@@ -251,7 +251,7 @@ end
 function rrule!!(::CoDual{typeof(atan)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = atan(_x)
-    atan_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(one(_x) + _x^2)))
+    atan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x^2)))
     return zero_fcodual(y), atan_pb
 end
 
@@ -264,7 +264,7 @@ end
 function rrule!!(::CoDual{typeof(asec)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asec(_x)
-    asec_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(abs(_x) * sqrt(_x^2 - one(_x)))))
+    asec_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(abs(_x) * sqrt(_x^2 - one(_x)))))
     return zero_fcodual(y), asec_pb
 end
 
@@ -277,7 +277,7 @@ end
 function rrule!!(::CoDual{typeof(acsc)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acsc(_x)
-    acsc_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(abs(_x) * sqrt(_x^2 - one(_x)))))
+    acsc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(abs(_x) * sqrt(_x^2 - one(_x)))))
     return zero_fcodual(y), acsc_pb
 end
 
@@ -290,7 +290,7 @@ end
 function rrule!!(::CoDual{typeof(acot)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acot(_x)
-    acot_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(one(_x) + _x^2)))
+    acot_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(one(_x) + _x^2)))
     return zero_fcodual(y), acot_pb
 end
 
@@ -303,7 +303,7 @@ end
 function rrule!!(::CoDual{typeof(sinh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = sinh(_x)
-    sinh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, cosh(_x)))
+    sinh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, cosh(_x)))
     return zero_fcodual(y), sinh_pb
 end
 
@@ -316,7 +316,7 @@ end
 function rrule!!(::CoDual{typeof(cosh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cosh(_x)
-    cosh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, sinh(_x)))
+    cosh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, sinh(_x)))
     return zero_fcodual(y), cosh_pb
 end
 
@@ -329,7 +329,7 @@ end
 function rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = tanh(_x)
-    tanh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, one(y) - y^2))
+    tanh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(y) - y^2))
     return zero_fcodual(y), tanh_pb
 end
 
@@ -342,7 +342,7 @@ end
 function rrule!!(::CoDual{typeof(sech)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = sech(_x)
-    sech_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -tanh(_x) * y))
+    sech_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -tanh(_x) * y))
     return zero_fcodual(y), sech_pb
 end
 
@@ -355,7 +355,7 @@ end
 function rrule!!(::CoDual{typeof(csch)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = csch(_x)
-    csch_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -coth(_x) * y))
+    csch_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -coth(_x) * y))
     return zero_fcodual(y), csch_pb
 end
 
@@ -368,7 +368,7 @@ end
 function rrule!!(::CoDual{typeof(coth)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = coth(_x)
-    coth_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -csch(_x)^2))
+    coth_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -csch(_x)^2))
     return zero_fcodual(y), coth_pb
 end
 
@@ -383,7 +383,7 @@ end
 function rrule!!(::CoDual{typeof(asinh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asinh(_x)
-    asinh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(sqrt(_x^2 + one(_x)))))
+    asinh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(_x^2 + one(_x)))))
     return zero_fcodual(y), asinh_pb
 end
 
@@ -398,7 +398,7 @@ end
 function rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acosh(_x)
-    acosh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(sqrt(_x^2 - one(_x)))))
+    acosh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(_x^2 - one(_x)))))
     return zero_fcodual(y), acosh_pb
 end
 
@@ -413,7 +413,7 @@ end
 function rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = atanh(_x)
-    atanh_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(one(_x) - _x^2)))
+    atanh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) - _x^2)))
     return zero_fcodual(y), atanh_pb
 end
 
@@ -428,7 +428,7 @@ end
 function rrule!!(::CoDual{typeof(asech)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asech(_x)
-    asech_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(_x * sqrt(one(_x) - _x^2))))
+    asech_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(_x * sqrt(one(_x) - _x^2))))
     return zero_fcodual(y), asech_pb
 end
 
@@ -443,7 +443,9 @@ end
 function rrule!!(::CoDual{typeof(acsch)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acsch(_x)
-    acsch_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(abs(_x) * sqrt(one(_x) + _x^2))))
+    acsch_pb(ȳ::P) = (
+        NoRData(), _rvs_guarded_scale(ȳ, -inv(abs(_x) * sqrt(one(_x) + _x^2)))
+    )
     return zero_fcodual(y), acsch_pb
 end
 
@@ -458,7 +460,7 @@ end
 function rrule!!(::CoDual{typeof(acoth)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acoth(_x)
-    acoth_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(one(_x) - _x^2)))
+    acoth_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) - _x^2)))
     return zero_fcodual(y), acoth_pb
 end
 
@@ -471,7 +473,7 @@ end
 function rrule!!(::CoDual{typeof(secd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = secd(_x)
-    secd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, deg2rad(y * tand(_x))))
+    secd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(y * tand(_x))))
     return zero_fcodual(y), secd_pb
 end
 
@@ -484,7 +486,7 @@ end
 function rrule!!(::CoDual{typeof(cscd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cscd(_x)
-    cscd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -deg2rad(y * cotd(_x))))
+    cscd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -deg2rad(y * cotd(_x))))
     return zero_fcodual(y), cscd_pb
 end
 
@@ -497,7 +499,7 @@ end
 function rrule!!(::CoDual{typeof(cotd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cotd(_x)
-    cotd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -deg2rad(one(y) + y^2)))
+    cotd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -deg2rad(one(y) + y^2)))
     return zero_fcodual(y), cotd_pb
 end
 
@@ -512,7 +514,7 @@ end
 function rrule!!(::CoDual{typeof(asind)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asind(_x)
-    asind_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(deg2rad(sqrt(one(_x) - _x^2)))))
+    asind_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(sqrt(one(_x) - _x^2)))))
     return zero_fcodual(y), asind_pb
 end
 
@@ -527,7 +529,7 @@ end
 function rrule!!(::CoDual{typeof(acosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acosd(_x)
-    acosd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(deg2rad(sqrt(one(_x) - _x^2)))))
+    acosd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(sqrt(one(_x) - _x^2)))))
     return zero_fcodual(y), acosd_pb
 end
 
@@ -542,7 +544,7 @@ end
 function rrule!!(::CoDual{typeof(atand)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = atand(_x)
-    atand_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(deg2rad(one(_x) + _x^2))))
+    atand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(one(_x) + _x^2))))
     return zero_fcodual(y), atand_pb
 end
 
@@ -558,7 +560,7 @@ function rrule!!(::CoDual{typeof(asecd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asecd(_x)
     asecd_pb(ȳ::P) = (
-        NoRData(), _rev_contract(ȳ, inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
+        NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
     )
     return zero_fcodual(y), asecd_pb
 end
@@ -575,7 +577,7 @@ function rrule!!(::CoDual{typeof(acscd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acscd(_x)
     acscd_pb(ȳ::P) = (
-        NoRData(), _rev_contract(ȳ, -inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
+        NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
     )
     return zero_fcodual(y), acscd_pb
 end
@@ -591,7 +593,7 @@ end
 function rrule!!(::CoDual{typeof(acotd)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acotd(_x)
-    acotd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -inv(deg2rad(one(_x) + _x^2))))
+    acotd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(one(_x) + _x^2))))
     return zero_fcodual(y), acotd_pb
 end
 
@@ -606,7 +608,7 @@ end
 function rrule!!(::CoDual{typeof(deg2rad)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = deg2rad(_x)
-    deg2rad_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, deg2rad(one(_x))))
+    deg2rad_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(one(_x))))
     return zero_fcodual(y), deg2rad_pb
 end
 
@@ -621,7 +623,7 @@ end
 function rrule!!(::CoDual{typeof(rad2deg)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = rad2deg(_x)
-    rad2deg_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, rad2deg(one(_x))))
+    rad2deg_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, rad2deg(one(_x))))
     return zero_fcodual(y), rad2deg_pb
 end
 
@@ -634,7 +636,7 @@ end
 function rrule!!(::CoDual{typeof(sinc)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = sinc(_x)
-    sinc_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, cosc(_x)))
+    sinc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, cosc(_x)))
     return zero_fcodual(y), sinc_pb
 end
 
@@ -651,7 +653,9 @@ function rrule!!(::CoDual{typeof(mod2pi)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = mod2pi(_x)
     mod2pi_pb(ȳ::P) = (
         NoRData(),
-        _rev_contract(ȳ, ifelse(isinteger(_x / oftype(_x, 2π)), oftype(_x, NaN), one(_x))),
+        _rvs_guarded_scale(
+            ȳ, ifelse(isinteger(_x / oftype(_x, 2π)), oftype(_x, NaN), one(_x))
+        ),
     )
     return zero_fcodual(y), mod2pi_pb
 end
@@ -667,7 +671,7 @@ end
 function rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = nextfloat(_x)
-    nextfloat_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, one(_x)))
+    nextfloat_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(_x)))
     return zero_fcodual(y), nextfloat_pb
 end
 
@@ -682,7 +686,7 @@ end
 function rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = prevfloat(_x)
-    prevfloat_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, one(_x)))
+    prevfloat_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(_x)))
     return zero_fcodual(y), prevfloat_pb
 end
 
@@ -699,7 +703,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x = primal(x)
     y = Base.FastMath.exp_fast(_x)
-    exp_fast_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y))
+    exp_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y))
     return zero_fcodual(y), exp_fast_pb
 end
 
@@ -716,7 +720,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x = primal(x)
     y = Base.FastMath.exp2_fast(_x)
-    exp2_fast_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y * oftype(y, log(2))))
+    exp2_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(2))))
     return zero_fcodual(y), exp2_fast_pb
 end
 
@@ -733,7 +737,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x = primal(x)
     y = Base.FastMath.exp10_fast(_x)
-    exp10_fast_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, y * oftype(y, log(10))))
+    exp10_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(10))))
     return zero_fcodual(y), exp10_fast_pb
 end
 
@@ -750,7 +754,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     _x = primal(x)
     y = Base.FastMath.atan_fast(_x)
-    atan_fast_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, inv(one(_x) + _x^2)))
+    atan_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x^2)))
     return zero_fcodual(y), atan_fast_pb
 end
 
@@ -761,13 +765,13 @@ function frule!!(::Lifted{typeof(sin),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     v = nd.value
     s, c = sincos(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, c)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, c)))
 end
 function rrule!!(::CoDual{typeof(sin)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincos(v)
     y = s
-    sin_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, c))
+    sin_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c))
     return zero_fcodual(y), sin_pb
 end
 
@@ -777,13 +781,13 @@ function frule!!(::Lifted{typeof(cos),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     v = nd.value
     s, c = sincos(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -s)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, -s)))
 end
 function rrule!!(::CoDual{typeof(cos)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincos(v)
     y = c
-    cos_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -s))
+    cos_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -s))
     return zero_fcodual(y), cos_pb
 end
 
@@ -794,14 +798,14 @@ function frule!!(::Lifted{typeof(tan),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<
     s, c = sincos(v)
     t = s / c
     y = t
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, one(t) + t^2)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, one(t) + t^2)))
 end
 function rrule!!(::CoDual{typeof(tan)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincos(v)
     t = s / c
     y = t
-    tan_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, one(t) + t^2))
+    tan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(t) + t^2))
     return zero_fcodual(y), tan_pb
 end
 
@@ -811,13 +815,13 @@ function frule!!(::Lifted{typeof(sind),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     v = nd.value
     s, c = sincosd(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, deg2rad(c))))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, deg2rad(c))))
 end
 function rrule!!(::CoDual{typeof(sind)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincosd(v)
     y = s
-    sind_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, deg2rad(c)))
+    sind_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(c)))
     return zero_fcodual(y), sind_pb
 end
 
@@ -827,13 +831,13 @@ function frule!!(::Lifted{typeof(cosd),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     v = nd.value
     s, c = sincosd(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -deg2rad(s))))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, -deg2rad(s))))
 end
 function rrule!!(::CoDual{typeof(cosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincosd(v)
     y = c
-    cosd_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -deg2rad(s)))
+    cosd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -deg2rad(s)))
     return zero_fcodual(y), cosd_pb
 end
 
@@ -845,7 +849,7 @@ function frule!!(::Lifted{typeof(tand),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
     t = s / c
     y = t
     return Lifted{P,N}(
-        y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, deg2rad(one(t) + t^2)))
+        y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, deg2rad(one(t) + t^2)))
     )
 end
 function rrule!!(::CoDual{typeof(tand)}, x::CoDual{P}) where {P<:IEEEFloat}
@@ -853,7 +857,7 @@ function rrule!!(::CoDual{typeof(tand)}, x::CoDual{P}) where {P<:IEEEFloat}
     s, c = sincosd(v)
     t = s / c
     y = t
-    tand_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, deg2rad(one(t) + t^2)))
+    tand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(one(t) + t^2)))
     return zero_fcodual(y), tand_pb
 end
 
@@ -865,13 +869,13 @@ function frule!!(
     v = nd.value
     s, c = sincospi(v)
     y = s
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, oftype(v, π) * c)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, oftype(v, π) * c)))
 end
 function rrule!!(::CoDual{typeof(sinpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincospi(v)
     y = s
-    sinpi_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, oftype(v, π) * c))
+    sinpi_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, oftype(v, π) * c))
     return zero_fcodual(y), sinpi_pb
 end
 
@@ -883,13 +887,13 @@ function frule!!(
     v = nd.value
     s, c = sincospi(v)
     y = c
-    return Lifted{P,N}(y, NDual{P,N}(y, _pt_guarded_scale(nd.partials, -oftype(v, π) * s)))
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, -oftype(v, π) * s)))
 end
 function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincospi(v)
     y = c
-    cospi_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, -oftype(v, π) * s))
+    cospi_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -oftype(v, π) * s))
     return zero_fcodual(y), cospi_pb
 end
 
@@ -906,7 +910,9 @@ function rrule!!(::CoDual{typeof(atan)}, x1::CoDual{P}, x2::CoDual{P}) where {P<
     b = primal(x2)
     y = atan(a, b)
     r2 = a^2 + b^2
-    atan_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, b / r2), _rev_contract(ȳ, -a / r2))
+    atan_pb(ȳ::P) = (
+        NoRData(), _rvs_guarded_scale(ȳ, b / r2), _rvs_guarded_scale(ȳ, -a / r2)
+    )
     return zero_fcodual(y), atan_pb
 end
 
@@ -926,7 +932,9 @@ function rrule!!(
     b = primal(x2)
     y = Base.FastMath.atan_fast(a, b)
     r2 = a^2 + b^2
-    atan_fast_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, b / r2), _rev_contract(ȳ, -a / r2))
+    atan_fast_pb(ȳ::P) = (
+        NoRData(), _rvs_guarded_scale(ȳ, b / r2), _rvs_guarded_scale(ȳ, -a / r2)
+    )
     return zero_fcodual(y), atan_fast_pb
 end
 
@@ -943,7 +951,7 @@ function rrule!!(::CoDual{typeof(log)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     y = log(a, b)
     lb = log(a)
     log_pb(ȳ::P) = (
-        NoRData(), _rev_contract(ȳ, -y / (a * lb)), _rev_contract(ȳ, inv(b * lb))
+        NoRData(), _rvs_guarded_scale(ȳ, -y / (a * lb)), _rvs_guarded_scale(ȳ, inv(b * lb))
     )
     return zero_fcodual(y), log_pb
 end
@@ -964,8 +972,8 @@ function rrule!!(::CoDual{typeof(mod)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     isint = isinteger(u)
     mod_pb(ȳ::P) = (
         NoRData(),
-        _rev_contract(ȳ, ifelse(isint, nan, one(u))),
-        _rev_contract(ȳ, ifelse(isint, nan, -floor(u))),
+        _rvs_guarded_scale(ȳ, ifelse(isint, nan, one(u))),
+        _rvs_guarded_scale(ȳ, ifelse(isint, nan, -floor(u))),
     )
     return zero_fcodual(y), mod_pb
 end
@@ -992,7 +1000,7 @@ function rrule!!(::CoDual{typeof(^)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:IE
     gp = ifelse(
         !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
     )
-    power_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, gx), _rev_contract(ȳ, gp))
+    power_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, gx), _rvs_guarded_scale(ȳ, gp))
     return zero_fcodual(y), power_pb
 end
 
@@ -1011,7 +1019,7 @@ function rrule!!(::CoDual{typeof(max)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     pick = isequal(y, a) & !isequal(y, b)
     ga = ifelse(pick, one(a), zero(a))
     gb = ifelse(pick, zero(b), one(b))
-    max_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, ga), _rev_contract(ȳ, gb))
+    max_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, ga), _rvs_guarded_scale(ȳ, gb))
     return zero_fcodual(y), max_pb
 end
 
@@ -1030,7 +1038,7 @@ function rrule!!(::CoDual{typeof(min)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     pick = isequal(y, a) | !isequal(y, b)
     ga = ifelse(pick, one(a), zero(a))
     gb = ifelse(pick, zero(b), one(b))
-    min_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, ga), _rev_contract(ȳ, gb))
+    min_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, ga), _rvs_guarded_scale(ȳ, gb))
     return zero_fcodual(y), min_pb
 end
 
@@ -1058,7 +1066,7 @@ function rrule!!(
             isone(p), one(fy), ifelse(iszero(p) || p > one(P), zero(fy), oftype(fy, Inf))
         ),
     )
-    pow_fast_pb(dy::P) = (NoRData(), _rev_contract(dy, gx), NoRData())
+    pow_fast_pb(dy::P) = (NoRData(), _rvs_guarded_scale(dy, gx), NoRData())
     return zero_fcodual(y), pow_fast_pb
 end
 
@@ -1086,7 +1094,10 @@ function rrule!!(
     glo = ifelse(below, one(P), zero(P))
     ghi = ifelse(above, one(P), zero(P))
     clamp_pb(ȳ::P) = (
-        NoRData(), _rev_contract(ȳ, ga), _rev_contract(ȳ, glo), _rev_contract(ȳ, ghi)
+        NoRData(),
+        _rvs_guarded_scale(ȳ, ga),
+        _rvs_guarded_scale(ȳ, glo),
+        _rvs_guarded_scale(ȳ, ghi),
     )
     return zero_fcodual(y), clamp_pb
 end
@@ -1102,7 +1113,7 @@ end
 function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = Base.FastMath.sincos(v)
-    sincos_pb(ȳ) = (NoRData(), _rev_contract(ȳ[1], c) + _rev_contract(ȳ[2], -s))
+    sincos_pb(ȳ) = (NoRData(), _rvs_guarded_scale(ȳ[1], c) + _rvs_guarded_scale(ȳ[2], -s))
     return zero_fcodual((s, c)), sincos_pb
 end
 
@@ -1117,7 +1128,8 @@ function rrule!!(::CoDual{typeof(sincosd)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
     s, c = sincosd(v)
     sincosd_pb(ȳ) = (
-        NoRData(), _rev_contract(ȳ[1], deg2rad(c)) + _rev_contract(ȳ[2], -deg2rad(s))
+        NoRData(),
+        _rvs_guarded_scale(ȳ[1], deg2rad(c)) + _rvs_guarded_scale(ȳ[2], -deg2rad(s)),
     )
     return zero_fcodual((s, c)), sincosd_pb
 end
@@ -1134,7 +1146,8 @@ function rrule!!(::CoDual{typeof(sincospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     s, c = sincospi(v)
     sincospi_pb(ȳ) = (
         NoRData(),
-        _rev_contract(ȳ[1], oftype(v, π) * c) + _rev_contract(ȳ[2], -oftype(v, π) * s),
+        _rvs_guarded_scale(ȳ[1], oftype(v, π) * c) +
+        _rvs_guarded_scale(ȳ[2], -oftype(v, π) * s),
     )
     return zero_fcodual((s, c)), sincospi_pb
 end
@@ -1147,7 +1160,7 @@ function frule!!(::Lifted{typeof(modf),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P
 end
 function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = modf(primal(x))
-    modf_pb(ȳ) = (NoRData(), _rev_contract(ȳ[1], one(P)))
+    modf_pb(ȳ) = (NoRData(), _rvs_guarded_scale(ȳ[1], one(P)))
     return zero_fcodual(y), modf_pb
 end
 
@@ -1161,7 +1174,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = tanpi(primal(x))
-    tanpi_pb(ȳ::P) = (NoRData(), _rev_contract(ȳ, P(π) * (one(P) + y^2)))
+    tanpi_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, P(π) * (one(P) + y^2)))
     return zero_fcodual(y), tanpi_pb
 end
 
@@ -1196,7 +1209,7 @@ function rrule!!(
     xvals = (primal(x), tuple_map(primal, xs)...)
     h = hypot(xvals...)
     coeffs = map(xi -> iszero(xi) ? zero(P) : xi / h, xvals)
-    hypot_pb(ȳ::P) = (NoRData(), map(c -> _rev_contract(ȳ, c), coeffs)...)
+    hypot_pb(ȳ::P) = (NoRData(), map(c -> _rvs_guarded_scale(ȳ, c), coeffs)...)
     return zero_fcodual(h), hypot_pb
 end
 

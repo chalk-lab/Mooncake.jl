@@ -259,32 +259,32 @@ end
 # ── NTuple arithmetic helpers ─────────────────────────────────────────────────────
 # All fully unrolled at compile time via Val(N) — safe for GPU registers.
 
-@inline _pt_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
+@inline _fwd_scale(p::NTuple{N,T}, s::T) where {N,T} = ntuple(i -> s * p[i], Val(N))
 # N=1 specializations avoid closure heap-allocation on the scalar (chunk_size=1) hot path.
-@inline _pt_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
+@inline _fwd_scale(p::NTuple{1,T}, s::T) where {T} = (s * p[1],)
 # `_nfwd_zero_mask` plays the same role as `nan_tangent_guard` for scalar NDual algebra:
 # when the local seed / upstream factor `a` is zero, replace `b` by zero(b) before the
 # multiply so `0 * Inf` and `0 * NaN` collapse to zero instead of poisoning the tangent.
-# nfwd uses this in forward mode through `_pt_guarded_scale`, which masks zero NDual lanes
+# nfwd uses this in forward mode through `_fwd_guarded_scale`, which masks zero NDual lanes
 # in singular formulas such as `log`, `sqrt`, `cbrt`, and `hypot`, and in reverse mode
 # through `_nfwd_real_dot`, which masks zero upstream cotangents before contracting them
 # against nfwd output tangents. This is the same strong-zero idea used in other AD systems,
 # including ForwardDiff, to keep inactive directions from turning into NaNs.
 @inline _nfwd_zero_mask(a, b) = ifelse(iszero(a), zero(b), b)
-@inline function _pt_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
+@inline function _fwd_guarded_scale(p::NTuple{N,T}, s::T) where {N,T}
     return ntuple(i -> begin
         pi = p[i]
         pi * _nfwd_zero_mask(pi, s)
     end, Val(N))
 end
-@inline _pt_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
-@inline _pt_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
-@inline _pt_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
-@inline _pt_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
-@inline _pt_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
-@inline _pt_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
-@inline _pt_neg(p::NTuple{1,T}) where {T} = (-p[1],)
-@inline _pt_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
+@inline _fwd_add(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] + q[i], Val(N))
+@inline _fwd_sub(p::NTuple{N}, q::NTuple{N}) where {N} = ntuple(i -> p[i] - q[i], Val(N))
+@inline _fwd_neg(p::NTuple{N}) where {N} = ntuple(i -> -p[i], Val(N))
+@inline _fwd_zero(::Val{N}, ::Type{T}) where {N,T} = ntuple(_ -> zero(T), Val(N))
+@inline _fwd_add(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] + q[1],)
+@inline _fwd_sub(p::NTuple{1,T}, q::NTuple{1,T}) where {T} = (p[1] - q[1],)
+@inline _fwd_neg(p::NTuple{1,T}) where {T} = (-p[1],)
+@inline _fwd_zero(::Val{1}, ::Type{T}) where {T} = (zero(T),)
 
 # These helpers define the scalar edge-case behavior used by nfwd for non-smooth
 # primitives: `^` keeps the removable-singularity cases at x == 0, while `mod` and
@@ -338,10 +338,10 @@ Base.exponent(a::NDual) = exponent(a.value)
 
 # ── Zero / One ────────────────────────────────────────────────────────────────────
 
-Base.zero(::NDual{T,N}) where {T,N} = NDual{T,N}(zero(T), _pt_zero(Val(N), T))
-Base.one(::NDual{T,N}) where {T,N} = NDual{T,N}(one(T), _pt_zero(Val(N), T))
-Base.zero(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(zero(T), _pt_zero(Val(N), T))
-Base.one(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(one(T), _pt_zero(Val(N), T))
+Base.zero(::NDual{T,N}) where {T,N} = NDual{T,N}(zero(T), _fwd_zero(Val(N), T))
+Base.one(::NDual{T,N}) where {T,N} = NDual{T,N}(one(T), _fwd_zero(Val(N), T))
+Base.zero(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(zero(T), _fwd_zero(Val(N), T))
+Base.one(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(one(T), _fwd_zero(Val(N), T))
 # Default oneunit(T) = T(one(T)) would call NDual{T,N}(::NDual) → Float64(::NDual) → error.
 # Override to use the scalar constructor directly.
 Base.oneunit(::Type{NDual{T,N}}) where {T,N} = NDual{T,N}(oneunit(T))
@@ -350,7 +350,7 @@ Base.oneunit(::NDual{T,N}) where {T,N} = NDual{T,N}(oneunit(T))
 # ── Promotion / Conversion ────────────────────────────────────────────────────────
 
 @inline function Base.convert(::Type{NDual{T,N}}, x::Real) where {T,N}
-    return NDual{T,N}(T(x), _pt_zero(Val(N), T))
+    return NDual{T,N}(T(x), _fwd_zero(Val(N), T))
 end
 Base.convert(::Type{NDual{T,N}}, d::NDual{T,N}) where {T,N} = d
 
@@ -366,7 +366,7 @@ end
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
 @inline function NDual{T,N}(x::Real, r::RoundingMode) where {T<:IEEEFloat,N}
-    return NDual{T,N}(T(x, r), _pt_zero(Val(N), T))
+    return NDual{T,N}(T(x, r), _fwd_zero(Val(N), T))
 end
 
 @noinline function _throw_ndual_lane_mismatch(op::Symbol, n1::Int, n2::Int)
@@ -387,12 +387,12 @@ end
 # ── Arithmetic ────────────────────────────────────────────────────────────────────
 
 @inline function Base.:+(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return NDual{T,N}(a.value + b.value, _pt_add(a.partials, b.partials))
+    return NDual{T,N}(a.value + b.value, _fwd_add(a.partials, b.partials))
 end
 @inline function Base.:-(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
-    return NDual{T,N}(a.value - b.value, _pt_sub(a.partials, b.partials))
+    return NDual{T,N}(a.value - b.value, _fwd_sub(a.partials, b.partials))
 end
-@inline Base.:-(a::NDual{T,N}) where {T,N} = NDual{T,N}(-a.value, _pt_neg(a.partials))
+@inline Base.:-(a::NDual{T,N}) where {T,N} = NDual{T,N}(-a.value, _fwd_neg(a.partials))
 
 # Real ± NDual: skip promotion — partials are unchanged for add, negated for sub.
 # Without these, `c + x` promotes c to NDual(c, zeros) then adds zero partials,
@@ -439,7 +439,7 @@ end
 @inline function Base.:*(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         a.value * b.value,
-        _pt_add(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)),
+        _fwd_add(_fwd_scale(a.partials, b.value), _fwd_scale(b.partials, a.value)),
     )
 end
 
@@ -478,8 +478,8 @@ end
     v = a.value / b.value
     return NDual{T,N}(
         v,
-        _pt_guarded_scale(
-            _pt_sub(a.partials, _pt_guarded_scale(b.partials, v)), inv(b.value)
+        _fwd_guarded_scale(
+            _fwd_sub(a.partials, _fwd_guarded_scale(b.partials, v)), inv(b.value)
         ),
     )
 end
@@ -487,7 +487,7 @@ end
 # NDual / Real: multiply by reciprocal — avoids promoting c to NDual.
 @inline function Base.:/(x::NDual{T,N}, c::Real) where {T,N}
     s = inv(T(c))
-    return NDual{T,N}(x.value * s, _pt_guarded_scale(x.partials, s))
+    return NDual{T,N}(x.value * s, _fwd_guarded_scale(x.partials, s))
 end
 
 # Real / NDual: d(c/b) = -(c/b²) db.  Without this, c::Real is promoted to
@@ -503,7 +503,7 @@ end
     # Promote the partials to `S` too (the value is already `S`), so the guarded scale sees
     # matching types — mirrors the `+`/`-`/`*` Real/NDual methods.
     sp = ntuple(i -> S(x.partials[i]), Val(N))
-    return NDual{S,N}(S(c) * vi, _pt_guarded_scale(sp, -(S(c) * vi * vi)))
+    return NDual{S,N}(S(c) * vi, _fwd_guarded_scale(sp, -(S(c) * vi * vi)))
 end
 
 # Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
@@ -513,7 +513,7 @@ end
 # Also fixes `x^-1` / `literal_pow(^, x, Val(-1))`, which delegate to this method.
 @inline function Base.inv(a::NDual{T,N}) where {T,N}
     vi = inv(a.value)
-    return NDual{T,N}(vi, _pt_guarded_scale(a.partials, -(vi * vi)))
+    return NDual{T,N}(vi, _fwd_guarded_scale(a.partials, -(vi * vi)))
 end
 
 # FMA (Fused Multiply-Add) based muladd: a single CPU instruction computes a*b+c
@@ -603,7 +603,7 @@ end
     # Guarded scale: at a singularity (e.g. n<0, a.value==0 makes dv=±Inf) inactive
     # lanes (zero partial) must stay zero rather than become 0*Inf=NaN, matching the
     # real-exponent `^` path.
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, dv))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 # Base defines literal_pow(^, ::AbstractFloat, ::Val{-1}) = inv(x) as a concrete
 # specialisation.  Since NDual <: AbstractFloat, this creates an ambiguity with the
@@ -617,7 +617,7 @@ end
     dv = ifelse(iszero(n), zero(T), T(n) * a.value^(n - 1))
     # Guarded scale: keeps inactive (zero-partial) lanes at zero when dv is ±Inf at a
     # singularity (n<0, a.value==0), matching the real-exponent `^` path.
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, dv))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
@@ -625,7 +625,7 @@ end
 @inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
     bT = T(b)
     v = a.value^bT
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
 end
 
 @inline function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
@@ -634,8 +634,8 @@ end
     coeff_b = _nfwd_pow_grad_p(a.value, b.value, float(v))
     return NDual{T,N}(
         v,
-        _pt_add(
-            _pt_guarded_scale(a.partials, coeff_a), _pt_guarded_scale(b.partials, coeff_b)
+        _fwd_add(
+            _fwd_guarded_scale(a.partials, coeff_a), _fwd_guarded_scale(b.partials, coeff_b)
         ),
     )
 end
@@ -660,19 +660,19 @@ end
     # d(b^a)/da = b^a·log(b). At b>0 this is `v*log(b)`; at the removable singularity b==0 the naive
     # `v*log(b)` is `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent
     # (b^a→0 dominates log(b)→-Inf). `_nfwd_pow_grad_p` encodes exactly this: `v*log(b)` for b>0, and
-    # for b==0 → 0 (positive exponent) / NaN (nonpositive, genuinely undefined). `_pt_guarded_scale`
+    # for b==0 → 0 (positive exponent) / NaN (nonpositive, genuinely undefined). `_fwd_guarded_scale`
     # additionally keeps an inactive (zero-seed) lane 0 in that genuinely-NaN case.
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_p(T(b), a.value, v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_p(T(b), a.value, v)))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 
 @inline function Base.FastMath.pow_fast(a::NDual{T,N}, n::Integer) where {T,N}
     v = Base.FastMath.pow_fast(a.value, n)
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(n), v)))
 end
 @inline function Base.FastMath.pow_fast(a::NDual{T,N}, ::Val{p}) where {T,N,p}
     v = Base.FastMath.pow_fast(a.value, Val(p))
-    return NDual{T,N}(v, _pt_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, T(p), v)))
 end
 
 # ── Math functions ─────────────────────────────────────────────────────────────────
@@ -682,40 +682,41 @@ end
 # Use sincos / sincosd to share the cordic/libm computation between sin and cos.
 @inline function Base.sin(a::NDual{T,N}) where {T,N}
     s, c = sincos(a.value)
-    return NDual{T,N}(s, _pt_scale(a.partials, c))
+    return NDual{T,N}(s, _fwd_scale(a.partials, c))
 end
 @inline function Base.cos(a::NDual{T,N}) where {T,N}
     s, c = sincos(a.value)
-    return NDual{T,N}(c, _pt_scale(a.partials, -s))
+    return NDual{T,N}(c, _fwd_scale(a.partials, -s))
 end
 @inline function Base.tan(a::NDual{T,N}) where {T,N}
     s, c = sincos(a.value)
-    return NDual{T,N}(s / c, _pt_scale(a.partials, inv(c)^2))
+    return NDual{T,N}(s / c, _fwd_scale(a.partials, inv(c)^2))
 end
 # asin/acos (and acosh/asech/asec/acsc + their degree variants below) have a finite value
 # but an infinite derivative at the domain boundary x = ±1 (a removable singularity for the
-# derivative). At those points `_pt_scale` would compute `Inf * 0` = NaN on inactive chunk
-# lanes; `_pt_guarded_scale` masks zero lanes to 0, matching the sqrt/log/inv siblings and the
-# reverse-mode `_rev_contract` oracle.
+# derivative). At those points `_fwd_scale` would compute `Inf * 0` = NaN on inactive chunk
+# lanes; `_fwd_guarded_scale` masks zero lanes to 0, matching the sqrt/log/inv siblings and the
+# reverse-mode `_rvs_guarded_scale` oracle.
 @inline function Base.asin(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        asin(a.value), _pt_guarded_scale(a.partials, inv(sqrt(one(T) - a.value^2)))
+        asin(a.value), _fwd_guarded_scale(a.partials, inv(sqrt(one(T) - a.value^2)))
     )
 end
 @inline function Base.acos(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acos(a.value), _pt_guarded_scale(a.partials, -inv(sqrt(one(T) - a.value^2)))
+        acos(a.value), _fwd_guarded_scale(a.partials, -inv(sqrt(one(T) - a.value^2)))
     )
 end
 @inline function Base.atan(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atan(a.value), _pt_scale(a.partials, inv(one(T) + a.value^2)))
+    return NDual{T,N}(atan(a.value), _fwd_scale(a.partials, inv(one(T) + a.value^2)))
 end
 @inline function Base.atan(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     r2 = a.value^2 + b.value^2
     return NDual{T,N}(
         atan(a.value, b.value),
-        _pt_scale(
-            _pt_sub(_pt_scale(a.partials, b.value), _pt_scale(b.partials, a.value)), inv(r2)
+        _fwd_scale(
+            _fwd_sub(_fwd_scale(a.partials, b.value), _fwd_scale(b.partials, a.value)),
+            inv(r2),
         ),
     )
 end
@@ -724,111 +725,112 @@ end
 )
 
 # NDual*Real atan: d/dy[atan(y,x)] = x/(y²+x²).  Without this, x::Real is promoted to
-# NDual(x, zeros), and _pt_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
+# NDual(x, zeros), and _fwd_scale(x.partials, y.value) generates a fmul(partial, 0.0) per
 # slot (zero-partial scale), followed by a wasted subtraction of that zero from the result.
 @inline function Base.atan(y::NDual{T,N}, x::R) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y.value)^2 + S(x)^2
     sp = ntuple(i -> S(y.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y.value), S(x)), _pt_scale(sp, S(x) / r2))
+    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_scale(sp, S(x) / r2))
 end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
-# NDual(y, zeros), and _pt_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
+# NDual(y, zeros), and _fwd_scale(y.partials, x.value) = 0 per slot, then fsub(0, partial)
 # hits the same IEEE -0 canonicalization that the existing Real/NDual division rule has.
 @inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2
     sp = ntuple(i -> S(x.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y), S(x.value)), _pt_scale(sp, -S(y) / r2))
+    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_scale(sp, -S(y) / r2))
 end
 
 # Hyperbolic
 @inline function Base.sinh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinh(a.value), _pt_scale(a.partials, cosh(a.value)))
+    return NDual{T,N}(sinh(a.value), _fwd_scale(a.partials, cosh(a.value)))
 end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
+    return NDual{T,N}(cosh(a.value), _fwd_scale(a.partials, sinh(a.value)))
 end
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
     tv = tanh(a.value)
-    return NDual{T,N}(tv, _pt_scale(a.partials, one(T) - tv^2))
+    return NDual{T,N}(tv, _fwd_scale(a.partials, one(T) - tv^2))
 end
 @inline function Base.asinh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asinh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
+    return NDual{T,N}(asinh(a.value), _fwd_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
 end
 @inline function Base.acosh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acosh(a.value), _pt_guarded_scale(a.partials, inv(sqrt(a.value^2 - one(T))))
+        acosh(a.value), _fwd_guarded_scale(a.partials, inv(sqrt(a.value^2 - one(T))))
     )
 end
 @inline function Base.atanh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atanh(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
+    return NDual{T,N}(atanh(a.value), _fwd_scale(a.partials, inv(one(T) - a.value^2)))
 end
 
 # Reciprocal hyperbolic: sech, csch, coth and their inverses.
 @inline function Base.sech(a::NDual{T,N}) where {T,N}
     sv = sech(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, -tanh(a.value) * sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, -tanh(a.value) * sv))
 end
 @inline function Base.csch(a::NDual{T,N}) where {T,N}
     cv = csch(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -coth(a.value) * cv))
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -coth(a.value) * cv))
 end
 @inline function Base.coth(a::NDual{T,N}) where {T,N}
     sv = csch(a.value)
-    return NDual{T,N}(coth(a.value), _pt_scale(a.partials, -(sv^2)))
+    return NDual{T,N}(coth(a.value), _fwd_scale(a.partials, -(sv^2)))
 end
 @inline function Base.asech(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asech(a.value),
-        _pt_guarded_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2))),
+        _fwd_guarded_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2))),
     )
 end
 @inline function Base.acsch(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acsch(a.value), _pt_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2)))
+        acsch(a.value),
+        _fwd_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2))),
     )
 end
 @inline function Base.acoth(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acoth(a.value), _pt_scale(a.partials, inv(one(T) - a.value^2)))
+    return NDual{T,N}(acoth(a.value), _fwd_scale(a.partials, inv(one(T) - a.value^2)))
 end
 
 # Exp / Log
 @inline function Base.exp(a::NDual{T,N}) where {T,N}
-    return (ev=exp(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev)))
+    return (ev=exp(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev)))
 end
 @inline function Base.exp2(a::NDual{T,N}) where {T,N}
-    return (ev=exp2(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(2)))))
+    return (ev=exp2(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(2)))))
 end
 @inline function Base.exp10(a::NDual{T,N}) where {T,N}
-    return (ev=exp10(a.value); NDual{T,N}(ev, _pt_scale(a.partials, ev * T(log(10)))))
+    return (ev=exp10(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(10)))))
 end
 @inline function Base.log(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(a.value), _pt_guarded_scale(a.partials, inv(a.value)))
+    return NDual{T,N}(log(a.value), _fwd_guarded_scale(a.partials, inv(a.value)))
 end
 @inline function Base.log2(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        log2(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(2))))
+        log2(a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(2))))
     )
 end
 @inline function Base.log10(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        log10(a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(10))))
+        log10(a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(10))))
     )
 end
 @inline function Base.log1p(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log1p(a.value), _pt_guarded_scale(a.partials, inv(one(T) + a.value)))
+    return NDual{T,N}(log1p(a.value), _fwd_guarded_scale(a.partials, inv(one(T) + a.value)))
 end
 @inline function Base.expm1(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(expm1(a.value), _pt_scale(a.partials, exp(a.value)))
+    return NDual{T,N}(expm1(a.value), _fwd_scale(a.partials, exp(a.value)))
 end
 
 # Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)),
 # d/db = -log(x) / (b * log(b)^2) = -log(b, x) / (b * log(b)).
 @inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        log(b, a.value), _pt_guarded_scale(a.partials, inv(a.value * T(log(b))))
+        log(b, a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(b))))
     )
 end
 @inline function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
@@ -836,9 +838,9 @@ end
     y = log(b.value, a.value)
     return NDual{T,N}(
         y,
-        _pt_add(
-            _pt_guarded_scale(b.partials, -y / (b.value * log_b)),
-            _pt_guarded_scale(a.partials, inv(a.value * log_b)),
+        _fwd_add(
+            _fwd_guarded_scale(b.partials, -y / (b.value * log_b)),
+            _fwd_guarded_scale(a.partials, inv(a.value * log_b)),
         ),
     )
 end
@@ -849,127 +851,127 @@ end
 
 # ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
 @inline function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
-    return NDual{T,N}(ldexp(a.value, n), _pt_scale(a.partials, T(exp2(n))))
+    return NDual{T,N}(ldexp(a.value, n), _fwd_scale(a.partials, T(exp2(n))))
 end
 
 # Roots
 @inline function Base.sqrt(a::NDual{T,N}) where {T,N}
-    return (sv=sqrt(a.value); NDual{T,N}(sv, _pt_guarded_scale(a.partials, inv(2 * sv))))
+    return (sv=sqrt(a.value); NDual{T,N}(sv, _fwd_guarded_scale(a.partials, inv(2 * sv))))
 end
 @inline function Base.cbrt(a::NDual{T,N}) where {T,N}
-    return (cv=cbrt(a.value); NDual{T,N}(cv, _pt_guarded_scale(a.partials, inv(3 * cv^2))))
+    return (cv=cbrt(a.value); NDual{T,N}(cv, _fwd_guarded_scale(a.partials, inv(3 * cv^2))))
 end
 
 # Absolute value and sign
 @inline function Base.abs(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(abs(a.value), _pt_scale(a.partials, sign(a.value)))
+    return NDual{T,N}(abs(a.value), _fwd_scale(a.partials, sign(a.value)))
 end
 @inline function Base.abs2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(abs2(a.value), _pt_scale(a.partials, 2 * a.value))
+    return NDual{T,N}(abs2(a.value), _fwd_scale(a.partials, 2 * a.value))
 end
-Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _pt_zero(Val(N), T))
+Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _fwd_zero(Val(N), T))
 
 # sincos — fused sin+cos; returns (sin(a), cos(a)) as a tuple of 
 @inline function Base.sincos(a::NDual{T,N}) where {T,N}
     sv, cv = sincos(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, cv)),
-    NDual{T,N}(cv, _pt_scale(a.partials, -sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, cv)),
+    NDual{T,N}(cv, _fwd_scale(a.partials, -sv))
 end
 
 # sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor.
 @inline function Base.sinpi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinpi(a.value), _pt_scale(a.partials, T(π) * cospi(a.value)))
+    return NDual{T,N}(sinpi(a.value), _fwd_scale(a.partials, T(π) * cospi(a.value)))
 end
 @inline function Base.cospi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cospi(a.value), _pt_scale(a.partials, -T(π) * sinpi(a.value)))
+    return NDual{T,N}(cospi(a.value), _fwd_scale(a.partials, -T(π) * sinpi(a.value)))
 end
 
 # tanpi(x) = tan(π·x); derivative = π·sec²(π·x) = π·(1 + tan²(π·x)).
 @inline function Base.tanpi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     v = tanpi(a.value)
-    return NDual{T,N}(v, _pt_scale(a.partials, T(π) * (one(T) + v^2)))
+    return NDual{T,N}(v, _fwd_scale(a.partials, T(π) * (one(T) + v^2)))
 end
 
 # sincospi — fused sin(π·x)+cos(π·x); each derivative gains a π factor.
 @inline function Base.sincospi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     sv, cv = sincospi(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, T(π) * cv)),
-    NDual{T,N}(cv, _pt_scale(a.partials, -T(π) * sv))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, T(π) * cv)),
+    NDual{T,N}(cv, _fwd_scale(a.partials, -T(π) * sv))
 end
 
 # Reciprocal trigonometric: sec, csc, cot and their inverses.
 @inline function Base.sec(a::NDual{T,N}) where {T,N}
     sv = sec(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, sv * tan(a.value)))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, sv * tan(a.value)))
 end
 @inline function Base.csc(a::NDual{T,N}) where {T,N}
     cv = csc(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -cv * cot(a.value)))
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -cv * cot(a.value)))
 end
 @inline function Base.cot(a::NDual{T,N}) where {T,N}
     cv = cot(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, -(one(T) + cv^2)))
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -(one(T) + cv^2)))
 end
 @inline function Base.asec(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asec(a.value),
-        _pt_guarded_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
+        _fwd_guarded_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
     )
 end
 @inline function Base.acsc(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acsc(a.value),
-        _pt_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
+        _fwd_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
     )
 end
 @inline function Base.acot(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acot(a.value), _pt_scale(a.partials, -inv(one(T) + a.value^2)))
+    return NDual{T,N}(acot(a.value), _fwd_scale(a.partials, -inv(one(T) + a.value^2)))
 end
 
 # Degree-based trigonometric functions — argument in degrees, derivative gains π/180.
 @inline function Base.sind(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sind(a.value), _pt_scale(a.partials, T(deg2rad(cosd(a.value)))))
+    return NDual{T,N}(sind(a.value), _fwd_scale(a.partials, T(deg2rad(cosd(a.value)))))
 end
 @inline function Base.cosd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cosd(a.value), _pt_scale(a.partials, T(-deg2rad(sind(a.value)))))
+    return NDual{T,N}(cosd(a.value), _fwd_scale(a.partials, T(-deg2rad(sind(a.value)))))
 end
 @inline function Base.tand(a::NDual{T,N}) where {T,N}
     tv = tand(a.value)
-    return NDual{T,N}(tv, _pt_scale(a.partials, T(deg2rad(one(T) + tv^2))))
+    return NDual{T,N}(tv, _fwd_scale(a.partials, T(deg2rad(one(T) + tv^2))))
 end
 @inline function Base.secd(a::NDual{T,N}) where {T,N}
     sv = secd(a.value)
-    return NDual{T,N}(sv, _pt_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
+    return NDual{T,N}(sv, _fwd_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
 end
 @inline function Base.cscd(a::NDual{T,N}) where {T,N}
     cv = cscd(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
+    return NDual{T,N}(cv, _fwd_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
 end
 @inline function Base.cotd(a::NDual{T,N}) where {T,N}
     cv = cotd(a.value)
-    return NDual{T,N}(cv, _pt_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
+    return NDual{T,N}(cv, _fwd_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
 end
 @inline function Base.asind(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asind(a.value),
-        _pt_guarded_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
+        _fwd_guarded_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
     )
 end
 @inline function Base.acosd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acosd(a.value),
-        _pt_guarded_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
+        _fwd_guarded_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
     )
 end
 @inline function Base.atand(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        atand(a.value), _pt_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
+        atand(a.value), _fwd_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
     )
 end
 @inline function Base.asecd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asecd(a.value),
-        _pt_guarded_scale(
+        _fwd_guarded_scale(
             a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
         ),
     )
@@ -977,28 +979,28 @@ end
 @inline function Base.acscd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acscd(a.value),
-        _pt_guarded_scale(
+        _fwd_guarded_scale(
             a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
         ),
     )
 end
 @inline function Base.acotd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
-        acotd(a.value), _pt_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
+        acotd(a.value), _fwd_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
     )
 end
 
 # Angle unit conversions — linear transforms; derivative is the constant scale factor.
 @inline function Base.deg2rad(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(deg2rad(a.value), _pt_scale(a.partials, T(deg2rad(one(T)))))
+    return NDual{T,N}(deg2rad(a.value), _fwd_scale(a.partials, T(deg2rad(one(T)))))
 end
 @inline function Base.rad2deg(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(rad2deg(a.value), _pt_scale(a.partials, T(rad2deg(one(T)))))
+    return NDual{T,N}(rad2deg(a.value), _fwd_scale(a.partials, T(rad2deg(one(T)))))
 end
 
 # sinc(x) = sin(πx)/(πx) for x≠0, 1 at x=0; derivative = cosc(x).
 @inline function Base.sinc(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinc(a.value), _pt_scale(a.partials, T(cosc(a.value))))
+    return NDual{T,N}(sinc(a.value), _fwd_scale(a.partials, T(cosc(a.value))))
 end
 
 # hypot — d/da hypot(a,b) = a / hypot(a,b), d/db = b / hypot(a,b).
@@ -1007,7 +1009,7 @@ end
     coeff_a = _nfwd_zero_mask(a.value, a.value / h)
     coeff_b = _nfwd_zero_mask(b.value, b.value / h)
     return NDual{T,N}(
-        h, _pt_add(_pt_scale(a.partials, coeff_a), _pt_scale(b.partials, coeff_b))
+        h, _fwd_add(_fwd_scale(a.partials, coeff_a), _fwd_scale(b.partials, coeff_b))
     )
 end
 @inline Base.hypot(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = hypot(
@@ -1204,7 +1206,7 @@ end
 end
 
 # sqrt(a + bi) = sqrt((|z|+a)/2) + i·sign(b)·sqrt((|z|-a)/2)
-# Construct the NDual arguments to sqrt directly with _pt_scale to avoid an
+# Construct the NDual arguments to sqrt directly with _fwd_scale to avoid an
 # unnecessary NDual*NDual product-rule evaluation (the factor 0.5 has zero partials).
 @inline function Base.sqrt(z::Complex{NDual{T,N}}) where {T,N}
     a, b = real(z), imag(z)
@@ -1212,13 +1214,14 @@ end
     half = T(0.5)
     re = sqrt(
         NDual{T,N}(
-            (r.value + a.value) * half, _pt_scale(_pt_add(r.partials, a.partials), half)
+            (r.value + a.value) * half, _fwd_scale(_fwd_add(r.partials, a.partials), half)
         ),
     )
     im =
         copysign(one(NDual{T,N}), b) * sqrt(
             NDual{T,N}(
-                (r.value - a.value) * half, _pt_scale(_pt_sub(r.partials, a.partials), half)
+                (r.value - a.value) * half,
+                _fwd_scale(_fwd_sub(r.partials, a.partials), half),
             ),
         )
     return Complex(re, im)
@@ -1326,7 +1329,7 @@ end
     coeff_x, coeff_y = _nfwd_mod_grad_coeffs(x.value, y.value)
     return NDual{T,N}(
         mod(x.value, y.value),
-        _pt_add(_pt_scale(x.partials, coeff_x), _pt_scale(y.partials, coeff_y)),
+        _fwd_add(_fwd_scale(x.partials, coeff_x), _fwd_scale(y.partials, coeff_y)),
     )
 end
 @inline Base.mod(x::NDual{T1,N1}, y::NDual{T2,N2}) where {T1<:IEEEFloat,T2<:IEEEFloat,N1,N2} = mod(
@@ -1342,7 +1345,7 @@ end
 
 @inline function Base.mod2pi(x::NDual{T,N}) where {T<:IEEEFloat,N}
     coeff = _nfwd_mod2pi_grad(x.value)
-    return NDual{T,N}(mod2pi(x.value), _pt_scale(x.partials, coeff))
+    return NDual{T,N}(mod2pi(x.value), _fwd_scale(x.partials, coeff))
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────

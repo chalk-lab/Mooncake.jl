@@ -74,7 +74,7 @@ using Mooncake.Nfwd
 
         # Regression (#208/#209/#210): `/(Real, NDual)` and the two `atan(·, ·)` Real/NDual
         # methods promoted the value to `S = promote_type(T, R)` but left the partials at `T`,
-        # so a wider-float Real operand fed a type-`S` scale into `_pt_scale`/`_pt_guarded_scale`
+        # so a wider-float Real operand fed a type-`S` scale into `_fwd_scale`/`_fwd_guarded_scale`
         # (which require matching types) → MethodError instead of the promised NDual{S,N}. The
         # partials must promote to `S` too, mirroring the `+`/`-`/`*` methods above.
         w32 = NDual{Float32,2}(1.0f0, (1.0f0, 0.0f0))
@@ -144,7 +144,7 @@ using Mooncake.Nfwd
         # reciprocal, so an *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
         # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression R3-1:
         # inv / literal `x^-1` / Real÷NDual / NDual÷NDual / NDual÷Real previously used the unguarded
-        # `_pt_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
+        # `_fwd_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
         z = _d2(0.0, 0.0, 1.0)
         for d in (inv(z), z^(-1), 1.0 / z, _d2(3.0, 0.0, 1.0) / z, _d2(3.0, 0.0, 1.0) / 0.0)
             @test Nfwd.ndual_partial(d, 1) === 0.0   # inactive lane: 0, not NaN
@@ -200,7 +200,7 @@ using Mooncake.Nfwd
 
         # integer / literal negative exponent at x=0: dv = ±Inf, so an *inactive* (zero-partial)
         # lane must stay 0 via the guarded scale, not become 0*Inf = NaN. The active lane keeps
-        # the genuine singular Inf. (Regression for the unguarded `_pt_scale` on these paths.)
+        # the genuine singular Inf. (Regression for the unguarded `_fwd_scale` on these paths.)
         zneg = _d2(0.0, 1.0, 0.0)
         @test isinf(Nfwd.ndual_partial(zneg^(-2), 1))      # active lane: genuine singularity
         @test Nfwd.ndual_partial(zneg^(-2), 2) === 0.0     # inactive lane: zero, not NaN
@@ -367,7 +367,7 @@ using Mooncake.Nfwd
         # have a FINITE value but an infinite derivative at x = ±1 (a removable singularity for the
         # derivative). An *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
         # become `Inf * 0 = NaN`; the active lane keeps the genuine singular ±Inf. lane1 active,
-        # lane2 inactive. (Regression: these paths previously used the unguarded `_pt_scale`.)
+        # lane2 inactive. (Regression: these paths previously used the unguarded `_fwd_scale`.)
         for f in (asin, acos, acosh, asech, asec, acsc, asind, acosd, asecd, acscd)
             d = f(_d2(1.0, 1.0, 0.0))
             @test isfinite(Nfwd.ndual_value(d))               # value finite at the boundary

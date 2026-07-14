@@ -91,9 +91,9 @@ end
         end
     end
 
-    # Regression (#172): the chunked llvm.powi frule must scale partials with `_pt_guarded_scale`, so
+    # Regression (#172): the chunked llvm.powi frule must scale partials with `_fwd_guarded_scale`, so
     # an inactive (zero-seed) lane stays exactly 0.0 even where `grad` is ±Inf (x=0, negative
-    # exponent). Unguarded `_pt_scale` gave `0 * Inf = NaN`. Mirrors the `pow_fast` guard.
+    # exponent). Unguarded `_fwd_scale` gave `0 * Inf = NaN`. Mirrors the `pow_fast` guard.
     @testset "llvm.powi inactive-lane guard at x=0 negative exponent" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")

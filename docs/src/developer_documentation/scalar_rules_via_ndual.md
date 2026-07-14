@@ -24,7 +24,7 @@ The reverse factors are dispatched through small tables (`_unary_deriv` / `_bina
 `_pow_grad_x`/`_pow_grad_p` for the pow family and `_pick_first_max`/`_pick_first_min` for `max`/`min`)
 and contracted against the output cotangent by `_rev_contract`, which keeps an inactive
 (zero-cotangent) lane exactly zero even where the local derivative is `±Inf` — the reverse analogue of
-the forward `_pt_guarded_scale`. This covers ordinary derivatives, strong-zero behavior, and awkward
+the forward `_fwd_guarded_scale`. This covers ordinary derivatives, strong-zero behavior, and awkward
 points such as discontinuities or removable singularities.
 
 ## Concrete MWE
@@ -36,10 +36,10 @@ the internal helper names need to be imported or qualified explicitly:
 
 ```julia
 const NDual = Mooncake.Nfwd.NDual
-const _pt_scale = Mooncake.Nfwd._pt_scale
+const _fwd_scale = Mooncake.Nfwd._fwd_scale
 
 @inline function Base.cospi(x::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cospi(x.value), _pt_scale(x.partials, -T(π) * sinpi(x.value)))
+    return NDual{T,N}(cospi(x.value), _fwd_scale(x.partials, -T(π) * sinpi(x.value)))
 end
 ```
 
@@ -47,7 +47,7 @@ Key details:
 
 - `x.value` is the primal scalar value.
 - `x.partials` is the `N`-lane tuple of tangent directions carried by `NDual`.
-- `_pt_scale(x.partials, s)` multiplies every tangent lane by the same local scalar derivative `s`.
+- `_fwd_scale(x.partials, s)` multiplies every tangent lane by the same local scalar derivative `s`.
 - The returned `NDual` therefore contains both the primal `cospi(x)` value and the propagated tangent lanes.
 
 The forward `frule!!` stays thin — it just runs that overload. The reverse `rrule!!` is a direct

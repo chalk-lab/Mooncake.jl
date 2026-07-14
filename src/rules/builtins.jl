@@ -1075,7 +1075,7 @@ function frule!!(
     ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
 ) where {Nw,T<:IEEEFloat}
     # The NDual `sqrt` overload (Nfwd.jl) computes the primal `sqrt` once, stores it as the
-    # result's `.value` (inner-value invariant), and applies `_pt_guarded_scale` — the NDual
+    # result's `.value` (inner-value invariant), and applies `_fwd_guarded_scale` — the NDual
     # analogue of `nan_tangent_guard` — so the singular `sqrt(0)` case has zeroed partials
     # instead of NaN. Read the primal back from the dual rather than recomputing `sqrt_llvm`.
     dy = sqrt(tangent(x))

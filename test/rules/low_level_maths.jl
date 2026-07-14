@@ -71,7 +71,7 @@
     @testset "fused trig forward pole guard (inactive lane stays 0, not NaN)" begin
         # `tand(90)` hits an EXACT Float64 pole: `cosd(90) == 0` (90 is representable, unlike π/2
         # in radians), so `tand(90) = Inf` and its derivative `1 + tand^2 = Inf`. The fused-family
-        # frule!! must scale partials with `_pt_guarded_scale`, so an inactive (zero-seed) lane
+        # frule!! must scale partials with `_fwd_guarded_scale`, so an inactive (zero-seed) lane
         # stays exactly 0 rather than 0*Inf = NaN — matching main's forward robustness.
         for T in (Float32, Float64)
             for x in (T(90), T(270))
