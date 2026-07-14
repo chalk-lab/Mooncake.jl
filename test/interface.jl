@@ -1667,6 +1667,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
                     @test hv ≈ 2 .* v
                 end
+                # BLAS `dot` path (regression #283): the reverse `dot` pullback threads `Ptr{NoTangent}`
+                # fdata pointers, whose forward V must keep the per-lane partial pointers (else the
+                # forward-over-reverse `_new_` backing mismatches and crashes).
+                let f = x -> dot(x, x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
+                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                    @test val ≈ dot(x, x)
+                    @test g ≈ 2 .* x
+                    @test hv ≈ 2 .* v
+                end
             end
         end
     end
@@ -1709,6 +1718,18 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test v ≈ 14.0
                 @test g ≈ [2.0, 4.0, 6.0]
                 @test H ≈ 2 * I
+            end
+
+            @testset "BLAS quadratic form (dot, regression #283)" begin
+                # `dot(x, A*x)/2` has gradient `A*x` and Hessian `A`; its reverse rule runs through
+                # BLAS on raw pointers, so forward-over-reverse threads `Ptr{NoTangent}` fdata pointers
+                # that must keep their per-lane V. Untested before #283 (all other cases are elementwise).
+                A = [2.0 0.5 0.0; 0.5 3.0 0.1; 0.0 0.1 4.0]  # symmetric ⇒ Hessian is exactly A
+                f(x) = dot(x, A * x) / 2
+                x = [0.5, -0.2, 0.9]
+                v, g, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
+                @test g ≈ A * x
+                @test H ≈ A
             end
 
             @testset "chunked Hessian == width-1 (chunk_size $W)" for W in (1, 2, 3, 5)

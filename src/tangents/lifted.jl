@@ -768,6 +768,16 @@ end
 @foldable @inline function dual_type(::Val{N}, ::Type{Ptr{Nothing}}) where {N}
     return NTuple{N,Ptr{Nothing}}
 end
+# `Ptr{NoTangent}` is the fdata-placeholder element type carried through the reverse-mode pointer
+# chain (a `Ptr{Nothing}` bitcast to the fdata tag, later re-bitcast to a differentiable `Ptr{T}` a
+# foreigncall/BLAS consumes) — e.g. under forward-over-reverse of a `dot`/BLAS quadratic form. Like
+# `Ptr{Nothing}` it must carry the `N` per-lane partial pointers, so the `bitcast` frule's per-lane
+# output stays canonical (`V === dual_type`). This is NOT a genuine non-differentiable-element pointer
+# (`Ptr{UInt8}`/`Ptr{Int}`, which stay `NoDual` via the generic rule below); `NoTangent` is the tangent
+# sentinel and never appears as a user pointer's element type.
+@foldable @inline function dual_type(::Val{N}, ::Type{Ptr{NoTangent}}) where {N}
+    return NTuple{N,Ptr{NoTangent}}
+end
 # Non-differentiable-element pointers (e.g. `Ptr{UInt8}`) carry no forward
 # derivative — V is `NoDual`, mirroring `tangent_type(T) === NoTangent`. Without
 # this the zero-field generic fallback returns `NTuple{N, Ptr{NoTangent}}`, which
