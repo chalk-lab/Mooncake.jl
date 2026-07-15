@@ -484,18 +484,28 @@ function frule!!(
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
     LAPACK.potrs!(uplo, A, B)
+    # `dL*L' + L*dL'` (resp. `U'dU + dU'U`) allocated three matrices per lane. Build its two
+    # (triangular*triangular) terms into hoisted scratches via in-place `BLAS.trmm!` (materialize
+    # one factor, apply the other in place); the symmetric `mul!` then runs BLAS symm!/symv! in
+    # place. The sum is symmetric (`X + X'`), matching the original `Symmetric(...)` (uplo `:U`).
+    buf1 = similar(A)
+    buf2 = similar(A)
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         if uplo == 'L'
-            L = LowerTriangular(A)
-            dL = LowerTriangular(dA_lane)
-            mul!(dB_lane, Symmetric(dL * L' + L * dL'), B, -one(P), one(P))
+            copyto!(buf1, adjoint(LowerTriangular(A)))
+            BLAS.trmm!('L', 'L', 'N', 'N', one(P), dA_lane, buf1)
+            copyto!(buf2, adjoint(LowerTriangular(dA_lane)))
+            BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, buf2)
         else
-            U = UpperTriangular(A)
-            dU = UpperTriangular(dA_lane)
-            mul!(dB_lane, Symmetric(U'dU + dU'U), B, -one(P), one(P))
+            copyto!(buf1, UpperTriangular(dA_lane))
+            BLAS.trmm!('L', 'U', 'T', 'N', one(P), A, buf1)
+            copyto!(buf2, UpperTriangular(A))
+            BLAS.trmm!('L', 'U', 'T', 'N', one(P), dA_lane, buf2)
         end
+        buf1 .+= buf2
+        mul!(dB_lane, Symmetric(buf1), B, -one(P), one(P))
         LAPACK.potrs!(uplo, A, dB_lane)
     end
     return B_dB
