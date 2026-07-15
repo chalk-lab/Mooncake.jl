@@ -913,11 +913,13 @@ function frule!!(
     x = primal(x_dx)
     # Primal first — subsequent lane work needs the new `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
+    tmp = similar(x)  # scratch reused across lanes (was allocated by `BLAS.trmv` per lane)
     for lane in 1:Nw
         dA = _blas_lane_partial(A_dA, lane)
         dx = _blas_lane_partial(x_dx, lane)
         BLAS.trsv!(uplo, trans, diag, A, dx)
-        tmp = BLAS.trmv(uplo, trans, diag, dA, x)
+        copyto!(tmp, x)
+        BLAS.trmv!(uplo, trans, diag, dA, tmp)
         diag === 'U' && (tmp .-= x)
         BLAS.trsv!(uplo, trans, diag, A, tmp)
         dx .-= tmp
