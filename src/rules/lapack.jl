@@ -373,22 +373,35 @@ function frule!!(
     uplo = primal(_uplo)
     A, dA_lanes = arrayify(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
-    @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        if uplo == 'L'
-            L = LowerTriangular(A)
-            tmp = LowerTriangular(ldiv!(L, Symmetric(dA_lane, :L) / L'))
-            for n in 1:size(A, 1)
-                tmp[n, n] = tmp[n, n] / 2
+    # One scratch reused across lanes; the per-lane solves/products run in place via direct
+    # BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars allocate a temp on each call).
+    buf = similar(A)
+    N = size(A, 1)
+    if uplo == 'L'
+        @inbounds for lane in 1:Nw
+            dA_lane = dA_lanes[lane]
+            copyto!(buf, Symmetric(dA_lane, :L))
+            BLAS.trsm!('R', 'L', 'T', 'N', one(P), A, buf)
+            BLAS.trsm!('L', 'L', 'N', 'N', one(P), A, buf)
+            for n in 1:N
+                buf[n, n] = buf[n, n] / 2
             end
-            _copytrito!(dA_lane, lmul!(L, tmp), 'L')
-        else
-            U = UpperTriangular(A)
-            tmp = UpperTriangular(rdiv!(U' \ Symmetric(dA_lane, :U), U))
-            for n in 1:size(A, 1)
-                tmp[n, n] = tmp[n, n] / 2
+            tril!(buf)
+            BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, buf)
+            _copytrito!(dA_lane, buf, 'L')
+        end
+    else
+        @inbounds for lane in 1:Nw
+            dA_lane = dA_lanes[lane]
+            copyto!(buf, Symmetric(dA_lane, :U))
+            BLAS.trsm!('L', 'U', 'T', 'N', one(P), A, buf)
+            BLAS.trsm!('R', 'U', 'N', 'N', one(P), A, buf)
+            for n in 1:N
+                buf[n, n] = buf[n, n] / 2
             end
-            _copytrito!(dA_lane, rmul!(tmp, U), 'U')
+            triu!(buf)
+            BLAS.trmm!('R', 'U', 'N', 'N', one(P), A, buf)
+            _copytrito!(dA_lane, buf, 'U')
         end
     end
     y = (A, info)
