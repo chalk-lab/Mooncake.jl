@@ -98,6 +98,7 @@ using Mooncake:
     frule!!,
     rrule!!,
     DebugFRule,
+    DebugRRule,
     build_rrule,
     tangent_type,
     zero_tangent,

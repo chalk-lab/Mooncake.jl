@@ -1340,8 +1340,10 @@ for (fname, elty, relty) in (
         β = primal(β_dβ)
         C, dC = arrayify(C_dC)
 
-        # Run forwards pass, and remember previous value of `C` for the reverse-pass.
-        C_copy = collect(C)
+        # Run forwards pass, and remember previous value of `C` for the reverse-pass (pooled restore
+        # copy, reclaimed at the next AD call's reset).
+        C_copy = buffered_similar!(C)
+        copyto!(C_copy, C)
         BLAS.$fname(uplo, trans, α, A, β, C)
 
         function syrk!_or_herk!_adjoint(::NoRData)
@@ -1351,20 +1353,22 @@ for (fname, elty, relty) in (
             # Increment gradients.
             $(isherm ? :(real_diag!(dC)) : :())
 
-            B = uplo == 'U' ? triu(dC) : tril(dC)
+            B = buffered_similar!(dC)
+            copyto!(B, dC)
+            uplo == 'U' ? triu!(B) : tril!(B)
             ∇β = dot(C, B)
             $(isherm ? :(∇β = real(∇β)) : :())
-            ∇α = dot(
-                if trans == 'N'
-                    A * $(isherm ? adjoint : transpose)(A)
-                else
-                    $(isherm ? adjoint : transpose)(A) * A
-                end,
-                B,
-            )
+            AAt = buffered_similar!(dC)
+            if trans == 'N'
+                mul!(AAt, A, $(isherm ? adjoint : transpose)(A))
+            else
+                mul!(AAt, $(isherm ? adjoint : transpose)(A), A)
+            end
+            ∇α = dot(AAt, B)
             $(isherm ? :(∇α = real(∇α)) : :())
 
-            M1 = B + $(isherm ? adjoint : transpose)(B)
+            M1 = buffered_similar!(B)
+            M1 .= B .+ $(isherm ? adjoint : transpose)(B)
             M2 = $(isherm ? :A : :(conj(A)))
             dA .+= α' .* (trans == 'N' ? M1 * M2 : M2 * M1)
             dC .= (uplo == 'U' ? tril!(dC, -1) : triu!(dC, 1)) .+ β' .* B

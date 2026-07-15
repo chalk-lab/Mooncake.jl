@@ -407,9 +407,10 @@ function frule!!(
     uplo = primal(_uplo)
     A, dA_lanes = arrayify(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
-    # One scratch reused across lanes; the per-lane solves/products run in place via direct
-    # BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars allocate a temp on each call).
-    buf = similar(A)
+    # One scratch reused across lanes (and, via the global pool, across calls); the per-lane
+    # solves/products run in place via direct BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars
+    # allocate a temp).
+    buf = buffered_similar!(A)
     N = size(A, 1)
     if uplo == 'L'
         @inbounds for lane in 1:Nw
@@ -441,14 +442,16 @@ function frule!!(
     y = (A, info)
     return Lifted{typeof(y),Nw}(y, (tangent(A_dA), NoDual()))
 end
+# `A_copy` (captured by the pullback to restore `A`, so live across the reverse sweep) is drawn from
+# the global scratch pool as a fresh slot; distinct per call at a loop site, reclaimed at the next
+# AD call's reset.
 function rrule!!(
     ::CoDual{typeof(potrf!)}, _uplo::CoDual{Char}, _A::CoDual{<:AbstractMatrix{P}}
 ) where {P<:BlasRealFloat}
-
-    # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
-    A_copy = copy(A)
+    A_copy = buffered_similar!(A)
+    copyto!(A_copy, A)
 
     # Run primal.
     _, info = potrf!(uplo, A)
@@ -456,19 +459,26 @@ function rrule!!(
     function potrf_pb!!(::NoRData)
         dA2 = dA
 
-        # Compute cotangents.
+        # Compute cotangents. `Emat` (the ±-scaling matrix) and `tmp` (the triangular product) are
+        # pooled scratch reused across calls.
         N = size(A, 1)
+        Emat = buffered_similar!(A)
+        fill!(Emat, P(2))
+        @inbounds for n in diagind(Emat)
+            Emat[n] -= P(1)
+        end
+        tmp = buffered_similar!(A)
         if Char(uplo) == 'L'
-            E = LowerTriangular(__E(P, N))
+            E = LowerTriangular(Emat)
             L = LowerTriangular(A)
-            tmp = dA2'L
+            mul!(tmp, dA2', L)
             tmp .*= E'
             B = rdiv!(ldiv!(L', tmp), L)
             dA .= __sym_lower!(B) .* E ./ 2 .+ triu!(dA2, 1)
         else
-            E = UpperTriangular(__E(P, N))
+            E = UpperTriangular(Emat)
             U = UpperTriangular(A)
-            tmp = U * dA2'
+            mul!(tmp, U, dA2')
             tmp .*= E'
             B = rdiv!(ldiv!(U, tmp), U')
             dA .= __sym_upper!(B) .* E ./ 2 .+ tril!(dA2, -1)
@@ -494,14 +504,6 @@ function __sym_upper!(X::Matrix)
         X[p, q] = (X[p, q] + X[q, p]) / 2
     end
     return X
-end
-
-@inline function __E(P::Type, N::Int)
-    E = fill(P(2), (N, N))
-    for n in diagind(E)
-        E[n] -= P(1)
-    end
-    return E
 end
 
 @is_primitive(
@@ -615,7 +617,9 @@ end
         A, dA = arrayify(A_dA)
         uplo = primal(_uplo)
 
-        B_copy = copy(B)
+        # Pooled restore copy (reclaimed at the next AD call's reset).
+        B_copy = buffered_similar!(B)
+        copyto!(B_copy, B)
         LAPACK.lacpy!(B, A, uplo)
         # fill dB with zeros in the copied region
         zero_tri!(dB, uplo)

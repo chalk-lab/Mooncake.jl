@@ -173,11 +173,15 @@ end
 ) where {R,N}
     if friendly_tangents
         ȳ_tangent = primal_to_tangent!!(zero_tangent(ȳ), ȳ)
-        value, pb = __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
+        value, pb = with_scratch_pool(
+            () -> __value_and_pullback!!(rule, ȳ_tangent, __create_coduals(fx)...)
+        )
         friendly_pb = _to_friendly(map(friendly_tangent_cache, fx), fx, pb)
         return value, friendly_pb
     end
-    return __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+    return with_scratch_pool(
+        () -> __value_and_pullback!!(rule, ȳ, __create_coduals(fx)...)
+    )
 end
 
 """
@@ -207,11 +211,13 @@ value_and_gradient!!(rule, f, x, y)
     rule::R, fx::Vararg{Any,N}; friendly_tangents=false
 ) where {R,N}
     if friendly_tangents
-        value, gradient = __value_and_gradient!!(rule, __create_coduals(fx)...)
+        value, gradient = with_scratch_pool(
+            () -> __value_and_gradient!!(rule, __create_coduals(fx)...)
+        )
         friendly_gradient = _to_friendly(map(friendly_tangent_cache, fx), fx, gradient)
         return value, friendly_gradient
     end
-    return __value_and_gradient!!(rule, __create_coduals(fx)...)
+    return with_scratch_pool(() -> __value_and_gradient!!(rule, __create_coduals(fx)...))
 end
 
 function __create_coduals(args)
@@ -871,11 +877,15 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
-        return __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+        return with_scratch_pool(
+            () -> __value_and_pullback!!(cache.rule, ȳ, coduals...; y_cache=cache.y_cache)
+        )
     end
     ȳ_tangent = primal_to_tangent!!(cache.ȳ_cache, ȳ)
-    value, pb = __value_and_pullback!!(
-        cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
+    value, pb = with_scratch_pool(
+        () -> __value_and_pullback!!(
+            cache.rule, ȳ_tangent, coduals...; y_cache=cache.y_cache
+        ),
     )
     friendly_pb = _to_friendly(getfield(cache, :dests), fx, pb)
     return value, friendly_pb
@@ -984,9 +994,11 @@ value_and_gradient!!(cache, f, x, y)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
-        return __value_and_gradient!!(cache.rule, coduals...)
+        return with_scratch_pool(() -> __value_and_gradient!!(cache.rule, coduals...))
     end
-    value, gradient = __value_and_gradient!!(cache.rule, coduals...)
+    value, gradient = with_scratch_pool(
+        () -> __value_and_gradient!!(cache.rule, coduals...)
+    )
     friendly_gradient = _to_friendly(getfield(cache, :dests), fx, gradient)
     return value, friendly_gradient
 end
@@ -1975,7 +1987,7 @@ in `f` and `x`.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
-    return __call_rule(cache.single_rule, fx)
+    return with_scratch_pool(() -> __call_rule(cache.single_rule, fx))
 end
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
@@ -1999,7 +2011,7 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
             "built at width $W; all inputs must share the cache's chunk width.",
         ),
     )
-    return __call_rule(rule, fx)
+    return with_scratch_pool(() -> __call_rule(rule, fx))
 end
 
 """

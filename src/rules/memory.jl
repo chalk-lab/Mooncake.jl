@@ -858,8 +858,16 @@ end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
-    x = Memory{P}(undef, primal(n))
-    dx = zero_tangent_internal(x, NoCache())
+    m = primal(n)
+    x = Memory{P}(undef, m)
+    # `x` is a fresh intermediate array (no aliases yet); its zero tangent is transient (accumulated
+    # over the reverse sweep, reclaimed at the next AD call's reset), so pool it for bits-float
+    # eltypes — where the tangent is `Memory{P}` — instead of allocating a fresh one each call.
+    dx = if P <: Base.IEEEFloat || P <: Complex{<:Base.IEEEFloat}
+        buffered_zero_memory!(P, m)
+    else
+        zero_tangent_internal(x, NoCache())
+    end
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 

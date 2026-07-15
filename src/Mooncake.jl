@@ -187,6 +187,7 @@ include(joinpath("interpreter", "forward_mode.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
+include(joinpath("rules", "buffered_rules.jl"))
 include("tools_for_rules.jl")
 
 """
