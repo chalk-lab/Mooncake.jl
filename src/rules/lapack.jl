@@ -3,13 +3,28 @@
 # which differ only in the primal call. `A`/`dA_lanes` come from `arrayify(A_dA)` and `A` is
 # already overwritten by the in-place `getrf!`.
 function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) where {Nw}
-    L = UnitLowerTriangular(A)
-    U = UpperTriangular(A)
+    T = eltype(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    n = size(A, 1)
+    # F = L \ (P·dA) / U, then dA = L*tril(F,-1) + triu(F)*U. Two scratches reused across lanes;
+    # the solves/products run in place via direct BLAS (LinearAlgebra's triangular `\`/`*` and the
+    # `[p,:]`/`tril`/`triu` copies allocated ~5 matrices per lane). `A` is the packed LU factor:
+    # unit-lower `L` (BLAS diag 'U') and upper `U` (diag 'N').
+    Fbuf = similar(A)
+    buf = similar(A)
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
-        F = rdiv!(ldiv!(L, dA_lane[p, :]), U)
-        dA_lane .= L * tril(F, -1) + triu(F) * U
+        for i in 1:n
+            @views Fbuf[i, :] .= dA_lane[p[i], :]
+        end
+        BLAS.trsm!('L', 'L', 'N', 'U', one(T), A, Fbuf)
+        BLAS.trsm!('R', 'U', 'N', 'N', one(T), A, Fbuf)
+        copyto!(buf, Fbuf)
+        tril!(buf, -1)
+        BLAS.trmm!('L', 'L', 'N', 'U', one(T), A, buf)
+        triu!(Fbuf)
+        BLAS.trmm!('R', 'U', 'N', 'N', one(T), A, Fbuf)
+        dA_lane .= buf .+ Fbuf
     end
     y = (A, ipiv, info)
     return Lifted{typeof(y),Nw}(y, (tangent(A_dA), zero_dual(Val(Nw), ipiv), NoDual()))
