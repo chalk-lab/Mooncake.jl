@@ -3363,14 +3363,18 @@ function frule!!(
         end
         return dest
     end
+    # Aliasing-safe accumulator reused across lanes: `dest` may appear in `bc.args`, so we
+    # accumulate into a buffer distinct from `dest_partials[lane]` and copy in only at lane end.
+    tmp = similar(pout)
     for lane in 1:Nw
         flat_ts = if lane == 1
             flat_ts_1
         else
             _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
         end
-        dy = _gpu_accumulate_jvp!(zero(pout), flat_pargs, flat_ts, dual_out)
-        copyto!(dest_partials[lane], dy)
+        fill!(tmp, zero(eltype(tmp)))
+        _gpu_accumulate_jvp!(tmp, flat_pargs, flat_ts, dual_out)
+        copyto!(dest_partials[lane], tmp)
     end
     return dest
 end
