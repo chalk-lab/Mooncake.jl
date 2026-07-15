@@ -45,12 +45,14 @@ function frule!!(
     # One `ChainRules.frule` call per lane. ChainRules' matrix-exp frule computes the primal
     # `exp(X)` and the directional derivative together via a single augmented block-matrix
     # exponential, so each lane recomputes `exp(X)` (the dominant cost): it cannot be hoisted out
-    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` mutates, so
-    # each lane needs a fresh `Xc`; the (lane-independent) `Y_primal` is taken from lane 1, which
-    # therefore needs no pre-fill (Nw ≥ 1).
+    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` destroys
+    # its input, so `Xc`/`dXc` are reused scratches refilled from `Xp`/the lane's tangent each
+    # lane; the (lane-independent) `Y_primal` is taken from lane 1 (Nw ≥ 1).
+    Xc = similar(Xp)
+    dXc = similar(Xp)
     @inbounds for lane in 1:Nw
-        Xc = copy(Xp)
-        dXc = copy(tangent(X_dX).partials[lane])
+        copyto!(Xc, Xp)
+        copyto!(dXc, tangent(X_dX).partials[lane])
         Y_l, dY_l = ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)
         if lane == 1
             copyto!(Y_primal, Y_l)
