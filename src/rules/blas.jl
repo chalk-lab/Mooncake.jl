@@ -1522,17 +1522,18 @@ function frule!!(
     α = primal(α_dα)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
-    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
-    # it and copy per lane.
+    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist `X` and
+    # the `tmp` scratch above the loop, refilling `tmp` per lane with `copyto!`.
     X = copy(B)
     trsm!(side, uplo, trans, diag, one(P), A, X)
+    tmp = similar(X)
     @inbounds for lane in 1:Nw
         dα_lane = tangent(α_dα, lane)
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
         dB_lane .+= dα_lane .* X
-        tmp = copy(X)
+        copyto!(tmp, X)
         BLAS.trmm!(side, uplo, trans, diag, α, dA_lane, tmp)
         if diag == 'U'
             tmp .-= α .* X
