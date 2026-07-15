@@ -1405,15 +1405,20 @@ function frule!!(
     α = primal(α_dα)
     A = primal(A_dA)
     B = primal(B_dB)
+    Bbuf = similar(B)  # scratch reused across lanes (was `copy(B)` per lane)
     for lane in 1:Nw
         dα = tangent(α_dα, lane)
         dA = _blas_lane_partial(A_dA, lane)
         dB = _blas_lane_partial(B_dB, lane)
         BLAS.trmm!(side, uplo, ta, diag, α, A, dB)
-        dB .+= BLAS.trmm!(side, uplo, ta, diag, α, dA, copy(B))
+        copyto!(Bbuf, B)
+        BLAS.trmm!(side, uplo, ta, diag, α, dA, Bbuf)
+        dB .+= Bbuf
         diag === 'U' && (dB .-= α .* B)
         if !iszero(dα)
-            dB .+= BLAS.trmm!(side, uplo, ta, diag, dα, A, copy(B))
+            copyto!(Bbuf, B)
+            BLAS.trmm!(side, uplo, ta, diag, dα, A, Bbuf)
+            dB .+= Bbuf
         end
     end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
