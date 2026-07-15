@@ -3037,17 +3037,14 @@ function _gpu_accumulate_jvp!(dy, flat_pargs, flat_tangents, dual_out)
         flat_pargs,
         flat_tangents,
         (meta, t_eff) -> begin
+            # Fuse the (lane-independent) partial extraction with the seed multiply and the
+            # accumulate: a dot-call stays lazy, so `dy .+=` runs one in-place kernel with no
+            # per-lane intermediate array (an eager `broadcast(f, dual_out)` would allocate one).
             if meta.dof == 1
-                dy .+=
-                    broadcast(o -> Nfwd._nfwd_dual_partial(o, meta.slot1), dual_out) .*
-                    t_eff
+                dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot1) .* t_eff
             elseif meta.dof == 2
-                dy .+=
-                    broadcast(o -> Nfwd._nfwd_dual_partial(o, meta.slot1), dual_out) .*
-                    real.(t_eff)
-                dy .+=
-                    broadcast(o -> Nfwd._nfwd_dual_partial(o, meta.slot2), dual_out) .*
-                    imag.(t_eff)
+                dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot1) .* real.(t_eff)
+                dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot2) .* imag.(t_eff)
             end
         end,
     )
