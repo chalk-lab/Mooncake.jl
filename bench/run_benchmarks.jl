@@ -181,6 +181,7 @@ function benchmark_rules!!(
     include_other_frameworks::Bool,
     seconds=nothing;
     retries=0,
+    fwd_chunk=(_ -> 1),
 )
     test_cases = reduce(vcat, map(first, test_case_data))
     memory = map(x -> x[2], test_case_data)
@@ -230,10 +231,13 @@ function benchmark_rules!!(
             # `skip_forward` (forward mode cannot represent them; the frule throws when run).
             if !TestUtils._case_skip_forward(ranges[n])
                 @info "Mooncake (Forward)"
-                rule = Mooncake.build_frule(args...)
+                # One forward pass at chunk width `fwd_chunk(args)` (default 1; the inter-AD
+                # comparison overrides it — see `_inter_fwd_chunk`).
+                W = fwd_chunk(args)
+                rule = Mooncake.build_frule(args...; chunk_size=W)
                 lifts = map(
                     x ->
-                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(1), x),
+                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(W), x),
                     args,
                 )
                 to_benchmark(rule, copy_coduals(lifts...)...)
@@ -373,6 +377,11 @@ function benchmark_derived_rrules!!(rng_ctor)
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
 
+# Inter-AD forward timing is a SINGLE chunked JVP at chunk width min(8, dof), where dof is the
+# total number of scalar inputs (`args[1]` is the function). This measures forward-mode cost per
+# chunk rather than a full Rⁿ gradient, which forward mode would build from ceil(dof / 8) passes.
+_inter_fwd_chunk(args) = clamp(sum(length, args[2:end]; init=0), 1, 8)
+
 function benchmark_inter_framework_rules()
     test_case_data = generate_inter_framework_tests()
     tags = map(first, test_case_data)
@@ -380,7 +389,11 @@ function benchmark_inter_framework_rules()
     memory = []
     ranges = fill(nothing, length(test_cases))
     return benchmark_rules!!(
-        [(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true, 1.0
+        [(test_cases, memory, ranges, tags)],
+        (lb=0.1, ub=200),
+        true,
+        1.0;
+        fwd_chunk=_inter_fwd_chunk,
     )
 end
 
