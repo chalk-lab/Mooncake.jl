@@ -199,22 +199,31 @@ function frule!!(
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
     LAPACK.getrs!(trans, A, ipiv, B)
-    L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
     invp = invperm(p)
+    # d(LU) = dL*U + L*dU (dL strict-lower via the unit-diagonal factor, dU upper). Build it into
+    # `tmp` with in-place `BLAS.trmm!`, then row-permute by `invp` into `buf` (both reused across
+    # lanes). LinearAlgebra's triangular `*`/`mul!` and the `[invp,:]` copy allocated 2-3/lane.
+    n = size(A, 1)
+    tmp = similar(A)
+    buf = similar(A)
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
-        dL_plus_I = UnitLowerTriangular(dA_lane)
-        dU = UpperTriangular(dA_lane)
-        tmp = dL_plus_I * U
+        copyto!(tmp, U)
+        BLAS.trmm!('L', 'L', 'N', 'U', one(P), dA_lane, tmp)
         tmp .-= U
-        tmp2 = mul!(tmp, L, dU, one(P), one(P))[invp, :]
+        copyto!(buf, UpperTriangular(dA_lane))
+        BLAS.trmm!('L', 'L', 'N', 'U', one(P), A, buf)
+        tmp .+= buf
+        for i in 1:n
+            @views buf[i, :] .= tmp[invp[i], :]
+        end
         if trans == 'N'
-            mul!(dB_lane, tmp2, B, -one(P), one(P))
+            mul!(dB_lane, buf, B, -one(P), one(P))
         else
-            mul!(dB_lane, tmp2', B, -one(P), one(P))
+            mul!(dB_lane, buf', B, -one(P), one(P))
         end
         LAPACK.getrs!(trans, A, ipiv, dB_lane)
     end
