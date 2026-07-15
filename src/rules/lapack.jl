@@ -334,21 +334,33 @@ function frule!!(
 ) where {Nw,P<:BlasRealFloat}
     A, dA_lanes = arrayify(A_dA)
     ipiv = primal(_ipiv)
-    L = UnitLowerTriangular(A)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     invp = invperm(p)
-    tmp2s = ntuple(Val(Nw)) do lane
+    n = size(A, 1)
+    buf1 = similar(A)
+    buf2 = similar(A)
+    # Phase 1 (before getri! destroys the LU factor A): store tmp2 = (dL*U + L*dU)[invp,:] for
+    # each lane INTO its own dA_lanes slot (the output partial), reusing buf1/buf2. The original
+    # held an Nw-tuple of these fresh matrices; the in-place store removes that O(Nw) allocation.
+    @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
-        dL_plus_I = UnitLowerTriangular(dA_lane)
-        dU = UpperTriangular(dA_lane)
-        tmp = dL_plus_I * U
-        tmp .-= U
-        mul!(tmp, L, dU, one(P), one(P))[invp, :]
+        copyto!(buf1, U)
+        BLAS.trmm!('L', 'L', 'N', 'U', one(P), dA_lane, buf1)
+        buf1 .-= U
+        copyto!(buf2, UpperTriangular(dA_lane))
+        BLAS.trmm!('L', 'L', 'N', 'U', one(P), A, buf2)
+        buf1 .+= buf2
+        for i in 1:n
+            @views dA_lane[i, :] .= buf1[invp[i], :]
+        end
     end
     LAPACK.getri!(A, ipiv)
+    # Phase 2: dA_lane := -A⁻¹ * tmp2 * A⁻¹, with tmp2 currently held in dA_lane.
     @inbounds for lane in 1:Nw
-        dA_lanes[lane] .= (-A * tmp2s[lane] * A)
+        dA_lane = dA_lanes[lane]
+        mul!(buf1, A, dA_lane)
+        mul!(dA_lane, buf1, A, -one(P), zero(P))
     end
     return A_dA
 end
