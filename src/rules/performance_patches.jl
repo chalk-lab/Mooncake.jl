@@ -217,8 +217,11 @@ function Mooncake.frule!!(
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
     y = kron(px1, px2)
-    partials = ntuple(k -> kron(dx1s[k], px2) + kron(px1, dx2s[k]), Val(N))
     A = typeof(y)
+    # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` directly into each
+    # partial: `kron(dx1ₖ,px2) + kron(px1,dx2ₖ)` allocates two output-sized `kron` temporaries per
+    # lane (O(N) waste), whereas `_kron!_jvp_lane!` writes both terms in one pass with none.
+    partials = ntuple(k -> _kron!_jvp_lane!(similar(y), px1, dx1s[k], px2, dx2s[k]), Val(N))
     return Lifted{A,N}(y, NDualArray{T,N,2,A}(y, partials))
 end
 
