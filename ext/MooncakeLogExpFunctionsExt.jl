@@ -251,8 +251,11 @@ function frule!!(
     px, dxs = arrayify(x)
     y, dys = arrayify(out)
     logsumexp!(y, px)
+    w = exp.(px .- y)  # softmax weights, lane-independent — computed once, not per lane
+    tmp = similar(px)  # scratch reused across lanes
     for lane in 1:Nw
-        sum!(dys[lane], dxs[lane] .* exp.(px .- y))
+        tmp .= dxs[lane] .* w
+        sum!(dys[lane], tmp)
     end
     return out
 end
@@ -310,8 +313,11 @@ function frule!!(
     _x = primal(x)
     y = primal(out)
     logsumexp!(y, _x)
+    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
+    tmp = similar(_x)  # scratch reused across lanes
     for lane in 1:Nw
-        sum!(tangent(out).partials[lane], tangent(x).partials[lane] .* exp.(_x .- y))
+        tmp .= tangent(x).partials[lane] .* w
+        sum!(tangent(out).partials[lane], tmp)
     end
     return out
 end
