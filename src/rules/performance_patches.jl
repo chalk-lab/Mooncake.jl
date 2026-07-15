@@ -216,12 +216,22 @@ function Mooncake.frule!!(
 ) where {N,T<:Union{Float32,Float64}}
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
-    y = kron(px1, px2)
+    # `convert(Matrix, ·)` is a no-op for dense `Matrix` inputs (kron_sum) and materialises wrappers
+    # once (kron_view_sum's `view`/`UpperTriangular`), so the scalar `_kron!_jvp_lane!` loop below
+    # indexes plain arrays instead of paying a per-element wrapper branch across the 800×800 output.
+    mx1 = convert(Matrix, px1)
+    mx2 = convert(Matrix, px2)
+    y = kron(mx1, mx2)
     A = typeof(y)
     # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` directly into each
     # partial: `kron(dx1ₖ,px2) + kron(px1,dx2ₖ)` allocates two output-sized `kron` temporaries per
     # lane (O(N) waste), whereas `_kron!_jvp_lane!` writes both terms in one pass with none.
-    partials = ntuple(k -> _kron!_jvp_lane!(similar(y), px1, dx1s[k], px2, dx2s[k]), Val(N))
+    partials = ntuple(
+        k -> _kron!_jvp_lane!(
+            similar(y), mx1, convert(Matrix, dx1s[k]), mx2, convert(Matrix, dx2s[k])
+        ),
+        Val(N),
+    )
     return Lifted{A,N}(y, NDualArray{T,N,2,A}(y, partials))
 end
 
