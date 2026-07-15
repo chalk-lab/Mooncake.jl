@@ -122,23 +122,21 @@ function frule!!(
     diag = primal(_diag)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
-    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist
-    # it and copy per lane.
+    # The triangular solve of the (unmodified) primal RHS is lane-invariant: hoist it and one
+    # `tmp` scratch. `lmul!(::Triangular, ·)` allocates a temp per call, so the product runs in
+    # place via `BLAS.trmm!` — `uplo`/`trans`/`diag` are exactly its side chars (`diag` is 'N' or
+    # 'U', matching UnitLowerTriangular vs LowerTriangular). A vector RHS is viewed as one column.
     X = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, X)
+    tmp = similar(X)
+    tmpm = tmp isa AbstractVector ? reshape(tmp, :, 1) : tmp
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
         LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
-        tmp = copy(X)
-        if diag == 'N'
-            a = uplo == 'L' ? LowerTriangular(dA_lane) : UpperTriangular(dA_lane)
-            lmul!(trans == 'N' ? a : a', tmp)
-        else
-            a = uplo == 'L' ? UnitLowerTriangular(dA_lane) : UnitUpperTriangular(dA_lane)
-            lmul!(trans == 'N' ? a : a', tmp)
-            tmp .-= X
-        end
+        copyto!(tmp, X)
+        BLAS.trmm!('L', uplo, trans, diag, one(P), dA_lane, tmpm)
+        diag == 'N' || (tmp .-= X)
         LAPACK.trtrs!(uplo, trans, diag, A, tmp)
         dB_lane .-= tmp
     end
