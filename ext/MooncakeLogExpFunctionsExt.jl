@@ -198,7 +198,8 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
     _x = primal(x)
     y = logsumexp(_x)
-    dy_lanes = ntuple(lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y)), Val(Nw))
+    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
+    dy_lanes = ntuple(lane -> dot(tangent(x).partials[lane], w), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 # Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
@@ -216,11 +217,20 @@ function frule!!(
     kw = primal(kwargs)
     px, dxs = arrayify(x)
     y = logsumexp(px; kw...)
+    # `dot` conjugates, so keep `sum(dxs .* w)` here (P may be Complex); w is lane-independent.
+    w = exp.(px .- y)  # softmax weights, computed once, not per lane
+    tmp = similar(px)  # scratch reused across lanes
     if y isa AbstractArray
-        dy_partials = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
+        dy_partials = ntuple(Val(Nw)) do lane
+            tmp .= dxs[lane] .* w
+            sum(tmp; kw...)
+        end
         return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
     else
-        dy_lanes = ntuple(lane -> sum(dxs[lane] .* exp.(px .- y); kw...), Val(Nw))
+        dy_lanes = ntuple(Val(Nw)) do lane
+            tmp .= dxs[lane] .* w
+            sum(tmp; kw...)
+        end
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
     end
 end
