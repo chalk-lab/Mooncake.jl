@@ -804,12 +804,13 @@ function frule!!(
     diag = primal(_diag)
     A = primal(A_dA)
     x = primal(x_dx)
+    tmp = similar(x)  # scratch reused across lanes (was a `copy(x)` per lane)
     for lane in 1:Nw
         dA = _blas_lane_partial(A_dA, lane)
         dx = _blas_lane_partial(x_dx, lane)
         # Frechet: dx := A*dx + dA*x  (+ unit-diag adjustment).
         BLAS.trmv!(uplo, trans, diag, A, dx)
-        tmp = copy(x)
+        copyto!(tmp, x)
         BLAS.trmv!(uplo, trans, diag, dA, tmp)
         dx .+= tmp
         diag === 'U' && (dx .-= x)
