@@ -3057,23 +3057,23 @@ function _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, y)
         flat_pargs,
         flat_tangents,
         (meta, t_eff) -> begin
+            # Fuse map into the reduction: `mapreduce` over the two arrays computes and sums in one
+            # pass, so no per-lane intermediate array materialises (an eager `broadcast` would).
             if meta.dof == 1
-                dy += sum(
-                    broadcast(
-                        (o, tt) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * tt,
-                        out,
-                        t_eff,
-                    ),
+                dy += mapreduce(
+                    (o, tt) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * tt,
+                    +,
+                    out,
+                    t_eff,
                 )
             elseif meta.dof == 2
-                dy += sum(
-                    broadcast(
-                        (o, tt) ->
-                            Nfwd._nfwd_dual_partial(o, meta.slot1) * real(tt) +
-                            Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(tt),
-                        out,
-                        t_eff,
-                    ),
+                dy += mapreduce(
+                    (o, tt) ->
+                        Nfwd._nfwd_dual_partial(o, meta.slot1) * real(tt) +
+                        Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(tt),
+                    +,
+                    out,
+                    t_eff,
                 )
             end
         end,
