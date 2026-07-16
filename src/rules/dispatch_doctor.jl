@@ -13,11 +13,12 @@ import ..Lifted
 import ..NoPullback
 import ..zero_fcodual
 # `frule!!` / `rrule!!` must be imported so the definitions below add methods to
-# `Mooncake.frule!!` / `Mooncake.rrule!!` rather than creating dead module-local functions;
-# `NoDual` is the forward non-diff sentinel used by the frule body.
+# `Mooncake.frule!!` / `Mooncake.rrule!!` rather than creating dead module-local functions.
+# `zero_lifted` builds the canonical zero-derivative `Lifted` for the non-differentiable `Cint`
+# result of the foreigncall.
 import ..frule!!
 import ..rrule!!
-import ..NoDual
+import ..zero_lifted
 
 import DispatchDoctor._RuntimeChecks: is_precompiling, checking_enabled
 import DispatchDoctor._Stabilization: _show_warning, _construct_pairs
