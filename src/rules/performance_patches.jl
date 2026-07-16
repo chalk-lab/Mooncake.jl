@@ -175,8 +175,12 @@ end
 # Primitive only when the output is a dense `Array` — i.e. at least one operand is strided.
 # `kron` preserves structure (returns `UpperTriangular`/`Diagonal`/… whose canonical tangent is a
 # wrapper, not the dense matrix this rule builds) exactly when BOTH operands are the same
-# structured wrapper; those cases fall back to the derived rule. The strided×strided declaration is
-# the intersection of the other two, so "≥1 strided operand" carries no `_is_primitive` ambiguity.
+# structured wrapper; those cases route to the derived rule instead. The strided×strided
+# declaration is the intersection of the other two, so "≥1 strided operand" carries no
+# `_is_primitive` ambiguity. (The derived forward path builds the canonical wrapper dual; the
+# derived reverse path for two triangular operands has a *pre-existing* gap — its pullback writes a
+# dense gradient into a triangular fdata and throws — unchanged by this narrowing and masked by the
+# `interface_only` triangular test cases.)
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
