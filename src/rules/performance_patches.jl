@@ -172,8 +172,19 @@ end
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
+# Primitive only when the output is a dense `Array` — i.e. at least one operand is strided.
+# `kron` preserves structure (returns `UpperTriangular`/`Diagonal`/… whose canonical tangent is a
+# wrapper, not the dense matrix this rule builds) exactly when BOTH operands are the same
+# structured wrapper; those cases fall back to the derived rule. The strided×strided declaration is
+# the intersection of the other two, so "≥1 strided operand" carries no `_is_primitive` ambiguity.
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+    typeof(kron),StridedMatrix{T},AbstractMatrix{T}
+} where {T<:IEEEFloat}
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(kron),AbstractMatrix{T},StridedMatrix{T}
+} where {T<:IEEEFloat}
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(kron),StridedMatrix{T},StridedMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
@@ -206,8 +217,17 @@ end
 # gives the JVP per lane: `d(kron(x1,x2))ₖ = kron(dx1ₖ, x2) + kron(x1, dx2ₖ)`. Restricted to real
 # `BlasFloat` (what `arrayify` and the real `NDualArray{…,NDual{T,N}}` packing support; the tested
 # precisions). Float16 / complex `kron` stay derived in forward mode.
+# Primitive only for dense `Array` output (≥1 strided operand); structure-preserving kron (both
+# the same structured wrapper) falls back to the derived rule, which builds the canonical
+# `ImmutableDual` this dense rule cannot. Strided×strided is the intersection — no ambiguity.
 @is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+    typeof(kron),StridedMatrix{T},AbstractMatrix{T}
+} where {T<:Union{Float32,Float64}}
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(kron),AbstractMatrix{T},StridedMatrix{T}
+} where {T<:Union{Float32,Float64}}
+@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(kron),StridedMatrix{T},StridedMatrix{T}
 } where {T<:Union{Float32,Float64}}
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
