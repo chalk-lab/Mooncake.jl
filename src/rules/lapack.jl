@@ -7,9 +7,9 @@ function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) 
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
     n = size(A, 1)
     # F = L \ (P·dA) / U, then dA = L*tril(F,-1) + triu(F)*U. Two scratches reused across lanes;
-    # the solves/products run in place via direct BLAS (LinearAlgebra's triangular `\`/`*` and the
-    # `[p,:]`/`tril`/`triu` copies allocated ~5 matrices per lane). `A` is the packed LU factor:
-    # unit-lower `L` (BLAS diag 'U') and upper `U` (diag 'N').
+    # the solves/products run in place via direct BLAS (LinearAlgebra's triangular `\`/`*` and
+    # `[p,:]`/`tril`/`triu` allocate per call). `A` is the packed LU factor: unit-lower `L`
+    # (BLAS diag 'U') and upper `U` (diag 'N').
     Fbuf = similar(A)
     buf = similar(A)
     @inbounds for lane in 1:Nw
@@ -219,7 +219,7 @@ function frule!!(
     invp = invperm(p)
     # d(LU) = dL*U + L*dU (dL strict-lower via the unit-diagonal factor, dU upper). Build it into
     # `tmp` with in-place `BLAS.trmm!`, then row-permute by `invp` into `buf` (both reused across
-    # lanes). LinearAlgebra's triangular `*`/`mul!` and the `[invp,:]` copy allocated 2-3/lane.
+    # lanes); LinearAlgebra's triangular `*`/`mul!` and the `[invp,:]` copy allocate per call.
     n = size(A, 1)
     tmp = similar(A)
     buf = similar(A)
@@ -519,10 +519,10 @@ function frule!!(
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
     LAPACK.potrs!(uplo, A, B)
-    # `dL*L' + L*dL'` (resp. `U'dU + dU'U`) allocated three matrices per lane. Build its two
-    # (triangular*triangular) terms into hoisted scratches via in-place `BLAS.trmm!` (materialize
-    # one factor, apply the other in place); the symmetric `mul!` then runs BLAS symm!/symv! in
-    # place. The sum is symmetric (`X + X'`), matching the original `Symmetric(...)` (uplo `:U`).
+    # dS = dL*L' + L*dL' (resp. U'dU + dU'U). Build its two (triangular*triangular) terms into
+    # hoisted scratches via in-place `BLAS.trmm!` (materialize one factor, apply the other in
+    # place); the symmetric `mul!` then runs BLAS symm!/symv! in place. The sum is symmetric
+    # (`X + X'`), so `Symmetric(buf1)` (uplo `:U`) reads it exactly.
     buf1 = similar(A)
     buf2 = similar(A)
     @inbounds for lane in 1:Nw

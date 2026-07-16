@@ -804,7 +804,7 @@ function frule!!(
     diag = primal(_diag)
     A = primal(A_dA)
     x = primal(x_dx)
-    tmp = similar(x)  # scratch reused across lanes (was a `copy(x)` per lane)
+    tmp = similar(x)  # scratch reused across lanes
     for lane in 1:Nw
         dA = _blas_lane_partial(A_dA, lane)
         dx = _blas_lane_partial(x_dx, lane)
@@ -913,7 +913,7 @@ function frule!!(
     x = primal(x_dx)
     # Primal first — subsequent lane work needs the new `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
-    tmp = similar(x)  # scratch reused across lanes (was allocated by `BLAS.trmv` per lane)
+    tmp = similar(x)  # scratch reused across lanes
     for lane in 1:Nw
         dA = _blas_lane_partial(A_dA, lane)
         dx = _blas_lane_partial(x_dx, lane)
@@ -1405,7 +1405,7 @@ function frule!!(
     α = primal(α_dα)
     A = primal(A_dA)
     B = primal(B_dB)
-    Bbuf = similar(B)  # scratch reused across lanes (was `copy(B)` per lane)
+    Bbuf = similar(B)  # scratch reused across lanes
     for lane in 1:Nw
         dα = tangent(α_dα, lane)
         dA = _blas_lane_partial(A_dA, lane)
