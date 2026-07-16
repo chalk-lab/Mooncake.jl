@@ -2039,8 +2039,12 @@ The arguments in `x` are returned to their original state: if `f` mutates them i
         output_internal_tangent,
         _friendly_cache((output_primal,)),
     )
+    # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated arg);
+    # copy it out before the input restore below, or the restore overwrites the returned value
+    # with the original input. Free for scalar/immutable outputs; a copy only for mutable ones.
+    returned_primal = _copy_output(output_primal)
     _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-    return output_primal, output_friendly_tangent
+    return returned_primal, output_friendly_tangent
 end
 
 @inline function value_and_derivative!!(
@@ -2074,7 +2078,9 @@ end
     # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     output = __call_rule(cache.single_rule, input_lifted)
-    result = (primal(output), last(unlift(output)))
+    # Copy the output primal out before the input restore: it may alias an in-place-mutated
+    # input, and the restore would otherwise overwrite the returned value with the original.
+    result = (_copy_output(primal(output)), last(unlift(output)))
     _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
     return result
 end
