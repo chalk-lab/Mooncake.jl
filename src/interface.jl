@@ -2592,7 +2592,11 @@ mutates `x` in place, it is restored, so the input is not mutated.
     # buffers, the returned `J` aliases the cache and is overwritten on the next call.
     seed = cache.gradient_seed
     Jref = cache.jacobian_buffer
-    if seed !== nothing && Jref !== nothing
+    # Gate on `seed isa Tuple`, not just `!== nothing`: the packable seed is a 3-tuple, but a
+    # `StructuredGradSeed` (e.g. a custom `DenseVector` whose `similar` returns a plain `Vector`)
+    # can also reach here — destructuring it below would MethodError. A structured seed instead
+    # falls through to the generic non-packable sweep.
+    if seed isa Tuple && Jref !== nothing
         f_seed_stored, arg_seeds, _ = seed
         # Re-wrap the call-time `f` (the stored seed holds the prepare-time instance); `V === NoDual`
         # is guaranteed by packability, so this is a free isbits rewrap. The sweep runs in a

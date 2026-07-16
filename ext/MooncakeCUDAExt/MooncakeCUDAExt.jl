@@ -2386,14 +2386,18 @@ function frule!!(
     x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:ImmutableDual},
 ) where {Nw}
     in_nt = tangent(x).value
-    parent_nda = in_nt.parent
-    parent_nda isa NDualArray || throw(
+    # Guard `hasproperty` before reading `.parent`: the broad `@is_primitive` admits wrappers whose
+    # differentiable field is not `parent` (Diagonal's `diag`, Symmetric/Triangular's `data`), whose
+    # forward V NamedTuple then has no `parent` field — reading it would throw a raw
+    # `NamedTuple has no field parent` before this guard. Fail with the intended clear error instead.
+    (hasproperty(in_nt, :parent) && in_nt.parent isa NDualArray) || throw(
         ArgumentError(
-            "forward `cu` supports a single-level array wrapper over a dense array; got a nested " *
-            "or non-array-wrapper forward representation $(typeof(parent_nda)) for input " *
-            "$(typeof(primal(x))). Use reverse mode for this input.",
+            "forward `cu` supports a single-level array wrapper over a dense array (a `parent` " *
+            "field holding an `NDualArray`); got input $(typeof(primal(x))) with forward " *
+            "representation $(typeof(in_nt)). Use reverse mode for this input.",
         ),
     )
+    parent_nda = in_nt.parent
     y = cu(primal(x))
     Pp = y.parent
     parent_partials = ntuple(k -> cu(parent_nda.partials[k]), Val(Nw))
