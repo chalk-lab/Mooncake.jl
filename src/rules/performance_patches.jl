@@ -76,9 +76,9 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:BlasFloat}
-# Reverse mode: dense and wrapped, real `IEEEFloat` only (incl. Float16, which the reverse `arrayify`/
-# `matrixify` handle for dense and Triangular/Symmetric/Adjoint/Transpose). Matches the reverse rrule
-# coverage below exactly; complex stays derived, as on `main`.
+# Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_accum!` folds the dense gradient into
+# dense/Triangular/Diagonal/Adjoint/Transpose fdata; Symmetric/Hermitian are admitted by the signature
+# but their off-diagonal `setindex!` throws (as on `main`). Complex stays derived, as on `main`.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}

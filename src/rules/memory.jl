@@ -674,9 +674,8 @@ end
     ) where {Nw}
         ord = primal(ordering)
         bc = primal(boundscheck)
-        return Lifted{typeof(memoryrefget(primal(x), ord, bc)),Nw}(
-            memoryrefget(primal(x), ord, bc), memoryrefget(tangent(x), ord, bc)
-        )
+        y = memoryrefget(primal(x), ord, bc)
+        return Lifted{typeof(y),Nw}(y, memoryrefget(tangent(x), ord, bc))
     end
     @inline function frule!!(
         ::Lifted{typeof(lmemoryrefget),Nw},

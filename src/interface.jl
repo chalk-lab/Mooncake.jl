@@ -1434,7 +1434,7 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
     # float-vector input qualifies. The output shape is unknown here, so hold a `Ref` that the
     # first `value_and_jacobian!!` call sizes and fills once the output vector is known.
     jacobian_buffer = let args = Base.tail(fx)
-        if gradient_seed !== nothing && length(args) == 1 && eltype(only(args)) <: IEEEFloat
+        if gradient_seed isa Tuple && length(args) == 1 && eltype(only(args)) <: IEEEFloat
             Base.RefValue{Union{Nothing,Matrix{eltype(only(args))}}}(nothing)
         else
             nothing

@@ -146,9 +146,9 @@ function has_equal_data_internal(
 end
 
 # Shared reverse-pass construction: the rrule forwards-pass OpaqueClosure (which also closes over
-# the reverse-pass) and the obj-tangent ref. Deliberately does NOT build the frule — both callers
-# build their own (`_function_wrapper_tangent` at width 1, `_function_wrapper_forward_tangent` at
-# width N), so the forward path no longer wastes a discarded width-1 frule build on every tangent.
+# the reverse-pass) and the obj-tangent ref. Deliberately does NOT build the frule — each caller
+# builds its own (`_function_wrapper_tangent` at width 1, `_function_wrapper_forward_tangent` at
+# width N).
 function _function_wrapper_reverse_parts(R, obj::Tobj, A, obj_tangent) where {Tobj}
 
     # Analyse types for rrule.
