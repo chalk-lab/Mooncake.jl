@@ -102,6 +102,30 @@ end
     x, 1
 )
 
+# `NTuple{N,TWP}` is a single-number leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
+# tuple. Without these terminals the gradient/Jacobian driver mis-counts a TWP input's dofs (the
+# generic struct `dof` recurses `hi`/`lo` → 2, but a TWP is one number) and the standard-basis seed
+# walk MethodErrors on the bare-TWP element of the `NTuple` leaf. Mirror the `NDual` terminals; a
+# unit tangent direction is `TWP(1, 0)`.
+@inline dof(::TWP, ::IdDict{Any,Any}) = 1
+@inline function _basis_seed_isbits(
+    ::NTuple{N,TWP{F}}, slots::NTuple{N,Int}, c::Int
+) where {N,F}
+    c += 1
+    hot = TWP{F}(one(F), zero(F))
+    cold = TWP{F}(zero(F), zero(F))
+    return (ntuple(k -> c == slots[k] ? hot : cold, Val(N)), c)
+end
+@inline function _basis_seed!!(
+    ::NTuple{N,TWP{F}}, slots::NTuple{N,Int}, cursor, _dict
+) where {N,F}
+    cursor[] += 1
+    c = cursor[]
+    hot = TWP{F}(one(F), zero(F))
+    cold = TWP{F}(zero(F), zero(F))
+    return ntuple(k -> c == slots[k] ? hot : cold, Val(N))
+end
+
 #
 # Rules. These are required for a lot of functionality in this case.
 #

@@ -92,6 +92,25 @@ end
 @inline Mooncake.lift(x::P, ẋ::P) = Mooncake.Lifted{P,1}(x, (ẋ,))
 @inline Mooncake._unlift_seed(x::Mooncake.Lifted{P,1,Tuple{P}}, ::IdDict) = Mooncake.tangent(x, 1)
 
+# `NTuple{N,P}` is a single-scalar leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
+# tuple. Without these terminals the gradient/Jacobian driver mis-counts the input's dofs (a bare
+# BFloat16 tangent hits the fieldless-struct fallback → 0 dof → silent zero gradient) and the
+# standard-basis seed walk MethodErrors when a BFloat16 leaf is nested in a larger V (the generic
+# `::Tuple` recursion has no bare-BFloat16 terminal). Mirror the `NDual` terminals: one dof, and a
+# lane is hot iff its slot matches the cursor.
+@inline Mooncake.dof(::P, ::IdDict{Any,Any}) = 1
+@inline function Mooncake._basis_seed_isbits(
+    ::NTuple{N,P}, slots::NTuple{N,Int}, c::Int
+) where {N}
+    c += 1
+    return (ntuple(k -> c == slots[k] ? one(P) : zero(P), Val(N)), c)
+end
+@inline function Mooncake._basis_seed!!(::NTuple{N,P}, slots::NTuple{N,Int}, cursor, _dict) where {N}
+    cursor[] += 1
+    c = cursor[]
+    return ntuple(k -> c == slots[k] ? one(P) : zero(P), Val(N))
+end
+
 # Conversions
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float32},P}
