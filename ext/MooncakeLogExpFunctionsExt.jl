@@ -159,17 +159,21 @@ function frule!!(
     _x = primal(x)
     kw = primal(kwargs)
     y = logsumexp(_x; kw...)
+    w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
+    tmp = similar(_x)  # scratch reused across lanes
     if y isa AbstractArray
         # Array result — each lane's partial is the same shape as y.
-        dy_partials = ntuple(
-            lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y); kw...), Val(Nw)
-        )
+        dy_partials = ntuple(Val(Nw)) do lane
+            tmp .= tangent(x).partials[lane] .* w
+            sum(tmp; kw...)
+        end
         return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
     else
         # Scalar result.
-        dy_lanes = ntuple(
-            lane -> sum(tangent(x).partials[lane] .* exp.(_x .- y); kw...), Val(Nw)
-        )
+        dy_lanes = ntuple(Val(Nw)) do lane
+            tmp .= tangent(x).partials[lane] .* w
+            sum(tmp; kw...)
+        end
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
     end
 end
