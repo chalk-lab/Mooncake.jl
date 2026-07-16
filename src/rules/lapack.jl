@@ -341,8 +341,7 @@ function frule!!(
     buf1 = similar(A)
     buf2 = similar(A)
     # Phase 1 (before getri! destroys the LU factor A): store tmp2 = (dL*U + L*dU)[invp,:] for
-    # each lane INTO its own dA_lanes slot (the output partial), reusing buf1/buf2. The original
-    # held an Nw-tuple of these fresh matrices; the in-place store removes that O(Nw) allocation.
+    # each lane INTO its own dA_lanes slot (the output partial), reusing buf1/buf2.
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         copyto!(buf1, U)

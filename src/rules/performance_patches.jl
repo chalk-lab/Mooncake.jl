@@ -216,9 +216,9 @@ function Mooncake.frule!!(
 ) where {N,T<:Union{Float32,Float64}}
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
-    # `convert(Matrix, ·)` is a no-op for dense `Matrix` inputs (kron_sum) and materialises wrappers
-    # once (kron_view_sum's `view`/`UpperTriangular`), so the scalar `_kron!_jvp_lane!` loop below
-    # indexes plain arrays instead of paying a per-element wrapper branch across the 800×800 output.
+    # `convert(Matrix, ·)` passes dense `Matrix` inputs through unchanged and materialises wrapped
+    # inputs (`view`/`UpperTriangular`) once, so the scalar `_kron!_jvp_lane!` loop below indexes
+    # plain arrays instead of paying a per-element wrapper branch.
     mx1 = convert(Matrix, px1)
     mx2 = convert(Matrix, px2)
     y = kron(mx1, mx2)
