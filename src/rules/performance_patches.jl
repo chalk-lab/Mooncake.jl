@@ -141,6 +141,24 @@ function Mooncake.frule!!(
     end
     return out
 end
+# Fold the dense per-entry cotangent `v` at (i,j) into the (possibly structured) input fdata `dx`.
+# `matrixify` returns `dx` re-wrapped in the input's wrapper; a triangular/diagonal fdata stores
+# only its structural entries, and the off-pattern (i,j) are structurally-zero *non-variables* of
+# the primal, so their gradient contribution is dropped (writing them would both throw and be
+# wrong — finite differences give zero there). Dense inputs take the first method unchanged, so the
+# hot dense path allocates nothing extra.
+@inline _kron_accum!(dx::AbstractMatrix, i, j, v) = (@inbounds dx[i, j] += v; nothing)
+@inline _kron_tri_stored(::UpperTriangular, i, j) = i <= j
+@inline _kron_tri_stored(::UnitUpperTriangular, i, j) = i < j
+@inline _kron_tri_stored(::LowerTriangular, i, j) = i >= j
+@inline _kron_tri_stored(::UnitLowerTriangular, i, j) = i > j
+@inline function _kron_accum!(dx::LinearAlgebra.AbstractTriangular, i, j, v)
+    _kron_tri_stored(dx, i, j) && (@inbounds parent(dx)[i, j] += v)
+    return nothing
+end
+@inline _kron_accum!(dx::Diagonal, i, j, v) =
+    (i == j && (@inbounds dx.diag[i] += v); nothing)
+
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},
@@ -155,12 +173,17 @@ function Mooncake.rrule!!(
     function _kron!_pb!!(::NoRData)
         P, Q = size(px2)
         for m in axes(px1, 1), n in axes(px1, 2)
-            dx1[m, n] += dot(
-                (@view dout[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
+            _kron_accum!(
+                dx1,
+                m,
+                n,
+                dot(
+                    (@view dout[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
+                ),
             )
         end
         for p in axes(px2, 1), q in axes(px2, 2)
-            dx2[p, q] += dot((@view dout[p:P:end, q:Q:end]), px1)
+            _kron_accum!(dx2, p, q, dot((@view dout[p:P:end, q:Q:end]), px1))
         end
         copyto!(pout, old_pout)
         fill!(dout, zero(T))
@@ -177,10 +200,9 @@ end
 # wrapper, not the dense matrix this rule builds) exactly when BOTH operands are the same
 # structured wrapper; those cases route to the derived rule instead. The strided×strided
 # declaration is the intersection of the other two, so "≥1 strided operand" carries no
-# `_is_primitive` ambiguity. (The derived forward path builds the canonical wrapper dual; the
-# derived reverse path for two triangular operands has a *pre-existing* gap — its pullback writes a
-# dense gradient into a triangular fdata and throws — unchanged by this narrowing and masked by the
-# `interface_only` triangular test cases.)
+# `_is_primitive` ambiguity. The derived forward path builds the canonical wrapper dual; the
+# reverse pullbacks fold the dense gradient into a structured fdata via `_kron_accum!`, keeping only
+# the wrapper's stored entries.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -203,12 +225,15 @@ function Mooncake.rrule!!(
         M, N = size(dx1)
         P, Q = size(dx2)
         for m in 1:M, n in 1:N
-            dx1[m, n] += dot(
-                (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
+            _kron_accum!(
+                dx1,
+                m,
+                n,
+                dot((@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2),
             )
         end
         for p in 1:P, q in 1:Q
-            dx2[p, q] += dot((@view dy[p:P:end, q:Q:end]), px1)
+            _kron_accum!(dx2, p, q, dot((@view dy[p:P:end, q:Q:end]), px1))
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -316,7 +341,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     test_cases = vcat(
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -326,7 +351,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -336,7 +361,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -346,7 +371,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -356,12 +381,34 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
                 view(randn(rng, P, 5, 5), 1:5, 1:5),
                 UpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        # Diagonal operand: the reverse pullback must fold only the diagonal of the dense
+        # gradient into the `Diagonal` fdata (off-diagonal are structural zeros, dropped).
+        map(precisions) do (P)
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                Diagonal(randn(rng, P, 4)),
+                randn(rng, P, 3, 3),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 4, 4),
+                Diagonal(randn(rng, P, 3)),
             )
         end,
     )
