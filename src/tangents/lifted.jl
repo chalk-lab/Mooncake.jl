@@ -1258,10 +1258,7 @@ end
 # sometimes feeds raw Lifted V values (NoDual, ImmutableDual, MutableDual)
 # back into `lift`. Wrap directly rather than re-deriving V from the (now-V)
 # tangent input.
-@inline lift(x::P, ẋ::NoDual) where {P} = Lifted{P,1}(x, ẋ)
-@inline function lift(x::P, ẋ::Union{ImmutableDual,MutableDual}) where {P}
-    return Lifted{P,1}(x, ẋ)
-end
+@inline lift(x::P, ẋ::Union{NoDual,ImmutableDual,MutableDual}) where {P} = Lifted{P,1}(x, ẋ)
 # Tuple / NamedTuple primal + per-field reverse tangents → per-field V. Reached
 # in real AD (lifting a tuple/named-tuple primal) and when the test framework's
 # tangent-shape arithmetic recurses through a `Tangent`'s fields and feeds the V

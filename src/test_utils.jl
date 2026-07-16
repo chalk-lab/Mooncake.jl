@@ -2252,35 +2252,6 @@ function _test_tangent_splitting_internal(
     @test increment_rdata!!(t, r) isa T
 end
 
-"""
-    test_rule_and_type_interactions(rng::AbstractRNG, p)
-
-Check that a collection of standard functions for which we _ought_ to have a working rrule
-for `p` work, and produce the correct answer. For example, the `rrule!!` for `typeof` should
-work correctly on any type, we should have a working rule for `getfield` for any
-struct-type, and we should have a rule for `setfield!` for any mutable struct type.
-See extended help for more info.
-
-# Extended Help
-
-The purpose of this test is to ensure that, for any given `p`, the full range of primitive
-functions that _ought_ to work on it, do indeed work on it.
-
-This is one part of the interface where some care _might_ be required. If, for some reason,
-it should _never_ be the case that e.g. for a particular `p`, `getfield` should be called,
-then it may make no sense at all to run these tests. In such cases, the author of the type
-is responsible for knowing what they are doing. Please open an issue to discuss for your
-type if you are at all unsure what to do.
-
-When defining a custom tangent type for `P`, the functions that you will need to pay
-attention to writing rules for are
-- [`Mooncake._new_`](@ref)
-- [`Mooncake.lgetfield`](@ref)
-- [`Mooncake.lsetfield!`](@ref)
-
-In all cases, you may wish to consult the current implementations of `rrule!!` for these
-functions for inspiration regarding how you might implement them for your type.
-"""
 # Whether the standardised field-access interaction tests (`getfield`/`lgetfield`/`_new_`/
 # `setfield!`/`lsetfield!`) in `test_rule_and_type_interactions` apply to `P`. Defaults to `true`.
 # A type whose custom tangent is not field-parallel to the primal — i.e. field `i` of the primal

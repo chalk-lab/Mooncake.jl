@@ -72,23 +72,17 @@ export NDual,
     UnsupportedInputError,
     UnsupportedOutputError,
     _NFWD_PREFERRED_CHUNK_SIZE,
-    _nfwd_check_callable_sig,
     _nfwd_check_chunk_size,
-    _nfwd_check_primal,
     _nfwd_default_chunk_size,
     _nfwd_fold_slots,
-    _nfwd_infer_scalar_output,
     _nfwd_input_dof,
     _nfwd_input_error,
     _nfwd_is_supported_primal,
     _nfwd_is_supported_scalar,
     _nfwd_output_error,
-    _nfwd_resolve_chunk_size,
-    _nfwd_sig_default_chunk_size,
     _nfwd_sig_dof,
     _nfwd_type_dof,
-    _nfwd_unfold_slots,
-    _nfwd_validate
+    _nfwd_unfold_slots
 
 #
 # ── Role of `ntuple` ──────────────────────────────────────────────────────────────
@@ -1565,33 +1559,9 @@ end
     return Base.mapreduce_impl(f, op, A, ifirst, ilast)
 end
 
-# Infer at rule-build time whether `sig` has a scalar IEEEFloat output, allowing a
-# rule to skip a redundant primal type-check call for known-scalar functions.
-#
-# Uses `Base.return_types`, which is a best-effort hint: it may return `[Any]` for
-# type-unstable functions or under some world-age conditions. In those cases this
-# function safely returns `false`, falling through to the runtime primal check. There
-# is no correctness risk from a missed inference and only a missed optimisation.
-function _nfwd_infer_scalar_output(sig::Type{<:Tuple})
-    F = sig.parameters[1]
-    Base.issingletontype(F) || return false
-    argtypes = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
-    rt = Base.return_types(F.instance, argtypes)
-    return !isempty(rt) && rt[1] <: IEEEFloat
-end
-
 @inline function _nfwd_check_chunk_size(chunk_size::Integer)
     chunk_size > 0 && return Int(chunk_size)
     throw(ArgumentError("`chunk_size` must be a positive integer, got $chunk_size."))
-end
-
-# Shared preamble for frule/rrule builders: validate chunk_size, callable sig, and
-# debug_mode.
-@inline function _nfwd_validate(sig, chunk_size::Integer; debug_mode=false)
-    chunk_size = _nfwd_check_chunk_size(chunk_size)
-    _nfwd_check_callable_sig(sig)
-    debug_mode && throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
-    return chunk_size
 end
 
 # Conservative SIMD-friendly default: 8 lanes covers one AVX-512 register (8×Float64)
@@ -1633,20 +1603,6 @@ end
         total += d
     end
     return total
-end
-
-@inline function _nfwd_sig_default_chunk_size(::Type{sig}) where {sig<:Tuple}
-    dof = _nfwd_sig_dof(sig)
-    preferred = _NFWD_PREFERRED_CHUNK_SIZE
-    return dof === nothing ? preferred : max(1, min(dof, preferred))
-end
-
-@inline function _nfwd_resolve_chunk_size(chunk_size, x::Tuple)
-    return if isnothing(chunk_size)
-        _nfwd_default_chunk_size(x)
-    else
-        _nfwd_check_chunk_size(chunk_size)
-    end
 end
 
 @inline _nfwd_is_supported_scalar(::Type{<:IEEEFloat}) = true
@@ -1789,27 +1745,6 @@ end
             "  $(_nfwd_value_summary(y))",
         ),
     )
-end
-
-@inline function _nfwd_check_primal(x)
-    _nfwd_is_supported_primal(x) || _nfwd_input_error(x)
-    return x
-end
-
-@inline function _nfwd_check_callable_sig(sig::Type{<:Tuple})
-    F = sig.parameters[1]
-    Base.issingletontype(F) || throw(
-        ArgumentError(
-            "nfwd only supports stateless callables for rule construction. Got $F. " *
-            "Stateless callables are required because nfwd re-evaluates the function " *
-            "multiple times with different tangent seeds; a mutable callable would " *
-            "produce incorrect gradients on the second and subsequent evaluations.",
-        ),
-    )
-    f = F.instance
-    argsig = Tuple{(sig.parameters[i] for i in 2:length(sig.parameters))...}
-    hasmethod(f, argsig) && return sig
-    throw(ArgumentError("nfwd rule construction expected a callable signature, got $sig."))
 end
 
 #

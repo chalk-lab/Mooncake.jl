@@ -626,7 +626,7 @@ using Mooncake.Nfwd
 
     # Regression (#196): `_nfwd_type_dof(::Type{<:Tuple})` must propagate `nothing` (not `0 + nothing`,
     # which throws) when a tuple element's size is not type-determinable, e.g. a tuple containing an
-    # Array. Consumers (`_nfwd_sig_dof`/`_nfwd_sig_default_chunk_size`) rely on the `nothing` fallback.
+    # Array. Consumers (`_nfwd_sig_dof`) rely on the `nothing` fallback.
     @testset "type-level DOF: tuple-with-array propagates nothing (#196)" begin
         @test Nfwd._nfwd_type_dof(Tuple{Float64,Float64}) == 2
         @test Nfwd._nfwd_type_dof(Tuple{ComplexF64,Float64}) == 3
