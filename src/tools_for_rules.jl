@@ -328,7 +328,7 @@ function _zero_derivative_impl(ctx, sig, mode)
     else
         where_syms = foldl(_collect_expr_symbols!, where_params; init=Set{Symbol}())
         function (t)
-            if isempty(intersect(_collect_expr_symbols!(Set{Symbol}(), t), where_syms))
+            if isdisjoint(_collect_expr_symbols!(Set{Symbol}(), t), where_syms)
                 return :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)})
             else
                 return :(Mooncake.Lifted{<:$t})
