@@ -246,8 +246,10 @@ end
 @inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
     return NDualArray{eltype(A),N,ndims(A),A}(x)
 end
-@inline function Mooncake.uninit_dual(::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
-    return NDualArray{eltype(A),N,ndims(A),A}(x)
+# `uninit_dual` coincides with `zero_dual`: the single-arg `NDualArray` constructor zero-inits
+# the slot-local partials.
+@inline function Mooncake.uninit_dual(w::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
+    return Mooncake.zero_dual(w, x)
 end
 @inline function Mooncake.randn_dual(
     ::Val{N}, rng::Random.AbstractRNG, x::A
@@ -3185,8 +3187,7 @@ end
 # kernel for an independent JVP.
 @inline _bc_tangent(::Union{Mooncake.NoDual,Mooncake.NoTangent}, _, _) = NoTangent()
 @inline _bc_tangent(::Tuple{<:Union{Mooncake.NoDual,Mooncake.NoTangent}}, _, _) = NoTangent()
-@inline _bc_tangent(v::Nfwd.NDual{T,N}, _, lane) where {T,N} = v.partials[lane]
-@inline _bc_tangent(v::Nfwd.NDualArray{T,N}, _, lane) where {T,N} = v.partials[lane]
+@inline _bc_tangent(v::Union{Nfwd.NDual,Nfwd.NDualArray}, _, lane) = v.partials[lane]
 @inline function _bc_tangent(v::Complex{Nfwd.NDual{R,N}}, _, lane) where {R,N}
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
