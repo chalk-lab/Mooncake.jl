@@ -831,9 +831,7 @@ end
         # Zero each partial: `Core.memorynew` returns uninitialized memory, which whole-buffer
         # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
         # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently lowered).
-        partials = ntuple(
-            _ -> (m=Core.memorynew(Memory{P}, _n); fill!(m, zero(P)); m), Val(Nw)
-        )
+        partials = ntuple(_ -> fill!(Core.memorynew(Memory{P}, _n), zero(P)), Val(Nw))
         return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
     end
     function rrule!!(
@@ -851,7 +849,7 @@ function frule!!(
 ) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
     # Per-lane zero-initialized partial Memory objects.
-    partials = ntuple(_ -> (m=Memory{P}(undef, primal(n)); fill!(m, zero(P)); m), Val(Nw))
+    partials = ntuple(_ -> fill!(Memory{P}(undef, primal(n)), zero(P)), Val(Nw))
     return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
 end
 function rrule!!(
