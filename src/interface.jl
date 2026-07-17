@@ -1573,8 +1573,7 @@ end
     #    per lane is the width-1 `basis_lifted!!` seed at that scalar dof, `unlift`ed back to a
     #    reverse tangent (a scalar output makes each lane's derivative the coefficient for its
     #    seeded basis direction).
-    # `W = gradient_chunk_size`. The first chunk is peeled out to keep the scalar `y` concretely
-    # typed. Like the trailing loop it guards `lane <= total_dof`: a lane past the last dof (a short
+    # `W = gradient_chunk_size`. Each chunk guards `slot <= total_dof`: a lane past the last dof (a short
     # final/only chunk, or `W > total_dof`) carries a zero seed direction (`basis_lifted!!` maps
     # out-of-range slots to none) that contributes nothing — keeping the sweep correct and uniform
     # with the Jacobian/Hessian sweeps rather than relying on `W <= total_dof` (the assumption whose
@@ -1585,33 +1584,11 @@ end
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the end.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    first_lanes = ntuple(
-        lane -> last(unlift(basis_lifted!!(zero_lifted(Val(1), input_primals), (lane,)))), W
-    )
-    first_tangents = ntuple(i -> ntuple(lane -> first_lanes[lane][i], W), nfields)
-    first_vs = tangent(
-        basis_lifted!!(zero_lifted(Val(W), input_primals), ntuple(identity, W))
-    )
-    first_lifted = ntuple(
-        i -> Lifted{fieldtype(P, i),W}(input_primals[i], first_vs[i]), nfields
-    )
-    first_out = value_and_derivative!!(cache, first_lifted...)
-    y = primal(first_out)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    for lane in 1:W
-        lane <= total_dof || break
-        coeff = Float64(tangent(first_out, lane))
-        native_gradients = tuple_map(
-            (g, dx) -> begin
-                lt = dx[lane]
-                lt isa NoTangent && return g
-                return increment!!(g, _scale(coeff, lt))
-            end,
-            native_gradients,
-            first_tangents,
-        )
-    end
-    for start_slot in (1 + W):W:total_dof
+    # Single sweep over all chunks. `total_dof >= 1` here (the zero-dof case returned above), so the
+    # first iteration always runs and assigns `y`; its leading input restore is a no-op (the snapshot
+    # was just taken with no intervening `f`).
+    local y
+    for start_slot in 1:W:total_dof
         _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
         slots = ntuple(lane -> start_slot + lane - 1, W)
         lanes = ntuple(
@@ -1624,6 +1601,10 @@ end
         vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
         lifted = ntuple(i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields)
         output = value_and_derivative!!(cache, lifted...)
+        if start_slot == 1
+            y = primal(output)
+            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        end
         for lane in 1:W
             slot = start_slot + lane - 1
             slot <= total_dof || break
