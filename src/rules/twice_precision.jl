@@ -108,8 +108,12 @@ end
 # walk MethodErrors on the bare-TWP element of the `NTuple` leaf. Mirror the `NDual` terminals; a
 # unit tangent direction is `TWP(1, 0)`.
 @inline dof(::TWP, ::IdDict{Any,Any}) = 1
+# The V-tuple arg is spelled `Tuple{TWP{F},Vararg{TWP{F}}}` (at least one element) rather than
+# `NTuple{N,TWP{F}}` so `F` is always bound: an empty `NTuple{0,TWP{F}}` leaves `F` free (Aqua
+# `unbound_args`). A basis-seed leaf always has `N >= 1` lanes, so this excludes only an unreachable
+# case; `N` still binds from `slots`.
 @inline function _basis_seed_isbits(
-    ::NTuple{N,TWP{F}}, slots::NTuple{N,Int}, c::Int
+    ::Tuple{TWP{F},Vararg{TWP{F}}}, slots::NTuple{N,Int}, c::Int
 ) where {N,F}
     c += 1
     hot = TWP{F}(one(F), zero(F))
@@ -117,7 +121,7 @@ end
     return (ntuple(k -> c == slots[k] ? hot : cold, Val(N)), c)
 end
 @inline function _basis_seed!!(
-    ::NTuple{N,TWP{F}}, slots::NTuple{N,Int}, cursor, _dict
+    ::Tuple{TWP{F},Vararg{TWP{F}}}, slots::NTuple{N,Int}, cursor, _dict
 ) where {N,F}
     cursor[] += 1
     c = cursor[]
