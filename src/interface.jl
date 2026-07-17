@@ -1,8 +1,4 @@
-#
-# ======================================================================================
-# Shared types, constants, and errors
-# ======================================================================================
-#
+# ===== Shared types, constants, and errors ================================================
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String
@@ -154,17 +150,18 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # `_copy_to_output!!`) around every call, so the inputs are never mutated even though
     # the forward rule aliases (and an in-place `f` mutates) the user's storage.
     input_snapshot::IS
-    # Preallocated seeds for the zero-allocation packable gradient over one or more same-eltype
-    # float vectors: `(f_seed, arg_seeds, grad_bufs)` — a `gradient_chunk_size`-wide width-`W`
-    # `Lifted` per arg (over a cache-owned primal buffer whose partials are mutated in place per
-    # chunk) plus a preallocated per-arg gradient buffer. `nothing` for every other input shape
-    # (differentiable `f`, structs, tuples, complex, mixed eltypes, …), which uses the generic
-    # chunked gradient path.
+    # Preallocated seeds for the zero-allocation packable gradient over one or more
+    # same-eltype float vectors: `(f_seed, arg_seeds, grad_bufs)` — a
+    # `gradient_chunk_size`-wide width-`W` `Lifted` per arg (over a cache-owned primal
+    # buffer whose partials are mutated in place per chunk) plus a preallocated per-arg
+    # gradient buffer. `nothing` for every other input shape (differentiable `f`, structs,
+    # tuples, complex, mixed eltypes, …), which uses the generic chunked gradient path.
     gradient_seed::GS
-    # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a single
-    # same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix, sized and filled
-    # on the first call (the output shape is not known at construction). Like the gradient buffers
-    # it is reused and returned (overwritten on the next call). `nothing` for every other shape.
+    # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a
+    # single same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix,
+    # sized and filled on the first call (the output shape is not known at construction).
+    # Like the gradient buffers it is reused and returned (overwritten on the next call).
+    # `nothing` for every other shape.
     jacobian_buffer::JB
 end
 
@@ -253,24 +250,27 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheError(msg))
 end
 
-# Input-mutation safety (used only by the GENERIC chunked gradient path and the forward Jacobian
-# sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see `_refresh_all!`
-# / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot) === x`), and a sweep
-# re-runs `f` once per chunk on that shared storage; an in-place-mutating `f` would otherwise
-# compound its mutation across chunks and corrupt later chunks' derivatives. Those sweeps snapshot
-# the input args into the prepared `cache.input_snapshot` buffer (args only — `f` is never mutated
-# and may be uncopyable) and restore from it (in place, via `_copy_to_output!!`) before each re-run
-# and once at the end, leaving the inputs unchanged, consistent with reverse mode.
+# Input-mutation safety (used only by the GENERIC chunked gradient path and the forward
+# Jacobian sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see
+# `_refresh_all!` / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot)
+# === x`), and a sweep re-runs `f` once per chunk on that shared storage; an
+# in-place-mutating `f` would otherwise compound its mutation across chunks and corrupt
+# later chunks' derivatives. Those sweeps snapshot the input args into the prepared
+# `cache.input_snapshot` buffer (args only — `f` is never mutated and may be uncopyable) and
+# restore from it (in place, via `_copy_to_output!!`) before each re-run and once at the
+# end, leaving the inputs unchanged, consistent with reverse mode.
 
-# ── Zero-allocation gradient for array-backed structured inputs ──────────────────────────────
+# ── Zero-allocation gradient for array-backed structured inputs
+# ──────────────────────────────
 #
 # Generalises the flat float-vector packable path to `NDualArray` leaves nested in
-# tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds and
-# per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray, gradient Array)`
-# leaf pairs in dof order. Per chunk the seed leaf partials are poked in place and each lane's
-# directional derivative is written straight into the matching gradient leaf — no per-chunk
-# allocation. Only differentiable dofs backed by real float arrays qualify; any scalar/complex/
-# abstract dof makes the gather return `nothing` and the input falls back to the generic path.
+# tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds
+# and per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray,
+# gradient Array)` leaf pairs in dof order. Per chunk the seed leaf partials are poked in
+# place and each lane's directional derivative is written straight into the matching
+# gradient leaf — no per-chunk allocation. Only differentiable dofs backed by real float
+# arrays qualify; any scalar/complex/ abstract dof makes the gather return `nothing` and the
+# input falls back to the generic path.
 struct StructuredGradSeed{Ff,As,Gs,Ls}
     f_seed::Ff
     arg_seeds::As
@@ -278,13 +278,14 @@ struct StructuredGradSeed{Ff,As,Gs,Ls}
     leaves::Ls
 end
 
-# For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars): there
-# are no array leaves to poke, but every piece — `zero_lifted`, the dict-free isbits
-# `basis_lifted!!`, `value_and_derivative!!`, and the scatter — is allocation-free, so a concrete
-# barrier with compile-time width `W` runs the chunked gradient with no allocation. Each chunk
-# rebuilds the isbits seed on the stack (capturing the current primal) and reconstructs the per-arg
-# `Lifted`s through the stored templates' concrete types (`typeof(tmpl)(primal, V)`, which folds
-# where `Lifted{fieldtype(P,i),W}` does not). `total_dof` is precomputed to avoid `dof`'s `IdDict`.
+# For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars):
+# there are no array leaves to poke, but every piece — `zero_lifted`, the dict-free isbits
+# `basis_lifted!!`, `value_and_derivative!!`, and the scatter — is allocation-free, so a
+# concrete barrier with compile-time width `W` runs the chunked gradient with no allocation.
+# Each chunk rebuilds the isbits seed on the stack (capturing the current primal) and
+# reconstructs the per-arg `Lifted`s through the stored templates' concrete types
+# (`typeof(tmpl)(primal, V)`, which folds where `Lifted{fieldtype(P,i),W}` does not).
+# `total_dof` is precomputed to avoid `dof`'s `IdDict`.
 struct IsbitsGradSeed{W,Tmpls}
     templates::Tmpls
     total_dof::Int
@@ -347,11 +348,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         _cache_spec_summary(getfield(cache, :output_spec)),
     )
 end
-#
-# ======================================================================================
-# Forward mode — derivative and Jacobian
-# ======================================================================================
-#
+# ===== Forward mode — derivative and Jacobian =============================================
 
 """
     value_and_derivative!!(rule, f::Lifted, x::Lifted...)
@@ -389,8 +386,8 @@ end
 @inline _dual_primal_type(::Type{<:Lifted{Y}}) where {Y} = Y
 
 @inline function _forward_cache_output_summary(cache::FCache)
-    # The forward output shape is unknown at prepare time, so it is always inferred from the rule's
-    # return type.
+    # The forward output shape is unknown at prepare time, so it is always inferred from the
+    # rule's return type.
     lifted_arg_types = Tuple{
         map(
             spec -> lifted_type(Val(1), typeof(spec).parameters[1]),
@@ -432,9 +429,10 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     input_specs = map(_input_spec, fx)
     # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
-    # type-generic, so structs, tuples, complex, and differentiable `f` batch `W` directional
-    # derivatives per pass through the generic chunked gradient path just like float arrays.
-    # Only the zero-allocation fast path below is shape-restricted (see `gradient_seed`).
+    # type-generic, so structs, tuples, complex, and differentiable `f` batch `W`
+    # directional derivatives per pass through the generic chunked gradient path just like
+    # float arrays. Only the zero-allocation fast path below is shape-restricted (see
+    # `gradient_seed`).
     total_dof = dof(tuple_map(zero_tangent, fx))
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
@@ -454,22 +452,24 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
         nothing
     end
     # Preallocated seed for the zero-allocation single-float-vector gradient path: a width-W
-    # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus the
-    # inert `f_seed`. `nothing` for every other shape, which uses the generic gradient path.
+    # `x_seed` over a cache-owned primal buffer (partials mutated in place per chunk) plus
+    # the inert `f_seed`. `nothing` for every other shape, which uses the generic gradient
+    # path.
     gradient_seed = let args = Base.tail(fx)
-        # The zero-allocation seed needs a non-differentiable `f` (the path rewraps `f` without
-        # sweeping its dofs, assuming `V === NoDual`) and same-eltype float-vector args. The
-        # same-eltype requirement mirrors the seed method's dispatch (`x1::AbstractVector{T},
-        # xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed would be dead cache weight
-        # that dispatch can never reach.
+        # The zero-allocation seed needs a non-differentiable `f` (the path rewraps `f`
+        # without sweeping its dofs, assuming `V === NoDual`) and same-eltype float-vector
+        # args. The same-eltype requirement mirrors the seed method's dispatch
+        # (`x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed
+        # would be dead cache weight that dispatch can never reach.
         #
-        # `typeof(similar(a)) == typeof(a)`: the flat seed primals are `similar(a)`, but the rule
-        # and `input_specs` are built for `typeof(a)`. For an input whose `similar` does not
-        # round-trip its type (a `SubArray`/view, whose `similar` is a plain `Vector`), the seed
-        # primal type would mismatch both, so the inner `value_and_derivative!!` revalidation
-        # throws a PreparedCacheError (and the rule's OpaqueClosure would type-mismatch anyway).
-        # Exclude those here so they fall through to the structured path, whose `deepcopy`-built
-        # seeds DO round-trip the type and so handle them correctly.
+        # `typeof(similar(a)) == typeof(a)`: the flat seed primals are `similar(a)`, but the
+        # rule and `input_specs` are built for `typeof(a)`. For an input whose `similar`
+        # does not round-trip its type (a `SubArray`/view, whose `similar` is a plain
+        # `Vector`), the seed primal type would mismatch both, so the inner
+        # `value_and_derivative!!` revalidation throws a PreparedCacheError (and the rule's
+        # OpaqueClosure would type-mismatch anyway). Exclude those here so they fall through
+        # to the structured path, whose `deepcopy`-built seeds DO round-trip the type and so
+        # handle them correctly.
         if gradient_chunk_size >= 1 &&
             tangent_type(typeof(first(fx))) === NoTangent &&
             !isempty(args) &&
@@ -486,22 +486,24 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
             nothing
         end
     end
-    # Structured array-backed inputs (NDualArray leaves nested in tuples/NamedTuples/structs)
-    # that the flat-vector seed above does not cover: preallocate per-arg seeds + gradient
-    # buffers and gather their leaf pairs for the zero-allocation leaf-table path. `nothing`
-    # (so the generic chunked path runs) when any dof is not array-backed, or `f` is differentiable.
+    # Structured array-backed inputs (NDualArray leaves nested in
+    # tuples/NamedTuples/structs) that the flat-vector seed above does not cover:
+    # preallocate per-arg seeds + gradient buffers and gather their leaf pairs for the
+    # zero-allocation leaf-table path. `nothing` (so the generic chunked path runs) when any
+    # dof is not array-backed, or `f` is differentiable.
     if gradient_seed === nothing &&
         gradient_chunk_size >= 1 &&
         tangent_type(typeof(first(fx))) === NoTangent &&
         !isempty(Base.tail(fx))
         W = gradient_chunk_size
         _args = Base.tail(fx)
-        # Seed over fresh copies, NOT the user's arrays: `zero_lifted(Val(W), a)`'s `NDualArray`
-        # leaves alias `a`'s storage, so seeding over the prepare-time args directly would let an
-        # in-place `f` clobber the user's input (the per-chunk `_refresh_all!` copies the call-time
-        # input into these cache-owned buffers, which the rule may then mutate). `deepcopy`
-        # (not `_copy_output`) preserves any intra-arg aliasing, so the `_gather_arg_leaves` guard
-        # still detects aliased leaves and bails to the generic path. Mirrors the flat path's `similar`.
+        # Seed over fresh copies, NOT the user's arrays: `zero_lifted(Val(W), a)`'s
+        # `NDualArray` leaves alias `a`'s storage, so seeding over the prepare-time args
+        # directly would let an in-place `f` clobber the user's input (the per-chunk
+        # `_refresh_all!` copies the call-time input into these cache-owned buffers, which
+        # the rule may then mutate). `deepcopy` (not `_copy_output`) preserves any intra-arg
+        # aliasing, so the `_gather_arg_leaves` guard still detects aliased leaves and bails
+        # to the generic path. Mirrors the flat path's `similar`.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = map(zero_tangent, _args)
         _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
@@ -511,18 +513,18 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
             )
         elseif isbitstype(typeof(fx)) &&
             _only_real_scalar_dofs(typeof(tangent(zero_lifted(Val(W), fx))))
-            # Scalar-only structured input with real-float dofs: the concrete-barrier path rebuilds
-            # the seed on the stack each chunk. The primal tuple must be isbits too — otherwise the
-            # per-chunk `zero_lifted` would allocate (an `IdDict`); a non-isbits `f` falls back to
-            # the generic path. Store per-input `Lifted` templates (for type-stable reconstruction)
-            # and the precomputed dof count.
+            # Scalar-only structured input with real-float dofs: the concrete-barrier path
+            # rebuilds the seed on the stack each chunk. The primal tuple must be isbits too
+            # — otherwise the per-chunk `zero_lifted` would allocate (an `IdDict`); a
+            # non-isbits `f` falls back to the generic path. Store per-input `Lifted`
+            # templates (for type-stable reconstruction) and the precomputed dof count.
             templates = map(a -> zero_lifted(Val(W), a), fx)
             gradient_seed = IsbitsGradSeed{W,typeof(templates)}(templates, total_dof)
         end
     end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
-    # float-vector input qualifies. The output shape is unknown here, so hold a `Ref` that the
-    # first `value_and_jacobian!!` call sizes and fills once the output vector is known.
+    # float-vector input qualifies. The output shape is unknown here, so hold a `Ref` that
+    # the first `value_and_jacobian!!` call sizes and fills once the output vector is known.
     jacobian_buffer = let args = Base.tail(fx)
         if gradient_seed isa Tuple && length(args) == 1 && eltype(only(args)) <: IEEEFloat
             Base.RefValue{Union{Nothing,Matrix{eltype(only(args))}}}(nothing)
@@ -552,8 +554,8 @@ not the single-direction [`value_and_derivative!!`](@ref); the resolved width is
         nothing,
         nothing,
         # Lazy gradient workspace, kept concretely typed (not `Ref{Any}`, which would make
-        # cached forward gradients inference-opaque) without evaluating `zero_tangent` on the
-        # runtime inputs here.
+        # cached forward gradients inference-opaque) without evaluating `zero_tangent` on
+        # the runtime inputs here.
         Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(nothing),
         gradient_chunk_size,
         gradient_chunk_size_auto,
@@ -600,9 +602,10 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
         ),
     )
     W = getfield(cache, :gradient_chunk_size)
-    # Every slot must share the cache's chunk width: the chunk rule's OpaqueClosure is built at
-    # width `W` and would otherwise type-mismatch on a trailing slot opaquely. Checking only
-    # `first(fx)` would let mixed-width inputs (e.g. width-W `f` with a width-W' argument) past.
+    # Every slot must share the cache's chunk width: the chunk rule's OpaqueClosure is built
+    # at width `W` and would otherwise type-mismatch on a trailing slot opaquely. Checking
+    # only `first(fx)` would let mixed-width inputs (e.g. width-W `f` with a width-W'
+    # argument) past.
     widths = map(_lifted_width, fx)
     all(==(W), widths) || throw(
         PreparedCacheError(
@@ -650,9 +653,10 @@ The arguments in `x` are returned to their original state: if `f` mutates them i
         output_internal_tangent,
         _friendly_cache((output_primal,)),
     )
-    # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated arg);
-    # copy it out before the input restore below, or the restore overwrites the returned value
-    # with the original input. Free for scalar/immutable outputs; a copy only for mutable ones.
+    # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated
+    # arg); copy it out before the input restore below, or the restore overwrites the
+    # returned value with the original input. Free for scalar/immutable outputs; a copy only
+    # for mutable ones.
     returned_primal = _copy_output(output_primal)
     _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
     return returned_primal, output_friendly_tangent
@@ -744,11 +748,12 @@ function _validate_jacobian_output(y, Tx)
     return Ty
 end
 
-# Type-stable inner sweep for the zero-allocation packable Jacobian (function barrier, called from
-# the `@unstable` method below). Per chunk: restore the seed primal from `x`, set this chunk's
-# standard-basis columns in the seed's `NDualArray` partials in place, run the width-dispatched
-# `value_and_derivative!!`, and copy each lane's directional derivative into the corresponding `J`
-# column. `J` is sized from the first output and cached in `Jref` (reused, overwritten next call).
+# Type-stable inner sweep for the zero-allocation packable Jacobian (function barrier,
+# called from the `@unstable` method below). Per chunk: restore the seed primal from `x`,
+# set this chunk's standard-basis columns in the seed's `NDualArray` partials in place, run
+# the width-dispatched `value_and_derivative!!`, and copy each lane's directional derivative
+# into the corresponding `J` column. `J` is sized from the first output and cached in `Jref`
+# (reused, overwritten next call).
 function _fcache_jacobian_packable!!(
     cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dof::Int, x::AbstractVector{T}
 ) where {T}
@@ -827,37 +832,39 @@ mutates `x` in place, it is restored, so the input is not mutated.
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
-    # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer preallocated at
-    # prepare time (single same-eltype float vector in, float vector out). Mirrors the zero-alloc
-    # `value_and_gradient!!`: seed standard-basis columns into the cached `NDualArray` partials in
-    # place, run the width-dispatched `value_and_derivative!!`, and scatter each lane's directional
-    # derivative (one Jacobian column) into the reused `J`. The seed primal is a cache buffer (`x`
-    # is copied into it each chunk), so `x` is never touched — no snapshot needed. Like the gradient
-    # buffers, the returned `J` aliases the cache and is overwritten on the next call.
+    # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer
+    # preallocated at prepare time (single same-eltype float vector in, float vector out).
+    # Mirrors the zero-alloc `value_and_gradient!!`: seed standard-basis columns into the
+    # cached `NDualArray` partials in place, run the width-dispatched
+    # `value_and_derivative!!`, and scatter each lane's directional derivative (one Jacobian
+    # column) into the reused `J`. The seed primal is a cache buffer (`x` is copied into it
+    # each chunk), so `x` is never touched — no snapshot needed. Like the gradient buffers,
+    # the returned `J` aliases the cache and is overwritten on the next call.
     seed = cache.gradient_seed
     Jref = cache.jacobian_buffer
-    # Gate on `seed isa Tuple`, not just `!== nothing`: the packable seed is a 3-tuple, but a
-    # `StructuredGradSeed` (e.g. a custom `DenseVector` whose `similar` returns a plain `Vector`)
-    # can also reach here — destructuring it below would MethodError. A structured seed instead
-    # falls through to the generic non-packable sweep.
+    # Gate on `seed isa Tuple`, not just `!== nothing`: the packable seed is a 3-tuple, but
+    # a `StructuredGradSeed` (e.g. a custom `DenseVector` whose `similar` returns a plain
+    # `Vector`) can also reach here — destructuring it below would MethodError. A structured
+    # seed instead falls through to the generic non-packable sweep.
     if seed isa Tuple && Jref !== nothing
         f_seed_stored, arg_seeds, _ = seed
-        # Re-wrap the call-time `f` (the stored seed holds the prepare-time instance); `V === NoDual`
-        # is guaranteed by packability, so this is a free isbits rewrap. The sweep runs in a
-        # concretely-typed function barrier (this `@unstable` method would otherwise box the seed's
-        # per-lane partials each iteration).
+        # Re-wrap the call-time `f` (the stored seed holds the prepare-time instance); `V
+        # === NoDual` is guaranteed by packability, so this is a free isbits rewrap. The
+        # sweep runs in a concretely-typed function barrier (this `@unstable` method would
+        # otherwise box the seed's per-lane partials each iteration).
         f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
         return _fcache_jacobian_packable!!(
             cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dof, x
         )
     end
-    # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not cover): seed
-    # each chunk's `W` standard-basis columns starting at `start_col` via `basis_lifted!!` (slots
-    # past `total_dof` map to `0`, an all-zero lane) and read one Jacobian column per lane.
-    # `W = gradient_chunk_size` is `min(dof((f, x...)), requested)`, which INCLUDES `f`'s own dofs,
-    # so for a differentiable `f` it can exceed `total_dof = length(x)`; every J-write loop must
-    # guard `lane <= total_dof`. Width-dispatched `value_and_derivative!!` routes to `chunk_rule`
-    # (W > 1) or `single_rule` (W == 1, no chunk rule).
+    # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not
+    # cover): seed each chunk's `W` standard-basis columns starting at `start_col` via
+    # `basis_lifted!!` (slots past `total_dof` map to `0`, an all-zero lane) and read one
+    # Jacobian column per lane. `W = gradient_chunk_size` is `min(dof((f, x...)),
+    # requested)`, which INCLUDES `f`'s own dofs, so for a differentiable `f` it can exceed
+    # `total_dof = length(x)`; every J-write loop must guard `lane <= total_dof`.
+    # Width-dispatched `value_and_derivative!!` routes to `chunk_rule` (W > 1) or
+    # `single_rule` (W == 1, no chunk rule).
     W = cache.gradient_chunk_size
     f_seed = zero_lifted(Val(W), f)
     x_seed = zero_lifted(Val(W), x)        # `NDualArray` partials reseeded in place per chunk
@@ -872,8 +879,8 @@ mutates `x` in place, it is restored, so the input is not mutated.
     y = primal(output)
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
-    # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so lanes
-    # past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
+    # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so
+    # lanes past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
     @inbounds for lane in 1:W
         lane <= total_dof || break
         J[:, lane] .= tangent(output, lane)
@@ -945,7 +952,8 @@ end
 end
 
 # Multi-argument calls match no 3-arg method above; give a clear error rather than a raw,
-# many-line MethodError (sibling `value_and_*!!` accept `f, x...`, so users may try it here).
+# many-line MethodError (sibling `value_and_*!!` accept `f, x...`, so users may try it
+# here).
 @unstable function value_and_jacobian!!(cache, f, x, xs...)
     throw(
         ArgumentError(
@@ -957,8 +965,9 @@ end
 end
 
 # IT=Nothing specialisation: disambiguates against the Lifted-vararg and Tuple-vararg
-# zero-arg overloads (Aqua detects the ambiguity without this more-specific method). The validate
-# always throws an arity `PreparedCacheError` (`input_specs` has the `f` entry, no args given).
+# zero-arg overloads (Aqua detects the ambiguity without this more-specific method). The
+# validate always throws an arity `PreparedCacheError` (`input_specs` has the `f` entry, no
+# args given).
 function value_and_derivative!!(
     cache::FCache{R,Nothing,FG,GW,CF,S}
 ) where {R,FG,GW,CF,S<:Tuple}
@@ -968,11 +977,7 @@ end
 function value_and_derivative!!(cache::FCache)
     return _validate_prepared_cache(cache.input_specs, ())
 end
-#
-# ======================================================================================
-# Reverse mode — gradient and pullback
-# ======================================================================================
-#
+# ===== Reverse mode — gradient and pullback ===============================================
 
 """
     __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
@@ -1092,9 +1097,9 @@ There are lots of ways to get this wrong though, so we generally advise against 
 # Otherwise returns IdDict to handle aliased mutable buffers across the tuple of tangents.
 _friendly_cache(fx::Tuple) = isbitstype(typeof(fx)) ? NoCache() : IdDict{Any,Any}()
 
-# Convert the internal tangents `native` back to friendly (primal-shaped) tangents, sharing one
-# aliasing cache across the tuple. Shared by the four (pullback/gradient) × (rule/cached) friendly
-# branches below.
+# Convert the internal tangents `native` back to friendly (primal-shaped) tangents, sharing
+# one aliasing cache across the tuple. Shared by the four (pullback/gradient) ×
+# (rule/cached) friendly branches below.
 @inline function _to_friendly(dests, fx, native)
     c = _friendly_cache(fx)
     return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, native)
@@ -1291,7 +1296,8 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     ȳ,
     f::F,
     x::Vararg{Any,N};
-    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data;
+    # see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -1330,9 +1336,10 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     input_specs = map(_input_spec, fx)
     output_spec = _input_spec(primal(y))
-    # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient Cache is
-    # also a well-formed pullback Cache. `_copy_output` suffices for the isbits scalar output — no
-    # `_copy_to_output!!` fill needed (and the gradient run path never reads it anyway).
+    # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient
+    # Cache is also a well-formed pullback Cache. `_copy_output` suffices for the isbits
+    # scalar output — no `_copy_to_output!!` fill needed (and the gradient run path never
+    # reads it anyway).
     y_cache = _copy_output(primal(y))
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
@@ -1404,7 +1411,8 @@ value_and_gradient!!(cache, f, x, y)
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
-    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
+    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data;
+    # see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -1419,11 +1427,13 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-# Is forward V `T` built only from real-float scalar dofs (`NoDual`/`NDual{<:IEEEFloat}` nested in
-# tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters via a one-dof-per
+# Is forward V `T` built only from real-float scalar dofs (`NoDual`/`NDual{<:IEEEFloat}`
+# nested in tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters
+# via a one-dof-per
 # -leaf cursor walk that only knows these shapes, so this is its admission gate: complex dofs (two
-# dofs per element), `PossiblyUninitTangent`, and any other isbits V fall back to the generic path
-# (which handles them) rather than hitting an opaque `MethodError` in the scatter.
+# dofs per element), `PossiblyUninitTangent`, and any other isbits V fall back to the
+# generic path (which handles them) rather than hitting an opaque `MethodError` in the
+# scatter.
 _only_real_scalar_dofs(::Type{NoDual}) = true
 _only_real_scalar_dofs(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
 function _only_real_scalar_dofs(::Type{T}) where {T<:Tuple}
@@ -1435,11 +1445,11 @@ end
 _only_real_scalar_dofs(::Type{<:ImmutableDual{T}}) where {T} = _only_real_scalar_dofs(T)
 _only_real_scalar_dofs(::Type) = false
 
-# Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse tangent
-# `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not array-backed.
-# `dict` guards against aliasing/cycles: a revisited array or mutable wrapper means the flat
-# leaf table would mis-order or double-count dofs (the generic path dedups instead), so bail to
-# `nothing` and let that path handle it.
+# Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse
+# tangent `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not
+# array-backed. `dict` guards against aliasing/cycles: a revisited array or mutable wrapper
+# means the flat leaf table would mis-order or double-count dofs (the generic path dedups
+# instead), so bail to `nothing` and let that path handle it.
 _grad_leaves(::NoDual, @nospecialize(g), dict) = ()
 function _grad_leaves(v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict) where {T<:IEEEFloat}
     haskey(dict, v) && return nothing
@@ -1502,9 +1512,9 @@ not restored.
     returned gradients will be overwritten if you call this function again with the same
     `cache`. Take a copy (`copy` / `deepcopy`) of anything you need to keep across calls.
 """
-# Shared finalisation for every value_and_gradient!! path: return the native gradient directly, or
-# (when the cache was prepared with `friendly_tangents=true`) convert it to a primal-shaped one.
-# Type-stable — each caller's types are concrete at the call site.
+# Shared finalisation for every value_and_gradient!! path: return the native gradient
+# directly, or (when the cache was prepared with `friendly_tangents=true`) convert it to a
+# primal-shaped one. Type-stable — each caller's types are concrete at the call site.
 @inline function _finalize_gradient(cache::FCache, y, native_gradients, input_primals)
     isnothing(cache.input_tangents) && return y, native_gradients
     friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
@@ -1514,14 +1524,15 @@ not restored.
     )
 end
 
-# Generic chunked fallback for any input the four concrete fast paths (scalar / packable float
-# vectors / array-backed-structured `StructuredGradSeed` / scalar-isbits `IsbitsGradSeed`) do not
-# cover: differentiable `f`, complex, mixed/abstract element types, possibly-uninitialised fields,
-# aliased/cyclic structured inputs. It splices the runtime chunk width `cache.gradient_chunk_size`
-# into `ntuple`/`Lifted` type parameters, so it is deliberately type-unstable (the gradient infers
-# as `Any`) — trading inference and the per-chunk fresh-seed allocation for shape generality.
-# `@unstable`, like the sibling `prepare_*`/`value_and_jacobian!!`/`value_gradient_and_hessian!!`
-# entry points; the four fast paths above stay concrete.
+# Generic chunked fallback for any input the four concrete fast paths (scalar / packable
+# float vectors / array-backed-structured `StructuredGradSeed` / scalar-isbits
+# `IsbitsGradSeed`) do not cover: differentiable `f`, complex, mixed/abstract element types,
+# possibly-uninitialised fields, aliased/cyclic structured inputs. It splices the runtime
+# chunk width `cache.gradient_chunk_size` into `ntuple`/`Lifted` type parameters, so it is
+# deliberately type-unstable (the gradient infers as `Any`) — trading inference and the
+# per-chunk fresh-seed allocation for shape generality. `@unstable`, like the sibling
+# `prepare_*`/`value_and_jacobian!!`/`value_gradient_and_hessian!!` entry points; the four
+# fast paths above stay concrete.
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
@@ -1545,8 +1556,9 @@ end
     total_dof = dof(native_gradients)
 
     if total_dof == 0
-        # Snapshot/restore like the chunked loop below: forward slots alias the user's storage, so
-        # an in-place `f` over a zero-dof input (e.g. `Vector{Int}`) would otherwise mutate it.
+        # Snapshot/restore like the chunked loop below: forward slots alias the user's
+        # storage, so an in-place `f` over a zero-dof input (e.g. `Vector{Int}`) would
+        # otherwise mutate it.
         _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
         output = __call_rule(
             cache.single_rule, tuple_map(lift, input_primals, native_gradients)
@@ -1557,30 +1569,32 @@ end
         return _finalize_gradient(cache, y, native_gradients, input_primals)
     end
 
-    # Per chunk of `W` standard-basis directions starting at `start_slot`:
-    #  - seed the forward direction by basis-seeding the whole input tuple's `zero_lifted` V
-    #    (`basis_lifted!!` walks all inputs' dofs with one global cursor; slots past
-    #    `total_dof` give zero lanes), then split that tuple V into per-input width-`W` slots;
-    #  - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single rule
-    #    for `W == 1`) and read lane `k`'s directional derivative as `coeff = tangent(out, k)`;
-    #  - scatter `coeff * reverse_tangent` into the gradient, where the reverse basis tangent
-    #    per lane is the width-1 `basis_lifted!!` seed at that scalar dof, `unlift`ed back to a
-    #    reverse tangent (a scalar output makes each lane's derivative the coefficient for its
-    #    seeded basis direction).
-    # `W = gradient_chunk_size`. Each chunk guards `slot <= total_dof`: a lane past the last dof (a short
-    # final/only chunk, or `W > total_dof`) carries a zero seed direction (`basis_lifted!!` maps
-    # out-of-range slots to none) that contributes nothing — keeping the sweep correct and uniform
-    # with the Jacobian/Hessian sweeps rather than relying on `W <= total_dof` (the assumption whose
-    # absence in the Jacobian sweep caused an out-of-bounds write).
+    # Per chunk of `W` standard-basis directions starting at `start_slot`:  - seed the
+    # forward direction by basis-seeding the whole input tuple's `zero_lifted` V   
+    # (`basis_lifted!!` walks all inputs' dofs with one global cursor; slots past   
+    # `total_dof` give zero lanes), then split that tuple V into per-input width-`W` slots; 
+    # - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single
+    # rule    for `W == 1`) and read lane `k`'s directional derivative as `coeff =
+    # tangent(out, k)`;  - scatter `coeff * reverse_tangent` into the gradient, where the
+    # reverse basis tangent    per lane is the width-1 `basis_lifted!!` seed at that scalar
+    # dof, `unlift`ed back to a    reverse tangent (a scalar output makes each lane's
+    # derivative the coefficient for its    seeded basis direction). `W =
+    # gradient_chunk_size`. Each chunk guards `slot <= total_dof`: a lane past the last dof
+    # (a short final/only chunk, or `W > total_dof`) carries a zero seed direction
+    # (`basis_lifted!!` maps out-of-range slots to none) that contributes nothing — keeping
+    # the sweep correct and uniform with the Jacobian/Hessian sweeps rather than relying on
+    # `W <= total_dof` (the assumption whose absence in the Jacobian sweep caused an
+    # out-of-bounds write).
     W = cache.gradient_chunk_size
     nfields = Val(fieldcount(typeof(input_primals)))
     P = typeof(input_primals)
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
-    # before each subsequent chunk (so an in-place `f` does not compound) and once at the end.
+    # before each subsequent chunk (so an in-place `f` does not compound) and once at the
+    # end.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    # Single sweep over all chunks. `total_dof >= 1` here (the zero-dof case returned above), so the
-    # first iteration always runs and assigns `y`; its leading input restore is a no-op (the snapshot
-    # was just taken with no intervening `f`).
+    # Single sweep over all chunks. `total_dof >= 1` here (the zero-dof case returned
+    # above), so the first iteration always runs and assigns `y`; its leading input restore
+    # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
     for start_slot in 1:W:total_dof
         _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
@@ -1602,8 +1616,9 @@ end
             slot = start_slot + lane - 1
             slot <= total_dof || break
             coeff = Float64(tangent(output, lane))
-            # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane, parallel to
-            # `native_gradients`; scatter each field's contribution directly (no input-major transpose).
+            # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane,
+            # parallel to `native_gradients`; scatter each field's contribution directly (no
+            # input-major transpose).
             native_gradients = tuple_map(
                 (g, lt) -> lt isa NoTangent ? g : increment!!(g, _scale(coeff, lt)),
                 native_gradients,
@@ -1624,8 +1639,8 @@ end
 # - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
 # - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic chunked).
 #
-# Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)` (all need a non-diff `f`
-# except the scalar path):
+# Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)` (all need a non-diff
+# `f` except the scalar path):
 # - `x::IEEEFloat`: scalar width-1 path
 # - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
 # - tuples/NamedTuples/structs of real float arrays: zero-alloc `StructuredGradSeed` leaf-table
@@ -1635,12 +1650,13 @@ end
 #   width-dispatched `value_and_derivative!!`
 
 # Scalar `value_and_gradient!!` fast path: a single width-1 forward evaluation through
-# `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to chunk;
-# this avoids the generic path's standard-basis seeding and lane accumulation.
+# `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to
+# chunk; this avoids the generic path's standard-basis seeding and lane accumulation.
 @inline function value_and_gradient!!(cache::FCache, f::F, x::T) where {F,T<:IEEEFloat}
-    # A differentiable `f` carries its own degrees of freedom: the width-1 single-seed run below
-    # cannot represent them (and `lift(f, NoTangent())` would seed uninitialised tangent storage),
-    # so fall back to the generic chunked path, which sweeps `f`'s dofs too.
+    # A differentiable `f` carries its own degrees of freedom: the width-1 single-seed run
+    # below cannot represent them (and `lift(f, NoTangent())` would seed uninitialised
+    # tangent storage), so fall back to the generic chunked path, which sweeps `f`'s dofs
+    # too.
     tangent_type(F) === NoTangent ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
     _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
@@ -1652,34 +1668,37 @@ end
 end
 
 # Zero-allocation packable gradient for one or more same-eltype float vectors. Reuse the
-# preallocated width-`W` seeds (`cache.gradient_seed = (f_seed, arg_seeds, grad_bufs)`):
-# per chunk, mutate each arg seed's `NDualArray` partials in place to set standard-basis
+# preallocated width-`W` seeds (`cache.gradient_seed = (f_seed, arg_seeds, grad_bufs)`): per
+# chunk, mutate each arg seed's `NDualArray` partials in place to set standard-basis
 # directions (mapping the global slot to the owning arg via running offsets), run the
 # width-dispatched `value_and_derivative!!`, and scatter each lane's directional derivative
 # straight into the preallocated per-arg gradient buffer. The seed primals are restored from
-# `xs` and the partials zeroed at the top of every chunk, so an in-place `f` neither touches the
-# user's arrays nor compounds across chunks. This method only matches same-eltype float-vector
-# args; other zero-alloc shapes (array-backed structured / scalar-only structured) build their
-# own seed at prepare time and dispatch from the generic `value_and_gradient!!` to
-# `_structured_gradient!!` / `_isbits_gradient!!`. A differentiable `f` (no preallocated seed)
-# falls back to the generic chunked path.
+# `xs` and the partials zeroed at the top of every chunk, so an in-place `f` neither touches
+# the user's arrays nor compounds across chunks. This method only matches same-eltype
+# float-vector args; other zero-alloc shapes (array-backed structured / scalar-only
+# structured) build their own seed at prepare time and dispatch from the generic
+# `value_and_gradient!!` to `_structured_gradient!!` / `_isbits_gradient!!`. A
+# differentiable `f` (no preallocated seed) falls back to the generic chunked path.
 function value_and_gradient!!(
     cache::FCache, f::F, x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T},Nm1}
 ) where {F,T<:IEEEFloat,Nm1}
-    # Leading `x1` binds `T` directly (a bare `Vararg{AbstractVector{T},N}` leaves `T` unbound at N=0;
-    # Aqua). Gradient always has >=1 input. Reconstruct `xs`/`N` to leave the body below unchanged.
+    # Leading `x1` binds `T` directly (a bare `Vararg{AbstractVector{T},N}` leaves `T`
+    # unbound at N=0; Aqua). Gradient always has >=1 input. Reconstruct `xs`/`N` to leave
+    # the body below unchanged.
     xs = (x1, xs_rest...)
     N = Nm1 + 1
     seed = cache.gradient_seed
-    # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is destructured
-    # below. Any other seed — `nothing` (differentiable `f` / non-packable), or the struct seeds
-    # `StructuredGradSeed`/`IsbitsGradSeed` (e.g. a view, whose `similar` is not its own type so it
-    # is excluded from the flat path) — is delegated to the generic method, which dispatches on the
-    # seed type (and validates the cache itself). `invoke` is needed because a plain call would
-    # re-dispatch back to this method (the args are float vectors).
+    # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is
+    # destructured below. Any other seed — `nothing` (differentiable `f` / non-packable), or
+    # the struct seeds `StructuredGradSeed`/`IsbitsGradSeed` (e.g. a view, whose `similar`
+    # is not its own type so it is excluded from the flat path) — is delegated to the
+    # generic method, which dispatches on the seed type (and validates the cache itself).
+    # `invoke` is needed because a plain call would re-dispatch back to this method (the
+    # args are float vectors).
     seed isa Tuple ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
-    # Validate once, on the packable path only (the fallback validates in the generic method).
+    # Validate once, on the packable path only (the fallback validates in the generic
+    # method).
     input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     f_seed_stored, arg_seeds, grad_bufs = seed
@@ -1689,28 +1708,31 @@ function value_and_gradient!!(
     f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
     z = zero(T)
     total_dof = sum(length, xs)
-    # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field is the
-    # authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
+    # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field
+    # is the authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
     W = cache.gradient_chunk_size
-    # Bind `y` from the primal below (not a fabricated `zero(T)`), so the return type stays concrete
-    # even when `f`'s output float type differs from the input eltype. The scatter writes every
-    # gradient position exactly once per sweep, so `grad_bufs` needs no pre-zeroing.
+    # Bind `y` from the primal below (not a fabricated `zero(T)`), so the return type stays
+    # concrete even when `f`'s output float type differs from the input eltype. The scatter
+    # writes every gradient position exactly once per sweep, so `grad_bufs` needs no
+    # pre-zeroing.
     local y
     if total_dof == 0
-        # Zero-DOF (empty) input: run the primal once so `y` is the true value, not a fabricated zero.
+        # Zero-DOF (empty) input: run the primal once so `y` is the true value, not a
+        # fabricated zero.
         y = primal(value_and_derivative!!(cache, f_seed, arg_seeds...))
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     end
     s = 1
     while s <= total_dof
-        # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales the
-        # partials) during the previous chunk's run, so restore the primals from the user's
-        # arrays and zero the partials before setting this chunk's basis directions — otherwise
-        # the mutation compounds across chunks and the gradient is silently wrong.
+        # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales
+        # the partials) during the previous chunk's run, so restore the primals from the
+        # user's arrays and zero the partials before setting this chunk's basis directions —
+        # otherwise the mutation compounds across chunks and the gradient is silently wrong.
         off = 0
         @inbounds for i in 1:N
             nda = arg_seeds[i].value
-            # Single-leaf inline of the structured path's `_refresh_seed!` (restore seed primal).
+            # Single-leaf inline of the structured path's `_refresh_seed!` (restore seed
+            # primal).
             copyto!(nda.primal, xs[i])
             len = length(xs[i])
             for lane in 1:W
@@ -1749,11 +1771,11 @@ end
 # is all the per-call primal state the rule needs). Type-stable, allocation-free.
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
 function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
-    # `_validate_prepared_cache` only checks top-level sizes, so a structured input whose NESTED
-    # array changed shape still reaches here. Check `size`, not just `length`: a same-length
-    # reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the stale cache-owned
-    # shape and run the rule on it — silently wrong for any f that depends on size/axes. Fail
-    # loudly and locally (a clear PreparedCacheError) instead.
+    # `_validate_prepared_cache` only checks top-level sizes, so a structured input whose
+    # NESTED array changed shape still reaches here. Check `size`, not just `length`: a
+    # same-length reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the
+    # stale cache-owned shape and run the rule on it — silently wrong for any f that depends
+    # on size/axes. Fail loudly and locally (a clear PreparedCacheError) instead.
     size(v.primal) == size(x) || throw(
         PreparedCacheError(
             "Prepared cache mismatch: a nested array argument has size $(size(x)) but the " *
@@ -1787,11 +1809,12 @@ end
     return _refresh_all!(Base.tail(arg_seeds), Base.tail(xs))
 end
 
-# Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)` leaf
-# tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an in-place `f`
-# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones —
-# so the seeding work is O(total_dof) per chunk, O(total_dof²) over a full gradient (compute, not
-# allocation); the alternative (clear only the previous chunk's hot entries) is unsafe for in-place `f`.
+# Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)`
+# leaf tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an
+# in-place `f` dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W`
+# standard-basis ones — so the seeding work is O(total_dof) per chunk, O(total_dof²) over a
+# full gradient (compute, not allocation); the alternative (clear only the previous chunk's
+# hot entries) is unsafe for in-place `f`.
 @inline _leaves_dof(::Tuple{}) = 0
 @inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
 @inline _zero_partials!(::Tuple{}, W) = nothing
@@ -1819,28 +1842,30 @@ end
     L = length(nda.primal)
     @inbounds for i in 1:L
         d = off + i
-        # `d` ranges 1..total_dof across all leaves, so a `min(·, total_dof)` upper clamp would
-        # be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's empty lanes.
+        # `d` ranges 1..total_dof across all leaves, so a `min(·, total_dof)` upper clamp
+        # would be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's
+        # empty lanes.
         s <= d <= s + W - 1 && (g[i] = tangent(out, d - s + 1))
     end
     return _scatter_chunk!(Base.tail(ls), out, s, W, off + L)
 end
 
-# Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`). Mirrors
-# the flat-vector packable gradient: per chunk restore the seed primals from the current inputs
-# and re-zero the partials (so an in-place `f` neither touches the user's arrays nor compounds
-# across chunks), poke the chunk's standard-basis partials in place, run the width-dispatched
-# `value_and_derivative!!`, and write each lane's directional derivative straight into the
-# matching preallocated gradient leaf (every dof is written exactly once, so `grad_bufs` needs
-# no zeroing).
+# Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`).
+# Mirrors the flat-vector packable gradient: per chunk restore the seed primals from the
+# current inputs and re-zero the partials (so an in-place `f` neither touches the user's
+# arrays nor compounds across chunks), poke the chunk's standard-basis partials in place,
+# run the width-dispatched `value_and_derivative!!`, and write each lane's directional
+# derivative straight into the matching preallocated gradient leaf (every dof is written
+# exactly once, so `grad_bufs` needs no zeroing).
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
     input_primals = (f, xs...)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     f_stored = seed.f_seed
-    # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V === NoDual`
-    # is guaranteed by the non-differentiable-`f` gate, so this is a free isbits rewrap.
+    # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
+    # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
+    # rewrap.
     f_seed = typeof(f_stored)(f, tangent(f_stored))
     arg_seeds = seed.arg_seeds
     grad_bufs = seed.grad_bufs
@@ -1863,9 +1888,10 @@ function _structured_gradient!!(
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
-# One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current primal),
-# basis-seed it at the chunk's slots, reconstruct the per-arg `Lifted`s through the stored
-# templates' concrete types, and run the width-dispatched rule. All allocation-free for isbits V.
+# One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current
+# primal), basis-seed it at the chunk's slots, reconstruct the per-arg `Lifted`s through the
+# stored templates' concrete types, and run the width-dispatched rule. All allocation-free
+# for isbits V.
 @inline function _isbits_chunk(cache, input_primals, templates, ::Val{W}, s) where {W}
     seed_w = zero_lifted(Val(W), input_primals)
     vs = tangent(basis_lifted!!(seed_w, ntuple(k -> s + k - 1, Val(W))))
@@ -1875,8 +1901,8 @@ end
 
 # Write the chunk's `W` directional derivatives into the gradient. `out`'s lane `k` is the
 # derivative w.r.t. dof `s + k - 1`; the gradient mirrors the input structure (recursive
-# coherence), so a single dof-ordered walk sets each leaf scalar directly. Pure isbits rebuild
-# with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
+# coherence), so a single dof-ordered walk sets each leaf scalar directly. Pure isbits
+# rebuild with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
 @inline function _isbits_scatter(ng, out, ::Val{W}, s) where {W}
     coeffs = ntuple(lane -> tangent(out, lane), Val(W))
     g, _ = _scatter_isbits(ng, coeffs, s, 0)
@@ -1885,8 +1911,9 @@ end
 @inline _scatter_isbits(g::NoTangent, _coeffs, _s, c::Int) = (g, c)
 @inline function _scatter_isbits(g::T, coeffs::NTuple{W}, s, c::Int) where {T<:IEEEFloat,W}
     c += 1
-    # A scalar leaf consumes one dof; write the active lane's coefficient at this cursor position when
-    # it falls in the current chunk `[s, s+W-1]` (matches the array path `_scatter_chunk!`).
+    # A scalar leaf consumes one dof; write the active lane's coefficient at this cursor
+    # position when it falls in the current chunk `[s, s+W-1]` (matches the array path
+    # `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
 @inline _scatter_isbits(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
@@ -1904,7 +1931,8 @@ end
     return (typeof(g)(inner), c)
 end
 
-# Zero-allocation gradient for scalar-only structured inputs (isbits V); see `IsbitsGradSeed`.
+# Zero-allocation gradient for scalar-only structured inputs (isbits V); see
+# `IsbitsGradSeed`.
 function _isbits_gradient!!(
     cache::FCache, f::F, xs::Tuple, gs::IsbitsGradSeed{W}
 ) where {F,W}
@@ -1926,11 +1954,7 @@ function _isbits_gradient!!(
     end
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
-#
-# ======================================================================================
-# Forward-over-reverse — Hessian-vector products (HVP)
-# ======================================================================================
-#
+# ===== Forward-over-reverse — Hessian-vector products (HVP) ===============================
 
 @inline function _assert_matching_tangent_shape(primal, tangent)
     if applicable(axes, primal) && applicable(axes, tangent)
@@ -1992,31 +2016,34 @@ true
     grad_cache = prepare_gradient_cache(f, x...; config)
 
     # `DerivedFoRRule` wraps a pre-built `Lifted(rule, rule_tangent)` so forward AD reuses
-    # the rule's forward-mode-compiled dual callables instead of `zero_dual`
-    # re-deriving them and leaking reverse-mode primitives (e.g. inlined `IdDict()`)
-    # into the forward IR. The type parameter `D` discriminates derived
-    # (`D <: Lifted`) from primitive (`D === Nothing`) rrules — primitive rrules have
-    # no MistyClosure IR and keep using `grad_cache`'s rule directly.
-    # Internal chunk width for the forward-over-reverse dual callables and `grad_f`'s forward
-    # chunk rule (kept in lockstep so they agree). Default 1 (width-1): a standalone HVP is a
-    # single direction, so `value_and_hvp!!` must stay width-1. `prepare_hessian_cache` passes
-    # `_chunk = N > 1` to build a width-N variant for its chunked Hessian sweep; cap at `dof(x)`
-    # (cannot batch more Hessian columns than input DOFs).
+    # the rule's forward-mode-compiled dual callables instead of `zero_dual` re-deriving
+    # them and leaking reverse-mode primitives (e.g. inlined `IdDict()`) into the forward
+    # IR. The type parameter `D` discriminates derived (`D <: Lifted`) from primitive (`D
+    # === Nothing`) rrules — primitive rrules have no MistyClosure IR and keep using
+    # `grad_cache`'s rule directly. Internal chunk width for the forward-over-reverse dual
+    # callables and `grad_f`'s forward chunk rule (kept in lockstep so they agree). Default
+    # 1 (width-1): a standalone HVP is a single direction, so `value_and_hvp!!` must stay
+    # width-1. `prepare_hessian_cache` passes `_chunk = N > 1` to build a width-N variant
+    # for its chunked Hessian sweep; cap at `dof(x)` (cannot batch more Hessian columns than
+    # input DOFs).
     fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, dof(tuple_map(zero_tangent, x)))
-    # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing `config.chunk_size`
-    # through: at width 1 (standalone HVP) this builds no `chunk_rule`, so the cache cannot bake an
-    # unusable width-K chunk rule over a width-1 for_rule (the FoR `rule_dual` and the `chunk_rule`
-    # widths can never diverge). The width-W Hessian variant (from `prepare_hessian_cache`) gets a
-    # width-W `chunk_rule` matching its width-W for_rule. `empty_cache=false`: any global-cache reset
-    # already happened in `prepare_gradient_cache` above; re-clearing here would invalidate it.
-    # The inner forward cache differentiates `grad_f` (a compiled reverse-gradient closure), not user
-    # data: its only inputs are `grad_f`, its internal `grad_tangent`, and the direction `v`, all
-    # already internal tangents. It must stay non-friendly regardless of `config.friendly_tangents`.
-    # Threading the flag in would (a) make `prepare_derivative_cache` `_copy_output` `grad_f`, whose
-    # captured compiled rule reaches `Method`/`Core.MethodInstance` reflection and errors, and
-    # (b) route `value_and_hvp!!` through the friendly tuple path, which mis-treats `grad_tangent` as
-    # a primal-shaped tangent. `friendly_tangents` governs the reverse output-tangent contract only;
-    # HVP/Hessian take no user output tangent, so the flag does not affect their result shape.
+    # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing
+    # `config.chunk_size` through: at width 1 (standalone HVP) this builds no `chunk_rule`,
+    # so the cache cannot bake an unusable width-K chunk rule over a width-1 for_rule (the
+    # FoR `rule_dual` and the `chunk_rule` widths can never diverge). The width-W Hessian
+    # variant (from `prepare_hessian_cache`) gets a width-W `chunk_rule` matching its
+    # width-W for_rule. `empty_cache=false`: any global-cache reset already happened in
+    # `prepare_gradient_cache` above; re-clearing here would invalidate it. The inner
+    # forward cache differentiates `grad_f` (a compiled reverse-gradient closure), not user
+    # data: its only inputs are `grad_f`, its internal `grad_tangent`, and the direction
+    # `v`, all already internal tangents. It must stay non-friendly regardless of
+    # `config.friendly_tangents`. Threading the flag in would (a) make
+    # `prepare_derivative_cache` `_copy_output` `grad_f`, whose captured compiled rule
+    # reaches `Method`/`Core.MethodInstance` reflection and errors, and (b) route
+    # `value_and_hvp!!` through the friendly tuple path, which mis-treats `grad_tangent` as
+    # a primal-shaped tangent. `friendly_tangents` governs the reverse output-tangent
+    # contract only; HVP/Hessian take no user output tangent, so the flag does not affect
+    # their result shape.
     fwd_config = Config(;
         config.debug_mode,
         config.silence_debug_messages,
@@ -2116,22 +2143,19 @@ true
     return f_val, grad, hvp
 end
 
-# Multi-argument calls match no single-arg method above; give a clear error rather than a raw
-# MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
+# Multi-argument calls match no single-arg method above; give a clear error rather than a
+# raw MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
 @inline function value_and_hvp!!(cache::HVPCache, f, v, x1, x2, xs::Vararg{Any,N}) where {N}
     return _throw_hvp_multiarg("value_and_hvp!!", N + 2)
 end
-#
-# ======================================================================================
-# Forward-over-reverse — Hessian
-# ======================================================================================
-#
+# ===== Forward-over-reverse — Hessian =====================================================
 
 function _make_hessian_buffers(x::AbstractVector)
-    # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array input
-    # (e.g. `CuArray`) gets device-resident buffers; for a `Vector{T}` input this is identical to
-    # host `zeros`. The chunked/width-1 sweeps write `H`/`grad`/`v` in place (broadcast + `copyto!`),
-    # so a device-resident `x` yields a device-resident gradient and Hessian.
+    # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array
+    # input (e.g. `CuArray`) gets device-resident buffers; for a `Vector{T}` input this is
+    # identical to host `zeros`. The chunked/width-1 sweeps write `H`/`grad`/`v` in place
+    # (broadcast + `copyto!`), so a device-resident `x` yields a device-resident gradient
+    # and Hessian.
     T = eltype(x)
     n = length(x)
     return (;
@@ -2193,10 +2217,10 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     x1 = only(x)
     _validate_hessian_argument(x1)
     base = prepare_hvp_cache(f, x1; config)
-    # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose FoR
-    # rule's dual callables are width W, alongside the width-1 `base` used by `value_and_hvp!!`.
-    # `chunked === nothing` keeps the width-1 column loop (scalar 1-DOF, or chunk_size 1). Auto
-    # (`chunk_size` nothing/0) chunks the full matrix.
+    # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose
+    # FoR rule's dual callables are width W, alongside the width-1 `base` used by
+    # `value_and_hvp!!`. `chunked === nothing` keeps the width-1 column loop (scalar 1-DOF,
+    # or chunk_size 1). Auto (`chunk_size` nothing/0) chunks the full matrix.
     dof_x = dof(zero_tangent(x1))
     W = let c = getfield(config, :chunk_size)
         req = if (c === nothing || c == 0)
@@ -2252,8 +2276,8 @@ end
 # column per lane from the gradient-tangent (output tuple index 2). Mirrors the chunked
 # Jacobian sweep. Fills `g` (gradient) and `H` (Hessian, columns) in place and returns the
 # primal value. A function barrier (specialised on `Val{W}`) keeps the per-lane partials
-# unboxed despite the `@unstable` caller. `x1` is snapshotted and restored so an in-place `f`
-# does not corrupt the input across chunks (the seed primal aliases `x1`).
+# unboxed despite the `@unstable` caller. `x1` is snapshotted and restored so an in-place
+# `f` does not corrupt the input across chunks (the seed primal aliases `x1`).
 function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where {W}
     f_seed = zero_lifted(Val(W), grad_f)
     x_seed = zero_lifted(Val(W), x1)
@@ -2352,16 +2376,17 @@ H
         return fval, g, H
     end
     # Chunked forward-over-reverse: when `prepare_hessian_cache` built a width-W variant of
-    # `grad_f` (its FoR dual callables are width W), sweep W Hessian columns per pass. Falls back
-    # to the width-1 column loop otherwise (scalar 1-DOF, or chunk_size 1).
+    # `grad_f` (its FoR dual callables are width W), sweep W Hessian columns per pass. Falls
+    # back to the width-1 column loop otherwise (scalar 1-DOF, or chunk_size 1).
     if chunked !== nothing
         grad_f_c, fwd_c, W = chunked
         value = _chunked_hessian_sweep!(grad_f_c, fwd_c, H, g, x1, n, Val(W))
         return value, g, H
     end
     local value
-    # Reset `v` in case a prior call threw between `v[i] = one(T)` and `v[i] = zero(T)`. Only the
-    # width-1 sweep touches `v`; the chunked path builds its own seed, so this stays out of it.
+    # Reset `v` in case a prior call threw between `v[i] = one(T)` and `v[i] = zero(T)`.
+    # Only the width-1 sweep touches `v`; the chunked path builds its own seed, so this
+    # stays out of it.
     fill!(v, zero(T))
     # One-hot writes via a reused host buffer + `copyto!`: `v[i] = x` is GPU scalar
     # indexing (errors on CuArray), while `copyto!` serves both Vector and CuArray.
@@ -2381,18 +2406,14 @@ H
     return value, g, H
 end
 
-# Multi-argument calls match no single-arg method above; give a clear error rather than a raw
-# MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
+# Multi-argument calls match no single-arg method above; give a clear error rather than a
+# raw MethodError (mirrors `value_and_jacobian!!(cache, f, x, xs...)`).
 @unstable @inline function value_gradient_and_hessian!!(
     cache::HVPCache, f, x1, x2, xs::Vararg{Any,N}
 ) where {N}
     return _throw_hvp_multiarg("value_gradient_and_hessian!!", N + 2)
 end
-#
-# ======================================================================================
-# Shared cross-mode utilities
-# ======================================================================================
-#
+# ===== Shared cross-mode utilities ========================================================
 
 """
     __exclude_unsupported_output(y)
@@ -2419,9 +2440,10 @@ end
 
 # For an isbits `T` (guaranteed by the caller) this terminates, since isbits types cannot be
 # self-referential: true iff `T` is a `Ptr` or transitively contains a `Ptr` field. Lets the
-# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits struct
-# to the loud Ptr-in-output guard below (otherwise the "output may not contain a pointer" guarantee
-# fails silently, because a `Ptr` — and a struct whose fields are all bits — is itself isbits).
+# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits
+# struct to the loud Ptr-in-output guard below (otherwise the "output may not contain a
+# pointer" guarantee fails silently, because a `Ptr` — and a struct whose fields are all
+# bits — is itself isbits).
 _isbits_contains_ptr(::Type{<:Ptr}) = true
 _isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes(T))
 
@@ -2460,13 +2482,13 @@ Copy the contents of `src` to `dst`, with zero or minimal new memory allocation.
 Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
 For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
-# The two-argument methods are the allocation-free hot path (input restore on every
-# autodiff pass); they recurse two-argument and stay byte-identical to the original
-# acyclic implementation. Only the mutable-struct method re-dispatches to the three-argument
-# family below (when `ismutable(src)`), which threads an `IdDict` aliasing cache: each mutable
+# The two-argument methods are the allocation-free hot path (input restore on every autodiff
+# pass); they recurse two-argument and stay byte-identical to the original acyclic
+# implementation. Only the mutable-struct method re-dispatches to the three-argument family
+# below (when `ismutable(src)`), which threads an `IdDict` aliasing cache: each mutable
 # `dst` — and each reference-element array — is registered (keyed by its `src`) before its
-# contents are restored, so a cycle returns the in-progress `dst` instead of recursing forever.
-# Mirrors reverse-mode's `MaybeCache`.
+# contents are restored, so a cycle returns the in-progress `dst` instead of recursing
+# forever. Mirrors reverse-mode's `MaybeCache`.
 _copy_to_output!!(dst::Number, src::Number) = src
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
@@ -2480,9 +2502,9 @@ function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
     return Core.svec(map(_copy_to_output!!, dst, src)...)
 end
 
-# copy for Array, Memory. Acyclic hot path: recurses two-argument with no aliasing cache. Cycle
-# handling (including a self-referential reference-element array) lives in the three-argument array
-# method below, which threads the cache.
+# copy for Array, Memory. Acyclic hot path: recurses two-argument with no aliasing cache.
+# Cycle handling (including a self-referential reference-element array) lives in the
+# three-argument array method below, which threads the cache.
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
@@ -2529,7 +2551,8 @@ function _copy_to_output!!(dst::P, src::P) where {P}
         end
     end
 
-    # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
+    # when immutable struct object created by non initializing inner constructor.
+    # (Base.deepcopy misses this out)
     !isassigned(flds, 1) && return src
     return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
 end
@@ -2645,8 +2668,8 @@ _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict
 _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
 function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
-    # Copy each element via its own `_copy_output` dispatch (arrays, structs, type values, …); the
-    # sibling `_copy_to_output!!(::SimpleVector)` copies element-wise the same way.
+    # Copy each element via its own `_copy_output` dispatch (arrays, structs, type values,
+    # …); the sibling `_copy_to_output!!(::SimpleVector)` copies element-wise the same way.
     return Core.svec([_copy_output(x_sub, c) for x_sub in x]...)
 end
 
@@ -2738,7 +2761,8 @@ end
         flds = collect(
             Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i), c))
         )
-        # when immutable struct object created by non initializing inner constructor. (Base.deepcopy misses this out)
+        # when immutable struct object created by non initializing inner constructor.
+        # (Base.deepcopy misses this out)
         return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, $idx)::P
     end
 end
@@ -2775,7 +2799,8 @@ function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
     return throw_ptr_in_output_error(y)
 end
 
-# Prepared-cache spec for one primal: array inputs record their size, everything else records `()`.
+# Prepared-cache spec for one primal: array inputs record their size, everything else
+# records `()`.
 @inline _input_spec(x) =
     x isa AbstractArray ? InputSpec(typeof(x), size(x)) : InputSpec(typeof(x), ())
 
@@ -2853,11 +2878,12 @@ end
 @inline function dof(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
     return is_init(t) ? dof(val(t), seen) : 0
 end
-# Generic fallback for tuples, named tuples, and any tangent struct — `Tangent`/`MutableTangent`
-# (whose single `fields` NamedTuple recurses), but also `MistyClosureTangent` and other
-# custom/closure tangents from e.g. the HVP `grad_f`. Walk its fields with mutable-node dedup so
-# aliased and cyclic tangents are handled uniformly (tuples/named-tuples are immutable and
-# fully-initialised, so `fieldcount`/`getfield` recursion matches element iteration).
+# Generic fallback for tuples, named tuples, and any tangent struct —
+# `Tangent`/`MutableTangent` (whose single `fields` NamedTuple recurses), but also
+# `MistyClosureTangent` and other custom/closure tangents from e.g. the HVP `grad_f`. Walk
+# its fields with mutable-node dedup so aliased and cyclic tangents are handled uniformly
+# (tuples/named-tuples are immutable and fully-initialised, so `fieldcount`/`getfield`
+# recursion matches element iteration).
 @inline function dof(t::P, seen::IdDict{Any,Any}) where {P}
     if Base.ismutabletype(P)
         haskey(seen, t) && return 0
