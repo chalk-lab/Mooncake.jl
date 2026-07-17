@@ -621,9 +621,7 @@ function frule!!(
     _inb = primal(inbounds)
     Core.arrayset(_inb, primal(A), primal(v), _inds...)
     for lane in 1:Nw
-        Core.arrayset(
-            _inb, tangent(A).partials[lane], _nfwd_dual_partial(tangent(v), lane), _inds...
-        )
+        Core.arrayset(_inb, tangent(A).partials[lane], tangent(v, lane), _inds...)
     end
     return A
 end
