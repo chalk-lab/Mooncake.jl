@@ -281,49 +281,35 @@ function frule!!(
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besseljx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besseljx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besseljx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
-    ∂x_2 = -sign(imag(x)) * y
-    v_parts = tangent(_v).partials
-    dy_lanes = ntuple(Val(Nw)) do k
-        dx_k = tangent(_x, k)
-        notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
+# `besseljx`/`besselyx` share an identical two-term `∂x` body (imaginary-axis `sign`/`imag`
+# projector) up to the bare function symbol; generate both from the symbol.
+for f in (:besseljx, :besselyx)
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof($f),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
+        }
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
+        ) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+            v = primal(_v)
+            x = primal(_x)
+            y = $f(v, x)
+            primal_eltype = eltype(y isa Complex ? y.re : y)
+            ∂x_1 = ($f(v - 1, x) - $f(v + 1, x)) / 2
+            ∂x_2 = -sign(imag(x)) * y
+            v_parts = tangent(_v).partials
+            dy_lanes = ntuple(Val(Nw)) do k
+                dx_k = tangent(_x, k)
+                notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
+            end
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+        end
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(besselyx),IEEEFloat,Union{IEEEFloat,Complex{<:IEEEFloat}}
-}
-function frule!!(
-    ::Lifted{typeof(besselyx),Nw}, _v::Lifted{T,Nw,NDual{T,Nw}}, _x::Lifted{P,Nw}
-) where {Nw,T<:IEEEFloat,P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    v = primal(_v)
-    x = primal(_x)
-    y = besselyx(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
-    ∂x_2 = -sign(imag(x)) * y
-    v_parts = tangent(_v).partials
-    dy_lanes = ntuple(Val(Nw)) do k
-        dx_k = tangent(_x, k)
-        notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 # Scaled bessel-k and Hankel functions: single-`∂x` recurrence, identical body to the standard
-# group above (`besselkx`'s `∂x` adds `+ y`, the Hankels add `∓ im·y`). `besselix`/`besseljx`/
-# `besselyx` above are kept separate — they have a distinct two-term `∂x` involving `real`/`imag`.
+# group above (`besselkx`'s `∂x` adds `+ y`, the Hankels add `∓ im·y`). `besselix` above is kept
+# separate — its two-term `∂x` uses the real-axis `sign`/`real` projector, not the imaginary one.
 for (f, ∂x_expr) in (
     (:besselkx, :(-(besselkx(v - 1, x) + besselkx(v + 1, x)) / 2 + y)),
     (:hankelh1x, :((hankelh1x(v - 1, x) - hankelh1x(v + 1, x)) / 2 - im * y)),
