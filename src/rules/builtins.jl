@@ -486,8 +486,9 @@ end
 @inline function frule!!(
     ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
 ) where {Nw,T<:Ptr,P<:Ptr}
+    tx = tangent(x)
     lanes = ntuple(Val(Nw)) do k
-        p = tangent(x)[k]
+        p = tx[k]
         if eltype(typeof(p)) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
             p
         else

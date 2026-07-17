@@ -510,13 +510,11 @@ function increment_and_get_rdata!(
     increment!!(f, t)
     return NoRData()
 end
-increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
-# `ZeroTangent` is the ChainRules idiom for a *differentiable* argument whose gradient is
-# structurally zero (distinct from `NoTangent`, a non-differentiable argument). Either way the
-# increment is zero, so — like `NoTangent` — leave fdata untouched and return the rdata `r` as-is.
-# Without this, a common CRC pullback returning `ZeroTangent()` for a slot hit the generic fallback
-# and threw an ArgumentError.
-increment_and_get_rdata!(::Any, r, ::CRC.ZeroTangent) = r
+# `NoTangent` (a non-differentiable argument) and `ZeroTangent` (the ChainRules idiom for a
+# differentiable argument whose gradient is structurally zero) both mean a zero increment: leave
+# fdata untouched and return the rdata `r`. Without the `ZeroTangent` case, a common CRC pullback
+# returning `ZeroTangent()` for a slot hit the generic fallback and threw an ArgumentError.
+increment_and_get_rdata!(::Any, r, ::Union{CRC.NoTangent,CRC.ZeroTangent}) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
 end

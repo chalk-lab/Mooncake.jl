@@ -21,9 +21,7 @@ end
 # the differentiable `captures_tangent` carries scalar DOFs. `dual_callable` is the compiled
 # dual rule (an OpaqueClosure/MistyClosure), not a tangent — walking it generically recurses
 # unboundedly into compiled IR (e.g. via the HVP `grad_f`), so it is skipped.
-@inline dof(t::MistyClosureTangent, seen::IdDict{Any,Any}) = dof(
-    getfield(t, :captures_tangent), seen
-)
+@inline dof(t::MistyClosureTangent, seen::IdDict{Any,Any}) = dof(t.captures_tangent, seen)
 
 # Build a forward-mode rule for a MistyClosure using its original world age.
 #

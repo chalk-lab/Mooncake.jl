@@ -306,11 +306,8 @@ end
 @inline function Mooncake.lift(x::CuPtr{T}, ẋ::CuPtr{T}) where {T}
     return Mooncake.Lifted{CuPtr{T},1}(x, (ẋ,))
 end
-@inline function Mooncake.lift(x::A, ẋ::A) where {T<:IEEEFloat,D,A<:CuArray{T,D}}
-    return Mooncake.Lifted{A,1}(x, NDualArray{T,1,D,A}(x, (ẋ,)))
-end
-@inline function Mooncake.lift(x::A, ẋ::A) where {R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
-    return Mooncake.Lifted{A,1}(x, NDualArray{Complex{R},1,D,A}(x, (ẋ,)))
+@inline function Mooncake.lift(x::A, ẋ::A) where {A<:CuMaybeComplexArray}
+    return Mooncake.Lifted{A,1}(x, NDualArray{eltype(A),1,ndims(A),A}(x, (ẋ,)))
 end
 # CuDataRef is non-differentiable (V === NoDual). The legacy fixture idiom
 # `Dual(data, copy(data))` passes a same-typed handle as the tangent; here we
