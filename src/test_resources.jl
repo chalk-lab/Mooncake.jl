@@ -604,9 +604,8 @@ function Mooncake.frule!!(
     x::Mooncake.Lifted{Float64,Nw,Mooncake.Nfwd.NDual{Float64,Nw}},
 ) where {Nw}
     px = Mooncake.primal(x)
-    partials = Mooncake.tangent(x).partials
     y = 5 * px
-    dy_lanes = ntuple(k -> 5 * partials[k], Val(Nw))
+    dy_lanes = ntuple(k -> 5 * Mooncake.tangent(x, k), Val(Nw))
     return Mooncake.Lifted{Float64,Nw}(y, Mooncake.Nfwd.NDual{Float64,Nw}(y, dy_lanes))
 end
 function Mooncake.rrule!!(::CoDual{typeof(edge_case_tester)}, x::CoDual{Float64})

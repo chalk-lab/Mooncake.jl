@@ -283,7 +283,7 @@ function frule!!(
     # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
     # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
     # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
-    in(_key, keys(primal(d))) || return default
+    haskey(primal(d), _key) || return default
     return Lifted{V,N}(primal(d)[_key], tangent(d)[_key])
 end
 function rrule!!(
