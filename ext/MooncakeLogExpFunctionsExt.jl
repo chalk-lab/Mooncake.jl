@@ -161,20 +161,15 @@ function frule!!(
     y = logsumexp(_x; kw...)
     w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
     tmp = similar(_x)  # scratch reused across lanes
+    # Per-lane reduction is identical for scalar and array results; only the output wrapper differs.
+    dy = ntuple(Val(Nw)) do lane
+        tmp .= tangent(x).partials[lane] .* w
+        sum(tmp; kw...)
+    end
     if y isa AbstractArray
-        # Array result — each lane's partial is the same shape as y.
-        dy_partials = ntuple(Val(Nw)) do lane
-            tmp .= tangent(x).partials[lane] .* w
-            sum(tmp; kw...)
-        end
-        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
+        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy))
     else
-        # Scalar result.
-        dy_lanes = ntuple(Val(Nw)) do lane
-            tmp .= tangent(x).partials[lane] .* w
-            sum(tmp; kw...)
-        end
-        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy))
     end
 end
 # Per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
