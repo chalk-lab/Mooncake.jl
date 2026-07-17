@@ -143,11 +143,9 @@ an unimplemented partial is mathematically required.
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# Lifted analogues — per-lane partial extraction and result packing.
-@inline _sf_lane(v::NDual, lane::Integer) = v.partials[lane]
-@inline function _sf_lane(v::Complex{<:NDual}, lane::Integer)
-    return Complex(real(v).partials[lane], imag(v).partials[lane])
-end
+# Lifted analogue — pack (y, per-lane dy values) into the canonical scalar-result slot.
+# Per-lane partials come from the canonical `tangent(slot, k)` accessor (handles NDual and
+# Complex{NDual} scalar Vs).
 
 # Wrap (y, per-lane dy values) into the canonical Lifted slot for a
 # scalar (real or complex) result.
@@ -222,10 +220,8 @@ for (f, ∂x_expr) in (
             y = $f(a, x)
             primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
-            a_v = tangent(_a)
-            x_v = tangent(_x)
             dy_lanes = ntuple(Val(Nw)) do k
-                notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+                notimplemented_tangent_guard(tangent(_a, k)) + ∂x * tangent(_x, k)
             end
             return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
         end
@@ -256,9 +252,8 @@ for (f, ∂x_expr) in (
             primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
             v_parts = tangent(_v).partials
-            x_v = tangent(_x)
             dy_lanes = ntuple(Val(Nw)) do k
-                notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+                notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
             return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
         end
@@ -283,9 +278,8 @@ function frule!!(
     ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
     ∂x_2 = -sign(real(x)) * y
     v_parts = tangent(_v).partials
-    x_v = tangent(_x)
     dy_lanes = ntuple(Val(Nw)) do k
-        dx_k = _sf_lane(x_v, k)
+        dx_k = tangent(_x, k)
         notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * real(dx_k)
     end
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
@@ -304,9 +298,8 @@ function frule!!(
     ∂x_1 = (besseljx(v - 1, x) - besseljx(v + 1, x)) / 2
     ∂x_2 = -sign(imag(x)) * y
     v_parts = tangent(_v).partials
-    x_v = tangent(_x)
     dy_lanes = ntuple(Val(Nw)) do k
-        dx_k = _sf_lane(x_v, k)
+        dx_k = tangent(_x, k)
         notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
     end
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
@@ -325,9 +318,8 @@ function frule!!(
     ∂x_1 = (besselyx(v - 1, x) - besselyx(v + 1, x)) / 2
     ∂x_2 = -sign(imag(x)) * y
     v_parts = tangent(_v).partials
-    x_v = tangent(_x)
     dy_lanes = ntuple(Val(Nw)) do k
-        dx_k = _sf_lane(x_v, k)
+        dx_k = tangent(_x, k)
         notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
     end
     return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
@@ -354,9 +346,8 @@ for (f, ∂x_expr) in (
             primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
             v_parts = tangent(_v).partials
-            x_v = tangent(_x)
             dy_lanes = ntuple(Val(Nw)) do k
-                notimplemented_tangent_guard(v_parts[k]) + ∂x * _sf_lane(x_v, k)
+                notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
             return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
         end
