@@ -243,35 +243,17 @@ end
 # the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields
 # and fail; an explicit `NDualArray` seed keeps `zero_dual` / `uninit_dual` / `randn_dual`
 # coherent with `dual_type`.
-@inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
-    return NDualArray{T,N,D,A}(x)
+@inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
+    return NDualArray{eltype(A),N,ndims(A),A}(x)
 end
-@inline function Mooncake.zero_dual(
-    ::Val{N}, x::A
-) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
-    return NDualArray{Complex{R},N,D,A}(x)
-end
-@inline function Mooncake.uninit_dual(
-    ::Val{N}, x::A
-) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
-    return NDualArray{T,N,D,A}(x)
-end
-@inline function Mooncake.uninit_dual(
-    ::Val{N}, x::A
-) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
-    return NDualArray{Complex{R},N,D,A}(x)
+@inline function Mooncake.uninit_dual(::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
+    return NDualArray{eltype(A),N,ndims(A),A}(x)
 end
 @inline function Mooncake.randn_dual(
     ::Val{N}, rng::Random.AbstractRNG, x::A
-) where {N,T<:IEEEFloat,D,A<:CuArray{T,D}}
-    partials = ntuple(_ -> A(randn(rng, T, size(x)...)), Val(N))
-    return NDualArray{T,N,D,A}(x, partials)
-end
-@inline function Mooncake.randn_dual(
-    ::Val{N}, rng::Random.AbstractRNG, x::A
-) where {N,R<:IEEEFloat,D,A<:CuArray{Complex{R},D}}
-    partials = ntuple(_ -> A(randn(rng, Complex{R}, size(x)...)), Val(N))
-    return NDualArray{Complex{R},N,D,A}(x, partials)
+) where {N,A<:CuMaybeComplexArray}
+    partials = ntuple(_ -> A(randn(rng, eltype(A), size(x)...)), Val(N))
+    return NDualArray{eltype(A),N,ndims(A),A}(x, partials)
 end
 # Cache-aware seed delegations: a `CuArray` has a custom `NDualArray` V, so the cache-aware
 # `_*_dual_internal` must delegate to the cache-free factory above (like core's `Array`
