@@ -40,24 +40,23 @@ function frule!!(
     X_dX::Lifted{Matrix{P},Nw,NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat}
     Xp = primal(X_dX)
-    Y_partials = ntuple(_ -> similar(Xp), Val(Nw))
-    Y_primal = similar(Xp)
     # One `ChainRules.frule` call per lane. ChainRules' matrix-exp frule computes the primal
     # `exp(X)` and the directional derivative together via a single augmented block-matrix
     # exponential, so each lane recomputes `exp(X)` (the dominant cost): it cannot be hoisted out
-    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` destroys
-    # its input, so `Xc`/`dXc` are reused scratches refilled from `Xp`/the lane's tangent each
-    # lane; the (lane-independent) `Y_primal` is taken from lane 1 (Nw ≥ 1).
+    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` destroys its
+    # input, so `Xc`/`dXc` are reused scratches refilled from `Xp`/the lane's tangent each lane. The
+    # frule returns freshly-allocated `Matrix{P}` for both the primal and each partial, so use them
+    # directly (no extra `similar`/`copyto!`); the (lane-independent) `Y_primal` is lane 1's (Nw ≥ 1).
     Xc = similar(Xp)
     dXc = similar(Xp)
-    @inbounds for lane in 1:Nw
+    copyto!(Xc, Xp)
+    copyto!(dXc, tangent(X_dX).partials[1])
+    Y_primal, dY_1 = ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)
+    Y_partials = ntuple(Val(Nw)) do lane
+        lane == 1 && return dY_1
         copyto!(Xc, Xp)
         copyto!(dXc, tangent(X_dX).partials[lane])
-        Y_l, dY_l = ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)
-        if lane == 1
-            copyto!(Y_primal, Y_l)
-        end
-        copyto!(Y_partials[lane], dY_l)
+        return ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)[2]
     end
     return Lifted{Matrix{P},Nw}(
         Y_primal, NDualArray{P,Nw,2,Matrix{P}}(Y_primal, Y_partials)
