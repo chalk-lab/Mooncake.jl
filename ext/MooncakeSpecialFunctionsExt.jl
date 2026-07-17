@@ -197,89 +197,39 @@ function frule!!(
     return Lifted{typeof(y),Nw}(y, (p_nd, q_nd))
 end
 
-# 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`)
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(gamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
-function frule!!(
-    ::Lifted{typeof(gamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
-) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a = primal(_a)
-    x = primal(_x)
-    y = gamma(a, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = -exp((a - 1) * log(x) - x)
-    a_v = tangent(_a)
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+# 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`). The four share
+# an identical body up to the `∂x` expression; generate them from `(fn, ∂x-expression)` specs, as for
+# the bessel/hankel loops below.
+for (f, ∂x_expr) in (
+    (:gamma, :(-exp((a - 1) * log(x) - x))),
+    (:loggamma, :(-exp((a - 1) * log(x) - x - loggamma(a, x)))),
+    (:expint, :(-expint(a - 1, x))),
+    (:expintx, :(y - expintx(a - 1, x))),
+)
+    @eval begin
+        @is_primitive DefaultCtx ForwardMode Tuple{
+            typeof($f),
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+            Union{IEEEFloat,Complex{<:IEEEFloat}},
+        }
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
+        ) where {
+            Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}
+        }
+            a = primal(_a)
+            x = primal(_x)
+            y = $f(a, x)
+            primal_eltype = eltype(y isa Complex ? y.re : y)
+            ∂x = $∂x_expr
+            a_v = tangent(_a)
+            x_v = tangent(_x)
+            dy_lanes = ntuple(Val(Nw)) do k
+                notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
+            end
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+        end
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(loggamma),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
-function frule!!(
-    ::Lifted{typeof(loggamma),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
-) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a = primal(_a)
-    x = primal(_x)
-    y = loggamma(a, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = -exp((a - 1) * log(x) - x - loggamma(a, x))
-    a_v = tangent(_a)
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expint),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
-function frule!!(
-    ::Lifted{typeof(expint),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
-) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a = primal(_a)
-    x = primal(_x)
-    y = expint(a, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = -expint(a - 1, x)
-    a_v = tangent(_a)
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
-end
-
-@is_primitive DefaultCtx ForwardMode Tuple{
-    typeof(expintx),
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-    Union{IEEEFloat,Complex{<:IEEEFloat}},
-}
-function frule!!(
-    ::Lifted{typeof(expintx),Nw}, _a::Lifted{T,Nw}, _x::Lifted{P,Nw}
-) where {Nw,L<:IEEEFloat,T<:Union{L,Complex{L}},P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    a = primal(_a)
-    x = primal(_x)
-    y = expintx(a, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
-    ∂x = y - expintx(a - 1, x)
-    a_v = tangent(_a)
-    x_v = tangent(_x)
-    dy_lanes = ntuple(Val(Nw)) do k
-        notimplemented_tangent_guard(_sf_lane(a_v, k)) + ∂x * _sf_lane(x_v, k)
-    end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
 end
 
 # 2-arg standard Bessel and Hankel functions. The six share an identical body up to the
