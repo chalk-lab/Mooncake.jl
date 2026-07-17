@@ -285,13 +285,14 @@ end
     return tangent_type(T) === NoTangent ? NoDual : NTuple{N,CuPtr{T}}
 end
 
-@inline function Mooncake.zero_dual(::Val{N}, x::CuPtr{T}) where {N,T}
-    tangent_type(T) === NoTangent && return NoDual()
-    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
-end
-@inline function Mooncake.uninit_dual(::Val{N}, x::CuPtr{T}) where {N,T}
-    tangent_type(T) === NoTangent && return NoDual()
-    return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+# `zero_dual`/`uninit_dual` build the same per-lane null-pointer seed; generate both from the name
+# (mirroring the `_*_dual_internal` delegation loop above and core's `zero_dual`/`uninit_dual`
+# loop). `randn_dual` shares the body but keeps its own method for the extra `rng` argument.
+for factory in (:zero_dual, :uninit_dual)
+    @eval @inline function Mooncake.$factory(::Val{N}, x::CuPtr{T}) where {N,T}
+        tangent_type(T) === NoTangent && return NoDual()
+        return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
+    end
 end
 @inline function Mooncake.randn_dual(
     ::Val{N}, ::Random.AbstractRNG, x::CuPtr{T}
