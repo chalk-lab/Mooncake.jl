@@ -150,13 +150,13 @@ an unimplemented partial is mathematically required.
 # Wrap (y, per-lane dy values) into the canonical Lifted slot for a
 # scalar (real or complex) result.
 @inline function _lifted_scalar_result(
-    y::L, primal_eltype, dy_lanes::NTuple{Nw}, ::Val{Nw}
+    y::L, primal_eltype, dy_lanes::NTuple{Nw}
 ) where {L<:IEEEFloat,Nw}
     parts = ntuple(k -> primal_eltype(dy_lanes[k]), Val(Nw))
     return Lifted{L,Nw}(y, NDual{L,Nw}(y, parts))
 end
 @inline function _lifted_scalar_result(
-    y::Complex{L}, primal_eltype, dy_lanes::NTuple{Nw}, ::Val{Nw}
+    y::Complex{L}, primal_eltype, dy_lanes::NTuple{Nw}
 ) where {L<:IEEEFloat,Nw}
     re_parts = ntuple(k -> primal_eltype(real(dy_lanes[k])), Val(Nw))
     im_parts = ntuple(k -> primal_eltype(imag(dy_lanes[k])), Val(Nw))
@@ -219,7 +219,7 @@ for (f, ∂x_expr) in (
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(tangent(_a, k)) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
         end
     end
 end
@@ -251,7 +251,7 @@ for (f, ∂x_expr) in (
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
         end
     end
 end
@@ -278,7 +278,7 @@ function frule!!(
         dx_k = tangent(_x, k)
         notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * real(dx_k)
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+    return _lifted_scalar_result(y, primal_eltype, dy_lanes)
 end
 
 # `besseljx`/`besselyx` share an identical two-term `∂x` body (imaginary-axis `sign`/`imag`
@@ -302,7 +302,7 @@ for f in (:besseljx, :besselyx)
                 dx_k = tangent(_x, k)
                 notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
         end
     end
 end
@@ -331,7 +331,7 @@ for (f, ∂x_expr) in (
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes, Val(Nw))
+            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
         end
     end
 end
