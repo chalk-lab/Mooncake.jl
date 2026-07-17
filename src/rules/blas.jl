@@ -362,7 +362,8 @@ function frule!!(
         dXv = _viewify_one(_n, dX_lane, _inc)
         s = zero(R)
         @inbounds for i in eachindex(Xv)
-            s += real(Xv[i] * dXv[i]') + real(Xv[i]' * dXv[i])
+            # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
+            s += 2 * real(Xv[i]' * dXv[i])
         end
         # Removable singularity at the zero vector: `s == 0` there, so `s / (2y)` is `0/0`.
         iszero(s) ? zero(R) : s / (2 * y)

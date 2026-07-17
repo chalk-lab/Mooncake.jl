@@ -219,18 +219,15 @@ function frule!!(
     # `dot` conjugates, so keep `sum(dxs .* w)` here (P may be Complex); w is lane-independent.
     w = exp.(px .- y)  # softmax weights, computed once, not per lane
     tmp = similar(px)  # scratch reused across lanes
+    # Per-lane reduction is identical for scalar and array results; only the output wrapper differs.
+    dy = ntuple(Val(Nw)) do lane
+        tmp .= dxs[lane] .* w
+        sum(tmp; kw...)
+    end
     if y isa AbstractArray
-        dy_partials = ntuple(Val(Nw)) do lane
-            tmp .= dxs[lane] .* w
-            sum(tmp; kw...)
-        end
-        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy_partials))
+        return Lifted{typeof(y),Nw}(y, NDualArray{P,Nw,ndims(y),typeof(y)}(y, dy))
     else
-        dy_lanes = ntuple(Val(Nw)) do lane
-            tmp .= dxs[lane] .* w
-            sum(tmp; kw...)
-        end
-        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+        return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy))
     end
 end
 # Plain scalar logsumexp on a wrapped input: 0-alloc manual loop (mirrors the dense scalar method).
