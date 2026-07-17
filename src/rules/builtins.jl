@@ -489,7 +489,7 @@ end
     tx = tangent(x)
     lanes = ntuple(Val(Nw)) do k
         p = tx[k]
-        if eltype(typeof(p)) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
+        if eltype(p) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
             p
         else
             bitcast(T, p)
