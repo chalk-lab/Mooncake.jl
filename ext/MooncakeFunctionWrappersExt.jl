@@ -48,10 +48,7 @@ import Mooncake:
     SetToZeroCache,
     Stack,
     lift,
-    lifted_type,
-    randn_lifted,
-    uninit_lifted,
-    zero_lifted
+    lifted_type
 
 # Tangent type for FunctionWrapper. Also serves as fdata since FunctionWrapper is mutable.
 # Fields:
@@ -406,7 +403,7 @@ function rrule!!(f::CoDual{<:FunctionWrapper}, x::Vararg{CoDual})
     return y, function_wrapper_eval_pb
 end
 
-function frule!!(f::Lifted{FunctionWrapper{R,A},N}, x::Vararg{Lifted,M}) where {R,A,N,M}
+function frule!!(f::Lifted{FunctionWrapper{R,A},N}, x::Vararg{Lifted}) where {R,A,N}
     return tangent(f).frule_wrapper(x...)
 end
 
