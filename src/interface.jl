@@ -1670,17 +1670,18 @@ function value_and_gradient!!(
     # Aqua). Gradient always has >=1 input. Reconstruct `xs`/`N` to leave the body below unchanged.
     xs = (x1, xs_rest...)
     N = Nm1 + 1
-    input_primals = (f, xs...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     seed = cache.gradient_seed
     # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is destructured
     # below. Any other seed — `nothing` (differentiable `f` / non-packable), or the struct seeds
     # `StructuredGradSeed`/`IsbitsGradSeed` (e.g. a view, whose `similar` is not its own type so it
     # is excluded from the flat path) — is delegated to the generic method, which dispatches on the
-    # seed type. `invoke` is needed because a plain call would re-dispatch back to this method (the
-    # args are float vectors).
+    # seed type (and validates the cache itself). `invoke` is needed because a plain call would
+    # re-dispatch back to this method (the args are float vectors).
     seed isa Tuple ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
+    # Validate once, on the packable path only (the fallback validates in the generic method).
+    input_primals = (f, xs...)
+    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     f_seed_stored, arg_seeds, grad_bufs = seed
     # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
