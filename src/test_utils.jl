@@ -719,7 +719,7 @@ function test_frule(
     # Chunked widths (N > 1), primitive rules only.
     chunked_widths = filter(>(1), Tuple(widths))
     (is_primitive && !interface_only && !isempty(chunked_widths)) || return nothing
-    base = map(z -> z isa CoDual ? primal(z) : z, x)
+    base = __get_primals(x)
     # Fresh copy for the reference primal — `f` may mutate an argument in place.
     yp = map(_deepcopy, base)
     y_true = yp[1](yp[2:end]...)

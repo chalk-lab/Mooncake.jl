@@ -25,7 +25,7 @@ function frule!!(
     # one `NDual` per element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
     nda = tangent(x)
     pv = sum(nda.primal)
-    return Lifted{P,N}(pv, NDual{P,N}(pv, ntuple(k -> sum(nda.partials[k]), Val(N))))
+    return Lifted{P,N}(pv, _scalar_ndual(pv, ntuple(k -> sum(nda.partials[k]), Val(N))))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -49,7 +49,9 @@ function frule!!(
     nda = tangent(x)
     p = nda.primal
     v = sum(abs2, p)
-    return Lifted{P,N}(v, NDual{P,N}(v, ntuple(k -> 2 * dot(p, nda.partials[k]), Val(N))))
+    return Lifted{P,N}(
+        v, _scalar_ndual(v, ntuple(k -> 2 * dot(p, nda.partials[k]), Val(N)))
+    )
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
