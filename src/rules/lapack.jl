@@ -144,7 +144,7 @@ function frule!!(
     X = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, X)
     tmp = similar(X)
-    tmpm = tmp isa AbstractVector ? reshape(tmp, :, 1) : tmp
+    tmpm = _as_col(tmp)
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]

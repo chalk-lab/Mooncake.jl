@@ -444,18 +444,15 @@ function rrule!!(
 end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
+    # `zero_derivative` runs the primal once and wraps it via `zero_lifted`, giving the canonical
+    # zero-derivative V for both result shapes (`jl_get_world_counter`'s `UInt64` → `NoDual`;
+    # `jl_matching_methods`'s `Vector{Any}` → `Vector{Any}`, whose `tangent_type` is not `NoTangent`).
     @eval function frule!!(
-        ::Lifted{typeof(_foreigncall_),Nw},
-        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        f::Lifted{typeof(_foreigncall_),Nw},
+        n::Lifted{Val{$(QuoteNode(name))},Nw},
         args::Vararg{Lifted,M},
     ) where {Nw,M}
-        y = _foreigncall_(Val($(QuoteNode(name))), tuple_map(primal, args)...)
-        # Canonical zero-derivative forward result. `jl_get_world_counter` returns a `UInt64`
-        # (`dual_type` is `NoDual`), but `jl_matching_methods` returns a `Vector{Any}` whose
-        # canonical `dual_type` is `Vector{Any}` — hardcoding `NoDual` there would be a
-        # non-canonical V (tangent_type is not `NoTangent`). `zero_lifted` yields the right
-        # shape for both.
-        return zero_lifted(Val(Nw), y)
+        return zero_derivative(f, n, args...)
     end
     @eval function rrule!!(
         f::CoDual{typeof(_foreigncall_)},
