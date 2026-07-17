@@ -486,14 +486,17 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
+# One vararg method covers both the index and index+boundscheck forms for the float
+# `NDualMemoryRef`-V slot, mirroring the element-wise `memoryrefnew` sibling below.
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
     ii::Lifted,
-) where {Nw,P<:NDualEltype}
-    _ii = primal(ii)
-    y = memoryrefnew(primal(x), _ii)
-    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], _ii), Val(Nw))
+    rest::Vararg{Lifted,K},
+) where {Nw,P<:NDualEltype,K}
+    a = (primal(ii), map(primal, rest)...)
+    y = memoryrefnew(primal(x), a...)
+    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], a...), Val(Nw))
     return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
 end
 @inline function rrule!!(
@@ -502,18 +505,6 @@ end
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
-@inline function frule!!(
-    ::Lifted{typeof(memoryrefnew),Nw},
-    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
-    ii::Lifted,
-    boundscheck::Lifted{Bool},
-) where {Nw,P<:NDualEltype}
-    _ii = primal(ii)
-    _bc = primal(boundscheck)
-    y = memoryrefnew(primal(x), _ii, _bc)
-    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], _ii, _bc), Val(Nw))
-    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
-end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
     x::CoDual{<:MemoryRef},
