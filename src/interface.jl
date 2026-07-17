@@ -1,4 +1,6 @@
-# ===== Shared types, constants, and errors ================================================
+#
+# Shared types, constants, and errors
+#
 
 struct ValueAndGradientReturnTypeError <: Exception
     msg::String
@@ -28,7 +30,10 @@ end
 function throw_ptr_in_output_error(y)
     throw(
         ValueAndPullbackReturnTypeError(
-            "Found a value of type $(typeof(y)) in output, but output is not permitted to be or contain a pointer. This is because the amount of memory to which it refers is unknown, therefore Mooncake.jl is unable to allocate appropriate memory for its gradients.",
+            "Found a value of type $(typeof(y)) in output, but output is not permitted " *
+            "to be or contain a pointer. This is because the amount of memory to which " *
+            "it refers is unknown, therefore Mooncake.jl is unable to allocate " *
+            "appropriate memory for its gradients.",
         ),
     )
 end
@@ -36,8 +41,8 @@ end
 function throw_circular_reference_or_alias_error(y)
     throw(
         ValueAndPullbackReturnTypeError(
-            "Object with address $(objectid(y)) and type $(typeof(y)) appears more than once." *
-            " Output cannot contain Circular references or aliases",
+            "Object with address $(objectid(y)) and type $(typeof(y)) appears more than " *
+            "once. Output cannot contain Circular references or aliases",
         ),
     )
 end
@@ -216,7 +221,9 @@ end
 
 InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
 
-@inline _cache_spec_summary(spec::InputSpec{T}) where {T} = "$(T) ($(_cache_size_summary(T, "size $(spec.size)")))"
+@inline function _cache_spec_summary(spec::InputSpec{T}) where {T}
+    return "$(T) ($(_cache_size_summary(T, "size $(spec.size)")))"
+end
 
 const _MAX_CHUNK_WIDTH = 8
 
@@ -231,21 +238,19 @@ end
 function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     label = i == 1 ? "`f`" : "`x$(i - 1)`"
     msg = if kind === :arity
-        "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got $(got).\n" *
-        "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
-        "with the same top-level argument structure they were prepared with."
+        "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got " *
+        "$(got).\nPrepared pullback, gradient, derivative, HVP, and Hessian caches must " *
+        "be reused with the same top-level argument structure they were prepared with."
     elseif kind === :type
-        "Cached autodiff call has a type mismatch for $label.\n" *
-        "Expected top-level type: $expected\n" *
-        "Got top-level type: $got\n" *
-        "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
-        "with the same top-level argument types they were prepared with."
+        "Cached autodiff call has a type mismatch for $label.\nExpected top-level type: " *
+        "$expected\nGot top-level type: $got\nPrepared pullback, gradient, derivative, " *
+        "HVP, and Hessian caches must be reused with the same top-level argument types " *
+        "they were prepared with."
     else
-        "Cached autodiff call has a size mismatch for $label.\n" *
-        "Expected top-level size: $expected\n" *
-        "Got top-level size: $got\n" *
-        "Prepared pullback, gradient, derivative, HVP, and Hessian caches must be reused " *
-        "with the same top-level array sizes they were prepared with."
+        "Cached autodiff call has a size mismatch for $label.\nExpected top-level size: " *
+        "$expected\nGot top-level size: $got\nPrepared pullback, gradient, derivative, " *
+        "HVP, and Hessian caches must be reused with the same top-level array sizes they " *
+        "were prepared with."
     end
     throw(PreparedCacheError(msg))
 end
@@ -348,7 +353,9 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         _cache_spec_summary(getfield(cache, :output_spec)),
     )
 end
-# ===== Forward mode — derivative and Jacobian =============================================
+#
+# Forward mode — derivative and Jacobian
+#
 
 """
     value_and_derivative!!(rule, f::Lifted, x::Lifted...)
@@ -357,9 +364,9 @@ end
 Run a forward rule directly, without first constructing a `FCache`.
 
 The tuple interface lifts each input to a width-1 slot and returns `(y, dy)` for a single
-directional derivative. The `Lifted` interface returns the rule output (a `Lifted`) directly and
-computes one derivative per lane of the supplied `Lifted` width — width-1 unless the caller built
-wider (chunked) slots.
+directional derivative. The `Lifted` interface returns the rule output (a `Lifted`) directly
+and computes one derivative per lane of the supplied `Lifted` width — width-1 unless the
+caller built wider (chunked) slots.
 """
 @inline function value_and_derivative!!(rule::R) where {R}
     throw(
@@ -403,10 +410,11 @@ end
 
 Returns a cache used with [`value_and_derivative!!`](@ref). See that function for more info.
 
-`config.chunk_size` sets the forward chunk width baked into this cache (a default heuristic when
-`nothing`), capped at the total differentiable degrees of freedom. It governs the chunked
-[`value_and_gradient!!`](@ref) / [`value_and_jacobian!!`](@ref) paths (every input shape chunks),
-not the single-direction [`value_and_derivative!!`](@ref); the resolved width is shown by the cache.
+`config.chunk_size` sets the forward chunk width baked into this cache (a default heuristic
+when `nothing`), capped at the total differentiable degrees of freedom. It governs the
+chunked [`value_and_gradient!!`](@ref) / [`value_and_jacobian!!`](@ref) paths (every input
+shape chunks), not the single-direction [`value_and_derivative!!`](@ref); the resolved width
+is shown by the cache.
 
 !!! note
     Cache construction stays lazy and does not execute `f(x...)`. Unlike the reverse
@@ -570,9 +578,9 @@ end
 """
     value_and_derivative!!(cache::FCache, f::Lifted, x::Vararg{Lifted,N})
 
-Returns a `Lifted` containing the result of applying forward-mode AD to compute the (Fréchet)
-derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values
-in `f` and `x`.
+Returns a `Lifted` containing the result of applying forward-mode AD to compute the
+(Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the
+tangent values in `f` and `x`.
 """
 # Derivative dispatch summary for `value_and_derivative!!(cache, ...)`. Both compute a
 # single directional derivative (one tangent per input); chunking is internal to
@@ -619,17 +627,31 @@ end
 """
     value_and_derivative!!(cache::FCache, (f, df), (x, dx), ...)
 
-Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the tangent values contained in `df` and `dx`.
+Returns a tuple `(y, dy)` containing the result of applying forward-mode AD to compute the
+(Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the
+tangent values contained in `df` and `dx`.
 
-Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to accommodate the case where internal Mooncake tangent types do not coincide with tangents provided by the user (in which case we translate between "friendly tangents" and internal tangents using cache storage).
+Tuples are used as inputs and outputs instead of a combined value/tangent wrapper to
+accommodate the case where internal Mooncake tangent types do not coincide with tangents
+provided by the user (in which case we translate between "friendly tangents" and internal
+tangents using cache storage).
 
-The arguments in `x` are returned to their original state: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the inputs are not mutated. `f` itself is not snapshotted — a callable that mutates its own fields is not restored.
+The arguments in `x` are returned to their original state: if `f` mutates them in place,
+they are restored from a cache-owned snapshot, so the inputs are not mutated. `f` itself is
+not snapshotted — a callable that mutates its own fields is not restored.
 
 !!! info
-    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f` and `x` must be of the same size and shape as those used to construct the `cache`. This is to ensure that the gradient can be written to the memory allocated when the `cache` was built.
+    `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
+    and `x` must be of the same size and shape as those used to construct the `cache`. This
+    is to ensure that the gradient can be written to the memory allocated when the `cache`
+    was built.
 
 !!! warning
-    `cache` owns any mutable state returned by this function, meaning that mutable components of values returned by it will be mutated if you run this function again with different arguments. Therefore, if you need to keep the values returned by this function around over multiple calls to this function with the same `cache`, you should take a copy (using `copy` or `deepcopy`) of them before calling again.
+    `cache` owns any mutable state returned by this function, meaning that mutable
+    components of values returned by it will be mutated if you run this function again with
+    different arguments. Therefore, if you need to keep the values returned by this function
+    around over multiple calls to this function with the same `cache`, you should take a
+    copy (using `copy` or `deepcopy`) of them before calling again.
 """
 @inline function value_and_derivative!!(
     cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
@@ -679,7 +701,8 @@ end
                 "Tangent types do not match primal types: tangent $(typeof(t)) is not a " *
                 "$(tangent_type(typeof(p))) for primal $(typeof(p)). With " *
                 "`friendly_tangents=false`, supply internal tangents (e.g. " *
-                "`Mooncake.zero_tangent(x)`) or rebuild the cache with `friendly_tangents=true`.",
+                "`Mooncake.zero_tangent(x)`) or rebuild the cache with " *
+                "`friendly_tangents=true`.",
             ),
         )
         nothing
@@ -709,7 +732,8 @@ function _validate_jacobian_argument(x)
     T = eltype(x)
     T <: IEEEFloat || throw(
         ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector inputs with IEEEFloat element types; got eltype $T",
+            "value_and_jacobian!! only supports AbstractVector inputs with IEEEFloat " *
+            "element types; got eltype $T",
         ),
     )
     x isa DenseVector || throw(
@@ -723,7 +747,8 @@ end
 function _throw_jacobian_eltype_mismatch(Tx, Ty)
     throw(
         ArgumentError(
-            "value_and_jacobian!! requires input and output AbstractVector element types to match; got input eltype $Tx and output eltype $Ty",
+            "value_and_jacobian!! requires input and output AbstractVector element types " *
+            "to match; got input eltype $Tx and output eltype $Ty",
         ),
     )
 end
@@ -741,7 +766,8 @@ function _validate_jacobian_output(y, Tx)
     Ty = eltype(y)
     Ty <: IEEEFloat || throw(
         ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector outputs with IEEEFloat element types; got eltype $Ty",
+            "value_and_jacobian!! only supports AbstractVector outputs with IEEEFloat " *
+            "element types; got eltype $Ty",
         ),
     )
     Ty == Tx || _throw_jacobian_eltype_mismatch(Tx, Ty)
@@ -796,33 +822,33 @@ end
     value_and_jacobian!!(cache::FCache, f, x)
     value_and_jacobian!!(cache::Cache, f, x)
 
-Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued
-function `f` of a single vector input.
+Using a pre-built cache, compute and return `(value, jacobian)` for a vector-valued function
+`f` of a single vector input.
 
 The current implementation supports a single non-empty dense vector input and an
-`AbstractVector` output, both with the same `IEEEFloat` element type. (Note the input must be
-dense even though [`value_and_gradient!!`](@ref) on the same cache also accepts strided views.)
-The returned
-Jacobian is a dense matrix whose columns correspond to input coordinates.
+`AbstractVector` output, both with the same `IEEEFloat` element type. (Note the input must
+be dense even though [`value_and_gradient!!`](@ref) on the same cache also accepts strided
+views.) The returned Jacobian is a dense matrix whose columns correspond to input
+coordinates.
 
-As with all functionality in Mooncake, `x` is returned to its original state: if `f`
-mutates `x` in place, it is restored, so the input is not mutated.
+As with all functionality in Mooncake, `x` is returned to its original state: if `f` mutates
+`x` in place, it is restored, so the input is not mutated.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref) or
     [`prepare_pullback_cache`](@ref), and `f` and `x` must match the types and shapes used
-    to construct the cache. A [`prepare_gradient_cache`](@ref) cache is for a scalar output and
-    is not usable here; it is rejected at call time with an "only supports AbstractVector
-    outputs" error.
+    to construct the cache. A [`prepare_gradient_cache`](@ref) cache is for a scalar output
+    and is not usable here; it is rejected at call time with an "only supports
+    AbstractVector outputs" error.
 
 !!! warning
     With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
     buffer owned by `cache` *only on the zero-allocation path*, taken when `f` is
-    non-differentiable (carries no parameters of its own). On that path the buffer (reused as the
-    gradient and Hessian paths do) is overwritten on the next call with the same cache, so `copy`
-    it first if you need to retain it. A differentiable `f` (e.g. a closure capturing parameters)
-    instead returns a freshly allocated Jacobian each call, as does a reverse
-    [`prepare_pullback_cache`](@ref) cache.
+    non-differentiable (carries no parameters of its own). On that path the buffer (reused
+    as the gradient and Hessian paths do) is overwritten on the next call with the same
+    cache, so `copy` it first if you need to retain it. A differentiable `f` (e.g. a closure
+    capturing parameters) instead returns a freshly allocated Jacobian each call, as does a
+    reverse [`prepare_pullback_cache`](@ref) cache.
 """
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
@@ -942,7 +968,8 @@ end
     _validate_jacobian_argument(x)
     return throw(
         ArgumentError(
-            "value_and_jacobian!! only supports dense AbstractVector{<:IEEEFloat} inputs; got $(typeof(x))",
+            "value_and_jacobian!! only supports dense AbstractVector{<:IEEEFloat} " *
+            "inputs; got $(typeof(x))",
         ),
     )
 end
@@ -977,12 +1004,15 @@ end
 function value_and_derivative!!(cache::FCache)
     return _validate_prepared_cache(cache.input_specs, ())
 end
-# ===== Reverse mode — gradient and pullback ===============================================
+#
+# Reverse mode — gradient and pullback
+#
 
 """
     __value_and_pullback!!(rule, ȳ, f::CoDual, x::CoDual...; y_cache=nothing)
 
-*Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
+*Note:* this is not part of the public Mooncake.jl interface, and may change without
+warning.
 
 In-place version of `value_and_pullback!!` in which the arguments have been wrapped in
 `CoDual`s. Note that any mutable data in `f` and `x` will be incremented in-place. As such,
@@ -1028,9 +1058,11 @@ end
 """
     __value_and_gradient!!(rule, f::CoDual, x::CoDual...)
 
-*Note:* this is not part of the public Mooncake.jl interface, and may change without warning.
+*Note:* this is not part of the public Mooncake.jl interface, and may change without
+warning.
 
-Equivalent to `__value_and_pullback!!(rule, 1.0, f, x...)` -- assumes `f` returns a `Float64`.
+Equivalent to `__value_and_pullback!!(rule, 1.0, f, x...)` -- assumes `f` returns a
+`Float64`.
 
 ```jldoctest; setup = :(using Mooncake; import Mooncake: build_rrule, zero_tangent)
 # Set up the problem.
@@ -1066,9 +1098,9 @@ end
 """
     value_and_pullback!!(rule, ȳ, f, x...; friendly_tangents=false)
 
-Compute the value and pullback of `f(x...)`. If `friendly_tangents=false`,
-`ȳ` must be a valid tangent for the primal return by `f(x...)`.
-If `friendly_tangents=true`, `ȳ` must be of the same type as the primal returned by `f(x...)`.
+Compute the value and pullback of `f(x...)`. If `friendly_tangents=false`, `ȳ` must be a
+valid tangent for the primal return by `f(x...)`. If `friendly_tangents=true`, `ȳ` must be
+of the same type as the primal returned by `f(x...)`.
 
 `rule` should be constructed using `build_rrule`.
 
@@ -1078,8 +1110,8 @@ recommend using `value_and_gradient!!` where possible.
 *Note:* If calling `value_and_pullback!!` multiple times for various values of `x`, you
 should use the same instance of `rule` each time.
 
-*Note:* It is your responsibility to ensure that there is no aliasing in `f` and `x`.
-For example,
+*Note:* It is your responsibility to ensure that there is no aliasing in `f` and `x`. For
+example,
 ```julia
 X = randn(5, 5)
 rule = build_rrule(dot, X, X)
@@ -1125,9 +1157,10 @@ end
 Equivalent to `value_and_pullback!!(rule, 1.0, f, x...)`, and assumes `f` returns a
 `Union{Float16,Float32,Float64}`.
 
-*Note:* There are lots of subtle ways to mis-use [`value_and_pullback!!`](@ref), so we generally
-recommend using `Mooncake.value_and_gradient!!` (this function) where possible. The
-docstring for [`value_and_pullback!!`](@ref) is useful for understanding this function though.
+*Note:* There are lots of subtle ways to mis-use [`value_and_pullback!!`](@ref), so we
+generally recommend using `Mooncake.value_and_gradient!!` (this function) where possible.
+The docstring for [`value_and_pullback!!`](@ref) is useful for understanding this function
+though.
 
 An example:
 ```jldoctest; setup = :(using Mooncake; import Mooncake: build_rrule)
@@ -1160,10 +1193,10 @@ function __create_coduals(args)
         if e isa StackOverflowError
             error(
                 "Found a StackOverFlow error when trying to wrap inputs. This often " *
-                "means that Mooncake.jl has encountered a self-referential type. Mooncake.jl " *
-                "is not presently able to handle self-referential types, so if you are " *
-                "indeed using a self-referential type somewhere, you will need to " *
-                "refactor to avoid it if you wish to use Mooncake.jl.",
+                "means that Mooncake.jl has encountered a self-referential type. " *
+                "Mooncake.jl is not presently able to handle self-referential types, so " *
+                "if you are indeed using a self-referential type somewhere, you will " *
+                "need to refactor to avoid it if you wish to use Mooncake.jl.",
             )
         else
             rethrow(e)
@@ -1175,16 +1208,16 @@ end
     prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and the requirement that no two
-of `(f, x...)` alias the same mutable storage.
+including the `config.friendly_tangents` output-tangent contract and the requirement that no
+two of `(f, x...)` alias the same mutable storage.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
 !!! note
-    Evaluates `f(x...)` twice during cache preparation: once on a deepcopy of the arguments to
-    validate the output, and once during the differentiated pass. Non-reversible side effects
-    (e.g. I/O such as printing) therefore occur twice; in-place mutations of the arguments are
-    restored by the reverse pass and net to a single observable change.
+    Evaluates `f(x...)` twice during cache preparation: once on a deepcopy of the arguments
+    to validate the output, and once during the differentiated pass. Non-reversible side
+    effects (e.g. I/O such as printing) therefore occur twice; in-place mutations of the
+    arguments are restored by the reverse pass and net to a single observable change.
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
 
@@ -1235,14 +1268,15 @@ end
 
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 pullback of `f` applied to `ȳ`. The first element is the component of the pullback
-associated to any fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
+associated to any fields of `f`, the second w.r.t the first element of `x`, etc. If the
+cache was prepared with `config.friendly_tangents=true`, the pullback uses the same types as
 those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
-There are no restrictions on what `y = f(x...)` is permitted to return. However, `ȳ` must be
-an acceptable tangent for `y`. If the cache was prepared with `config.friendly_tangents=false`,
-this means that, for example, it must be true that `tangent_type(typeof(y)) == typeof(ȳ)`.
-If the cache was prepared with `config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
+There are no restrictions on what `y = f(x...)` is permitted to return. However, `ȳ` must
+be an acceptable tangent for `y`. If the cache was prepared with
+`config.friendly_tangents=false`, this means that, for example, it must be true that
+`tangent_type(typeof(y)) == typeof(ȳ)`. If the cache was prepared with
+`config.friendly_tangents=true`, then `typeof(y) == typeof(ȳ)`.
 
 As with all functionality in Mooncake, if `f` modifies itself or `x`, `value_and_pullback!!`
 will return both to their original state as part of the process of computing the pullback.
@@ -1261,22 +1295,25 @@ will return both to their original state as part of the process of computing the
     copy (using `copy` or `deepcopy`) of them before calling again.
 
 !!! warning
-    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable storage.
-    Each argument slot is given an independent cotangent buffer, so passing the same array in
-    two positions (e.g. `dot(X, X)`) accumulates into separate buffers and yields the wrong
-    result, as with the rule-direct `value_and_pullback!!`.
+    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable
+    storage. Each argument slot is given an independent cotangent buffer, so passing the
+    same array in two positions (e.g. `dot(X, X)`) accumulates into separate buffers and
+    yields the wrong result, as with the rule-direct `value_and_pullback!!`.
 
-The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
-It contains one boolean for each element of `(f, x...)`.
-It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
+should be reset to zero before differentiation. It contains one boolean for each element of
+`(f, x...)`. It is used for performance optimizations if you can guarantee that the initial
+cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out
+again.
 
 !!! danger
-    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
-    across calls and can silently corrupt gradients — including those of *other* arguments, since
-    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
-    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
-    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
-    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale
+    values across calls and can silently corrupt gradients — including those of *other*
+    arguments, since reverse-mode rules propagate cotangents between them (the pullback of
+    `A \\ b` derives `A`'s from `b`'s). It is guaranteed safe only when the argument holds
+    no differentiable data (`tangent_type(typeof(arg)) === NoTangent`); a closure over data
+    or a "constant" array does not qualify. See [issue
+    #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
 
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
@@ -1319,8 +1356,8 @@ end
     prepare_gradient_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and the requirement that no two
-of `(f, x...)` alias the same mutable storage.
+including the `config.friendly_tangents` output-tangent contract and the requirement that no
+two of `(f, x...)` alias the same mutable storage.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -1354,9 +1391,9 @@ end
 
 Computes a 2-tuple. The first element is `f(x...)`, and the second is a tuple containing the
 gradient of `f` w.r.t. each argument. The first element is the gradient w.r.t any
-differentiable fields of `f`, the second w.r.t the first element of `x`, etc.
-If the cache was prepared with `config.friendly_tangents=true`, the gradient uses the same types as
-those of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
+differentiable fields of `f`, the second w.r.t the first element of `x`, etc. If the cache
+was prepared with `config.friendly_tangents=true`, the gradient uses the same types as those
+of `f` and `x`. Otherwise, it uses the tangent types associated to `f` and `x`.
 
 Assumes that `f` returns a `Union{Float16, Float32, Float64}`.
 
@@ -1377,22 +1414,25 @@ will return both to their original state as part of the process of computing the
     copy (using `copy` or `deepcopy`) of them before calling again.
 
 !!! warning
-    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable storage.
-    Each argument slot is given an independent cotangent buffer, so passing the same array in
-    two positions (e.g. `dot(X, X)`) accumulates into separate buffers and yields the wrong
-    result, as with the rule-direct `value_and_pullback!!`.
+    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable
+    storage. Each argument slot is given an independent cotangent buffer, so passing the
+    same array in two positions (e.g. `dot(X, X)`) accumulates into separate buffers and
+    yields the wrong result, as with the rule-direct `value_and_pullback!!`.
 
-The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents should be reset to zero before differentiation.
-It contains one boolean for each element of `(f, x...)`.
-It is used for performance optimizations if you can guarantee that the initial cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out again.
+The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
+should be reset to zero before differentiation. It contains one boolean for each element of
+`(f, x...)`. It is used for performance optimizations if you can guarantee that the initial
+cotangent allocated in `cache` (created by `zero_tangent`) never needs to be zeroed out
+again.
 
 !!! danger
-    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale values
-    across calls and can silently corrupt gradients — including those of *other* arguments, since
-    reverse-mode rules propagate cotangents between them (the pullback of `A \\ b` derives `A`'s
-    from `b`'s). It is guaranteed safe only when the argument holds no differentiable data
-    (`tangent_type(typeof(arg)) === NoTangent`); a closure over data or a "constant" array does not
-    qualify. See [issue #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
+    Setting an entry to `false` skips resetting that argument's cotangent, so it keeps stale
+    values across calls and can silently corrupt gradients — including those of *other*
+    arguments, since reverse-mode rules propagate cotangents between them (the pullback of
+    `A \\ b` derives `A`'s from `b`'s). It is guaranteed safe only when the argument holds
+    no differentiable data (`tangent_type(typeof(arg)) === NoTangent`); a closure over data
+    or a "constant" array does not qualify. See [issue
+    #1238](https://github.com/chalk-lab/Mooncake.jl/issues/1238).
 
 # Example Usage
 ```jldoctest; setup = :(using Mooncake)
@@ -1429,11 +1469,10 @@ end
 
 # Is forward V `T` built only from real-float scalar dofs (`NoDual`/`NDual{<:IEEEFloat}`
 # nested in tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters
-# via a one-dof-per
-# -leaf cursor walk that only knows these shapes, so this is its admission gate: complex dofs (two
-# dofs per element), `PossiblyUninitTangent`, and any other isbits V fall back to the
-# generic path (which handles them) rather than hitting an opaque `MethodError` in the
-# scatter.
+# via a one-dof-per -leaf cursor walk that only knows these shapes, so this is its admission
+# gate: complex dofs (two dofs per element), `PossiblyUninitTangent`, and any other isbits V
+# fall back to the generic path (which handles them) rather than hitting an opaque
+# `MethodError` in the scatter.
 _only_real_scalar_dofs(::Type{NoDual}) = true
 _only_real_scalar_dofs(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
 function _only_real_scalar_dofs(::Type{T}) where {T<:Tuple}
@@ -1497,15 +1536,16 @@ All differentiable input shapes are chunked (a zero-dof input is evaluated once)
 families take a zero-allocation path that reuses cache-owned seeds: (0) a single scalar
 `x::IEEEFloat`; and, with a non-differentiable isbits `f`, (1) one or more same-element-type
 dense float vectors; (2) tuples/NamedTuples/structs whose differentiable leaves are all real
-float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. (A non-isbits `f`
-on paths 1–2 costs one `Lifted` allocation per call, not per chunk.) Everything else — complex,
-mixed/abstract element types, possibly-uninitialised fields, or a differentiable `f` — is
-differentiated correctly via the generic chunked path, which allocates a fresh seed per chunk.
+float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. (A non-isbits
+`f` on paths 1–2 costs one `Lifted` allocation per call, not per chunk.) Everything else —
+complex, mixed/abstract element types, possibly-uninitialised fields, or a differentiable
+`f` — is differentiated correctly via the generic chunked path, which allocates a fresh seed
+per chunk.
 
-The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers (the
-zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is restored
-(the generic path). `f` itself is not snapshotted — a callable that mutates its own fields is
-not restored.
+The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers
+(the zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is
+restored (the generic path). `f` itself is not snapshotted — a callable that mutates its own
+fields is not restored.
 
 !!! warning
     `cache` owns any mutable state returned by this function: mutable components of the
@@ -1637,15 +1677,19 @@ end
 #
 # FCache path overview:
 # - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
-# - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic chunked).
+# - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic
+#   chunked).
 #
 # Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)` (all need a non-diff
 # `f` except the scalar path):
 # - `x::IEEEFloat`: scalar width-1 path
 # - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
-# - tuples/NamedTuples/structs of real float arrays: zero-alloc `StructuredGradSeed` leaf-table
-# - tuples/NamedTuples/immutable structs of real float scalars: zero-alloc `IsbitsGradSeed` barrier
-# - otherwise (differentiable `f`, complex, mixed/abstract eltypes, aliased/cyclic): generic chunked
+# - tuples/NamedTuples/structs of real float arrays: zero-alloc `StructuredGradSeed`
+#   leaf-table
+# - tuples/NamedTuples/immutable structs of real float scalars: zero-alloc `IsbitsGradSeed`
+#   barrier
+# - otherwise (differentiable `f`, complex, mixed/abstract eltypes, aliased/cyclic): generic
+#   chunked
 #   path, which per chunk seeds `gradient_chunk_size` standard-basis directions and runs the
 #   width-dispatched `value_and_derivative!!`
 
@@ -1778,8 +1822,9 @@ function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEF
     # on size/axes. Fail loudly and locally (a clear PreparedCacheError) instead.
     size(v.primal) == size(x) || throw(
         PreparedCacheError(
-            "Prepared cache mismatch: a nested array argument has size $(size(x)) but the " *
-            "cache was built for size $(size(v.primal)). Rebuild the cache for the new shape.",
+            "Prepared cache mismatch: a nested array argument has size $(size(x)) but " *
+            "the cache was built for size $(size(v.primal)). Rebuild the cache for the " *
+            "new shape.",
         ),
     )
     copyto!(v.primal, x)
@@ -1954,19 +1999,23 @@ function _isbits_gradient!!(
     end
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
-# ===== Forward-over-reverse — Hessian-vector products (HVP) ===============================
+#
+# Forward-over-reverse — Hessian-vector products (HVP)
+#
 
 @inline function _assert_matching_tangent_shape(primal, tangent)
     if applicable(axes, primal) && applicable(axes, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument 1 must match the primal axes; got axes $(axes(tangent)) for tangent vs $(axes(primal)) for primal",
+                "Tangent direction for argument 1 must match the primal axes; got axes " *
+                "$(axes(tangent)) for tangent vs $(axes(primal)) for primal",
             ),
         )
     elseif applicable(length, primal) && applicable(length, tangent)
         length(primal) == length(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument 1 must match the primal length; got length $(length(tangent)) for tangent vs $(length(primal)) for primal",
+                "Tangent direction for argument 1 must match the primal length; got " *
+                "length $(length(tangent)) for tangent vs $(length(primal)) for primal",
             ),
         )
     end
@@ -1983,11 +2032,11 @@ for use with [`value_and_hvp!!`](@ref).
 only a single input is supported; concatenate the inputs of a multi-argument function into
 one vector.
 
-The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The
-inner rule is compiled only once regardless of how many HVPs are subsequently evaluated.
+The cache compiles an outer forward-mode rule over an inner reverse-mode gradient. The inner
+rule is compiled only once regardless of how many HVPs are subsequently evaluated.
 
-*Note:* `cache` is tied to the type and shape of `x`. Evaluating at a different point
-is fine, but changing the shape requires a new cache.
+*Note:* `cache` is tied to the type and shape of `x`. Evaluating at a different point is
+fine, but changing the shape requires a new cache.
 
 !!! note
     Calls `f(x...)` during cache preparation (via inner gradient and derivative caches).
@@ -2098,13 +2147,13 @@ end
     value_and_hvp!!(cache::HVPCache, f, v, x)
 
 Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at `x`
-and the Hessian-vector product `H v`. `v` is the tangent direction; returns
-`(f(x), ∇f(x), H(x)v)`. For `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are
+and the Hessian-vector product `H v`. `v` is the tangent direction; returns `(f(x), ∇f(x),
+H(x)v)`. For `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are
 `Vector{Float64}`. Like [`value_and_jacobian!!`](@ref), only a single `AbstractVector` input
 is supported; concatenate the inputs of a multi-argument function into one vector.
 
-As with all functionality in Mooncake, `x` is returned to its original state: if `f`
-mutates `x` in place, it is restored, so the input is not mutated.
+As with all functionality in Mooncake, `x` is returned to its original state: if `f` mutates
+`x` in place, it is restored, so the input is not mutated.
 
 !!! warning
     `cache` must be the output of [`prepare_hvp_cache`](@ref), and `f` must be the same
@@ -2148,7 +2197,9 @@ end
 @inline function value_and_hvp!!(cache::HVPCache, f, v, x1, x2, xs::Vararg{Any,N}) where {N}
     return _throw_hvp_multiarg("value_and_hvp!!", N + 2)
 end
-# ===== Forward-over-reverse — Hessian =====================================================
+#
+# Forward-over-reverse — Hessian
+#
 
 function _make_hessian_buffers(x::AbstractVector)
     # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array
@@ -2165,7 +2216,8 @@ end
 
 @noinline _throw_not_hessian_cache() = throw(
     ArgumentError(
-        "`cache` was not built with `prepare_hessian_cache`; rebuild via `prepare_hessian_cache(f, x)` to use `value_gradient_and_hessian!!`",
+        "`cache` was not built with `prepare_hessian_cache`; rebuild via " *
+        "`prepare_hessian_cache(f, x)` to use `value_gradient_and_hessian!!`",
     ),
 )
 
@@ -2181,22 +2233,22 @@ element type is supported; concatenate the inputs of a multi-argument function i
 vector. Validation is eager and raises `ArgumentError` here rather than at evaluation time.
 The cache pre-allocates the Hessian, gradient, and basis-direction buffers that
 [`value_gradient_and_hessian!!`](@ref) writes into, so subsequent calls do not allocate
-fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if
-you need to retain previous results. Buffers are allocated to match the input's array
-type: GPU-array inputs (e.g. `CuArray`) produce a device-resident gradient and Hessian
-(use `Array(H)` to move the result to the host).
+fresh outputs. The returned `gradient` and Hessian alias cache storage; copy them if you
+need to retain previous results. Buffers are allocated to match the input's array type:
+GPU-array inputs (e.g. `CuArray`) produce a device-resident gradient and Hessian (use
+`Array(H)` to move the result to the host).
 
-Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function. The
-Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward pass
-(≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an internal
-maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it.
+Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function.
+The Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward pass
+(≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an
+internal maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it.
 
 !!! note
     This path uses Mooncake's generic public forward cache over the captured reverse-mode
     gradient closure. A chunked Hessian prepares two forward variants — width-1 (shared with
-    [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is evaluated and the
-    forward-over-reverse rule compiled twice during preparation; the width-1 (scalar 1-DOF or
-    `chunk_size=1`) case prepares a single variant.
+    [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is evaluated and
+    the forward-over-reverse rule compiled twice during preparation; the width-1 (scalar
+    1-DOF or `chunk_size=1`) case prepares a single variant.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
@@ -2258,13 +2310,15 @@ end
 function _validate_hessian_argument(x)
     x isa AbstractVector || throw(
         ArgumentError(
-            "Hessian computation only supports AbstractVector inputs; argument 1 has type $(typeof(x))",
+            "Hessian computation only supports AbstractVector inputs; argument 1 has " *
+            "type $(typeof(x))",
         ),
     )
     T = eltype(x)
     T <: IEEEFloat || throw(
         ArgumentError(
-            "Hessian computation only supports AbstractVector inputs with IEEEFloat element types; argument 1 has eltype $T",
+            "Hessian computation only supports AbstractVector inputs with IEEEFloat " *
+            "element types; argument 1 has eltype $T",
         ),
     )
     return T
@@ -2311,8 +2365,8 @@ end
 """
     value_gradient_and_hessian!!(cache::HVPCache, f, x)
 
-Using a pre-built `cache` from [`prepare_hessian_cache`](@ref), compute and return
-`(f(x), ∇f(x), ∇²f(x))` — value, gradient vector, and Hessian matrix of `f`.
+Using a pre-built `cache` from [`prepare_hessian_cache`](@ref), compute and return `(f(x),
+∇f(x), ∇²f(x))` — value, gradient vector, and Hessian matrix of `f`.
 
 Uses forward-over-reverse AD; the Hessian is chunked, sweeping `config.chunk_size` basis
 directions per forward pass. Like [`value_and_jacobian!!`](@ref), only a single
@@ -2320,16 +2374,16 @@ directions per forward pass. Like [`value_and_jacobian!!`](@ref), only a single
 into one vector.
 
 !!! info
-    `cache` must be the output of [`prepare_hessian_cache`](@ref), and `f` must be the
-    same function object used to construct `cache`. `x` must have the same size and element
-    type as used to construct the cache. The implementation supports only `AbstractVector`s
-    of IEEE floats. For non-vector inputs, use [`value_and_hvp!!`](@ref) to obtain
-    second-order directional derivatives without forming a full Hessian.
+    `cache` must be the output of [`prepare_hessian_cache`](@ref), and `f` must be the same
+    function object used to construct `cache`. `x` must have the same size and element type
+    as used to construct the cache. The implementation supports only `AbstractVector`s of
+    IEEE floats. For non-vector inputs, use [`value_and_hvp!!`](@ref) to obtain second-order
+    directional derivatives without forming a full Hessian.
 
 !!! warning
-    The returned `gradient` and Hessian alias buffers owned by `cache` and are
-    overwritten on the next call with the same cache. Copy them (`copy`/`deepcopy`)
-    before mutating or if you need to retain previous results.
+    The returned `gradient` and Hessian alias buffers owned by `cache` and are overwritten
+    on the next call with the same cache. Copy them (`copy`/`deepcopy`) before mutating or
+    if you need to retain previous results.
 
 !!! warning
     `HVPCache` is not safe for concurrent reuse across threads. Use a separate cache per
@@ -2368,7 +2422,8 @@ H
     # indexing `v`/`H`, otherwise the sweep below raises a raw `BoundsError`.
     n == length(v) || throw(
         ArgumentError(
-            "input vector has length $n but cache was prepared for length $(length(v)); rebuild via `prepare_hessian_cache`",
+            "input vector has length $n but cache was prepared for length $(length(v)); " *
+            "rebuild via `prepare_hessian_cache`",
         ),
     )
     if n == 0
@@ -2413,18 +2468,22 @@ end
 ) where {N}
     return _throw_hvp_multiarg("value_gradient_and_hessian!!", N + 2)
 end
-# ===== Shared cross-mode utilities ========================================================
+#
+# Shared cross-mode utilities
+#
 
 """
     __exclude_unsupported_output(y)
     __exclude_func_with_unsupported_output(fx)
 
-Required for the robust design of [`value_and_pullback!!`](@ref), [`prepare_pullback_cache`](@ref).
-Ensures that `y` or returned value of `fx::Tuple{Tf, Targs...}` contains no aliasing, circular references, `Ptr`s or non differentiable datatypes. 
-In the forward pass f(args...) output can only return a "Tree" like datastructure with leaf nodes as primitive types.  
-Refer https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789 and related issue for details.  
-Internally calls [`__exclude_unsupported_output_internal!`](@ref).
-The design is modelled after `zero_tangent`.
+Required for the robust design of [`value_and_pullback!!`](@ref),
+[`prepare_pullback_cache`](@ref). Ensures that `y` or returned value of `fx::Tuple{Tf,
+Targs...}` contains no aliasing, circular references, `Ptr`s or non differentiable
+datatypes. In the forward pass f(args...) output can only return a "Tree" like datastructure
+with leaf nodes as primitive types. Refer
+https://github.com/chalk-lab/Mooncake.jl/issues/517#issuecomment-2715202789 and related
+issue for details. Internally calls [`__exclude_unsupported_output_internal!`](@ref). The
+design is modelled after `zero_tangent`.
 """
 function __exclude_unsupported_output(y::T) where {T}
     __exclude_unsupported_output_internal!(y, Set{UInt}())
@@ -2451,10 +2510,11 @@ _isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes
     __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
 
 For checking if output`y` is a valid Mutable/immutable composite or a primitive type.
-Performs a recursive depth first search over the function output `y` with an `isbitstype()` check base case. The visited memory addresses are stored inside `address_set`.
-If the set already contains a newly visited address, it errors out indicating an Alias or Circular reference.
-Also errors out if `y` is or contains a Pointer.
-It is called internally by [`__exclude_unsupported_output(y)`](@ref).
+Performs a recursive depth first search over the function output `y` with an `isbitstype()`
+check base case. The visited memory addresses are stored inside `address_set`. If the set
+already contains a newly visited address, it errors out indicating an Alias or Circular
+reference. Also errors out if `y` is or contains a Pointer. It is called internally by
+[`__exclude_unsupported_output(y)`](@ref).
 """
 function __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) where {T}
     isbitstype(T) && !_isbits_contains_ptr(T) && return nothing
@@ -2478,9 +2538,10 @@ end
 """
     _copy_to_output!!(dst::T, src::T)
 
-Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of `dst` and `src` must be the same.
-Required as Base.copy!() does not work for all supported primal types. For example, `Base.copy!` does not work for `Core.svec`.
-For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
+Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of
+`dst` and `src` must be the same. Required as Base.copy!() does not work for all supported
+primal types. For example, `Base.copy!` does not work for `Core.svec`. For types with custom
+copy semantics, overload this function (see `Core.SimpleVector` for an example).
 """
 # The two-argument methods are the allocation-free hot path (input restore on every autodiff
 # pass); they recurse two-argument and stay byte-identical to the original acyclic
@@ -2561,11 +2622,10 @@ end
 function _copy_to_output!!(dst::T, src::P) where {T,P}
     throw(
         ArgumentError(
-            "Mooncake.jl does not currently have a method " *
-            "`_copy_to_output!!` to handle this type combination: " *
-            "dst passed is of type $T, while src is a $P. " *
-            "This often happens when differentiating over " *
-            "non-differentiable types (e.g. integers or booleans).",
+            "Mooncake.jl does not currently have a method `_copy_to_output!!` to handle " *
+            "this type combination: dst passed is of type $T, while src is a $P. This " *
+            "often happens when differentiating over non-differentiable types (e.g. " *
+            "integers or booleans).",
         ),
     )
 end
@@ -2639,9 +2699,10 @@ end
 """
     _copy_output(x::T)
 
-Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy.
-Required as Base.copy() does not work for all supported primal types. For example, `Base.copy` does not work for `Core.svec`.
-For types with custom copy semantics, overload this function (see `Core.SimpleVector` for an example).
+Returns a copy of `x`, of the same type `T`. Allocates new memory for the copy. Required as
+Base.copy() does not work for all supported primal types. For example, `Base.copy` does not
+work for `Core.svec`. For types with custom copy semantics, overload this function (see
+`Core.SimpleVector` for an example).
 """
 # The optional aliasing cache `c::C` supports self-referential and aliased inputs:
 # each cycle-capable node is registered before its fields are copied, so a cycle
