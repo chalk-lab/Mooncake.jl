@@ -702,10 +702,9 @@ end
 end
 # Tuple recursion: head/tail cons (via `_dual_tuple_v`). Specialized per concrete tuple type by
 # Julia's normal dispatch, so concrete tuples resolve at compile time without an @generated function.
-# A *standalone* empty tuple is non-differentiable (`tangent_type(Tuple{}) === NoTangent`), so its V
-# is `NoDual` — coherent with reverse. (The cons *base case* `Tuple{}` lives in `_dual_tuple_v`
-# below, which must keep it `Tuple{}` to terminate the recursion.)
-@foldable @inline dual_type(::Val{N}, ::Type{Tuple{}}) where {N} = NoDual
+# A *standalone* empty tuple is non-differentiable (`tangent_type(Tuple{}) === NoTangent`), so it
+# collapses to `NoDual` via the whole-tuple gate below — coherent with reverse, and distinct from
+# the cons *base case* `Tuple{}` in `_dual_tuple_v` below, which must stay `Tuple{}` to terminate.
 @foldable @inline function dual_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     # Phantom free-TypeVar `Tuple` (e.g. `Tuple{T, A}`, where `UnionAll(A, Tuple{T,A})` normalises
     # to a `DataType` with dangling typevars): the static parameter `P` is unbound, so referencing
