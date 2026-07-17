@@ -744,25 +744,12 @@ function _validate_jacobian_argument(x)
     return T
 end
 
-function _throw_jacobian_eltype_mismatch(Tx, Ty)
-    throw(
-        ArgumentError(
-            "value_and_jacobian!! requires input and output AbstractVector element types " *
-            "to match; got input eltype $Tx and output eltype $Ty",
-        ),
-    )
-end
-
-function _throw_jacobian_output_type_error(y)
-    throw(
-        ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))"
-        ),
-    )
-end
-
 function _validate_jacobian_output(y, Tx)
-    y isa AbstractVector || _throw_jacobian_output_type_error(y)
+    y isa AbstractVector || throw(
+        ArgumentError(
+            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
+        ),
+    )
     Ty = eltype(y)
     Ty <: IEEEFloat || throw(
         ArgumentError(
@@ -770,7 +757,12 @@ function _validate_jacobian_output(y, Tx)
             "element types; got eltype $Ty",
         ),
     )
-    Ty == Tx || _throw_jacobian_eltype_mismatch(Tx, Ty)
+    Ty == Tx || throw(
+        ArgumentError(
+            "value_and_jacobian!! requires input and output AbstractVector element types " *
+            "to match; got input eltype $Tx and output eltype $Ty",
+        ),
+    )
     return Ty
 end
 
