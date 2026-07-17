@@ -68,15 +68,16 @@ tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
     MistyClosureTangent
 lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
 function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict})
-    lifted_captures = _lift_mc_captures(x.oc.captures, ẋ.captures_tangent, c)
+    captures, ct = x.oc.captures, ẋ.captures_tangent
+    lifted_captures = if c === nothing
+        lift(captures, ct)
+    else
+        get!(() -> lift(captures, ct, c), c, captures)
+    end
     return Lifted{typeof(x),1,MistyClosureTangent}(
         x, MistyClosureTangent(lifted_captures, ẋ.dual_callable)
     )
 end
-@inline _lift_mc_captures(captures, ct, ::Nothing) = lift(captures, ct)
-@inline _lift_mc_captures(captures, ct, c::IdDict) = get!(
-    () -> lift(captures, ct, c), c, captures
-)
 
 # Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
 # DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged.

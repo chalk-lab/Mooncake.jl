@@ -161,7 +161,7 @@ function _randn_dual_internal(
     return out
 end
 # Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
-@inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, IdDict())
+@inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, nothing)
 # Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
 # struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
 # recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict

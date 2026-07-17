@@ -1178,17 +1178,8 @@ function rrule!!(::CoDual{typeof(tanpi)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), tanpi_pb
 end
 
-# ---- eps: piecewise-constant (zero derivative); emit a canonical zero-derivative dual ----
-@is_primitive MinimalCtx Tuple{typeof(Base.eps),P} where {P<:IEEEFloat}
-@inline function frule!!(
-    ::Lifted{typeof(Base.eps),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    return zero_lifted(Val(N), eps(primal(x)))
-end
-function rrule!!(::CoDual{typeof(Base.eps)}, x::CoDual{P}) where {P<:IEEEFloat}
-    eps_pb(::P) = (NoRData(), zero(P))
-    return zero_fcodual(eps(primal(x))), eps_pb
-end
+# ---- eps: piecewise-constant (zero derivative) ----
+@zero_derivative MinimalCtx Tuple{typeof(Base.eps),P} where {P<:IEEEFloat}
 
 # ---- angle_fast is constant on real inputs ⇒ zero derivative ----
 @zero_derivative MinimalCtx Tuple{typeof(Base.FastMath.angle_fast),P} where {P<:IEEEFloat}

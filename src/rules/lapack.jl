@@ -864,9 +864,7 @@ function frule!!(
     ld, s = logabsdet(F)
     y = (ld, s)
     # The sign `s` always has zero derivative; a singular S (s==0) zeros `ld`'s derivative too.
-    if iszero(s)
-        return Lifted{typeof(y),Nw}(y, (zero_dual(Val(Nw), ld), zero_dual(Val(Nw), s)))
-    end
+    iszero(s) && return zero_lifted(Val(Nw), y)
     Sinv = inv(F)
     # See `logdet` frule: `arrayify` applies the symmetric-storage weighting to each lane.
     _, d_lanes = arrayify(_S)

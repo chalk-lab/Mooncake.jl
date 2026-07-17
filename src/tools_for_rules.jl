@@ -323,16 +323,20 @@ function _zero_derivative_impl(ctx, sig, mode)
     # parameter: `_fwd_zd_arg_bound($t)` is a function call, invalid in method-signature (type-param)
     # position when `$t` mentions a static parameter, so those keep the direct bound. Widening a
     # static-param-free arg is a no-op unless it is a bare kind type, so it is always safe.
-    _lifted_bound = if where_params === nothing
-        (t -> :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)}))
+    # An arg that references a static parameter keeps its direct bound (`_fwd_zd_arg_bound($t)` is a
+    # function call, invalid in type-param position when `$t` mentions a static param); every other
+    # arg is widened. With no `where`, no arg references a static param, so `where_syms` is empty and
+    # every arg widens.
+    where_syms = if where_params === nothing
+        Set{Symbol}()
     else
-        where_syms = foldl(_collect_expr_symbols!, where_params; init=Set{Symbol}())
-        function (t)
-            if isdisjoint(_collect_expr_symbols!(Set{Symbol}(), t), where_syms)
-                return :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)})
-            else
-                return :(Mooncake.Lifted{<:$t})
-            end
+        foldl(_collect_expr_symbols!, where_params; init=Set{Symbol}())
+    end
+    _lifted_bound = function (t)
+        if isdisjoint(_collect_expr_symbols!(Set{Symbol}(), t), where_syms)
+            return :(Mooncake.Lifted{<:Mooncake._fwd_zd_arg_bound($t)})
+        else
+            return :(Mooncake.Lifted{<:$t})
         end
     end
 
