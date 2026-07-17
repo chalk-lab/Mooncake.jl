@@ -31,7 +31,6 @@ import Mooncake:
     Lifted,
     primal,
     tangent,
-    extract,
     zero_fcodual,
     MinimalCtx
 

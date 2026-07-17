@@ -852,8 +852,6 @@ end
 @inline _cu_lgetfield_primal(x, name, ::Nothing) = getfield(x, name)
 @inline _cu_lgetfield_primal(x, name, order) = getfield(x, name, order)
 @inline _cuarray_is_data_field(name) = name === 1 || name === :data
-@inline _cu_lgetfield_data_tangent(dx::CuArray, name) =
-    _cuarray_is_data_field(name) ? dx.data : NoTangent()
 @inline _cu_lgetfield_data_fdata(dx::CuArray, name) =
     _cuarray_is_data_field(name) ? dx.data : NoFData()
 
