@@ -265,8 +265,8 @@ end
 # restore from it (in place, via `_copy_to_output!!`) before each re-run and once at the
 # end, leaving the inputs unchanged, consistent with reverse mode.
 
-# ── Zero-allocation gradient for array-backed structured inputs
-# ──────────────────────────────
+# ── Zero-allocation gradient for array-backed structured inputs ───────────────
+
 #
 # Generalises the flat float-vector packable path to `NDualArray` leaves nested in
 # tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds
@@ -353,6 +353,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
         _cache_spec_summary(getfield(cache, :output_spec)),
     )
 end
+
 #
 # Forward mode — derivative and Jacobian
 #
@@ -996,6 +997,7 @@ end
 function value_and_derivative!!(cache::FCache)
     return _validate_prepared_cache(cache.input_specs, ())
 end
+
 #
 # Reverse mode — gradient and pullback
 #
@@ -1515,6 +1517,7 @@ end
 #
 # `value_and_gradient!!` generic chunked path
 #
+
 """
     value_and_gradient!!(cache::FCache, f, x...)
 
@@ -1667,6 +1670,7 @@ end
 #
 # `value_and_gradient!!` fast paths
 #
+
 # FCache path overview:
 # - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
 # - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic
@@ -1991,6 +1995,7 @@ function _isbits_gradient!!(
     end
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
+
 #
 # Forward-over-reverse — Hessian-vector products (HVP)
 #
@@ -2189,6 +2194,7 @@ end
 @inline function value_and_hvp!!(cache::HVPCache, f, v, x1, x2, xs::Vararg{Any,N}) where {N}
     return _throw_hvp_multiarg("value_and_hvp!!", N + 2)
 end
+
 #
 # Forward-over-reverse — Hessian
 #
@@ -2460,6 +2466,7 @@ end
 ) where {N}
     return _throw_hvp_multiarg("value_gradient_and_hessian!!", N + 2)
 end
+
 #
 # Shared cross-mode utilities
 #
@@ -2623,6 +2630,7 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
 end
 
 # ── Cyclic family: threads the `IdDict` aliasing cache `c` ─────────────────────
+
 _copy_to_output!!(dst::Number, src::Number, ::IdDict) = src
 _copy_to_output!!(::Type, src::Type, ::IdDict) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict) = src
