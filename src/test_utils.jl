@@ -746,8 +746,9 @@ function test_frule(
         # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
         # lane k's direction. Skipped (same allowlist) when the output is not a plain numeric dual.
         if lane_checkable && _chunk_lane_checkable(tangent(y_ẏ))
+            frule1 = build_frule(interp, sig; chunk_size=1)
             for k in 1:N
-                y1 = build_frule(interp, sig; chunk_size=1)(lane_seeds[k]...)
+                y1 = frule1(lane_seeds[k]...)
                 @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1))
             end
         end

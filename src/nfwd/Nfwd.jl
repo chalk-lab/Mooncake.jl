@@ -1931,10 +1931,11 @@ function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
     return IndexStyle(A)
 end
 
-@inline function Base.getindex(
-    a::NDualArray{Element,N}, i::Vararg{Int}
-) where {Element<:IEEEFloat,N}
-    return NDual{Element,N}(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
+# One `getindex` for both real and complex eltypes: `_scalar_ndual` builds an `NDual{T,N}` from a
+# real element and a `Complex{NDual{T,N}}` from a complex one. `setindex!` stays split — its `x`
+# argument type differs by eltype.
+@inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
+    return _scalar_ndual(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
 end
 @inline function Base.setindex!(
     a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
@@ -1945,11 +1946,6 @@ end
 end
 # Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
 # and per-lane partial arrays hold `Complex{T}`, so split/recombine the real and imaginary parts.
-@inline function Base.getindex(
-    a::NDualArray{Element,N}, i::Vararg{Int}
-) where {T<:IEEEFloat,Element<:Complex{T},N}
-    return _scalar_ndual(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
-end
 @inline function Base.setindex!(
     a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
 ) where {T<:IEEEFloat,Element<:Complex{T},N}
