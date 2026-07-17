@@ -767,14 +767,14 @@ function frule!!(
     ::Lifted{typeof(logdet),Nw},
     _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
 ) where {Nw,P<:BlasRealFloat}
-    S = primal(_S)
+    S, d_lanes = arrayify(_S)
     F = bunchkaufman(S)
     Sinv = inv(F)
     y = logdet(F)
-    # `_arrayify_lane(::Symmetric, …)` re-wraps each lane's `.data` partial as `Symmetric(·, uplo)`,
-    # applying the storage weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) that the reverse
-    # `rrule!!` encodes via `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
-    dy_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    # `arrayify` re-wraps each lane's `.data` partial as `Symmetric(·, uplo)`, applying the storage
+    # weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) the reverse `rrule!!` encodes via
+    # `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
+    dy_lanes = ntuple(k -> dot(Sinv, d_lanes[k]), Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
 function rrule!!(
@@ -817,8 +817,9 @@ function frule!!(
     # value `d` and zero partials.
     iszero(d) && return zero_lifted(Val(Nw), d)
     Sinv = inv(F)
-    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
-    dy_lanes = ntuple(k -> d * dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    # See `logdet` frule: `arrayify` applies the symmetric-storage weighting to each lane.
+    _, d_lanes = arrayify(_S)
+    dy_lanes = ntuple(k -> d * dot(Sinv, d_lanes[k]), Val(Nw))
     return Lifted{P,Nw}(d, _scalar_ndual(d, dy_lanes))
 end
 function rrule!!(
@@ -867,8 +868,9 @@ function frule!!(
         return Lifted{typeof(y),Nw}(y, (zero_dual(Val(Nw), ld), zero_dual(Val(Nw), s)))
     end
     Sinv = inv(F)
-    # See `logdet` frule: `_arrayify_lane(::Symmetric, …)` applies the symmetric-storage weighting.
-    ld_lanes = ntuple(k -> dot(Sinv, _arrayify_lane(S, tangent(_S), k)), Val(Nw))
+    # See `logdet` frule: `arrayify` applies the symmetric-storage weighting to each lane.
+    _, d_lanes = arrayify(_S)
+    ld_lanes = ntuple(k -> dot(Sinv, d_lanes[k]), Val(Nw))
     return Lifted{typeof(y),Nw}(y, (_scalar_ndual(ld, ld_lanes), zero_dual(Val(Nw), s)))
 end
 function rrule!!(

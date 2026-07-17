@@ -1514,9 +1514,7 @@ not restored.
     friendly_gradients = _copy_to_output!!(cache.friendly_gradients, input_primals)
     return y,
     tangent_to_primal_internal!!(
-        friendly_gradients,
-        native_gradients,
-        isbitstype(typeof(friendly_gradients)) ? NoCache() : IdDict{Any,Any}(),
+        friendly_gradients, native_gradients, _friendly_cache(friendly_gradients)
     )
 end
 
@@ -1597,7 +1595,6 @@ end
             ),
             W,
         )
-        input_tangents = ntuple(i -> ntuple(lane -> lanes[lane][i], W), nfields)
         vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
         lifted = ntuple(i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields)
         output = value_and_derivative!!(cache, lifted...)
@@ -1609,14 +1606,12 @@ end
             slot = start_slot + lane - 1
             slot <= total_dof || break
             coeff = Float64(tangent(output, lane))
+            # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane, parallel to
+            # `native_gradients`; scatter each field's contribution directly (no input-major transpose).
             native_gradients = tuple_map(
-                (g, dx) -> begin
-                    lt = dx[lane]
-                    lt isa NoTangent && return g
-                    return increment!!(g, _scale(coeff, lt))
-                end,
+                (g, lt) -> lt isa NoTangent ? g : increment!!(g, _scale(coeff, lt)),
                 native_gradients,
-                input_tangents,
+                lanes[lane],
             )
         end
     end

@@ -662,16 +662,10 @@ Shapes defined so far:
 @foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat} = NDual{P,N}
 # Non-differentiable primitives — mirrors `tangent_type(T) === NoTangent`
 # in reverse mode, returning the forward-mode V sentinel `NoDual`.
-@foldable @inline dual_type(::Val{N}, ::Type{<:Integer}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Char}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Symbol}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Nothing}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{<:Type}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{<:TypeVar}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Module}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Expr}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Cstring}) where {N} = NoDual
-@foldable @inline dual_type(::Val{N}, ::Type{Cwstring}) where {N} = NoDual
+@foldable @inline dual_type(
+    ::Val{N},
+    ::Type{<:Union{Integer,Char,Symbol,Nothing,Type,TypeVar,Module,Expr,Cstring,Cwstring}},
+) where {N} = NoDual
 # Bottom type, mirroring `tangent_type(Union{}) === Union{}` and
 # `lifted_type(Val(N), Union{}) === Union{}` (e.g. a Bottom-typed IR node after a
 # guaranteed-throw call). Without this, `dual_type(Val(N), Union{})` MethodErrors.
