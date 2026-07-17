@@ -182,14 +182,10 @@ function frule!!(
     z = exp((a - 1) * log(x) - x - loggamma(a))
     a_parts = tangent(_a).partials
     x_parts = tangent(_x).partials
-    p_lanes = ntuple(Val(Nw)) do k
-        ∂a = notimplemented_tangent_guard(a_parts[k])
-        primal_eltype(∂a + x_parts[k] * z)
-    end
-    q_lanes = ntuple(Val(Nw)) do k
-        ∂a = notimplemented_tangent_guard(a_parts[k])
-        primal_eltype(∂a + x_parts[k] * -z)
-    end
+    # `∂a` depends only on `a_parts[k]` (not on the sign of `z`), so compute it once per lane.
+    ∂a_lanes = ntuple(k -> notimplemented_tangent_guard(a_parts[k]), Val(Nw))
+    p_lanes = ntuple(k -> primal_eltype(∂a_lanes[k] + x_parts[k] * z), Val(Nw))
+    q_lanes = ntuple(k -> primal_eltype(∂a_lanes[k] + x_parts[k] * -z), Val(Nw))
     p_nd = NDual{primal_eltype,Nw}(y[1], p_lanes)
     q_nd = NDual{primal_eltype,Nw}(y[2], q_lanes)
     return Lifted{typeof(y),Nw}(y, (p_nd, q_nd))
