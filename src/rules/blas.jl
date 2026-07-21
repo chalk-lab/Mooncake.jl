@@ -2035,6 +2035,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                     (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
                     (flags..., f, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
                     (flags..., f, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                    # Differently-typed pair (dense Vector + strided SubArray): the @is_primitive
+                    # binds the two array args to independent type vars, so the pair stays a forward
+                    # primitive. The hand-written driver's is_primitive=true asserts this resolves to
+                    # frule!!, not the derived path (which can't land complex per-lane partials).
+                    (flags..., f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
                 ],
             )
         end
