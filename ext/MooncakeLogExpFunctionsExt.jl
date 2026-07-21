@@ -179,11 +179,12 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,D}
     _x = primal(x)
     y = logsumexp(_x)
+    w = exp.(_x .- y)  # softmax weights, lane-independent: exp runs once over x, not per lane
     dy_lanes = ntuple(Val(Nw)) do lane
         _dx = tangent(x).partials[lane]
         s = zero(P)
         @inbounds for i in eachindex(_dx)
-            s += _dx[i] * exp(_x[i] - y)
+            s += _dx[i] * w[i]
         end
         s
     end
@@ -236,11 +237,12 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     px, dxs = arrayify(x)
     y = logsumexp(px)
+    w = exp.(px .- y)  # softmax weights, lane-independent: exp runs once over x, not per lane
     dy_lanes = ntuple(Val(Nw)) do lane
         _dx = dxs[lane]
         s = zero(P)
         @inbounds for i in eachindex(_dx)
-            s += _dx[i] * exp(px[i] - y)
+            s += _dx[i] * w[i]
         end
         s
     end
