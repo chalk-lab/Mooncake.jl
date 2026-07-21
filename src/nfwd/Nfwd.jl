@@ -1865,7 +1865,12 @@ end
 # native array calls instead of needing to de-interleave a `Array{NDual}` first.
 #
 # `primal::A` aliases user storage; `partials::NTuple{N, A}` holds slot-local
-# lane tangents (separately allocated, same shape). `Wrapped` is determined by `(Element, N)`
+# lane tangents (separately allocated, same shape). Deliberately N separate arrays, not one
+# contiguous `(size × N)` buffer: contiguous storage would let a width-N frule batch the N lanes
+# in one wide BLAS/kernel call with no gather, but it does not pay — on CPU that batching is
+# break-even (BLAS is already efficient on separate calls), and on GPU the batched cuBLAS APIs
+# (`gemm_batched!`/`gemv_batched!`) take the N separate arrays directly, with no gather and faster
+# than gather+wide. `Wrapped` is determined by `(Element, N)`
 # — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
 # `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
 # element-wise code through the array interface continues to dispatch; element
