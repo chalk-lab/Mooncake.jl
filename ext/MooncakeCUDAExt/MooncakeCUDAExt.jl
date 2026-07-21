@@ -3234,7 +3234,7 @@ function frule!!(
     # `out`, `decoded`, `flat_bc`, and `flat_pargs` are primal-only (lane-independent),
     # so run the single dual-broadcast kernel once and reuse it for every lane's JVP
     # (including lane 1's flattened tangents, captured here).
-    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
+    bc_prepared, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
         bc_primal, _bc_tangent(bc_V, bc_primal, 1)
     )
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
@@ -3246,7 +3246,7 @@ function frule!!(
         flat_ts_k = if k == 1
             flat_ts_1
         else
-            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, k))[4]
+            _gpu_bcast_leaves(bc_prepared, bc_primal, _bc_tangent(bc_V, bc_primal, k))[2]
         end
         _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts_k, out)
     end
@@ -3327,7 +3327,7 @@ function frule!!(
     bc_primal = primal(bc)
     bc_V = tangent(bc)
     # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
-    _, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
+    bc_prepared, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
         bc_primal, _bc_tangent(bc_V, bc_primal, 1)
     )
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
@@ -3350,7 +3350,7 @@ function frule!!(
         flat_ts = if lane == 1
             flat_ts_1
         else
-            _prepare_gpu_broadcast(bc_primal, _bc_tangent(bc_V, bc_primal, lane))[4]
+            _gpu_bcast_leaves(bc_prepared, bc_primal, _bc_tangent(bc_V, bc_primal, lane))[2]
         end
         fill!(tmp, zero(eltype(tmp)))
         _gpu_accumulate_jvp!(tmp, flat_pargs, flat_ts, dual_out)
