@@ -3777,7 +3777,19 @@ function frule!!(
         # the primal is a constant NaN, so the JVP is the zero map, consistent with
         # the rrule — 0/0 would manufacture a NaN tangent.
         n = length(px)
-        dμ_lanes = ntuple(k -> n == 0 ? zero(μ) : sum(x_partials[k]) / n, Val(Nw))
+        if n == 0 || Nw == 1
+            dμ_lanes = ntuple(k -> n == 0 ? zero(μ) : sum(x_partials[k]) / n, Val(Nw))
+        else
+            # sum(xpₖ)/n batched: sum(xpₖ) = onesᵀ·xpₖ via gemv_batched! (ones shared, no gather;
+            # 'T' so complex partials aren't conjugated), one concatenated readback for the N scalars.
+            T = eltype(px)
+            onev = reshape(fill!(similar(px, T, n), one(T)), :, 1)
+            xvs = [reshape(xp, :) for xp in x_partials]
+            outs = [similar(px, T, 1) for _ in 1:Nw]
+            cuBLAS.gemv_batched!('T', one(T), fill(onev, Nw), xvs, zero(T), outs)
+            host = Array(reduce(vcat, outs))
+            dμ_lanes = ntuple(k -> host[k] / n, Nw)
+        end
         return Lifted{typeof(μ),Nw}(μ, _wrap_scalar_v_lanes(μ, dμ_lanes))
     end
     _dims = raw_dims isa Integer ? (raw_dims,) : raw_dims
