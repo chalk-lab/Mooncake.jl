@@ -42,6 +42,7 @@ Target: correct by construction where possible, aggressively testable where not,
 - Avoid `src/interpreter/` unless the task targets it. `Mooncake.primal_ir`/`dual_ir`/`fwd_ir`/`rvs_ir` are for inspection only — not semver-stable.
 - Internal helpers may change freely; exported/public behaviour needs tests, docs, and clear error messages. Prepared caches are shape/type dependent — when cache construction changes, test reuse and failure modes.
 - Write clear error messages, especially for malformed rules, unsupported cases, and rule-construction failures; prefer clear, concise names for variables, types, and methods.
+- No internal work-stage refs (task numbers, `D1`-style labels, ad-hoc `#NNN` tags) in comments, docstrings, or docs. A bare `#NNN` reads as a GitHub issue/PR: use one only when it resolves to a real issue/PR whose content matches — verify relevance, not existence (low legacy numbers often collide with unrelated issues). Prefix external refs: `julia#61368`.
 - Investigate before editing: root-cause and verify the intended fix first; keep investigation notes in `temp/` (untracked scratch). Prefer targeted changes and minimal inline fixes over new helpers or broad refactors; run the `minimise` skill before committing.
 - Run JuliaFormatter only from `test/integration_testing/format` (pins the CI version): `julia --project=test/integration_testing/format -e 'using JuliaFormatter; JuliaFormatter.format(".")'`.
 
