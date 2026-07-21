@@ -85,9 +85,11 @@ using FunctionWrappers: FunctionWrapper
         test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
     end
 
-    # Chunked forward mode (width N > 1): `test_rule` only builds width-1 frules, so exercise the
-    # width-N path directly. Covers both calling a pre-existing wrapper and constructing one from a
-    # closure with a differentiated capture (each lane must carry an independent direction).
+    # Chunked forward (width N > 1): `test_rule` runs the width-N frule but skips its per-lane
+    # oracle for FunctionWrapper — the tangent bakes all N lanes into one OpaqueClosure, so per-lane
+    # extraction is unsupported (`_chunk_lane_checkable` excludes it). Verify the output's per-lane
+    # partials directly: zero-seed the wrapper, or construct one from a closure with a
+    # differentiated capture (each lane an independent direction).
     @testset "chunked forward (width N)" begin
         FW = FunctionWrapper{Float64,Tuple{Float64}}
         ndual(x, seeds) = Mooncake.Lifted{Float64,length(seeds)}(
