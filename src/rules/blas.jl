@@ -915,15 +915,17 @@ function frule!!(
     # Primal first — subsequent lane work needs the new `x`.
     BLAS.trsv!(uplo, trans, diag, A, x)
     tmp = similar(x)  # scratch reused across lanes
+    # d(op(A)⁻¹·x) = op(A)⁻¹·(dx − op(dA)·x). op(A)⁻¹ is linear, so the tangent takes one solve of
+    # that combined RHS, not separate solves of `dx` and `op(dA)·x`: build `dx − op(dA)·x` in `dx`,
+    # solve in place.
     for lane in 1:Nw
         dA = _blas_lane_partial(A_dA, lane)
         dx = _blas_lane_partial(x_dx, lane)
-        BLAS.trsv!(uplo, trans, diag, A, dx)
         copyto!(tmp, x)
         BLAS.trmv!(uplo, trans, diag, dA, tmp)
         diag === 'U' && (tmp .-= x)
-        BLAS.trsv!(uplo, trans, diag, A, tmp)
         dx .-= tmp
+        BLAS.trsv!(uplo, trans, diag, A, dx)
     end
     return x_dx
 end
