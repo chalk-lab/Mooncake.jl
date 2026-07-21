@@ -2009,7 +2009,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     copy(B),
                 ),
             ]
-        end...,
+        end,
     )
 
     # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
