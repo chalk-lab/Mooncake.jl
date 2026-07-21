@@ -672,6 +672,26 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
         # `jl_reshape_array` foreigncall, the path the real-only frule used to miss.
         (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
+        # Reshape of an array of differentiable struct / tuple elements (Array{FloatPair},
+        # Array{Tuple{Float64,Float64}}): forward mode must reshape primal and V in lockstep.
+        (
+            false,
+            :none,
+            nothing,
+            x -> (
+                v=[TestResources.FloatPair(x, 2x), TestResources.FloatPair(3x, 4x)];
+                r=reshape(v, 2, 1);
+                r[1, 1].a + r[2, 1].b
+            ),
+            1.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2]),
+            1.0,
+        ),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (

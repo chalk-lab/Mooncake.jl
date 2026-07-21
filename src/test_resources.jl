@@ -47,6 +47,12 @@ end
 
 Base.:(==)(a::StructFoo, b::StructFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
 
+# Immutable struct with two `Float64` fields; used to test `reshape` of an array of struct elements.
+struct FloatPair
+    a::Float64
+    b::Float64
+end
+
 mutable struct MutableFoo
     a::Float64
     b::AbstractVector
