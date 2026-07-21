@@ -155,7 +155,8 @@ function frule!!(
         LAPACK.trtrs!(uplo, trans, diag, A, tmp)
         dB_lane .-= tmp
     end
-    LAPACK.trtrs!(uplo, trans, diag, A, B)
+    # Primal result op(A)⁻¹·B = X, already solved above and unmutated: copy it, don't re-solve.
+    copyto!(B, X)
     return B_dB
 end
 function rrule!!(
