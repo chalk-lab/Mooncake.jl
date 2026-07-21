@@ -2088,12 +2088,15 @@ function frule!!(
     C_partials = tangent(C).partials
     A_partials = tangent(A).partials
     B_partials = tangent(B).partials
-    @inbounds for lane in 1:Nw
-        dC = C_partials[lane]
-        dA = A_partials[lane]
-        dB = B_partials[lane]
-        cuBLAS.gemm!(tAv, tBv, _1, dA, pB, _0, dC)
-        cuBLAS.gemm!(tAv, tBv, _1, pA, dB, _1, dC)
+    if Nw == 1
+        dC = C_partials[1]
+        cuBLAS.gemm!(tAv, tBv, _1, A_partials[1], pB, _0, dC)
+        cuBLAS.gemm!(tAv, tBv, _1, pA, B_partials[1], _1, dC)
+    else
+        # Batch the 2N per-lane gemms into 2 gemm_batched! (see the batching convention above).
+        dCs = collect(C_partials)
+        cuBLAS.gemm_batched!(tAv, tBv, _1, collect(A_partials), fill(pB, Nw), _0, dCs)
+        cuBLAS.gemm_batched!(tAv, tBv, _1, fill(pA, Nw), collect(B_partials), _1, dCs)
     end
     return C
 end
@@ -2294,13 +2297,16 @@ function frule!!(
     Y_partials = tangent(Y).partials
     A_partials = tangent(A).partials
     B_partials = tangent(B).partials
-    @inbounds for lane in 1:Nw
-        dY = Y_partials[lane]
-        dA = A_partials[lane]
-        dB = B_partials[lane]
-        # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
-        cuBLAS.gemv!(tAv, av, dA, pB, bv, dY)
-        cuBLAS.gemv!(tAv, av, pA, dB, _1, dY)
+    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+    if Nw == 1
+        dY = Y_partials[1]
+        cuBLAS.gemv!(tAv, av, A_partials[1], pB, bv, dY)
+        cuBLAS.gemv!(tAv, av, pA, B_partials[1], _1, dY)
+    else
+        # Batch the 2N per-lane gemvs into 2 gemv_batched! (see the batching convention above).
+        dYs = collect(Y_partials)
+        cuBLAS.gemv_batched!(tAv, av, collect(A_partials), fill(pB, Nw), bv, dYs)
+        cuBLAS.gemv_batched!(tAv, av, fill(pA, Nw), collect(B_partials), _1, dYs)
     end
     # primal: pY = av*op(pA)*pB + bv*pY
     cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
