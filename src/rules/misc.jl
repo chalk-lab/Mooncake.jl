@@ -562,6 +562,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # bare `setfield!` writeback — the `convert` in the shared `_setfield_tangent!` is required.
         # `:none` perf flag: an abstract field legitimately boxes, so don't assert stability/allocs.
         (false, :none, nothing, lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
+        # Positional access on a single-field Ref: setfield!(r, 1, v) === setfield!(r, :x, v), so the
+        # lsetfield! frule must accept Val(1) as well as Val(:x).
+        (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
+        (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
     ]
 
     # Some specific test cases for lgetfield to test the basics.
@@ -612,6 +616,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         # the generic frule routed it through a missing `_get_lifted_field(::NDualRef, ...)`. The
         # `order` loop below generates both the 2-arg and 3-arg variants from this single entry.
         (false, :none, nothing, lgetfield, Ref(5.0), Val(:x)),
+        # Positional access on a single-field Ref: getfield(r, 1) === getfield(r, :x), so the frule
+        # must accept Val(1) as well as Val(:x). The order loop below generates both arg forms.
+        (false, :none, nothing, lgetfield, Ref(5.0), Val(1)),
     ]
 
     # Create `lgetfield` tests for each type in TestTypes for broader coverage.
