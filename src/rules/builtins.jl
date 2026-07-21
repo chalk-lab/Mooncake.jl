@@ -2245,7 +2245,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         # Reverse only: a differentiable pointer-to-pointer raw store (`pointerset`/
         # `atomic_pointerset` into a `Ptr{Ptr{Float64}}`) cannot be done in forward mode — the
         # destination's per-lane tangent is an array-of-structs of pointers, so the forward rule
-        # fails loudly (it silently produced a wrong derivative before the loud guard). Reverse mode
+        # fails loudly rather than silently returning a wrong derivative. Reverse mode
         # is correct (see the explicit value_and_gradient!! testset in test/rules/builtins.jl).
         (true, :none, (skip_forward=true,), f_pointerset, CoDual(3.0, 1.0)),
         (true, :none, (skip_forward=true,), f_atomic_pointerset, CoDual(3.0, 1.0)),

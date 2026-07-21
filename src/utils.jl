@@ -608,7 +608,7 @@ _copy(x::Type) = x
 #
 # Fix: __call_rule forces generic dispatch on Julia 1.10, so the compiled code calls via
 # jl_apply_generic, which never reaches emit_specsig_oc_call. Three controls make this
-# deterministic — where the previous `Base.inferencebarrier` hint did NOT (it only blocked
+# deterministic — where a bare `Base.inferencebarrier` hint does NOT (it only blocked
 # inference, leaving the method free to re-specialise on the concrete callee and recover the
 # specsig call): `@nospecialize` compiles a single `rule::Any` method (no per-callee
 # specialisation); the explicit `(rule::Any)` cast forbids codegen from emitting a specsig call

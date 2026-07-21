@@ -85,7 +85,7 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 # Mutate the user's Vector and every lane's partial Vector in sync. `T<:NDualEltype` with the
-# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too (#6); the body is
+# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too; the body is
 # element-type-agnostic. The plain-`Array`-V overload below covers non-`NDualArray` element-wise Vs.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N},
@@ -804,8 +804,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (true, :stability, nothing, Base._growend!, randn(5), 3),
         (true, :stability, nothing, Base._growat!, randn(5), 2, 2),
         (false, :stability, nothing, sizehint!, randn(5), 10),
-        # Complex vectors (`NDualArray` V `Complex{NDual}` inner): the parallel-arrays frules were
-        # `T<:IEEEFloat`-only, so the broad `@is_primitive` had no matching frule -> MethodError (#6).
+        # Complex vectors (`NDualArray` V `Complex{NDual}` inner) exercise the broad `@is_primitive`
+        # against a matching frule; a `T<:IEEEFloat`-only frule would leave it uncovered -> MethodError.
         (false, :stability, nothing, Base._deletebeg!, randn(ComplexF64, 5), 2),
         (false, :stability, nothing, Base._deleteend!, randn(ComplexF64, 5), 2),
         (false, :stability, nothing, Base._deleteat!, randn(ComplexF64, 5), 2, 2),

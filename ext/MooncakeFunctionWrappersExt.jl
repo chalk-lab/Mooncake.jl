@@ -202,7 +202,7 @@ end
 function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     run_fwds_pass, obj_tangent_ref = _function_wrapper_reverse_parts(R, obj, A, obj_tangent)
 
-    # Forward-pass wrapper for the width-1 frule. Post-cutover `frule` is Lifted-dispatched; wrap
+    # Forward-pass wrapper for the width-1 frule. `frule` is Lifted-dispatched; wrap
     # the closure obj + current obj_tangent into a width-1 Lifted slot via the boundary helper.
     _, frule_sig, frule_ret = _construct_frule_types(R, A)
     frule = build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...})

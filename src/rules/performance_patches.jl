@@ -80,7 +80,7 @@ end
 } where {T<:BlasFloat}
 # Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_accum!` folds the dense gradient into
 # dense/Triangular/Diagonal/Adjoint/Transpose fdata; Symmetric/Hermitian are admitted by the signature
-# but their off-diagonal `setindex!` throws (as on `main`). Complex stays derived, as on `main`.
+# but their off-diagonal `setindex!` throws. Complex stays derived.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}

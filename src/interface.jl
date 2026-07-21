@@ -956,8 +956,7 @@ end
     # Reached only for inputs the methods above reject (`x` is not a dense
     # `AbstractVector{<:IEEEFloat}`). `_validate_jacobian_argument` always throws
     # a specific message here; the explicit throw documents that this fallback
-    # never returns a value (previously a dead `_validate_prepared_cache`
-    # call left the nominal return as `nothing`).
+    # never returns a value.
     _validate_jacobian_argument(x)
     return throw(
         ArgumentError(

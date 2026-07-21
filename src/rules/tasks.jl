@@ -129,7 +129,7 @@ function frule!!(
     ::Lifted{Val{name},N},
     val::Lifted,
 ) where {N,name}
-    # Inline body — `set_tangent_field!(::TaskTangent, ::Symbol, ::NoTangent)` is
+    # `set_tangent_field!(::TaskTangent, ::Symbol, ::NoTangent)` is
     # a no-op (Task fields are non-differentiable), so we only mutate the
     # user's Task primal and return the new-value slot unchanged.
     setfield!(primal(task), name, primal(val))

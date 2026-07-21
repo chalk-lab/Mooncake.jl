@@ -149,7 +149,7 @@ end
 )
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
 # `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
-# `arrayify(::AbstractTriangular)` and avoiding the drift that left the Unit variants uncovered.
+# `arrayify(::AbstractTriangular)`.
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.value.data, lane)
 )
@@ -2014,7 +2014,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
     # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
     # α·B·A + β·C for side='R' (A is N×N); A is symmetric (symm!) / Hermitian (hemm!), read through
-    # the `uplo` triangle. These BLAS level-3 ops had no test_rule coverage (Task G).
+    # the `uplo` triangle.
     test_cases = append!(
         test_cases,
         let

@@ -670,7 +670,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
         # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
-        # `jl_reshape_array` foreigncall, the path the real-only frule used to miss.
+        # `jl_reshape_array` foreigncall, which the frule must handle for complex element types too.
         (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
         # Reshape of an array of differentiable struct / tuple elements (Array{FloatPair},
         # Array{Tuple{Float64,Float64}}): forward mode must reshape primal and V in lockstep.
@@ -696,7 +696,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot yet
-            # preserve the canonical dual at width N>1 (a Cluster-C forward limitation); the
+            # preserve the canonical dual at width N>1 (a known forward-mode limitation); the
             # width-1 path is correct, so skip only the chunked check here.
             false,
             :none,

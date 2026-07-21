@@ -49,8 +49,8 @@ function Config(;
     empty_cache::Bool=false,
     enable_nfwd=nothing,
 )
-    # `enable_nfwd` previously opted out of the NDual-backed forward fast path. Forward-mode
-    # caches now always use the native chunk `frule!!`, so the keyword has no effect.
+    # `enable_nfwd` is accepted only for backward compatibility and has no effect: forward-mode
+    # caches always use the native chunk `frule!!`, so the keyword is deprecated.
     enable_nfwd === nothing || Base.depwarn(
         "The `enable_nfwd` keyword to `Mooncake.Config` is deprecated and has no effect; " *
         "forward-mode caches always use the native chunk `frule!!`.",

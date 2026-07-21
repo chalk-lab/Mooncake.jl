@@ -168,7 +168,7 @@ function Base.:(==)(a::Lifted, b::Lifted)
     return primal(a) == primal(b) && tangent(a) == tangent(b)
 end
 
-# `NDualArray` / `NDualMemoryRef` (and the `NDualEltype` constant) now
+# `NDualArray` / `NDualMemoryRef` (and the `NDualEltype` constant)
 # live in `src/nfwd/Nfwd.jl` and are re-exported into Mooncake via
 # `using .Nfwd: NDualArray, NDualMemoryRef, NDualEltype` in `src/Mooncake.jl`.
 # The Mooncake-namespace method extensions for these types are below.
@@ -538,7 +538,7 @@ function _add_to_primal_internal(
     end
     return p′
 end
-# `NDualMemoryRef` (and its constructor) now lives in `src/nfwd/Nfwd.jl`.
+# `NDualMemoryRef` (and its constructor) lives in `src/nfwd/Nfwd.jl`.
 # Mooncake-namespace method extensions follow.
 
 @static if VERSION >= v"1.11-rc4"
@@ -1019,7 +1019,7 @@ end
 # monomorphic — its sole inhabitant is `X` — so the concrete `Lifted{Type{X}, N, …}` is exact and
 # carries no impossible type fact. `isconcretetype(Type{X})` is `false`, so the generic method above
 # would route it to the UnionAll-widened branch, forcing the runtime slot to box at the OC argument
-# boundary. The kind-widening (34782f41b) is needed only for the genuinely abstract metatypes
+# boundary. The kind-widening is needed only for the genuinely abstract metatypes
 # (`DataType`, `Type`, `Type{<:T}` — which stay on the generic method); it explicitly excludes these
 # well-behaved `Type{X}` singletons, so narrow them here to keep the slot box-free.
 @foldable @inline function lifted_type(::Val{N}, ::Type{Type{X}}) where {N,X}
@@ -1318,7 +1318,7 @@ end
 # A `Ptr` has no numeric partials to zero (its V is `NTuple{N,Ptr}` of pointers, never a float
 # tangent that could be read as garbage), so its zero forward seed is the uninitialised one — and
 # critically the generic struct fallback would route a `Ptr` field through the 1-arg
-# `zero_tangent(::Ptr)`, which throws. (Constants are now `zero_lifted`, so this path is live.)
+# `zero_tangent(::Ptr)`, which throws. (Constants seed via `zero_lifted`, so this path is live.)
 @inline zero_dual(w::Val{N}, x::Ptr) where {N} = uninit_dual(w, x)
 
 @inline function randn_dual(
@@ -1961,8 +1961,7 @@ end
 
 # ── MemoryRef seed factories (Julia 1.11+) ──────────────────────────────────
 #
-# `uninit_dual` / `randn_dual` for MemoryRef are deferred — `zero_dual` is
-# the canonical entry point (bits-element dense zero-init).
+# `zero_dual` is the canonical MemoryRef seed factory (bits-element dense zero-init).
 
 @static if VERSION >= v"1.11-rc4"
     # MemoryRef / Memory seed factories for `NDualEltype` elements (real `IEEEFloat` and

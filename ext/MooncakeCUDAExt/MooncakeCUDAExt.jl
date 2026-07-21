@@ -312,9 +312,9 @@ end
 @inline function Mooncake.lift(x::A, ẋ::A) where {A<:CuMaybeComplexArray}
     return Mooncake.Lifted{A,1}(x, NDualArray{eltype(A),1,ndims(A),A}(x, (ẋ,)))
 end
-# CuDataRef is non-differentiable (V === NoDual). The legacy fixture idiom
-# `Dual(data, copy(data))` passes a same-typed handle as the tangent; here we
-# discard it and produce the canonical NoDual V.
+# CuDataRef is non-differentiable (V === NoDual). This `lift(x::A, ::A)` method accepts a
+# same-typed second argument (the tangent the test harness supplies) and discards it, producing
+# the canonical NoDual V.
 @inline function Mooncake.lift(x::A, ::A) where {A<:CuDataRef}
     return Mooncake.Lifted{A,1}(x, NoDual())
 end
@@ -1314,7 +1314,7 @@ end
     MinimalCtx,
     Tuple{typeof(unsafe_copyto!),<:CuMaybeComplexArray,Integer,<:Array,Integer,Integer},
 )
-# (host-Array-src forward mode is served by the merged `unsafe_copyto!` frule above.)
+# (host-Array-src forward mode is served by the `unsafe_copyto!` frule above.)
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
     dest::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},

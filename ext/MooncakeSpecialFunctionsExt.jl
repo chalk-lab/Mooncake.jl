@@ -143,7 +143,6 @@ an unimplemented partial is mathematically required.
 
 @from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
-# Lifted analogue — pack (y, per-lane dy values) into the canonical scalar-result slot.
 # Per-lane partials come from the canonical `tangent(slot, k)` accessor (handles NDual and
 # Complex{NDual} scalar Vs).
 

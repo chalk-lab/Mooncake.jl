@@ -698,9 +698,8 @@ function test_frule(
     debug_mode::Bool=false,
 ) where {P}
     @nospecialize rng x
-    # Width-1 battery. The seeds are shared across the four checks (matching their historical
-    # sharing in `test_rule`); `CoDual`-supplied args carry their tangent across the bridge,
-    # everything else gets a random width-1 seed.
+    # Width-1 battery. The seeds are shared across the four checks; `CoDual`-supplied args carry
+    # their tangent across the bridge, everything else gets a random width-1 seed.
     if 1 in widths
         x_ẋ = map(
             z -> z isa CoDual ? lift(primal(z), tangent(z)) : randn_lifted(Val(1), rng, z),

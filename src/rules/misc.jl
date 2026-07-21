@@ -291,8 +291,7 @@ end
 # lgetfield with order argument
 #
 
-# This is largely copy + pasted from the above. Attempts were made to refactor to avoid
-# code duplication, but it wound up not being any cleaner than this copy + pasted version.
+# This deliberately duplicates the form above rather than sharing code, which proved no cleaner.
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 @inline function frule!!(
@@ -428,8 +427,7 @@ end
     # (e.g. `Vector{Float64}` vals → `NDualArray`) rebuilds over the new primal array with
     # copied partials; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
     # keys/vals) is a shallow array copy whose elements alias the shallow-shared key/value
-    # objects, matching `Base.copy(::Dict)`. The old `map(copy, …)` form errored on
-    # `Vector{NoDual}` (`copy(::NoDual)`) and assumed every field was an `NDualArray`.
+    # objects, matching `Base.copy(::Dict)`.
     _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(new_arr, map(copy, v.partials))
     _copy_dict_field_v(::Any, v::AbstractArray) = copy(v)
     function frule!!(
