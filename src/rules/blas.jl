@@ -1293,6 +1293,7 @@ for (fname, elty, relty) in (
     (:(herk!), ComplexF64, Float64),
 )
     isherm = fname == :(herk!)
+    nonbang = Symbol(chop(string(fname)))  # syrk!/herk! -> syrk/herk (non-mutating product)
 
     @eval @is_primitive(
         MinimalCtx,
@@ -1321,23 +1322,28 @@ for (fname, elty, relty) in (
         A = primal(A_dA)
         β = primal(β_dβ)
         C = primal(C_dC)
+        # Count lanes that differentiate α and β once, up front — both hoists below key off these.
+        ndα = 0
+        ndβ = 0
+        for lane in 1:Nw
+            ndα += !iszero(tangent(α_dα, lane))
+            ndβ += !iszero(tangent(β_dβ, lane))
+        end
         # NaN-masking reference triangle of the input C: the β==0 convention lets the caller pass an
         # uninitialised/NaN C (overwritten by the primal below), so the `dβ*C` term must not leak NaN
-        # into the tangent — matching the sibling level-3 frules (gemm!/symm!/gemv!/…). Lane-invariant
-        # and C is untouched until after the loop, so compute it once here rather than per lane.
-        Ct = uplo == 'U' ? triu(C) : tril(C)
+        # into the tangent — matching the sibling level-3 frules. Read only inside the `dβ` branch, so
+        # build it (once, C is untouched until after the loop) only when some lane seeds β; the empty
+        # placeholder is never written or read otherwise, so it costs nothing (elided).
+        Ct = ndβ > 0 ? (uplo == 'U' ? triu(C) : tril(C)) : Matrix{$elty}(undef, 0, 0)
         # The rank-k product (via $fname) is lane-invariant and enters the tangent only via the `dα`
         # term, which updates only the `uplo` triangle. When more than one lane differentiates α,
         # hoist it once — masked to that triangle so the axpy leaves the other one alone — and add by
         # axpy instead of recomputing per such lane.
-        ndα = 0
-        for lane in 1:Nw
-            ndα += !iszero(tangent(α_dα, lane))
-        end
-        AAt = Matrix{$elty}(undef, (ndα > 1 ? size(C) : (0, 0))...)
-        if ndα > 1
-            BLAS.$fname(uplo, t, one($relty), A, zero($relty), AAt)
-            uplo == 'U' ? triu!(AAt) : tril!(AAt)
+        AAt = if ndα > 1
+            M = BLAS.$nonbang(uplo, t, one($relty), A)
+            uplo == 'U' ? triu!(M) : tril!(M)
+        else
+            Matrix{$elty}(undef, 0, 0)
         end
         for lane in 1:Nw
             dα = tangent(α_dα, lane)
