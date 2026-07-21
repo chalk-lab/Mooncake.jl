@@ -1,7 +1,7 @@
 @testset "performance_patches" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:performance_patches))
 
-    # Regression (#169): a Float16 WRAPPED `_kron!` input has a struct-lift V and would route to the
+    # Regression: a Float16 WRAPPED `_kron!` input has a struct-lift V and would route to the
     # `arrayify`-based wrapper-fallback frule, but `arrayify` supports only `BlasFloat` → a raw
     # MethodError. The `@is_primitive` now covers dense Float16 and wrapped `BlasFloat` only, so a
     # Float16 wrapped input is left non-primitive and handled by derived forward mode. Float16 finite
@@ -28,7 +28,7 @@
         )
     end
 
-    # Regression (#177/#180): the `_kron!` `@is_primitive` declarations must be per-mode. The
+    # Regression: the `_kron!` `@is_primitive` declarations must be per-mode. The
     # `BlasFloat` widening exists only for the forward wrapper frule; if it leaks into reverse (as it
     # did when declared with the two-arg, both-modes `@is_primitive`) then complex `_kron!` becomes a
     # reverse primitive while the reverse rrule is real-only → complex reverse `MethodError`. Likewise
@@ -45,7 +45,7 @@
         @test Mooncake.is_primitive(DefaultCtx, Mooncake.ForwardMode, ksig(Float16), W)
         @test Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, ksig(Float16), W)
 
-        # #177: complex reverse-mode kron must run (via derived mode), not `MethodError`.
+        # Complex reverse-mode kron must run (via derived mode), not `MethodError`.
         fc(A, B) = sum(abs2, kron(A, B))
         Ac = ComplexF64[1 2; 3 4]
         Bc = ComplexF64[0.5 0; 0 2]

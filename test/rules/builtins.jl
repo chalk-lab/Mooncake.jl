@@ -172,7 +172,7 @@ end
 end
 
 @testset "unsafe_wrap forward rule on an incoherent differentiable pointer" begin
-    # Regression (#182): a differentiable pointer element that is neither a scalar float/complex nor
+    # Regression: a differentiable pointer element that is neither a scalar float/complex nor
     # a pointer-to-scalar (e.g. `Ptr{Tuple{Float64,Float64}}`) has a per-lane `NTuple{Nw,Ptr}` V that
     # matches none of the coherent frules — it hit a raw `MethodError` even though the broad
     # `@is_primitive` covers it and the reverse rule handles all `T`. Must fail loudly (ArgumentError),
@@ -230,7 +230,7 @@ end
     end
 end
 
-# Regression (#199): max_float/min_float propagate NaN, but the frule selected the tangent via
+# Regression: max_float/min_float propagate NaN, but the frule selected the tangent via
 # `a > b` / `a < b`, which is false when the FIRST operand is NaN — so it picked the other, finite
 # operand's NDual, whose `.value` then diverged from the NaN primal (inner-value invariant broken).
 @static if VERSION >= v"1.12.0-rc2"

@@ -64,7 +64,7 @@
         @test all(iszero, tangent(r).partials)
     end
 
-    # Regression (#206): the nrm2 REVERSE pullback has the same removable singularity — at the
+    # Regression: the nrm2 REVERSE pullback has the same removable singularity — at the
     # zero vector `y == 0`, so `dX .+= X .* (dy / y)` was `0 * Inf = NaN`. The gradient x/‖x‖ is
     # taken as 0 there (matching the frule). Non-zero inputs must still give x/‖x‖.
     @testset "nrm2 reverse zero-vector gradient" begin
@@ -77,7 +77,7 @@
         @test g[2] ≈ x ./ 5                   # x/‖x‖ still correct off the singularity
     end
 
-    # Regression (#207): gemm!'s frule!!/rrule!! only cover a matrix C, so the @is_primitive C slot
+    # Regression: gemm!'s frule!!/rrule!! only cover a matrix C, so the @is_primitive C slot
     # must be AbstractMatrix (not AbstractVecOrMat) to stay in lockstep with the rule methods — a
     # vector-C gemm! must NOT be declared primitive (else a MethodError instead of a clean fallback).
     @testset "gemm! is_primitive C-slot lockstep" begin
@@ -95,7 +95,7 @@
         end
     end
 
-    # Regression (#200): the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
+    # Regression: the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
     # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
     # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.
     @testset "syrk! dβ*C NaN-C guard at β=0" begin
@@ -127,7 +127,7 @@
         @test dF[1, 2].partials[1] ≈ C[1, 2]
     end
 
-    # Regression (#201/#202): the trmm!/trsm! reverse rules computed ∇α = dot(B,dB)/α' after the primal
+    # Regression: the trmm!/trsm! reverse rules computed ∇α = dot(B,dB)/α' after the primal
     # overwrote B; at α==0 that is 0/0 = NaN, though the true gradient is finite. ∇α must be finite and
     # correct at α==0 (and unchanged for α≠0). f is linear in α, so the gradient is constant.
     @testset "trmm!/trsm! ∇α finite at α=0" begin

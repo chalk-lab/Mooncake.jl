@@ -1,7 +1,7 @@
 @testset "blas (ComplexF64)" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_ComplexF64))
 
-    # Regression (#184): the forward dotc/dotu `@is_primitive` must bind the two array arguments to
+    # Regression: the forward dotc/dotu `@is_primitive` must bind the two array arguments to
     # independent type vars, so a differently-typed pair (dense `Vector` + a strided `SubArray`) is
     # still a primitive. A single shared type var left such pairs non-primitive, dropping them onto
     # the derived forward path that cannot land complex per-lane partials.

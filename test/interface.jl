@@ -755,7 +755,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             # A differentiable `Ref` within a multi-dof gradient input forces the chunked
             # `basis_lifted!!` seeding path (2 dofs at chunk_size=2); `_basis_seed!!` had no
-            # `NDualRef` method (#4), so this threw a MethodError. Forward must match the reverse
+            # `NDualRef` method, so this threw a MethodError. Forward must match the reverse
             # oracle (the `Ref`'s cotangent is a `MutableTangent`).
             g_ref = t -> t[1][]^2 + sin(t[2])
             ref_fwd = Mooncake.prepare_derivative_cache(
@@ -1667,7 +1667,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
                     @test hv ≈ 2 .* v
                 end
-                # BLAS `dot` path (regression #283): the reverse `dot` pullback threads `Ptr{NoTangent}`
+                # BLAS `dot` path: the reverse `dot` pullback threads `Ptr{NoTangent}`
                 # fdata pointers, whose forward V must keep the per-lane partial pointers (else the
                 # forward-over-reverse `_new_` backing mismatches and crashes).
                 let f = x -> dot(x, x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
@@ -1720,10 +1720,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H ≈ 2 * I
             end
 
-            @testset "BLAS quadratic form (dot, regression #283)" begin
+            @testset "BLAS quadratic form (dot)" begin
                 # `dot(x, A*x)/2` has gradient `A*x` and Hessian `A`; its reverse rule runs through
                 # BLAS on raw pointers, so forward-over-reverse threads `Ptr{NoTangent}` fdata pointers
-                # that must keep their per-lane V. Untested before #283 (all other cases are elementwise).
+                # that must keep their per-lane V. Previously untested (all other cases are elementwise).
                 A = [2.0 0.5 0.0; 0.5 3.0 0.1; 0.0 0.1 4.0]  # symmetric ⇒ Hessian is exactly A
                 f(x) = dot(x, A * x) / 2
                 x = [0.5, -0.2, 0.9]

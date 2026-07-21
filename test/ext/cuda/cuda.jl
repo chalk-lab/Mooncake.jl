@@ -83,7 +83,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_sum_sin_pow2(x) = sum(sin.(x .^ 2))
         _sum_f_sin(x) = sum(sin, x)
         _sum_f_exp(x) = sum(exp, x)
-        # Regression (#170/#171): a predicate `f` maps to `Bool`, so `sum(f, x)` has a
+        # Regression: a predicate `f` maps to `Bool`, so `sum(f, x)` has a
         # non-differentiable `Int` result. Forward mode must return a zero-derivative (NoDual) V, not
         # crash. Exercised on a dense CuArray and (via the caller passing `x'`) an Adjoint below.
         _sum_f_pred(x) = sum(y -> y > 0.5, x)
@@ -421,7 +421,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _sum_f_sin, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, ComplexF64, 16)),
-            # sum(predicate, x): non-differentiable Int result (#170 dense, #171 adjoint)
+            # sum(predicate, x): non-differentiable Int result (dense and adjoint)
             (false, :none, false, _sum_f_pred, _rand(rng, 16)),
             (false, :none, false, _sum_f_pred, _rand(rng, 4, 3)'),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
@@ -847,14 +847,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             )
         end
 
-        # Regression (#178): the forward vcat/hcat/cat/permutedims frules canonicalise each argument
+        # Regression: the forward vcat/hcat/cat/permutedims frules canonicalise each argument
         # via `arrayify(::Lifted)`. The generic `arrayify` is bounded to `BlasFloat`, so Float16 and
         # ComplexF16 `CuArray`s (admitted by `CuMaybeWrappedArray`) `MethodError`ed until the CUDA ext
         # added an eltype-agnostic forward `arrayify`. `test_rule`'s finite differences are unusable at
         # Float16/ComplexF16 precision, so verify directly: these ops are linear, so the forward JVP is
         # exactly the same rearrangement of each lane's partials. FD-free, so exact and deterministic.
-        @testset "Float16/ComplexF16 concat forward exact (#178) — $ET, width $N" for ET in
-                                                                                      (
+        @testset "Float16/ComplexF16 concat forward exact — $ET, width $N" for ET in (
                 Float16, ComplexF16
             ),
             N in (1, 2, 3)

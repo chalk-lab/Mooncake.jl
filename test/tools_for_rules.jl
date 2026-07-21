@@ -59,7 +59,7 @@ datatype_arg_zero_tester(::DataType) = 0
 
 # Same, but with a `where`-parametric signature: the kind-typed (DataType) argument must still be
 # widened to `Type` (the static param `S` must not be), so the forward frule covers the existential
-# `Lifted{Type{_A}} where _A` inference infers. See the regression test below (#186).
+# `Lifted{Type{_A}} where _A` inference infers. See the regression test below.
 datatype_arg_zero_tester_param(::DataType, ::S) where {S<:Real} = 0
 @zero_derivative MinimalCtx Tuple{
     typeof(datatype_arg_zero_tester_param),DataType,S
@@ -142,7 +142,7 @@ end
 @from_rrule DefaultCtx Tuple{typeof(test_add),T,T} where {T<:IEEEFloat} false
 
 # Test case whose rrule returns a ZeroTangent for a differentiable argument (a common CRC idiom for a
-# structurally-zero gradient slot). Regression (#194): increment_and_get_rdata! must handle
+# structurally-zero gradient slot). Regression: increment_and_get_rdata! must handle
 # CRC.ZeroTangent (zero increment) rather than throwing the generic ArgumentError.
 test_zerotangent(x::Float64, y::Float64) = x^2
 function CRC.rrule(::typeof(test_zerotangent), x::Float64, y::Float64)
@@ -282,7 +282,7 @@ end
             existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
             @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
 
-            # Regression (#186): the same widening must apply to a `where`-parametric signature — the
+            # Regression: the same widening must apply to a `where`-parametric signature — the
             # kind-typed `DataType` arg widened to `Type`, but NOT the static parameter `S` (wrapping
             # it in a function call would be invalid in signature position). Without the fix the frule
             # bound was `Lifted{<:DataType}`, which does not cover the existential.
@@ -353,7 +353,7 @@ end
         ]
             @test Mooncake.mooncake_tangent(p, t) isa tangent_type(typeof(p))
         end
-        # Regression (#198): a NotImplemented tangent must FULLY poison the value. For a complex
+        # Regression: a NotImplemented tangent must FULLY poison the value. For a complex
         # tangent, `L(NaN)` gave `Complex(NaN, 0.0)` — the imaginary part leaked an unpoisoned zero.
         @testset "notimplemented_tangent_guard poisons both complex components" begin
             r = Mooncake.notimplemented_tangent_guard(ComplexF64(1.0, 2.0))
@@ -385,7 +385,7 @@ end
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
             @test_throws ArgumentError pb!!(5.0)
         end
-        @testset "ZeroTangent gradient slot (#194)" begin
+        @testset "ZeroTangent gradient slot" begin
             # A CRC pullback returning ZeroTangent() for a differentiable arg must apply a zero
             # increment, not throw. Previously increment_and_get_rdata! had no ZeroTangent method.
             f = ToolsForRulesResources.test_zerotangent

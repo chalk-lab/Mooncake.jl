@@ -110,7 +110,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
     end
 
     @testset "scalar NDual _add_to_primal adds only the partials" begin
-        # Regression (#173): an inner `NDual`'s `.value` is the primal it shadows (inner-value
+        # Regression: an inner `NDual`'s `.value` is the primal it shadows (inner-value
         # invariant), so `_add_to_primal` must add only the partials — adding `.value` too would
         # double-count the primal (a zero-partials V would return `2x` instead of the identity `x`).
         x = 3.0
@@ -284,12 +284,12 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         @test x[1] === 9.0 && a.partials[1][1] === 7.0 && a.partials[2][1] === -7.0
     end
 
-    # Regression (#193): the per-lane tangent of a `Ref{<:IEEEFloat}` (NDualRef V) must be the
+    # Regression: the per-lane tangent of a `Ref{<:IEEEFloat}` (NDualRef V) must be the
     # reverse-oracle shape — a `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}` (a `Ref` is a
     # mutable struct) — NOT the bare lane partial. Returning the scalar diverged from `unlift`/the
     # reverse oracle and made struct-recursion field extraction (which converts each field into its
     # declared reverse tangent) throw a convert `MethodError` for a `Ref`-valued field.
-    @testset "NDualRef per-lane tangent is reverse-shaped (#193)" begin
+    @testset "NDualRef per-lane tangent is reverse-shaped" begin
         # Bare Ref: per-lane shape must equal the width-1 unlift (reverse) shape.
         sref = zero_lifted(Val(2), Ref(3.0))
         Tt = Mooncake.tangent_type(Base.RefValue{Float64})
@@ -326,7 +326,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
             @test primal(zero_lifted(Val(2), p)) === p
 
             # Empty backing memory: `zero_dual` must not `BoundsError` on the unguarded
-            # `Core.memoryref(mem, offset)` (offset==1, out of bounds for len 0) (#5).
+            # `Core.memoryref(mem, offset)` (offset==1, out of bounds for len 0).
             empty_p = Float64[].ref
             @test typeof(zero_dual(Val(2), empty_p)) ===
                 Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
@@ -376,7 +376,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         pview.parent = 7.0
         @test pview.parent === 7.0
 
-        # Regression (#183): a mutable struct with an ABSTRACT field type lifts to a `MutableDual`
+        # Regression: a mutable struct with an ABSTRACT field type lifts to a `MutableDual`
         # whose backing NamedTuple is abstract (`@NamedTuple{x}`, x::Any). Writing a lane tangent
         # narrows the merged NamedTuple to a concrete element type, which is not `isa` the stored
         # abstract type — a bare `setfield!` throws `TypeError`. The view must `convert` back.

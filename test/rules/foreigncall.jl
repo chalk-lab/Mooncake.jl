@@ -6,7 +6,7 @@ end
 @testset "foreigncall" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:foreigncall))
 
-    # Regression (#166): reshape of an array whose elements are differentiable NON-numeric types has
+    # Regression: reshape of an array whose elements are differentiable NON-numeric types has
     # an element-wise `Array{VE}` forward V (`Array{ImmutableDual}` for a struct, `Array{Tuple{NDual,
     # …}}` for a tuple) — matching neither the numeric `NDualArray` frule nor the old `Array{NoDual}`
     # one, so forward `reshape` errored while reverse (element-type-generic) worked. Covered now by
@@ -26,7 +26,7 @@ end
         )
     end
 
-    # Regression (#211): the jl_get_world_counter/jl_matching_methods frule returns
+    # Regression: the jl_get_world_counter/jl_matching_methods frule returns
     # `zero_lifted(Val(Nw), y)` so the forward V is CANONICAL. jl_matching_methods returns a
     # `Vector{Any}` (tangent_type is `Vector{Any}`, NOT `NoTangent`), so hardcoding `NoDual` was a
     # non-canonical V; the world counter (`UInt`) legitimately duals to `NoDual`. This asserts the
@@ -91,7 +91,7 @@ end
         end
     end
 
-    # Regression (#172): the chunked llvm.powi frule must scale partials with `_fwd_guarded_scale`, so
+    # Regression: the chunked llvm.powi frule must scale partials with `_fwd_guarded_scale`, so
     # an inactive (zero-seed) lane stays exactly 0.0 even where `grad` is ±Inf (x=0, negative
     # exponent). Unguarded `_fwd_scale` gave `0 * Inf = NaN`. Mirrors the `pow_fast` guard.
     @testset "llvm.powi inactive-lane guard at x=0 negative exponent" begin
@@ -116,7 +116,7 @@ end
         @test tangent(r).partials[2] == 0.0
     end
 
-    # Regression (#195): the REVERSE llvm.powi pullback must apply the same zero-cotangent guard, so a
+    # Regression: the REVERSE llvm.powi pullback must apply the same zero-cotangent guard, so a
     # zero incoming cotangent yields an exact 0 even where grad is ±Inf (x=0, negative exponent).
     # Unguarded `grad * dy` gave `Inf * 0 = NaN`.
     @testset "llvm.powi reverse zero-cotangent guard at x=0 negative exponent" begin

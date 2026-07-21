@@ -72,7 +72,7 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(r3) ≈ 4.0
         @test Nfwd.ndual_partial(r3, 1) ≈ 2.0
 
-        # Regression (#208/#209/#210): `/(Real, NDual)` and the two `atan(·, ·)` Real/NDual
+        # Regression: `/(Real, NDual)` and the two `atan(·, ·)` Real/NDual
         # methods promoted the value to `S = promote_type(T, R)` but left the partials at `T`,
         # so a wider-float Real operand fed a type-`S` scale into `_fwd_scale`/`_fwd_guarded_scale`
         # (which require matching types) → MethodError instead of the promised NDual{S,N}. The
@@ -184,12 +184,12 @@ using Mooncake.Nfwd
         @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
         # Zero real base with an NDual exponent, POSITIVE exponent (b=0, a=2): primal is 0, and
         # d(b^a)/da = b^a·log(b) has the removable-singularity limit 0 (b^a→0 dominates log(b)→-Inf).
-        # BOTH lanes must be 0 — the naive `v*log(b) = 0·(-Inf)` gave NaN in active lanes (#197); the
-        # inactive lane was already guarded (#181). `_nfwd_pow_grad_p` now yields the 0 limit.
+        # BOTH lanes must be 0 — the naive `v*log(b) = 0·(-Inf)` gave NaN in active lanes; the
+        # inactive lane was already guarded. `_nfwd_pow_grad_p` now yields the 0 limit.
         bz = (0.0)^_d2(2.0, 1.0, 0.0)
         @test Nfwd.ndual_value(bz) == 0.0
-        @test Nfwd.ndual_partial(bz, 1) === 0.0   # active lane: removable-singularity limit (#197)
-        @test Nfwd.ndual_partial(bz, 2) === 0.0   # inactive lane: guarded (#181)
+        @test Nfwd.ndual_partial(bz, 1) === 0.0   # active lane: removable-singularity limit
+        @test Nfwd.ndual_partial(bz, 2) === 0.0   # inactive lane: guarded
         # b=0 with a NONpositive exponent is genuinely undefined → NaN (active), guarded 0 (inactive).
         bz_neg = (0.0)^_d2(-1.0, 1.0, 0.0)
         @test isnan(Nfwd.ndual_partial(bz_neg, 1))
@@ -363,7 +363,7 @@ using Mooncake.Nfwd
             end
         end
 
-        # Boundary singularity (#205): asin/acos/acosh/asech/asec/acsc and their degree variants
+        # Boundary singularity: asin/acos/acosh/asech/asec/acsc and their degree variants
         # have a FINITE value but an infinite derivative at x = ±1 (a removable singularity for the
         # derivative). An *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
         # become `Inf * 0 = NaN`; the active lane keeps the genuine singular ±Inf. lane1 active,
@@ -624,10 +624,10 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(real(sz32)) ≈ real(sin(complex(3.0f0, 4.0f0))) rtol=1e-5
     end
 
-    # Regression (#196): `_nfwd_type_dof(::Type{<:Tuple})` must propagate `nothing` (not `0 + nothing`,
+    # Regression: `_nfwd_type_dof(::Type{<:Tuple})` must propagate `nothing` (not `0 + nothing`,
     # which throws) when a tuple element's size is not type-determinable, e.g. a tuple containing an
     # Array. Consumers (`_nfwd_sig_dof`) rely on the `nothing` fallback.
-    @testset "type-level DOF: tuple-with-array propagates nothing (#196)" begin
+    @testset "type-level DOF: tuple-with-array propagates nothing" begin
         @test Nfwd._nfwd_type_dof(Tuple{Float64,Float64}) == 2
         @test Nfwd._nfwd_type_dof(Tuple{ComplexF64,Float64}) == 3
         @test Nfwd._nfwd_type_dof(Tuple{}) == 0
@@ -635,7 +635,7 @@ using Mooncake.Nfwd
         @test Nfwd._nfwd_type_dof(Tuple{Tuple{Vector{Float64}},Float64}) === nothing
         # Downstream consumers fall back gracefully instead of throwing.
         @test Nfwd._nfwd_sig_dof(Tuple{typeof(identity),Vector{Float64}}) === nothing
-        # Regression (#204): `_nfwd_default_chunk_size(())` (empty args, e.g. a zero-arg callable) must
+        # Regression: `_nfwd_default_chunk_size(())` (empty args, e.g. a zero-arg callable) must
         # return 1, not throw on an empty reduction (`sum` needs `init=0`).
         @test Nfwd._nfwd_default_chunk_size(()) == 1
     end

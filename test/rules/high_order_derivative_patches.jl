@@ -280,9 +280,9 @@ end
 
 # The `jl_genericmemory_owner` forward rule (a forward-over-reverse `dataids`-inlining workaround)
 # must return the canonical forward V for its `Memory` result — `NDualArray`, not a bare `NoDual`
-# (which would yield `NoTangent()` on a lane read and diverge from the reverse oracle). Review #7.
+# (which would yield `NoTangent()` on a lane read and diverge from the reverse oracle).
 @static if VERSION >= v"1.11-"
-    @testset "jl_genericmemory_owner frule canonical V (#7)" begin
+    @testset "jl_genericmemory_owner frule canonical V" begin
         m = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]
         zl(x) = Mooncake.zero_lifted(Val(1), x)
         l = Mooncake.frule!!(
