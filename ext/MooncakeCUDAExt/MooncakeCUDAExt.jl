@@ -2052,6 +2052,10 @@ end
 # backward, which cannot be expressed as a single cuBLAS GEMM call. A runtime guard
 # below rejects complex + 'T' rather than silently returning incorrect gradients.
 
+# Batching convention (GPU): a width-N frule that would issue one cuBLAS call per lane instead
+# batches into a single `gemm_batched!` / `gemv_batched!` — the batched API takes the N separate
+# partial arrays (no gather) and collapses N launches to one (~3x measured). The shared operand
+# repeats across lanes via `fill`; `Nw == 1` keeps the direct single-call path.
 @is_primitive(
     MinimalCtx,
     Tuple{
