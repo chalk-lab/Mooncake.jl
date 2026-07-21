@@ -179,16 +179,16 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,D}
     _x = primal(x)
     y = logsumexp(_x)
-    w = exp.(_x .- y)  # softmax weights, lane-independent: exp runs once over x, not per lane
-    dy_lanes = ntuple(Val(Nw)) do lane
-        _dx = tangent(x).partials[lane]
-        s = zero(P)
-        @inbounds for i in eachindex(_dx)
-            s += _dx[i] * w[i]
-        end
-        s
+    parts = tangent(x).partials
+    # Element-outer, lane-inner: exp(x[i]-y) (the lane-independent softmax weight) is computed once
+    # per element and folded into every lane's sum in one pass — exp once per element, no weight
+    # array. `foldl` carries the per-lane tuple as its accumulator so the inner `ntuple` never closes
+    # over a reassigned variable (which would box and allocate); the rule stays allocation-free.
+    grad = foldl(eachindex(_x); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
+        wi = exp(@inbounds(_x[i]) - y)
+        ntuple(lane -> g[lane] + @inbounds(parts[lane][i]) * wi, Val(Nw))
     end
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, grad))
 end
 # Dense non-`Array` storage (e.g. `CuArray`): the same per-lane reduction via broadcast,
 # since scalar indexing is unavailable. The `Array` loop method above is strictly more
@@ -237,16 +237,14 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     px, dxs = arrayify(x)
     y = logsumexp(px)
-    w = exp.(px .- y)  # softmax weights, lane-independent: exp runs once over x, not per lane
-    dy_lanes = ntuple(Val(Nw)) do lane
-        _dx = dxs[lane]
-        s = zero(P)
-        @inbounds for i in eachindex(_dx)
-            s += _dx[i] * w[i]
-        end
-        s
+    # Element-outer, lane-inner (see the dense-`Array` method): exp once per element, folded into
+    # every lane's sum via `foldl` so the inner `ntuple` never closes over a reassigned variable —
+    # no weight array, no boxing, allocation-free.
+    grad = foldl(eachindex(px); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
+        wi = exp(@inbounds(px[i]) - y)
+        ntuple(lane -> g[lane] + @inbounds(dxs[lane][i]) * wi, Val(Nw))
     end
-    return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
+    return Lifted{P,Nw}(y, NDual{P,Nw}(y, grad))
 end
 # In-place logsumexp! where either argument is wrapped (or they differ in wrapper): arrayify both,
 # mirroring the dense frule + reverse rrule. The dense `Array`/`NDualArray` (both args) frule above is
