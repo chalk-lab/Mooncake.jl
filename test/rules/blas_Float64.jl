@@ -51,32 +51,6 @@
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 
-    # Regression: nrm2 at the zero vector has a removable singularity (`s / (2y)` is `0/0`);
-    # every lane's partial must be zero, not NaN.
-    @testset "nrm2 zero-vector lanes (width $N)" for N in (1, 2, 3)
-        Xz = Mooncake.randn_lifted(Val(N), Xoshiro(1), zeros(3))
-        r = Mooncake.frule!!(
-            Mooncake.zero_lifted(Val(N), BLAS.nrm2),
-            Mooncake.zero_lifted(Val(N), 3),
-            Xz,
-            Mooncake.zero_lifted(Val(N), 1),
-        )
-        @test all(iszero, tangent(r).partials)
-    end
-
-    # Regression: the nrm2 REVERSE pullback has the same removable singularity — at the
-    # zero vector `y == 0`, so `dX .+= X .* (dy / y)` was `0 * Inf = NaN`. The gradient x/‖x‖ is
-    # taken as 0 there (matching the frule). Non-zero inputs must still give x/‖x‖.
-    @testset "nrm2 reverse zero-vector gradient" begin
-        fn(x) = BLAS.nrm2(x)
-        _, g0 = value_and_gradient!!(prepare_gradient_cache(fn, zeros(3)), fn, zeros(3))
-        @test all(iszero, g0[2])              # was all-NaN
-        @test !any(isnan, g0[2])
-        x = [3.0, 4.0]
-        _, g = value_and_gradient!!(prepare_gradient_cache(fn, x), fn, x)
-        @test g[2] ≈ x ./ 5                   # x/‖x‖ still correct off the singularity
-    end
-
     # Regression: gemm!'s frule!!/rrule!! only cover a matrix C, so the @is_primitive C slot
     # must be AbstractMatrix (not AbstractVecOrMat) to stay in lockstep with the rule methods — a
     # vector-C gemm! must NOT be declared primitive (else a MethodError instead of a clean fallback).

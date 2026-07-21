@@ -2075,7 +2075,9 @@ end
 
 # Tests that are not specific to any BlasFloat precision.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:blas_basic})
-    return Any[], Any[]
+    # Removable singularity at the zero vector: the nrm2 frule (`s/(2y)`) and reverse pullback
+    # (`X*(dy/y)`) are both 0/0 there, so every lane's partial and the gradient must be 0, not NaN.
+    return Any[(false, :none, nothing, BLAS.nrm2, 3, zeros(3), 1)], Any[]
 end
 function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     test_cases = Any[
