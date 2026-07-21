@@ -1970,6 +1970,48 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    # trmm!/trsm! reverse ∇α at α=0: the pullback's `dot(B,dB)/α'` is 0/0 there (the primal zeroed
+    # B), so it recomputes the finite gradient from the saved input. One α=0 case per op suffices
+    # (the rule is linear in α; α≠0 is covered by the random-α cases above).
+    test_cases = append!(
+        test_cases,
+        let
+            rng = rng_ctor(123456)
+            A = randn(rng, P, 2, 2)
+            Ainv = copy(A)
+            Ainv[diagind(Ainv)] .+= 1
+            B = randn(rng, P, 2, 2)
+            [
+                (
+                    false,
+                    :none,
+                    nothing,
+                    BLAS.trmm!,
+                    'L',
+                    'U',
+                    'N',
+                    'N',
+                    zero(P),
+                    A,
+                    copy(B),
+                ),
+                (
+                    false,
+                    :none,
+                    nothing,
+                    BLAS.trsm!,
+                    'L',
+                    'U',
+                    'N',
+                    'N',
+                    zero(P),
+                    Ainv,
+                    copy(B),
+                ),
+            ]
+        end...,
+    )
+
     # symm! (all BlasFloat) / hemm! (complex only): C ← α·A·B + β·C for side='L' (A is M×M) or
     # α·B·A + β·C for side='R' (A is N×N); A is symmetric (symm!) / Hermitian (hemm!), read through
     # the `uplo` triangle. These BLAS level-3 ops had no test_rule coverage (Task G).

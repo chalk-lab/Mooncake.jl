@@ -100,22 +100,6 @@
         dF = tangent(rF)
         @test dF[1, 2].partials[1] ≈ C[1, 2]
     end
-
-    # Regression: the trmm!/trsm! reverse rules computed ∇α = dot(B,dB)/α' after the primal
-    # overwrote B; at α==0 that is 0/0 = NaN, though the true gradient is finite. ∇α must be finite and
-    # correct at α==0 (and unchanged for α≠0). f is linear in α, so the gradient is constant.
-    @testset "trmm!/trsm! ∇α finite at α=0" begin
-        A = [1.0 2.0; 0.0 3.0]
-        B = [1.0 4.0; 2.0 5.0]
-        ftrmm(a, A, B) = sum(BLAS.trmm!('L', 'U', 'N', 'N', a, A, copy(B)))
-        ftrsm(a, A, B) = sum(BLAS.trsm!('L', 'U', 'N', 'N', a, A, copy(B)))
-        for f in (ftrmm, ftrsm)
-            _, g0 = value_and_gradient!!(prepare_gradient_cache(f, 0.0, A, B), f, 0.0, A, B)
-            _, g2 = value_and_gradient!!(prepare_gradient_cache(f, 2.0, A, B), f, 2.0, A, B)
-            @test isfinite(g0[2])            # ∇α at α=0 is finite (was NaN)
-            @test g0[2] ≈ g2[2]              # linear in α → constant gradient, matches α≠0
-        end
-    end
 end
 
 @testset "blas (Float64)" begin
