@@ -1030,6 +1030,15 @@ function frule!!(
     Cp = primal(C_dC)
     A = _as_col(Ap)
     B = _as_col(Bp)
+    # `op(A)·op(B)` is lane-invariant. It enters the tangent only through the `dα` term, so it is
+    # recomputed once per lane that differentiates α — wasteful only when more than one lane does.
+    # In that case hoist the product once and add the `dα` term by axpy; otherwise (0 or 1 such
+    # lane, the common case) leave the per-lane `gemm!` untouched.
+    ndα = 0
+    for lane in 1:Nw
+        ndα += !iszero(tangent(alpha, lane))
+    end
+    AB = ndα > 1 ? BLAS.gemm(tA, tB, one(T), A, B) : Matrix{T}(undef, 0, 0)
     for lane in 1:Nw
         dα = tangent(alpha, lane)
         dβ = tangent(beta, lane)
@@ -1042,7 +1051,7 @@ function frule!!(
         BLAS.gemm!(tA, tB, α, dA, B, β, dC)
         BLAS.gemm!(tA, tB, α, A, dB, one(T), dC)
         if !iszero(dα)
-            BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
+            ndα > 1 ? (dC .+= dα .* AB) : BLAS.gemm!(tA, tB, dα, A, B, one(T), dC)
         end
         if !iszero(dβ)
             @inbounds for n in eachindex(Cp)
@@ -1175,6 +1184,15 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         A = primal(A_dA)
         B = primal(B_dB)
         C = primal(C_dC)
+        # `$fname(A)·B` is lane-invariant and enters the tangent only via the `dα` term. When more
+        # than one lane differentiates α, hoist the product once and add the term by axpy instead of
+        # recomputing it per such lane; otherwise leave the per-lane call untouched.
+        ndα = 0
+        for lane in 1:Nw
+            ndα += !iszero(tangent(alpha, lane))
+        end
+        AB = Matrix{T}(undef, (ndα > 1 ? size(C) : (0, 0))...)
+        ndα > 1 && BLAS.$fname(s, ul, one(T), A, B, zero(T), AB)
         for lane in 1:Nw
             dα = tangent(alpha, lane)
             dβ = tangent(beta, lane)
@@ -1184,7 +1202,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.$fname(s, ul, α, A, dB, β, dC)
             BLAS.$fname(s, ul, α, dA, B, one(T), dC)
             if !iszero(dα)
-                BLAS.$fname(s, ul, dα, A, B, one(T), dC)
+                ndα > 1 ? (dC .+= dα .* AB) : BLAS.$fname(s, ul, dα, A, B, one(T), dC)
             end
             if !iszero(dβ)
                 @inbounds for n in eachindex(C)
@@ -1308,13 +1326,32 @@ for (fname, elty, relty) in (
         # into the tangent — matching the sibling level-3 frules (gemm!/symm!/gemv!/…). Lane-invariant
         # and C is untouched until after the loop, so compute it once here rather than per lane.
         Ct = uplo == 'U' ? triu(C) : tril(C)
+        # The rank-k product (via $fname) is lane-invariant and enters the tangent only via the `dα`
+        # term, which updates only the `uplo` triangle. When more than one lane differentiates α,
+        # hoist it once — masked to that triangle so the axpy leaves the other one alone — and add by
+        # axpy instead of recomputing per such lane.
+        ndα = 0
+        for lane in 1:Nw
+            ndα += !iszero(tangent(α_dα, lane))
+        end
+        AAt = Matrix{$elty}(undef, (ndα > 1 ? size(C) : (0, 0))...)
+        if ndα > 1
+            BLAS.$fname(uplo, t, one($relty), A, zero($relty), AAt)
+            uplo == 'U' ? triu!(AAt) : tril!(AAt)
+        end
         for lane in 1:Nw
             dα = tangent(α_dα, lane)
             dβ = tangent(β_dβ, lane)
             dA = _blas_lane_partial(A_dA, lane)
             dC = _blas_lane_partial(C_dC, lane)
             BLAS.$(isherm ? :her2k! : :syr2k!)(uplo, t, $elty(α), A, dA, β, dC)
-            iszero(dα) || BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+            iszero(dα) || (
+                if ndα > 1
+                    (dC .+= dα .* AAt)
+                else
+                    BLAS.$fname(uplo, t, dα, A, one($relty), dC)
+                end
+            )
             if !iszero(dβ)
                 for n in eachindex(dC, Ct)
                     dC[n] = ifelse_nan(Ct[n], dC[n], dC[n] + dβ * Ct[n])
@@ -1409,6 +1446,18 @@ function frule!!(
     A = primal(A_dA)
     B = primal(B_dB)
     Bbuf = similar(B)  # scratch reused across lanes
+    # `op(A)·B` is lane-invariant and enters the tangent only via the `dα` term. When more than one
+    # lane differentiates α, hoist it once and add the term by axpy instead of recomputing per lane;
+    # otherwise leave the per-lane `trmm!` untouched.
+    ndα = 0
+    for lane in 1:Nw
+        ndα += !iszero(tangent(α_dα, lane))
+    end
+    AopB = Matrix{P}(undef, (ndα > 1 ? size(B) : (0, 0))...)
+    if ndα > 1
+        copyto!(AopB, B)
+        BLAS.trmm!(side, uplo, ta, diag, one(P), A, AopB)
+    end
     for lane in 1:Nw
         dα = tangent(α_dα, lane)
         dA = _blas_lane_partial(A_dA, lane)
@@ -1419,9 +1468,13 @@ function frule!!(
         dB .+= Bbuf
         diag === 'U' && (dB .-= α .* B)
         if !iszero(dα)
-            copyto!(Bbuf, B)
-            BLAS.trmm!(side, uplo, ta, diag, dα, A, Bbuf)
-            dB .+= Bbuf
+            if ndα > 1
+                dB .+= dα .* AopB
+            else
+                copyto!(Bbuf, B)
+                BLAS.trmm!(side, uplo, ta, diag, dα, A, Bbuf)
+                dB .+= Bbuf
+            end
         end
     end
     BLAS.trmm!(side, uplo, ta, diag, α, A, B)
