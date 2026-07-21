@@ -1542,7 +1542,8 @@ function frule!!(
         BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
         dB_lane .-= tmp
     end
-    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    # Primal result α·op(A)⁻¹·B = α·X, and X already holds the unscaled solve: scale, don't re-solve.
+    B .= α .* X
     return B_dB
 end
 
