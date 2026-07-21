@@ -137,23 +137,24 @@ function frule!!(
     diag = primal(_diag)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
-    # The triangular solve of the (unmodified) primal RHS is lane-invariant: hoist it and one
-    # `tmp` scratch. `lmul!(::Triangular, ·)` allocates a temp per call, so the product runs in
-    # place via `BLAS.trmm!` — `uplo`/`trans`/`diag` are exactly its side chars (`diag` is 'N' or
-    # 'U', matching UnitLowerTriangular vs LowerTriangular). A vector RHS is viewed as one column.
+    # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it and the `tmp` scratch.
     X = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, X)
     tmp = similar(X)
     tmpm = _as_col(tmp)
+    # d(op(A)⁻¹·B) = op(A)⁻¹·(dB − op(dA)·X). op(A)⁻¹ is linear, so the tangent takes one solve of
+    # that combined RHS, not separate solves of `dB` and `op(dA)·X`: build `dB − op(dA)·X` in
+    # `dB_lane`, solve in place. `op(dA)·X` runs in place via `BLAS.trmm!` (`lmul!(::Triangular, ·)`
+    # would allocate); `diag` 'N'/'U' selects LowerTriangular/UnitLowerTriangular, vector RHS as one
+    # column.
     @inbounds for lane in 1:Nw
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
-        LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
         copyto!(tmp, X)
         BLAS.trmm!('L', uplo, trans, diag, one(P), dA_lane, tmpm)
         diag == 'N' || (tmp .-= X)
-        LAPACK.trtrs!(uplo, trans, diag, A, tmp)
         dB_lane .-= tmp
+        LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
     end
     # Primal result op(A)⁻¹·B = X, already solved above and unmutated: copy it, don't re-solve.
     copyto!(B, X)

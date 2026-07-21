@@ -1523,24 +1523,23 @@ function frule!!(
     α = primal(α_dα)
     A, dA_lanes = arrayify(A_dA)
     B, dB_lanes = arrayify(B_dB)
-    # The triangular solve of the (as yet unmodified) primal RHS is lane-invariant: hoist `X` and
-    # the `tmp` scratch above the loop, refilling `tmp` per lane with `copyto!`.
+    # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it and the `tmp` scratch.
     X = copy(B)
     trsm!(side, uplo, trans, diag, one(P), A, X)
     tmp = similar(X)
+    # d(α·op(A)⁻¹·B) = dα·X + α·op(A)⁻¹·(dB − op(dA)·X). op(A)⁻¹ is linear, so the tangent takes one
+    # solve of that combined RHS, not separate solves of `dB` and `op(dA)·X`. Per lane: build
+    # `dB − op(dA)·X` in `dB_lane` (via `tmp`), solve in place (α folded in), add the `dα` term.
     @inbounds for lane in 1:Nw
         dα_lane = tangent(α_dα, lane)
         dA_lane = dA_lanes[lane]
         dB_lane = dB_lanes[lane]
+        copyto!(tmp, X)
+        BLAS.trmm!(side, uplo, trans, diag, one(P), dA_lane, tmp)
+        diag == 'U' && (tmp .-= X)
+        dB_lane .-= tmp
         BLAS.trsm!(side, uplo, trans, diag, α, A, dB_lane)
         dB_lane .+= dα_lane .* X
-        copyto!(tmp, X)
-        BLAS.trmm!(side, uplo, trans, diag, α, dA_lane, tmp)
-        if diag == 'U'
-            tmp .-= α .* X
-        end
-        BLAS.trsm!(side, uplo, trans, diag, one(P), A, tmp)
-        dB_lane .-= tmp
     end
     # Primal result α·op(A)⁻¹·B = α·X, and X already holds the unscaled solve: scale, don't re-solve.
     B .= α .* X
