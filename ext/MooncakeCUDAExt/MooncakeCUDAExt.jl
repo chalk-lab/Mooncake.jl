@@ -1051,7 +1051,22 @@ function frule!!(
     R = eltype(px)
     x_partials = tangent(x).partials
     y_partials = tangent(y).partials
-    dz_lanes = ntuple(k -> dot(x_partials[k], py) + dot(px, y_partials[k]), Val(Nw))
+    if Nw == 1
+        dz_lanes = (dot(x_partials[1], py) + dot(px, y_partials[1]),)
+    else
+        # Batch the 2N per-lane dots into 2 gemv_batched! (py, px shared): dot(a,b) = conj(a)'·b via
+        # gemv 'C' with the varying operand as a length×1 column; one concatenated readback per term.
+        pxm = reshape(px, :, 1)
+        xms = [reshape(xp, :, 1) for xp in x_partials]
+        yvs = [reshape(yp, :) for yp in y_partials]
+        o1 = [similar(px, R, 1) for _ in 1:Nw]
+        o2 = [similar(px, R, 1) for _ in 1:Nw]
+        cuBLAS.gemv_batched!('C', one(R), xms, fill(py, Nw), zero(R), o1)   # dot(x_partials[k], py)
+        cuBLAS.gemv_batched!('C', one(R), fill(pxm, Nw), yvs, zero(R), o2)  # dot(px, y_partials[k])
+        h1 = Array(reduce(vcat, o1))
+        h2 = Array(reduce(vcat, o2))
+        dz_lanes = ntuple(k -> h1[k] + h2[k], Nw)
+    end
     return Lifted{R,Nw}(z, NDual{R,Nw}(z, dz_lanes))
 end
 function rrule!!(
