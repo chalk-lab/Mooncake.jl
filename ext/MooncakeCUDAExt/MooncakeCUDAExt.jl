@@ -1024,7 +1024,7 @@ function frule!!(
         outs = [similar(px, T, 1) for _ in 1:Nw]  # beta=0 overwrites, no zeroing needed
         cuBLAS.gemv_batched!('C', one(T), fill(pxm, Nw), xvs, zero(T), outs)
         host = Array(reduce(vcat, outs))
-        dy_lanes = ntuple(k -> real(host[k]) / y, Nw)
+        dy_lanes = ntuple(k -> real(host[k]) / y, Val(Nw))
     end
     return Lifted{R,Nw}(y, NDual{R,Nw}(y, dy_lanes))
 end
@@ -1069,7 +1069,7 @@ function frule!!(
         cuBLAS.gemv_batched!('C', one(R), fill(pxm, Nw), yvs, zero(R), o2)  # dot(px, y_partials[k])
         h1 = Array(reduce(vcat, o1))
         h2 = Array(reduce(vcat, o2))
-        dz_lanes = ntuple(k -> h1[k] + h2[k], Nw)
+        dz_lanes = ntuple(k -> h1[k] + h2[k], Val(Nw))
     end
     return Lifted{R,Nw}(z, NDual{R,Nw}(z, dz_lanes))
 end
@@ -1284,8 +1284,9 @@ function frule!!(
     if Nw == 1 || isempty(px)
         dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
     else
-        # Batch the N per-lane reductions into one gemv_batched!: sum(xₖ) = onesᵀ·xₖ ('T' avoids
-        # conjugating complex partials), then one concatenated readback for the N scalars.
+        # Batch the N per-lane reductions into one gemv_batched!: sum(xₖ) = onesᵀ·xₖ ('T' transposes
+        # the n×1 ones column into the 1×n contracting row; ones is real and gemv never conjugates its
+        # vector operand, so the partials pass through unchanged), then one concatenated readback.
         T = eltype(px)
         onev = reshape(fill!(similar(px, T, length(px)), one(T)), :, 1)
         xvs = [reshape(xp, :) for xp in x_partials]
@@ -3816,8 +3817,9 @@ function frule!!(
         if n == 0 || Nw == 1
             dμ_lanes = ntuple(k -> n == 0 ? zero(μ) : sum(x_partials[k]) / n, Val(Nw))
         else
-            # sum(xpₖ)/n batched: sum(xpₖ) = onesᵀ·xpₖ via gemv_batched! (ones shared, no gather;
-            # 'T' so complex partials aren't conjugated), one concatenated readback for the N scalars.
+            # sum(xpₖ)/n batched: sum(xpₖ) = onesᵀ·xpₖ via gemv_batched! (ones shared, no gather; 'T'
+            # transposes the n×1 ones column into the 1×n contracting row — ones is real and gemv never
+            # conjugates its vector operand, so the partials pass through unchanged), one readback.
             T = eltype(px)
             onev = reshape(fill!(similar(px, T, n), one(T)), :, 1)
             xvs = [reshape(xp, :) for xp in x_partials]
