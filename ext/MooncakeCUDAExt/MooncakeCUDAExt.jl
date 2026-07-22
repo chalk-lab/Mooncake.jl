@@ -1258,7 +1258,19 @@ function frule!!(
     px = primal(x)
     y = sum(px)
     x_partials = tangent(x).partials
-    dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
+    if Nw == 1
+        dy_lanes = (sum(x_partials[1]),)
+    else
+        # Batch the N per-lane reductions into one gemv_batched!: sum(xₖ) = onesᵀ·xₖ ('T' avoids
+        # conjugating complex partials), then one concatenated readback for the N scalars.
+        T = eltype(px)
+        onev = reshape(fill!(similar(px, T, length(px)), one(T)), :, 1)
+        xvs = [reshape(xp, :) for xp in x_partials]
+        outs = [similar(px, T, 1) for _ in 1:Nw]
+        cuBLAS.gemv_batched!('T', one(T), fill(onev, Nw), xvs, zero(T), outs)
+        host = Array(reduce(vcat, outs))
+        dy_lanes = ntuple(k -> host[k], Val(Nw))
+    end
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
