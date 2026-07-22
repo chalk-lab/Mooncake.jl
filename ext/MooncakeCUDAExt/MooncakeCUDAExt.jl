@@ -3789,7 +3789,7 @@ function frule!!(
             outs = [similar(px, T, 1) for _ in 1:Nw]
             cuBLAS.gemv_batched!('T', one(T), fill(onev, Nw), xvs, zero(T), outs)
             host = Array(reduce(vcat, outs))
-            dμ_lanes = ntuple(k -> host[k] / n, Nw)
+            dμ_lanes = ntuple(k -> host[k] / n, Val(Nw))
         end
         return Lifted{typeof(μ),Nw}(μ, _wrap_scalar_v_lanes(μ, dμ_lanes))
     end

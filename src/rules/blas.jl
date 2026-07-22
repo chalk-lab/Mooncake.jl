@@ -1332,8 +1332,8 @@ for (fname, elty, relty) in (
         # NaN-masking reference triangle of the input C: the β==0 convention lets the caller pass an
         # uninitialised/NaN C (overwritten by the primal below), so the `dβ*C` term must not leak NaN
         # into the tangent — matching the sibling level-3 frules. Read only inside the `dβ` branch, so
-        # build it (once, C is untouched until after the loop) only when some lane seeds β; the empty
-        # placeholder is never written or read otherwise, so it costs nothing (elided).
+        # build the O(n²) triangle copy (once, C is untouched until after the loop) only when some lane
+        # seeds β; otherwise it is at most a 0×0 array header.
         Ct = ndβ > 0 ? (uplo == 'U' ? triu(C) : tril(C)) : Matrix{$elty}(undef, 0, 0)
         # The rank-k product (via $fname) is lane-invariant and enters the tangent only via the `dα`
         # term, which updates only the `uplo` triangle. When more than one lane differentiates α,
