@@ -101,6 +101,11 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
         v = x[i].value
         v > u && (u = v)
     end
+    # At an infinite maximum logsumexp is non-differentiable. This scalar-NDual path runs inside CUDA
+    # elementwise/reduction kernels, where one NaN poisons the whole reduction, so it returns the
+    # argmax subgradient (uniform over the maximal entries). The NDualArray frules and the reverse
+    # rrules deliberately return NaN there instead — mutually consistent, and a loud flag of the
+    # singularity, rather than committing to a subgradient on the hot path.
     isinf(u) && return _nf_logsumexp_inf(x, u)
     # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
     # Both _nf_logsumexp_accum and _nf_logsumexp_scale take grad as a function parameter
