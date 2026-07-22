@@ -1051,8 +1051,11 @@ function frule!!(
     R = eltype(px)
     x_partials = tangent(x).partials
     y_partials = tangent(y).partials
-    if Nw == 1
-        dz_lanes = (dot(x_partials[1], py) + dot(px, y_partials[1]),)
+    # `isempty` routes past the batched path: gemv_batched! with a zero-length operand quick-returns
+    # before its `beta=0` overwrite, leaving output buffers uninitialised — so dot over empty operands
+    # (derivative 0) must use the per-lane form, which is 0 for every lane.
+    if Nw == 1 || isempty(px)
+        dz_lanes = ntuple(k -> dot(x_partials[k], py) + dot(px, y_partials[k]), Val(Nw))
     else
         # Batch the 2N per-lane dots into 2 gemv_batched! (py, px shared): dot(a,b) = conj(a)'·b via
         # gemv 'C' with the varying operand as a length×1 column; one concatenated readback per term.
@@ -1110,8 +1113,10 @@ function frule!!(
     px = primal(x)
     y = prod(px)
     x_partials = tangent(x).partials
-    if iszero(y)
-        # A zero factor annihilates every lane's derivative (and px has a zero, so 1/px is invalid).
+    if iszero(y) || isempty(px)
+        # Every lane's derivative is zero: a zero factor annihilates it (and px has a zero, so 1/px is
+        # invalid), or px is empty (prod over no elements has derivative 0). Either way skip the
+        # batched gemv_batched!, which would read uninitialised buffers on a zero-length operand.
         dy_lanes = ntuple(_ -> zero(y), Val(Nw))
     elseif Nw == 1
         dy_lanes = (y * sum(x_partials[1] ./ px),)
@@ -1273,8 +1278,11 @@ function frule!!(
     px = primal(x)
     y = sum(px)
     x_partials = tangent(x).partials
-    if Nw == 1
-        dy_lanes = (sum(x_partials[1]),)
+    # `isempty` routes past the batched path: gemv_batched! with a zero-length operand quick-returns
+    # before its `beta=0` overwrite, leaving the output buffers uninitialised — so sum over an empty
+    # array (derivative 0) must use the per-lane reduction, which is 0 for every lane.
+    if Nw == 1 || isempty(px)
+        dy_lanes = ntuple(k -> sum(x_partials[k]), Val(Nw))
     else
         # Batch the N per-lane reductions into one gemv_batched!: sum(xₖ) = onesᵀ·xₖ ('T' avoids
         # conjugating complex partials), then one concatenated readback for the N scalars.
