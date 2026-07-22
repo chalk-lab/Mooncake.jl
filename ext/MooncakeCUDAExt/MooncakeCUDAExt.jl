@@ -1110,7 +1110,22 @@ function frule!!(
     px = primal(x)
     y = prod(px)
     x_partials = tangent(x).partials
-    dy_lanes = ntuple(k -> iszero(y) ? zero(y) : y * sum(x_partials[k] ./ px), Val(Nw))
+    if iszero(y)
+        # A zero factor annihilates every lane's derivative (and px has a zero, so 1/px is invalid).
+        dy_lanes = ntuple(_ -> zero(y), Val(Nw))
+    elseif Nw == 1
+        dy_lanes = (y * sum(x_partials[1] ./ px),)
+    else
+        # y≠0 ⇒ px has no zeros. Per lane dyₖ = y·Σ(xpₖ/px) = y·(wᵀ·xpₖ) with w=1/px lane-invariant;
+        # batch the N reductions into one gemv_batched! ('T' avoids conjugating complex w).
+        T = eltype(px)
+        wcol = reshape(inv.(px), :, 1)
+        xvs = [reshape(xp, :) for xp in x_partials]
+        outs = [similar(px, T, 1) for _ in 1:Nw]
+        cuBLAS.gemv_batched!('T', one(T), fill(wcol, Nw), xvs, zero(T), outs)
+        host = Array(reduce(vcat, outs))
+        dy_lanes = ntuple(k -> y * host[k], Val(Nw))
+    end
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
