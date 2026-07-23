@@ -84,9 +84,11 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-# Mutate the user's Vector and every lane's partial Vector in sync. `T<:NDualEltype` with the
-# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too; the body is
-# element-type-agnostic. The plain-`Array`-V overload below covers non-`NDualArray` element-wise Vs.
+# Mutate the user's Vector and the flat element-major partials block in sync: deleting `d`
+# elements from the front removes the first `d * N` block entries (each element owns `N`
+# contiguous lanes). `T<:NDualEltype` with the 4-param V prefix so complex `NDualArray`s
+# (`Complex{NDual}` inner) match too; the body is element-type-agnostic. The plain-`Array`-V
+# overload below covers non-`NDualArray` element-wise Vs.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N},
     a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
@@ -94,9 +96,7 @@ function frule!!(
 ) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._deletebeg!(primal(a), d_p)
-    for lane in 1:N
-        Base._deletebeg!(tangent(a).partials[lane], d_p)
-    end
+    Base._deletebeg!(getfield(tangent(a), :partials_block), d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: delete primal and the element-wise tangent `Array` in lockstep. Covers both
@@ -139,9 +139,7 @@ function frule!!(
 ) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._deleteend!(primal(a), d_p)
-    for lane in 1:N
-        Base._deleteend!(tangent(a).partials[lane], d_p)
-    end
+    Base._deleteend!(getfield(tangent(a), :partials_block), d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
@@ -193,9 +191,7 @@ function frule!!(
     i_p = primal(i)
     d_p = primal(delta)
     Base._deleteat!(primal(a), i_p, d_p)
-    for lane in 1:N
-        Base._deleteat!(tangent(a).partials[lane], i_p, d_p)
-    end
+    Base._deleteat!(getfield(tangent(a), :partials_block), (i_p - 1) * N + 1, d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
@@ -248,9 +244,7 @@ function frule!!(
 ) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._growbeg!(primal(a), d_p)
-    for lane in 1:N
-        Base._growbeg!(tangent(a).partials[lane], d_p)
-    end
+    Base._growbeg!(getfield(tangent(a), :partials_block), d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
@@ -288,9 +282,7 @@ function frule!!(
 ) where {N,T<:NDualEltype}
     d_p = primal(d)
     Base._growend!(primal(a), d_p)
-    for lane in 1:N
-        Base._growend!(tangent(a).partials[lane], d_p)
-    end
+    Base._growend!(getfield(tangent(a), :partials_block), d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers vectors of differentiable
@@ -331,9 +323,7 @@ function frule!!(
     i_p = primal(i)
     d_p = primal(d)
     Base._growat!(primal(a), i_p, d_p)
-    for lane in 1:N
-        Base._growat!(tangent(a).partials[lane], i_p, d_p)
-    end
+    Base._growat!(getfield(tangent(a), :partials_block), (i_p - 1) * N + 1, d_p * N)
     return zero_lifted(Val(N), nothing)
 end
 # Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
@@ -378,9 +368,7 @@ function frule!!(
 ) where {N,T<:NDualEltype}
     sz_p = primal(sz)
     sizehint!(primal(x), sz_p)
-    for lane in 1:N
-        sizehint!(tangent(x).partials[lane], sz_p)
-    end
+    sizehint!(getfield(tangent(x), :partials_block), sz_p * N)
     return x
 end
 # Plain-`Array` V: an `Array` of per-element Vs, hinted in lockstep. Covers both differentiable
@@ -401,10 +389,11 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
 end
 
 # `Lifted{Ptr{T},N}(y, dy_partials)` is the canonical Ptr V — `dy_partials` is the
-# `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects. Real and complex
-# element types share one body: the `NDualArray` stores per-lane partials as
-# parallel `NTuple{N,Array{T,D}}` in both cases, so each lane's pointer is just
-# `jl_array_ptr` of `partials[k]`.
+# `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects, one contiguous per-lane buffer
+# per pointer. The element-major block interleaves the `N` lanes, so a per-lane pointer is
+# contiguous only at width 1 (the whole flat block IS lane 1). Real and complex element types
+# share this body. Width `N > 1` has no contiguous per-lane buffer to point at, so it fails
+# loudly rather than hand back a pointer that a consumer would read with the wrong stride.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -415,10 +404,15 @@ function frule!!(
     a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}},
 ) where {N,T<:Union{IEEEFloat,Complex{<:IEEEFloat}},D}
     y = ccall(:jl_array_ptr, Ptr{T}, (Any,), primal(a))
-    dy_partials = ntuple(
-        k -> ccall(:jl_array_ptr, Ptr{T}, (Any,), tangent(a).partials[k]), Val(N)
+    N == 1 || throw(
+        ArgumentError(
+            "jl_array_ptr (raw array pointer) is unsupported in chunked forward mode " *
+            "(width $N > 1): the element-major partials block interleaves the $N lanes, so " *
+            "no lane has a contiguous buffer to point at. Use width-1 forward mode.",
+        ),
     )
-    return Lifted{Ptr{T},N}(y, dy_partials)
+    dy = ccall(:jl_array_ptr, Ptr{T}, (Any,), getfield(tangent(a), :partials_block))
+    return Lifted{Ptr{T},N}(y, ntuple(_ -> dy, Val(N)))
 end
 # Element-wise V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
 # `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
@@ -472,11 +466,15 @@ function frule!!(
     _doffs = primal(doffs)
     _soffs = primal(soffs)
     Base.unsafe_copyto!(primal(dest), _doffs, primal(src), _soffs, _n)
-    for lane in 1:N
-        Base.unsafe_copyto!(
-            tangent(dest).partials[lane], _doffs, tangent(src).partials[lane], _soffs, _n
-        )
-    end
+    # Element-major flat blocks with matching `N`: copying `_n` elements is one contiguous
+    # `_n * N`-entry copy at the elements' lane offsets `(o - 1) * N + 1`.
+    Base.unsafe_copyto!(
+        getfield(tangent(dest), :partials_block),
+        (_doffs - 1) * N + 1,
+        getfield(tangent(src), :partials_block),
+        (_soffs - 1) * N + 1,
+        _n * N,
+    )
     return dest
 end
 # Element-wise V: copy primals and the parallel per-element-V arrays (e.g. `Vector{Any}`
@@ -557,8 +555,9 @@ function frule!!(
     ::Lifted{typeof(complex),N}, x::Lifted{Array{P,D},N,<:NDualArray}
 ) where {N,P<:IEEEFloat,D}
     y = complex(primal(x))  # y = x + 0im
-    parts = ntuple(k -> complex(tangent(x).partials[k]), Val(N))  # d(complex(x)) = complex(dx)
-    return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, parts))
+    # d(complex(x)) = complex(dx): complexify the flat block element-wise (layout preserved).
+    block = complex.(getfield(tangent(x), :partials_block))
+    return Lifted{typeof(y),N}(y, NDualArray{Complex{P},N,D,typeof(y)}(y, block))
 end
 
 Base.@propagate_inbounds function frule!!(
@@ -570,7 +569,9 @@ Base.@propagate_inbounds function frule!!(
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     y = arrayref(_inb, primal(x), _inds...)
-    dy_partials = ntuple(k -> arrayref(_inb, tangent(x).partials[k], _inds...), Val(Nw))
+    block = getfield(tangent(x), :partials_block)
+    off = Nfwd._lane_offset(tangent(x), _inds...)
+    dy_partials = ntuple(k -> @inbounds(block[off + k]), Val(Nw))
     return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 # Element-wise V: read the element primal and its per-element V from the parallel arrays.
@@ -620,8 +621,10 @@ function frule!!(
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     Core.arrayset(_inb, primal(A), primal(v), _inds...)
-    for lane in 1:Nw
-        Core.arrayset(_inb, tangent(A).partials[lane], tangent(v, lane), _inds...)
+    block = getfield(tangent(A), :partials_block)
+    off = Nfwd._lane_offset(tangent(A), _inds...)
+    @inbounds for lane in 1:Nw
+        block[off + lane] = tangent(v, lane)
     end
     return A
 end
@@ -715,9 +718,9 @@ function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
     new_primal = copy(primal(a))
-    new_partials = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
+    new_block = copy(getfield(tangent(a), :partials_block))
     return Lifted{Array{T,D},N}(
-        new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_partials)
+        new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_block)
     )
 end
 # Element-wise V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`

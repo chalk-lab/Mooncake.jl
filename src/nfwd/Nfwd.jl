@@ -1898,13 +1898,48 @@ const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
     return Complex{NDual{T,N}}
 end
 
-# The concrete element-major block type for a primal container `A`: one extra leading lane
-# dimension. A `Memory{T}` primal blocks to `Matrix{T}` — `Memory` is 1-D only, so the block
-# cannot itself be a `Memory`. No generic fallback: an unknown container (e.g. a GPU array)
-# must define its own method, or fail loudly here rather than silently landing a CPU block.
-@inline _block_type(::Type{Array{Element,D}}) where {Element,D} = Array{Element,D + 1}
+# The concrete element-major block type for a primal container `A`. No generic fallback: an
+# unknown container (e.g. a GPU array) must define its own method, or fail loudly here rather
+# than silently landing a CPU block.
+#
+# `_block_dims` gives the block's `undef` dimensions and `_block_reshape` presents it to
+# shape-consuming helpers (BLAS, `tangent_view`) as `(N, size(primal)...)`. Element access is
+# always linear (`_lane_offset`), so it is oblivious to the block's declared shape.
 @static if VERSION >= v"1.11-rc4"
+    # A `Memory{T}` primal blocks to `Matrix{T}` — `Memory` is 1-D only, so the block cannot
+    # itself be a `Memory`.
+    @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = Array{Element,D + 1}
     @inline _block_type(::Type{Memory{Element}}) where {Element} = Matrix{Element}
+    @inline _block_dims(N::Int, p) = (N, size(p)...)
+    @inline _block_reshape(block, N::Int, p) = block
+else
+    # Julia 1.10: an `Array` grows its own buffer in place, but a shaped `(N, dims...)` block
+    # (a `Matrix`/`Array{D+1}`) cannot be resized in place. So the block is a flat, in-place-
+    # resizable `Vector` of length `N * length(primal)`, still element-major: element `i`'s `N`
+    # lanes are the contiguous slice `[(i-1)*N+1 : i*N]`, matching the linear `_lane_offset`.
+    #
+    # The shaped `(N, size(p)...)` view is an `unsafe_wrap` over the flat block's buffer, NOT
+    # `reshape` and NOT `Base.ReshapedArray`:
+    #   - `reshape` of an `Array` marks the buffer shared, which then makes the in-place resize
+    #     primitives throw "cannot resize array with shared data";
+    #   - `Base.ReshapedArray` avoids that flag but a multi-dim reshape of a `Vector` has a
+    #     non-optimizing (recursive) `getindex`/`setindex!` path that fails the JET stability tests.
+    # `unsafe_wrap` yields a genuine `Array` (builtin indexing, no recursion; unit-first-stride,
+    # BLAS-compatible; write-through) and does not set the shared flag, so resize, BLAS and type
+    # stability all coexist. The raw pointer is safe because the flat block is a live field of the
+    # enclosing `NDualArray` (`partials_block`), which is a live rule argument wherever a shaped
+    # view is taken — so the buffer cannot be freed while the view is in use. Views are transient
+    # (rebuilt per access), so a later resize never leaves a stale wrap behind.
+    #
+    # The wrap header (~48B) is paid only by shaped consumers (BLAS/LAPACK operands and
+    # `tangent_view` reductions), never by scalar `getindex`/`setindex!` (linear block access) or by
+    # the resize primitives (direct flat mutation) — and never on 1.11+, where `_block_reshape` is
+    # the identity.
+    @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = Vector{Element}
+    @inline _block_dims(N::Int, p) = (N * length(p),)
+    @inline _block_reshape(block, N::Int, p) = unsafe_wrap(
+        Array, pointer(block), (N, size(p)...)
+    )
 end
 
 struct NDualArray{
@@ -1939,12 +1974,22 @@ struct NDualArray{
                 "$(_block_type(A)) for A=$A.",
             ),
         )
-        size(partials_block) == (N, size(primal)...) || throw(
-            DimensionMismatch(
-                "NDualArray partials block has size $(size(partials_block)); expected " *
-                "$((N, size(primal)...)) (lane-leading, then the primal's axes).",
-            ),
-        )
+        @static if VERSION >= v"1.11-rc4"
+            size(partials_block) == (N, size(primal)...) || throw(
+                DimensionMismatch(
+                    "NDualArray partials block has size $(size(partials_block)); expected " *
+                    "$((N, size(primal)...)) (lane-leading, then the primal's axes).",
+                ),
+            )
+        else
+            # Julia 1.10 flat block: element-major `Vector` of length `N * length(primal)`.
+            length(partials_block) == N * length(primal) || throw(
+                DimensionMismatch(
+                    "NDualArray partials block has length $(length(partials_block)); " *
+                    "expected $(N * length(primal)) = N * length(primal) (N lanes per element).",
+                ),
+            )
+        end
         return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
     end
 end
@@ -1954,7 +1999,7 @@ end
 @inline function _pack_block(
     p::A, ts::NTuple{N,A}
 ) where {Element,N,A<:AbstractArray{Element}}
-    block = _block_type(A)(undef, (N, size(p)...))
+    block = _block_type(A)(undef, _block_dims(N, p)...)
     @inbounds for k in 1:N
         tk = ts[k]
         for j in 1:length(p)
@@ -2003,7 +2048,7 @@ end
 @inline function NDualArray{Element,N,D,A}(
     p::A
 ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-    block = fill!(_block_type(A)(undef, (N, size(p)...)), zero(Element))
+    block = fill!(_block_type(A)(undef, _block_dims(N, p)...), zero(Element))
     return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
         p, block
     )
@@ -2027,10 +2072,15 @@ Base.propertynames(::NDualArray) = (:primal, :partials_block, :partials)
 # land in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Build
 # just the one lane — the preferred accessor over the `.partials` shim's full-tuple synthesis.
 @inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
-    getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
+    _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal)),
+    k,
+    ntuple(_ -> Colon(), Val(D))...,
 )
 
-# AbstractArray interface.
+# AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
+# is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_offset`). Resize
+# mutates primal and block in place in lockstep (same `Vector` objects, grown), so the immutable
+# wrapper's stable field references always observe the current state.
 Base.size(a::NDualArray) = size(a.primal)
 function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
     return IndexStyle(A)

@@ -369,10 +369,18 @@ end
 # block itself IS BLAS-compatible with the lane axis leading, so a lane-invariant linear
 # map applies to all `N` lanes in one wide call: right-multiplying the `(N, len)` lane
 # matrix by the map's transpose batches every lane (see the per-rule comments).
-@inline function _partials_block(
-    x::Lifted{P,N,<:NDualArray}
-) where {T,D,P<:AbstractArray{T,D},N}
-    return getfield(tangent(x), :partials_block), false
+# The in-place fast path (return the storage block directly, `copied == false`) is 1.11+ only.
+# On Julia 1.10 the block is a flat `Vector`; reshaping it to `(N, dims...)` for BLAS marks its
+# buffer shared (Julia's `reshape` of an `Array`), which then makes the in-place resize primitives
+# throw "cannot resize array with shared data" for a vector that is both BLAS'd and resized. So on
+# 1.10 the general gather method below handles `NDualArray` too (`copied == true`, written back by
+# the rule): it only ever reads the flat block through a non-marking `ReshapedArray` view.
+@static if VERSION >= v"1.11-rc4"
+    @inline function _partials_block(
+        x::Lifted{P,N,<:NDualArray}
+    ) where {T,D,P<:AbstractArray{T,D},N}
+        return getfield(tangent(x), :partials_block), false
+    end
 end
 @inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
     p = primal(x)

@@ -705,7 +705,7 @@ Shapes defined so far:
     return Complex{NDual{R,N}}
 end
 @foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return NDualArray{T,N,D,Array{T,D},NDual{T,N},Array{T,D + 1}}
+    return NDualArray{T,N,D,Array{T,D},NDual{T,N},Nfwd._block_type(Array{T,D})}
 end
 # `Base.RefValue{P<:NDualEltype}`: the `NDualRef` parallel-partials V (scalar analogue of `NDualArray`). A *distinct*
 # wrapper, so the generic struct recursion never re-lifts it (a bare `RefValue` shadow would be).
@@ -719,7 +719,12 @@ end
     ::Val{N}, ::Type{Array{Complex{R},D}}
 ) where {N,R<:IEEEFloat,D}
     return NDualArray{
-        Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}},Array{Complex{R},D + 1}
+        Complex{R},
+        N,
+        D,
+        Array{Complex{R},D},
+        Complex{NDual{R,N}},
+        Nfwd._block_type(Array{Complex{R},D}),
     }
 end
 # General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
@@ -941,7 +946,9 @@ end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Array{T,D}}
 ) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N},Array{T,D + 1}}}
+    return Lifted{
+        Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N},Nfwd._block_type(Array{T,D})}
+    }
 end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Base.RefValue{P}}
@@ -955,7 +962,12 @@ end
         Array{Complex{R},D},
         N,
         NDualArray{
-            Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}},Array{Complex{R},D + 1}
+            Complex{R},
+            N,
+            D,
+            Array{Complex{R},D},
+            Complex{NDual{R,N}},
+            Nfwd._block_type(Array{Complex{R},D}),
         },
     }
 end
