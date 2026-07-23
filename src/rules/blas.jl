@@ -121,40 +121,51 @@ end
 # recurses through the wrapper's V (`ImmutableDual` whose NamedTuple mirrors the wrapper's fields)
 # and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
 # `NDualArray`'s lane partial.
-@inline _arrayify_lane(::DenseArray, V::NDualArray, lane::Integer) = V.partials[lane]
-@inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer) where {N} = V[lane]
+# The trailing `Val{dense}` selects the dense leaf's backing: `Val(false)` (the 3-arg default,
+# used by the block-op callers gemm/gemv/_partials_block) returns the lazy stride-`N` block-row
+# view; `Val(true)` `collect`s it, so the reconstructed wrapper is backed by CONTIGUOUS memory —
+# needed by the `dotc`/`dotu` non-contiguous fallback, where BLAS must read an operand's partials
+# exactly as it reads the primal. `dense` is a static parameter, so the leaf branch constant-folds.
+@inline _arrayify_lane(x, V, lane::Integer) = _arrayify_lane(x, V, lane, Val(false))
+@inline _dense_lane_partial(x::Lifted, k::Integer) = _arrayify_lane(
+    primal(x), tangent(x), k, Val(true)
+)
+@inline _arrayify_lane(
+    ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
+) where {dense} = dense ? collect(V.partials[lane]) : V.partials[lane]
+@inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N} = V[lane]
 @inline function _arrayify_lane(
-    x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer
+    x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer, d::Val
 ) where {P,B,C,D,E}
-    pp = _arrayify_lane(x.parent, V.value.parent, lane)
+    pp = _arrayify_lane(x.parent, V.value.parent, lane, d)
     return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
 end
 @inline function _arrayify_lane(
-    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer
+    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer, d::Val
 ) where {P,B,C,D}
-    pp = _arrayify_lane(x.parent, V.value.parent, lane)
+    pp = _arrayify_lane(x.parent, V.value.parent, lane, d)
     return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
 end
-@inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer) = adjoint(
-    _arrayify_lane(x.parent, V.value.parent, lane)
+@inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer, d::Val) = adjoint(
+    _arrayify_lane(x.parent, V.value.parent, lane, d)
 )
-@inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer) = transpose(
-    _arrayify_lane(x.parent, V.value.parent, lane)
+@inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer, d::Val) = transpose(
+    _arrayify_lane(x.parent, V.value.parent, lane, d)
 )
-@inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer) = Diagonal(
-    _arrayify_lane(x.diag, V.value.diag, lane)
+@inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer, d::Val) = Diagonal(
+    _arrayify_lane(x.diag, V.value.diag, lane, d)
 )
-@inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer) = Symmetric(
-    _arrayify_lane(x.data, V.value.data, lane), Symbol(x.uplo)
+@inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
+    _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
 )
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
 # `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
 # `arrayify(::AbstractTriangular)`.
-@inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
-    _arrayify_lane(x.data, V.value.data, lane)
+@inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
+    _arrayify_lane(x.data, V.value.data, lane, d)
 )
-@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer) where {T} = reinterpret(
-    T, _arrayify_lane(x.parent, V.value.parent, lane)
+@inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
+    T, _arrayify_lane(x.parent, V.value.parent, lane, d)
 )
 
 """
@@ -461,31 +472,8 @@ end
 # so `BLAS.$fname` reads the partial exactly as it reads the primal operand. Correct at all widths,
 # but O(Nw) BLAS calls plus a materialisation per lane — hence only for the non-contiguous case.
 @inline _blas_dot_raw_safe(x) = x isa Ptr || stride(x, 1) == 1
-
-# `_dense_lane_partial` mirrors `_arrayify_lane` but `collect`s the dense leaf, so the
-# reconstructed wrapper is backed by contiguous memory (a strided view over a contiguous parent),
-# which BLAS reads identically to the primal operand.
-_dense_lane_partial(x::Lifted, k::Integer) = _dense_arrayify_lane(primal(x), tangent(x), k)
-_dense_arrayify_lane(::DenseArray, V::NDualArray, k::Integer) = collect(V.partials[k])
-_dense_arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, k::Integer) where {N} = V[k]
-function _dense_arrayify_lane(
-    x::SubArray{P,B,C,D,E}, V::ImmutableDual, k::Integer
-) where {P,B,C,D,E}
-    pp = _dense_arrayify_lane(x.parent, V.value.parent, k)
-    return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
-end
-function _dense_arrayify_lane(
-    x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, k::Integer
-) where {P,B,C,D}
-    pp = _dense_arrayify_lane(x.parent, V.value.parent, k)
-    return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
-end
-function _dense_arrayify_lane(x::Adjoint, V::ImmutableDual, k::Integer)
-    adjoint(_dense_arrayify_lane(x.parent, V.value.parent, k))
-end
-function _dense_arrayify_lane(x::Transpose, V::ImmutableDual, k::Integer)
-    transpose(_dense_arrayify_lane(x.parent, V.value.parent, k))
-end
+# `_dense_lane_partial` (defined with `_arrayify_lane` above) rebuilds a lane over CONTIGUOUS
+# memory, so BLAS reads it identically to the primal operand.
 
 for (jlfname, elty) in
     ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
