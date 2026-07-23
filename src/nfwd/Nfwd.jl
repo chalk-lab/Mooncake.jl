@@ -1912,6 +1912,7 @@ end
     @inline _block_type(::Type{Memory{Element}}) where {Element} = Matrix{Element}
     @inline _block_dims(N::Int, p) = (N, size(p)...)
     @inline _block_reshape(block, N::Int, p) = block
+    @inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
 else
     # Julia 1.10: an `Array` grows its own buffer in place, but a shaped `(N, dims...)` block
     # (a `Matrix`/`Array{D+1}`) cannot be resized in place. So the block is a flat, in-place-
@@ -1940,6 +1941,7 @@ else
     @inline _block_reshape(block, N::Int, p) = unsafe_wrap(
         Array, pointer(block), (N, size(p)...)
     )
+    @inline _block_shape_ok(block, N::Int, p) = length(block) == N * length(p)
 end
 
 struct NDualArray{
@@ -1974,22 +1976,17 @@ struct NDualArray{
                 "$(_block_type(A)) for A=$A.",
             ),
         )
-        @static if VERSION >= v"1.11-rc4"
-            size(partials_block) == (N, size(primal)...) || throw(
-                DimensionMismatch(
-                    "NDualArray partials block has size $(size(partials_block)); expected " *
-                    "$((N, size(primal)...)) (lane-leading, then the primal's axes).",
-                ),
-            )
-        else
-            # Julia 1.10 flat block: element-major `Vector` of length `N * length(primal)`.
-            length(partials_block) == N * length(primal) || throw(
-                DimensionMismatch(
-                    "NDualArray partials block has length $(length(partials_block)); " *
-                    "expected $(N * length(primal)) = N * length(primal) (N lanes per element).",
-                ),
-            )
-        end
+        # `_block_shape_ok` encodes the block orientation per backend: element-major
+        # `(N, dims...)` on 1.11+, flat length `N * length` on 1.10, and lane-major
+        # `(dims..., N)` for `CuArray` (overridden in the CUDA extension, where lanes must be
+        # contiguous). The `B === _block_type(A)` check above already pins the block type.
+        _block_shape_ok(partials_block, N, primal) || throw(
+            DimensionMismatch(
+                "NDualArray partials block has size $(size(partials_block)) (length " *
+                "$(length(partials_block))); expected $N lanes over a primal of size " *
+                "$(size(primal)).",
+            ),
+        )
         return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
     end
 end
@@ -1997,7 +1994,7 @@ end
 # Pack per-lane same-shape arrays into a fresh element-major block: lane `k` of element
 # `j` lands at linear block index `(j - 1) * N + k` (the block's leading dim is the lane).
 @inline function _pack_block(
-    p::A, ts::NTuple{N,A}
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
 ) where {Element,N,A<:AbstractArray{Element}}
     block = _block_type(A)(undef, _block_dims(N, p)...)
     @inbounds for k in 1:N
@@ -2016,19 +2013,19 @@ end
 # the 5-/6-parameter forms keep the caller's `Wrapped` (and `B`) so the inner constructor
 # still rejects incoherent parameters.
 @inline function NDualArray{Element,N,D,A}(
-    p::A, ts::NTuple{N,A}
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
 ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
     return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
         p, _pack_block(p, ts)
     )
 end
 @inline function NDualArray{Element,N,D,A,Wrapped}(
-    p::A, ts::NTuple{N,A}
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
 ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
     return NDualArray{Element,N,D,A,Wrapped,_block_type(A)}(p, _pack_block(p, ts))
 end
 @inline function NDualArray{Element,N,D,A,Wrapped,B}(
-    p::A, ts::NTuple{N,A}
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
 ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B}
     return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
 end
