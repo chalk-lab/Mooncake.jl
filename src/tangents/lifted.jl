@@ -189,17 +189,22 @@ end
 @inline function tangent(x::Lifted{P,N,NDual{T,N}}, lane::Integer) where {P,T<:IEEEFloat,N}
     return tangent(x).partials[lane]
 end
+# Two per-lane accessors on an array slot, differing in copy-vs-view (for an array/memory leaf
+# both name the same lane partials):
+#   tangent(x, lane)      -> dense COPY in `tangent_type(P)` (the primal's own array type),
+#                            read-only; O(length). Use for reverse-shape matching / struct-field
+#                            extraction / passing as a value. Necessary because struct recursion
+#                            `convert`s per-lane fields to their declared reverse tangent types,
+#                            which the strided block-row view cannot satisfy.
+#   tangent_view(x, lane) -> live strided VIEW into the block (stride `N`), write-through;
+#                            zero-copy. Use to WRITE a lane's partials into the slot's storage.
 @inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
-    # Materialize the lane's block column-slice into a dense container matching the reverse
-    # tangent shape (`tangent_type(P)` is the primal's own array type): struct recursion
-    # `convert`s per-lane fields into their declared reverse tangent types, which the lazy
-    # strided `SubArray` over the block does not satisfy. Copy semantics — under the
-    # element-major block there is no ownable per-lane array to alias, so writes to the
-    # returned array do NOT flow back into the slot (use `tangent(x).partials[lane]` or the
-    # block for write-through).
     v = tangent(x)
-    return copyto!(similar(getfield(v, :primal)), v.partials[lane])
+    return copyto!(similar(getfield(v, :primal)), tangent_view(v, lane))
 end
+@inline Nfwd.tangent_view(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N} = Nfwd.tangent_view(
+    tangent(x), lane
+)
 @inline function tangent(
     x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
 ) where {P<:NDualEltype,N}

@@ -2019,10 +2019,16 @@ end
     return getfield(a, name)
 end
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
-    block = getfield(a, :partials_block)
-    return ntuple(k -> view(block, k, ntuple(_ -> Colon(), Val(D))...), Val(N))
+    return ntuple(k -> tangent_view(a, k), Val(N))
 end
 Base.propertynames(::NDualArray) = (:primal, :partials_block, :partials)
+
+# Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations
+# land in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Build
+# just the one lane — the preferred accessor over the `.partials` shim's full-tuple synthesis.
+@inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
+    getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
+)
 
 # AbstractArray interface.
 Base.size(a::NDualArray) = size(a.primal)

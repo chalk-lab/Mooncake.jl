@@ -42,7 +42,7 @@ for f in [rand!, randn!, randexp!]
         x::Lifted{Array{Float64,D},Nw,<:NDualArray{Float64,Nw,D,Array{Float64,D}}},
     ) where {Nw,D}
         $f(primal(rng), primal(x))
-        foreach(p -> fill!(p, 0.0), tangent(x).partials)
+        fill!(getfield(tangent(x), :partials_block), 0.0)
         return x
     end
     @eval function rrule!!(

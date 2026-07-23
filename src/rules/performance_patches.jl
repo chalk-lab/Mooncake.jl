@@ -21,12 +21,15 @@ function frule!!(
     ::Lifted{typeof(sum),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Reduce the primal and each lane's partial array separately — each is a plain `Array`, so
-    # `sum` vectorises. Folding the whole `NDualArray` element-wise instead (lazy `getindex` →
-    # one `NDual` per element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
+    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ) — sum each lane's block-row view
+    # (a scalar, so the whole thing is stack-only / 0-alloc, as the `:allocs` test requires).
+    # Folding the whole `NDualArray` element-wise instead (lazy `getindex` → one `NDual` per
+    # element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
     nda = tangent(x)
-    pv = sum(nda.primal)
-    return Lifted{P,N}(pv, _scalar_ndual(pv, ntuple(k -> sum(nda.partials[k]), Val(N))))
+    pv = sum(getfield(nda, :primal))
+    return Lifted{P,N}(
+        pv, _scalar_ndual(pv, ntuple(k -> sum(tangent_view(nda, k)), Val(N)))
+    )
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -44,14 +47,14 @@ function frule!!(
     ::Lifted{typeof(abs2),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Chain rule on the parallel arrays: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·partialₖᵢ`,
-    # i.e. `2·dot(p, partialsₖ)` — both `sum(abs2, ·)` and `dot` are BLAS/SIMD over plain
-    # `Array`s. Folding `sum(abs2, tangent(x))` element-wise is the scalar left-fold, ~5x slower.
+    # Chain rule: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·blockₖᵢ = 2·dot(p, block-rowₖ)` — a
+    # scalar `dot` over each lane's block-row view, so stack-only / 0-alloc (the `:allocs` test).
+    # Folding `sum(abs2, tangent(x))` element-wise is the scalar left-fold, ~5x slower.
     nda = tangent(x)
-    p = nda.primal
+    p = getfield(nda, :primal)
     v = sum(abs2, p)
     return Lifted{P,N}(
-        v, _scalar_ndual(v, ntuple(k -> 2 * dot(p, nda.partials[k]), Val(N)))
+        v, _scalar_ndual(v, ntuple(k -> 2 * dot(p, tangent_view(nda, k)), Val(N)))
     )
 end
 function rrule!!(
@@ -113,11 +116,14 @@ function Mooncake.frule!!(
     px1 = primal(x1)
     px2 = primal(x2)
     LinearAlgebra._kron!(pout, px1, px2)
-    dout_ts = tangent(out).partials
-    dx1_ts = tangent(x1).partials
-    dx2_ts = tangent(x2).partials
     for lane in 1:N
-        _kron!_jvp_lane!(dout_ts[lane], px1, dx1_ts[lane], px2, dx2_ts[lane])
+        _kron!_jvp_lane!(
+            tangent_view(out, lane),
+            px1,
+            tangent_view(x1, lane),
+            px2,
+            tangent_view(x2, lane),
+        )
     end
     return out
 end

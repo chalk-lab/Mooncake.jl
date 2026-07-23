@@ -132,7 +132,7 @@ end
 )
 @inline _arrayify_lane(
     ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
-) where {dense} = dense ? collect(V.partials[lane]) : V.partials[lane]
+) where {dense} = dense ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
 @inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N} = V[lane]
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer, d::Val

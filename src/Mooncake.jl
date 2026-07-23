@@ -166,6 +166,7 @@ using .Nfwd:
     NDualArray,
     NDualRef,
     NDualEltype,
+    tangent_view,
     _scalar_ndual,
     _nfwd_dual_partial,
     _fwd_scale,
