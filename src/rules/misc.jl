@@ -194,28 +194,73 @@ end
     ) where {T<:Nfwd.NDualEltype,N,D,A<:Array{T,D}}
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
+            # The array's `.ref` points at element 1, which is block column 1 (the block's
+            # columns follow the array's elements). Rank-D blocks flatten to the `(N, length)`
+            # matrix via `reshape`, which SHARES storage: mutations through the projected ref V
+            # land in this array's block and vice versa, mirroring the primal aliasing.
             primal_ref = getfield(V.primal, :ref)
-            partial_refs = ntuple(k -> getfield(V.partials[k], :ref), Val(N))
-            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, partial_refs)
+            block = reshape(getfield(V, :partials_block), N, length(V.primal))
+            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, block, 1)
         end
         return NoDual()
     end
-    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the parallel-arrays
-    # memory-ref V to the matching `NDualArray` over those memories (the
-    # `.ptr_or_offset` field is a non-diff Ptr → `NoDual`). Mirrors the reverse
+    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the block-backed memory-ref V
+    # to the `NDualArray` over that whole `Memory`. The ref's block may be a WINDOW into a larger
+    # backing (an `Array`-projected ref covers only the array's elements, and a grown `Vector`'s
+    # `Memory` has capacity slack), so rebuild the full `(N, memlen)` block over the same backing
+    # — column j of this ref's block pairs with mem slot `o - col + j`, so mem slot 1 starts at
+    # backing offset `refoff + (col - o) * N`. Sharing the backing preserves aliasing: mutations
+    # through the `Memory` V and through this ref land in the same storage. Mirrors the reverse
     # `rrule!!`, which returns `x.dx.mem`.
     @inline function _get_lifted_field(
         V::Nfwd.NDualMemoryRef{T,N,M}, name::Union{Symbol,Int}
     ) where {T,N,M}
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :mem
-            primal_mem = getfield(V.primal, :mem)
-            partial_mems = ntuple(k -> getfield(V.partials[k], :mem), Val(N))
-            return Nfwd.NDualArray{T,N,1,M}(primal_mem, partial_mems)
+            p = getfield(V, :primal)
+            primal_mem = getfield(p, :mem)
+            len = length(primal_mem)
+            block = getfield(V, :partials_block)
+            bref = getfield(block, :ref)
+            backing = getfield(bref, :mem)
+            start =
+                Core.memoryrefoffset(bref) +
+                (getfield(V, :col) - Core.memoryrefoffset(p)) * N
+            if start < 1 || start + N * len - 1 > length(backing)
+                throw(
+                    ArgumentError(
+                        "Cannot project `.mem` of a lifted `MemoryRef{$T}`: its partials " *
+                        "block does not cover the whole backing `Memory` (length $len; " *
+                        "block backing length $(length(backing)), start offset $start). " *
+                        "This ref's block was created for a smaller container.",
+                    ),
+                )
+            end
+            full = if len == 0
+                Matrix{T}(undef, N, 0)
+            else
+                _new_(
+                    Matrix{T},
+                    Core.memoryrefnew(Core.memoryrefnew(backing), start, true),
+                    (N, len),
+                )
+            end
+            return Nfwd.NDualArray{T,N,1,M}(primal_mem, full)
         elseif name === :ptr_or_offset
-            # Per-lane raw pointers (one into each partial memory); the downstream
-            # `bitcast` re-types them, landing an `NTuple{N,Ptr{T}}` for a foreigncall.
-            return ntuple(k -> getfield(V.partials[k], :ptr_or_offset), Val(N))
+            # Per-lane raw pointers require dense per-lane storage; in the element-major block
+            # a lane is strided (stride N), so only width 1 has an addressable lane. The
+            # downstream `bitcast` re-types the pointer, landing `NTuple{1,Ptr{T}}`.
+            N == 1 || throw(
+                ArgumentError(
+                    "Forward-mode raw pointer (`ptr_or_offset`) of a lifted `MemoryRef{$T}` " *
+                    "is unsupported at chunk width $N > 1: the element-major partials block " *
+                    "stores each lane with stride $N, so there is no dense per-lane buffer " *
+                    "a raw pointer could address. Differentiate at chunk width 1.",
+                ),
+            )
+            block = getfield(V, :partials_block)
+            lane_ref = Nfwd._block_column_ref(block, getfield(V, :col))
+            return (getfield(lane_ref, :ptr_or_offset),)
         end
         return NoDual()
     end
@@ -428,7 +473,9 @@ end
     # copied partials; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
     # keys/vals) is a shallow array copy whose elements alias the shallow-shared key/value
     # objects, matching `Base.copy(::Dict)`.
-    _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(new_arr, map(copy, v.partials))
+    _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(
+        new_arr, copy(getfield(v, :partials_block))
+    )
     _copy_dict_field_v(::Any, v::AbstractArray) = copy(v)
     function frule!!(
         ::Lifted{typeof(copy),Nw}, a::Lifted{D,Nw,<:MutableDual}

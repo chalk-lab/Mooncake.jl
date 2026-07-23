@@ -232,10 +232,23 @@ function frule!!(
     _dims = primal(dims)
     primal_arr = unsafe_wrap(Array, primal(p), _dims)
     p_partials = tangent(p)
-    partials = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
+    # Block-backed lane pointers address the `Nw` contiguous lanes of one element-major block
+    # column (lane k at `lane 1 + (k-1)*sizeof(T)`), so re-wrapping lane 1's pointer with a
+    # leading lane dimension reconstructs the ALIASING block — writes through the wrapped
+    # array's V land in the pointed-at tangent storage (the whole point of this rule). Packing
+    # per-lane wraps into a fresh block would silently sever that aliasing instead.
+    all(k -> p_partials[k] == p_partials[1] + (k - 1) * sizeof(T), 1:Nw) || throw(
+        ArgumentError(
+            "Forward-mode `unsafe_wrap` requires the lifted pointer's lane pointers to be " *
+            "the contiguous lanes of one element-major block column. Wrapping separated " *
+            "per-lane buffers cannot preserve tangent aliasing.",
+        ),
+    )
+    bd = (Nw, (_dims isa Integer ? (_dims,) : _dims)...)
+    block = unsafe_wrap(Array, p_partials[1], bd)
     D = ndims(primal_arr)
     return Lifted{Array{T,D},Nw}(
-        primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, partials)
+        primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, block)
     )
 end
 # Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are

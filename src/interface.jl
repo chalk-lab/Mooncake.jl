@@ -777,15 +777,18 @@ function _fcache_jacobian_packable!!(
     cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dof::Int, x::AbstractVector{T}
 ) where {T}
     nda = arg_seed.value
+    block = getfield(nda, :partials_block)
     z = zero(T)
     local y, J
     s = 1
     while s <= total_dof
         copyto!(nda.primal, x)
+        # Element-major block: zero every lane at once, then poke this chunk's basis entries
+        # (`block[lane, slot]`) — direct block access, no per-lane view allocation.
+        fill!(block, z)
         @inbounds for lane in 1:W
-            fill!(nda.partials[lane], z)
             slot = s + lane - 1
-            slot <= total_dof && (nda.partials[lane][slot] = one(T))
+            slot <= total_dof && (block[lane, slot] = one(T))
         end
         output = value_and_derivative!!(cache, f_seed, arg_seed)
         if s == 1
@@ -798,12 +801,28 @@ function _fcache_jacobian_packable!!(
                 fill!(cached, z)
             end
         end
-        @inbounds for lane in 1:W
-            col = s + lane - 1
-            col <= total_dof || break
-            lt = tangent(output, lane)
-            for r in eachindex(lt)
-                J[r, col] = lt[r]
+        # Read each lane's directional derivative straight out of the output's block when the
+        # output V is an `NDualArray` (`tangent(output, lane)` materializes a fresh per-lane
+        # copy under the element-major block — an allocation per lane); other output V shapes
+        # (wrapped vectors) keep the generic per-lane accessor.
+        ov = tangent(output)
+        if ov isa NDualArray
+            oblock = getfield(ov, :partials_block)
+            @inbounds for lane in 1:W
+                col = s + lane - 1
+                col <= total_dof || break
+                for r in 1:length(getfield(ov, :primal))
+                    J[r, col] = oblock[(r - 1) * W + lane]
+                end
+            end
+        else
+            @inbounds for lane in 1:W
+                col = s + lane - 1
+                col <= total_dof || break
+                lt = tangent(output, lane)
+                for r in eachindex(lt)
+                    J[r, col] = lt[r]
+                end
             end
         end
         s += W
@@ -1774,11 +1793,12 @@ function value_and_gradient!!(
             # primal).
             copyto!(nda.primal, xs[i])
             len = length(xs[i])
+            block = getfield(nda, :partials_block)
+            fill!(block, z)
             for lane in 1:W
-                fill!(nda.partials[lane], z)
                 slot = s + lane - 1
                 (slot <= total_dof && off < slot <= off + len) &&
-                    (nda.partials[lane][slot - off] = one(T))
+                    (block[lane, slot - off] = one(T))
             end
             off += len
         end
@@ -1860,19 +1880,20 @@ end
 @inline _zero_partials!(::Tuple{}, W) = nothing
 @inline function _zero_partials!(ls::Tuple, W)
     nda = first(ls)[1]
-    @inbounds for k in 1:W
-        fill!(nda.partials[k], zero(eltype(nda.primal)))
-    end
+    fill!(getfield(nda, :partials_block), zero(eltype(nda.primal)))
     return _zero_partials!(Base.tail(ls), W)
 end
 @inline _seed_chunk!(::Tuple{}, s, W, off) = off
 @inline function _seed_chunk!(ls::Tuple, s, W, off)
     nda = first(ls)[1]
+    block = getfield(nda, :partials_block)
     o = one(eltype(nda.primal))
     L = length(nda.primal)
+    # Linear block index (element i's lane k sits at `(i-1)*W + k`) — rank-agnostic, so
+    # matrix leaves work too, and no per-lane view allocation.
     @inbounds for i in 1:L
         d = off + i
-        s <= d <= s + W - 1 && (nda.partials[d - s + 1][i] = o)
+        s <= d <= s + W - 1 && (block[(i - 1) * W + (d - s + 1)] = o)
     end
     return _seed_chunk!(Base.tail(ls), s, W, off + L)
 end

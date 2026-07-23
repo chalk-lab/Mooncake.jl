@@ -1988,6 +1988,17 @@ end
     return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
 end
 
+# Block-accepting outer constructor: adopt an existing element-major block AS the partials
+# storage (no copy — the caller passes a block deliberately, usually to share storage with
+# another V so mutations through either are visible through both).
+@inline function NDualArray{Element,N,D,A}(
+    p::A, block::AbstractArray{Element}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
+
 # Zero-init seed: allocate a fresh slot-local zero block matching the primal.
 @inline function NDualArray{Element,N,D,A}(
     p::A
@@ -2086,15 +2097,25 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualMemoryRef{Element, N, M}` — parallel-arrays wrapper for `MemoryRef`
+# `NDualMemoryRef{Element, N, M}` — element-major-block wrapper for `MemoryRef`
 # (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
 # primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
 # cover it. Like `NDualArray`, this carries the same information as a
-# `MemoryRef` of interleaved `NDual`s but keeps the primal and each lane's
-# partials as separate native `MemoryRef`s — friendlier because each is a
-# genuine `MemoryRef{Element}` usable directly in a `ccall`. `partials[k]` is a
-# framework-allocated `MemoryRef` at the same offset as `primal`, into a fresh
-# `Memory{Element}` of the same length.
+# `MemoryRef` of interleaved `NDual`s, but the primal ref stays a genuine
+# `MemoryRef{Element}` (usable directly in a `ccall`) while the `N` lane
+# partials live in a shared `(N, ncols)` element-major block: `col` names the
+# block column carrying the referenced element's partials, so `memoryrefget`/
+# `memoryrefset!` touch the contiguous column `partials_block[:, col]` and
+# `memoryrefnew(x, i)` just advances `col` by `i - 1`.
+#
+# The block is SHARED with the enclosing container's V — an `NDualArray` over
+# the same `Memory` (or over an `Array` wrapping it) holds the very same block,
+# so mutations through either V are visible through the other, mirroring the
+# primal `Memory`/`MemoryRef`/`Array` aliasing. Column `col + j` always pairs
+# with mem slot `memoryrefoffset(primal) + j`; factory-built refs cover the
+# whole backing `Memory` (column j ↔ mem slot j, `col == memoryrefoffset`),
+# while a ref projected out of an `Array`'s V covers that array's elements
+# (column 1 ↔ the array's first element).
 # ──────────────────────────────────────────────────────────────────────────
 
 @static if VERSION >= v"1.11-rc4"
@@ -2102,28 +2123,40 @@ end
 
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
-        partials::NTuple{N,MemoryRef{Element}}
+        partials_block::Matrix{Element}
+        col::Int
+        function NDualMemoryRef{Element,N,M}(
+            primal::MemoryRef{Element}, partials_block::Matrix{Element}, col::Int
+        ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+            size(partials_block, 1) == N || throw(
+                DimensionMismatch(
+                    "NDualMemoryRef partials block has $(size(partials_block, 1)) rows; " *
+                    "expected the chunk width N = $N (lane-leading layout).",
+                ),
+            )
+            col >= 1 ||
+                throw(ArgumentError("NDualMemoryRef column index must be >= 1; got $col."))
+            return new{Element,N,M}(primal, partials_block, col)
+        end
     end
 
-    # Zero-init seed: allocate fresh slot-local partials at the same offset
-    # as `primal`. Element types in `NDualEltype` are bits types, so undef
-    # iteration is not needed.
+    # Zero-init seed: a fresh zero block covering the whole backing `Memory` (column j ↔ mem
+    # slot j), so the referenced element's column is the ref's offset. Element types in
+    # `NDualEltype` are bits types, so undef iteration is not needed.
     @inline function NDualMemoryRef{Element,N,M}(
         p::MemoryRef{Element}
     ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
-        # Empty backing memory: `Core.memoryref(mem, offset)` (offset==1) is out of bounds, so use
-        # the 1-arg form (mirrors `_memoryref_at`'s empty guard in lifted.jl, inlined here because
-        # that helper is defined later).
-        return NDualMemoryRef{Element,N,M}(
-            p,
-            ntuple(Val(N)) do _
-                mem = Memory{Element}(undef, len)
-                fill!(mem, zero(Element))
-                len == 0 ? Core.memoryref(mem) : Core.memoryref(mem, offset)
-            end,
-        )
+        block = fill!(Matrix{Element}(undef, N, length(p.mem)), zero(Element))
+        return NDualMemoryRef{Element,N,M}(p, block, Core.memoryrefoffset(p))
+    end
+
+    # `MemoryRef` into the block's backing at the start (lane 1) of column `col`. Columns are
+    # adjacent in the column-major block, so a run of `n` columns from here is one contiguous
+    # backing range of `n * N` elements — flat copies need no per-lane striding at any offset.
+    @inline function _block_column_ref(block::Matrix, col::Int)
+        r = getfield(block, :ref)
+        col == 1 && return r
+        return Core.memoryrefnew(r, (col - 1) * size(block, 1) + 1, true)
     end
 end
 

@@ -219,7 +219,23 @@ end
 # `UndefVarError` at precompile on 1.10.
 @static if VERSION >= v"1.11-rc4"
     @inline function tangent(x::Lifted{P,N,<:NDualMemoryRef}, lane::Integer) where {P,N}
-        return tangent(x).partials[lane]
+        # Materialize the lane into the reverse tangent shape (`tangent_type(MemoryRef{T})` is
+        # `MemoryRef{T}` into a same-length `Memory` at the same offset). Copy semantics, like the
+        # `NDualArray` lane accessor above: the block has no ownable per-lane memory to alias.
+        # Block column `j` pairs with mem slot `o - c + j`; slots the block does not cover
+        # (e.g. an `Array`-projected ref over a longer-capacity `Memory`) stay zero.
+        v = tangent(x)
+        p = getfield(v, :primal)
+        block = getfield(v, :partials_block)
+        c = getfield(v, :col)
+        o = Core.memoryrefoffset(p)
+        T = eltype(block)
+        mem = fill!(Memory{T}(undef, length(p.mem)), zero(T))
+        @inbounds for j in 1:size(block, 2)
+            s = o - c + j
+            1 <= s <= length(mem) && (mem[s] = block[lane, j])
+        end
+        return _memoryref_at(mem, o)
     end
     # `Core.memoryref(mem, offset)` is out-of-bounds for an empty `mem` (length 0); the 1-arg
     # `Core.memoryref(mem)` gives the canonical empty ref. Empty `Memory` is a valid primal
@@ -551,8 +567,8 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     @inline primal(a::NDualMemoryRef) = a.primal
-    @inline tangent(a::NDualMemoryRef) = a.partials
-    @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials)
+    @inline tangent(a::NDualMemoryRef) = a.partials_block
+    @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials_block)
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -662,7 +678,8 @@ Shapes defined so far:
 - Concrete struct `P` (mutable): `MutableDual{NamedTuple{...}}` — mutable
   counterpart for in-place tangent updates.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
-  `NDualMemoryRef{T, N, Memory{T}}` — parallel-arrays wrapper (per-lane `MemoryRef` partials).
+  `NDualMemoryRef{T, N, Memory{T}}` — primal ref plus the shared `(N, ncols)` element-major
+  partials block (one contiguous column per referenced element).
 """
 # No `isconcretetype(P)` guard (unlike the `lifted_type(::Type{P<:IEEEFloat})` sibling, which
 # widens a non-concrete `P` to a UnionAll): `dual_type` is the inner-V query and is only ever
@@ -1089,10 +1106,18 @@ end
 @inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
-    # derivative storage); its forward V is the parallel-arrays `NDualMemoryRef`. Reached in
-    # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted.
+    # derivative storage); its forward V is the block-backed `NDualMemoryRef`. Reached in
+    # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted. The seed
+    # values are PACKED into a fresh block (copy semantics, like the `Array` lift): `unlift`
+    # reads the result back out of the block via the lane accessor, so the round-trip is
+    # consistent even though `ẋ` itself is not aliased.
     @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
-        return Lifted{MemoryRef{T},1}(x, NDualMemoryRef{T,1,Memory{T}}(x, (ẋ,)))
+        len = length(ẋ.mem)
+        block = Matrix{T}(undef, 1, len)
+        copyto!(block, 1, ẋ.mem, 1, len)
+        return Lifted{MemoryRef{T},1}(
+            x, NDualMemoryRef{T,1,Memory{T}}(x, block, Core.memoryrefoffset(x))
+        )
     end
     # `_lift_backing` always calls the 3-arg form; without these `NDualArray`-specific 3-arg
     # passthroughs a lifted reverse rule's float `dx::MemoryRef`/`Memory` field falls
@@ -1924,24 +1949,25 @@ function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where
     v.value = _basis_seed!!(v.value, slots, cursor, dict)
     return v
 end
-# `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the partials are per-lane
-# `MemoryRef`s. `dof` walks the whole underlying `Memory`, so advance one cursor step per memory
-# element (two for complex — real then imag, like the `NDualArray` complex method) and write each
-# lane's partial there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it has a
-# `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex `NDualMemoryRef`
-# reaches here and needs the complex method below, mirroring `NDualArray` / `NDualRef`.
+# `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the block column
+# pairs with the memory slot. Factory-built refs (the only ones seeded) cover the whole backing
+# `Memory` (column j ↔ mem slot j), and `dof` walks that whole `Memory`, so advance one cursor
+# step per block column (two for complex — real then imag, like the `NDualArray` complex method)
+# and write each lane there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it
+# has a `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex
+# `NDualMemoryRef` reaches here and needs the complex method below, mirroring `NDualArray`.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(
         v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
     ) where {T<:IEEEFloat,N}
         haskey(dict, v) && return dict[v]
         dict[v] = v
-        mems = ntuple(k -> v.partials[k].mem, Val(N))
-        @inbounds for idx in eachindex(v.primal.mem)
+        block = getfield(v, :partials_block)
+        @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
             for k in 1:N
-                mems[k][idx] = c == slots[k] ? one(T) : zero(T)
+                block[k, idx] = c == slots[k] ? one(T) : zero(T)
             end
         end
         return v
@@ -1951,14 +1977,14 @@ end
     ) where {R<:IEEEFloat,N}
         haskey(dict, v) && return dict[v]
         dict[v] = v
-        mems = ntuple(k -> v.partials[k].mem, Val(N))
-        @inbounds for idx in eachindex(v.primal.mem)
+        block = getfield(v, :partials_block)
+        @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]
             cursor[] += 1
             ci = cursor[]
             for k in 1:N
-                mems[k][idx] = Complex(
+                block[k, idx] = Complex(
                     cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
                 )
             end
@@ -1988,25 +2014,21 @@ end
     # factories below, keeping the seed coherent with `dual_type` and the reverse `zero_tangent`
     # oracle (a bare complex `MemoryRef`/`Memory` would otherwise fall through to the generic path,
     # whose element-wise Memory V mismatches the `NDualArray`/`NDualMemoryRef` these types dual to).
-    # `uninit`/`randn` for MemoryRef mirror the `NDualMemoryRef` zero-init constructor: per-lane
-    # partial MemoryRefs into a fresh `Memory{E}` at `p`'s offset.
+    # `uninit`/`randn` for MemoryRef mirror the `NDualMemoryRef` zero-init constructor: a fresh
+    # block covering the whole backing `Memory` (column j ↔ mem slot j), column = `p`'s offset.
     @inline function zero_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
         return NDualMemoryRef{E,N,Memory{E}}(p)
     end
     @inline function uninit_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
         return NDualMemoryRef{E,N,Memory{E}}(
-            p, ntuple(_ -> _memoryref_at(Memory{E}(undef, len), offset), Val(N))
+            p, Matrix{E}(undef, N, length(p.mem)), Core.memoryrefoffset(p)
         )
     end
     @inline function randn_dual(
         ::Val{N}, rng::AbstractRNG, p::MemoryRef{E}
     ) where {N,E<:NDualEltype}
-        offset = Core.memoryrefoffset(p)
-        len = length(p.mem)
         return NDualMemoryRef{E,N,Memory{E}}(
-            p, ntuple(_ -> _memoryref_at(Memory{E}(randn(rng, E, len)), offset), Val(N))
+            p, randn(rng, E, N, length(p.mem)), Core.memoryrefoffset(p)
         )
     end
     @inline function zero_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}

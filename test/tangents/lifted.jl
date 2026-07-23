@@ -322,12 +322,14 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
             @test dual_type(Val(2), Memory{Float64}) ===
                 NDualArray{Float64,2,1,Memory{Float64},NDual{Float64,2},Matrix{Float64}}
 
-            # Seed factory: zero-init partials at the same offset, slot-local.
+            # Seed factory: a zero block covering the whole backing memory, slot-local;
+            # the referenced element's column is the ref's offset.
             a = zero_dual(Val(2), p)
             @test typeof(a) === Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
-            @test primal(a) === p && tangent(a) === a.partials
-            @test unpack_ndual(a) === (a.primal, a.partials)
-            @test all(iszero, a.partials[1].mem) && all(iszero, a.partials[2].mem)
+            @test primal(a) === p && tangent(a) === a.partials_block
+            @test unpack_ndual(a) === (a.primal, a.partials_block)
+            @test size(a.partials_block) == (2, 3) && all(iszero, a.partials_block)
+            @test a.col == Core.memoryrefoffset(p) == 1
             @test primal(zero_lifted(Val(2), p)) === p
 
             # Empty backing memory: `zero_dual` must not `BoundsError` on the unguarded
@@ -528,7 +530,7 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
             let m = Memory{ComplexF64}(undef, 2)
                 m .= [1.0 + 0.0im, 2.0 + 0.0im]
                 b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
-                @test collect(tangent(b).partials[1].mem) == [0.0 + 1.0im, 0.0 + 0.0im]
+                @test tangent(b).partials_block[1, :] == [0.0 + 1.0im, 0.0 + 0.0im]
             end
         end
 

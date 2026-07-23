@@ -55,6 +55,7 @@ For a concrete `P` it must always hold that `V === dual_type(Val(N), P)`.
 
 - a real scalar `P` → `NDual{P, N}` (a value plus an `NTuple{N}` of per-lane partials);
 - an array `Array{T, D}` → `NDualArray{T, N, D, ...}`, a wrapper holding the primal array (a genuine `Array{T, D}` usable directly in a `ccall`, aliasing the user's storage) and the `N` lane partials in one slot-local *element-major* block of shape `(N, size...)`, so each element's partials form a contiguous column (per-lane access is a strided view, `a.partials[k]`);
+- a `MemoryRef{T}` (Julia 1.11+) → `NDualMemoryRef{T, N, ...}`, holding the primal ref plus the *same* element-major block as the enclosing `Memory`/`Array` V and the block column pairing with the referenced element — projections (`array.ref`, `ref.mem`, `memoryrefnew`) share the block, so mutations through any V land in one storage, mirroring the primal aliasing;
 - a struct → `ImmutableDual` / `MutableDual` wrapping the per-field forward values;
 - tuples / named-tuples → element-wise recursion;
 - a non-differentiable `P` (integers, `Symbol`, `Module`, types, …) → [`Mooncake.NoDual`](@ref), the forwards-mode analogue of reverse-mode's `NoTangent`.

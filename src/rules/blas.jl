@@ -343,6 +343,22 @@ end
     primal(x), tangent(x), lane
 )
 
+# Interim guard while the chunked BLAS frules are ported to the element-major partials block:
+# a lane of the block is a stride-N view, which the pointer-based BLAS wrappers either reject
+# (`chkstride1`) or — worse — read at the wrong stride (silently wrong derivatives). Every
+# affected frule fails loudly here for chunk width > 1; width 1 is dense and stays correct.
+# Indexing-based forward rules (nrm2, kron, LAPACK) are correct on the views and are not guarded.
+@noinline function _chunked_blas_unported(fname::Symbol, Nw::Int)
+    throw(
+        ArgumentError(
+            "The chunked forward rule for `BLAS.$fname` has not been ported to the " *
+            "element-major partials block: per-lane partials are lane-strided views that " *
+            "this BLAS wrapper cannot read correctly at chunk width $Nw > 1. " *
+            "Differentiate at chunk width 1 (or use reverse mode) until the port lands.",
+        ),
+    )
+end
+
 # nrm2 — output is real (real or complex T); per-lane dy is real.
 function frule!!(
     ::Lifted{typeof(BLAS.nrm2),Nw},
@@ -431,6 +447,7 @@ for (jlfname, elty) in
         _DY::Lifted{<:Union{Ptr{$elty},AbstractArray{$elty}}},
         _incy::Lifted{<:Integer},
     ) where {Nw}
+        Nw == 1 || _chunked_blas_unported($(QuoteNode(jlfname)), Nw)
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
@@ -457,6 +474,7 @@ function frule!!(
     X_dX::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::Lifted,
 ) where {Nw,P<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:scal!, Nw)
     n = primal(_n)
     incx = primal(_incx)
     a = primal(a_da)
@@ -531,6 +549,7 @@ function frule!!(
     beta::Lifted{P,Nw},
     y_dy::Lifted{<:AbstractVector{P}},
 ) where {Nw,P<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:gemv!, Nw)
     _tA = primal(tA)
     α = primal(alpha)
     β = primal(beta)
@@ -682,6 +701,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         beta::Lifted{T,Nw},
         y_dy::Lifted{<:AbstractVector{T}},
     ) where {Nw,T<:$elty}
+        Nw == 1 || _chunked_blas_unported($(QuoteNode(fname)), Nw)
         ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
@@ -800,6 +820,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{T}},
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:trmv!, Nw)
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
@@ -907,6 +928,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{T}},
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:trsv!, Nw)
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
@@ -1021,6 +1043,7 @@ function frule!!(
     beta::Lifted{T,Nw},
     C_dC::Lifted{<:AbstractMatrix{T}},
 ) where {Nw,T<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:gemm!, Nw)
     tA = primal(transA)
     tB = primal(transB)
     α = primal(alpha)
@@ -1177,6 +1200,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         beta::Lifted{T,Nw},
         C_dC::Lifted{<:AbstractMatrix{T}},
     ) where {Nw,T<:$elty}
+        Nw == 1 || _chunked_blas_unported($(QuoteNode(fname)), Nw)
         s = primal(side)
         ul = primal(uplo)
         α = primal(alpha)
@@ -1316,6 +1340,7 @@ for (fname, elty, relty) in (
         β_dβ::Lifted{$relty,Nw},
         C_dC::Lifted{<:AbstractMatrix{$elty}},
     ) where {Nw}
+        Nw == 1 || _chunked_blas_unported($(QuoteNode(fname)), Nw)
         uplo = primal(_uplo)
         t = primal(_t)
         α = primal(α_dα)
@@ -1444,6 +1469,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P}},
     B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:trmm!, Nw)
     side = primal(_side)
     uplo = primal(_uplo)
     ta = primal(_ta)
@@ -1577,6 +1603,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P}},
     B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
+    Nw == 1 || _chunked_blas_unported(:trsm!, Nw)
     side = primal(_side)
     uplo = primal(_uplo)
     trans = primal(_t)

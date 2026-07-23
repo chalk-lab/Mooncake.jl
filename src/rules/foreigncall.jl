@@ -256,11 +256,13 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
-# Reshape both primal and per-lane partials via ccall. Element-type-agnostic across the whole
-# `NDualEltype` surface (real and complex floats): the `NDualArray`'s primal and parallel partials
-# are all plain `Array{E,D}`, so the reshape `ccall` eltype tracks the array's actual eltype `E`,
-# mirroring the element-type-generic reverse rrule below. (Width parameter `W` of the V is left free
-# so this matches both the real `NDual{E,Nw}` and complex `Complex{NDual{R,Nw}}` element duals.)
+# Reshape the primal and the partials block via ccall. The block reshapes to `(Nw, dims...)` —
+# same backing, so the reshaped array's V ALIASES the original's partials exactly as the reshaped
+# primal aliases the original data. Element-type-agnostic across the whole `NDualEltype` surface
+# (real and complex floats): primal and block are plain `Array{E,·}`, so the reshape `ccall`
+# eltype tracks the array's actual eltype `E`, mirroring the element-type-generic reverse rrule
+# below. (Width parameter `W` of the V is left free so this matches both the real `NDual{E,Nw}`
+# and complex `Complex{NDual{R,Nw}}` element duals.)
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_reshape_array},Nw},
@@ -274,18 +276,10 @@ function frule!!(
 ) where {Nw,E<:NDualEltype,M,D}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
-    new_partials = ntuple(
-        k -> ccall(
-            :jl_reshape_array,
-            Array{E,M},
-            (Any, Any, Any),
-            Array{E,M},
-            tangent(a).partials[k],
-            d,
-        ),
-        Val(Nw),
-    )
-    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_partials))
+    # Plain `reshape` (not the ccall — its type expressions cannot spell `Array{E,M+1}`) shares
+    # the block's storage all the same.
+    new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
+    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
 end
 # Element-wise `Array{VE,D}` forward V — every element carries its own element dual `VE`: `NoDual`
 # for non-differentiable elements (e.g. the `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside

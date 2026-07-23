@@ -244,10 +244,12 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-# Per-lane copy of each `partials[lane]` MemoryRef in sync with the primal copy. `P <: NDualEltype`
-# (float or complex), matching the sibling MemoryRef frules — the per-lane copy is element-agnostic, and
-# the complex NDualMemoryRef V is the same `NDualMemoryRef{P,Nw,Memory{P}}` shape (e.g. the `copy_similar` /
-# `copyto_axcheck!` path of complex `logdet`/`logabsdet`).
+# Copy the partials of the `_n` copied elements in sync with the primal copy. In the element-major
+# block the copied elements' partials are `_n` adjacent columns — one contiguous `Nw * _n` backing
+# range — so the whole tangent copy is a single flat `unsafe_copyto!` (memmove, overlap-safe), with
+# no per-lane striding at any pair of offsets. `P <: NDualEltype` (float or complex), matching the
+# sibling MemoryRef frules (e.g. the `copy_similar` / `copyto_axcheck!` path of complex
+# `logdet`/`logabsdet`).
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -256,8 +258,13 @@ function frule!!(
 ) where {Nw,P<:NDualEltype}
     _n = primal(n)
     unsafe_copyto!(primal(dest), primal(src), _n)
-    for lane in 1:Nw
-        unsafe_copyto!(tangent(dest).partials[lane], tangent(src).partials[lane], _n)
+    if _n > 0
+        dv, sv = tangent(dest), tangent(src)
+        unsafe_copyto!(
+            Nfwd._block_column_ref(getfield(dv, :partials_block), getfield(dv, :col)),
+            Nfwd._block_column_ref(getfield(sv, :partials_block), getfield(sv, :col)),
+            Nw * _n,
+        )
     end
     return dest
 end
@@ -420,9 +427,9 @@ end
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy_partials = ntuple(
-        k -> memoryrefget(tangent(x).partials[k], _val(ordering), _val(bc)), Val(Nw)
-    )
+    v = tangent(x)
+    block, c = getfield(v, :partials_block), getfield(v, :col)
+    dy_partials = ntuple(k -> block[k, c], Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline function rrule!!(
@@ -453,7 +460,9 @@ end
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, bc)
-    dy_partials = ntuple(k -> memoryrefget(tangent(x).partials[k], ordering, bc), Val(Nw))
+    v = tangent(x)
+    block, c = getfield(v, :partials_block), getfield(v, :col)
+    dy_partials = ntuple(k -> block[k, c], Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline Base.@propagate_inbounds function rrule!!(
@@ -478,9 +487,10 @@ end
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
 ) where {Nw,P<:NDualEltype}
+    # Share the Memory V's block (column j ↔ mem slot j); the fresh ref is at slot 1 = column 1.
     y = memoryrefnew(primal(x))
-    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k]), Val(Nw))
-    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
+    block = getfield(tangent(x), :partials_block)
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, block, 1))
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
@@ -496,8 +506,12 @@ end
 ) where {Nw,P<:NDualEltype,K}
     a = (primal(ii), map(primal, rest)...)
     y = memoryrefnew(primal(x), a...)
-    dy_partials = ntuple(k -> memoryrefnew(tangent(x).partials[k], a...), Val(Nw))
-    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, dy_partials))
+    # Same block, column advanced in lockstep with the primal ref's offset.
+    v = tangent(x)
+    newcol = getfield(v, :col) + primal(ii) - 1
+    return Lifted{MemoryRef{P},Nw}(
+        y, NDualMemoryRef{P,Nw,Memory{P}}(y, getfield(v, :partials_block), newcol)
+    )
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -536,13 +550,10 @@ end
     ::Lifted{Val{boundscheck},Nw},
 ) where {Nw,P<:NDualEltype,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
+    v = tangent(x)
+    block, c = getfield(v, :partials_block), getfield(v, :col)
     for lane in 1:Nw
-        memoryrefset!(
-            tangent(x).partials[lane],
-            _nfwd_dual_partial(tangent(value), lane),
-            ordering,
-            boundscheck,
-        )
+        block[lane, c] = _nfwd_dual_partial(tangent(value), lane)
     end
     return value
 end
@@ -608,10 +619,10 @@ end
     ord = primal(ordering)
     bc = primal(boundscheck)
     memoryrefset!(primal(x), primal(value), ord, bc)
+    v = tangent(x)
+    block, c = getfield(v, :partials_block), getfield(v, :col)
     for lane in 1:Nw
-        memoryrefset!(
-            tangent(x).partials[lane], _nfwd_dual_partial(tangent(value), lane), ord, bc
-        )
+        block[lane, c] = _nfwd_dual_partial(tangent(value), lane)
     end
     return value
 end
@@ -819,11 +830,11 @@ end
     ) where {Nw,P<:NDualEltype}
         _n = primal(n)
         x = Core.memorynew(Memory{P}, _n)
-        # Zero each partial: `Core.memorynew` returns uninitialized memory, which whole-buffer
+        # Zero the block: `Core.memorynew` returns uninitialized memory, which whole-buffer
         # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
         # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently lowered).
-        partials = ntuple(_ -> fill!(Core.memorynew(Memory{P}, _n), zero(P)), Val(Nw))
-        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
+        block = fill!(Matrix{P}(undef, Nw, _n), zero(P))
+        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
     end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
@@ -839,9 +850,9 @@ function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
-    # Per-lane zero-initialized partial Memory objects.
-    partials = ntuple(_ -> fill!(Memory{P}(undef, primal(n)), zero(P)), Val(Nw))
-    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, partials))
+    # Zero-initialized partials block covering the fresh memory (column j ↔ mem slot j).
+    block = fill!(Matrix{P}(undef, Nw, primal(n)), zero(P))
+    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
 end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
@@ -929,10 +940,16 @@ function frule!!(
 ) where {Nw,P<:NDualEltype,D}
     _sz = primal(sz)
     y = _new_(Array{P,D}, primal(ref), _sz)
-    # Each lane's partial Array shares the per-lane partial MemoryRef as its
-    # ref field; per-lane Array shape matches `_sz`.
-    partials = ntuple(k -> _new_(Array{P,D}, tangent(ref).partials[k], _sz), Val(Nw))
-    return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, partials))
+    # The array's block is a window over the ref's SHARED block backing, starting at the ref's
+    # column (array element 1) with one extra leading lane dimension — mutations through the
+    # array V and through the ref V land in the same storage, mirroring the primal aliasing.
+    v = tangent(ref)
+    block = _new_(
+        Array{P,D + 1},
+        Nfwd._block_column_ref(getfield(v, :partials_block), getfield(v, :col)),
+        (Nw, _sz...),
+    )
+    return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, block))
 end
 # Element-wise `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
 # is the element-wise `Array{dual_type(P),D}` built from the element-wise V ref (a plain
@@ -970,9 +987,9 @@ function frule!!(
     x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
 ) where {Nw,P<:NDualEltype}
     new_primal = copy(primal(x))
-    new_partials = ntuple(k -> copy(tangent(x).partials[k]), Val(Nw))
+    new_block = copy(getfield(tangent(x), :partials_block))
     return Lifted{Memory{P},Nw}(
-        new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_partials)
+        new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_block)
     )
 end
 # Element-wise-V `Memory` copy: the V is itself a `Memory` (per-element forward Vs), not the
@@ -1095,9 +1112,12 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-# Write the primal field, then per-lane partial field. For :size
-# (non-differentiable metadata) each lane gets the same primal value; other
-# fields (e.g. :ref) get per-lane tangent storage.
+# Write the primal field, then retarget the block IN PLACE (`setfield!` on the block Array's own
+# `ref`/`size` fields), preserving the block object's identity so every V sharing it keeps
+# aliasing. `:size` maps to the block shape `(Nw, size...)`; `:ref` (array growth installing new
+# storage) maps to the incoming ref V's block backing at its column — the array's elements start
+# there, one column each. As in the primal (`_growend!` writes `.size` and `.ref` separately),
+# the block may be transiently inconsistent between the two writes; nothing reads in between.
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Array,Nw,<:NDualArray},
@@ -1105,16 +1125,16 @@ end
     x::Lifted,
 ) where {Nw,name}
     setfield!(primal(value), name, primal(x))
-    V = tangent(value)
+    block = getfield(tangent(value), :partials_block)
     if name === :size || name === 2
-        for partial in V.partials
-            setfield!(partial, name, primal(x))
-        end
+        setfield!(block, :size, (Nw, primal(x)...))
     else
-        x_partials = tangent(x).partials
-        for lane in 1:Nw
-            setfield!(V.partials[lane], name, x_partials[lane])
-        end
+        xv = tangent(x)
+        setfield!(
+            block,
+            :ref,
+            Nfwd._block_column_ref(getfield(xv, :partials_block), getfield(xv, :col)),
+        )
     end
     return x
 end
@@ -1157,8 +1177,8 @@ function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
     yp = copy(primal(a))
-    parts = ntuple(k -> copy(tangent(a).partials[k]), Val(N))
-    return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, parts))
+    block = copy(getfield(tangent(a), :partials_block))
+    return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, block))
 end
 @inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
     return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
