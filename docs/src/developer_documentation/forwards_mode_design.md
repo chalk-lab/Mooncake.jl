@@ -125,7 +125,7 @@ function frule!!(
 end
 ```
 The in-place primal update is hoisted out of the per-lane loop: repeating it would corrupt the shared primal seen by later lanes.
-(In practice we would implement a rule for a lower-level function like `LinearAlgebra.BLAS.gemm!`, rather than `mul!`.)
+(In practice we would implement a rule for a lower-level function like `LinearAlgebra.BLAS.gemm!`, rather than `mul!`. The actual BLAS/LAPACK rules go one step further: a single lane of the element-major block is a stride-`N` view, which the pointer-based BLAS wrappers cannot consume, so those rules operate on the dense block itself — a lane-invariant linear map applies to all `N` lanes in *one* wide BLAS call by right-multiplying the `(N, len)` lane matrix by the map's transpose. See `_partials_block` and the per-rule comments in `src/rules/blas.jl`.)
 
 
 ## Derived Rules

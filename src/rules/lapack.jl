@@ -135,28 +135,42 @@ function frule!!(
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
-    A, dA_lanes = arrayify(A_dA)
-    B, dB_lanes = arrayify(B_dB)
-    # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it and the `tmp` scratch.
+    A = primal(A_dA)
+    B = primal(B_dB)
+    Ab, _ = _partials_block(A_dA)
+    Bb, bcopied = _partials_block(B_dB)
+    m, nrhs = size(B, 1), size(B, 2)
+    Bb3 = reshape(Bb, Nw, m, nrhs)
+    # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it.
     X = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, X)
-    tmp = similar(X)
-    tmpm = _as_col(tmp)
-    # d(op(A)⁻¹·B) = op(A)⁻¹·(dB − op(dA)·X). op(A)⁻¹ is linear, so the tangent takes one solve of
-    # that combined RHS, not separate solves of `dB` and `op(dA)·X`: build `dB − op(dA)·X` in
-    # `dB_lane`, solve in place. `op(dA)·X` runs in place via `BLAS.trmm!` (`lmul!(::Triangular, ·)`
-    # would allocate); `diag` 'N'/'U' selects LowerTriangular/UnitLowerTriangular, vector RHS as one
-    # column.
-    @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        dB_lane = dB_lanes[lane]
-        copyto!(tmp, X)
-        BLAS.trmm!('L', uplo, trans, diag, one(P), dA_lane, tmpm)
-        diag == 'N' || (tmp .-= X)
-        dB_lane .-= tmp
-        LAPACK.trtrs!(uplo, trans, diag, A, dB_lane)
+    # d(op(A)⁻¹·B) = op(A)⁻¹·(dB − op(dA)·X). op(A)⁻¹ is linear, so the tangent takes one
+    # solve of that combined RHS, not separate solves of `dB` and `op(dA)·X`.
+    # 1) dB_k −= op(dA_k)·X — skipped when `A` is constant data. trmm masks dA's triangle
+    #    (and implicit unit diagonal, whose derivative the `diag == 'U'` correction
+    #    removes).
+    if !iszero(Ab)
+        R = size(A, 1)
+        Abm = reshape(Ab, Nw, R, R)
+        Ascr = Matrix{P}(undef, R, R)
+        tmp = Matrix{P}(undef, m, nrhs)
+        for k in 1:Nw
+            copyto!(Ascr, view(Abm,k,:,:))
+            copyto!(tmp, X)
+            BLAS.trmm!('L', uplo, trans, diag, one(P), Ascr, tmp)
+            diag == 'N' || (tmp .-= reshape(X, m, nrhs))
+            view(Bb3,k,:,:) .-= tmp
+        end
     end
-    # Primal result op(A)⁻¹·B = X, already solved above and unmutated: copy it, don't re-solve.
+    # 2) op(A)⁻¹ applied to every lane: right-divide each dB slab by op(A)ᵀ (real
+    #    element types only, so a flag flip suffices).
+    fA = trans == 'N' ? 'T' : 'N'
+    for j in 1:nrhs
+        BLAS.trsm!('R', uplo, fA, diag, one(P), A, view(Bb3,:,:,j))
+    end
+    bcopied && _write_back_partials!(B_dB, Bb)
+    # Primal result op(A)⁻¹·B = X, already solved above and unmutated: copy it, don't
+    # re-solve.
     copyto!(B, X)
     return B_dB
 end
@@ -213,37 +227,49 @@ function frule!!(
 ) where {Nw,P<:BlasRealFloat}
     trans = primal(_trans)
     ipiv = primal(_ipiv)
-    A, dA_lanes = arrayify(A_dA)
-    B, dB_lanes = arrayify(B_dB)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    Ab, _ = _partials_block(A_dA)
+    Bb, bcopied = _partials_block(B_dB)
+    Bbf = reshape(Bb, Nw, :)
     LAPACK.getrs!(trans, A, ipiv, B)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
     invp = invperm(p)
-    # d(LU) = dL*U + L*dU (dL strict-lower via the unit-diagonal factor, dU upper). Build it into
-    # `tmp` with in-place `BLAS.trmm!`, then row-permute by `invp` into `buf` (both reused across
-    # lanes); LinearAlgebra's triangular `*`/`mul!` and the `[invp,:]` copy allocate per call.
+    # d(LU) = dL*U + L*dU (dL strict-lower via the unit-diagonal factor, dU upper). Build
+    # it into `tmp` with in-place `BLAS.trmm!`, then row-permute by `invp` into `buf`
+    # (both reused across lanes). The per-lane getrs! solve needs a dense RHS, so each
+    # lane's dB round-trips through the `dBscr` scratch (matching `B`'s shape).
     n = size(A, 1)
     tmp = similar(A)
     buf = similar(A)
+    dBscr = Array{P}(undef, size(B))
+    danonzero = !iszero(Ab)
+    Abm = reshape(Ab, Nw, n, n)
+    Ascr = danonzero ? Matrix{P}(undef, n, n) : Matrix{P}(undef, 0, 0)
     @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        dB_lane = dB_lanes[lane]
-        copyto!(tmp, U)
-        BLAS.trmm!('L', 'L', 'N', 'U', one(P), dA_lane, tmp)
-        tmp .-= U
-        copyto!(buf, UpperTriangular(dA_lane))
-        BLAS.trmm!('L', 'L', 'N', 'U', one(P), A, buf)
-        tmp .+= buf
-        for i in 1:n
-            @views buf[i, :] .= tmp[invp[i], :]
+        copyto!(dBscr, view(Bbf, lane, :))
+        if danonzero
+            copyto!(Ascr, view(Abm,lane,:,:))
+            copyto!(tmp, U)
+            BLAS.trmm!('L', 'L', 'N', 'U', one(P), Ascr, tmp)
+            tmp .-= U
+            copyto!(buf, UpperTriangular(Ascr))
+            BLAS.trmm!('L', 'L', 'N', 'U', one(P), A, buf)
+            tmp .+= buf
+            for i in 1:n
+                @views buf[i, :] .= tmp[invp[i], :]
+            end
+            if trans == 'N'
+                mul!(dBscr, buf, B, -one(P), one(P))
+            else
+                mul!(dBscr, buf', B, -one(P), one(P))
+            end
         end
-        if trans == 'N'
-            mul!(dB_lane, buf, B, -one(P), one(P))
-        else
-            mul!(dB_lane, buf', B, -one(P), one(P))
-        end
-        LAPACK.getrs!(trans, A, ipiv, dB_lane)
+        LAPACK.getrs!(trans, A, ipiv, dBscr)
+        copyto!(view(Bbf, lane, :), dBscr)
     end
+    bcopied && _write_back_partials!(B_dB, Bb)
     return B_dB
 end
 function rrule!!(
@@ -334,35 +360,42 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
     _ipiv::Lifted{<:AbstractVector{Int}},
 ) where {Nw,P<:BlasRealFloat}
-    A, dA_lanes = arrayify(A_dA)
+    A = primal(A_dA)
     ipiv = primal(_ipiv)
+    Ab, acopied = _partials_block(A_dA)
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     invp = invperm(p)
     n = size(A, 1)
+    Abm = reshape(Ab, Nw, n, n)
     buf1 = similar(A)
     buf2 = similar(A)
-    # Phase 1 (before getri! destroys the LU factor A): store tmp2 = (dL*U + L*dU)[invp,:] for
-    # each lane INTO its own dA_lanes slot (the output partial), reusing buf1/buf2.
+    Ascr = Matrix{P}(undef, n, n)
+    # Phase 1 (before getri! destroys the LU factor A): store tmp2 = (dL*U + L*dU)[invp,:]
+    # for each lane INTO its own block slice (the output partial), via the dense `Ascr`
+    # scratch (the BLAS calls need dense operands; a block lane is stride-Nw).
     @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
+        copyto!(Ascr, view(Abm,lane,:,:))
         copyto!(buf1, U)
-        BLAS.trmm!('L', 'L', 'N', 'U', one(P), dA_lane, buf1)
+        BLAS.trmm!('L', 'L', 'N', 'U', one(P), Ascr, buf1)
         buf1 .-= U
-        copyto!(buf2, UpperTriangular(dA_lane))
+        copyto!(buf2, UpperTriangular(Ascr))
         BLAS.trmm!('L', 'L', 'N', 'U', one(P), A, buf2)
         buf1 .+= buf2
         for i in 1:n
-            @views dA_lane[i, :] .= buf1[invp[i], :]
+            @views view(Abm, lane, i, :) .= buf1[invp[i], :]
         end
     end
     LAPACK.getri!(A, ipiv)
-    # Phase 2: dA_lane := -A⁻¹ * tmp2 * A⁻¹, with tmp2 currently held in dA_lane.
+    # Phase 2: lane := -A⁻¹ * tmp2 * A⁻¹, with tmp2 currently held in the lane and A now
+    # holding A⁻¹.
     @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        mul!(buf1, A, dA_lane)
-        mul!(dA_lane, buf1, A, -one(P), zero(P))
+        copyto!(Ascr, view(Abm,lane,:,:))
+        mul!(buf1, A, Ascr)
+        mul!(Ascr, buf1, A, -one(P), zero(P))
+        copyto!(view(Abm,lane,:,:), Ascr)
     end
+    acopied && _write_back_partials!(A_dA, Ab)
     return A_dA
 end
 function rrule!!(
@@ -406,16 +439,22 @@ function frule!!(
     ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A, dA_lanes = arrayify(A_dA)
+    A = primal(A_dA)
+    Ab, acopied = _partials_block(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
-    # One scratch reused across lanes; the per-lane solves/products run in place via direct
-    # BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars allocate a temp on each call).
-    buf = similar(A)
     N = size(A, 1)
+    Abm = reshape(Ab, Nw, N, N)
+    # Scratches reused across lanes; the per-lane solves/products run in place via direct
+    # BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars allocate a temp on each call).
+    # Each lane's dA round-trips through the dense `Ascr` (a block lane is stride-Nw,
+    # which the BLAS calls and LAPACK-backed `Symmetric` copies reject); the triangle
+    # write-back moves whole contiguous lane columns of the block.
+    buf = similar(A)
+    Ascr = Matrix{P}(undef, N, N)
     if uplo == 'L'
         @inbounds for lane in 1:Nw
-            dA_lane = dA_lanes[lane]
-            copyto!(buf, Symmetric(dA_lane, :L))
+            copyto!(Ascr, view(Abm,lane,:,:))
+            copyto!(buf, Symmetric(Ascr, :L))
             BLAS.trsm!('R', 'L', 'T', 'N', one(P), A, buf)
             BLAS.trsm!('L', 'L', 'N', 'N', one(P), A, buf)
             for n in 1:N
@@ -423,12 +462,14 @@ function frule!!(
             end
             tril!(buf)
             BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, buf)
-            _copytrito!(dA_lane, buf, 'L')
+            for q in 1:N
+                view(Abm, lane, q:N, q) .= view(buf, q:N, q)
+            end
         end
     else
         @inbounds for lane in 1:Nw
-            dA_lane = dA_lanes[lane]
-            copyto!(buf, Symmetric(dA_lane, :U))
+            copyto!(Ascr, view(Abm,lane,:,:))
+            copyto!(buf, Symmetric(Ascr, :U))
             BLAS.trsm!('L', 'U', 'T', 'N', one(P), A, buf)
             BLAS.trsm!('R', 'U', 'N', 'N', one(P), A, buf)
             for n in 1:N
@@ -436,9 +477,12 @@ function frule!!(
             end
             triu!(buf)
             BLAS.trmm!('R', 'U', 'N', 'N', one(P), A, buf)
-            _copytrito!(dA_lane, buf, 'U')
+            for q in 1:N
+                view(Abm, lane, 1:q, q) .= view(buf, 1:q, q)
+            end
         end
     end
+    acopied && _write_back_partials!(A_dA, Ab)
     y = (A, info)
     return Lifted{typeof(y),Nw}(y, (tangent(A_dA), NoDual()))
 end
@@ -518,33 +562,44 @@ function frule!!(
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
     uplo = primal(_uplo)
-    A, dA_lanes = arrayify(A_dA)
-    B, dB_lanes = arrayify(B_dB)
+    A = primal(A_dA)
+    B = primal(B_dB)
+    Ab, _ = _partials_block(A_dA)
+    Bb, bcopied = _partials_block(B_dB)
+    Bbf = reshape(Bb, Nw, :)
+    n = size(A, 1)
+    Abm = reshape(Ab, Nw, n, n)
     LAPACK.potrs!(uplo, A, B)
-    # dS = dL*L' + L*dL' (resp. U'dU + dU'U). Build its two (triangular*triangular) terms into
-    # hoisted scratches via in-place `BLAS.trmm!` (materialize one factor, apply the other in
-    # place); the symmetric `mul!` then runs BLAS symm!/symv! in place. The sum is symmetric
-    # (`X + X'`), so `Symmetric(buf1)` (uplo `:U`) reads it exactly.
+    # dS = dL*L' + L*dL' (resp. U'dU + dU'U). Build its two (triangular*triangular) terms
+    # into hoisted scratches via in-place `BLAS.trmm!` (materialize one factor, apply the
+    # other in place); the symmetric `mul!` then runs BLAS symm!/symv! in place. The sum
+    # is symmetric (`X + X'`), so `Symmetric(buf1)` (uplo `:U`) reads it exactly. The
+    # BLAS/LAPACK calls need dense operands, so each lane's dA and dB round-trip through
+    # the `Ascr`/`dBscr` scratches (a block lane is stride-Nw).
     buf1 = similar(A)
     buf2 = similar(A)
+    Ascr = Matrix{P}(undef, n, n)
+    dBscr = Array{P}(undef, size(B))
     @inbounds for lane in 1:Nw
-        dA_lane = dA_lanes[lane]
-        dB_lane = dB_lanes[lane]
+        copyto!(Ascr, view(Abm,lane,:,:))
+        copyto!(dBscr, view(Bbf, lane, :))
         if uplo == 'L'
             copyto!(buf1, adjoint(LowerTriangular(A)))
-            BLAS.trmm!('L', 'L', 'N', 'N', one(P), dA_lane, buf1)
-            copyto!(buf2, adjoint(LowerTriangular(dA_lane)))
+            BLAS.trmm!('L', 'L', 'N', 'N', one(P), Ascr, buf1)
+            copyto!(buf2, adjoint(LowerTriangular(Ascr)))
             BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, buf2)
         else
-            copyto!(buf1, UpperTriangular(dA_lane))
+            copyto!(buf1, UpperTriangular(Ascr))
             BLAS.trmm!('L', 'U', 'T', 'N', one(P), A, buf1)
             copyto!(buf2, UpperTriangular(A))
-            BLAS.trmm!('L', 'U', 'T', 'N', one(P), dA_lane, buf2)
+            BLAS.trmm!('L', 'U', 'T', 'N', one(P), Ascr, buf2)
         end
         buf1 .+= buf2
-        mul!(dB_lane, Symmetric(buf1), B, -one(P), one(P))
-        LAPACK.potrs!(uplo, A, dB_lane)
+        mul!(dBscr, Symmetric(buf1), B, -one(P), one(P))
+        LAPACK.potrs!(uplo, A, dBscr)
+        copyto!(view(Bbf, lane, :), dBscr)
     end
+    bcopied && _write_back_partials!(B_dB, Bb)
     return B_dB
 end
 function rrule!!(
@@ -598,12 +653,31 @@ end
         _uplo::Lifted{Char},
     ) where {Nw,P<:BlasFloat}
         uplo = primal(_uplo)
-        B, dB_lanes = arrayify(B_dB)
-        A, dA_lanes = arrayify(A_dA)
+        B = primal(B_dB)
+        A = primal(A_dA)
+        Ab, _ = _partials_block(A_dA)
+        Bb, bcopied = _partials_block(B_dB)
         LAPACK.lacpy!(B, A, uplo)
-        @inbounds for lane in 1:Nw
-            LAPACK.lacpy!(dB_lanes[lane], dA_lanes[lane], uplo)
+        # The tangent copy mirrors the primal's triangle selection, applied to all lanes
+        # at once: for each copied element the `Nw` lanes are one contiguous block
+        # column, so the copies below move whole lane columns.
+        m, n = size(A)
+        Ab3 = reshape(Ab, Nw, size(A)...)
+        Bb3 = reshape(Bb, Nw, size(B)...)
+        if uplo == 'U'
+            for j in 1:n
+                r = 1:min(j, m)
+                view(Bb3, :, r, j) .= view(Ab3, :, r, j)
+            end
+        elseif uplo == 'L'
+            for j in 1:n
+                r = j:m
+                view(Bb3, :, r, j) .= view(Ab3, :, r, j)
+            end
+        else
+            view(Bb3, :, 1:m, 1:n) .= Ab3
         end
+        bcopied && _write_back_partials!(B_dB, Bb)
         return B_dB
     end
     function rrule!!(
