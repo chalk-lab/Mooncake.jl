@@ -195,12 +195,15 @@ end
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
             # The array's `.ref` points at element 1, which is block column 1 (the block's
-            # columns follow the array's elements). Rank-D blocks flatten to the `(N, length)`
-            # matrix via `reshape`, which SHARES storage: mutations through the projected ref V
-            # land in this array's block and vice versa, mirroring the primal aliasing.
-            primal_ref = getfield(V.primal, :ref)
-            block = reshape(getfield(V, :partials_block), N, length(V.primal))
-            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(primal_ref, block, 1)
+            # columns follow the array's elements). A `D==1` block is already the `(N, length)`
+            # matrix the ref V needs — use it directly; only a rank-`D>1` block needs flattening
+            # via `reshape` (which shares storage). Passing the block directly for the common
+            # vector case avoids an Array-header allocation on EVERY `.ref` projection — and
+            # `.ref` is projected once per element in derived elementwise access, so the reshape
+            # header was ~one allocation per element (the SplitEM forward-alloc regression).
+            pb = getfield(V, :partials_block)
+            block = pb isa Matrix{T} ? pb : reshape(pb, N, length(V.primal))
+            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(getfield(V.primal, :ref), block, 1)
         end
         return NoDual()
     end
