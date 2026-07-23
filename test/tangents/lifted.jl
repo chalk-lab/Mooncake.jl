@@ -71,7 +71,7 @@ using Mooncake:
 # Shorthands for the table-driven type tests below (top level: parametric aliases are
 # not allowed in local scope).
 const ND = NDual
-NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
+NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
 
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
@@ -136,15 +136,17 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         (3, Float32, ND{Float32,3}),
         (4, Float64, ND{Float64,4}),
         # Dense arrays: parallel-arrays NDualArray.
-        (2, Vector{Float64}, NDA{Float64,2,1,Vector{Float64}}),
-        (1, Matrix{Float32}, NDA{Float32,1,2,Matrix{Float32}}),
+        (2, Vector{Float64}, NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}),
+        (1, Matrix{Float32}, NDA{Float32,1,2,Matrix{Float32},Array{Float32,3}}),
         # Complex scalars and arrays.
         (2, Complex{Float64}, Complex{ND{Float64,2}}),
         (1, Complex{Float32}, Complex{ND{Float32,1}}),
         (
             2,
             Vector{ComplexF64},
-            NDualArray{ComplexF64,2,1,Vector{ComplexF64},Complex{ND{Float64,2}}},
+            NDualArray{
+                ComplexF64,2,1,Vector{ComplexF64},Complex{ND{Float64,2}},Matrix{ComplexF64}
+            },
         ),
         # Tuples / NamedTuples: element-wise recursion.
         (2, Tuple{Float64}, Tuple{ND{Float64,2}}),
@@ -152,7 +154,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         (
             2,
             Tuple{Float64,Vector{Float64}},
-            Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64}}},
+            Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}},
         ),
         (
             2,
@@ -162,7 +164,10 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
         (
             2,
             NamedTuple{(:x, :y),Tuple{Float64,Vector{Float64}}},
-            NamedTuple{(:x, :y),Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64}}}},
+            NamedTuple{
+                (:x, :y),
+                Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}},
+            },
         ),
         # Struct lifts: Immutable/MutableDual over the per-field NamedTuple.
         (
@@ -315,7 +320,7 @@ NDA{T,N,D,A} = NDualArray{T,N,D,A,NDual{T,N}}
                 MemoryRef{Float64},2,Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
             }
             @test dual_type(Val(2), Memory{Float64}) ===
-                NDualArray{Float64,2,1,Memory{Float64},NDual{Float64,2}}
+                NDualArray{Float64,2,1,Memory{Float64},NDual{Float64,2},Matrix{Float64}}
 
             # Seed factory: zero-init partials at the same offset, slot-local.
             a = zero_dual(Val(2), p)

@@ -37,7 +37,7 @@ end
 # result `NDualArray`.
 function frule!!(
     ::Lifted{typeof(exp),Nw},
-    X_dX::Lifted{Matrix{P},Nw,NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
+    X_dX::Lifted{Matrix{P},Nw,<:NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat}
     Xp = primal(X_dX)
     # One `ChainRules.frule` call per lane. ChainRules' matrix-exp frule computes the primal

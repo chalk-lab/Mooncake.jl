@@ -18,7 +18,8 @@
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(
-    ::Lifted{typeof(sum),N}, x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}}
+    ::Lifted{typeof(sum),N},
+    x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     # Reduce the primal and each lane's partial array separately — each is a plain `Array`, so
     # `sum` vectorises. Folding the whole `NDualArray` element-wise instead (lazy `getindex` →
@@ -41,7 +42,7 @@ end
 function frule!!(
     ::Lifted{typeof(sum),N},
     ::Lifted{typeof(abs2),N},
-    x::Lifted{Array{P,D},N,NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
+    x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     # Chain rule on the parallel arrays: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·partialₖᵢ`,
     # i.e. `2·dot(p, partialsₖ)` — both `sum(abs2, ·)` and `dot` are BLAS/SIMD over plain

@@ -54,7 +54,7 @@ For a concrete `P` it must always hold that `V === dual_type(Val(N), P)`.
 `dual_type` plays the same role for forwards-mode that [`tangent_type`](@ref) plays for reverse-mode, and it is *recursively coherent* with it: where the reverse representation of a component is `tangent_type(component)`, the forward representation is `dual_type(Val(N), component)`, mirroring each other shape-for-shape. Concretely:
 
 - a real scalar `P` → `NDual{P, N}` (a value plus an `NTuple{N}` of per-lane partials);
-- an array `Array{T, D}` → `NDualArray{T, N, D, ...}`, a *parallel-arrays* wrapper holding the primal array and `N` partial arrays separately (each a genuine `Array{T, D}` usable directly in a `ccall`);
+- an array `Array{T, D}` → `NDualArray{T, N, D, ...}`, a wrapper holding the primal array (a genuine `Array{T, D}` usable directly in a `ccall`, aliasing the user's storage) and the `N` lane partials in one slot-local *element-major* block of shape `(N, size...)`, so each element's partials form a contiguous column (per-lane access is a strided view, `a.partials[k]`);
 - a struct → `ImmutableDual` / `MutableDual` wrapping the per-field forward values;
 - tuples / named-tuples → element-wise recursion;
 - a non-differentiable `P` (integers, `Symbol`, `Module`, types, …) → [`Mooncake.NoDual`](@ref), the forwards-mode analogue of reverse-mode's `NoTangent`.
@@ -107,7 +107,7 @@ Note that the primal `sin(x)` is read out of `dy.value` rather than recomputed �
 #### Pre-allocated Matrix-Matrix Multiply
 
 Recall that for ``Z = X Y`` we have that ``\dot{Z} = X \dot{Y} + \dot{X} Y``.
-Because the forward value of an array is the parallel-arrays `NDualArray` (primal and each lane's partials are genuine `Array`s), we can apply the primal `mul!` once and then a per-lane `mul!` over the partial arrays:
+Because the forward value of an array is an `NDualArray` (the primal is a genuine `Array`, and the lane partials live in one element-major block accessed per lane as `tangent(·).partials[k]`, a strided view), we can apply the primal `mul!` once and then a per-lane `mul!` over the lane partials — writes through the views land in the slot's block:
 ```julia
 function frule!!(
     ::Lifted{typeof(mul!), N},
@@ -115,7 +115,8 @@ function frule!!(
 ) where {N, P<:Matrix{Float64}}
     mul!(primal(Z), primal(X), primal(Y))            # primal update, once
     for k in 1:N
-        dZ, dX, dY = tangent(Z, k), tangent(X, k), tangent(Y, k)
+        dZ = tangent(Z).partials[k]                   # write-through lane view
+        dX, dY = tangent(X).partials[k], tangent(Y).partials[k]
         mul!(dZ, primal(X), dY)                       # X * Ẏ
         mul!(dZ, dX, primal(Y), 1.0, 1.0)            # + Ẋ * Y
     end
@@ -352,4 +353,4 @@ With reference to [the limitations of ForwardDiff.jl](https://juliadiff.org/Forw
 1. `:foreigncall`s pose much less of a problem for Mooncake's forward-mode than for ForwardDiff.jl, because we can write a rule for any method of any function. In essence, you can only (reliably) write rules for ForwardDiff.jl via dispatch on `ForwardDiff.Dual`.
 1. the target function can be of any arity in Mooncake.jl, but must be unary in ForwardDiff.jl.
 1. there are no limitations on the argument type constraints that Mooncake.jl can handle, while ForwardDiff.jl requires that argument type constraints be `<:Real` or arrays of `<:Real`.
-1. No special storage types are required with Mooncake.jl, while ForwardDiff.jl requires that any container you write to is able to contain `ForwardDiff.Dual`s. (Mooncake's array forward value, `NDualArray`, keeps the partials in *separate* native arrays rather than interleaving them into the primal container.)
+1. No special storage types are required with Mooncake.jl, while ForwardDiff.jl requires that any container you write to is able to contain `ForwardDiff.Dual`s. (Mooncake's array forward value, `NDualArray`, keeps the partials in a *separate* element-major block rather than interleaving them into the primal container.)

@@ -159,7 +159,7 @@ function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
     ::Lifted{typeof(logsumexp),Nw},
-    x::Lifted{A,Nw,NDualArray{P,Nw,D,A,NDual{P,Nw}}},
+    x::Lifted{A,Nw,<:NDualArray{P,Nw,D,A,NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
     _x = primal(x)
     kw = primal(kwargs)
@@ -180,7 +180,7 @@ end
 # Per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw},
-    x::Lifted{Array{P,D},Nw,NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
+    x::Lifted{Array{P,D},Nw,<:NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat,D}
     _x = primal(x)
     y = logsumexp(_x)
@@ -199,7 +199,7 @@ end
 # since scalar indexing is unavailable. The `Array` loop method above is strictly more
 # specific and keeps the 0-alloc CPU path.
 function frule!!(
-    ::Lifted{typeof(logsumexp),Nw}, x::Lifted{A,Nw,NDualArray{P,Nw,D,A,NDual{P,Nw}}}
+    ::Lifted{typeof(logsumexp),Nw}, x::Lifted{A,Nw,<:NDualArray{P,Nw,D,A,NDual{P,Nw}}}
 ) where {Nw,P<:IEEEFloat,D,A<:AbstractArray{P,D}}
     _x = primal(x)
     y = logsumexp(_x)
@@ -318,8 +318,8 @@ end
 # Per-lane in-place `sum!` into `tangent(out).partials[lane]`.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
-    out::Lifted{Ao,Nw,NDualArray{P,Nw,Do,Ao,NDual{P,Nw}}},
-    x::Lifted{Ax,Nw,NDualArray{P,Nw,Dx,Ax,NDual{P,Nw}}},
+    out::Lifted{Ao,Nw,<:NDualArray{P,Nw,Do,Ao,NDual{P,Nw}}},
+    x::Lifted{Ax,Nw,<:NDualArray{P,Nw,Dx,Ax,NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat,Do,Dx,Ao<:AbstractArray{P,Do},Ax<:AbstractArray{P,Dx}}
     _x = primal(x)
     y = primal(out)

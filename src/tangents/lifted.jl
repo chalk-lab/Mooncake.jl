@@ -190,7 +190,15 @@ end
     return tangent(x).partials[lane]
 end
 @inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
-    return tangent(x).partials[lane]
+    # Materialize the lane's block column-slice into a dense container matching the reverse
+    # tangent shape (`tangent_type(P)` is the primal's own array type): struct recursion
+    # `convert`s per-lane fields into their declared reverse tangent types, which the lazy
+    # strided `SubArray` over the block does not satisfy. Copy semantics — under the
+    # element-major block there is no ownable per-lane array to alias, so writes to the
+    # returned array do NOT flow back into the slot (use `tangent(x).partials[lane]` or the
+    # block for write-through).
+    v = tangent(x)
+    return copyto!(similar(getfield(v, :primal)), v.partials[lane])
 end
 @inline function tangent(
     x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
@@ -640,9 +648,10 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `NDual{P, N}` — the packed scalar forward value.
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
-- `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
-  — the parallel-arrays canonical V wrapper (`primal` aliases user storage; `partials` are slot-local).
-- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}`
+- `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}, Array{T, D+1}}`
+  — the element-major canonical V wrapper (`primal` aliases user storage; the lane partials
+  are a slot-local `(N, size...)` block).
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}`
   — complex-eltype `NDualArray` variant.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
@@ -674,7 +683,7 @@ Shapes defined so far:
     return Complex{NDual{R,N}}
 end
 @foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return NDualArray{T,N,D,Array{T,D},NDual{T,N}}
+    return NDualArray{T,N,D,Array{T,D},NDual{T,N},Array{T,D + 1}}
 end
 # `Base.RefValue{P<:NDualEltype}`: the `NDualRef` parallel-partials V (scalar analogue of `NDualArray`). A *distinct*
 # wrapper, so the generic struct recursion never re-lifts it (a bare `RefValue` shadow would be).
@@ -687,7 +696,9 @@ end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{Array{Complex{R},D}}
 ) where {N,R<:IEEEFloat,D}
-    return NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}}
+    return NDualArray{
+        Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}},Array{Complex{R},D + 1}
+    }
 end
 # General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
 # always the element-wise Array-of-Structures V `Array{dual_type(Val(N), T), D}`, including
@@ -792,12 +803,14 @@ end
         return NDualMemoryRef{T,N,Memory{T}}
     end
     @foldable @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T},NDual{T,N}}
+        return NDualArray{T,N,1,Memory{T},NDual{T,N},Matrix{T}}
     end
     @foldable @inline function dual_type(
         ::Val{N}, ::Type{Memory{Complex{R}}}
     ) where {N,R<:IEEEFloat}
-        return NDualArray{Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}}}
+        return NDualArray{
+            Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}},Matrix{Complex{R}}
+        }
     end
     # Complex `MemoryRef`: the memory.jl frules build/consume `NDualMemoryRef` for any
     # `P<:NDualEltype` (complex included), so the canonical V must be `NDualMemoryRef`, not the
@@ -884,8 +897,8 @@ Shapes defined so far:
 
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
-- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}}}`.
-- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}}}`.
+- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}, Array{T, D+1}}}`.
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}}`.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `Lifted{MemoryRef{T}, N, NDualMemoryRef{T, N, Memory{T}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
@@ -906,7 +919,7 @@ end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Array{T,D}}
 ) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N}}}
+    return Lifted{Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N},Array{T,D + 1}}}
 end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Base.RefValue{P}}
@@ -919,7 +932,9 @@ end
     return Lifted{
         Array{Complex{R},D},
         N,
-        NDualArray{Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}}},
+        NDualArray{
+            Complex{R},N,D,Array{Complex{R},D},Complex{NDual{R,N}},Array{Complex{R},D + 1}
+        },
     }
 end
 @foldable @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
@@ -963,7 +978,7 @@ end
     @foldable @inline function lifted_type(
         ::Val{N}, ::Type{Memory{T}}
     ) where {N,T<:IEEEFloat}
-        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N}}}
+        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N},Matrix{T}}}
     end
 end
 # True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so its
@@ -1295,9 +1310,8 @@ end
 
 # ── Array seed factories (T <: IEEEFloat) ───────────────────────────────────
 #
-# Build an `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}` whose `primal` aliases
-# the user's array and whose `partials` is slot-local — no aliasing with the
-# user's array. The zero-init path uses `zero(::Array)` for each lane.
+# Build an `NDualArray` whose `primal` aliases the user's array and whose lane-partials
+# block is slot-local — no aliasing with the user's array.
 
 @inline function zero_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
     return NDualArray{E,N,D,A}(x)
@@ -1820,11 +1834,12 @@ function _basis_seed!!(
 ) where {T<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
+    parts = v.partials
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
         c = cursor[]
         for k in 1:N
-            v.partials[k][idx] = c == slots[k] ? one(T) : zero(T)
+            parts[k][idx] = c == slots[k] ? one(T) : zero(T)
         end
     end
     return v
@@ -1834,13 +1849,14 @@ function _basis_seed!!(
 ) where {R<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
+    parts = v.partials
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
         cr = cursor[]
         cursor[] += 1
         ci = cursor[]
         for k in 1:N
-            v.partials[k][idx] = Complex(
+            parts[k][idx] = Complex(
                 cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
             )
         end
