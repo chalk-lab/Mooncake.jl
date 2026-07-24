@@ -2231,23 +2231,27 @@ end
     # `MemoryRef` into the block's backing at the start (lane 1) of column `col`. Columns are
     # adjacent in the column-major block, so a run of `n` columns from here is one contiguous
     # backing range of `n * N` elements — flat copies need no per-lane striding at any offset.
+    # `memoryrefnew` skips its bounds check here: `col` is the primal ref's own validated offset
+    # and the block spans every column (`ncols == length(mem)`), and `k ∈ 1:N` stays within a
+    # column's `N` rows — so every offset is provably in bounds. The per-lane check is otherwise
+    # a hot-path cost on scalar array access.
     @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
         col == 1 && return partials_ref
-        return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, true)
+        return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, false)
     end
 
     # Read the `N` contiguous lanes starting at `colref` (position 1 == `colref` itself), and
     # write them. Alloc-free (`memoryref` ops + an isbits `ntuple`), for the hot get/set frules.
     @inline function _read_lanes(colref::MemoryRef, ::Val{N}) where {N}
         return ntuple(
-            k -> Core.memoryrefget(Core.memoryrefnew(colref, k, true), :not_atomic, false),
+            k -> Core.memoryrefget(Core.memoryrefnew(colref, k, false), :not_atomic, false),
             Val(N),
         )
     end
     @inline function _write_lanes!(colref::MemoryRef, vals, ::Val{N}) where {N}
         for k in 1:N
             Core.memoryrefset!(
-                Core.memoryrefnew(colref, k, true), vals[k], :not_atomic, false
+                Core.memoryrefnew(colref, k, false), vals[k], :not_atomic, false
             )
         end
         return nothing
