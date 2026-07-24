@@ -662,6 +662,19 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test first(z_and_dz_arr) == sum(abs2, x_arr)
             # directional derivative of sum(abs2, x) is 2x ⋅ dir
             @test last(z_and_dz_arr) == 2 * x * dx + 2 * y * dy
+
+            # Regression: the FULL gradient must fill every element, not just the first. The
+            # packable path seeds the element-major block by linear index; a 2-D `block[lane,
+            # elem]` index silently mis-seeds all but element 1 on Julia 1.10 (the block is a
+            # flat `Vector` there), giving e.g. [2x₁, 0, 0]. Exercise widths that split and span.
+            x3 = [1.0, 2.0, 3.0]
+            for cs in (1, 2, 3)
+                gc = Mooncake.prepare_derivative_cache(
+                    f_arr, x3; config=Mooncake.Config(; chunk_size=cs, kwargs...)
+                )
+                _, (_, g) = Mooncake.value_and_gradient!!(gc, f_arr, x3)
+                @test g == 2 .* x3
+            end
         end
 
         @testset "Non-differentiable outputs" begin

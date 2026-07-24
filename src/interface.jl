@@ -783,12 +783,14 @@ function _fcache_jacobian_packable!!(
     s = 1
     while s <= total_dof
         copyto!(nda.primal, x)
-        # Element-major block: zero every lane at once, then poke this chunk's basis entries
-        # (`block[lane, slot]`) — direct block access, no per-lane view allocation.
+        # Element-major block: zero every lane at once, then poke this chunk's basis entries.
+        # Index linearly (element `slot`'s lane at `(slot-1)*W + lane`), not 2-D `[lane, slot]`:
+        # on 1.10 the block is a flat `Vector`, where 2-D indexing lands out of bounds for every
+        # element past the first. Linear indexing is equivalent on the 1.11+ `(W, dims)` block.
         fill!(block, z)
         @inbounds for lane in 1:W
             slot = s + lane - 1
-            slot <= total_dof && (block[lane, slot] = one(T))
+            slot <= total_dof && (block[(slot - 1) * W + lane] = one(T))
         end
         output = value_and_derivative!!(cache, f_seed, arg_seed)
         if s == 1
@@ -1797,8 +1799,11 @@ function value_and_gradient!!(
             fill!(block, z)
             for lane in 1:W
                 slot = s + lane - 1
+                # Linear element-major index (`(elem-1)*W + lane`), not 2-D `[lane, elem]`: on
+                # 1.10 the block is a flat `Vector` and 2-D indexing lands out of bounds past the
+                # first element. Equivalent on the 1.11+ `(W, dims)` block.
                 (slot <= total_dof && off < slot <= off + len) &&
-                    (block[lane, slot - off] = one(T))
+                    (block[(slot - off - 1) * W + lane] = one(T))
             end
             off += len
         end
