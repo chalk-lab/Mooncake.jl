@@ -2056,7 +2056,13 @@ end
 # `partials_block[k, :, …, :]`, same shape as `primal`). Reads and writes through a view land in
 # the block. Callers use `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
-    return ntuple(k -> tangent_view(a, k), Val(N))
+    # Reshape the block once and take all `N` views from it, rather than reshaping per lane
+    # (each `tangent_view` reshapes independently). On 1.10 the reshape is an `unsafe_wrap`, so
+    # per-lane reshaping costs `N` wrap headers; sharing one wrap makes it `1`. On 1.11+ the
+    # reshape is the identity, so this is equivalent.
+    shaped = _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal))
+    colons = ntuple(_ -> Colon(), Val(D))
+    return ntuple(k -> view(shaped, k, colons...), Val(N))
 end
 
 # Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
