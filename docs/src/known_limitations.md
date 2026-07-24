@@ -268,6 +268,12 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+_**Second-order (HVP / Hessian) through raw-pointer operations**_
+
+There is a related restriction specific to forward-over-reverse (used for Hessian-vector products and Hessians). Forward-mode stores an array's `N` per-lane tangents in a single *element-major* block, so a given lane's data is strided by `N` in memory. When a reverse rule reads or writes its tangent (fdata) through a *raw pointer* — as the BLAS-backed rules do — and that reverse rule is itself differentiated in forward mode with chunk width `N > 1`, there is no contiguous per-lane buffer a plain `Ptr` could address. Mooncake raises a clear `ArgumentError` in this case rather than silently returning a wrong derivative.
+
+In practice this rarely surfaces, because operations with array-level rules — matrix multiplication, `dot`, `norm`, and the element-wise operations — do *not* go through raw pointers in forward-over-reverse, so their HVPs and Hessians work. The restriction only affects an operation whose *sole* differentiation primitive is a raw-pointer `foreigncall` with no array-level rule. If you hit it, differentiate at chunk width 1 (a single Hessian column at a time), or add an array-level rule for the operation.
+
 ```@meta
 DocTestSetup = nothing
 ```
