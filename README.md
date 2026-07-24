@@ -17,7 +17,7 @@ The goal of the `Mooncake.jl` project is to produce an AD package written entire
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
 > [!IMPORTANT]
-> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded
+> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded research
 > institutions, with correspondingly limited capacity for triage and review. In the spirit of
 > long-lived projects such as R and TeX, we favour correctness, stability,
 > and tightly scoped fixes over open-ended expansion.
