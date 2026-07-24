@@ -274,7 +274,7 @@ using Mooncake.Nfwd
             @test all(k -> e.re.partials[k] == k && e.im.partials[k] == 0.0, 1:N)
             a[2] = e  # setindex! round-trip
             @test a.primal[2] == 1.0 + 2.0im
-            @test all(k -> a.partials[k][2] == ComplexF64(k, 0.0), 1:N)
+            @test all(k -> tangent_view(a, k)[2] == ComplexF64(k, 0.0), 1:N)
         end
 
         # The 5-param inner constructor rejects an incoherent `Wrapped` (eltype would

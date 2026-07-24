@@ -65,7 +65,7 @@ end
                 Mooncake.zero_lifted(Val(N), Memory{Float64}),
                 Mooncake.zero_lifted(Val(N), 8),
             )
-            @test all(p -> all(iszero, p), tangent(r).partials)
+            @test all(iszero, tangent(r).partials_block)
         end
     end
 end

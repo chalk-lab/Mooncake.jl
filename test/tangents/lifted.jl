@@ -216,9 +216,11 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         va = zero_dual(Val(2), x)
         @test typeof(va) === dual_type(Val(2), Vector{Float64})
         @test primal(va) === x
-        @test all(iszero, va.partials[1]) && all(iszero, va.partials[2])
+        @test all(iszero, tangent_view(va, 1)) && all(iszero, tangent_view(va, 2))
         @test va[1] === nd(1.0, 0.0, 0.0)
-        @test any(!iszero, randn_dual(Val(2), Random.MersenneTwister(0), x).partials[1])
+        @test any(
+            !iszero, tangent_view(randn_dual(Val(2), Random.MersenneTwister(0), x), 1)
+        )
         za = zero_lifted(Val(2), x)
         @test typeof(za) === lifted_type(Val(2), Vector{Float64})
         @test primal(za) === x
@@ -233,7 +235,7 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         vc = zero_dual(Val(2), xc)
         @test typeof(vc) === dual_type(Val(2), Vector{ComplexF64})
         @test primal(vc) === xc
-        @test all(iszero, vc.partials[1]) && all(iszero, vc.partials[2])
+        @test all(iszero, tangent_view(vc, 1)) && all(iszero, tangent_view(vc, 2))
         @test typeof(zero_lifted(Val(2), xc)) === lifted_type(Val(2), Vector{ComplexF64})
 
         # Complex MemoryRef (1.11+): the forward seed factories must produce the canonical
@@ -282,11 +284,14 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         )
         @test a isa AbstractArray{NDual{Float64,2},1}
         @test size(a) == (3,) && length(a) == 3
-        @test primal(a) === x && tangent(a) === a.partials
-        @test unpack_ndual(a) === (a.primal, a.partials)
+        @test primal(a) === x &&
+            tangent(a) == (a.partials_block[1, :], a.partials_block[2, :])
+        @test unpack_ndual(a) == (a.primal, tangent(a))
         @test a[2] === nd(2.0, -0.5, 1.0)  # lazy getindex
         a[1] = nd(9.0, 7.0, -7.0)          # setindex! writes both channels
-        @test x[1] === 9.0 && a.partials[1][1] === 7.0 && a.partials[2][1] === -7.0
+        @test x[1] === 9.0 &&
+            tangent_view(a, 1)[1] === 7.0 &&
+            tangent_view(a, 2)[1] === -7.0
     end
 
     # Regression: the per-lane tangent of a `Ref{<:IEEEFloat}` (NDualRef V) must be the
@@ -499,7 +504,7 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         shared = [10.0, 20.0]
         let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).value.value
             @test nt.a === nt.b
-            @test nt.a.partials[1] == [1.0, 0.0]
+            @test tangent_view(nt.a, 1) == [1.0, 0.0]
         end
 
         # Aliasing on the `lift` (reverse→forward) path, non-float-element array: the

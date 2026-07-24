@@ -878,9 +878,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test Array(Mooncake.primal(out_p)) == Array(permutedims(a, (2, 1)))
             Vv, Vh, Vp = map(Mooncake.tangent, (out_v, out_h, out_p))
             for k in 1:N
-                @test Array(Vv.partials[k]) == Array(vcat(pa.partials[k], pb.partials[k]))
-                @test Array(Vh.partials[k]) == Array(hcat(pa.partials[k], pc.partials[k]))
-                @test Array(Vp.partials[k]) == Array(permutedims(pa.partials[k], (2, 1)))
+                tv(V, i) = Mooncake.Nfwd.tangent_view(V, i)
+                @test Array(tv(Vv, k)) == Array(vcat(tv(pa, k), tv(pb, k)))
+                @test Array(tv(Vh, k)) == Array(hcat(tv(pa, k), tv(pc, k)))
+                @test Array(tv(Vp, k)) == Array(permutedims(tv(pa, k), (2, 1)))
             end
         end
 
@@ -929,8 +930,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test V.value.indices isa Mooncake.NoDual
             inV = Mooncake.tangent(seed)
             for k in 1:N
-                @test Array(V.value.parent.partials[k]) ==
-                    Array(cu(inV.value.parent.partials[k]))
+                @test Array(Mooncake.Nfwd.tangent_view(V.value.parent, k)) ==
+                    Array(cu(Mooncake.Nfwd.tangent_view(inV.value.parent, k)))
             end
         end
 

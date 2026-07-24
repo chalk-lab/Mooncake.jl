@@ -16,7 +16,8 @@ import Mooncake:
     frule!!,
     primal,
     rrule!!,
-    tangent
+    tangent,
+    tangent_view
 
 @is_primitive MinimalCtx Tuple{typeof(exp),Matrix{<:IEEEFloat}}
 
@@ -50,12 +51,12 @@ function frule!!(
     Xc = similar(Xp)
     dXc = similar(Xp)
     copyto!(Xc, Xp)
-    copyto!(dXc, tangent(X_dX).partials[1])
+    copyto!(dXc, tangent_view(X_dX, 1))
     Y_primal, dY_1 = ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)
     Y_partials = ntuple(Val(Nw)) do lane
         lane == 1 && return dY_1
         copyto!(Xc, Xp)
-        copyto!(dXc, tangent(X_dX).partials[lane])
+        copyto!(dXc, tangent_view(X_dX, lane))
         return ChainRules.frule((ChainRules.NoTangent(), dXc), LinearAlgebra.exp!, Xc)[2]
     end
     return Lifted{Matrix{P},Nw}(

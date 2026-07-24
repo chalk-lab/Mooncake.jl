@@ -12,6 +12,7 @@ import Mooncake:
     CoDual,
     primal,
     tangent,
+    tangent_view,
     @is_primitive,
     zero_fcodual,
     NoRData,
@@ -20,7 +21,7 @@ import Mooncake:
     Lifted,
     ImmutableDual,
     NDualArray
-using Mooncake.Nfwd: NDual
+using Mooncake.Nfwd: NDual, _lane_views
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
 # logistic(x::Real) = inv(exp(-x) + one(x)) produces a zero-partial NDual from
@@ -168,7 +169,7 @@ function frule!!(
     tmp = similar(_x)  # scratch reused across lanes
     # Per-lane reduction is identical for scalar and array results; only the output wrapper differs.
     dy = ntuple(Val(Nw)) do lane
-        tmp .= tangent(x).partials[lane] .* w
+        tmp .= tangent_view(x, lane) .* w
         sum(tmp; kw...)
     end
     if y isa AbstractArray
@@ -184,7 +185,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,D}
     _x = primal(x)
     y = logsumexp(_x)
-    parts = tangent(x).partials
+    parts = _lane_views(tangent(x))
     # Element-outer, lane-inner: exp(x[i]-y) (the lane-independent softmax weight) is computed once
     # per element and folded into every lane's sum in one pass — exp once per element, no weight
     # array. `foldl` carries the per-lane tuple as its accumulator so the inner `ntuple` never closes
@@ -204,7 +205,7 @@ function frule!!(
     _x = primal(x)
     y = logsumexp(_x)
     w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
-    dy_lanes = ntuple(lane -> dot(tangent(x).partials[lane], w), Val(Nw))
+    dy_lanes = ntuple(lane -> dot(tangent_view(x, lane), w), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
 # Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
@@ -315,7 +316,7 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
 } where {P<:IEEEFloat}
-# Per-lane in-place `sum!` into `tangent(out).partials[lane]`.
+# Per-lane in-place `sum!` into `tangent_view(out, lane)`.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
     out::Lifted{Ao,Nw,<:NDualArray{P,Nw,Do,Ao,NDual{P,Nw}}},
@@ -327,8 +328,8 @@ function frule!!(
     w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
     tmp = similar(_x)  # scratch reused across lanes
     for lane in 1:Nw
-        tmp .= tangent(x).partials[lane] .* w
-        sum!(tangent(out).partials[lane], tmp)
+        tmp .= tangent_view(x, lane) .* w
+        sum!(tangent_view(out, lane), tmp)
     end
     return out
 end

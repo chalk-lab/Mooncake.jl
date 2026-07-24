@@ -16,6 +16,7 @@ using Mooncake
 using Mooncake:
     primal,
     tangent,
+    tangent_view,
     randn_tangent,
     increment!!,
     NoTangent,

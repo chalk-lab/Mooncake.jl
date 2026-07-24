@@ -175,8 +175,8 @@ end
 
 # Whole-array accessors — O(1) by aliasing.
 @inline primal(a::NDualArray) = a.primal
-@inline tangent(a::NDualArray) = a.partials
-@inline unpack_ndual(a::NDualArray) = (a.primal, a.partials)
+@inline tangent(a::NDualArray) = Nfwd._lane_views(a)
+@inline unpack_ndual(a::NDualArray) = (a.primal, Nfwd._lane_views(a))
 
 # Per-lane native-tangent accessor. The `Lifted{MutS, N, <:MutableDual}` overload
 # at the bottom of this file returns a `MutableDualTangentView` proxy so rule
@@ -1878,7 +1878,7 @@ function _basis_seed!!(
 ) where {T<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    parts = v.partials
+    parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
         c = cursor[]
@@ -1893,7 +1893,7 @@ function _basis_seed!!(
 ) where {R<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    parts = v.partials
+    parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
         cr = cursor[]

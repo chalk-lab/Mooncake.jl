@@ -19,6 +19,7 @@ import Mooncake:
     zero_fcodual,
     primal,
     tangent,
+    tangent_view,
     arrayify,
     frule!!,
     Lifted,
@@ -369,7 +370,7 @@ function frule!!(
 ) where {Nw,P<:IEEEFloat,Q<:IEEEFloat,N,M}
     primal(x) .+= primal(b)
     for lane in 1:Nw
-        tangent(x).partials[lane] .+= tangent(b).partials[lane]
+        tangent_view(x, lane) .+= tangent_view(b, lane)
     end
     return x
 end

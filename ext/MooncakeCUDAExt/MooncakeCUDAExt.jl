@@ -254,7 +254,7 @@ end
 @inline Nfwd._block_dims(N::Int, p::CuArray) = (size(p)..., N)
 @inline Nfwd._block_shape_ok(block::CuArray, N::Int, p) = size(block) == (size(p)..., N)
 # Lane `k`'s partial: the contiguous last-dim slice. Overrides the host element-major
-# `tangent_view` (which views the leading lane axis); the `.partials` shim builds on this.
+# `tangent_view` (which views the leading lane axis); `_lane_views` builds on this.
 @inline function Nfwd.tangent_view(
     a::NDualArray{E,N,D,A}, k::Integer
 ) where {E,N,D,A<:CuArray}
@@ -263,7 +263,7 @@ end
 # GPU-friendly pack: the generic `_pack_block` fills element-by-element (scalar `setindex!`,
 # which a `CuArray` forbids). Copy each lane's partial into its block slice `[dims..., k]` — one
 # device copy per lane, no scalar indexing. `copyto!` accepts any-typed source, so lane views of
-# another block (`SubArray`, e.g. reconstructing a result from an input's `.partials`) work too.
+# another block (`SubArray`, e.g. reconstructing a result from an input's lane views) work too.
 @inline function _cu_pack_lane_major(p::CuArray, ts, Nw::Int)
     block = Nfwd._block_type(typeof(p))(undef, Nfwd._block_dims(Nw, p)...)
     colons = ntuple(_ -> Colon(), Val(ndims(p)))
@@ -401,7 +401,7 @@ function frule!!(
     x::Lifted{X,Nw,<:NDualArray},
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T},Nw}
     y = unsafe_convert(CuPtr{T}, primal(x))
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     dy = ntuple(k -> unsafe_convert(CuPtr{T}, x_partials[k]), Val(Nw))
     return Lifted{CuPtr{T},Nw}(y, dy)
 end
@@ -817,7 +817,7 @@ function frule!!(
 ) where {Nw}
     _dims = primal(dims)
     y = reshape(primal(x), _dims)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> reshape(x_partials[k], _dims), Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -847,7 +847,7 @@ function frule!!(
 ) where {Nw,M}
     _inds = map(primal, inds)
     y = view(primal(x), _inds...)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     if y isa CuMaybeComplexArray
         y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
         Y = typeof(y)
@@ -1019,7 +1019,7 @@ function frule!!(
     pidx = primal(idx)
     px = primal(x)
     y = px[pidx]
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> x_partials[k][pidx], Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -1053,7 +1053,7 @@ function frule!!(
     px = primal(x)
     y = norm(px)
     R = real(eltype(px))
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     if iszero(y) || Nw == 1
         dy_lanes = ntuple(Val(Nw)) do k
             iszero(y) ? zero(R) : real(dot(px, x_partials[k])) / y
@@ -1093,8 +1093,8 @@ function frule!!(
     py = primal(y)
     z = dot(px, py)
     R = eltype(px)
-    x_partials = tangent(x).partials
-    y_partials = tangent(y).partials
+    x_partials = Nfwd._lane_views(tangent(x))
+    y_partials = Nfwd._lane_views(tangent(y))
     # `isempty` routes past the batched path: gemv_batched! with a zero-length operand quick-returns
     # before its `beta=0` overwrite, leaving output buffers uninitialised — so dot over empty operands
     # (derivative 0) must use the per-lane form, which is 0 for every lane.
@@ -1156,7 +1156,7 @@ function frule!!(
 ) where {Nw}
     px = primal(x)
     y = prod(px)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     if iszero(y) || isempty(px)
         # Every lane's derivative is zero: a zero factor annihilates it (and px has a zero, so 1/px is
         # invalid), or px is empty (prod over no elements has derivative 0). Either way skip the
@@ -1203,7 +1203,7 @@ function frule!!(
 ) where {Nw}
     px = primal(x)
     y = cumsum(px; kw...)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -1238,7 +1238,7 @@ function frule!!(
     px = primal(x)
     y = cumprod(px; kw...)
     inv_px = nan_tangent_guard.(px, inv.(px))
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> y .* cumsum(x_partials[k] .* inv_px; kw...), Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -1275,7 +1275,7 @@ function frule!!(
 ) where {Nw}
     px = primal(x)
     y = accumulate(+, px; kw...)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -1321,7 +1321,7 @@ function frule!!(
 ) where {Nw}
     px = primal(x)
     y = sum(px)
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     # `isempty` routes past the batched path: gemv_batched! with a zero-length operand quick-returns
     # before its `beta=0` overwrite, leaving the output buffers uninitialised — so sum over an empty
     # array (derivative 0) must use the per-lane reduction, which is 0 for every lane.
@@ -1380,8 +1380,8 @@ function frule!!(
 ) where {Nw}
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
     unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
-    dest_partials = tangent(dest).partials
-    src_partials = tangent(src).partials
+    dest_partials = Nfwd._lane_views(tangent(dest))
+    src_partials = Nfwd._lane_views(tangent(src))
     # A device src's lanes are contiguous (lane-major block); a host src's lanes are strided
     # (element-major block) — materialize those so the cross-device copy sees contiguous memory.
     src_is_device = primal(src) isa CuArray
@@ -1521,7 +1521,7 @@ function frule!!(
     ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}, x::Lifted
 ) where {Nw}
     fill!(primal(a), primal(x))
-    a_partials = tangent(a).partials
+    a_partials = Nfwd._lane_views(tangent(a))
     Eout = eltype(a_partials[1])
     if tangent(x) isa NoDual
         for partial in a_partials
@@ -1587,7 +1587,7 @@ function frule!!(
     x::Lifted{<:Transpose{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
 ) where {Nw,T<:CuFloatOrComplex}
     y = sum(primal(x))
-    parent_partials = tangent(x).value.parent.partials
+    parent_partials = Nfwd._lane_views(tangent(x).value.parent)
     dy_lanes = ntuple(k -> sum(parent_partials[k]), Val(Nw))
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
@@ -1596,7 +1596,7 @@ function frule!!(
     x::Lifted{<:Adjoint{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
 ) where {Nw,T<:CuFloatOrComplex}
     y = sum(primal(x))
-    parent_partials = tangent(x).value.parent.partials
+    parent_partials = Nfwd._lane_views(tangent(x).value.parent)
     # Adjoint applies elementwise conj — sum then conjugate.
     dy_lanes = ntuple(k -> conj(sum(parent_partials[k])), Val(Nw))
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
@@ -1722,7 +1722,7 @@ end
 function frule!!(
     ::Lifted{typeof(sum),Nw}, f::Lifted, x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}
 ) where {Nw}
-    return _gpu_sum_f_lifted(Val(Nw), primal(f), primal(x), tangent(x).partials)
+    return _gpu_sum_f_lifted(Val(Nw), primal(f), primal(x), Nfwd._lane_views(tangent(x)))
 end
 
 # Wrap a scalar primal `y` with per-lane partials `dy_lanes` into the canonical
@@ -1750,7 +1750,7 @@ function frule!!(
     },
 ) where {Nw}
     return _gpu_sum_f_lifted(
-        Val(Nw), primal(f), parent(primal(x)), tangent(x).value.parent.partials
+        Val(Nw), primal(f), parent(primal(x)), Nfwd._lane_views(tangent(x).value.parent)
     )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
@@ -2197,9 +2197,9 @@ function frule!!(
     _1 = one(T)
     _0 = zero(T)
     cuBLAS.gemm!(tAv, tBv, _1, pA, pB, _0, pC)
-    C_partials = tangent(C).partials
-    A_partials = tangent(A).partials
-    B_partials = tangent(B).partials
+    C_partials = Nfwd._lane_views(tangent(C))
+    A_partials = Nfwd._lane_views(tangent(A))
+    B_partials = Nfwd._lane_views(tangent(B))
     if Nw == 1
         dC = C_partials[1]
         cuBLAS.gemm!(tAv, tBv, _1, A_partials[1], pB, _0, dC)
@@ -2291,9 +2291,9 @@ function frule!!(
     _β = T(primal(beta))
     _1 = one(T)
     cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
-    C_partials = tangent(C).partials
-    A_partials = tangent(A).partials
-    B_partials = tangent(B).partials
+    C_partials = Nfwd._lane_views(tangent(C))
+    A_partials = Nfwd._lane_views(tangent(A))
+    B_partials = Nfwd._lane_views(tangent(B))
     if Nw == 1
         dC = C_partials[1]
         cuBLAS.gemm!(tAv, tBv, _α, A_partials[1], pB, _β, dC)
@@ -2406,9 +2406,9 @@ function frule!!(
     _check_gemv_eltypes(T, eltype(pB))
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
-    Y_partials = tangent(Y).partials
-    A_partials = tangent(A).partials
-    B_partials = tangent(B).partials
+    Y_partials = Nfwd._lane_views(tangent(Y))
+    A_partials = Nfwd._lane_views(tangent(A))
+    B_partials = Nfwd._lane_views(tangent(B))
     # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
     if Nw == 1
         dY = Y_partials[1]
@@ -2475,7 +2475,7 @@ function frule!!(
     ::Lifted{typeof(cu),Nw}, x::Lifted{<:AbstractArray{<:CuFloatOrComplex},Nw,<:NDualArray}
 ) where {Nw}
     y = cu(primal(x))
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> cu(x_partials[k]), Val(Nw))
     Y = typeof(y)
     Element = eltype(y)
@@ -2507,7 +2507,7 @@ function frule!!(
     parent_nda = in_nt.parent
     y = cu(primal(x))
     Pp = y.parent
-    parent_partials = ntuple(k -> cu(parent_nda.partials[k]), Val(Nw))
+    parent_partials = ntuple(k -> cu(Nfwd.tangent_view(parent_nda, k)), Val(Nw))
     parent_V = NDualArray{eltype(Pp),Nw,ndims(Pp),typeof(Pp)}(Pp, parent_partials)
     V = ImmutableDual(merge(in_nt, (parent=parent_V,)))
     return Lifted{typeof(y),Nw}(y, V)
@@ -2531,7 +2531,7 @@ function frule!!(
     ::Lifted{Type{Array{T,D}},Nw}, x::Lifted{<:CuArray{T,D},Nw,<:NDualArray}
 ) where {T<:CuFloatOrComplex,D,Nw}
     y = Array(primal(x))
-    x_partials = tangent(x).partials
+    x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> Array(x_partials[k]), Val(Nw))
     Y = typeof(y)
     return Lifted{Y,Nw}(y, NDualArray{T,Nw,D,Y}(y, y_partials))
@@ -3314,7 +3314,8 @@ end
 # kernel for an independent JVP.
 @inline _bc_tangent(::Union{Mooncake.NoDual,Mooncake.NoTangent}, _, _) = NoTangent()
 @inline _bc_tangent(::Tuple{<:Union{Mooncake.NoDual,Mooncake.NoTangent}}, _, _) = NoTangent()
-@inline _bc_tangent(v::Union{Nfwd.NDual,Nfwd.NDualArray}, _, lane) = v.partials[lane]
+@inline _bc_tangent(v::Nfwd.NDual, _, lane) = v.partials[lane]
+@inline _bc_tangent(v::Nfwd.NDualArray, _, lane) = Nfwd.tangent_view(v, lane)
 @inline function _bc_tangent(v::Complex{Nfwd.NDual{R,N}}, _, lane) where {R,N}
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
@@ -3459,7 +3460,7 @@ function frule!!(
     )
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     pout = primal(dest)
-    dest_partials = tangent(dest).partials
+    dest_partials = Nfwd._lane_views(tangent(dest))
     decoded = _gpu_decode_ndual_output(
         Val(:broadcast), dual_out, flat_pargs; extract_primal=false
     )

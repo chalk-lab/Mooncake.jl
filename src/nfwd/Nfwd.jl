@@ -2052,22 +2052,16 @@ end
 end
 
 # Compatibility shim: synthesize the old `partials::NTuple{N, A}` field as lazy per-lane
-# strided views into the element-major block (lane `k` is `partials_block[k, :, …, :]`,
-# same shape as `primal`). Reads and writes through a view land in the block, so existing
-# `a.partials[k]` consumers stay correct; per-lane-dense consumers (`ccall`/`pointer`/
-# `setfield!` on a lane) need block-aware rewrites instead.
-@inline function Base.getproperty(a::NDualArray, name::Symbol)
-    name === :partials && return _lane_views(a)
-    return getfield(a, name)
-end
+# The `N` per-lane strided views into the element-major block (lane `k` is
+# `partials_block[k, :, …, :]`, same shape as `primal`). Reads and writes through a view land in
+# the block. Callers use `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
     return ntuple(k -> tangent_view(a, k), Val(N))
 end
-Base.propertynames(::NDualArray) = (:primal, :partials_block, :partials)
 
-# Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations
-# land in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Build
-# just the one lane — the preferred accessor over the `.partials` shim's full-tuple synthesis.
+# Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
+# in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Builds just
+# the one lane — the preferred single-lane accessor; `_lane_views` builds the whole tuple.
 @inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
     _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal)),
     k,
