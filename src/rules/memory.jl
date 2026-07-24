@@ -261,8 +261,8 @@ function frule!!(
     if _n > 0
         dv, sv = tangent(dest), tangent(src)
         unsafe_copyto!(
-            Nfwd._block_column_ref(getfield(dv, :partials_block), getfield(dv, :col)),
-            Nfwd._block_column_ref(getfield(sv, :partials_block), getfield(sv, :col)),
+            Nfwd._block_column_ref(getfield(dv, :partials_ref), getfield(dv, :col), Nw),
+            Nfwd._block_column_ref(getfield(sv, :partials_ref), getfield(sv, :col), Nw),
             Nw * _n,
         )
     end
@@ -428,8 +428,8 @@ end
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
     v = tangent(x)
-    block, c = getfield(v, :partials_block), getfield(v, :col)
-    dy_partials = ntuple(k -> block[k, c], Val(Nw))
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    dy_partials = Nfwd._read_lanes(colref, Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline function rrule!!(
@@ -461,8 +461,8 @@ end
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), ordering, bc)
     v = tangent(x)
-    block, c = getfield(v, :partials_block), getfield(v, :col)
-    dy_partials = ntuple(k -> block[k, c], Val(Nw))
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    dy_partials = Nfwd._read_lanes(colref, Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline Base.@propagate_inbounds function rrule!!(
@@ -510,7 +510,10 @@ end
     v = tangent(x)
     newcol = getfield(v, :col) + primal(ii) - 1
     return Lifted{MemoryRef{P},Nw}(
-        y, NDualMemoryRef{P,Nw,Memory{P}}(y, getfield(v, :partials_block), newcol)
+        y,
+        NDualMemoryRef{P,Nw,Memory{P}}(
+            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
+        ),
     )
 end
 @inline function rrule!!(
@@ -551,10 +554,9 @@ end
 ) where {Nw,P<:NDualEltype,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
     v = tangent(x)
-    block, c = getfield(v, :partials_block), getfield(v, :col)
-    for lane in 1:Nw
-        block[lane, c] = _nfwd_dual_partial(tangent(value), lane)
-    end
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    vals = ntuple(lane -> _nfwd_dual_partial(tangent(value), lane), Val(Nw))
+    Nfwd._write_lanes!(colref, vals, Val(Nw))
     return value
 end
 @inline function rrule!!(
@@ -620,10 +622,9 @@ end
     bc = primal(boundscheck)
     memoryrefset!(primal(x), primal(value), ord, bc)
     v = tangent(x)
-    block, c = getfield(v, :partials_block), getfield(v, :col)
-    for lane in 1:Nw
-        block[lane, c] = _nfwd_dual_partial(tangent(value), lane)
-    end
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    vals = ntuple(lane -> _nfwd_dual_partial(tangent(value), lane), Val(Nw))
+    Nfwd._write_lanes!(colref, vals, Val(Nw))
     return value
 end
 @inline function rrule!!(
@@ -946,7 +947,7 @@ function frule!!(
     v = tangent(ref)
     block = _new_(
         Array{P,D + 1},
-        Nfwd._block_column_ref(getfield(v, :partials_block), getfield(v, :col)),
+        Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw),
         (Nw, _sz...),
     )
     return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, block))
@@ -1133,7 +1134,7 @@ end
         setfield!(
             block,
             :ref,
-            Nfwd._block_column_ref(getfield(xv, :partials_block), getfield(xv, :col)),
+            Nfwd._block_column_ref(getfield(xv, :partials_ref), getfield(xv, :col), Nw),
         )
     end
     return x

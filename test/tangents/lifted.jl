@@ -326,9 +326,11 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
             # the referenced element's column is the ref's offset.
             a = zero_dual(Val(2), p)
             @test typeof(a) === Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
-            @test primal(a) === p && tangent(a) === a.partials_block
-            @test unpack_ndual(a) === (a.primal, a.partials_block)
-            @test size(a.partials_block) == (2, 3) && all(iszero, a.partials_block)
+            # The block is stored as its backing `MemoryRef` (`partials_ref`) + `ncols`;
+            # `tangent`/`unpack_ndual` reconstruct the `(N, ncols)` block view on demand.
+            @test primal(a) === p
+            @test unpack_ndual(a)[1] === a.primal && unpack_ndual(a)[2] == tangent(a)
+            @test size(tangent(a)) == (2, 3) && all(iszero, tangent(a))
             @test a.col == Core.memoryrefoffset(p) == 1
             @test primal(zero_lifted(Val(2), p)) === p
 
@@ -530,7 +532,8 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
             let m = Memory{ComplexF64}(undef, 2)
                 m .= [1.0 + 0.0im, 2.0 + 0.0im]
                 b = bl(Core.memoryref(m), (2,))  # slot 2 = imag part of element 1
-                @test tangent(b).partials_block[1, :] == [0.0 + 1.0im, 0.0 + 0.0im]
+                # `tangent(b)` is the `NDualMemoryRef` V; `tangent` of that reconstructs its block.
+                @test tangent(tangent(b))[1, :] == [0.0 + 1.0im, 0.0 + 0.0im]
             end
         end
 

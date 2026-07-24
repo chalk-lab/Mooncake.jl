@@ -231,7 +231,7 @@ end
         # (e.g. an `Array`-projected ref over a longer-capacity `Memory`) stay zero.
         v = tangent(x)
         p = getfield(v, :primal)
-        block = getfield(v, :partials_block)
+        block = Nfwd._reconstruct_block(v)
         c = getfield(v, :col)
         o = Core.memoryrefoffset(p)
         T = eltype(block)
@@ -572,8 +572,10 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     @inline primal(a::NDualMemoryRef) = a.primal
-    @inline tangent(a::NDualMemoryRef) = a.partials_block
-    @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, a.partials_block)
+    # `tangent`/`unpack_ndual` present the shared partials as the whole `(N, ncols)` block; the
+    # ref only stores its backing, so reconstruct the Matrix on demand (bulk/interface use only).
+    @inline tangent(a::NDualMemoryRef) = Nfwd._reconstruct_block(a)
+    @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, Nfwd._reconstruct_block(a))
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1979,7 +1981,7 @@ end
     ) where {T<:IEEEFloat,N}
         haskey(dict, v) && return dict[v]
         dict[v] = v
-        block = getfield(v, :partials_block)
+        block = Nfwd._reconstruct_block(v)
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
@@ -1994,7 +1996,7 @@ end
     ) where {R<:IEEEFloat,N}
         haskey(dict, v) && return dict[v]
         dict[v] = v
-        block = getfield(v, :partials_block)
+        block = Nfwd._reconstruct_block(v)
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]

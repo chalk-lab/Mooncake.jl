@@ -195,15 +195,16 @@ end
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
             # The array's `.ref` points at element 1, which is block column 1 (the block's
-            # columns follow the array's elements). A `D==1` block is already the `(N, length)`
-            # matrix the ref V needs — use it directly; only a rank-`D>1` block needs flattening
-            # via `reshape` (which shares storage). Passing the block directly for the common
-            # vector case avoids an Array-header allocation on EVERY `.ref` projection — and
-            # `.ref` is projected once per element in derived elementwise access, so the reshape
-            # header was ~one allocation per element (the SplitEM forward-alloc regression).
-            pb = getfield(V, :partials_block)
-            block = pb isa Matrix{T} ? pb : reshape(pb, N, length(V.primal))
-            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(getfield(V.primal, :ref), block, 1)
+            # columns follow the array's elements). The ref V needs only the block's flat backing
+            # (`getfield(block, :ref)`, a `MemoryRef` for any block rank) plus the column count —
+            # a pure getfield chain, no `reshape` header. `.ref` is projected once per element in
+            # derived elementwise access, so a per-projection Array-header allocation would be
+            # ~one allocation per element (the SplitEM forward-alloc regression). The backing is
+            # SHARED, so mutations through the ref V land in this array's block and vice versa.
+            block_ref = getfield(getfield(V, :partials_block), :ref)
+            return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
+                getfield(V.primal, :ref), block_ref, length(V.primal), 1
+            )
         end
         return NoDual()
     end
@@ -223,8 +224,7 @@ end
             p = getfield(V, :primal)
             primal_mem = getfield(p, :mem)
             len = length(primal_mem)
-            block = getfield(V, :partials_block)
-            bref = getfield(block, :ref)
+            bref = getfield(V, :partials_ref)
             backing = getfield(bref, :mem)
             start =
                 Core.memoryrefoffset(bref) +
@@ -261,8 +261,9 @@ end
                     "a raw pointer could address. Differentiate at chunk width 1.",
                 ),
             )
-            block = getfield(V, :partials_block)
-            lane_ref = Nfwd._block_column_ref(block, getfield(V, :col))
+            lane_ref = Nfwd._block_column_ref(
+                getfield(V, :partials_ref), getfield(V, :col), N
+            )
             return (getfield(lane_ref, :ptr_or_offset),)
         end
         return NoDual()

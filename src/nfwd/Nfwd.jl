@@ -2156,15 +2156,17 @@ end
 # cover it. Like `NDualArray`, this carries the same information as a
 # `MemoryRef` of interleaved `NDual`s, but the primal ref stays a genuine
 # `MemoryRef{Element}` (usable directly in a `ccall`) while the `N` lane
-# partials live in a shared `(N, ncols)` element-major block: `col` names the
-# block column carrying the referenced element's partials, so `memoryrefget`/
-# `memoryrefset!` touch the contiguous column `partials_block[:, col]` and
-# `memoryrefnew(x, i)` just advances `col` by `i - 1`.
+# partials live in a shared `(N, ncols)` element-major block, held here only as
+# its flat backing `partials_ref` (the block's `getfield(block, :ref)`, at
+# col-1 lane-1): `col` names the block column carrying the referenced element's
+# partials, so `memoryrefget`/`memoryrefset!` touch the contiguous lane run at
+# `_block_column_ref(partials_ref, col, N)` and `memoryrefnew(x, i)` just
+# advances `col` by `i - 1`.
 #
-# The block is SHARED with the enclosing container's V — an `NDualArray` over
-# the same `Memory` (or over an `Array` wrapping it) holds the very same block,
-# so mutations through either V are visible through the other, mirroring the
-# primal `Memory`/`MemoryRef`/`Array` aliasing. Column `col + j` always pairs
+# The block backing is SHARED with the enclosing container's V — an `NDualArray`
+# over the same `Memory` (or over an `Array` wrapping it) holds the very same
+# block, so mutations through either V are visible through the other, mirroring
+# the primal `Memory`/`MemoryRef`/`Array` aliasing. Column `col + j` always pairs
 # with mem slot `memoryrefoffset(primal) + j`; factory-built refs cover the
 # whole backing `Memory` (column j ↔ mem slot j, `col == memoryrefoffset`),
 # while a ref projected out of an `Array`'s V covers that array's elements
@@ -2174,23 +2176,46 @@ end
 @static if VERSION >= v"1.11-rc4"
     export NDualMemoryRef
 
+    # The shared `(N, ncols)` element-major block is stored only as its flat backing:
+    # `partials_ref` is the block's `getfield(block, :ref)` (col-1, lane-1) — a `MemoryRef`
+    # whatever the enclosing block's rank, so the type stays uniform (no extra type param, so
+    # the single `dual_type(MemoryRef{T})` and `Lifted`'s V-invariance hold). `ncols` is the
+    # block's column count; `col` is the 1-based column of the referenced element. Storing the
+    # ref rather than a shaped `Matrix` keeps the `.ref` projection of a rank-`D>1` `NDualArray`
+    # alloc-free: `getfield(block, :ref)` needs no `reshape` header (the SplitEM forward-alloc
+    # regression), while genuine block reconstruction (`_reconstruct_block`, bulk ops only) is
+    # a `Base.wrap` off the hot path.
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
-        partials_block::Matrix{Element}
+        partials_ref::MemoryRef{Element}
+        ncols::Int
         col::Int
         function NDualMemoryRef{Element,N,M}(
-            primal::MemoryRef{Element}, partials_block::Matrix{Element}, col::Int
+            primal::MemoryRef{Element},
+            partials_ref::MemoryRef{Element},
+            ncols::Int,
+            col::Int,
         ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-            size(partials_block, 1) == N || throw(
-                DimensionMismatch(
-                    "NDualMemoryRef partials block has $(size(partials_block, 1)) rows; " *
-                    "expected the chunk width N = $N (lane-leading layout).",
-                ),
-            )
             col >= 1 ||
                 throw(ArgumentError("NDualMemoryRef column index must be >= 1; got $col."))
-            return new{Element,N,M}(primal, partials_block, col)
+            return new{Element,N,M}(primal, partials_ref, ncols, col)
         end
+    end
+
+    # Convenience for the existing Matrix-based construction sites and the Memory-seed factory:
+    # validate the block's lane rows, then adopt its backing ref and column count.
+    @inline function NDualMemoryRef{Element,N,M}(
+        primal::MemoryRef{Element}, block::Matrix{Element}, col::Int
+    ) where {Element<:NDualEltype,N,M<:Memory{Element}}
+        size(block, 1) == N || throw(
+            DimensionMismatch(
+                "NDualMemoryRef partials block has $(size(block, 1)) rows; " *
+                "expected the chunk width N = $N (lane-leading layout).",
+            ),
+        )
+        return NDualMemoryRef{Element,N,M}(
+            primal, getfield(block, :ref), size(block, 2), col
+        )
     end
 
     # Zero-init seed: a fresh zero block covering the whole backing `Memory` (column j ↔ mem
@@ -2206,10 +2231,35 @@ end
     # `MemoryRef` into the block's backing at the start (lane 1) of column `col`. Columns are
     # adjacent in the column-major block, so a run of `n` columns from here is one contiguous
     # backing range of `n * N` elements — flat copies need no per-lane striding at any offset.
-    @inline function _block_column_ref(block::Matrix, col::Int)
-        r = getfield(block, :ref)
-        col == 1 && return r
-        return Core.memoryrefnew(r, (col - 1) * size(block, 1) + 1, true)
+    @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
+        col == 1 && return partials_ref
+        return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, true)
+    end
+
+    # Read the `N` contiguous lanes starting at `colref` (position 1 == `colref` itself), and
+    # write them. Alloc-free (`memoryref` ops + an isbits `ntuple`), for the hot get/set frules.
+    @inline function _read_lanes(colref::MemoryRef, ::Val{N}) where {N}
+        return ntuple(
+            k -> Core.memoryrefget(Core.memoryrefnew(colref, k, true), :not_atomic, false),
+            Val(N),
+        )
+    end
+    @inline function _write_lanes!(colref::MemoryRef, vals, ::Val{N}) where {N}
+        for k in 1:N
+            Core.memoryrefset!(
+                Core.memoryrefnew(colref, k, true), vals[k], :not_atomic, false
+            )
+        end
+        return nothing
+    end
+
+    # Reconstruct the whole `(N, ncols)` block as a genuine `Matrix` sharing the ref's backing
+    # (bulk/interface ops only — off the hot path). `partials_ref` is col-1 lane-1, so wrapping
+    # `(N, ncols)` from it reproduces the original block exactly.
+    @inline function _reconstruct_block(v::NDualMemoryRef{E,N}) where {E,N}
+        return Base.wrap(
+            Array, getfield(v, :partials_ref), (N, getfield(v, :ncols))
+        )::Matrix{E}
     end
 end
 
