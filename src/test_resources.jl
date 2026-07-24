@@ -922,7 +922,15 @@ function generate_test_functions()
             randn(5, 5),
             randn(5, 5),
         ),
-        (false, :allocs, nothing, kron!, randn(25, 25), Diagonal(randn(5)), randn(5, 5)),
+        (
+            false,
+            :allocs,
+            (fwd_allocs_broken=true,),
+            kron!,
+            randn(25, 25),
+            Diagonal(randn(5)),
+            randn(5, 5),
+        ),
         (
             false,
             :none,
@@ -932,7 +940,7 @@ function generate_test_functions()
             randn(sr(2), 70, 50),
             randn(sr(3), 30, 70),
         ),
-        (false, :allocs, nothing, test_handwritten_sum, randn(128, 128)),
+        (false, :allocs, (fwd_allocs_broken=true,), test_handwritten_sum, randn(128, 128)),
         (false, :allocs, nothing, _naive_map_sin_cos_exp, randn(1024), randn(1024)),
         (false, :allocs, nothing, _naive_map_negate, randn(1024), randn(1024)),
         (false, :allocs, nothing, test_from_slack, randn(10_000)),
@@ -957,7 +965,13 @@ function generate_test_functions()
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
         (false, :none, nothing, sig_argcount_mismatch, ones(4)),
-        (false, :allocs, (lb=2, ub=1500), large_tuple_inference, Tuple(zeros(1_000))),
+        (
+            false,
+            :allocs,
+            (lb=2, ub=1500, fwd_allocs_broken=true),
+            large_tuple_inference,
+            Tuple(zeros(1_000)),
+        ),
         (false, :none, nothing, regression_319, randn(3)),
     ]
 end

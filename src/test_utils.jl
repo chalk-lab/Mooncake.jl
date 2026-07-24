@@ -343,6 +343,28 @@ function has_equal_data_internal(
            all(map(f, keys(x), keys(y))) &&
            all(map(f, values(x), values(y)))
 end
+# `NDualArray` compares by LOGICAL content — primal plus each lane's tangent values — not by its
+# raw `partials_block` field. The block's physical size is an internal detail: it differs across
+# representations (1.10 parallel-arrays vs the 1.11+ element-major block) and can exceed the logical
+# length, so the generic struct-field recursion would spuriously mismatch or index out of bounds.
+# `tangent_view` reshapes to the primal's shape, so the per-lane comparison is representation-agnostic.
+function has_equal_data_internal(
+    x::Mooncake.Nfwd.NDualArray{E,N},
+    y::Mooncake.Nfwd.NDualArray{E,N},
+    equal_undefs::Bool,
+    d::IdDict{Any,Bool},
+) where {E,N}
+    has_equal_data_internal(x.primal, y.primal, equal_undefs, d) || return false
+    for k in 1:N
+        has_equal_data_internal(
+            collect(Mooncake.Nfwd.tangent_view(x, k)),
+            collect(Mooncake.Nfwd.tangent_view(y, k)),
+            equal_undefs,
+            d,
+        ) || return false
+    end
+    return true
+end
 
 has_equal_data_up_to_undefs(x::T, y::T) where {T} = has_equal_data(x, y; equal_undefs=false)
 
@@ -696,6 +718,7 @@ function test_frule(
     rtol=1e-3,
     max_fd_step=nothing,
     debug_mode::Bool=false,
+    fwd_allocs_broken::Bool=false,
 ) where {P}
     @nospecialize rng x
     # Width-1 battery. The seeds are shared across the four checks; `CoDual`-supplied args carry
@@ -712,7 +735,7 @@ function test_frule(
                 rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
             )
         end
-        test_frule_performance(perf_flag, frule, x_ẋ...)
+        test_frule_performance(perf_flag, frule, x_ẋ...; fwd_allocs_broken)
     end
 
     # Chunked widths (N > 1), primitive rules only.
@@ -1199,7 +1222,11 @@ __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
 end
 
 function test_frule_performance(
-    performance_checks_flag::Symbol, rule::R, f_ḟ::F, x_ẋ::Vararg{Any,N}
+    performance_checks_flag::Symbol,
+    rule::R,
+    f_ḟ::F,
+    x_ẋ::Vararg{Any,N};
+    fwd_allocs_broken::Bool=false,
 ) where {R,F,N}
     x_ẋ = _deepcopy(x_ẋ)
 
@@ -1245,7 +1272,17 @@ function test_frule_performance(
         # even for correct rules. Skip this check on Julia < 1.11.
         @static if VERSION >= v"1.11-"
             __forwards(rule, f_ḟ, x_ẋ...)
-            @test count_allocs(__forwards, rule, f_ḟ, x_ẋ...) == 0
+            n_fwd_allocs = count_allocs(__forwards, rule, f_ḟ, x_ẋ...)
+            # Julia 1.11 boxes a few forward OCs whose transform IR is type-stable and which are
+            # alloc-free again on 1.12: `large_tuple_inference` trips a 1.11 inference stack
+            # overflow on `NTuple{1000}`, and `kron!`/`test_handwritten_sum` hit 1.11 codegen
+            # boxing of the type-stable OC. Those cases set `fwd_allocs_broken`; mark them
+            # `@test_broken` on 1.11 rather than weakening the zero-alloc contract elsewhere.
+            if fwd_allocs_broken && VERSION < v"1.12-"
+                @test_broken n_fwd_allocs == 0
+            else
+                @test n_fwd_allocs == 0
+            end
         end
     end
 end
@@ -1407,6 +1444,7 @@ function test_rule(
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
     skip_chunked::Bool=false,
+    fwd_allocs_broken::Bool=false,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1467,6 +1505,7 @@ function test_rule(
                         rtol,
                         max_fd_step,
                         debug_mode,
+                        fwd_allocs_broken,
                     )
                 end
             end
@@ -1523,6 +1562,11 @@ end
 # pointer round-trip whose tangent buffer is a reverse tangent). Applies to both case kinds.
 _case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
 _case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
+# `fwd_allocs_broken`: the width-1 forward zero-allocation check is `@test_broken` on Julia 1.11
+# (alloc-free again on 1.12) for the few cases whose type-stable forward OC 1.11's optimizer boxes.
+function _case_fwd_allocs_broken(opts)
+    opts isa NamedTuple ? get(opts, :fwd_allocs_broken, false) : false
+end
 
 # One driver for both case kinds: hand-written cases test the registered `frule!!`/`rrule!!`
 # directly (`is_primitive=true`); derived cases run the full AD transform over a plain Julia
@@ -1545,6 +1589,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 
         mode === ForwardMode && _case_skip_forward(opts) && continue
         skip_chunked = _case_skip_chunked(opts)
+        fwd_allocs_broken = _case_fwd_allocs_broken(opts)
         test_rule(
             rng_ctor(123),
             f,
@@ -1554,6 +1599,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
             is_primitive=(!derived),
             mode,
             skip_chunked,
+            fwd_allocs_broken,
         )
     end
 end
