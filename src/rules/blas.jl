@@ -461,6 +461,46 @@ function rrule!!(
     return CoDual(y, NoFData()), nrm2_pb!!
 end
 
+# dot(x, y) — real inner product, intercepted at the array level. `LinearAlgebra.dot` on a pair of
+# strided `BlasReal` vectors inlines the cblas `ccall` directly (reading each operand's
+# `.ref.ptr_or_offset`), so without this it is differentiated only at that raw-pointer
+# `_foreigncall_` (below). That descends to raw pointers in *forward-over-reverse* (HVP/Hessian):
+# the reverse pullback reads its fdata through those pointers, and lifting a pointer out of an
+# element-major partials block is unsupported — a lane is strided (stride N), so there is no dense
+# per-lane buffer to address (see `_get_lifted_field(::NDualMemoryRef, :ptr_or_offset)`).
+# Intercepting `dot` at the array level keeps every access on the `NDualArray`/view path, which
+# handles the block, so `dot`'s HVP/Hessian works at any chunk width. The reverse is a cheap axpy,
+# so this matches the foreigncall's cost. Complex inner products are `dotc`/`dotu` (below),
+# unaffected. Scoped to the concrete `Vector` (the inlining case above): disjoint from the CUDA
+# extension's `dot(::CuArray, ::CuArray)` rule (no method ambiguity), and strided-wrapper operands
+# — never supported through the raw-pointer path at width > 1 — stay guarded by the same throw.
+@is_primitive(MinimalCtx, Tuple{typeof(dot),Vector{P},Vector{P}} where {P<:BlasRealFloat})
+function frule!!(
+    ::Lifted{typeof(dot),Nw}, x_dx::Lifted{Vector{P}}, y_dy::Lifted{Vector{P}}
+) where {Nw,P<:BlasRealFloat}
+    x, y = primal(x_dx), primal(y_dy)
+    result = dot(x, y)
+    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. Each lane's partial is the stride-`Nw` block row,
+    # read correctly through the `NDualArray`/view path (`_blas_lane_partial`).
+    dresult_lanes = ntuple(Val(Nw)) do lane
+        return dot(_blas_lane_partial(x_dx, lane), y) + dot(x, _blas_lane_partial(y_dy, lane))
+    end
+    return Lifted{P,Nw}(result, _scalar_ndual(result, dresult_lanes))
+end
+function rrule!!(
+    ::CoDual{typeof(dot)}, x_dx::CoDual{Vector{P}}, y_dy::CoDual{Vector{P}}
+) where {P<:BlasRealFloat}
+    x, dx = arrayify(x_dx)
+    y, dy = arrayify(y_dy)
+    result = dot(x, y)
+    function dot_pb!!(dv)
+        dx .+= y .* dv
+        dy .+= x .* dv
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(result, NoFData()), dot_pb!!
+end
+
 # dotc/dotu (complex) — forward mode only. Unlike real `dot` (which the cblas
 # routine returns by value), the complex routines write into a scalar `result =
 # Ref{T}()` passed to the ccall. The canonical NDualArray-style dual of that Ref stores a
@@ -2207,6 +2247,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
+
+        # dot(x, y) — real only (complex inner products are dotc/dotu).
+        (
+            if P <: BlasRealFloat
+                map([3, 5]) do n
+                    return (
+                        false, :stability, nothing, dot, randn(rng, P, n), randn(rng, P, n)
+                    )
+                end
+            else
+                []
+            end
+        )...,
         map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
