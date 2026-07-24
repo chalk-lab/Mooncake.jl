@@ -93,7 +93,7 @@ fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
     # A cache hit must return an independent copy (as reverse `build_derived_rrule` does),
     # not the shared cached object: otherwise two builds share one `DynamicFRule.cache`
     # Dict and race under threads / nested AD.
-    @testset "cache-hit returns an independent rule copy (D10)" begin
+    @testset "cache-hit returns an independent rule copy" begin
         interp = Mooncake.MooncakeInterpreter(ForwardMode)
         sig = Tuple{typeof(fwd_cache_dyn),Float64}
         r1 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)

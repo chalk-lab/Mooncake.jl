@@ -51,7 +51,7 @@ end
     # uninitialized memory that whole-buffer copies would propagate as nonzero partials.
     @static if VERSION >= v"1.12-"
         @testset "Core.memorynew NDualEltype V zero partials (width $N)" for N in (1, 2, 3)
-            # Dirty the heap so an unzeroed buffer would read back nonzero (deterministic guard).
+            # Dirty the heap so an unzeroed buffer would likely read back nonzero.
             let junk = Memory{Float64}[]
                 for _ in 1:200
                     m = Core.memorynew(Memory{Float64}, 16)

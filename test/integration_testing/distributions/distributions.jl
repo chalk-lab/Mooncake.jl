@@ -1589,7 +1589,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         ),
 
         # Dirichlet with array concentration parameter — NDual <: AbstractFloat so
-        # Dirichlet(Vector{NDual}) works directly; chunk_size=3 (2 α elems + x).
+        # Dirichlet(Vector{NDual}) works directly.
         (
             "Dirichlet α (array)",
             (a, x) -> logpdf(Dirichlet(a), [x, 1 - x]),

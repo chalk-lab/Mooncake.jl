@@ -276,10 +276,16 @@ function frule!!(
 ) where {Nw,E<:NDualEltype,M,D}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
-    # Plain `reshape` (not the ccall — its type expressions cannot spell `Array{E,M+1}`) shares
-    # the block's storage all the same.
-    new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
-    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
+    @static if VERSION >= v"1.11-rc4"
+        # Plain `reshape` (not the ccall — its type expressions cannot spell `Array{E,M+1}`)
+        # shares the element-major block's storage all the same.
+        new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
+        return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
+    else
+        # Parallel arrays: reshape each per-lane array to the new shape (each shares its lane's storage).
+        new_parts = ntuple(k -> reshape(tangent(a).partials[k], d), Val(Nw))
+        return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_parts))
+    end
 end
 # Element-wise `Array{VE,D}` forward V — every element carries its own element dual `VE`: `NoDual`
 # for non-differentiable elements (e.g. the `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside
@@ -689,9 +695,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
-            # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot yet
-            # preserve the canonical dual at width N>1 (a known forward-mode limitation); the
-            # width-1 path is correct, so skip only the chunked check here.
+            # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot carry the
+            # per-lane dual at width N>1 (the element-wise nested dual has no dense per-lane buffer a
+            # raw pointer could address). This now FAILS LOUDLY at width>1 (the `lgetfield`
+            # `ptr_or_offset` guard on 1.11+; a missing width>1 frule on 1.10) rather than silently
+            # dropping the derivative; the width-1 path is correct, so skip only the chunked check.
             false,
             :none,
             (skip_chunked=true,),
@@ -759,5 +767,26 @@ function throwing_rule_test_cases(::Val{:foreigncall})
     cases = Any[(
         ArgumentError, pointer_from_objref, (randn_lifted(Val(1), Xoshiro(123456), [1.0]),)
     )]
-    return cases, Any[]
+    memory = Any[]
+    @static if VERSION >= v"1.11-rc4"
+        # The raw pointer of an element-wise nested `MemoryRef` (from
+        # `pointer(::Vector{Vector})`) projects to a width-1 `Ptr` 1-tuple; at chunk width > 1 the
+        # per-element `NDualArray` dual has no dense per-lane buffer a single raw pointer could
+        # address, so `lgetfield(.ptr_or_offset)` must FAIL LOUDLY rather than silently drop the
+        # derivative. (On 1.10 there is no width>1 frule, so it is loud there via a different path.)
+        nested = [randn(2), randn(2)]
+        push!(memory, nested)
+        push!(
+            cases,
+            (
+                ArgumentError,
+                lgetfield,
+                (
+                    zero_lifted(Val(2), getfield(nested, :ref)),
+                    zero_lifted(Val(2), Val(:ptr_or_offset)),
+                ),
+            ),
+        )
+    end
+    return cases, memory
 end

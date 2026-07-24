@@ -73,12 +73,14 @@ val, grad = MC.value_and_gradient!!(fcache, g, x_eval)
 Passing `Config(chunk_size=2)` caps the forward chunk width `W`: the cache builds a native
 width-`W` `frule!!` that evaluates `W` directional derivatives per pass, and the gradient
 sweep runs `ceil(dof / W)` passes. Leaving `chunk_size=nothing` keeps Mooncake's default
-heuristic (`min(dof, 8)`). Chunking only applies to packable inputs — a non-differentiable
-`f` whose arguments are all `IEEEFloat` scalars or arrays; any other input shape (structs,
-tuples, complex element types, a differentiable `f`, …) is pinned to width 1 regardless of
-`chunk_size`. Cache construction stays passive (it transforms IR but does not
-run the function). `show(cache)` / `repr(cache)` report the resolved `chunk_size` and
-whether a width-`W` chunk rule was built (`chunk=true` once `dof > 1`).
+heuristic (`min(dof, 8)`). Chunking applies to every input shape with more than one degree of
+freedom. What is shape-restricted is the *zero-allocation* fast path — a non-differentiable `f`
+whose arguments are all same-eltype `IEEEFloat` vectors (or array-backed / isbits-scalar
+structured inputs). Any other shape (mixed eltypes, complex elements, a differentiable `f`, …)
+still chunks at width `W`, but through the generic sweep, which allocates. Cache construction
+stays passive (it transforms IR but does not run the function). `show(cache)` / `repr(cache)`
+report the resolved `chunk_size` and whether a width-`W` chunk rule was built (`chunk=true`
+once `dof > 1`).
 
 Separately, the Hessian path exposed by `prepare_hessian_cache` /
 `value_gradient_and_hessian!!` uses forward-over-reverse AD over a captured gradient

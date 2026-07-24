@@ -820,7 +820,8 @@ function _chunked_v_invariant(
            _chunked_v_invariant(imag(p), imag(v), c)
 end
 function _chunked_v_invariant(p::AbstractArray, v::Mooncake.Nfwd.NDualArray, ::IdDict)
-    return _chunked_v_approx(v.primal, p) && all(isfinite, getfield(v, :partials_block))
+    return _chunked_v_approx(v.primal, p) &&
+           all(lane -> all(isfinite, lane), Mooncake.Nfwd._lane_views(v))
 end
 function _chunked_v_invariant(p::Tuple, v::Tuple, c::IdDict)
     # Arity must match: a length mismatch is exactly the `dual_type` incoherence this harness

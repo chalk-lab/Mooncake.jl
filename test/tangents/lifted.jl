@@ -65,13 +65,33 @@ using Mooncake:
     extract,
     unpack_ndual,
     frule!!,
-    TaskTangent,
-    _new_
+    TaskTangent
 
 # Shorthands for the table-driven type tests below (top level: parametric aliases are
 # not allowed in local scope).
 const ND = NDual
-NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
+# The forward array V is version-split: the 1.11+ SplitEM block carries a 6th block-type
+# parameter `B` (= `_block_type(A)`); the 1.10 SoA fallback has no block, so its type is 5-param.
+# `B` can't be derived inside a type alias (no function calls on a free typevar), so spell the
+# array V shapes the table below needs as named consts per version — the table stays
+# version-agnostic.
+@static if VERSION >= v"1.11-rc4"
+    const NDA_VecF64 = NDualArray{
+        Float64,2,1,Vector{Float64},NDual{Float64,2},Matrix{Float64}
+    }
+    const NDA_MatF32 = NDualArray{
+        Float32,1,2,Matrix{Float32},NDual{Float32,1},Array{Float32,3}
+    }
+    const NDAC_VecC64 = NDualArray{
+        ComplexF64,2,1,Vector{ComplexF64},Complex{NDual{Float64,2}},Matrix{ComplexF64}
+    }
+else
+    const NDA_VecF64 = NDualArray{Float64,2,1,Vector{Float64},NDual{Float64,2}}
+    const NDA_MatF32 = NDualArray{Float32,1,2,Matrix{Float32},NDual{Float32,1}}
+    const NDAC_VecC64 = NDualArray{
+        ComplexF64,2,1,Vector{ComplexF64},Complex{NDual{Float64,2}}
+    }
+end
 
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
@@ -136,26 +156,16 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         (3, Float32, ND{Float32,3}),
         (4, Float64, ND{Float64,4}),
         # Dense arrays: parallel-arrays NDualArray.
-        (2, Vector{Float64}, NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}),
-        (1, Matrix{Float32}, NDA{Float32,1,2,Matrix{Float32},Array{Float32,3}}),
+        (2, Vector{Float64}, NDA_VecF64),
+        (1, Matrix{Float32}, NDA_MatF32),
         # Complex scalars and arrays.
         (2, Complex{Float64}, Complex{ND{Float64,2}}),
         (1, Complex{Float32}, Complex{ND{Float32,1}}),
-        (
-            2,
-            Vector{ComplexF64},
-            NDualArray{
-                ComplexF64,2,1,Vector{ComplexF64},Complex{ND{Float64,2}},Matrix{ComplexF64}
-            },
-        ),
+        (2, Vector{ComplexF64}, NDAC_VecC64),
         # Tuples / NamedTuples: element-wise recursion.
         (2, Tuple{Float64}, Tuple{ND{Float64,2}}),
         (2, Tuple{Float64,Float32}, Tuple{ND{Float64,2},ND{Float32,2}}),
-        (
-            2,
-            Tuple{Float64,Vector{Float64}},
-            Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}},
-        ),
+        (2, Tuple{Float64,Vector{Float64}}, Tuple{ND{Float64,2},NDA_VecF64}),
         (
             2,
             NamedTuple{(:a, :b),Tuple{Float64,Float32}},
@@ -164,10 +174,7 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         (
             2,
             NamedTuple{(:x, :y),Tuple{Float64,Vector{Float64}}},
-            NamedTuple{
-                (:x, :y),
-                Tuple{ND{Float64,2},NDA{Float64,2,1,Vector{Float64},Matrix{Float64}}},
-            },
+            NamedTuple{(:x, :y),Tuple{ND{Float64,2},NDA_VecF64}},
         ),
         # Struct lifts: Immutable/MutableDual over the per-field NamedTuple.
         (
@@ -284,8 +291,7 @@ NDA{T,N,D,A,B} = NDualArray{T,N,D,A,NDual{T,N},B}
         )
         @test a isa AbstractArray{NDual{Float64,2},1}
         @test size(a) == (3,) && length(a) == 3
-        @test primal(a) === x &&
-            tangent(a) == (a.partials_block[1, :], a.partials_block[2, :])
+        @test primal(a) === x && tangent(a) == ([0.5, -0.5, 1.5], [0.0, 1.0, -1.0])
         @test unpack_ndual(a) == (a.primal, tangent(a))
         @test a[2] === nd(2.0, -0.5, 1.0)  # lazy getindex
         a[1] = nd(9.0, 7.0, -7.0)          # setindex! writes both channels

@@ -142,7 +142,7 @@ using Mooncake.Nfwd
 
         # At a removable singularity (x=0) the inv / `x^-1` / division paths scale by a blown-up
         # reciprocal, so an *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
-        # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression R3-1:
+        # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression:
         # inv / literal `x^-1` / Real÷NDual / NDual÷NDual / NDual÷Real previously used the unguarded
         # `_fwd_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
         z = _d2(0.0, 0.0, 1.0)

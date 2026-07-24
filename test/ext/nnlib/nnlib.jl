@@ -375,6 +375,22 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
             perf_flag=:none,
         )
     end
+
+    # `gather` is a both-modes primitive; the loop above is reverse-only, so exercise its
+    # forward frule explicitly across chunk widths (plain-Array src). Guards against the
+    # frule regressing to `gather`'s raw-pointer body, which the block layout cannot address
+    # per lane at width > 1.
+    @testset "gather forward" begin
+        test_rule(
+            StableRNG(123),
+            NNlib.gather,
+            randn(StableRNG(1), 3, 4),
+            [1, 3, 1];
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
 end
 
 # Testing arrayify for general adjoint, transpose types (LinearAlgebra.jl, NNlib.jl etc)

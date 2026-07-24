@@ -22,6 +22,7 @@ import Mooncake:
     tangent_view,
     arrayify,
     frule!!,
+    zero_lifted,
     Lifted,
     NDualArray
 
@@ -304,6 +305,25 @@ function Mooncake.rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return res, gather_pb!!
+end
+# `gather` is linear in `src` and lane-invariant (the index map is the same for every lane),
+# so its JVP is `gather` applied to each lane's partials. Working through the accessor seam
+# (`tangent_view`) keeps this correct on both the 1.11+ block and the 1.10 parallel-arrays
+# layouts, and avoids `gather`'s raw-pointer `MemoryRef` body, which the block layout cannot
+# address per lane at chunk width > 1. Forward covers plain `Array` src only (the canonical
+# `NDualArray` V); a wrapped/GPU src fails forward with a clear `MethodError`, as `bias_act!`
+# does — use reverse mode there.
+function Mooncake.frule!!(
+    ::Lifted{typeof(NNlib.gather),Nw},
+    src::Lifted{<:Array{P,N},Nw,<:NDualArray},
+    idx::Lifted{<:SupportedArray{<:Union{Integer,Tuple},M},Nw},
+) where {Nw,P<:IEEEFloat,N,M}
+    pidx = primal(idx)
+    out = zero_lifted(Val(Nw), NNlib.gather(primal(src), pidx))
+    for k in 1:Nw
+        NNlib.gather!(tangent_view(out, k), tangent_view(src, k), pidx)
+    end
+    return out
 end
 for conv in [:conv, :depthwiseconv]
     local ∇conv_data, ∇conv_filter = Symbol.(:∇, conv, [:_data, :_filter])

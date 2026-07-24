@@ -20,12 +20,11 @@ In this setup:
 - `src/rules/low_level_maths.jl` holds the primitive registrations: a thin `frule!!` that runs the
   `NDual` overload, and a `rrule!!` that applies a native closed-form derivative factor.
 
-The reverse factors are dispatched through small tables (`_unary_deriv` / `_binary_deriv`, plus
-`_pow_grad_x`/`_pow_grad_p` for the pow family and `_pick_first_max`/`_pick_first_min` for `max`/`min`)
-and contracted against the output cotangent by `_rev_contract`, which keeps an inactive
-(zero-cotangent) lane exactly zero even where the local derivative is `±Inf` — the reverse analogue of
-the forward `_fwd_guarded_scale`. This covers ordinary derivatives, strong-zero behavior, and awkward
-points such as discontinuities or removable singularities.
+Each reverse `rrule!!` writes its closed-form derivative factor inline in a small pullback closure and
+applies it to the output cotangent with `_rvs_guarded_scale`, which keeps an inactive (zero-cotangent)
+lane exactly zero even where the local derivative is `±Inf` — the reverse analogue of the forward
+`_fwd_guarded_scale`. This covers ordinary derivatives, strong-zero behavior, and awkward points such
+as discontinuities or removable singularities.
 
 ## Concrete MWE
 
@@ -51,8 +50,8 @@ Key details:
 - The returned `NDual` therefore contains both the primal `cospi(x)` value and the propagated tangent lanes.
 
 The forward `frule!!` stays thin — it just runs that overload. The reverse `rrule!!` is a direct
-native pullback using the closed-form factor `d(cospi)/dx = -π·sinpi(x)` (registered in the
-`_unary_deriv` table), with no `NDual` seeding:
+native pullback that writes the closed-form factor `d(cospi)/dx = -π·sinpi(x)` inline, with no `NDual`
+seeding:
 
 ```julia
 @is_primitive MinimalCtx Tuple{typeof(cospi),P} where {P<:IEEEFloat}
@@ -60,16 +59,15 @@ function frule!!(
     ::Lifted{typeof(cospi),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
     dy = cospi(tangent(x))      # the NDual overload runs the primal once, storing it in dy.value
-    y = _nfwd_out_value(dy)     # read the primal back — do NOT recompute cospi(primal(x))
+    y = dy.value                # read the primal back — do NOT recompute cospi(primal(x))
     return Lifted{_typeof(y),N}(y, dy)
 end
 
-# _unary_deriv(::typeof(cospi), x, y) = -oftype(x, π) * sinpi(x)
 function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = cospi(_x)
-    cospi_pb!!(ȳ::P) = (NoRData(), _rev_contract(ȳ, _unary_deriv(cospi, _x, y)))
-    return zero_fcodual(y), cospi_pb!!
+    cospi_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -oftype(_x, π) * sinpi(_x)))
+    return zero_fcodual(y), cospi_pb
 end
 ```
 
@@ -78,9 +76,9 @@ The real registrations live in `src/rules/low_level_maths.jl`.
 The forward rule runs the primal on the inner `NDual` — the input slot already carries the `N` seeded
 tangent lanes, so the `NDual` overload propagates all of them in one evaluation.
 
-The reverse rule is independent: it evaluates the primal directly, looks up the closed-form derivative
-factor, and contracts it against the output cotangent through `_rev_contract`. It never constructs an
-`NDual`, so reverse mode does not depend on the forward-mode `Nfwd` submodule.
+The reverse rule is independent: it evaluates the primal directly, writes the closed-form derivative
+factor inline, and applies it to the output cotangent through `_rvs_guarded_scale`. It never constructs
+an `NDual`, so reverse mode does not depend on the forward-mode `Nfwd` submodule.
 
 `nfwd` only supports scalar leaves it can lift to `NDual` directly, so the forward side of this pattern
 fits primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tuples of them, e.g.

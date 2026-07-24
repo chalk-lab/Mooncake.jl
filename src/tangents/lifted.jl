@@ -676,6 +676,10 @@ Shapes defined so far:
   are a slot-local `(N, size...)` block).
 - `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}`
   — complex-eltype `NDualArray` variant.
+
+On Julia 1.10 the array V is the parallel-arrays form `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
+(no 6th block-type parameter; `N` separate per-lane arrays rather than one element-major block) —
+the 1.10 array ABI supports per-lane arrays without the shared-buffer resize hazard the block hits.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
@@ -707,7 +711,7 @@ Shapes defined so far:
     return Complex{NDual{R,N}}
 end
 @foldable @inline function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T<:IEEEFloat,D}
-    return NDualArray{T,N,D,Array{T,D},NDual{T,N},Nfwd._block_type(Array{T,D})}
+    return Nfwd._ndual_array_V(Array{T,D}, Val(N))
 end
 # `Base.RefValue{P<:NDualEltype}`: the `NDualRef` parallel-partials V (scalar analogue of `NDualArray`). A *distinct*
 # wrapper, so the generic struct recursion never re-lifts it (a bare `RefValue` shadow would be).
@@ -720,14 +724,7 @@ end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{Array{Complex{R},D}}
 ) where {N,R<:IEEEFloat,D}
-    return NDualArray{
-        Complex{R},
-        N,
-        D,
-        Array{Complex{R},D},
-        Complex{NDual{R,N}},
-        Nfwd._block_type(Array{Complex{R},D}),
-    }
+    return Nfwd._ndual_array_V(Array{Complex{R},D}, Val(N))
 end
 # General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
 # always the element-wise Array-of-Structures V `Array{dual_type(Val(N), T), D}`, including
@@ -928,6 +925,7 @@ Shapes defined so far:
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
 - `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}, Array{T, D+1}}}`.
 - `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}}`.
+  On Julia 1.10 the inner array V drops the block parameter (the parallel-arrays form; see `dual_type`).
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `Lifted{MemoryRef{T}, N, NDualMemoryRef{T, N, Memory{T}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
@@ -948,9 +946,7 @@ end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Array{T,D}}
 ) where {N,T<:IEEEFloat,D}
-    return Lifted{
-        Array{T,D},N,NDualArray{T,N,D,Array{T,D},NDual{T,N},Nfwd._block_type(Array{T,D})}
-    }
+    return Lifted{Array{T,D},N,Nfwd._ndual_array_V(Array{T,D}, Val(N))}
 end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Base.RefValue{P}}
@@ -960,18 +956,7 @@ end
 @foldable @inline function lifted_type(
     ::Val{N}, ::Type{Array{Complex{R},D}}
 ) where {N,R<:IEEEFloat,D}
-    return Lifted{
-        Array{Complex{R},D},
-        N,
-        NDualArray{
-            Complex{R},
-            N,
-            D,
-            Array{Complex{R},D},
-            Complex{NDual{R,N}},
-            Nfwd._block_type(Array{Complex{R},D}),
-        },
-    }
+    return Lifted{Array{Complex{R},D},N,Nfwd._ndual_array_V(Array{Complex{R},D}, Val(N))}
 end
 @foldable @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 # Abstract tuple/named-tuple `P` (e.g. a grouped-vararg `Tuple{Function,
@@ -1277,12 +1262,20 @@ end
     x, map(_ -> NoDual(), ẋ)
 )
 @inline lift(x::Array, ẋ::Array{<:NoTangent}, ::Union{Nothing,IdDict}) = lift(x, ẋ)
-# Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they
-# match the element-wise overload below by element type, so give them cache-threading
-# passthroughs that keep the more-specific terminal behaviour.
-@inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {E<:NDualEltype,D,A<:Array{E,D}} = lift(
-    x, ẋ
-)
+# Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they match the
+# element-wise overload below by element type. Honor the aliasing cache so two aliased primals
+# share ONE V, matching the reverse invariant: the V's block is a fresh copy per lift, so without
+# the cache aliased arrays get distinct V objects. (Egal makes the 1.10 parallel-arrays V share
+# regardless — its partials alias `ẋ` directly — but the block copy defeats egal.)
+@inline function lift(
+    x::A, ẋ::A, c::Union{Nothing,IdDict}
+) where {E<:NDualEltype,D,A<:Array{E,D}}
+    c isa IdDict || return lift(x, ẋ)
+    haskey(c, x) && return c[x]::Lifted{A,1}
+    lifted = lift(x, ẋ)
+    c[x] = lifted
+    return lifted
+end
 # Differentiable non-float-element array: element-wise V `Array{dual_type(Val(1), T), D}`,
 # built element-wise from the per-element lift (coherent with `dual_type` above).
 # The IEEEFloat / Complex / all-`NoTangent` overloads are more specific and win.
