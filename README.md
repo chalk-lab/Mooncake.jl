@@ -28,13 +28,9 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 > queries lacking a minimal reproducible example sit outside what we can
 > reasonably support, as do requests for rules beyond Julia Base, or for
 > behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page; such issues will generally be closed. Accounts given over to spam or
-> abuse will be blocked and reported; moderation is otherwise undertaken at
-> our discretion, as capacity allows.
->
-> Organisations relying on Mooncake.jl commercially are warmly encouraged
-> to contribute, whether through focused code contributions, financial
-> support, or both.
+> page; such issues will generally be closed. Accounts involved in spam
+> or abuse will be blocked and reported; moderation is otherwise undertaken
+> at our discretion, as capacity permits.
 
 ## Getting Started
 
