@@ -449,37 +449,58 @@ function frule!!(
     # Each lane's dA round-trips through the dense `Ascr` (a block lane is stride-Nw,
     # which the BLAS calls and LAPACK-backed `Symmetric` copies reject); the triangle
     # write-back moves whole contiguous lane columns of the block.
-    buf = similar(A)
-    Ascr = Matrix{P}(undef, N, N)
-    if uplo == 'L'
+    # Batched Cholesky pushforward. Every lane shares the factor `A`, so the per-lane `trsm!`/
+    # `trmm!` collapse into wide calls over the whole `(Nw,N,N)` block. The left- and right-oriented
+    # solves need opposite lane-stacking (column-block `S` vs row-block `T`), bridged by one permute.
+    # ~1.5x at small `N` (LAPACK-call-bound), fading to ~1x as `N` grows (FLOP-bound). Only the
+    # factor's own triangle is written back — `potrf!` leaves the other triangle of `A` untouched,
+    # so its partials must stay equal to the input `dA`'s (the block's other triangle, left as-is).
+    S = Array{P}(undef, N, Nw, N)
+    T = Array{P}(undef, Nw, N, N)
+    if uplo == 'U'
+        @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
+            S[i, lane, j] = i <= j ? Abm[lane, i, j] : Abm[lane, j, i]
+        end
+        BLAS.trsm!('L', 'U', 'T', 'N', one(P), A, reshape(S, N, Nw * N))
+        @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
+            T[lane, i, j] = S[i, lane, j]
+        end
+        Tf = reshape(T, Nw * N, N)
+        BLAS.trsm!('R', 'U', 'N', 'N', one(P), A, Tf)
         @inbounds for lane in 1:Nw
-            copyto!(Ascr, view(Abm,lane,:,:))
-            copyto!(buf, Symmetric(Ascr, :L))
-            BLAS.trsm!('R', 'L', 'T', 'N', one(P), A, buf)
-            BLAS.trsm!('L', 'L', 'N', 'N', one(P), A, buf)
             for n in 1:N
-                buf[n, n] = buf[n, n] / 2
+                T[lane, n, n] /= 2
             end
-            tril!(buf)
-            BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, buf)
-            for q in 1:N
-                view(Abm, lane, q:N, q) .= view(buf, q:N, q)
+            for j in 1:N, i in (j + 1):N
+                T[lane, i, j] = zero(P)
             end
         end
+        BLAS.trmm!('R', 'U', 'N', 'N', one(P), A, Tf)
+        @inbounds for lane in 1:Nw, q in 1:N, i in 1:q
+            Abm[lane, i, q] = T[lane, i, q]
+        end
     else
+        @inbounds for lane in 1:Nw, i in 1:N, j in 1:N
+            T[lane, i, j] = i >= j ? Abm[lane, i, j] : Abm[lane, j, i]
+        end
+        Tf = reshape(T, Nw * N, N)
+        BLAS.trsm!('R', 'L', 'T', 'N', one(P), A, Tf)
+        @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
+            S[i, lane, j] = T[lane, i, j]
+        end
+        Sf = reshape(S, N, Nw * N)
+        BLAS.trsm!('L', 'L', 'N', 'N', one(P), A, Sf)
         @inbounds for lane in 1:Nw
-            copyto!(Ascr, view(Abm,lane,:,:))
-            copyto!(buf, Symmetric(Ascr, :U))
-            BLAS.trsm!('L', 'U', 'T', 'N', one(P), A, buf)
-            BLAS.trsm!('R', 'U', 'N', 'N', one(P), A, buf)
             for n in 1:N
-                buf[n, n] = buf[n, n] / 2
+                S[n, lane, n] /= 2
             end
-            triu!(buf)
-            BLAS.trmm!('R', 'U', 'N', 'N', one(P), A, buf)
-            for q in 1:N
-                view(Abm, lane, 1:q, q) .= view(buf, 1:q, q)
+            for j in 1:N, i in 1:(j - 1)
+                S[i, lane, j] = zero(P)
             end
+        end
+        BLAS.trmm!('L', 'L', 'N', 'N', one(P), A, Sf)
+        @inbounds for lane in 1:Nw, q in 1:N, i in q:N
+            Abm[lane, i, q] = S[i, lane, q]
         end
     end
     acopied && _write_back_partials!(A_dA, Ab)
