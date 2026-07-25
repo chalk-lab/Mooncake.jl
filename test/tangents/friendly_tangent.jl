@@ -299,7 +299,9 @@
         @test cache isa Mooncake.FriendlyTangentCache{Mooncake.AsCustomised}
         dest = cache.buffer
         @test Mooncake.tangent_to_friendly_internal!!(dest, A, tx) === dest
-        expected = Matrix(transpose(LinearAlgebra.SymTridiagonal([1.0, 2.0, 3.0], [6.0, 8.0])))
+        expected = Matrix(
+            transpose(LinearAlgebra.SymTridiagonal([1.0, 2.0, 3.0], [6.0, 8.0]))
+        )
         @test dest == expected
         @test Mooncake.tangent_to_friendly!!(A, tx) == expected
     end

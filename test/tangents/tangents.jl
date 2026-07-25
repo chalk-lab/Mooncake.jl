@@ -239,7 +239,6 @@ using DispatchDoctor: allow_unstable
             @test tangent_type(F, Mooncake.NoRData) == T
         end
     end
-
 end
 
 # The goal of these tests is to check that we can indeed generate tangent types for anything
