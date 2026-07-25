@@ -115,3 +115,18 @@ fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
         end
     end
 end;
+
+@testset "nfwd primitive coverage" begin
+    # The nfwd classifier trusts one set of dual-transparent ops: structural `Core.Builtin`s
+    # in `_NFWD_SAFE_BUILTINS`. Every other builtin — and all intrinsics / foreigncalls — that touches a
+    # dual routes the function to the frule transform. If Julia gains a builtin it must be
+    # classified deliberately (safe vs opaque indirection) rather than silently trusted, so assert
+    # every current builtin is in exactly one of the two sets; a new one fails here loudly.
+    builtins = Set(
+        n for n in names(Core; all=true) if
+        isdefined(Core, n) && getfield(Core, n) isa Core.Builtin
+    )
+    accounted = Mooncake._NFWD_SAFE_BUILTINS ∪ Mooncake._NFWD_OPAQUE_BUILTINS
+    @test isempty(setdiff(builtins, accounted))
+    @test isempty(intersect(Mooncake._NFWD_SAFE_BUILTINS, Mooncake._NFWD_OPAQUE_BUILTINS))
+end

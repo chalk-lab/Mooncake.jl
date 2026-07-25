@@ -1532,7 +1532,11 @@ function test_rule(
             @testset "Caching" begin
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
-                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
+                    # A nfwd-safe function runs through a stateless `NfwdFRule` returned
+                    # before the OpaqueClosure cache is populated (it needs neither re-derivation
+                    # nor an independent copy), so only derived transform rules land in `oc_cache`.
+                    nfwd = !debug_mode && Mooncake._nfwd_safe(Any[sig.parameters...], 1)
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world) && !nfwd
                         # `:forward` rules are keyed by chunk width too; `test_rule` builds
                         # the default width-1 rule.
                         cache_key = (sig, debug_mode, :forward, 1)

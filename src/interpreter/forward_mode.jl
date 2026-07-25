@@ -26,10 +26,12 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true, chunk_size=1)
+function build_frule(
+    args...; debug_mode=false, silence_debug_messages=true, chunk_size=1, nfwd::Bool=true
+)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size, nfwd)
 end
 
 struct DualRuleInfo
@@ -61,6 +63,7 @@ function build_frule(
     silence_debug_messages=true,
     skip_world_age_check=false,
     chunk_size::Int=1,
+    nfwd::Bool=true,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -85,6 +88,13 @@ function build_frule(
     if is_primitive(C, ForwardMode, sig, interp.world)
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule(rule) : rule
+    end
+
+    # If the whole function is nfwd-safe, run it directly on the inner dual values (bypassing the
+    # per-op `Lifted`/frule transform envelope) rather than deriving a rule. This is the default;
+    # `nfwd=false` or `debug_mode` keeps the fully-checked transform path.
+    if nfwd && !debug_mode && _nfwd_safe(Any[sig.parameters...], chunk_size)
+        return NfwdFRule{chunk_size}()
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -462,6 +472,373 @@ end
 
 __get_primal(x::Lifted) = primal(x)
 
+#
+# Nfwd forward path (the default; `debug_mode` forces the fully-checked transform).
+#
+# When a whole non-primitive function's NDual execution is provably free of dual-laundering (a
+# reinterpret / bitcast / pointer op or a foreigncall handed a dual buffer), `build_frule` runs the
+# primal directly on the inner dual values instead of deriving a per-op `Lifted`/frule transform.
+# Soundness rests on the classifier below: it only vouches for code it can see through (recursable
+# `:invoke`s and structural builtins) and rejects any call whose inferred graph hands a dual-typed
+# argument to something opaque, or whose result is not NDual-coherent.
+
+# Primal projection of an nfwd dual result (inner-value invariant: read, never recompute).
+_nfwd_primal(y::Nfwd.NDual) = y.value
+_nfwd_primal(y::Complex{<:Nfwd.NDual}) = Complex(y.re.value, y.im.value)
+_nfwd_primal(y::Nfwd.NDualArray) = getfield(y, :primal)
+_nfwd_primal(y::Nfwd.NDualMemoryRef) = getfield(y, :primal)
+_nfwd_primal(y::Tuple) = map(_nfwd_primal, y)
+_nfwd_primal(y::NamedTuple) = map(_nfwd_primal, y)
+_nfwd_primal(@nospecialize(y)) = y
+
+# The nfwd path is only taken when the result type is one whose primal `_nfwd_primal` can
+# project exactly — a bare inner dual (`NDual`/`Complex{NDual}`/`NDualArray`/`NDualMemoryRef`) or a
+# tuple/named-tuple of those. A result carrying NDuals *inside* a user struct (e.g. an nfwd-built
+# `Normal{NDual}`) is rejected: the identity fallback would put a dual-typed value in the `Lifted`
+# primal field, mismatching `lifted_type`. Rejected calls fall back to the frule transform.
+function _nfwd_projectable(@nospecialize(T))
+    T isa DataType || return false
+    (T.name === _TN_NDUAL || T.name === _TN_NDARRAY || T.name === _TN_NDMEMREF) &&
+        return true
+    if T <: Complex
+        p = T.parameters[1]
+        return p isa DataType && p.name === _TN_NDUAL
+    end
+    # An empty tuple / named-tuple canonicalises to `NoDual` (its `tangent_type` is `NoTangent`),
+    # but nfwd execution returns the bare `()` — a non-canonical dual the `Lifted` machinery
+    # can't represent coherently — so it is not projectable and routes to the transform. `all`
+    # over no parameters is vacuously true, hence the explicit non-empty guard.
+    if T <: Tuple
+        return !isempty(T.parameters) &&
+               all(p -> p isa Type && _nfwd_projectable(p), T.parameters)
+    end
+    if T <: NamedTuple
+        vt = T.parameters[2]
+        return vt isa DataType &&
+               vt <: Tuple &&
+               !isempty(vt.parameters) &&
+               all(p -> p isa Type && _nfwd_projectable(p), vt.parameters)
+    end
+    return false
+end
+
+# Unwrap an nfwd-call operand into a value the primal function can be applied to. A differentiable
+# slot yields its inner dual value (`NDual`/`NDualArray`/`NDualMemoryRef`, dispatch-compatible with
+# the primal function); a non-differentiable slot (`NoDual` inner — how constants arrive) yields its
+# primal value, exact because its derivative is zero. Every operand is a `Lifted` (the rule ABI).
+@inline _nfwd_unwrap(a::Lifted{P,N,NoDual}) where {P,N} = primal(a)
+@inline _nfwd_unwrap(a::Lifted) = tangent(a)
+
+# Width-`N` forward rule for a whole function that is nfwd-safe (see `_nfwd_safe`): run
+# the primal directly on the inner dual values instead of deriving a per-op transform rule. Built
+# by `build_frule` when `nfwd` is set and the function classifies nfwd-safe.
+struct NfwdFRule{N} end
+
+@inline function (::NfwdFRule{N})(cf::Lifted, args::Vararg{Lifted,M}) where {N,M}
+    y = primal(cf)(map(_nfwd_unwrap, args)...)
+    p = _nfwd_primal(y)
+    return Lifted{typeof(p),N}(p, y)
+end
+
+_copy(nf::NfwdFRule) = nf
+
+const _TN_NDUAL = Base.unwrap_unionall(Nfwd.NDual).name
+const _TN_NDARRAY = Base.unwrap_unionall(Nfwd.NDualArray).name
+const _TN_NDMEMREF = Base.unwrap_unionall(Nfwd.NDualMemoryRef).name
+
+function _nfwd_has_ndual(@nospecialize(T), depth::Int=0)
+    depth > 12 && return true
+    T === Union{} && return false
+    if T isa DataType
+        (T.name === _TN_NDUAL || T.name === _TN_NDARRAY || T.name === _TN_NDMEMREF) &&
+            return true
+        for p in T.parameters
+            p isa Type && _nfwd_has_ndual(p, depth + 1) && return true
+        end
+        return false
+    elseif T isa Union
+        return _nfwd_has_ndual(T.a, depth + 1) || _nfwd_has_ndual(T.b, depth + 1)
+    elseif T isa UnionAll
+        return _nfwd_has_ndual(T.body, depth + 1)
+    end
+    return false
+end
+
+function _nfwd_invoke_sig(@nospecialize(t))
+    for _ in 1:4
+        t isa Core.MethodInstance && return t.specTypes
+        t isa Core.CodeInstance ? (t = t.def) : return nothing
+    end
+    return nothing
+end
+
+# Does any SSA/argument operand carry an inner dual? Only these two operand kinds can; a constant
+# operand (`QuoteNode`/`GlobalRef`/literal) never holds a dual, so it is skipped.
+function _nfwd_any_dual(ssatypes, @nospecialize(sig), args)
+    for a in args
+        if a isa Core.SSAValue
+            t = ssatypes[a.id]
+            t = if t isa Core.Const
+                Core.Typeof(t.val)
+            elseif t isa Core.PartialStruct
+                t.typ
+            else
+                t
+            end
+            _nfwd_has_ndual(CC.widenconst(t)) && return true
+        elseif a isa Core.Argument && 1 <= a.n <= length(sig.parameters)
+            _nfwd_has_ndual(sig.parameters[a.n]) && return true
+        end
+    end
+    return false
+end
+
+# The nfwd path can only vouch for code it can see through: statically-resolved `:invoke`s (whose
+# bodies it recurses into) and structural `Core.Builtin`s that move or inspect values without ever
+# reinterpreting their numeric bytes. Everything else is opaque to the scan — `:foreigncall`, any
+# `Core.IntrinsicFunction`, and unresolved dynamic `:call`s — and an opaque op that receives a
+# dual-typed argument could launder the derivative (read it back as a plain number), so the whole
+# function is rejected and falls back to the frule transform. This is a whitelist posture: an
+# unrecognised primitive is unsafe by default, so a newly-introduced dual-laundering op cannot
+# silently pass. `_NFWD_SAFE_FOREIGN` and `_NFWD_SAFE_BUILTINS` are the only trusted opaque ops; the
+# `nfwd primitive coverage` test asserts they stay in step with `Core` and fails loudly if
+# a new builtin appears unclassified.
+
+# Identity/hash foreigncalls that take a dual object but do not read its derivative: `objectid` of a
+# dual is address-based (a dual is an immutable wrapper over mutable buffers, or an isbits scalar
+# used only for dict/identity bookkeeping), so the hash never flows into the numeric gradient. This
+# is what lets a real logdensity (whose VarInfo dict machinery calls `jl_object_id`) run under nfwd.
+const _NFWD_SAFE_FOREIGN = Set{Symbol}([:jl_object_id])
+
+# Structural builtins that only move, inspect, or select values (and type/metaprogramming
+# machinery that never sees a numeric dual), so a dual passes through them intact — none reinterpret
+# a value's bytes as a number. Any builtin NOT listed here is treated as opaque: a dual reaching it
+# routes the function to the frule transform. `_NFWD_OPAQUE_BUILTINS` records the ones we deliberately
+# exclude (indirections whose callee body the scan cannot recurse into); the `nfwd primitive
+# coverage` test asserts every `Core.Builtin` is in one set or the other, so a new builtin fails
+# loudly rather than being silently trusted.
+const _NFWD_SAFE_BUILTINS = Set{Symbol}([
+    # field / property / global access
+    :getfield,
+    :setfield!,
+    :swapfield!,
+    :modifyfield!,
+    :replacefield!,
+    :setfieldonce!,
+    :getproperty,
+    :setproperty!,
+    :getglobal,
+    :setglobal!,
+    :swapglobal!,
+    :modifyglobal!,
+    :replaceglobal!,
+    :setglobalonce!,
+    :isdefinedglobal,
+    :get_binding_type,
+    :set_binding_type!,
+    # typed memory / array element access (structural — returns/stores the element type). Julia
+    # ≥1.11 lowers to `memoryref*`; 1.10 uses the `array*` builtins. Listing both keeps the
+    # classifier version-robust — a name absent on a given version simply never matches.
+    :memorynew,
+    :memoryref_isassigned,
+    :memoryrefget,
+    :memoryrefset!,
+    :memoryrefswap!,
+    :memoryrefmodify!,
+    :memoryrefreplace!,
+    :memoryrefsetonce!,
+    :memoryrefnew,
+    :memoryrefoffset,
+    :arrayref,
+    :arrayset,
+    :arraysize,
+    :const_arrayref,
+    # reflection / predicates / construction / select
+    :isdefined,
+    :nfields,
+    :fieldtype,
+    :typeof,
+    :typeassert,
+    :isa,
+    :(<:),
+    :(===),
+    :applicable,
+    :sizeof,
+    :current_scope,
+    :tuple,
+    :ifelse,
+    :throw,
+    :throw_methoderror,
+    :compilerbarrier,
+    :donotdelete,
+    # type / metaprogramming machinery (operates on types/exprs/svecs, never a numeric dual)
+    :svec,
+    :_svec_len,
+    :_svec_ref,
+    :_typevar,
+    :_typebody!,
+    :_structtype,
+    :_abstracttype,
+    :_primitivetype,
+    :_setsuper!,
+    :_defaultctors,
+    :_equiv_typedef,
+    :_compute_sparams,
+    :_expr,
+    :apply_type,
+])
+
+# Indirection builtins whose callee body the scan cannot see, so a dual flowing through them is
+# opaque and routed to the frule transform (never trusted, never an error).
+const _NFWD_OPAQUE_BUILTINS = Set{Symbol}([
+    :invoke,
+    :invokelatest,
+    :invoke_in_world,
+    :_call_in_world,
+    :_call_in_world_total,
+    :_call_latest,
+    :_apply_iterate,
+    :_apply_pure,
+    :finalizer,
+])
+
+# Resolve a call target to a `Core.Builtin`/`Core.IntrinsicFunction` when it is statically known
+# (a const global binding or an inlined primitive), else `nothing` (a dynamic/unresolved callee the
+# scan must treat as opaque).
+function _nfwd_callee(@nospecialize(a))
+    if a isa GlobalRef
+        return if (isdefined(a.mod, a.name) && isconst(a.mod, a.name))
+            getglobal(a.mod, a.name)
+        else
+            nothing
+        end
+    elseif a isa Core.IntrinsicFunction || a isa Core.Builtin
+        return a
+    end
+    return nothing
+end
+
+function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
+    ssatypes = ci.ssavaluetypes
+    for st in ci.code
+        st isa Expr || continue
+        if st.head === :foreigncall
+            fn = st.args[1]  # foreigncall target: a `QuoteNode`/`Symbol` name, or a dynamic ccall
+            name = if fn isa QuoteNode
+                fn.value
+            elseif fn isa Symbol
+                fn
+            else
+                Symbol("")
+            end
+            name in _NFWD_SAFE_FOREIGN && continue
+            _nfwd_any_dual(ssatypes, sig, st.args) && return true
+        elseif st.head === :call && !isempty(st.args)
+            cv = _nfwd_callee(st.args[1])
+            # A structural builtin is dual-transparent; anything else (intrinsic, unknown builtin,
+            # or unresolved dynamic call) is opaque and rejected if it touches a dual.
+            if cv isa Core.Builtin && nameof(cv) in _NFWD_SAFE_BUILTINS
+                continue
+            end
+            _nfwd_any_dual(ssatypes, sig, st.args) && return true
+        elseif st.head === :invoke
+            s = _nfwd_invoke_sig(st.args[1])
+            s === nothing || push!(work, s)
+        end
+    end
+    return false
+end
+
+_nfwd_code_typed(@nospecialize(sig)) =
+    try
+        Base.code_typed_by_type(sig; optimize=true)
+    catch
+        nothing
+    end
+
+# Memoise the nfwd-safety verdict per dual signature. The verdict is a pure function of the
+# signature and the inferred IR — fixed within a world — but computing it runs `code_typed` on the
+# call and recursively on every reachable `:invoke`, so re-deriving it for every forward build of
+# the same signature is wasted work. Cache keyed by signature and flushed whenever the world age
+# advances, since new method definitions can change inference (and hence the verdict).
+const _NFWD_SAFE_CACHE = Dict{Any,Bool}()
+const _NFWD_SAFE_WORLD = Ref{UInt}(typemax(UInt))
+const _NFWD_SAFE_LOCK = ReentrantLock()
+
+function _nfwd_body_safe_cached(@nospecialize(sig), @nospecialize(expected))
+    w = Base.get_world_counter()
+    return Base.@lock _NFWD_SAFE_LOCK begin
+        if w != _NFWD_SAFE_WORLD[]
+            empty!(_NFWD_SAFE_CACHE)
+            _NFWD_SAFE_WORLD[] = w
+        end
+        get!(() -> _nfwd_body_safe(sig, expected), _NFWD_SAFE_CACHE, (sig, expected))
+    end
+end
+
+# `expected` is the canonical dual of the primal result, `dual_type(Val(N), primal_return_type)`.
+# Nfwd execution must reproduce exactly this shape: a function can behave differently on inner
+# duals than on its primal (e.g. `TwicePrecision` arithmetic collapses an `NDual` back to a bare
+# scalar, so `_logrange_extra` returns `Tuple{NDual,NDual}` on duals but `Tuple{TwicePrecision,…}`
+# on floats), which would give a wrong primal and tangent. Requiring `rt === expected` rejects
+# those and routes them to the transform.
+function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::Int=600)
+    cts = _nfwd_code_typed(sig)
+    (cts === nothing || length(cts) != 1) && return false
+    ci, rt = cts[1]
+    (isconcretetype(rt) && _nfwd_projectable(rt) && rt === expected) || return false
+    work = Any[]
+    _nfwd_scan_body!(work, ci, sig) && return false
+    visited = Set{Any}()
+    nodes = 0
+    while !isempty(work)
+        s = pop!(work)
+        s in visited && continue
+        push!(visited, s)
+        (nodes += 1) > maxnodes && return false
+        cs = _nfwd_code_typed(s)
+        (cs === nothing || length(cs) != 1) && return false
+        _nfwd_scan_body!(work, cs[1][1], s) && return false
+    end
+    return true
+end
+
+# The nfwd path handles inner-dual scalars/arrays only: an argument is admissible iff it is
+# non-differentiable (dual `NoDual` → passed as its primal) or dual-lifts to a projectable inner
+# dual (`NDual`/`Complex{NDual}`/`NDualArray`/`NDualMemoryRef`, or a tuple/named-tuple of those →
+# passed as its dual). An argument that dual-lifts to a struct wrapper (`ImmutableDual`/
+# `MutableDual`) is not dispatch-compatible with the primal function, so the call is rejected and
+# falls back to the frule transform.
+function _nfwd_safe(sig_types::Vector, width::Int)
+    isempty(sig_types) && return false
+    all(isconcretetype, sig_types) || return false
+    # callee must be non-differentiable: nfwd call cannot carry a closure-field derivative.
+    dual_type(Val(width), sig_types[1]) === NoDual || return false
+    dsig_args = Any[]
+    for i in 2:length(sig_types)
+        dt = dual_type(Val(width), sig_types[i])
+        if dt === NoDual
+            push!(dsig_args, sig_types[i])          # non-differentiable → dispatch on the primal
+        elseif _nfwd_projectable(dt)
+            push!(dsig_args, dt)                     # inner dual → dispatch on the dual
+        else
+            return false                            # struct dual (ImmutableDual/…) → not nfwd
+        end
+    end
+    # The nfwd dual result must equal the canonical dual of the primal result; infer the primal
+    # return type and hand its `dual_type` to the safety check as the required shape.
+    pcts = _nfwd_code_typed(Tuple{sig_types...})
+    (pcts === nothing || length(pcts) != 1) && return false
+    prt = pcts[1][2]
+    isconcretetype(prt) || return false
+    expected = try
+        dual_type(Val(width), prt)
+    catch
+        return false
+    end
+    return _nfwd_body_safe_cached(Tuple{sig_types[1],dsig_args...}, expected)
+end
+
 function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
@@ -591,7 +968,9 @@ mutable struct LazyFRule{primal_sig,Trule}
 end
 
 # Create new lazy rule with same method instance, debug mode, chunk width, and prediction world
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.width, x.world)
+function _copy(x::P) where {P<:LazyFRule}
+    return P(x.mi, x.debug_mode, x.width, x.world)
+end
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
@@ -624,12 +1003,16 @@ end
 # #1218 (not the inference-complexity-widening case in #1209's headline MWE).
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
+    # `nfwd=false`: nfwd is a top-level whole-function decision. This is a sub-rule build, and its
+    # result type must match `Trule` (the transform-rule type `frule_type` predicted at
+    # construction); an `NfwdFRule` here would fail to `convert` into the `rule.rule` field.
     rule.rule = build_frule(
         interp,
         rule.mi;
         debug_mode=rule.debug_mode,
         chunk_size=rule.width,
         skip_world_age_check=true,
+        nfwd=false,
     )
     return __call_rule(rule.rule, args)
 end
@@ -674,7 +1057,9 @@ function DynamicFRule(debug_mode::Bool, width::Int)
 end
 
 # Create new dynamic rule with empty cache, same debug mode, chunk width, and build world
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.width, x.world)
+function _copy(x::P) where {P<:DynamicFRule}
+    return P(Dict{Any,Any}(), x.debug_mode, x.width, x.world)
+end
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
@@ -685,12 +1070,15 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
         # Build at the world this rule was created at (matching the enclosing rule), not the
         # current world. See _build_rule! and issue #1218.
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
+        # `nfwd=false`: nfwd is a top-level whole-function decision, not a sub-rule one (see
+        # `_build_rule!`).
         rule = build_frule(
             interp,
             sig;
             debug_mode=dynamic_rule.debug_mode,
             chunk_size=dynamic_rule.width,
             skip_world_age_check=true,
+            nfwd=false,
         )
         dynamic_rule.cache[sig] = rule
     end
