@@ -13,7 +13,7 @@ using Mooncake.TestUtils:
     test_rule,
     test_frule_interface,
     test_rrule_interface
-using LinearAlgebra
+using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
@@ -160,6 +160,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
         _bcast_nested_float_cast_sin(x) = sum(sin.(Float64.(x)))
         _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
+        _bcast_all_scalar_leaf(x, s) = sum(x .* (s .+ 1.0))
         _inplace_zero_dof_nested!(dest, x, c, b) =
             (dest.=x .+ c .* Float64.(b .> 0); sum(dest))
         # adjoint of a CuVector times a CuMatrix — dispatches through generic_matmatmul!
@@ -216,6 +217,47 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
+        # Wrappers for Statistics.varm GPU rule tests.
+        _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
+        _varm_sum_d2(x, m) = sum(varm(x, m; dims=2, corrected=true))
+        # no-dims path: varm(x, m_scalar; corrected); reused for real, complex, and
+        # mixed real/complex scalar means.
+        _varm_nodims_scalar(x, m) = varm(x, m; corrected=true)
+        # Tuple dims: what GroupNorm/InstanceNorm/BatchNorm actually pass (ntuple(static,
+        # N-1)), not covered by the single-Int tests above.
+        _varm_sum_dtuple(x, m) = sum(varm(x, m; dims=(1, 2), corrected=false))
+        # UnitRange dims: default LayerNorm(shape) passes `1:(N-M)` here, not a Tuple.
+        _varm_sum_drange(x, m) = sum(varm(x, m; dims=1:2, corrected=false))
+        # dims=: with an array m (not scalar, unlike _varm_nodims_scalar above): the only
+        # test that hits the array-mean rule's own Colon branch.
+        _varm_sum_dcolon_arraymean(x, m) = sum(varm(x, m; dims=:, corrected=false))
+        # Repeated dims (dims=(1,1), which a careless ntuple could produce e.g. in
+        # GroupNorm): denominator must count dim 1 once, not twice.
+        _varm_sum_ddup(x, m) = sum(varm(x, m; dims=(1, 1), corrected=false))
+        # Empty dims collection: the primal reduces over nothing and returns the full
+        # array; the rule's denominator must mirror _mean_denom's `init=1`.
+        _varm_sum_dempty(x, m) = sum(varm(x, m; dims=(), corrected=false))
+        # Bare 2-arg spelling (no keyword syntax at all): bypasses Core.kwcall entirely,
+        # exercising the dedicated bare-call primitive rather than the kwcall one above.
+        _varm_bare_nodims_scalar(x, m) = varm(x, m)
+        # Kwarg sets the real function rejects must throw identically under AD (the
+        # rules call the real method for their primal): array-m without the required
+        # dims kwarg, and scalar-m with a dims kwarg its method doesn't have.
+        _varm_arraymean_missing_dims(x, m) = varm(x, m; corrected=false)
+        _varm_scalarmean_stray_dims(x, m) = varm(x, m; dims=1)
+        # Wrappers for Statistics.mean GPU rule tests.
+        _mean_sum_d1(x) = sum(mean(x; dims=1))
+        _mean_sum_d2(x) = sum(mean(x; dims=2))
+        _mean_sum_dtuple(x) = sum(mean(x; dims=(1, 2)))
+        _mean_sum_drange(x) = sum(mean(x; dims=1:2))
+        _mean_sum_ddup(x) = sum(mean(x; dims=(1, 1)))
+        _mean_sum_dempty(x) = sum(mean(x; dims=()))  # empty dims: see _varm_sum_dempty
+        _mean_nodims(x) = mean(x; dims=:)
+        # Bare spelling: decomposed (no rule); used to pin rule/decomposition agreement.
+        _mean_bare(x) = mean(x)
+        # Complex CuArray mean variants
+        _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
+        _mean_cx_sum_d1(x) = real(sum(mean(x; dims=1)))
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -1081,6 +1123,21 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test grads[3] ≈ sum(mask)
         end
 
+        @testset "all-scalar nested broadcast leaves keep scalar gradients" begin
+            # Regression for the differentiable-scalar guard in _premat_nondiff_args:
+            # (s .+ 1.0) is a nested Broadcasted whose fdata is NoFData (scalars carry
+            # their gradient in rdata), but it has one differentiable DOF. Collapsing
+            # it to a constant dropped s from flat_pargs, crashing the reverse pass
+            # with UndefRefError; d/ds sum(x .* (s .+ 1.0)) = sum(x).
+            x = CuArray(randn(rng, 4))
+            s = 0.75
+            cache = prepare_gradient_cache(_bcast_all_scalar_leaf, x, s)
+            val, grads = value_and_gradient!!(cache, _bcast_all_scalar_leaf, x, s)
+            @test val ≈ sum(Array(x) .* (s + 1.0))
+            @test Array(grads[2]) ≈ fill(s + 1.0, 4)
+            @test grads[3] ≈ sum(Array(x))
+        end
+
         @testset "in-place zero-DOF nested broadcasts reconstruct scalar gradients" begin
             dest = CuArray(zeros(4))
             x = CuArray(randn(rng, 4))
@@ -1368,6 +1425,551 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 # else should fail loudly rather than silently misbehave.
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim(1.0)
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim((1, 2.0))
+            end
+        end
+
+        @testset "Statistics.varm GPU rule" begin
+            # varm(x, m; dims, corrected) : used by LayerNorm / GroupNorm / InstanceNorm
+            # via LuxLib.Impl.mean_var → var → varm. Test both frule!! and rrule!! through
+            # wrapper functions; is_primitive=false because the wrapper is not a primitive.
+            @testset "dims=1, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                test_rule(
+                    StableRNG(1), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=2, corrected=true (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 4, 1)
+                test_rule(
+                    StableRNG(2), _varm_sum_d2, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1, corrected=false (Float64)" begin
+                x = _rand(rng, Float64, 4, 3)
+                m = _rand(rng, Float64, 1, 3)
+                test_rule(
+                    StableRNG(3), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "no dims, scalar mean (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m_scalar = randn(StableRNG(8), Float32)
+                test_rule(
+                    StableRNG(8),
+                    _varm_nodims_scalar,
+                    x,
+                    m_scalar;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=(1,2) tuple, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                m = _rand(rng, Float32, 1, 1, 2)
+                test_rule(
+                    StableRNG(14),
+                    _varm_sum_dtuple,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=1:2 UnitRange, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                m = _rand(rng, Float32, 1, 1, 2)
+                test_rule(
+                    StableRNG(16),
+                    _varm_sum_drange,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "dims=:, array-shaped mean, corrected=false (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 1)
+                test_rule(
+                    StableRNG(20),
+                    _varm_sum_dcolon_arraymean,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "repeated dims=(1,1), corrected=false (Float32)" begin
+                # Regression: denominator must count dim 1 once, not size(x,1)^2.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                test_rule(
+                    StableRNG(21), _varm_sum_ddup, x, m; is_primitive=false, perf_flag=:none
+                )
+                @test _varm_sum_ddup(x, m) ≈ _varm_sum_d1(x, m)
+            end
+            @testset "bare 2-arg spelling, no keywords (Float32)" begin
+                # Regression: `varm(x, m)` with no keyword syntax at all bypasses
+                # Core.kwcall entirely; without the dedicated bare-call primitive it
+                # falls through to Statistics' captured-mean mapreduce, which Mooncake
+                # can't trace on GPU.
+                x = _rand(rng, Float32, 4, 3)
+                m_scalar = randn(StableRNG(22), Float32)
+                test_rule(
+                    StableRNG(22),
+                    _varm_bare_nodims_scalar,
+                    x,
+                    m_scalar;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "bare 2-arg spelling, no keywords (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                m_cx = randn(StableRNG(23), ComplexF32)
+                test_rule(
+                    StableRNG(23),
+                    _varm_bare_nodims_scalar,
+                    x,
+                    m_cx;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "mixed real/complex scalar mean" begin
+                # Regression: a real-valued rdata/fdata slot must project a mismatched
+                # complex intermediate onto its real part rather than throwing
+                # InexactError on the implicit conversion.
+                @testset "complex x, real m" begin
+                    x = _rand(rng, ComplexF32, 4, 3)
+                    m = randn(StableRNG(24), Float32)
+                    test_rule(
+                        StableRNG(24),
+                        _varm_nodims_scalar,
+                        x,
+                        m;
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+                @testset "real x, complex m" begin
+                    x = _rand(rng, Float32, 4, 3)
+                    m = randn(StableRNG(25), ComplexF32)
+                    test_rule(
+                        StableRNG(25),
+                        _varm_nodims_scalar,
+                        x,
+                        m;
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+            end
+            # NOTE: no complex or mixed real/complex *array*-mean tests here (unlike
+            # scalar-mean above). GPUArrays' accelerated varm requires Real eltypes on
+            # both arguments; anything else falls through to a generic scalar-indexing
+            # path that can't run on GPU at all, so there's no ground truth to test
+            # against. The array-m rules are restricted to real eltypes to match — a
+            # wider signature would make AD succeed where the primal throws — and the
+            # norm layers never produce these combinations anyway (x and its own mean
+            # always share a real eltype).
+            @testset "m broadcast against x: full-shape m, dims=1 (Float32)" begin
+                # Regression: the primal broadcasts m against x, so m need not have
+                # the reduced shape; m's gradient must reduce the elementwise gradient
+                # over exactly the dims m is broadcast along (none, here) rather than
+                # over `dims`, which used to column-sum it.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(26), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "m broadcast against x: (1,1) m, dims=1 (Float32)" begin
+                # Regression: m broadcast along a dim outside `dims` (dim 2 here) used
+                # to throw DimensionMismatch in the pullback.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 1)
+                test_rule(
+                    StableRNG(27), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "x broadcast against m: (1,3) x, full m, dims=1 (Float32)" begin
+                # Regression: x can be the broadcast-expanded operand too, not just m;
+                # the pullback must unbroadcast the elementwise gradient to BOTH
+                # operand shapes (dx used to throw DimensionMismatch here).
+                x = _rand(rng, Float32, 1, 3)
+                m = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(29), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "cross-precision arrays: Float32 x, Float64 m, dims=1" begin
+                # Claimed by the array-m signature (no precision tie, unlike scalar-m
+                # below): GPUArrays' method has no n==0 type bifurcation, so the
+                # output type is concrete and mixed real precisions just work.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float64, 1, 3)
+                test_rule(
+                    StableRNG(30), _varm_sum_d1, x, m; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "empty dims=() collection (Float32)" begin
+                # Regression: the primal reduces over nothing and returns the full
+                # array; the rule's denominator must mirror _mean_denom's `init=1`
+                # instead of throwing on a prod over an empty collection.
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                test_rule(
+                    StableRNG(31),
+                    _varm_sum_dempty,
+                    x,
+                    m;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "kwarg sets the primal rejects throw under AD" begin
+                x = _rand(rng, Float32, 4, 3)
+                m = _rand(rng, Float32, 1, 3)
+                rule = Mooncake.build_rrule(_varm_arraymean_missing_dims, x, m)
+                @test_throws UndefKeywordError Mooncake.value_and_gradient!!(
+                    rule, _varm_arraymean_missing_dims, x, m
+                )
+                m_scalar = randn(StableRNG(28), Float32)
+                rule2 = Mooncake.build_rrule(_varm_scalarmean_stray_dims, x, m_scalar)
+                @test_throws MethodError Mooncake.value_and_gradient!!(
+                    rule2, _varm_scalarmean_stray_dims, x, m_scalar
+                )
+            end
+            @testset "empty array, scalar mean, corrected=true (Float32)" begin
+                # Regression: an empty input must give NaN, matching
+                # Statistics._varm(A, m, corrected, ::Colon) (not 0/(0-1) = -0.0). This
+                # is Statistics.jl's generic method (scalar m isn't overridden by
+                # GPUArrays), the one where the NaN guard lives. NaN is a convention
+                # override, not a true singularity (x is empty, so the unguarded value
+                # is a constant 0 regardless of m), so the gradient must be 0, not NaN;
+                # checked explicitly since frule!! and rrule!! must agree here too.
+                x = CuArray(Float32[])
+                m = 0.0f0
+                @test isnan(_varm_nodims_scalar(x, m))
+                rule = Mooncake.build_rrule(_varm_nodims_scalar, x, m)
+                out, (_, dx, dm) = Mooncake.value_and_gradient!!(
+                    rule, _varm_nodims_scalar, x, m
+                )
+                @test isnan(out)
+                @test isempty(dx)
+                @test dm == 0.0f0
+            end
+            @testset "empty array, array mean, dims=: (Float32)" begin
+                # Regression: unlike scalar-mean above, GPUArrays' own
+                # `varm(A::AbstractGPUArray, M::AbstractArray; dims, corrected)` has no
+                # empty-input guard and gives 0, not NaN; the scalar-mean NaN guard
+                # above must not be applied here.
+                x = CuArray(Float32[])
+                m = CuArray(Float32[])
+                @test _varm_sum_dcolon_arraymean(x, m) == 0.0f0
+                rule = Mooncake.build_rrule(_varm_sum_dcolon_arraymean, x, m)
+                out, _ = Mooncake.value_and_gradient!!(
+                    rule, _varm_sum_dcolon_arraymean, x, m
+                )
+                @test out == 0.0f0
+            end
+            @testset "empty x, non-empty m, dims=:, corrected=false (Float32)" begin
+                # Regression: coeff = 2/(0-0) = Inf; multiplying it into a pre-reduced
+                # sum_diff gave Inf * 0 = NaN in dm. The elementwise gradient is formed
+                # first now (an empty array), so its unbroadcast reduction is a clean 0.
+                x = CuArray(Float32[])
+                m = CuArray(Float32[0.0f0])
+                rule = Mooncake.build_rrule(_varm_sum_dcolon_arraymean, x, m)
+                out, (_, _, dm) = Mooncake.value_and_gradient!!(
+                    rule, _varm_sum_dcolon_arraymean, x, m
+                )
+                @test out == 0.0f0
+                @test Array(dm) == [0.0f0]
+            end
+            @testset "scalar m must match x's underlying precision" begin
+                # Mixed precision (Float32 data, Float64 mean) makes Statistics'
+                # scalar-m varm infer Union{Float32,Float64} (its n==0 branch types
+                # σ² off x alone, while its main branch promotes with m), which
+                # Mooncake's rule builder cannot handle (zero(::Type{Union{...}}));
+                # such combinations are deliberately not claimed as primitives.
+                x = _rand(rng, Float32, 4, 3)
+                world = Base.get_world_counter()
+                kwsig = @NamedTuple{corrected::Bool}
+                mixed = Tuple{typeof(Core.kwcall),kwsig,typeof(varm),typeof(x),Float64}
+                same = Tuple{typeof(Core.kwcall),kwsig,typeof(varm),typeof(x),Float32}
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx, Mooncake.ReverseMode, mixed, world
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx, Mooncake.ReverseMode, same, world
+                )
+                @test !Mooncake.is_primitive(
+                    Mooncake.MinimalCtx, Mooncake.ForwardMode, mixed, world
+                )
+                @test Mooncake.is_primitive(
+                    Mooncake.MinimalCtx, Mooncake.ForwardMode, same, world
+                )
+            end
+            @testset "empty x forward tangent is the zero map" begin
+                # frule!! counterpart of the reverse-mode empty test above: the
+                # primal is a constant NaN at n==0, so the JVP must be 0 — the
+                # divide-after arithmetic would otherwise give 0/0 = NaN, which is
+                # inconsistent with the rrule's zero (empty/zero-rdata) gradient map.
+                x = CuArray(Float32[])
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; corrected=true), Mooncake.NoTangent()),
+                    Mooncake.Dual(varm, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                    Mooncake.Dual(0.0f0, 0.0f0),
+                )
+                @test isnan(Mooncake.primal(d))
+                @test Mooncake.tangent(d) === 0.0f0
+            end
+            @testset "Float16 dims=1 avoids overflow on large magnitudes" begin
+                # Regression: summing raw squares before dividing (rather than scaling
+                # by 1/(n-corrected) before reducing, as GPUArrays does) overflows Inf
+                # for representable Float16 inputs well before the true variance does.
+                x = CuArray(fill(Float16(1000), 200, 1))
+                m = CuArray(fill(Float16(999), 200, 1))
+                out = only(Array(varm(x, m; dims=1, corrected=false)))
+                @test isfinite(out)
+                @test out == Float16(1)
+            end
+            @testset "Float16 large n keeps λ finite in gradients" begin
+                # Regression: `one(T) / n` converts n to Float16 first, so for
+                # n > 65504 λ became 1/Inf16 = 0 and every gradient silently
+                # collapsed to zero while the primal (which inverts in Float64 and
+                # then converts, as GPUArrays does) stayed healthy.
+                x = CUDA.ones(Float16, 70000)
+                m = CUDA.zeros(Float16, 1)
+                rule = Mooncake.build_rrule(_varm_sum_d1, x, m)
+                out, (_, gx, _) = Mooncake.value_and_gradient!!(rule, _varm_sum_d1, x, m)
+                @test isfinite(out)
+                @test Array(gx)[1] == 2 * Float16(inv(70000))
+                # Pin the frule's λ arithmetic too (the rrule path above does not
+                # exercise it): with unit x-tangents the JVP is 2λ·n ≈ 2, whereas a
+                # `one(T)/n` λ would give exactly 0.
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; dims=1, corrected=false), Mooncake.NoTangent()),
+                    Mooncake.Dual(varm, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, CUDA.ones(Float16, 70000)),
+                    Mooncake.Dual(m, CUDA.zeros(Float16, 1)),
+                )
+                @test only(Array(Mooncake.tangent(d))) > Float16(1.5)
+            end
+            @testset "scalar m: Float16 huge n matches the generic primal" begin
+                # Unlike the GPUArrays array-m method above, Statistics' scalar-m
+                # varm divides the sum by the Int denominator in Float16 arithmetic,
+                # so at n > 65504 the denominator promotes to Inf16 and the primal
+                # and its CPU-traced gradient are both exactly 0; the CUDA rule must
+                # not substitute healthier arithmetic on one backend only.
+                x = CuArray(vcat(ones(Float16, 1), zeros(Float16, 69999)))
+                m = Float16(0)
+                @test _varm_nodims_scalar(x, m) == Float16(0)
+                rule = Mooncake.build_rrule(_varm_nodims_scalar, x, m)
+                out, (_, gx, gm) = Mooncake.value_and_gradient!!(
+                    rule, _varm_nodims_scalar, x, m
+                )
+                @test out == Float16(0)
+                @test all(iszero, Array(gx))
+                @test iszero(gm)
+                # Pin the frule's divide-after arithmetic too: the residual-weighted
+                # sum is finite (2 · 1 · 0.5 = 1) and the Inf16-promoted denominator
+                # zeroes the quotient, exactly as the CPU-traced JVP; a λ-prescaled
+                # form would give ≈1.4e-5 instead.
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; corrected=true), Mooncake.NoTangent()),
+                    Mooncake.Dual(varm, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                    Mooncake.Dual(m, Float16(0)),
+                )
+                @test Mooncake.tangent(d) === Float16(0)
+            end
+            @testset "scalar m: Float16 residual overflow keeps dm finite" begin
+                # Regression: m's cotangent used a precomputed raw sum(diff), which
+                # overflows Float16 to Inf here (70000 × 0.94 > 65504) while the
+                # dσ²/denom coefficient is zeroed by its Inf16-promoted denominator:
+                # dm = 0 * Inf = NaN. Scaling elementwise before reducing (as in the
+                # array-m pullback and the CPU-traced generic method) gives the
+                # correct 0.
+                x = CuArray(fill(Float16(0.94), 70000))
+                m = Float16(0)
+                @test _varm_nodims_scalar(x, m) == Float16(0)
+                rule = Mooncake.build_rrule(_varm_nodims_scalar, x, m)
+                out, (_, gx, gm) = Mooncake.value_and_gradient!!(
+                    rule, _varm_nodims_scalar, x, m
+                )
+                @test out == Float16(0)
+                @test iszero(gm)
+                @test all(iszero, Array(gx))
+            end
+        end
+
+        @testset "Statistics.mean GPU rule" begin
+            # mean(x; dims) on CuArrays. GPUArrays._mean calls sum(Fix1(*,λ), x; dims)
+            # which Mooncake cannot trace; the rule calls it natively for the value and
+            # hand-rolls only the derivative.
+            @testset "dims=1 (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(4), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=2 (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(5), _mean_sum_d2, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1 (Float64)" begin
+                x = _rand(rng, Float64, 4, 3)
+                test_rule(
+                    StableRNG(6), _mean_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=: scalar output (Float32)" begin
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(9), _mean_nodims, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=(1,2) tuple (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                test_rule(
+                    StableRNG(15), _mean_sum_dtuple, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1:2 UnitRange (Float32)" begin
+                x = _rand(rng, Float32, 4, 3, 2)
+                test_rule(
+                    StableRNG(17), _mean_sum_drange, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "repeated dims=(1,1) (Float32)" begin
+                # Regression: denominator must count dim 1 once, not size(x,1)^2.
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(18), _mean_sum_ddup, x; is_primitive=false, perf_flag=:none
+                )
+                @test _mean_sum_ddup(x) ≈ _mean_sum_d1(x)
+            end
+            @testset "empty dims=() collection (Float32)" begin
+                # Regression: same `init=1` denominator mirror as the varm test above.
+                x = _rand(rng, Float32, 4, 3)
+                test_rule(
+                    StableRNG(32), _mean_sum_dempty, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "empty array, dims=: gives NaN (Float32)" begin
+                # Regression: the primal is sum/length = 0/0 = NaN; the rule takes its
+                # value from the real function, so it must agree (a hand-rolled
+                # sum(λ .* x) sums zero terms and gives 0 instead). The gradient is
+                # empty, so there is no tangent to check beyond shape.
+                x = CuArray(Float32[])
+                @test isnan(_mean_nodims(x))
+                rule = Mooncake.build_rrule(_mean_nodims, x)
+                out, (_, dx) = Mooncake.value_and_gradient!!(rule, _mean_nodims, x)
+                @test isnan(out)
+                @test isempty(dx)
+                # Forward-mode counterpart: the primal is a constant NaN, so the JVP
+                # is the zero map — not the 0/0 = NaN of the divide-after formula.
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; dims=:), Mooncake.NoTangent()),
+                    Mooncake.Dual(mean, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                )
+                @test isnan(Mooncake.primal(d))
+                @test Mooncake.tangent(d) === 0.0f0
+            end
+            @testset "dims=: gradient matches bare mean (Float16, n > 65504)" begin
+                # Regression: the Colon primal divides AFTER summing, so its true
+                # (as-implemented) derivative is dμ / Float16(n) — 0 at this scale.
+                # The λ-prescaled form gave 1.43e-5 instead, so mean(x) and
+                # mean(x; dims=:) disagreed under AD.
+                x = CUDA.ones(Float16, 70000)
+                rule_b = Mooncake.build_rrule(_mean_bare, x)
+                _, (_, g_bare) = Mooncake.value_and_gradient!!(rule_b, _mean_bare, x)
+                rule_c = Mooncake.build_rrule(_mean_nodims, x)
+                _, (_, g_colon) = Mooncake.value_and_gradient!!(rule_c, _mean_nodims, x)
+                @test Array(g_colon) == Array(g_bare)
+                @test all(iszero, Array(g_colon))
+                # Pin the frule's divide-after arithmetic too: sum(0.5-tangents) is
+                # finite (35000 < 65504) and / Float16(70000) = / Inf16 gives exactly
+                # 0; a λ-prescaled form would give ≈ 0.5.
+                d = Mooncake.frule!!(
+                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.Dual((; dims=:), Mooncake.NoTangent()),
+                    Mooncake.Dual(mean, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                )
+                @test Mooncake.tangent(d) === Float16(0)
+            end
+        end
+
+        @testset "Statistics.varm GPU rule (complex)" begin
+            # m::Complex{IEEEFloat} scalar with a complex array: the same-precision
+            # scalar-m rule. σ² = sum(abs2(x-m))/n is always real (Float32).
+            @testset "no dims, scalar mean (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                m_cx = randn(StableRNG(10), ComplexF32)
+                test_rule(
+                    StableRNG(10),
+                    _varm_nodims_scalar,
+                    x,
+                    m_cx;
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+        end
+
+        @testset "Statistics.mean GPU rule (complex)" begin
+            # mean(x::CuArray{ComplexF32}; dims=:) → ComplexF32 scalar;
+            # mean(x::CuArray{ComplexF32}; dims=1) → CuArray{ComplexF32}.
+            @testset "dims=: scalar output (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                test_rule(
+                    StableRNG(12), _mean_cx_nodims, x; is_primitive=false, perf_flag=:none
+                )
+            end
+            @testset "dims=1 (ComplexF32)" begin
+                x = _rand(rng, ComplexF32, 4, 3)
+                test_rule(
+                    StableRNG(13), _mean_cx_sum_d1, x; is_primitive=false, perf_flag=:none
+                )
+            end
+        end
+
+        # Forward-over-reverse (HVP): works for non-elementwise ops; NDual-based
+        # elementwise rules error loudly (perturbation confusion).
+        @testset "forward-over-reverse (HVP)" begin
+            x = _rand(rng, Float32, 8)
+            v = _rand(rng, Float32, 8)
+            # sum(x) is linear ⇒ hvp = 0.
+            _, g, h = value_and_hvp!!(prepare_hvp_cache(sum, x), sum, v, x)
+            @test isapprox(Array(g), ones(Float32, 8); rtol=1.0f-4)
+            @test isapprox(Array(h), zeros(Float32, 8); atol=1.0f-5)
+            # dot(x, x) has Hessian 2I ⇒ hvp = 2v.
+            dotsq = z -> dot(z, z)
+            _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
+            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
+            # Full Hessian: buffers are device-resident, no scalar indexing.
+            hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
+            _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
+            @test H isa CuMatrix{Float32}
+            @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
+            # NDual-based elementwise rules error loudly under forward-over-reverse.
+            for f in (z -> sum(abs2, z), z -> sum(abs2.(z)))
+                @test_throws r"not yet supported" value_and_hvp!!(
+                    prepare_hvp_cache(f, x), f, v, x
+                )
             end
         end
     else
