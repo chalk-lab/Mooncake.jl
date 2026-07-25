@@ -1413,48 +1413,18 @@ end
 #                      ceil(N/K) passes  over input data.
 
 # ── Cholesky factorization for matrices of NDuals ─────────────────────────────────
-#
-# Forward-mode Cholesky derivative.  For A = L·Lᵀ (lower Cholesky) with symmetric
-# perturbation Ȧ, the corresponding perturbation of L is
-#
-#   L̇ = L · Φ(L⁻¹ · Ȧ · L⁻ᵀ)
-#
-# where Φ zeroes the strict upper triangle and halves the diagonal:
-#
-#   Φ(S)ᵢⱼ = Sᵢⱼ    for i > j   (strict lower triangle)
-#   Φ(S)ᵢᵢ = Sᵢᵢ/2  for i = j   (diagonal halved)
-#   Φ(S)ᵢⱼ = 0      for i < j   (upper triangle)
-#
-# Equivalently: Φ(S) = LowerTriangular(S) - Diagonal(diag(S)/2).
-#
-# The rule computes the primal Cholesky once in Float64, then applies the derivative
-# formula N times (once per partial slot) using triangular solves, avoiding the need
-# to run the full Cholesky algorithm on NDual-typed elements.
-
-function _cholesky_ndual_fwd(
-    L::AbstractMatrix{T}, Ȧ::AbstractMatrix{T}
-) where {T<:IEEEFloat}
-    Lt = LinearAlgebra.LowerTriangular(L)
-    S = Lt \ (Ȧ / Lt')
-    Φ = LinearAlgebra.LowerTriangular(S) - LinearAlgebra.Diagonal(diag(S) / 2)
-    return Matrix(Lt * Φ)
-end
 
 function LinearAlgebra.cholesky(
     A::AbstractMatrix{NDual{T,N}},
     (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
     check::Bool=true,
 ) where {T<:IEEEFloat,N}
-    A₀ = map(ndual_value, A)
-    F₀ = LinearAlgebra.cholesky(LinearAlgebra.Hermitian(A₀); check)
-    L₀ = Matrix(F₀.L)                    # dense lower-triangular Matrix{T}
-    L̇s = ntuple(k -> _cholesky_ndual_fwd(L₀, map(x -> ndual_partial(x, k), A)), Val(N))
-    n = size(L₀, 1)
-    L_nd = Matrix{NDual{T,N}}(undef, n, n)
-    @inbounds for i in 1:n, j in 1:n
-        L_nd[i, j] = NDual{T,N}(L₀[i, j], ntuple(k -> L̇s[k][i, j], Val(N)))
-    end
-    return LinearAlgebra.Cholesky(L_nd, 'L', 0)
+    # Run LinearAlgebra's generic (non-BLAS) Cholesky directly on the `NDual` elements. It computes
+    # the same derivative as the analytic pushforward (identical to machine precision across
+    # condition numbers, so no consistency/robustness loss versus the `potrf!` frule) and is several
+    # times faster: for the SplitEM `NDual`, the algorithm's dual arithmetic beats an explicit
+    # primal-factorise-plus-per-partial-solve, which only pays off for large matrices.
+    return @invoke LinearAlgebra.cholesky(A::AbstractMatrix, LinearAlgebra.NoPivot(); check)
 end
 
 # Hermitian and Symmetric wrappers: materialise the symmetric view, then defer to
