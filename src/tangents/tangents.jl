@@ -1386,7 +1386,7 @@ caches instead.
 | Mutable struct with fields and standard `MutableTangent` | `FriendlyTangentCache{AsMutableFields}` — per-field `NamedTuple` at runtime *(non-composite, internal mode)* |
 | `AbstractDict` | `FriendlyTangentCache{AsPrimal}` *(non-composite)* |
 | `LinearAlgebra.Symmetric` / `Hermitian` / `SymTridiagonal` | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
-| `LinearAlgebra.Adjoint` / `Transpose` (of an `IEEEFloat`/`BlasFloat`-eltype array) | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
+| `LinearAlgebra.Adjoint` / `Transpose` (when the parent can be safely presented as a dense array, see `_arrayify_roundtrip_safe` in `src/rules/linear_algebra.jl`) | `FriendlyTangentCache{AsCustomised}` *(non-composite)* |
 | Everything else (Julia primitive types, float arrays, non-differentiable arrays, custom-tangent types, zero-field types) | `FriendlyTangentCache{AsRaw}` *(non-composite)* |
 
 Override to opt a type into a non-composite mode with a custom buffer:

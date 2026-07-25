@@ -1,88 +1,132 @@
-# friendly_tangent_cache and tangent_to_friendly_internal!! for structured matrix types.
+# friendly_tangent_cache and tangent_to_friendly_internal!! for Symmetric, Hermitian,
+# SymTridiagonal, Adjoint, and Transpose. All five reuse arrayify (src/rules/blas.jl), the
+# same canonicalisation utility the BLAS rules use to turn a tangent into a real array for
+# actual matrix computations. Reusing it here means a type gets the same dense gradient
+# whether it appears on its own or nested inside one of the other wrappers, rather than
+# having a second, separately maintained presentation just for the "on its own" case.
 #
-# Symmetric, Hermitian, and SymTridiagonal store only part of the matrix internally but
-# represent a full symmetric/Hermitian matrix. The user-facing gradient is a plain Matrix{T}.
+# Adjoint and Transpose are exact relabellings: every entry of the wrapper corresponds to
+# exactly one entry of the parent, just moved (and conjugated, for Adjoint). Nesting them
+# is still an exact relabelling however deep, so a plain array wrapped in any number of
+# Adjoint/Transpose layers reconstructs correctly.
 #
-# Because we do not track which elements were getindex'ed, we cannot assume the tangent
-# retains the original structure — it must be treated as a dense matrix. The original
-# Symmetric/Hermitian/SymTridiagonal structure is therefore lost in the friendly gradient.
+# Symmetric, Hermitian, and SymTridiagonal only store one triangle (or, for SymTridiagonal,
+# one off-diagonal band), so one real, unambiguous gradient number can end up needing to be
+# shown at two positions in the dense matrix, for example both (1, 2) and (2, 1). We show
+# the same number at both. This matches the standard matrix calculus convention for the
+# gradient of a symmetric or Hermitian matrix, the symmetrised G + Gᵀ form (G + Gᴴ for
+# Hermitian): it is the form you want if you then use the gradient in an update step and
+# need the result to stay symmetric. arrayify already implements this for Symmetric by
+# wrapping the reconstructed tangent in a fresh Symmetric and letting its own indexing
+# mirror the value; Hermitian and SymTridiagonal do the same, reusing each type's own
+# indexing instead of writing the mirroring by hand.
 #
-# friendly_tangent_cache pre-allocates the Matrix{T} output buffer at prepare time.
-# tangent_to_friendly_internal!! copies the stored tangent fields directly into dest.
-# The stored triangle (for Symmetric/Hermitian) or diagonals (for SymTridiagonal) hold the
-# accumulated chain-rule gradient; all other entries are zero-initialised by Mooncake and
-# are left zero by fill! (SymTridiagonal) or implicit via copyto! (Symmetric/Hermitian).
+# Two structural cases genuinely cannot be reconstructed this way, and stay AsRaw:
+#   - A SubArray with repeated indices: two output positions read the same, already summed
+#     parent tangent value, and there is no way to recover what each occurrence originally
+#     contributed. A SubArray with no repeated indices has no such problem and is exactly
+#     as safe as Adjoint/Transpose.
+#   - A triangular wrapper's implicit diagonal (UnitUpperTriangular's unit diagonal, for
+#     example) is a constant baked into the primal's shape, not a real tangent value.
+#     Reading it back through the same wrapper type shows that constant as if it were a
+#     gradient, which is wrong. Diagonal has an implicit off-diagonal too, but that one
+#     really is 0, which happens to be the correct tangent there, so Diagonal is fine.
 #
-# For Hermitian{T} where T is complex: the stored triangle of .data accumulates the
-# chain-rule gradient for both logical positions it represents (via Mooncake's usual
-# tangent accumulation), and the non-stored triangle is zero-initialised. copyto! copies
-# the full data matrix (including complex entries) to dest, which is a plain Matrix{T}.
+# _arrayify_roundtrip_safe checks these properties by walking down the parent chain.
+# _implicit_positions_are_zero covers the "implicit constant" case in general: it builds
+# the all-zero tangent for a type and checks that arrayify's dense presentation of it is
+# also all zero, rather than hardcoding which types pass. It doubles as the "does arrayify
+# even support this type" check: arrayify falls back to a method that always throws for a
+# type it has never seen, so an unrecognised parent is caught here and reported through
+# @debug, instead of surfacing as a crash the next time a real gradient is computed. AsRaw
+# is always a safe fallback, just a less friendly one.
+#
+# Every friendly_tangent_cache method below constrains T to Union{IEEEFloat,BlasFloat},
+# matching arrayify's own bound. Without this, a non-differentiable eltype (Symmetric{Int},
+# say) would also match and return AsCustomised instead of AsRaw, the same regression
+# #1149 fixed for Transpose{Int}.
 
-function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
+function Mooncake.friendly_tangent_cache(
+    x::LinearAlgebra.Symmetric{T}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
 end
-function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Hermitian{T}) where {T}
+function Mooncake.friendly_tangent_cache(
+    x::LinearAlgebra.Hermitian{T}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
 end
-function Mooncake.friendly_tangent_cache(x::LinearAlgebra.SymTridiagonal{T}) where {T}
+function Mooncake.friendly_tangent_cache(
+    x::LinearAlgebra.SymTridiagonal{T}
+) where {T<:Union{IEEEFloat,BlasFloat}}
     FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, length(x.dv), length(x.dv)))
 end
 
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Symmetric{T}, tangent
-) where {T}
-    return copyto!(tangent_as_friendly, val(tangent.fields.data))
+    tangent_as_friendly::Matrix{T}, x::LinearAlgebra.Symmetric{T}, tangent
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, dx = arrayify(x, tangent)
+    return tangent_as_friendly .= dx
 end
 
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.Hermitian{T}, tangent
-) where {T}
-    return copyto!(tangent_as_friendly, val(tangent.fields.data))
+    tangent_as_friendly::Matrix{T}, x::LinearAlgebra.Hermitian{T}, tangent
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, dx = arrayify(x, tangent)
+    return tangent_as_friendly .= dx
 end
 
 @unstable function Mooncake.tangent_to_friendly_internal!!(
-    tangent_as_friendly::Matrix{T}, ::LinearAlgebra.SymTridiagonal{T}, tangent
-) where {T}
-    dv = val(tangent.fields.dv)
-    ev = val(tangent.fields.ev)
-    fill!(tangent_as_friendly, zero(T))
-    @inbounds for i in eachindex(dv)
-        tangent_as_friendly[i, i] = dv[i]
-    end
-    @inbounds for i in eachindex(ev)
-        tangent_as_friendly[i, i + 1] = ev[i]
-        tangent_as_friendly[i + 1, i] = ev[i]
-    end
-    return tangent_as_friendly
+    tangent_as_friendly::Matrix{T}, x::LinearAlgebra.SymTridiagonal{T}, tangent
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, dx = arrayify(x, tangent)
+    return tangent_as_friendly .= dx
 end
 
-# Symmetric/Hermitian/SymTridiagonal only store one triangle (or the diagonals) of the
-# full matrix, so their tangent has no slot for the un-stored half. Adjoint/Transpose have
-# no such gap: every logical entry maps to exactly one parent entry, just transposed. The
-# friendly tangent is a plain matrix shaped like the wrapper itself, reconstructed via
-# `arrayify` (src/rules/blas.jl, the same canonicalisation the differentiation rules use),
-# so parent types it already recurses through (SubArray, Diagonal, nested Adjoint/Transpose,
-# ...) are handled automatically rather than reimplemented here.
-#
+_unaliased_index(::AbstractRange) = true
+_unaliased_index(::Integer) = true
+_unaliased_index(idx::AbstractArray) = allunique(idx)
+_unaliased_index(::Any) = false
+
+_has_unaliased_indices(x::SubArray) = all(_unaliased_index, x.indices)
+
+function _implicit_positions_are_zero(x)
+    local dz
+    try
+        _, dz = arrayify(x, zero_tangent(x))
+    catch e
+        e isa ErrorException || rethrow()
+        @debug(
+            "friendly_tangent_cache: could not verify that `arrayify` supports parent type $(typeof(x)) (see error below); if it's a new array type, add a method in src/rules/blas.jl to enable a friendly (AsCustomised) presentation. Falling back to AsRaw.",
+            exception = e,
+        )
+        return false
+    end
+    return all(iszero, dz)
+end
+
+function _arrayify_roundtrip_safe(x)
+    tangent_type(typeof(x)) <: AbstractArray && return true
+    x isa LinearAlgebra.AdjOrTrans && return _arrayify_roundtrip_safe(x.parent)
+    if x isa SubArray
+        return _has_unaliased_indices(x) && _arrayify_roundtrip_safe(x.parent)
+    end
+    return _implicit_positions_are_zero(x)
+end
+
 # The buffer uses similar(x.parent, ...) instead of a hardcoded Matrix, so it stays on the
 # same device as the primal. A CPU buffer can't be written to from a GPU tangent.
-#
-# `.=` (not permutedims!/copyto!) broadcasts from the lazy adjoint/transpose view arrayify
-# returns, so vector parents ((1, N) row shape) and matrix parents are both handled by the
-# same method, and Adjoint's conjugation for complex T falls out of the broadcast for free
-# (matching adjoint(_dx) in arrayify) instead of needing a separate conj! call.
-#
-# Constrained to T<:Union{IEEEFloat,BlasFloat}: without this, e.g. Transpose{Int} would
-# also match here and return AsCustomised instead of AsRaw, breaking the existing
-# regression test for #1149 (non-differentiable element types have no gradient to
-# reconstruct, so they should fall through to the default AsRaw path).
-
 function Mooncake.friendly_tangent_cache(
     x::LinearAlgebra.AdjOrTrans{T}
 ) where {T<:Union{IEEEFloat,BlasFloat}}
+    _arrayify_roundtrip_safe(x.parent) || return FriendlyTangentCache{AsRaw}(nothing)
     FriendlyTangentCache{AsCustomised}(similar(x.parent, T, size(x)))
 end
 
+# .= (not permutedims!/copyto!) broadcasts from the lazy view arrayify returns, so vector
+# parents ((1, N) row shape) and matrix parents are both handled by the same method, and
+# Adjoint's conjugation for complex T falls out of the broadcast for free (matching
+# adjoint(_dx) in arrayify) instead of needing a separate conj! call.
 @unstable function Mooncake.tangent_to_friendly_internal!!(
     tangent_as_friendly::AbstractMatrix{T}, x::LinearAlgebra.AdjOrTrans{T}, tangent
 ) where {T<:Union{IEEEFloat,BlasFloat}}

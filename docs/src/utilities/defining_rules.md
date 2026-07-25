@@ -130,19 +130,27 @@ end
 ```
 
 Any struct that _contains_ a `MyMatrix` field will automatically expose that field's
-gradient as a `Matrix{T}` — no additional overrides required, because the default
+gradient as a `Matrix{T}`, with no additional overrides required, because the default
 struct recursion builds a `NamedTuple` of per-field friendly gradients.
 
-The existing overloads for `LinearAlgebra.Symmetric`, `LinearAlgebra.Hermitian`, and
-`LinearAlgebra.SymTridiagonal` in `src/rules/linear_algebra.jl` follow exactly this
-pattern and serve as reference implementations.
+### Reusing `arrayify` for structured and wrapped matrix types
 
-`Symmetric`/`Hermitian` only store one triangle of the full matrix, so their tangent has no
-slot for the un-stored half. `LinearAlgebra.Adjoint`/`Transpose` have no such gap: every
-entry maps to exactly one parent entry, just transposed (and, for `Adjoint`, conjugated).
-Their overloads in the same file therefore take a different approach: they
-reconstruct the friendly gradient via `arrayify` (`src/rules/blas.jl`), the same
-canonicalisation utility the differentiation rules themselves use, rather than accessing
-`tangent.fields` directly. This lets the conversion handle any parent type `arrayify`
-already recurses through (plain arrays, views, `Diagonal`, other `Adjoint`/`Transpose`
-wrappers, ...) instead of assuming the parent's tangent is always a plain array.
+`LinearAlgebra.Symmetric`, `Hermitian`, `SymTridiagonal`, `Adjoint`, and `Transpose` in
+`src/rules/linear_algebra.jl` take a different approach from the `MyMatrix` example above:
+instead of writing their own dense-conversion logic, they reuse `arrayify`
+(`src/rules/blas.jl`), the same canonicalisation utility the BLAS rules use to turn a
+tangent into a real array for matrix computations. This means a type gets the same dense
+gradient whether it appears on its own or nested inside one of the other wrappers.
+
+`Adjoint`/`Transpose` are exact relabellings of their parent, so this is always safe,
+however deeply they are nested over a plain array. `Symmetric`/`Hermitian`/`SymTridiagonal`
+only store part of the matrix, so a single real gradient number can need to be shown at two
+positions in the dense result; these types mirror that number, matching the standard matrix
+calculus convention for gradients of symmetric/Hermitian matrices (the symmetrised
+`G + Gᵀ`, or `G + Gᴴ` for Hermitian). A `SubArray` with no repeated indices is safe the
+same way. Two cases are not safe and stay `AsRaw`: a `SubArray` with repeated indices (two
+output positions reading the same already-summed value, with no way to recover the
+individual contributions), and a triangular wrapper's implicit diagonal (a constant baked
+into the primal's shape, not a real tangent value, so reading it back as a gradient is
+simply wrong). See the comment above `_arrayify_roundtrip_safe` in
+`src/rules/linear_algebra.jl` for the full reasoning and how each case is detected.

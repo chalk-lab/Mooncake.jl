@@ -79,6 +79,26 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
+# Same idea as Symmetric above, just reusing Hermitian's own indexing instead of
+# reimplementing it: wrapping the reconstructed tangent in a fresh Hermitian means reading
+# it off-diagonal conjugates automatically, and reading the diagonal forces it real, exactly
+# matching what Hermitian's own getindex already does for a primal value.
+function arrayify(
+    x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Hermitian(_dx, Symbol(x.uplo))
+end
+# dv and ev each get arrayified on their own (they are plain vectors), then handed back to
+# SymTridiagonal's own constructor, so reading the result off-diagonal mirrors ev the same
+# way SymTridiagonal already mirrors it for a primal value.
+function arrayify(
+    x::SymTridiagonal{T,<:AbstractVector{T}}, dx::TangentOrFData
+) where {T<:Union{IEEEFloat,BlasFloat}}
+    _, _dv = arrayify(x.dv, _fields(dx).dv)
+    _, _ev = arrayify(x.ev, _fields(dx).ev)
+    return x, SymTridiagonal(_dv, _ev)
+end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}

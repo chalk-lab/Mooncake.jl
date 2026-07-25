@@ -249,9 +249,11 @@ end
             )
             @test grads_sym[2] isa NamedTuple{(:m, :v)}
             @test grads_sym[2].m isa Matrix{Float64}
-            # m[1,1] and m[2,1] both read from data[1,1] and data[1,2] respectively
-            # (Symmetric :U stores upper triangle; m[2,1] aliases data[1,2]).
-            @test grads_sym[2].m ≈ [1.0 1.0; 0.0 0.0]
+            # m[1,1] reads data[1,1] directly. m[2,1] reads data[1,2] (Symmetric :U stores
+            # the upper triangle, so m[2,1] aliases the same slot as m[1,2]), accumulating
+            # 1 there. The friendly gradient mirrors that single stored value into both
+            # (1,2) and (2,1), matching the standard symmetric-matrix gradient convention.
+            @test grads_sym[2].m ≈ [1.0 1.0; 1.0 0.0]
             @test grads_sym[2].v ≈ 2 * foo.v
 
             cache_sym = Mooncake.prepare_gradient_cache(
@@ -265,6 +267,24 @@ end
             _, dx_sym2 = Mooncake.value_and_gradient!!(cache_sym, f_sym, foo)
             @test dx_sym2[2].m === dx_sym[2].m
             @test dx_sym2[2].m == grads_sym[2].m
+
+            # Regression for #1250: wrappers around a raw array have an isometric logical
+            # presentation, so their friendly gradients are plain arrays in wrapper shape.
+            A = reshape(collect(1.0:12.0), 3, 4)
+            f_wrapper = x -> sum(abs2, x)
+            for W in (LinearAlgebra.Adjoint, LinearAlgebra.Transpose)
+                x = W(A)
+                cache_wrapper = Mooncake.prepare_gradient_cache(
+                    f_wrapper, x; config=Mooncake.Config(; friendly_tangents=true)
+                )
+                value, (_, grad) = Mooncake.value_and_gradient!!(
+                    cache_wrapper, f_wrapper, x
+                )
+                @test value == sum(abs2, x)
+                @test grad isa Matrix{Float64}
+                @test size(grad) == size(x) == (4, 3)
+                @test grad == 2 .* Matrix(x)
+            end
 
             # Vector of structs: friendly gradient returns a Vector of the same struct type
             # (MWE 3 from temp/friendly_tangent_mwes.jl).

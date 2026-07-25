@@ -1103,6 +1103,30 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test grads[4] ≈ sum(mask)
         end
 
+        @testset "friendly tangents for Adjoint/Transpose of a CuArray" begin
+            # The AdjOrTrans friendly path (src/rules/linear_algebra.jl) allocates its
+            # buffer via similar(x.parent, ...) and converts with an arrayify-fed
+            # broadcast, so the friendly gradient must come back as a CuMatrix in
+            # wrapper shape without any CPU round-trip.
+            x = adjoint(CuArray(randn(rng, 2, 3)))
+            cache = prepare_gradient_cache(
+                sum, x; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            val, grads = value_and_gradient!!(cache, sum, x)
+            @test val ≈ sum(Array(parent(x)))
+            @test grads[2] isa CuMatrix{Float64}
+            @test size(grads[2]) == (3, 2)
+            @test Array(grads[2]) == ones(3, 2)
+
+            # Conjugation for complex Adjoint happens in the on-device broadcast.
+            xc = adjoint(CuArray(randn(rng, ComplexF64, 2, 3)))
+            txp = CuArray(randn(rng, ComplexF64, 2, 3))
+            tx = Mooncake.build_tangent(typeof(xc), txp)
+            fx = Mooncake.tangent_to_friendly!!(xc, tx)
+            @test fx isa CuMatrix{ComplexF64}
+            @test Array(fx) == Array(txp)'
+        end
+
         # Verify that unsupported GPU operations throw user-friendly ArgumentErrors rather
         # than silent wrong answers or opaque internal crashes.  Each case exercises an
         # explicit catch-all rule that blocks an unimplemented differentiation path.
