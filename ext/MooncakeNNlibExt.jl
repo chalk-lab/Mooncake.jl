@@ -270,6 +270,31 @@ end
     } where {P,N,M},
     true,
 )
+
+# ChainRules defines an `rrule` only for the in-place `gather!`, not `gather`, so without
+# this AD would trace `gather`'s scalar per-index loop (see
+# https://github.com/chalk-lab/Mooncake.jl/issues/1234). The pullback is `∇gather_src`
+# accumulating straight into `src`'s fdata, avoiding its intermediate allocation.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
+    } where {P<:IEEEFloat,N,M},
+)
+function Mooncake.rrule!!(
+    ::CoDual{typeof(NNlib.gather)},
+    src::CoDual{<:SupportedArray{P,N}},
+    idx::CoDual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    pidx = primal(idx)
+    res = zero_fcodual(NNlib.gather(primal(src), pidx))
+    function gather_pb!!(::NoRData)
+        _, dsrc = arrayify(src)
+        NNlib.scatter!(+, dsrc, tangent(res), pidx)
+        return NoRData(), NoRData(), NoRData()
+    end
+    return res, gather_pb!!
+end
 for conv in [:conv, :depthwiseconv]
     local ∇conv_data, ∇conv_filter = Symbol.(:∇, conv, [:_data, :_filter])
 
