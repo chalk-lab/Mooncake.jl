@@ -732,11 +732,17 @@ end
 end
 # Tuple result (e.g. `logabsgamma` returning `(Float64, Int64)`): element-wise recursion, the V
 # being the tuple of element Vs (`Lifted` wraps once at the top level, per the dual protocol).
-@inline function _lift_from_lanes(y::Tuple, dys::NTuple{Nw,Tuple}) where {Nw}
-    Vs = ntuple(length(y)) do i
-        tangent(_lift_from_lanes(y[i], ntuple(k -> dys[k][i], Val(Nw))))
+# `@generated` to unroll over the tuple's static arity: a plain `ntuple(length(y))` does not
+# specialize on `y`'s arity and falls to the slow generic `ntuple`, which dominates forward AD
+# through tuple-returning imported rules (distribution logpdfs — ~half of gp_pois's forward time).
+@generated function _lift_from_lanes(y::Tuple, dys::NTuple{Nw,Tuple}) where {Nw}
+    L = length(y.parameters)
+    elems = Any[]
+    for i in 1:L
+        lane_tuple = Expr(:tuple, (:(dys[$k][$i]) for k in 1:Nw)...)
+        push!(elems, :(tangent(_lift_from_lanes(y[$i], $lane_tuple))))
     end
-    return Lifted{typeof(y),Nw}(y, Vs)
+    return :(Lifted{typeof(y),Nw}(y, $(Expr(:tuple, elems...))))
 end
 # Least-specific fallback: the width-1 `_frule_wrapper` packs results with the generic `lift`,
 # which also handles struct/`NamedTuple`/structured-array results, but the width-`Nw` methods above
