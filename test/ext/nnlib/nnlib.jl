@@ -305,6 +305,9 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
 
+        # gather
+        (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),
+
         # conv
         (false, :none, true, Core.kwcall, (;), conv, x, w, dense_cdims),
         (false, :none, true, conv, x, w, dense_cdims),
