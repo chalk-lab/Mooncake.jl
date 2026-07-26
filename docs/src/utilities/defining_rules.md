@@ -148,9 +148,9 @@ only store part of the matrix, so a single real gradient number can need to be s
 positions in the dense result; these types mirror that number, matching the standard matrix
 calculus convention for gradients of symmetric/Hermitian matrices (the symmetrised
 `G + Gᵀ`, or `G + Gᴴ` for Hermitian). A `SubArray` with no repeated indices is safe the
-same way. Two cases are not safe and stay `AsRaw`: a `SubArray` with repeated indices (two
-output positions reading the same already-summed value, with no way to recover the
-individual contributions), and a triangular wrapper's implicit diagonal (a constant baked
-into the primal's shape, not a real tangent value, so reading it back as a gradient is
-simply wrong). See the comment above `_arrayify_roundtrip_safe` in
+same way. Two cases stay `AsRaw`: a `SubArray` with repeated indices (structurally the same
+as the symmetric-matrix mirroring above, but with no established convention to lean on, so
+this stays conservative instead of picking one), and a triangular wrapper's implicit
+diagonal (a constant baked into the primal's shape, not a real tangent value, so reading it
+back as a gradient is simply wrong). See the comment above `_arrayify_roundtrip_safe` in
 `src/rules/linear_algebra.jl` for the full reasoning and how each case is detected.

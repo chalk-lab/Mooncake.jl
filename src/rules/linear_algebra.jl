@@ -21,11 +21,13 @@
 # mirror the value; Hermitian and SymTridiagonal do the same, reusing each type's own
 # indexing instead of writing the mirroring by hand.
 #
-# Two structural cases genuinely cannot be reconstructed this way, and stay AsRaw:
+# Two structural cases stay AsRaw:
 #   - A SubArray with repeated indices: two output positions read the same, already summed
-#     parent tangent value, and there is no way to recover what each occurrence originally
-#     contributed. A SubArray with no repeated indices has no such problem and is exactly
-#     as safe as Adjoint/Transpose.
+#     parent tangent value, structurally the same as the Symmetric/Hermitian/SymTridiagonal
+#     mirroring above. Unlike those, there's no established convention for "the gradient of
+#     a repeated-index view" to lean on, so this stays conservative instead of picking one.
+#     A SubArray with no repeated indices has no such ambiguity and is exactly as safe as
+#     Adjoint/Transpose.
 #   - A triangular wrapper's implicit diagonal (UnitUpperTriangular's unit diagonal, for
 #     example) is a constant baked into the primal's shape, not a real tangent value.
 #     Reading it back through the same wrapper type shows that constant as if it were a
