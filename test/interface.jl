@@ -1410,6 +1410,22 @@ end
                 @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
             end
 
+            # Regression test: `applicable(axes, x)` is `true` for any `x` (Base's generic
+            # `axes(A) = map(oneto, size(A))` fallback matches unconditionally), so the
+            # shape check used to run `axes(...)` on struct-shaped primals/tangents that
+            # have no `size` method at all, throwing an unrelated MethodError instead of
+            # either skipping the check or reporting a real shape mismatch.
+            @testset "HVP with struct-shaped (non-array) primal/tangent" begin
+                f(x::SimplePair) = x.x1^2 + x.x2^2
+                x = SimplePair(3.0, 4.0)
+                v = Mooncake.Tangent((; x1=1.0, x2=0.0))
+                cache = prepare_hvp_cache(f, x)
+                f_val, grad, hvp = value_and_hvp!!(cache, f, v, x)
+                @test f_val ≈ 25.0
+                @test grad.fields == (; x1=6.0, x2=8.0)
+                @test hvp.fields == (; x1=2.0, x2=0.0)
+            end
+
             @testset "HVP cache mismatch errors" begin
                 f(x) = sum(x .* x)
                 x = [1.0, 2.0]

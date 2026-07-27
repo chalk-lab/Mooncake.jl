@@ -47,6 +47,14 @@ end
 @inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
     return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
 end
+# `IdDict`'s fields (`ht::Memory`, `count`, `ndel`) are hash-table bookkeeping, not
+# differentiable data, and `IdDict` has no field-wise constructor -- only the key-value
+# one, which the generic path below would call by mistake and crash on `ht`'s `#undef`
+# slots. A fresh IdDict starts empty, so its tangent is just its own zero_tangent;
+# increment/setindex in `src/rules/iddict.jl` fills it in later.
+@inline function build_output_tangent(::Type{P}, x::Tuple, ::Tuple) where {P<:IdDict}
+    return zero_tangent(_new_(P, x...))
+end
 @generated function _build_output_tangent_cartesian(
     ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
 ) where {P,nfield,names,Tt<:Tuple}
@@ -210,6 +218,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
             UnitUpperTriangular{Float64,Matrix{Float64}},
             randn(2, 2),
         ),
+        # Regression test: `IdDict`'s raw fields (`ht::Memory`, `count`, `ndel`) are hash-
+        # table bookkeeping, not differentiable data, and the generic _new_ tangent-
+        # construction path used to misread `ht` as a (k, v) pair and crash with
+        # UndefRefError on its #undef slots.
+        (false, :none, nothing, _new_, IdDict{Int,Float64}),
     ]
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)

@@ -1,3 +1,10 @@
+# `MooncakeInterpreter` holds compiler-internal state (world age, inference caches, a
+# cache of compiled rules) -- never a differentiable value. Without this, `zero_tangent`
+# recurses into that cache and hits a raw `OpaqueClosure` with an untranslatable
+# `llvmcall`. Needed because `@zero_derivative` rules like `get_interpreter` below still
+# need a zero tangent for their return value, not just their arguments.
+tangent_type(::Type{<:MooncakeInterpreter}) = NoTangent
+
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode}}
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode},UInt}
 @zero_derivative MinimalCtx Tuple{
