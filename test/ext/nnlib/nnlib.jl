@@ -382,6 +382,21 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
+        # An `init` with no rdata still competes in the maximum, so it is counted in the tie
+        # total even though it takes no share of the cotangent. Returning a share for it
+        # instead threw, `oftype` being unable to fit a fractional one into an integer.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=2,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
         # `init` over a multi-dim `src`, where the tie count and the `init` indicator have
         # to agree on the extra leading dimension. Winning `init` takes the whole cotangent,
         # so `dsrc` is zero and `dinit` is the destination count.

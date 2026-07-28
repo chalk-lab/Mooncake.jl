@@ -355,6 +355,11 @@ end
     init_tie = P.(y .== convert(P, init))
     total = total .+ init_tie                     # >= 1 everywhere: y is one of them
     dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
+    # An `init` with no rdata — an integer, say — still competes in the maximum and so is
+    # counted above, but it has no slot to take a share in, and `oftype` would throw fitting
+    # a fractional share into it. `nothing` suits this and an absent `init` alike: for both,
+    # the caller answers with `zero_rdata` of the keywords, which is `NoRData`.
+    Mooncake.zero_rdata(init) isa Mooncake.NoRData && return nothing
     # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
     # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised
     # an `increment!!` MethodError.
