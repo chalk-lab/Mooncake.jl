@@ -378,6 +378,34 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
+        # `init` over a multi-dim `src`, where the tie count and the `init` indicator have
+        # to agree on the extra leading dimension. Winning `init` takes the whole cotangent,
+        # so `dsrc` is zero and `dinit` is the destination count.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(2, 3),
+            [1, 1, 2],
+        ),
+
+        # `init=nothing` is NNlib's own default and takes the no-`init` path.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=nothing,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
         # `dstsize` past the largest index leaves destinations no index reaches, holding
         # `scatter_empty` with no tied source — the 0/0 that `max(total, 1)` guards. Summing
         # only the reachable destinations keeps the primal finite, since the others are
