@@ -40,7 +40,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (rng, size...) -> randn(rng, size...)
     end
     float = cuda ? x -> Float32(x) : identity
-    _ones = cuda ? n -> cu(ones(Float32, n)) : n -> ones(n)
+    _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -330,6 +330,27 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (false, :none, true, NNlib.scatter, max, _ones(3), [1, 1, 2]),
         (false, :none, true, NNlib.scatter, min, _ones(3), [1, 1, 2]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, max, _ones(3), [1, 1, 2]),
+
+        # ndims(src) > ndims(idx): the tie splits per row, and the helper's gather/scatter
+        # shapes have to agree on the extra leading dimension.
+        (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
+
+        # `init` is a differentiable keyword, so the keyword NamedTuple's rdata is not
+        # NoRData — returning NoRData there raised an `increment!!` MethodError. Kept below
+        # every source, where it does not win the max and so has a genuinely zero gradient;
+        # above every source it wins, and Mooncake reports 0 against a true 2, so that case
+        # cannot be asserted until the `init` gradient exists.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(0.5),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
 
         # gather
         (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),

@@ -355,7 +355,14 @@ function rrule!!(
     res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx; primal(kw)...))
     function scatter_extremum_kw_pb!!(::NoRData)
         _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res))
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+        # `scatter`'s `init` is a differentiable `Real`, so with it supplied the keyword
+        # `NamedTuple`'s rdata is not `NoRData` — returning `NoRData` there raises an
+        # `increment!!` `MethodError`. `dstsize` and an empty set of keywords still give
+        # `NoRData`, so this covers both. The `init` gradient itself stays zero, matching
+        # the imported ChainRules rule, which reports `NoTangent()` for all but `src`.
+        return NoRData(),
+        Mooncake.zero_rdata(primal(kw)), NoRData(), NoRData(), NoRData(),
+        NoRData()
     end
     return res, scatter_extremum_kw_pb!!
 end
