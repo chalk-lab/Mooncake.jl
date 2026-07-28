@@ -314,9 +314,9 @@ end
 @inline function _scatter_extremum_dsrc!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy
 ) where {P}
-    tied = psrc .== NNlib.gather(y, pidx)
-    ntied = NNlib.gather(NNlib.scatter(+, P.(tied), pidx), pidx)
-    dsrc .+= tied .* NNlib.gather(dy, pidx) ./ max.(ntied, one(P))
+    mask = P.(psrc .== NNlib.gather(y, pidx))
+    ntied = NNlib.gather(NNlib.scatter(+, mask, pidx), pidx)
+    dsrc .+= mask .* NNlib.gather(dy, pidx) ./ max.(ntied, one(P))
     return nothing
 end
 
