@@ -294,7 +294,6 @@ end
     end
 
     # Regression test for the `tangent_type(::Type{<:MooncakeInterpreter}) = NoTangent`
-    # fix at the top of this file -- see that comment for why it's needed.
     @testset "MooncakeInterpreter has NoTangent tangent_type" begin
         interp = get_interpreter(ForwardMode)
         @test Mooncake.tangent_type(typeof(interp)) == Mooncake.NoTangent

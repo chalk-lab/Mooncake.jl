@@ -2221,7 +2221,7 @@ end
 
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
     # `axes(x) = map(oneto, size(x))` is defined for any `x`, so `applicable(axes, x)` is
-    # `true` even when `x` has no `size` method (e.g. a struct-shaped `Tangent`) -- check
+    # `true` even when `x` has no `size` method (e.g. a struct-shaped `Tangent`) - check
     # `size` itself instead, since that's what `axes` actually depends on.
     if applicable(size, primal) && applicable(size, tangent)
         axes(primal) == axes(tangent) || throw(
