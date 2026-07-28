@@ -13,11 +13,11 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
-@testset "nnlib" begin
-    # TODO: CUDA version bound when 
-    #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
-    cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
+# TODO: CUDA version bound when
+#  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
+cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
 
+@testset "nnlib" begin
     _rand = if cuda
         (rng, size...) -> cu(randn(rng, size...))
     else
@@ -490,4 +490,17 @@ end
     @test isinf(ndual_value(y_nd_neg)) && ndual_value(y_nd_neg) < 0
     @test !isnan(ndual_partial(y_nd_neg, 1))
     @test ndual_partial(y_nd_neg, 1) ≈ 0.5f0
+end
+
+# NNlib's `exp(-abs(x))` form of σ has a kink at zero that the function itself does not.
+@testset "sigmoid at zero: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
+    test_rule(StableRNG(123), f, 0.0; perf_flag=:stability)
+    # The reported failure was a gradient through a broadcast containing an exact zero.
+    test_rule(StableRNG(123), x -> sum(f.(x)), [0.0, 0.5, -0.5]; is_primitive=false)
+    # On GPU that broadcast is evaluated on `NDual`s in-kernel, an independent code path.
+    if cuda
+        test_rule(
+            StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
+        )
+    end
 end
