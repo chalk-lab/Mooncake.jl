@@ -309,19 +309,29 @@ end
     true,
 )
 
+# Accumulates the `src` gradient into `dsrc` and returns `init`'s, or `nothing` when `init`
+# was not supplied. Both come from the same tie count, which is why they share a function.
+#
 # ChainRules' `∇scatter_src` for `max`/`min` is
 # `(src .== gather(dst, idx)) .* gather(Δ, idx)`, giving the full cotangent to every source
 # tied for its destination's extremum. The gradient then sums to the tie multiplicity rather
 # than to 1 — measured 2x for two tied entries, 3x for three — so it is not a member of the
 # subdifferential at all, as opposed to a debatable choice among its members. Dividing by
-# the number of tied entries restores the sum and picks the symmetric member, which is the
-# one central differences agree with. `init` seeds every destination, so it competes in the
-# same maximum and takes a share of the same cotangent. It is counted among the tied maxima,
-# which changes the sources' share too: a source tied with `init` takes `1/(m+1)`, not
-# `1/m`. Returns `init`'s cotangent, or `nothing` when it was not supplied. `max(total, 1)`
-# guards only that case — without `init`, a destination reachable by no index at all holds
-# `scatter_empty`, a constant whose mask is already zero, and the division would be `0/0`.
-@inline function _scatter_extremum_dsrc!(
+# the number of tied entries restores the sum and picks the symmetric member.
+#
+# `init` seeds every destination, so it competes in the same maximum and takes a share of
+# the same cotangent. Counting it among the tied maxima changes the sources' share too: a
+# source tied with `init` takes `1/(m+1)`, not `1/m`. `max(total, 1)` guards only the
+# no-`init` case — a destination reachable by no index at all then holds `scatter_empty`, a
+# constant whose mask is already zero, and the division would be `0/0`.
+#
+# Where nothing is tied, this is the derivative and finite differences agree with it. At an
+# exact tie they cannot: the symmetric split is the mean of the tied members' direction
+# components, while a central difference returns the midpoint of the one-sided derivatives.
+# Both lie in the subdifferential, so a finite-difference comparison that disagrees at a tie
+# is not evidence of a bug — which is why the tests cover `init` above and below the sources
+# but not level with them.
+@inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
     mask = P.(psrc .== NNlib.gather(y, pidx))
@@ -349,7 +359,7 @@ function rrule!!(
     pidx = primal(idx)
     res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx))
     function scatter_extremum_pb!!(::NoRData)
-        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res), nothing)
+        _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), nothing)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, scatter_extremum_pb!!
@@ -371,7 +381,7 @@ function rrule!!(
         # `haskey` on a `NamedTuple`'s type is settled at compile time, so each keyword set
         # gets its own specialisation and `kw_rdata` has one concrete type per call site.
         init = haskey(pkw, :init) ? pkw.init : nothing
-        dinit = _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res), init)
+        dinit = _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), init)
         # `init` is a differentiable `Real`, so with it supplied the keyword `NamedTuple`'s
         # rdata is not `NoRData` — returning `NoRData` there raises an `increment!!`
         # `MethodError`. `dstsize` alone, or no keywords at all, still gives `NoRData`.
