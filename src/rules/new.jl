@@ -239,7 +239,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
         # Regression test for IdDict's _new_ tangent-construction bugs above. Real, valid
         # field values here, not zero args - _new_ with no arguments leaves `ht`
         # uninitialized, which segfaults on its own, unrelated to the bug being tested.
-        (false, :none, nothing, _new_, IdDict{Int,Float64}, Memory{Any}(undef, 0), 0, 0),
+        # `ht` is Memory{Any} on 1.11+ but Vector{Any} on 1.10, so get it via fieldtype.   
+        (
+            false,
+            :none,
+            nothing,
+            _new_,
+            IdDict{Int,Float64},
+            fieldtype(IdDict{Int,Float64}, :ht)(undef, 0),
+            0,
+            0,
+        ),
     ]
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)
