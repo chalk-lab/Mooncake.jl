@@ -523,9 +523,12 @@ end
 # `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode
 # picked that branch up as `0 * Inf`, which poisoned `gelu`/`gelu_tanh` from `|x| ≈ 21`
 # upwards.
-@testset "tanh_fast at saturation" begin
+@testset "tanh_fast across NNlib's branches" begin
     test_rule(StableRNG(123), tanh_fast, 0.5; perf_flag=:stability)
     test_rule(StableRNG(123), tanh_fast, 400.0; perf_flag=:stability)
+    # Below |x| ≈ 0.13 the primal switches to a polynomial while the rule stays analytic, so
+    # this pins the gap between them as small enough for finite differences not to see it.
+    test_rule(StableRNG(123), tanh_fast, 0.05; perf_flag=:stability)
     test_rule(
         StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
     )
