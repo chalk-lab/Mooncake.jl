@@ -391,10 +391,18 @@ end
 # `t / (1 + t)^2` for either sign of `x`. The rules use that form because it holds the small
 # quantity in `t`'s exponent, where it keeps full relative precision. The textbook form does
 # not: floats near `1.0` are spaced `eps` apart, so forming `σ(x) = 1 - δ` destroys any
-# `δ < eps/2`, and the later `1 - σ(x)` — exact in itself — recovers only what survived. That
-# quantises the derivative to one ulp and then to exactly `0` (Float64 `x ≳ 37`, Float32
-# `x ≳ 17`, Float16 `x ≳ 8`) while the true value is still a normal float. `t ≤ 1`, so the
-# quotient cannot overflow.
+# `δ < eps/2`, and the later `1 - σ(x)` — exact in itself — recovers only what survived.
+# That quantises the derivative to one ulp and then to exactly `0` (Float64 `x ≳ 37`,
+# Float32 `x ≳ 17`, Float16 `x ≳ 8`) while the true value is still a normal float. `t ≤ 1`,
+# so the quotient cannot overflow.
+#
+# `t` and the value are computed separately, so `exp` runs twice — the primal recomputes it
+# internally. Deriving the value from `t` would cut the rule body from 5.5 to 3.5 ns, about
+# a tenth of a gradient through a large broadcast, and is bit-identical over [-5, 5]. It is
+# not done because it means restating the primal's branch here, and `sigmoid_fast`'s clamps
+# with it: 2 ns against a rule whose *value* could then drift from the function it
+# differentiates, in a formulation that has already changed once. Revisit with a profile
+# showing σ matters, and add a value-agreement test if so.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
