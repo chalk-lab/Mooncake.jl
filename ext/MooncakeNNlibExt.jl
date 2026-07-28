@@ -119,7 +119,7 @@ _maximum(x, dims, init) = maximum(x; dims, init)
     typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
 
-function rrule!!(
+function Mooncake.rrule!!(
     f::CoDual{typeof(dropout)},
     rng::CoDual{<:AbstractRNG},
     x::CoDual{<:SupportedArray{P,N}},
@@ -131,7 +131,7 @@ function rrule!!(
     return x, NoPullback(f, rng, x, p)
 end
 
-function rrule!!(
+function Mooncake.rrule!!(
     kwcall::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     f::CoDual{typeof(dropout)},
@@ -357,7 +357,7 @@ end
     return oftype(init, sum(dy .* init_tie ./ total))
 end
 
-function rrule!!(
+function Mooncake.rrule!!(
     ::CoDual{typeof(NNlib.scatter)},
     op::CoDual{<:Union{typeof(max),typeof(min)}},
     src::CoDual{<:SupportedArray{P,N}},
@@ -373,7 +373,7 @@ function rrule!!(
     return res, scatter_extremum_pb!!
 end
 
-function rrule!!(
+function Mooncake.rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
     ::CoDual{typeof(NNlib.scatter)},
