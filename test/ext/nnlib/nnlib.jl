@@ -13,6 +13,22 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
+# At p == 0 `dropout` returns its input array itself, so mutating the result writes through to
+# `x` and the sum doubles. Deterministic there — no draw is made — so finite differences apply.
+# `p` is fixed inside rather than passed in: `test_rule` would perturb it to `-ε`, which is
+# outside `dropout`'s domain, and no step cap helps when the value sits on the boundary.
+function dropout_alias_tester(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)))
+    y .*= 2
+    return sum(x)
+end
+
+function dropout_alias_tester_dims(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)); dims=1)
+    y .*= 2
+    return sum(x)
+end
+
 # TODO: CUDA version bound when
 #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
 cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
@@ -156,6 +172,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
+        (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),

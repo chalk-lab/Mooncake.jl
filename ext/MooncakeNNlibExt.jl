@@ -20,7 +20,8 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual
+    Dual,
+    NoPullback
 
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
@@ -93,11 +94,41 @@ _maximum(x, dims, init) = maximum(x; dims, init)
         Union{Array{P,3},AbstractGPUArray{P,3}},
     } where {P<:IEEEFloat},
 )
-@from_rrule(
-    MinimalCtx,
-    Tuple{typeof(dropout),AbstractRNG,SupportedArray{P,N},P} where {P<:IEEEFloat,N},
-    true,
-)
+# `dropout` returns its input array itself when `p ≤ 0`: the fast path is
+# `convert(AbstractArray{float(eltype(A))}, A)`, which for a float array is the identity. So the
+# output aliases the input, while ChainRules' rrule has no such path — it always allocates, and
+# always draws from `rng`. AD therefore ran a different program from the primal: mutating the
+# result no longer wrote through to the input, changing the value as well as the gradient, and
+# the RNG advanced where the primal left it untouched. Returning the input `CoDual` unchanged keeps the aliasing invariant, skips the
+# draw, and matches the `p > 0` path on `p` itself, for which ChainRules reports `NoTangent()`.
+@is_primitive MinimalCtx Tuple{
+    typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+} where {P<:IEEEFloat,N}
+@is_primitive MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+} where {P<:IEEEFloat,N}
+
+function rrule!!(
+    f::CoDual{typeof(dropout)},
+    rng::CoDual{<:AbstractRNG},
+    x::CoDual{<:SupportedArray{P,N}},
+    p::CoDual{P},
+) where {P<:IEEEFloat,N}
+    primal(p) > 0 && return Mooncake.rrule_wrapper(f, rng, x, p)
+    return x, NoPullback(f, rng, x, p)
+end
+
+function rrule!!(
+    kwcall::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    f::CoDual{typeof(dropout)},
+    rng::CoDual{<:AbstractRNG},
+    x::CoDual{<:SupportedArray{P,N}},
+    p::CoDual{P},
+) where {P<:IEEEFloat,N}
+    primal(p) > 0 && return Mooncake.rrule_wrapper(kwcall, kw, f, rng, x, p)
+    return x, NoPullback(kwcall, kw, f, rng, x, p)
+end
 
 # logsoftmax rrules
 @is_primitive MinimalCtx Tuple{
