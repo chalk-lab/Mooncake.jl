@@ -78,11 +78,20 @@ end
     end
 
     # `sigmoid_shaped` at exactly zero comes out right for BFloat16, where it does not for
-    # the IEEEFloat types: `abs(::BFloat16)` is BFloat16s' own method rather than the
-    # `abs_float` intrinsic, so its derivative at zero is 1 not `sign(0) == 0`, and the
-    # chain rule recovers 1/4. That is why the NNlib activation rules being `IEEEFloat`-only
-    # leave BFloat16 on a correct path rather than an excluded one — see #1257 for the
-    # IEEEFloat behaviour. Composite, so not a primitive.
+    # the IEEEFloat types, and the reason is this repo's own choice rather than BFloat16s'.
+    # `ext/MooncakeBFloat16sExt.jl` makes `abs` a primitive whose rules branch on
+    # `x >= zero(P)`, taking the positive side at zero and so reporting a derivative of 1;
+    # AD therefore never traces `abs` down to the `abs_float` intrinsic, whose rule
+    # multiplies by `sign(x)` and collapses at zero because `sign(0) == 0`. The chain rule
+    # then recovers 1/4. So these two cases are what pin that rule's behaviour at zero: with
+    # `abs` traced through BFloat16s' own `BFloat16(abs(Float32(x)))`, the derivative here
+    # is 0 instead, exactly as for the IEEEFloat types — see #1257 for those.
+    #
+    # `abs` itself cannot be checked at zero this way, which is why it is absent from the
+    # cases above: at a kink a central difference returns the midpoint of the one-sided
+    # derivatives, 0, against the rule's 1. This composite is smooth there — the kink
+    # cancels between the `ifelse` branches — so finite differences do agree with it.
+    # Composite, so not a primitive.
     @testset "sigmoid_shaped at zero" for x in (P(0), P(0.5))
         test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
     end
