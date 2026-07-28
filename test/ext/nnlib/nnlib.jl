@@ -336,10 +336,12 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
 
         # `init` is a differentiable keyword, so the keyword NamedTuple's rdata is not
-        # NoRData — returning NoRData there raised an `increment!!` MethodError. Kept below
-        # every source, where it does not win the max and so has a genuinely zero gradient;
-        # above every source it wins, and Mooncake reports 0 against a true 2, so that case
-        # cannot be asserted until the `init` gradient exists.
+        # NoRData — returning NoRData there raised an `increment!!` MethodError. Below every
+        # source it loses the max and its gradient is genuinely zero; above every source it
+        # wins outright and takes the whole cotangent. An exact tie between `init` and the
+        # sources is deliberately absent: the symmetric split over the tied members is a
+        # valid subgradient but not the one central differences give, which is the midpoint
+        # of the one-sided derivatives, so `test_rule` cannot express it.
         (
             false,
             :none,
@@ -350,6 +352,29 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             max,
             _ones(3),
             [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
+        # `dstsize` past the largest index leaves destinations no index reaches, holding
+        # `scatter_empty` with no tied source — the 0/0 that `max(total, 1)` guards. Summing
+        # only the reachable destinations keeps the primal finite, since the others are
+        # -Inf.
+        (
+            false,
+            :none,
+            false,
+            x -> sum(NNlib.scatter(max, x, [1, 1, 2]; dstsize=(4,))[1:2]),
+            _ones(3),
         ),
 
         # gather

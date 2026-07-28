@@ -309,21 +309,31 @@ end
     true,
 )
 
-# ChainRules' `∇scatter_src` for `max`/`min` is `(src .== gather(dst, idx)) .* gather(Δ, idx)`,
-# giving the full cotangent to every source tied for its destination's extremum. The gradient
-# then sums to the tie multiplicity rather than to 1 — measured 2x for two tied entries, 3x for
-# three — so it is not a member of the subdifferential at all, as opposed to a debatable choice
-# among its members. Dividing by the number of tied entries restores the sum and picks the
-# symmetric member, which is the one central differences agree with. `max(ntied, 1)` only guards
-# the division: an `init` above every source leaves a destination with no tied entry, and there
-# the mask is already zero.
+# ChainRules' `∇scatter_src` for `max`/`min` is
+# `(src .== gather(dst, idx)) .* gather(Δ, idx)`, giving the full cotangent to every source
+# tied for its destination's extremum. The gradient then sums to the tie multiplicity rather
+# than to 1 — measured 2x for two tied entries, 3x for three — so it is not a member of the
+# subdifferential at all, as opposed to a debatable choice among its members. Dividing by
+# the number of tied entries restores the sum and picks the symmetric member, which is the
+# one central differences agree with. `init` seeds every destination, so it competes in the
+# same maximum and takes a share of the same cotangent. It is counted among the tied maxima,
+# which changes the sources' share too: a source tied with `init` takes `1/(m+1)`, not
+# `1/m`. Returns `init`'s cotangent, or `nothing` when it was not supplied. `max(total, 1)`
+# guards only that case — without `init`, a destination reachable by no index at all holds
+# `scatter_empty`, a constant whose mask is already zero, and the division would be `0/0`.
 @inline function _scatter_extremum_dsrc!(
-    dsrc, psrc::AbstractArray{P}, pidx, y, dy
+    dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
     mask = P.(psrc .== NNlib.gather(y, pidx))
-    ntied = NNlib.gather(NNlib.scatter(+, mask, pidx), pidx)
-    dsrc .+= mask .* NNlib.gather(dy, pidx) ./ max.(ntied, one(P))
-    return nothing
+    total = NNlib.scatter(+, mask, pidx; dstsize=size(y))
+    if init === nothing
+        dsrc .+= mask .* NNlib.gather(dy, pidx) ./ max.(NNlib.gather(total, pidx), one(P))
+        return nothing
+    end
+    init_tie = P.(y .== init)
+    total = total .+ init_tie                     # >= 1 everywhere: y is one of them
+    dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
+    return sum(dy .* init_tie ./ total)
 end
 
 function rrule!!(
@@ -336,7 +346,7 @@ function rrule!!(
     pidx = primal(idx)
     res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx))
     function scatter_extremum_pb!!(::NoRData)
-        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res))
+        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res), nothing)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, scatter_extremum_pb!!
@@ -352,17 +362,22 @@ function rrule!!(
 ) where {P<:IEEEFloat,N,M}
     psrc, dsrc = arrayify(src)
     pidx = primal(idx)
-    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx; primal(kw)...))
+    pkw = primal(kw)
+    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx; pkw...))
     function scatter_extremum_kw_pb!!(::NoRData)
-        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res))
-        # `scatter`'s `init` is a differentiable `Real`, so with it supplied the keyword
-        # `NamedTuple`'s rdata is not `NoRData` — returning `NoRData` there raises an
-        # `increment!!` `MethodError`. `dstsize` and an empty set of keywords still give
-        # `NoRData`, so this covers both. The `init` gradient itself stays zero, matching
-        # the imported ChainRules rule, which reports `NoTangent()` for all but `src`.
-        return NoRData(),
-        Mooncake.zero_rdata(primal(kw)), NoRData(), NoRData(), NoRData(),
-        NoRData()
+        # `haskey` on a `NamedTuple`'s type is settled at compile time, so each keyword set
+        # gets its own specialisation and `kw_rdata` has one concrete type per call site.
+        init = haskey(pkw, :init) ? pkw.init : nothing
+        dinit = _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res), init)
+        # `init` is a differentiable `Real`, so with it supplied the keyword `NamedTuple`'s
+        # rdata is not `NoRData` — returning `NoRData` there raises an `increment!!`
+        # `MethodError`. `dstsize` alone, or no keywords at all, still gives `NoRData`.
+        kw_rdata = if dinit === nothing
+            Mooncake.zero_rdata(pkw)
+        else
+            merge(Mooncake.zero_rdata(pkw), (; init=dinit))
+        end
+        return NoRData(), kw_rdata, NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, scatter_extremum_kw_pb!!
 end
