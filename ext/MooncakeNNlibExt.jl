@@ -403,6 +403,16 @@ end
 # with it: 2 ns against a rule whose *value* could then drift from the function it
 # differentiates, in a formulation that has already changed once. Revisit with a profile
 # showing σ matters, and add a value-agreement test if so.
+#
+# Both rules differentiate the unclamped sigmoid. For large positive `x` that is not a
+# choice: σ is already exactly `1.0` in Float64 from about 36.8, so both primals are flat
+# there and the analytic derivative — 4.2e-18 at `x = 40` — is all there is to report.
+# `sigmoid_fast`'s `x < -80` clamp does change the value, to exactly `0` where σ gives
+# 6.6e-36, and there the derivative reported is σ's rather than the clamped primal's `0`.
+# Deliberate: NNlib documents `sigmoid_fast` as a less accurate σ, so its clamps are an
+# accuracy compromise rather than a different function, and matching them would put a
+# discontinuity in the derivative at exactly -80 for the sake of a value below 1e-35. Finite
+# differences cannot see either case — they give `0` at both ends.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
