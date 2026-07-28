@@ -377,28 +377,43 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
-# NNlib computes the smooth `σ` in overflow-safe form, `t = exp(-abs(x));
-# ifelse(x ≥ 0, inv(1 + t), t / (1 + t))`. AD through that implementation picks up a factor
-# of `sign(x)`, which is `0` at `x == 0`, so it reports `0` there instead of `1/4`: the kink
-# `abs` introduces cancels between the two branches analytically, but not via the chain
-# rule. Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+# The logistic sigmoid, `σ(x) = 1 / (1 + exp(-x))`, and its clamped variant `sigmoid_fast`.
+# Both are smooth, so neither needs a rule for the derivative to exist — but two numerical
+# traps make tracing the primal give the wrong answer, at opposite ends of the input range.
+#
+# Near zero: the primal is written for overflow safety, branching on the sign of `x` and
+# routing through `abs(x)`. AD therefore picks up a factor of `sign(x)`, which Julia defines as
+# `0` at `x == 0`, and reports a derivative of `0` there instead of `1/4`. The kink that `abs`
+# introduces cancels between the two branches analytically, but not through the chain rule.
+# Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+#
+# For saturated `x`: writing `t = exp(-abs(x))`, the derivative `σ(x) * (1 - σ(x))` equals
+# `t / (1 + t)^2` for either sign of `x`. The rules use that form because it holds the small
+# quantity in `t`'s exponent, where it keeps full relative precision. The textbook form does
+# not: floats near `1.0` are spaced `eps` apart, so forming `σ(x) = 1 - δ` destroys any
+# `δ < eps/2`, and the later `1 - σ(x)` — exact in itself — recovers only what survived. That
+# quantises the derivative to one ulp and then to exactly `0` (Float64 `x ≳ 37`, Float32
+# `x ≳ 17`, Float16 `x ≳ 8`) while the true value is still a normal float. `t ≤ 1`, so the
+# quotient cannot overflow.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
-        Ω = NNlib.$f(primal(x))
-        return Dual(Ω, tangent(x) * Ω * (one(P) - Ω))
+        t = exp(-abs(primal(x)))
+        d = t / (one(P) + t)^2
+        return Dual(NNlib.$f(primal(x)), tangent(x) * d)
     end
     @eval function rrule!!(::CoDual{typeof(NNlib.$f)}, x::CoDual{P}) where {P<:IEEEFloat}
-        Ω = NNlib.$f(primal(x))
-        sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * Ω * (one(P) - Ω)
-        return zero_fcodual(Ω), sigmoid_pb!!
+        t = exp(-abs(primal(x)))
+        d = t / (one(P) + t)^2
+        sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * d
+        return zero_fcodual(NNlib.$f(primal(x))), sigmoid_pb!!
     end
     # GPU elementwise and reduction rules evaluate the whole fused broadcast on `NDual`s
     # inside one kernel, so they never reach the rules above and need the derivative too.
     @eval @inline function NNlib.$f(x::NDual{P,N}) where {P<:IEEEFloat,N}
-        Ω = NNlib.$f(x.value)
-        d = Ω * (one(P) - Ω)
-        return NDual{P,N}(Ω, ntuple(i -> x.partials[i] * d, Val(N)))
+        t = exp(-abs(x.value))
+        d = t / (one(P) + t)^2
+        return NDual{P,N}(NNlib.$f(x.value), ntuple(i -> x.partials[i] * d, Val(N)))
     end
 end
 

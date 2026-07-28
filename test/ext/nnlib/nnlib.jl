@@ -503,4 +503,8 @@ end
             StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
         )
     end
+    # Saturated inputs, where `Ω * (1 - Ω)` loses the derivative entirely. Float16 is omitted:
+    # its spacing at such `x` exceeds every finite-difference step `test_rule` tries.
+    test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
+    test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
 end
