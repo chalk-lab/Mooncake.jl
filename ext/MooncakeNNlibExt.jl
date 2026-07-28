@@ -377,4 +377,29 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
+# NNlib computes the smooth `σ` in overflow-safe form, `t = exp(-abs(x));
+# ifelse(x ≥ 0, inv(1 + t), t / (1 + t))`. AD through that implementation picks up a factor
+# of `sign(x)`, which is `0` at `x == 0`, so it reports `0` there instead of `1/4`: the kink
+# `abs` introduces cancels between the two branches analytically, but not via the chain
+# rule. Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+for f in (:σ, :sigmoid_fast)
+    @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
+    @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
+        Ω = NNlib.$f(primal(x))
+        return Dual(Ω, tangent(x) * Ω * (one(P) - Ω))
+    end
+    @eval function rrule!!(::CoDual{typeof(NNlib.$f)}, x::CoDual{P}) where {P<:IEEEFloat}
+        Ω = NNlib.$f(primal(x))
+        sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * Ω * (one(P) - Ω)
+        return zero_fcodual(Ω), sigmoid_pb!!
+    end
+    # GPU elementwise and reduction rules evaluate the whole fused broadcast on `NDual`s
+    # inside one kernel, so they never reach the rules above and need the derivative too.
+    @eval @inline function NNlib.$f(x::NDual{P,N}) where {P<:IEEEFloat,N}
+        Ω = NNlib.$f(x.value)
+        d = Ω * (one(P) - Ω)
+        return NDual{P,N}(Ω, ntuple(i -> x.partials[i] * d, Val(N)))
+    end
+end
+
 end
