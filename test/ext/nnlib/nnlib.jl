@@ -636,3 +636,17 @@ end
         )
     end
 end
+
+# The `dropout` rules cover reverse mode only, so their primitive declarations are scoped to
+# it. Left unscoped they would claim forward mode too, where there is no `frule!!` to answer
+# the claim, and tracing the primal — which works — would give way to a `MethodError`. The
+# case table above cannot catch that: it pins `mode = Mooncake.ReverseMode`.
+@testset "forward mode traces dropout" begin
+    test_rule(
+        StableRNG(123),
+        x -> sum(dropout(StableRNG(1), x, 0.0)),
+        randn(StableRNG(123), 3);
+        mode=Mooncake.ForwardMode,
+        is_primitive=false,
+    )
+end

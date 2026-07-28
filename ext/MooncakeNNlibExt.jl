@@ -21,7 +21,8 @@ import Mooncake:
     arrayify,
     frule!!,
     Dual,
-    NoPullback
+    NoPullback,
+    ReverseMode
 
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
@@ -112,10 +113,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 # measured — it does not reach the interface, where the gradient's type stays concrete, and
 # the aliasing arm is the cheaper one (32 against 800 bytes for the rule, and an
 # allocation-free pullback against 448).
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
 
