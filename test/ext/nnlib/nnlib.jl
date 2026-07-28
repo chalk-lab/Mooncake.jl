@@ -515,6 +515,7 @@ end
         x -> sum(softmax(x)),
         x -> sum(softmax(x; dims=1)),
         x -> sum(logsoftmax(x)),
+        x -> sum(logsoftmax(x; dims=1)),
         x -> logsumexp(x),
         x -> sum(logsumexp(x; dims=1)),
         x -> sum(NNlib.gather(x, [1, 3])),
