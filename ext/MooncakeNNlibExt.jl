@@ -348,12 +348,16 @@ end
         dsrc .+= mask .* NNlib.gather(dy, pidx) ./ max.(NNlib.gather(total, pidx), one(P))
         return nothing
     end
-    init_tie = P.(y .== init)
+    # NNlib fills the destination with `convert(P, init)`, so the tie test compares the
+    # rounded value. Against the caller's, an `init` not representable in `P` — a `Float64`
+    # literal over a `Float32` array — matches nothing even when it won, `total` collapses
+    # to `0`, and the divisions below return `NaN`.
+    init_tie = P.(y .== convert(P, init))
     total = total .+ init_tie                     # >= 1 everywhere: y is one of them
     dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
-    # `oftype`, because `init` need not share `src`'s precision: NNlib converts it into the
-    # destination, so the reduction runs in the destination's type while the rdata slot must
-    # carry `init`'s own. Mixing the two raised an `increment!!` MethodError.
+    # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
+    # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised
+    # an `increment!!` MethodError.
     return oftype(init, sum(dy .* init_tie ./ total))
 end
 

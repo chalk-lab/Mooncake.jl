@@ -42,8 +42,11 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
     float = cuda ? x -> Float32(x) : identity
     _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
-    # Deliberately the other precision from `_ones`, for a mixed-precision `init`.
-    mixed_init = cuda ? 2.0 : 2.0f0
+    # A mixed-precision `init`, wider than its `src` and not representable in it, so that
+    # the rounding NNlib applies on the way into the destination is observable. `2.0` is not
+    # enough: it round-trips, and a tie test against the unrounded `init` still passes.
+    mixed_src = cuda ? cu(ones(Float32, 3)) : ones(Float32, 3)
+    mixed_init = 2.1
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -375,7 +378,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             (init=mixed_init,),
             NNlib.scatter,
             max,
-            _ones(3),
+            mixed_src,
             [1, 1, 2],
         ),
 
