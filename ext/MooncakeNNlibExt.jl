@@ -415,12 +415,16 @@ end
 # differences cannot see either case — they give `0` at both ends.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
-    @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
+    @eval function Mooncake.frule!!(
+        ::Dual{typeof(NNlib.$f)}, x::Dual{P}
+    ) where {P<:IEEEFloat}
         t = exp(-abs(primal(x)))
         d = t / (one(P) + t)^2
         return Dual(NNlib.$f(primal(x)), tangent(x) * d)
     end
-    @eval function rrule!!(::CoDual{typeof(NNlib.$f)}, x::CoDual{P}) where {P<:IEEEFloat}
+    @eval function Mooncake.rrule!!(
+        ::CoDual{typeof(NNlib.$f)}, x::CoDual{P}
+    ) where {P<:IEEEFloat}
         t = exp(-abs(primal(x)))
         d = t / (one(P) + t)^2
         sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * d
@@ -450,12 +454,12 @@ end
 # `1.0` (exactly `0` for Float64 `|x| ≳ 19.5`, Float32 `|x| ≳ 9`, against a true value near
 # `1e-17`).
 @is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
-function frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+function Mooncake.frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
     u = exp(-2 * abs(primal(x)))
     d = 4u / (one(P) + u)^2
     return Dual(tanh_fast(primal(x)), tangent(x) * d)
 end
-function rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
+function Mooncake.rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
     u = exp(-2 * abs(primal(x)))
     d = 4u / (one(P) + u)^2
     tanh_fast_pb!!(dΩ::P) = NoRData(), dΩ * d
