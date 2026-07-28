@@ -13,10 +13,11 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
-# At p == 0 `dropout` returns its input array itself, so mutating the result writes through to
-# `x` and the sum doubles. Deterministic there — no draw is made — so finite differences apply.
-# `p` is fixed inside rather than passed in: `test_rule` would perturb it to `-ε`, which is
-# outside `dropout`'s domain, and no step cap helps when the value sits on the boundary.
+# At p == 0 `dropout` returns its input array itself, so mutating the result writes through
+# to `x` and the sum doubles. Deterministic there — no draw is made — so finite differences
+# apply. `p` is fixed inside rather than passed in: `test_rule` would perturb it to `-ε`,
+# which is outside `dropout`'s domain, and no step cap helps when the value sits on the
+# boundary.
 function dropout_alias_tester(Trng, x)
     y = dropout(Trng(1), x, zero(eltype(x)))
     y .*= 2
