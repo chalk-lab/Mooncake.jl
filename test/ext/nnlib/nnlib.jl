@@ -41,6 +41,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
     float = cuda ? x -> Float32(x) : identity
     _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
+    # Deliberately the other precision from `_ones`, for a mixed-precision `init`.
+    mixed_init = cuda ? 2.0 : 2.0f0
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -359,6 +361,17 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             true,
             Core.kwcall,
             (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=mixed_init,),
             NNlib.scatter,
             max,
             _ones(3),

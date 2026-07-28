@@ -333,7 +333,10 @@ end
     init_tie = P.(y .== init)
     total = total .+ init_tie                     # >= 1 everywhere: y is one of them
     dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
-    return sum(dy .* init_tie ./ total)
+    # `oftype`, because `init` need not share `src`'s precision: NNlib converts it into the
+    # destination, so the reduction runs in the destination's type while the rdata slot must
+    # carry `init`'s own. Mixing the two raised an `increment!!` MethodError.
+    return oftype(init, sum(dy .* init_tie ./ total))
 end
 
 function rrule!!(
