@@ -40,6 +40,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (rng, size...) -> randn(rng, size...)
     end
     float = cuda ? x -> Float32(x) : identity
+    _ones = cuda ? n -> cu(ones(Float32, n)) : n -> ones(n)
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -322,6 +323,13 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # scatter
         (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
+
+        # scatter(max/min, ...) with sources tied for one destination. The tie is the point,
+        # so the values are equal by construction rather than random: ChainRules gives each
+        # tied entry the whole cotangent, summing to the tie multiplicity.
+        (false, :none, true, NNlib.scatter, max, _ones(3), [1, 1, 2]),
+        (false, :none, true, NNlib.scatter, min, _ones(3), [1, 1, 2]),
+        (false, :none, true, Core.kwcall, (;), NNlib.scatter, max, _ones(3), [1, 1, 2]),
 
         # gather
         (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),

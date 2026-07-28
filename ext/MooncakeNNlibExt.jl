@@ -99,8 +99,9 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 # output aliases the input, while ChainRules' rrule has no such path — it always allocates, and
 # always draws from `rng`. AD therefore ran a different program from the primal: mutating the
 # result no longer wrote through to the input, changing the value as well as the gradient, and
-# the RNG advanced where the primal left it untouched. Returning the input `CoDual` unchanged keeps the aliasing invariant, skips the
-# draw, and matches the `p > 0` path on `p` itself, for which ChainRules reports `NoTangent()`.
+# the RNG advanced where the primal left it untouched. Returning the input `CoDual` unchanged
+# keeps the aliasing invariant, skips the draw, and matches the `p > 0` path on `p` itself,
+# for which ChainRules reports `NoTangent()`.
 @is_primitive MinimalCtx Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
@@ -301,6 +302,57 @@ end
     } where {P,N,M},
     true,
 )
+
+# ChainRules' `∇scatter_src` for `max`/`min` is `(src .== gather(dst, idx)) .* gather(Δ, idx)`,
+# giving the full cotangent to every source tied for its destination's extremum. The gradient
+# then sums to the tie multiplicity rather than to 1 — measured 2x for two tied entries, 3x for
+# three — so it is not a member of the subdifferential at all, as opposed to a debatable choice
+# among its members. Dividing by the number of tied entries restores the sum and picks the
+# symmetric member, which is the one central differences agree with. `max(ntied, 1)` only guards
+# the division: an `init` above every source leaves a destination with no tied entry, and there
+# the mask is already zero.
+@inline function _scatter_extremum_dsrc!(
+    dsrc, psrc::AbstractArray{P}, pidx, y, dy
+) where {P}
+    tied = psrc .== NNlib.gather(y, pidx)
+    ntied = NNlib.gather(NNlib.scatter(+, P.(tied), pidx), pidx)
+    dsrc .+= tied .* NNlib.gather(dy, pidx) ./ max.(ntied, one(P))
+    return nothing
+end
+
+function rrule!!(
+    ::CoDual{typeof(NNlib.scatter)},
+    op::CoDual{<:Union{typeof(max),typeof(min)}},
+    src::CoDual{<:SupportedArray{P,N}},
+    idx::CoDual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    psrc, dsrc = arrayify(src)
+    pidx = primal(idx)
+    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx))
+    function scatter_extremum_pb!!(::NoRData)
+        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res))
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return res, scatter_extremum_pb!!
+end
+
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(NNlib.scatter)},
+    op::CoDual{<:Union{typeof(max),typeof(min)}},
+    src::CoDual{<:SupportedArray{P,N}},
+    idx::CoDual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    psrc, dsrc = arrayify(src)
+    pidx = primal(idx)
+    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx; primal(kw)...))
+    function scatter_extremum_kw_pb!!(::NoRData)
+        _scatter_extremum_dsrc!(dsrc, psrc, pidx, primal(res), tangent(res))
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return res, scatter_extremum_kw_pb!!
+end
 
 # ChainRules defines an `rrule` only for the in-place `gather!`, not `gather`, so without
 # this AD would trace `gather`'s scalar per-index loop (see
