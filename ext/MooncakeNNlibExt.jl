@@ -382,10 +382,10 @@ end
 # traps make tracing the primal give the wrong answer, at opposite ends of the input range.
 #
 # Near zero: the primal is written for overflow safety, branching on the sign of `x` and
-# routing through `abs(x)`. AD therefore picks up a factor of `sign(x)`, which Julia defines as
-# `0` at `x == 0`, and reports a derivative of `0` there instead of `1/4`. The kink that `abs`
-# introduces cancels between the two branches analytically, but not through the chain rule.
-# Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+# routing through `abs(x)`. AD therefore picks up a factor of `sign(x)`, which Julia defines
+# as `0` at `x == 0`, and reports a derivative of `0` there instead of `1/4`. The kink that
+# `abs` introduces cancels between the two branches analytically, but not through the chain
+# rule. Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
 #
 # For saturated `x`: writing `t = exp(-abs(x))`, the derivative `σ(x) * (1 - σ(x))` equals
 # `t / (1 + t)^2` for either sign of `x`. The rules use that form because it holds the small
@@ -435,18 +435,20 @@ for f in (:σ, :sigmoid_fast)
     end
 end
 
-# `tanh_fast(x::Float64)` evaluates `y = (exp(2x) - 1) / (exp(2x) + 1)` and only then selects
-# `ifelse(2x > 900, sign(x), y)`. `ifelse` is a call, so the primal computes the branch it
-# discards: past `|x| ≈ 355` that branch is `Inf/Inf`, i.e. `NaN`. The primal is unharmed, but
-# reverse mode sends a zero cotangent into the discarded `y` and the quotient's pullback forms
-# `0 * Inf`, so `NaN` reaches the argument. A rule keeps AD out of that body altogether.
-# `gelu`/`gelu_tanh` inherit the failure at `|x| ≈ 21`, far inside their useful range, because
-# they feed `λ(x + 0.044715x³)` through `tanh_fast`. An `NDual` method is deliberately absent:
-# `NDual` is not an `IEEEFloat`, so the in-kernel path reaches `Base.tanh` and never this body.
+# `tanh_fast(x::Float64)` evaluates `y = (exp(2x) - 1) / (exp(2x) + 1)` and only then
+# selects `ifelse(2x > 900, sign(x), y)`. `ifelse` is a call, so the primal computes the
+# branch it discards: past `|x| ≈ 355` that branch is `Inf/Inf`, i.e. `NaN`. The primal is
+# unharmed, but reverse mode sends a zero cotangent into the discarded `y` and the
+# quotient's pullback forms `0 * Inf`, so `NaN` reaches the argument. A rule keeps AD out of
+# that body altogether. `gelu`/`gelu_tanh` inherit the failure at `|x| ≈ 21`, far inside
+# their useful range, because they feed `λ(x + 0.044715x³)` through `tanh_fast`. An `NDual`
+# method is deliberately absent: `NDual` is not an `IEEEFloat`, so the in-kernel path
+# reaches `Base.tanh` and never this body.
 #
-# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`. As for `σ`
-# above, that form is used because the textbook one collapses once `tanh(x)` rounds to `1.0`
-# (exactly `0` for Float64 `|x| ≳ 19.5`, Float32 `|x| ≳ 9`, against a true value near `1e-17`).
+# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`. As for
+# `σ` above, that form is used because the textbook one collapses once `tanh(x)` rounds to
+# `1.0` (exactly `0` for Float64 `|x| ≳ 19.5`, Float32 `|x| ≳ 9`, against a true value near
+# `1e-17`).
 @is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
     u = exp(-2 * abs(primal(x)))

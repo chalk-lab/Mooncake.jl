@@ -1084,10 +1084,10 @@ Correctness is assessed only against central finite differences, so properties t
 differencing cannot resolve are not covered. Two cases arise in practice:
 
 - derivative *precision* in a saturated regime. Where `f(x ± ε)` round to the same float for
-    every `ε` on the grid, the finite-difference estimate is `0` whatever the rule returns, so
-    a rule that has lost the derivative entirely passes as readily as an exact one.
-- primal types whose spacing at `x` exceeds the step grid. `Float16` hits this well inside its
-    normal range, which makes such arguments untestable here rather than merely imprecise.
+    every `ε` on the grid, the finite-difference estimate is `0` whatever the rule returns,
+    so a rule that has lost the derivative entirely passes as readily as an exact one.
+- primal types whose spacing at `x` exceeds the step grid. `Float16` hits this well inside
+    its normal range, making such arguments untestable here rather than merely imprecise.
 
 Accepting a caller-supplied reference derivative to compare against would close both gaps.
 Until then, a rule whose value depends on either property needs that reasoning recorded
