@@ -512,12 +512,20 @@ end
 
     # Float16 collapses first, at x >= 8, and is the one width no finite-difference test can
     # cover: the estimate is 0 too, and `isapprox(0, 3.35e-4; atol=1e-3)` holds, so
-    # `test_rule` would pass the collapsed implementation. The `NDual` method is directly
-    # callable, so compare it against a wider-precision reference instead. `Ω * (1 - Ω)`
-    # returns exactly 0 here, so this is the only test pinning σ's precision at all.
-    x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
+    # `test_rule` would pass the collapsed implementation. Compare against a wider-precision
+    # reference instead. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only tests
+    # pinning σ's precision, and the formula has three copies — one per rule and one for the
+    # in-kernel `NDual` method — so each gets its own. All three are directly callable, the
+    # rules because they take `P<:IEEEFloat`.
     ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
+    x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(Float16(8), one(Float16))
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(Mooncake.zero_fcodual(f), Mooncake.zero_fcodual(Float16(8)))
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
 
 # `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode
@@ -532,4 +540,17 @@ end
     test_rule(
         StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
     )
+    # As for σ, the saturated derivative's precision is beyond finite differences, and both
+    # rules carry their own copy of `4u / (1 + u)^2`. `1 - Ω^2` returns exactly 0 at
+    # Float16(6), against a true 2.46e-5, so this separates the two forms outright.
+    ref16 = Float64(1 - tanh(big(6.0))^2)
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
+        Mooncake.Dual(Float16(6), one(Float16)),
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(tanh_fast), Mooncake.zero_fcodual(Float16(6))
+    )
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
