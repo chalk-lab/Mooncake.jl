@@ -831,9 +831,13 @@ end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
 end
+# `4u / (1 + u)^2` with `u = exp(-2|x|)`, not the textbook `1 - tanh(x)^2`: floats near
+# `1.0` are spaced `eps` apart, so once `tanh(x)` rounds to `1.0` the subtraction returns
+# exactly `0`, while the true derivative is still normal (Float64 `|x| ≳ 19.5`, Float32
+# `|x| ≳ 9`). The forms are algebraically equal, and `u ≤ 1` bounds the quotient.
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
-    tv = tanh(a.value)
-    return NDual{T,N}(tv, _pt_scale(a.partials, one(T) - tv^2))
+    u = exp(-2 * abs(a.value))
+    return NDual{T,N}(tanh(a.value), _pt_scale(a.partials, 4u / (one(T) + u)^2))
 end
 @inline function Base.asinh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(asinh(a.value), _pt_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
