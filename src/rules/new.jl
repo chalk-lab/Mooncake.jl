@@ -43,17 +43,28 @@ function rrule!!(
     end
     return CoDual(y, dy), pb!!
 end
+# The generic mutable-type branch above assumes fdata is a MutableTangent with a
+# `.fields` NamedTuple, but IdDict's fdata is a plain IdDict (fields `ht`/`count`/`ndel`),
+# so `dy.fields` throws. IdDict's rdata is always NoRData (rules/iddict.jl) anyway, so
+# there's nothing to compute - skip straight to NoPullback, same as the immutable branch
+# does whenever R == NoRData.
+function rrule!!(
+    f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
+) where {P<:IdDict,N}
+    y = _new_(P, tuple_map(primal, x)...)
+    dy = build_fdata(P, tuple_map(primal, x), tuple_map(tangent, x))
+    return CoDual(y, dy), NoPullback(f, p, x...)
+end
 
 @inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
     return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
 end
-# `IdDict`'s fields (`ht::Memory`, `count`, `ndel`) are hash-table bookkeeping, not
-# differentiable data, and `IdDict` has no field-wise constructor -- only the key-value
-# one, which the generic path below would call by mistake and crash on `ht`'s `#undef`
-# slots. A fresh IdDict starts empty, so its tangent is just its own zero_tangent;
-# increment/setindex in `src/rules/iddict.jl` fills it in later.
+# IdDict has no field-wise constructor - only the key-value one, so the generic path
+# below would misread its raw `ht::Memory` field as a (k, v) pair and crash. A fresh
+# IdDict starts empty, so just build its tangent directly via tangent_type(P)'s own
+# constructor.
 @inline function build_output_tangent(::Type{P}, x::Tuple, ::Tuple) where {P<:IdDict}
-    return zero_tangent(_new_(P, x...))
+    return tangent_type(P)()
 end
 @generated function _build_output_tangent_cartesian(
     ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
@@ -80,6 +91,13 @@ end
 
 @inline function build_fdata(::Type{P}, x::Tuple, fdata::Tuple) where {P}
     return _build_fdata_cartesian(P, x, fdata, Val(fieldcount(P)), Val(fieldnames(P)))
+end
+# Same issue as build_output_tangent above, on the fdata path: the generic cartesian path
+# builds a NamedTuple of IdDict's raw fields and hands it to IdDict's key-value-pairs
+# constructor, which misreads it as an iterable of (k, v) pairs and crashes. Build the
+# empty fdata-typed IdDict directly instead.
+@inline function build_fdata(::Type{P}, x::Tuple, ::Tuple) where {P<:IdDict}
+    return fdata_type(tangent_type(P))()
 end
 @generated function _build_fdata_cartesian(
     ::Type{P}, x::Tuple, fdata::Tfdata, ::Val{nfield}, ::Val{names}
@@ -218,11 +236,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
             UnitUpperTriangular{Float64,Matrix{Float64}},
             randn(2, 2),
         ),
-        # Regression test: `IdDict`'s raw fields (`ht::Memory`, `count`, `ndel`) are hash-
-        # table bookkeeping, not differentiable data, and the generic _new_ tangent-
-        # construction path used to misread `ht` as a (k, v) pair and crash with
-        # UndefRefError on its #undef slots.
-        (false, :none, nothing, _new_, IdDict{Int,Float64}),
+        # Regression test for IdDict's _new_ tangent-construction bugs above. Real, valid
+        # field values here, not zero args - _new_ with no arguments leaves `ht`
+        # uninitialized, which segfaults on its own, unrelated to the bug being tested.
+        (false, :none, nothing, _new_, IdDict{Int,Float64}, Memory{Any}(undef, 0), 0, 0),
     ]
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)

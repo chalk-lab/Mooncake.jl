@@ -1423,7 +1423,7 @@ end
                 f_val, grad, hvp = value_and_hvp!!(cache, f, v, x)
                 @test f_val ≈ 25.0
                 @test grad.fields == (; x1=6.0, x2=8.0)
-                @test hvp.fields == (; x1=2.0, x2=0.0)
+                @test hvp.fields.fields == (; x1=2.0, x2=0.0)
             end
 
             @testset "HVP cache mismatch errors" begin
