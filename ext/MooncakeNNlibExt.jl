@@ -356,10 +356,16 @@ end
     init_tie = P.(y .== convert(P, init))
     total = total .+ init_tie                     # >= 1 everywhere: y is one of them
     dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
-    # An `init` with no rdata — an integer, say — still competes in the maximum and so is
-    # counted above, but it has no slot to take a share in, and `oftype` would throw fitting
-    # a fractional share into it. `nothing` suits this and an absent `init` alike: for both,
-    # the caller answers with `zero_rdata` of the keywords, which is `NoRData`.
+    # An `init` with no rdata — an integer, say — has no slot to take a share in, and
+    # `oftype` would throw fitting a fractional share into it. `nothing` suits this and an
+    # absent `init` alike: for both, the caller answers with `zero_rdata` of the keywords,
+    # which is `NoRData`.
+    #
+    # Returning here rather than before the tie count leaves such an `init` competing in the
+    # maximum, so a source tied with it takes `1/(m+1)`. Returning earlier would give `1/m`.
+    # Both are subgradients, so this is consistency with the arm below rather than
+    # correctness, and no test distinguishes them: it would take a tie, where the rule and
+    # finite differences legitimately disagree.
     Mooncake.zero_rdata(init) isa Mooncake.NoRData && return nothing
     # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
     # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised

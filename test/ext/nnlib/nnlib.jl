@@ -382,9 +382,11 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # An `init` with no rdata still competes in the maximum, so it is counted in the tie
-        # total even though it takes no share of the cotangent. Returning a share for it
-        # instead threw, `oftype` being unable to fit a fractional one into an integer.
+        # An `init` with no rdata, which used to throw: `oftype` cannot fit a fractional
+        # share into an integer. Here `init` wins outright, so no source ties it — whether
+        # it is counted in the tie total makes no difference to this case, and no test can
+        # settle that, since a tie is where finite differences and the rule legitimately
+        # disagree. See the note above `_scatter_extremum_grads!`.
         (
             false,
             :none,
