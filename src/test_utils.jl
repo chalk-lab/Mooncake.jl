@@ -1077,6 +1077,21 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
     domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
     the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
+
+# Limitations
+
+Correctness is assessed only against central finite differences, so properties that finite
+differencing cannot resolve are not covered. Two cases arise in practice:
+
+- derivative *precision* in a saturated regime. Where `f(x ± ε)` round to the same float for
+    every `ε` on the grid, the finite-difference estimate is `0` whatever the rule returns, so
+    a rule that has lost the derivative entirely passes as readily as an exact one.
+- primal types whose spacing at `x` exceeds the step grid. `Float16` hits this well inside its
+    normal range, which makes such arguments untestable here rather than merely imprecise.
+
+Accepting a caller-supplied reference derivative to compare against would close both gaps.
+Until then, a rule whose value depends on either property needs that reasoning recorded
+alongside it, since no `test_rule` call can hold it in place.
 """
 function test_rule(
     rng::AbstractRNG,

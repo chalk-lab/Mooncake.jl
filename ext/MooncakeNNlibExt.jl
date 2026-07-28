@@ -417,4 +417,29 @@ for f in (:σ, :sigmoid_fast)
     end
 end
 
+# `tanh_fast(x::Float64)` evaluates `y = (exp(2x) - 1) / (exp(2x) + 1)` and only then selects
+# `ifelse(2x > 900, sign(x), y)`. `ifelse` is a call, so the primal computes the branch it
+# discards: past `|x| ≈ 355` that branch is `Inf/Inf`, i.e. `NaN`. The primal is unharmed, but
+# reverse mode sends a zero cotangent into the discarded `y` and the quotient's pullback forms
+# `0 * Inf`, so `NaN` reaches the argument. A rule keeps AD out of that body altogether.
+# `gelu`/`gelu_tanh` inherit the failure at `|x| ≈ 21`, far inside their useful range, because
+# they feed `λ(x + 0.044715x³)` through `tanh_fast`. An `NDual` method is deliberately absent:
+# `NDual` is not an `IEEEFloat`, so the in-kernel path reaches `Base.tanh` and never this body.
+#
+# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`. As for `σ`
+# above, that form is used because the textbook one collapses once `tanh(x)` rounds to `1.0`
+# (exactly `0` for Float64 `|x| ≳ 19.5`, Float32 `|x| ≳ 9`, against a true value near `1e-17`).
+@is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+    u = exp(-2 * abs(primal(x)))
+    d = 4u / (one(P) + u)^2
+    return Dual(tanh_fast(primal(x)), tangent(x) * d)
+end
+function rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
+    u = exp(-2 * abs(primal(x)))
+    d = 4u / (one(P) + u)^2
+    tanh_fast_pb!!(dΩ::P) = NoRData(), dΩ * d
+    return zero_fcodual(tanh_fast(primal(x))), tanh_fast_pb!!
+end
+
 end

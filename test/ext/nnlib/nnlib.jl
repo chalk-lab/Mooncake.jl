@@ -503,8 +503,20 @@ end
             StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
         )
     end
-    # Saturated inputs, where `Ω * (1 - Ω)` loses the derivative entirely. Float16 is omitted:
-    # its spacing at such `x` exceeds every finite-difference step `test_rule` tries.
+    # Saturated inputs, where `Ω * (1 - Ω)` loses the derivative entirely. These cover NaN, Inf
+    # and type stability out here, not the precision itself — see the "Limitations" section of
+    # `test_rule`'s docstring for why finite differences cannot see it, and why Float16 (whose
+    # spacing at such `x` exceeds every step tried) is absent.
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
+end
+
+# `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode picked
+# that branch up as `0 * Inf`, which poisoned `gelu`/`gelu_tanh` from `|x| ≈ 21` upwards.
+@testset "tanh_fast at saturation" begin
+    test_rule(StableRNG(123), tanh_fast, 0.5; perf_flag=:stability)
+    test_rule(StableRNG(123), tanh_fast, 400.0; perf_flag=:stability)
+    test_rule(
+        StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
+    )
 end
