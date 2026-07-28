@@ -330,9 +330,14 @@ end
 #
 # `init` seeds every destination, so it competes in the same maximum and takes a share of
 # the same cotangent. Counting it among the tied maxima changes the sources' share too: a
-# source tied with `init` takes `1/(m+1)`, not `1/m`. `max(total, 1)` guards only the
-# no-`init` case — a destination reachable by no index at all then holds `scatter_empty`, a
-# constant whose mask is already zero, and the division would be `0/0`.
+# source tied with `init` takes `1/(m+1)`, not `1/m`.
+#
+# Neither arm guards the division. `total` is only ever read at destinations some index
+# reaches, and such a destination holds one of the sources scattered to it, so it has at
+# least one tied member. A wider `dstsize` leaves destinations holding `scatter_empty` with
+# no tied source, but nothing gathers them. The exception is a `NaN` in `src`, which
+# propagates into the destination and equals nothing, so the count is zero and the share is
+# `NaN` — matching the primal, which is `NaN` there too.
 #
 # Where nothing is tied, this is the derivative and finite differences agree with it. At an
 # exact tie they cannot: the symmetric split is the mean of the tied members' direction
@@ -346,7 +351,7 @@ end
     mask = P.(psrc .== NNlib.gather(y, pidx))
     total = NNlib.scatter(+, mask, pidx; dstsize=size(y))
     if init === nothing
-        dsrc .+= mask .* NNlib.gather(dy, pidx) ./ max.(NNlib.gather(total, pidx), one(P))
+        dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
         return nothing
     end
     # NNlib fills the destination with `convert(P, init)`, so the tie test compares the

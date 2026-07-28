@@ -428,9 +428,9 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         ),
 
         # `dstsize` past the largest index leaves destinations no index reaches, holding
-        # `scatter_empty` with no tied source — the 0/0 that `max(total, 1)` guards. Summing
-        # only the reachable destinations keeps the primal finite, since the others are
-        # -Inf.
+        # `scatter_empty` with no tied source. Nothing gathers them, so they take no part in
+        # the gradient; summing only the reachable ones keeps the primal finite, the others
+        # being -Inf.
         (
             false,
             :none,
