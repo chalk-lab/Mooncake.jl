@@ -493,7 +493,7 @@ end
 end
 
 # NNlib's `exp(-abs(x))` form of σ has a kink at zero that the function itself does not.
-@testset "sigmoid at zero: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
+@testset "sigmoid at zero and saturation: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
     test_rule(StableRNG(123), f, 0.0; perf_flag=:stability)
     # The reported failure was a gradient through a broadcast containing an exact zero.
     test_rule(StableRNG(123), x -> sum(f.(x)), [0.0, 0.5, -0.5]; is_primitive=false)
@@ -509,6 +509,15 @@ end
     # spacing at such `x` exceeds every step tried) is absent.
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
+
+    # Float16 collapses first, at x >= 8, and is the one width no finite-difference test can
+    # cover: the estimate is 0 too, and `isapprox(0, 3.35e-4; atol=1e-3)` holds, so
+    # `test_rule` would pass the collapsed implementation. The `NDual` method is directly
+    # callable, so compare it against a wider-precision reference instead. `Ω * (1 - Ω)`
+    # returns exactly 0 here, so this is the only test pinning σ's precision at all.
+    x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
+    ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
+    @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
 end
 
 # `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode picked

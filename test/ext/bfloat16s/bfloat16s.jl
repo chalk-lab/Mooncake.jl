@@ -15,8 +15,8 @@ end
 const sr = StableRNG
 const P = Core.BFloat16
 
-# The shape NNlib gives `sigmoid`: `exp(-abs(x))` selected by an `ifelse`. Smooth at zero even
-# though `abs` is not, because the kink cancels between the two branches.
+# The shape NNlib gives `sigmoid`: `exp(-abs(x))` selected by an `ifelse`. Smooth at zero
+# even though `abs` is not, because the kink cancels between the two branches.
 function sigmoid_shaped(x)
     (t=exp(-abs(x)); ifelse(x >= zero(x), inv(one(x) + t), t / (one(x) + t)))
 end
@@ -77,12 +77,12 @@ end
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
     end
 
-    # `sigmoid_shaped` at exactly zero comes out right for BFloat16, where it does not for the
-    # IEEEFloat types: `abs(::BFloat16)` is BFloat16s' own method rather than the `abs_float`
-    # intrinsic, so its derivative at zero is 1 instead of `sign(0) == 0`, and the chain rule
-    # recovers 1/4. That is why the NNlib activation rules being `IEEEFloat`-only leaves
-    # BFloat16 on a correct path rather than an excluded one — see chalk-lab/Mooncake.jl#1257
-    # for the IEEEFloat behaviour. Composite, so not a primitive.
+    # `sigmoid_shaped` at exactly zero comes out right for BFloat16, where it does not for
+    # the IEEEFloat types: `abs(::BFloat16)` is BFloat16s' own method rather than the
+    # `abs_float` intrinsic, so its derivative at zero is 1 not `sign(0) == 0`, and the
+    # chain rule recovers 1/4. That is why the NNlib activation rules being `IEEEFloat`-only
+    # leave BFloat16 on a correct path rather than an excluded one — see #1257 for the
+    # IEEEFloat behaviour. Composite, so not a primitive.
     @testset "sigmoid_shaped at zero" for x in (P(0), P(0.5))
         test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
     end
