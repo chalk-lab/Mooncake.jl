@@ -69,14 +69,17 @@ end
 
 test_sum(x) = sum(x)
 
-CRC.frule((_, dx), ::typeof(test_sum), x::AbstractArray{<:Real}) = sum(x), sum(dx)
+CRC.frule((_, dx), ::typeof(test_sum), x::AbstractArray{<:Number}) = sum(x), sum(dx)
 
-function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Real})
-    test_sum_pb(dy::Real) = CRC.NoTangent(), fill(dy, size(x))
+function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Number})
+    test_sum_pb(dy::Number) = CRC.NoTangent(), fill(dy, size(x))
     return test_sum(x), test_sum_pb
 end
 
-@from_chainrules DefaultCtx Tuple{typeof(test_sum),AbstractArray{<:Base.IEEEFloat}} false
+# Complex too, so an `Adjoint`'s conjugation is exercised and not just its transposition.
+@from_chainrules DefaultCtx Tuple{
+    typeof(test_sum),AbstractArray{<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+} false
 
 # Test case with heap-allocated output.
 
@@ -326,6 +329,10 @@ end
             (ToolsForRulesResources.test_sum, ones(2, 3)'),
             (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
             (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
+            # An `Adjoint` view conjugates on write, a `Transpose` does not; removing that
+            # conjugation from `arrayify` fails the first of these and not the second.
+            (ToolsForRulesResources.test_sum, ones(ComplexF64, 3, 2)'),
+            (ToolsForRulesResources.test_sum, transpose(ones(ComplexF64, 3, 2))),
             (ToolsForRulesResources.test_view_output, ones(2, 3)),
             (ToolsForRulesResources.test_scale, 5.0, randn(3)),
             (ToolsForRulesResources.test_nothing,),
