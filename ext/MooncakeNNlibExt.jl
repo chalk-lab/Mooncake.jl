@@ -21,6 +21,7 @@ import Mooncake:
     arrayify,
     frule!!,
     Dual,
+    ForwardMode,
     ReverseMode
 
 @inline function _nf_logsumexp_accum(
@@ -287,6 +288,36 @@ end
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
+# Scoping the declaration above to reverse mode lets forward mode trace `gather`'s primal,
+# which is what we want for CPU arrays. For GPU arrays the traced kernel launch does not
+# survive the transform: the process dies with `signal 4 (Illegal instruction)` raised from
+# inside the derived rule, with no Julia exception to catch. An unscoped declaration would
+# have given a `MethodError` naming the missing `frule!!`, so tracing trades an informative
+# error for an uncatchable crash. Declaring the GPU signature a forward primitive and
+# raising here keeps it an ordinary error. Reverse mode is untouched and works on GPU
+# arrays.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(NNlib.gather),AbstractGPUArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
+    } where {P<:IEEEFloat,N,M},
+)
+function Mooncake.frule!!(
+    ::Dual{typeof(NNlib.gather)},
+    ::Dual{<:AbstractGPUArray{P,N}},
+    ::Dual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    throw(
+        ArgumentError(
+            "forward mode over `NNlib.gather` is not supported for GPU arrays: " *
+            "differentiating the traced kernel launch crashes the process. Reverse mode " *
+            "has a rule for this signature and does work; on the CPU, so does forward " *
+            "mode.",
+        ),
+    )
+end
+
 function Mooncake.rrule!!(
     ::CoDual{typeof(NNlib.gather)},
     src::CoDual{<:SupportedArray{P,N}},

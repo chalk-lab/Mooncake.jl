@@ -529,3 +529,22 @@ end
         test_rule(StableRNG(123), f, x; mode=Mooncake.ForwardMode, is_primitive=false)
     end
 end
+
+# Tracing works for the CPU arrays above, but `gather`'s GPU kernel launch does not survive
+# the forward transform — it took the process down with an illegal instruction, which no
+# test
+# can catch. The rule for that signature raises instead, which this pins where a device is
+# available. Reverse mode over the same call keeps working.
+if cuda
+    @testset "forward mode over gather on a GPU array raises" begin
+        gather_sum(z) = sum(NNlib.gather(z, [1, 3]))
+        xg = cu(randn(StableRNG(123), Float32, 4))
+        rule = Mooncake.build_frule(gather_sum, xg)
+        @test_throws ArgumentError rule(
+            Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
+        )
+        cache = Mooncake.prepare_gradient_cache(gather_sum, xg)
+        @test Array(Mooncake.value_and_gradient!!(cache, gather_sum, xg)[2][2]) ==
+            Float32[1, 0, 1, 0]
+    end
+end
