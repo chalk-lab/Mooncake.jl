@@ -46,6 +46,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     # the rounding NNlib applies on the way into the destination is observable. `2.0` is not
     # enough: it round-trips, and a tie test against the unrounded `init` still passes.
     mixed_src = cuda ? cu(ones(Float32, 3)) : ones(Float32, 3)
+    _onetwo = cuda ? () -> cu(Float32[1, 2]) : () -> [1.0, 2.0]
     mixed_init = 2.1
     Trng = cuda ? CUDA.RNG : StableRNG
 
@@ -344,10 +345,11 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # `init` is a differentiable keyword, so the keyword NamedTuple's rdata is not
         # NoRData — returning NoRData there raised an `increment!!` MethodError. Below every
         # source it loses the max and its gradient is genuinely zero; above every source it
-        # wins outright and takes the whole cotangent. An exact tie between `init` and the
-        # sources is deliberately absent: the symmetric split over the tied members is a
-        # valid subgradient but not the one central differences give, which is the midpoint
-        # of the one-sided derivatives, so `test_rule` cannot express it.
+        # wins outright and takes the whole cotangent. The third case ties `init` with
+        # exactly one source: at a two-way tie a central difference's mean of the one-sided
+        # derivatives IS the symmetric split, so the convention is pinned here in the
+        # ordinary way. Three-way ties are the ones finite differences cannot express, and
+        # those are asserted against the rule directly.
         (
             false,
             :none,
@@ -369,6 +371,17 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             max,
             _ones(3),
             [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(1.0),),
+            NNlib.scatter,
+            max,
+            _onetwo(),
+            [1, 2],
         ),
         (
             false,

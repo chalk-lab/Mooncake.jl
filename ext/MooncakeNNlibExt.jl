@@ -339,12 +339,14 @@ end
 # propagates into the destination and equals nothing, so the count is zero and the share is
 # `NaN` — matching the primal, which is `NaN` there too.
 #
-# Where nothing is tied, this is the derivative and finite differences agree with it. At an
-# exact tie they cannot: the symmetric split is the mean of the tied members' direction
-# components, while a central difference returns the midpoint of the one-sided derivatives.
-# Both lie in the subdifferential, so a finite-difference comparison that disagrees at a tie
-# is not evidence of a bug — which is why the tests cover `init` above and below the sources
-# but not level with them.
+# Where nothing is tied, this is the derivative and finite differences agree with it. At a
+# tie a central difference returns the mean of the one-sided directional derivatives, so
+# whether it agrees depends on how many members are tied: with two, that mean IS the
+# symmetric split and they agree exactly, so `test_rule` covers such a case directly. With
+# three or more they part company — the split stays the mean of all the members while the
+# difference still averages only the largest and smallest — and both remain subgradients, so
+# a disagreement there is not evidence of a bug. That is why the three-way case is asserted
+# against the rule rather than through finite differences.
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
