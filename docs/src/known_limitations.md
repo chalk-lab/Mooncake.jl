@@ -268,6 +268,20 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+## Forward mode over some NNlib reductions on GPU arrays
+
+`NNlib.softmax`, `logsoftmax`, `logsumexp` and `gather` have reverse-mode rules but no
+forward-mode ones, so forward mode traces their primals. On CPU arrays that works. On GPU
+arrays it does not: the traced primal reaches `GPUArrays`' reduction internals, whose IR
+contains a value-less `Core.UpsilonNode` that Mooncake's forward transform reads
+unconditionally, and the result is an `UndefRefError` raised from inside the transform rather
+than a message naming what is unsupported.
+
+Reverse mode over these functions works on GPU arrays, as does forward mode over the same
+functions on CPU arrays. Writing `frule!!`s for them would remove the limitation; failing
+that, a GPU-array `frule!!` that raises deliberately would at least make the diagnosis
+obvious.
+
 ```@meta
 DocTestSetup = nothing
 ```
