@@ -377,43 +377,36 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
-# The logistic sigmoid, `σ(x) = 1 / (1 + exp(-x))`, and its clamped variant `sigmoid_fast`.
-# Both are smooth, so neither needs a rule for the derivative to exist — but two numerical
-# traps make tracing the primal give the wrong answer, at opposite ends of the input range.
+# The logistic sigmoid `σ(x) = 1 / (1 + exp(-x))` and its clamped variant `sigmoid_fast`.
+# Both are smooth, so a rule is not needed for the derivative to exist — but tracing the
+# primal gets it wrong at both ends of the range.
 #
-# Near zero: the primal is written for overflow safety, branching on the sign of `x` and
-# routing through `abs(x)`. AD therefore picks up a factor of `sign(x)`, which Julia defines
-# as `0` at `x == 0`, and reports a derivative of `0` there instead of `1/4`. The kink that
-# `abs` introduces cancels between the two branches analytically, but not through the chain
-# rule. Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+# At zero: the primal branches on the sign of `x` for overflow safety and routes through
+# `abs(x)`, so AD picks up `sign(0)`, which Julia defines as `0`, and reports `0` instead of
+# `1/4`. The kink `abs` introduces cancels between the branches analytically but not through
+# the chain rule. Exactly-zero arguments are common — zero-initialised biases, dead ReLU
+# units.
 #
-# For saturated `x`: writing `t = exp(-abs(x))`, the derivative `σ(x) * (1 - σ(x))` equals
-# `t / (1 + t)^2` for either sign of `x`. The rules use that form because it holds the small
-# quantity in `t`'s exponent, where it keeps full relative precision. The textbook form does
-# not: floats near `1.0` are spaced `eps` apart, so forming `σ(x) = 1 - δ` destroys any
-# `δ < eps/2`, and the later `1 - σ(x)` — exact in itself — recovers only what survived.
-# That quantises the derivative to one ulp and then to exactly `0` (Float64 `x ≳ 37`,
-# Float32 `x ≳ 17`, Float16 `x ≳ 8`) while the true value is still a normal float. `t ≤ 1`,
-# so the quotient cannot overflow.
+# When saturated: writing `t = exp(-abs(x))`, the derivative is `t / (1 + t)^2` for either
+# sign, which holds the small quantity in an exponent. The textbook `σ(x) * (1 - σ(x))` does
+# not: floats near `1.0` are spaced `eps` apart, so `σ = 1 - δ` destroys any `δ < eps/2` and
+# the exact `1 - σ` recovers only what survived. That quantises the derivative to one ulp
+# and then to `0` (Float64 `x ≳ 37`, Float32 `≳ 17`, Float16 `≳ 8`) while the true value is
+# still normal. `t ≤ 1`, so the quotient cannot overflow.
 #
-# `t` and the value are computed separately, so `exp` runs twice — the primal recomputes it
-# internally. Deriving the value from `t` would cut the rule body from 5.5 to 3.5 ns, about
-# a tenth of a gradient through a large broadcast, and is bit-identical over [-5, 5]. It is
-# not done because it means restating the primal's branch here, and `sigmoid_fast`'s clamps
-# with it: 2 ns against a rule whose *value* could then drift from the function it
-# differentiates, in a formulation that has already changed once. `test_rule` does compare
-# the two values, but only to `√eps`, so a drift on the scale of those clamps would pass;
-# revisit with a profile showing σ matters, and with a tighter value check than that.
+# `exp` therefore runs twice, here and inside the primal. Deriving the value from `t` would
+# save 2 ns of 5.5 and is bit-identical over [-5, 5], but it means restating the primal's
+# branch and `sigmoid_fast`'s clamps here, where the value could drift from the function
+# being differentiated — and `test_rule` compares values only to `√eps`, too loose to catch
+# drift on the scale of those clamps.
 #
-# Both rules differentiate the unclamped sigmoid. For large positive `x` that is not a
-# choice: σ is already exactly `1.0` in Float64 from about 36.8, so both primals are flat
-# there and the analytic derivative — 4.2e-18 at `x = 40` — is all there is to report.
-# `sigmoid_fast`'s `x < -80` clamp does change the value, to exactly `0` where σ gives
-# 6.6e-36, and there the derivative reported is σ's rather than the clamped primal's `0`.
-# Deliberate: NNlib documents `sigmoid_fast` as a less accurate σ, so its clamps are an
-# accuracy compromise rather than a different function, and matching them would put a
-# discontinuity in the derivative at exactly -80 for the sake of a value below 1e-35. Finite
-# differences cannot see either case — they give `0` at both ends.
+# Both rules differentiate the unclamped sigmoid. Past `x ≈ 36.8` that is not a choice: σ is
+# already exactly `1.0`, so the analytic derivative — 4.2e-18 at `x = 40` — is all there is
+# to report. Below `x = -80` `sigmoid_fast` clamps the value to `0` where σ gives 6.6e-36,
+# and the rule still reports σ's. Deliberate: NNlib documents `sigmoid_fast` as a less
+# accurate σ, so its clamps are an accuracy compromise rather than a different function, and
+# matching them would put a discontinuity at exactly -80 for a value below 1e-35. Finite
+# differences see neither end.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function Mooncake.frule!!(
@@ -441,34 +434,29 @@ for f in (:σ, :sigmoid_fast)
 end
 
 # `tanh_fast(x::Float64)` evaluates both `y = (exp(2x) - 1) / (exp(2x) + 1)` and a Remez
-# polynomial `ypoly`, and only then selects between them and `sign(x)` with
-# `ifelse(x^2 > 900, sign(x), ifelse(x^2 < 0.017, ypoly, y))`. `ifelse` is a call, so the
-# primal computes the branches it discards, and past `|x| ≈ 355` the `y` branch is
-# `Inf/Inf`, i.e. `NaN`. The primal is unharmed — `x^2 > 900` switched to `sign(x)` from
-# `|x| > 30`, well below — but reverse mode sends a zero cotangent into the discarded `y`
-# and the quotient's pullback forms `0 * Inf`, so `NaN` reaches the argument. A rule keeps
-# AD out of that body altogether. `gelu`/`gelu_tanh` inherit the failure at `|x| ≈ 21`, far
-# inside their useful range, because they feed `λ(x + 0.044715x³)` through `tanh_fast` and
-# that argument reaches 355 first. An `NDual` method is deliberately absent: `NDual` is not
-# an `IEEEFloat`, so the in-kernel path reaches `Base.tanh` and never this body.
+# polynomial, then selects with `ifelse(x^2 > 900, sign(x), ifelse(x^2 < 0.017, ypoly, y))`.
+# `ifelse` is a call, so the discarded branches are computed, and past `|x| ≈ 355` the `y`
+# branch is `Inf/Inf`. The primal is unharmed — it switched to `sign(x)` back at `|x| > 30`
+# — but reverse mode sends a zero cotangent into the discarded `y` and the quotient's
+# pullback forms `0 * Inf`, putting `NaN` on the argument. A rule keeps AD out of that body.
+# `gelu`/`gelu_tanh` inherit it from `|x| ≈ 21`, since they feed `λ(x + 0.044715x³)` through
+# and that argument reaches 355 first. No `NDual` method: `NDual` is not an `IEEEFloat`, so
+# the in-kernel path reaches `Base.tanh` instead.
 #
-# `tanh_fast(x::Float32)` is a separate body — a Remez rational `x * (n / d)` discarded when
-# `x2 < 66f0` fails — so it fails in the same way for an unrelated reason, its `n`/`d`
+# `tanh_fast(x::Float32)` is a separate body — a Remez rational `x * (n / d)`, discarded
+# once `x2 < 66f0` fails — failing the same way for an unrelated reason, its `n`/`d`
 # overflowing past `|x| ≈ 618587`. Through `gelu_tanh` that is reached from `|x| ≈ 258.8`,
-# only about 12x the `Float64` threshold rather than the three orders of magnitude the bare
-# functions differ by, and well inside what a `Float32` pre-activation sees. The rule covers
-# `IEEEFloat` and so covers both; what needs a test of its own is the boundary, since
-# `Float64` cases stay green with `Float32` dispatching elsewhere.
+# only 12x the Float64 threshold rather than the three orders of magnitude the bare
+# functions differ by, and well inside what a Float32 pre-activation sees. The rule covers
+# `IEEEFloat` and so covers both; the boundary needs its own test, since Float64 cases stay
+# green with Float32 dispatching elsewhere.
 #
-# Below `|x| ≈ 0.13` the primal is `ypoly` while this rule reports the analytic derivative,
-# the same rule-versus-primal gap recorded for `σ`'s clamps above. The discrepancy is far
-# under the polynomial's own approximation error, and matching it would mean restating the
-# primal here.
-#
-# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`. As for
-# `σ` above, that form is used because the textbook one collapses once `tanh(x)` rounds to
-# `1.0` (exactly `0` for Float64 `|x| ≳ 19.5`, Float32 `|x| ≳ 9`, against a true value near
-# `1e-17`).
+# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`, used
+# for the reason given for `σ` above: the textbook form collapses to exactly `0` once
+# `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`) against a true value near
+# 1e-17. Below `|x| ≈ 0.13` the primal is `ypoly` while this reports the analytic derivative
+# — the same rule-versus-primal gap as σ's clamps, far under the polynomial's own error, and
+# matching it would mean restating the primal.
 @is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
 function Mooncake.frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
     u = exp(-2 * abs(primal(x)))

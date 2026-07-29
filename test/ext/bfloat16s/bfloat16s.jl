@@ -77,23 +77,21 @@ end
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
     end
 
-    # `sigmoid_shaped` at exactly zero comes out right for BFloat16, where it does not for
-    # the IEEEFloat types, and the reason is this repo's own choice rather than BFloat16s'.
-    # `ext/MooncakeBFloat16sExt.jl` makes `abs` a primitive whose rules branch on
-    # `x >= zero(P)`, taking the positive side at zero and so reporting a derivative of 1;
-    # AD therefore never traces `abs` down to the `abs_float` intrinsic, whose rule
-    # multiplies by `sign(x)` and collapses at zero because `sign(0) == 0`. The chain rule
-    # then recovers 1/4. With `abs` traced through BFloat16s' own
-    # `BFloat16(abs(Float32(x)))` the derivative here is 0 instead, exactly as for the
-    # IEEEFloat types — see #1257 for those.
+    # `sigmoid_shaped` at exactly zero comes out right for BFloat16 where it does not for
+    # the IEEEFloat types, and the reason is this repo's own choice:
+    # `ext/MooncakeBFloat16sExt.jl` makes `abs` a primitive whose rules branch on `x >=
+    # zero(P)`, taking the positive side at zero and reporting 1, so AD never reaches the
+    # `abs_float` intrinsic whose rule multiplies by `sign(x)` and collapses at zero. The
+    # chain rule then recovers 1/4. Trace `abs` through BFloat16s' own
+    # `BFloat16(abs(Float32(x)))` and the derivative is 0 here too — see #1257 for the
+    # IEEEFloat types.
     #
     # `test_rule` cannot tell those apart, so the derivative is pinned by calling the rule.
-    # Only ε = 1e-2 gives a nonzero finite difference here: at every smaller step
-    # `sigmoid_shaped(±ε)` rounds back to `0.5` and the estimate is exactly 0. Since the
-    # check passes when any one step agrees, a collapsed derivative of 0 matches six of the
-    # seven exactly, with no tolerance involved. Switching this rule's branch to the
-    # intrinsic's `sign(x)` moves the value below from 1/4 to 0 and leaves the whole group
-    # green.
+    # Only ε = 1e-2 gives a nonzero finite difference: at every smaller step
+    # `sigmoid_shaped(±ε)` rounds back to `0.5`. Since the check passes when any one step
+    # agrees, a collapsed derivative of 0 matches six of the seven exactly, no tolerance
+    # involved — switching this rule's branch to the intrinsic's `sign(x)` moves the value
+    # below from 1/4 to 0 and leaves the group green.
     #
     # `abs` itself is absent from the cases above for the related reason that at a kink a
     # central difference returns the midpoint of the one-sided derivatives, 0, against the
