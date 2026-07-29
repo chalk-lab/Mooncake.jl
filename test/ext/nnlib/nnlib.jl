@@ -525,14 +525,6 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
 end
 
-# The `dropout` rules cover reverse mode only, so their primitive declarations are scoped to
-# it. Left unscoped they would claim forward mode too, where there is no `frule!!` to answer
-# the claim, and tracing the primal — which works — would give way to a `MethodError`. The
-# case table above cannot catch that: it pins `mode = Mooncake.ReverseMode`.
-# An `init` with no rdata still competes in the maximum, so the sources tied with it must
-# still receive their share. The guard that withholds `init`'s own share sits after that
-# accumulation; hoisting it skips the accumulation and leaves `src` with no gradient at all.
-# A tie is needed to see it, and `test_rule` cannot express one, so the rule is called here.
 # The tie count totals one per tied entry, so it saturates in `Float16` past 2048 the same
 # way the logsumexp reductions do, inflating every share in a larger tie group — 2x at 4096
 # and 16x at 32768. Every source ties at one destination here, so the count is the length.
@@ -552,6 +544,10 @@ end
     end
 end
 
+# An `init` with no rdata still competes in the maximum, so the sources tied with it must
+# still receive their share. The guard that withholds `init`'s own share sits after that
+# accumulation; hoisting it skips the accumulation and leaves `src` with no gradient at all.
+# A tie is needed to see it, and `test_rule` cannot express one, so the rule is called here.
 @testset "scatter shares with a non-differentiable init" begin
     s = Mooncake.zero_fcodual(ones(3))
     out, pb = Mooncake.rrule!!(
@@ -567,6 +563,10 @@ end
     @test Mooncake.tangent(s) ≈ [1 / 3, 1 / 3, 1 / 2]
 end
 
+# The `dropout` rules cover reverse mode only, so their primitive declarations are scoped to
+# it. Left unscoped they would claim forward mode too, where there is no `frule!!` to answer
+# the claim, and tracing the primal — which works — would give way to a `MethodError`. The
+# case table above cannot catch that: it pins `mode = Mooncake.ReverseMode`.
 @testset "forward mode traces dropout" begin
     test_rule(
         StableRNG(123),
