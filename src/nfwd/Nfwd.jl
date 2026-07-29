@@ -1560,8 +1560,10 @@ for _WrapType in (:Symmetric, :Hermitian)
         # the ambiguity with LinearAlgebra's *(AbstractMatrix, AbstractMatrix) when B
         # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
         # a more specific method that wins on both).
+        # Strided, not `AbstractMatrix`: the wider bound left a GPU-sparse-backed wrapper
+        # ambiguous with cuSPARSE's `*`, and CPU-sparse gets the same product generically.
         function Base.:*(
-            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            A::LinearAlgebra.$_WrapType{NDual{T,N},<:StridedMatrix{NDual{T,N}}},
             B::Union{StridedVector,StridedMatrix},
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
@@ -1569,7 +1571,7 @@ for _WrapType in (:Symmetric, :Hermitian)
 
         function Base.:*(
             A::Union{StridedVector,StridedMatrix},
-            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            B::LinearAlgebra.$_WrapType{NDual{T,N},<:StridedMatrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
         end

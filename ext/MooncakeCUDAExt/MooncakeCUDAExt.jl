@@ -3271,4 +3271,26 @@ end
 # Colon branch is just `sum(A)/length(A)`, with no closure over a differentiable
 # value, so ordinary decomposition already differentiates it correctly.
 
+##
+## Tie-break: `cholesky` of a device array of forward-mode duals
+##
+
+# cuSOLVER claims `Symmetric{<:Real,<:CuArray}` and Nfwd `Symmetric{NDual,<:StridedMatrix}`, so
+# a device array of duals matched both; neither can factorise it, so say that instead.
+for _WrapType in (:Hermitian, :Symmetric)
+    @eval function LinearAlgebra.cholesky(
+        A::LinearAlgebra.$_WrapType{NDual{T,N},<:CuArray{NDual{T,N},2}},
+        (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
+        check::Bool=true,
+    ) where {T<:IEEEFloat,N}
+        throw(
+            ArgumentError(
+                "cholesky of a `$($_WrapType)` over a `CuArray` of `Nfwd.NDual` is not " *
+                "supported. GPU forward mode keeps a dual's value and partials in parallel " *
+                "arrays rather than in a device array of duals, so factorise on the host.",
+            ),
+        )
+    end
+end
+
 end

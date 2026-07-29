@@ -7,6 +7,7 @@ using CUDA.CUDACore.GPUArrays: unsafe_free!
 using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
 using Mooncake: lgetfield
+using Mooncake.Nfwd: NDual
 using Mooncake.TestUtils:
     test_tangent_interface,
     test_tangent_splitting,
@@ -1952,6 +1953,16 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test_throws r"not yet supported" value_and_hvp!!(
                     prepare_hvp_cache(f, x), f, v, x
                 )
+            end
+        end
+
+        # Aqua checks Mooncake alone, so only this sees a collision with CUDA's methods.
+        @testset "no ambiguities against CUDA" begin
+            @test isempty(Test.detect_ambiguities(Mooncake; recursive=true))
+            A = CuArray{NDual{Float64,1}}(undef, 2, 2)
+            fill!(A, NDual{Float64,1}(2.0, (1.0,)))
+            for W in (Symmetric, Hermitian)
+                @test_throws r"is not supported" cholesky(W(A))
             end
         end
     else
