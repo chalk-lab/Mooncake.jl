@@ -340,12 +340,22 @@ end
 # the same cotangent. Counting it among the tied maxima changes the sources' share too: a
 # source tied with `init` takes `1/(m+1)`, not `1/m`.
 #
-# Neither arm guards the division. `total` is only ever read at destinations some index
-# reaches, and such a destination holds one of the sources scattered to it, so it has at
-# least one tied member. A wider `dstsize` leaves destinations holding `scatter_empty` with
-# no tied source, but nothing gathers them. The exception is a `NaN` in `src`, which
-# propagates into the destination and equals nothing, so the count is zero and the share is
-# `NaN` — matching the primal, which is `NaN` there too.
+# Neither arm guards the division, and the two divisions are safe for different reasons.
+# `gather(total, pidx)` is only ever read at destinations some index reaches, and such a
+# destination holds one of the sources scattered to it, so it has at least one tied
+# member. A wider `dstsize` leaves destinations holding `scatter_empty` with no tied source,
+# but nothing gathers them.
+#
+# The `dinit` division is not gathered and does read every destination, including those no
+# index reaches — and with `init` supplied those hold `convert(P, init)` rather than
+# `scatter_empty`. It is safe anyway, and for a reason of its own: what fills such a
+# destination is `init` itself, so `init_tie` is `1` exactly there and `total` cannot be
+# zero. Measured with `dstsize=(3,)` over two indices: `dinit` comes back `1.0` for
+# `init = 0.5` and for `init = -Inf`, the destination being won by `init` alone.
+#
+# Both share one exception, a `NaN` — in `src`, or as `init` — which propagates into the
+# destination and equals nothing, so the count is zero and the share is `NaN`, matching the
+# primal, which is `NaN` there too.
 #
 # Where nothing is tied, this is the derivative and finite differences agree with it. At a
 # tie a central difference returns the mean of the one-sided directional derivatives, so
