@@ -98,9 +98,8 @@ end
     DefaultCtx, Tuple{typeof(test_scale),Base.IEEEFloat,Vector{<:Base.IEEEFloat}}, false
 )
 
-# Test case whose output is an array view, so ChainRules works in a layout that Mooncake's
-# structural tangent does not share. The view is over a freshly allocated array, because the
-# bridge requires that the result not alias anything in the arguments.
+# Output is an array view, whose layout Mooncake's structural tangent does not share. Over a
+# freshly allocated array, since the bridge requires that the result not alias any argument.
 
 test_view_output(x) = transpose(2 .* x)
 
@@ -324,15 +323,14 @@ end
         @testset "rules: $(typeof(fargs))" for fargs in Any[
             (ToolsForRulesResources.bleh, 5.0, 4),
             (ToolsForRulesResources.test_sum, ones(5)),
-            # A view's cotangent arrives flat while its fdata is the parent's. Non-square, so
-            # a missing transpose is a shape error rather than a silent pass.
+            # One per array view the bridge admits: the cotangent arrives flat while the
+            # fdata is the parent's. Non-square so a missing transpose is a shape error; the
+            # reshape nests a view in a view; the complex pair pins the conjugation, which
+            # dropped from `arrayify` fails the `Adjoint` case and not the `Transpose`.
             (ToolsForRulesResources.test_sum, ones(2, 3)'),
             (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
             (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
-            # A view of a view, so `arrayify`'s recursion through nested fdata is exercised.
             (ToolsForRulesResources.test_sum, reshape(view(ones(3, 3), 1:2, 1:3), 3, 2)),
-            # An `Adjoint` view conjugates on write, a `Transpose` does not; removing that
-            # conjugation from `arrayify` fails the first of these and not the second.
             (ToolsForRulesResources.test_sum, ones(ComplexF64, 3, 2)'),
             (ToolsForRulesResources.test_sum, transpose(ones(ComplexF64, 3, 2))),
             (ToolsForRulesResources.test_view_output, ones(2, 3)),
