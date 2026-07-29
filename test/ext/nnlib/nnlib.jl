@@ -399,6 +399,23 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
+        # Dropping `max(total, 1)` made a `NaN` in `src` propagate into the gradient instead
+        # of being silenced to zero, which is the whole point of removing it, and it has to
+        # do so in both arms — the two disagreeing on the same input is what the removal
+        # fixed. `interface_only`, since a `NaN` gradient is not finite-differenceable.
+        (true, :none, true, NNlib.scatter, max, [NaN, 1.0, 2.0], [1, 1, 2]),
+        (
+            true,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            [NaN, 1.0, 2.0],
+            [1, 1, 2],
+        ),
+
         # `init` over a multi-dim `src`, where the tie count and the `init` indicator have
         # to agree on the extra leading dimension. Winning `init` takes the whole cotangent,
         # so `dsrc` is zero and `dinit` is the destination count.
@@ -499,6 +516,25 @@ end
 # it. Left unscoped they would claim forward mode too, where there is no `frule!!` to answer
 # the claim, and tracing the primal — which works — would give way to a `MethodError`. The
 # case table above cannot catch that: it pins `mode = Mooncake.ReverseMode`.
+# An `init` with no rdata still competes in the maximum, so the sources tied with it must
+# still receive their share. The guard that withholds `init`'s own share sits after that
+# accumulation; hoisting it skips the accumulation and leaves `src` with no gradient at all.
+# A tie is needed to see it, and `test_rule` cannot express one, so the rule is called here.
+@testset "scatter shares with a non-differentiable init" begin
+    s = Mooncake.zero_fcodual(ones(3))
+    out, pb = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(Core.kwcall),
+        Mooncake.zero_fcodual((init=true,)),
+        Mooncake.zero_fcodual(NNlib.scatter),
+        Mooncake.zero_fcodual(max),
+        s,
+        Mooncake.zero_fcodual([1, 1, 2]),
+    )
+    Mooncake.tangent(out) .= 1
+    pb(Mooncake.NoRData())
+    @test Mooncake.tangent(s) ≈ [1 / 3, 1 / 3, 1 / 2]
+end
+
 @testset "forward mode traces dropout" begin
     test_rule(
         StableRNG(123),

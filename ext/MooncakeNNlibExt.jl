@@ -366,11 +366,14 @@ end
     # absent `init` alike: for both, the caller answers with `zero_rdata` of the keywords,
     # which is `NoRData`.
     #
-    # Returning here rather than before the tie count leaves such an `init` competing in the
-    # maximum, so a source tied with it takes `1/(m+1)`. Returning earlier would give `1/m`.
-    # Both are subgradients, so this is consistency with the arm below rather than
-    # correctness, and no test distinguishes them: it would take a tie, where the rule and
-    # finite differences legitimately disagree.
+    # This return has to come after both lines above, and each is load-bearing for a
+    # different reason. Move it up as a plain early return and the `dsrc` accumulation is
+    # skipped, so `src` gets no gradient at all: `[0, 0, 0]` where the shares are
+    # `[1/3, 1/3, 1/2]`. Move it up but keep the accumulation, dividing by a `total` that
+    # `init_tie` has not been folded into yet, and an `init` that wins outright divides by
+    # zero: nothing ties the maximum, the source mask is empty, and every share is `NaN`.
+    # An `init` with no rdata still competes in the maximum: it takes no share of its own,
+    # but it is part of the count that sets everyone else's.
     Mooncake.zero_rdata(init) isa Mooncake.NoRData && return nothing
     # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
     # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised
