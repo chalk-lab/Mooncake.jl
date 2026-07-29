@@ -503,24 +503,16 @@ end
             StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
         )
     end
-    # Saturated inputs, where `Ω * (1 - Ω)` loses the derivative entirely. These cover NaN,
-    # Inf and type stability out here, not the precision itself — see the "Limitations"
-    # section of `test_rule`'s docstring for why finite differences cannot see it. Float16
-    # is absent for a different reason, given below.
+    # Saturated inputs. These cover NaN, Inf and type stability, not the precision itself —
+    # see the Limitations section of `test_rule`'s docstring.
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
 
-    # Float16 collapses first, at x >= 8, and `test_rule` cannot be used on it at all —
-    # not because it would pass the collapsed formula, but because it fails whichever
-    # formula is in place. Its check compares `ȳ·ẏ + x̄·ẋ` in one `isapprox`, and at
-    # `Float16(8)` both terms are unusable. `ẏ` is exactly `0` for every step, σ's output
-    # being saturated: its spacing there is 4.88e-4 against a true change of 3.35e-6. `ẋ`,
-    # itself reconstructed by differencing, is 2.3% off for the largest step and `0` for the
-    # rest, the spacing being 0.0078 against a `2ε` of 0.02. So compare against a
-    # wider-precision reference. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only
-    # tests pinning σ's precision, and the formula has three copies — one per rule and one
-    # for the in-kernel `NDual` method — so each gets its own. All three are directly
-    # callable, the rules because they take `P<:IEEEFloat`.
+    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in
+    # place: both terms of its `ȳ·ẏ + x̄·ẋ` check are unusable, `ẏ` being exactly 0 for
+    # every step (spacing 4.88e-4 against a true change of 3.35e-6) and `ẋ` 2.3% off at
+    # best. So compare against a wider-precision reference. `Ω * (1 - Ω)` returns exactly 0
+    # here, so these are the only tests pinning σ's precision, once per copy of the formula.
     ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
     x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2

@@ -377,36 +377,18 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
-# The logistic sigmoid `σ(x) = 1 / (1 + exp(-x))` and its clamped variant `sigmoid_fast`.
-# Both are smooth, so a rule is not needed for the derivative to exist — but tracing the
-# primal gets it wrong at both ends of the range.
+# σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
+# `abs(x)`, so AD picks up `sign(0) == 0` and reports `0` for `1/4`. When saturated the
+# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so any
+# `δ < eps/2` is destroyed and the derivative quantises to `0` (Float64 `x ≳ 37`, Float32 `≳
+# 17`, Float16 `≳ 8`) while the true value is still normal. `t / (1 + t)^2` with `t =
+# exp(-abs(x))` holds it in an exponent instead, and `t ≤ 1` bounds the quotient.
 #
-# At zero: the primal branches on the sign of `x` for overflow safety and routes through
-# `abs(x)`, so AD picks up `sign(0)`, which Julia defines as `0`, and reports `0` instead of
-# `1/4`. The kink `abs` introduces cancels between the branches analytically but not through
-# the chain rule. Exactly-zero arguments are common — zero-initialised biases, dead ReLU
-# units.
-#
-# When saturated: writing `t = exp(-abs(x))`, the derivative is `t / (1 + t)^2` for either
-# sign, which holds the small quantity in an exponent. The textbook `σ(x) * (1 - σ(x))` does
-# not: floats near `1.0` are spaced `eps` apart, so `σ = 1 - δ` destroys any `δ < eps/2` and
-# the exact `1 - σ` recovers only what survived. That quantises the derivative to one ulp
-# and then to `0` (Float64 `x ≳ 37`, Float32 `≳ 17`, Float16 `≳ 8`) while the true value is
-# still normal. `t ≤ 1`, so the quotient cannot overflow.
-#
-# `exp` therefore runs twice, here and inside the primal. Deriving the value from `t` would
-# save 2 ns of 5.5 and is bit-identical over [-5, 5], but it means restating the primal's
-# branch and `sigmoid_fast`'s clamps here, where the value could drift from the function
-# being differentiated — and `test_rule` compares values only to `√eps`, too loose to catch
-# drift on the scale of those clamps.
-#
-# Both rules differentiate the unclamped sigmoid. Past `x ≈ 36.8` that is not a choice: σ is
-# already exactly `1.0`, so the analytic derivative — 4.2e-18 at `x = 40` — is all there is
-# to report. Below `x = -80` `sigmoid_fast` clamps the value to `0` where σ gives 6.6e-36,
-# and the rule still reports σ's. Deliberate: NNlib documents `sigmoid_fast` as a less
-# accurate σ, so its clamps are an accuracy compromise rather than a different function, and
-# matching them would put a discontinuity at exactly -80 for a value below 1e-35. Finite
-# differences see neither end.
+# `exp` runs twice, here and in the primal, rather than restating the primal's branch and
+# `sigmoid_fast`'s clamps where they could drift from it — 2 ns of 5.5. Both rules
+# differentiate the unclamped σ: past `x ≈ 36.8` the analytic value is all there is, and
+# below `-80` `sigmoid_fast`'s clamp is documented as an accuracy compromise, not a
+# different function.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function Mooncake.frule!!(
@@ -433,30 +415,17 @@ for f in (:σ, :sigmoid_fast)
     end
 end
 
-# `tanh_fast(x::Float64)` evaluates both `y = (exp(2x) - 1) / (exp(2x) + 1)` and a Remez
-# polynomial, then selects with `ifelse(x^2 > 900, sign(x), ifelse(x^2 < 0.017, ypoly, y))`.
-# `ifelse` is a call, so the discarded branches are computed, and past `|x| ≈ 355` the `y`
-# branch is `Inf/Inf`. The primal is unharmed — it switched to `sign(x)` back at `|x| > 30`
-# — but reverse mode sends a zero cotangent into the discarded `y` and the quotient's
-# pullback forms `0 * Inf`, putting `NaN` on the argument. A rule keeps AD out of that body.
-# `gelu`/`gelu_tanh` inherit it from `|x| ≈ 21`, since they feed `λ(x + 0.044715x³)` through
-# and that argument reaches 355 first. No `NDual` method: `NDual` is not an `IEEEFloat`, so
-# the in-kernel path reaches `Base.tanh` instead.
+# `tanh_fast` selects between branches with `ifelse`, which is a call, so the discarded
+# branch is computed: past `|x| ≈ 355` the Float64 body's `(exp(2x) - 1) / (exp(2x) + 1)` is
+# `Inf/Inf`, and a zero cotangent into that quotient's pullback forms `0 * Inf` and puts
+# `NaN` on the argument. The Float32 body overflows its Remez rational the same way past
+# `|x| ≈ 618587`, or `≈ 258.8` through `gelu_tanh`, well inside a Float32 pre-activation,
+# and needs its own test since Float64 cases stay green while Float32 dispatches elsewhere.
+# A rule keeps AD out of both bodies; `gelu`/`gelu_tanh` inherit from `|x| ≈ 21`. No `NDual`
+# method — it is not an `IEEEFloat`, so the in-kernel path reaches `Base.tanh`.
 #
-# `tanh_fast(x::Float32)` is a separate body — a Remez rational `x * (n / d)`, discarded
-# once `x2 < 66f0` fails — failing the same way for an unrelated reason, its `n`/`d`
-# overflowing past `|x| ≈ 618587`. Through `gelu_tanh` that is reached from `|x| ≈ 258.8`,
-# only 12x the Float64 threshold rather than the three orders of magnitude the bare
-# functions differ by, and well inside what a Float32 pre-activation sees. The rule covers
-# `IEEEFloat` and so covers both; the boundary needs its own test, since Float64 cases stay
-# green with Float32 dispatching elsewhere.
-#
-# Writing `u = exp(-2 * abs(x))`, the derivative `1 - tanh(x)^2` is `4u / (1 + u)^2`, used
-# for the reason given for `σ` above: the textbook form collapses to exactly `0` once
-# `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`) against a true value near
-# 1e-17. Below `|x| ≈ 0.13` the primal is `ypoly` while this reports the analytic derivative
-# — the same rule-versus-primal gap as σ's clamps, far under the polynomial's own error, and
-# matching it would mean restating the primal.
+# `4u / (1 + u)^2` with `u = exp(-2|x|)` for σ's reason: `1 - tanh(x)^2` collapses to `0`
+# once `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
 function Mooncake.frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
     u = exp(-2 * abs(primal(x)))

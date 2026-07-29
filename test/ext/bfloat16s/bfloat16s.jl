@@ -77,26 +77,12 @@ end
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
     end
 
-    # `sigmoid_shaped` at exactly zero comes out right for BFloat16 where it does not for
-    # the IEEEFloat types, and the reason is this repo's own choice:
-    # `ext/MooncakeBFloat16sExt.jl` makes `abs` a primitive whose rules branch on `x >=
-    # zero(P)`, taking the positive side at zero and reporting 1, so AD never reaches the
-    # `abs_float` intrinsic whose rule multiplies by `sign(x)` and collapses at zero. The
-    # chain rule then recovers 1/4. Trace `abs` through BFloat16s' own
-    # `BFloat16(abs(Float32(x)))` and the derivative is 0 here too — see #1257 for the
-    # IEEEFloat types.
-    #
-    # `test_rule` cannot tell those apart, so the derivative is pinned by calling the rule.
-    # Only ε = 1e-2 gives a nonzero finite difference: at every smaller step
-    # `sigmoid_shaped(±ε)` rounds back to `0.5`. Since the check passes when any one step
-    # agrees, a collapsed derivative of 0 matches six of the seven exactly, no tolerance
-    # involved — switching this rule's branch to the intrinsic's `sign(x)` moves the value
-    # below from 1/4 to 0 and leaves the group green.
-    #
-    # `abs` itself is absent from the cases above for the related reason that at a kink a
-    # central difference returns the midpoint of the one-sided derivatives, 0, against the
-    # rule's 1. The composite is smooth at zero — the kink cancels between the `ifelse`
-    # branches — which is what lets `test_rule` run on it at all.
+    # Right at zero for BFloat16 where it is not for the IEEEFloat types, because this
+    # repo's `abs` rules branch on `x >= zero(P)` and take the positive side, never reaching
+    # the `abs_float` intrinsic's `sign(x)`. Pinned by calling the rule, since `test_rule`
+    # passes when any one step agrees and a collapsed 0 matches six of the seven exactly:
+    # below ε = 1e-2, `sigmoid_shaped(±ε)` rounds back to `0.5`. `abs` itself is absent
+    # above because a central difference returns 0 at its kink against the rule's 1.
     @testset "sigmoid_shaped at zero" begin
         rule = Mooncake.build_rrule(sigmoid_shaped, P(0))
         _, pb = rule(Mooncake.zero_fcodual(sigmoid_shaped), Mooncake.zero_fcodual(P(0)))
