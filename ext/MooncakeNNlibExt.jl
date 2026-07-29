@@ -452,6 +452,14 @@ end
 # that argument reaches 355 first. An `NDual` method is deliberately absent: `NDual` is not
 # an `IEEEFloat`, so the in-kernel path reaches `Base.tanh` and never this body.
 #
+# `tanh_fast(x::Float32)` is a separate body — a Remez rational `x * (n / d)` discarded when
+# `x2 < 66f0` fails — so it fails in the same way for an unrelated reason, its `n`/`d`
+# overflowing past `|x| ≈ 618587`. Through `gelu_tanh` that is reached from `|x| ≈ 258.8`,
+# only about 12x the `Float64` threshold rather than the three orders of magnitude the bare
+# functions differ by, and well inside what a `Float32` pre-activation sees. The rule covers
+# `IEEEFloat` and so covers both; what needs a test of its own is the boundary, since
+# `Float64` cases stay green with `Float32` dispatching elsewhere.
+#
 # Below `|x| ≈ 0.13` the primal is `ypoly` while this rule reports the analytic derivative,
 # the same rule-versus-primal gap recorded for `σ`'s clamps above. The discrepancy is far
 # under the polynomial's own approximation error, and matching it would mean restating the

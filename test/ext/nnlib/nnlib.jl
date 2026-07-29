@@ -543,6 +543,12 @@ end
     test_rule(
         StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
     )
+    # NNlib's `tanh_fast(::Float32)` is a different body from the `Float64` one — a Remez
+    # rational whose discarded branch overflows, rather than an `exp` quotient — so none of
+    # the cases above reach it, and the rule kept working for `Float64` with `Float32`
+    # removed from it. Through `gelu_tanh` the Float32 gradient goes `NaN` from |x| ≈ 258.8,
+    # so a scalar there fails without the rule and passes with it.
+    test_rule(StableRNG(123), NNlib.gelu_tanh, 300.0f0; is_primitive=false)
     # As for σ, the saturated derivative's precision is beyond finite differences, and both
     # rules carry their own copy of `4u / (1 + u)^2`. `1 - Ω^2` returns exactly 0 at
     # Float16(6), against a true 2.46e-5, so this separates the two forms outright.
