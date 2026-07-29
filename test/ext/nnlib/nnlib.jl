@@ -13,11 +13,8 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
-# At p == 0 `dropout` returns its input array itself, so mutating the result writes through
-# to `x` and the sum doubles. Deterministic there — no draw is made — so finite differences
-# apply. `p` is fixed inside rather than passed in: `test_rule` would perturb it to `-ε`,
-# which is outside `dropout`'s domain, and no step cap helps when the value sits on the
-# boundary.
+# At p == 0 `dropout` returns its input itself, so mutating the result doubles the sum. `p`
+# is fixed inside because `test_rule` would perturb it to `-ε`, outside `dropout`'s domain.
 function dropout_alias_tester(Trng, x)
     y = dropout(Trng(1), x, zero(eltype(x)))
     y .*= 2
@@ -42,9 +39,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
     float = cuda ? x -> Float32(x) : identity
     _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
-    # A mixed-precision `init`, wider than its `src` and not representable in it, so that
-    # the rounding NNlib applies on the way into the destination is observable. `2.0` is not
-    # enough: it round-trips, and a tie test against the unrounded `init` still passes.
+    # Wider than its `src` and not representable in it, so NNlib's rounding is observable;
+    # `2.0` round-trips and would pass either way.
     mixed_src = cuda ? cu(ones(Float32, 3)) : ones(Float32, 3)
     _onetwo = cuda ? () -> cu(Float32[1, 2]) : () -> [1.0, 2.0]
     mixed_init = 2.1
@@ -182,11 +178,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
         (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
-        # `Adjoint`/`Transpose` through the aliasing arm, `p ≤ 0`, which returns the input
-        # `CoDual` and never reaches ChainRules. With `_rand` these run on a `CuArray` where a
-        # device is present, which needs this branch's `materialize!` rule: without it the
-        # forward-mode broadcast into a wrapped `CuArray` is traced into the kernel launch and
-        # dies on the `jl_gc_disable_finalizers_internal` ccall. Both fail on `main`.
+        # The aliasing arm, `p ≤ 0`, which returns the input `CoDual`. On a device these
+        # also need the `materialize!` rule for the forward broadcast. Both fail on `main`.
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
         (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
         # ... and through the other arm, `p > 0`, which calls the ChainRules bridge. There the
@@ -362,14 +355,10 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # shapes have to agree on the extra leading dimension.
         (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
 
-        # `init` is a differentiable keyword, so the keyword NamedTuple's rdata is not
-        # NoRData — returning NoRData there raised an `increment!!` MethodError. Below every
-        # source it loses the max and its gradient is genuinely zero; above every source it
-        # wins outright and takes the whole cotangent. The third case ties `init` with
-        # exactly one source: at a two-way tie a central difference's mean of the one-sided
-        # derivatives IS the symmetric split, so the convention is pinned here in the
-        # ordinary way. Three-way ties are the ones finite differences cannot express, and
-        # those are asserted against the rule directly.
+        # `init` is differentiable, so the keyword NamedTuple's rdata is not NoRData. The
+        # three cases put it below every source, above every source, and tied with exactly
+        # one — the tie a central difference can express, since its mean of the one-sided
+        # derivatives is the symmetric split.
         (
             false,
             :none,
@@ -415,11 +404,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # An `init` with no rdata, which used to throw: `oftype` cannot fit a fractional
-        # share into an integer. Here `init` wins outright, so no source ties it — whether
-        # it is counted in the tie total makes no difference to this case, and no test can
-        # settle that, since a tie is where finite differences and the rule legitimately
-        # disagree. See the note above `_scatter_extremum_grads!`.
+        # An `init` with no rdata, which used to throw. It wins outright here, so nothing
+        # ties it and its place in the tie total is untestable — see the note on the helper.
         (
             false,
             :none,
@@ -583,12 +569,9 @@ end
     @test Mooncake.tangent(s) ≈ [1 / 3, 1 / 3, 1 / 2]
 end
 
-# The two `NaN` cases in the table above run under `interface_only`, which does not compare
-# gradients at all — so neither of them observes the behaviour that removing `max(total, 1)`
-# chose, and the value has to be read from the cotangent here. A `NaN` in `src` makes every
-# tie test at its destination a `NaN ==` comparison, so the count is zero and the share is
-# `0/0`. The guard turned that into a zero while the primal stayed `NaN`; without it the two
-# agree. Both arms have to do the same thing — them disagreeing is what the removal fixed.
+# The table's `NaN` cases run under `interface_only`, which compares no gradients, so the
+# cotangent has to be read here. A `NaN` in `src` makes every tie test false, so the share
+# is `0/0`; `max(total, 1)` turned that into a zero while the primal stayed `NaN`.
 @testset "scatter NaN in src reaches the gradient" begin
     src, idx = [NaN, 1.0, 2.0], [1, 1, 2]
     @test isnan(NNlib.scatter(max, src, idx)[1])

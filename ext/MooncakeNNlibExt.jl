@@ -95,26 +95,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
         Union{Array{P,3},AbstractGPUArray{P,3}},
     } where {P<:IEEEFloat},
 )
-# `dropout` returns its input array itself when `p ≤ 0`, its fast path being
-# `convert(AbstractArray{float(eltype(A))}, A)` — the identity for a float array.
-# ChainRules' rrule has no such path: it always allocates and always draws from `rng`, so AD
-# ran a different program from the primal, wrong in the value as well as the gradient, and
-# advanced the RNG where the primal left it untouched. Returning the input `CoDual` keeps
-# the aliasing invariant and matches the `p > 0` path on `p`, for which ChainRules gives
-# `NoTangent()`. The identity is checked rather than assumed — NNlib is openly unsure about
-# that fast path — since were it to allocate, returning the input would alias where the
-# primal does not, this defect inverted.
-#
-# Branching on a value makes the return type a two-arm `Union`. For plain arrays the arms
-# differ only in the pullback, the primal slot being the same `CoDual`: deliberate and
-# measured, since it does not reach the interface, the gradient's type stays concrete, and
-# the aliasing arm is cheaper (32 bytes against 800, allocation-free pullback against 448).
-# For `Adjoint`/`Transpose` they differ in primal and fdata type too — aliasing returns the
-# wrapper and its `FData`, the other arm the plain `Array` ChainRules produces — but that is
-# not an asymmetry this branch introduced: those signatures never worked through ChainRules
-# on `main` either, the plain tangent not being `tangent_type` of the wrapper. The aliasing
-# arm is the half that now works, so `p ≤ 0` over an `Adjoint` went from that error to a
-# correct gradient, which the two cases below pin.
+# At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
+# from `rng` regardless: a different program from the primal. Checked, not assumed, because
+# if that fast path ever allocates, returning the input would alias where the primal does
+# not.
 @is_primitive MinimalCtx ReverseMode Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
@@ -320,44 +304,19 @@ end
     true,
 )
 
-# Accumulates the `src` gradient into `dsrc` and returns `init`'s, or `nothing` when `init`
-# was not supplied. Both come from the same tie count, which is why they share a function.
-#
-# ChainRules' `∇scatter_src` for `max`/`min` is `(src .== gather(dst, idx)) .* gather(Δ,
-# idx)`, giving the full cotangent to every source tied for its destination's extremum. The
-# gradient then sums to the tie multiplicity rather than to 1 — measured 2x for two tied
-# entries, 3x for three — so it is not a member of the subdifferential at all, as opposed to
-# a debatable choice among its members. Dividing by the tie count restores the sum and picks
-# the symmetric member. `init` seeds every destination, so it competes in the same maximum
-# and takes a share: a source tied with `init` gets `1/(m+1)`, not `1/m`.
-#
-# Neither division is guarded, and each is safe for its own reason. `gather(total, pidx)` is
-# only read at destinations some index reaches, and such a destination holds one of the
-# sources scattered to it, so it has at least one tied member; a wider `dstsize` leaves
-# destinations holding `scatter_empty` with no tied source, but nothing gathers them. The
-# `dinit` division is not gathered and does read every destination, including unreached
-# ones, which with `init` supplied hold `convert(P, init)` rather than `scatter_empty` —
-# safe because what fills them is `init` itself, so `init_tie` is `1` exactly there and
-# `total` cannot be zero. Measured with `dstsize=(3,)` over two indices: `dinit` is `1.0`
-# for `init = 0.5` and for `init = -Inf`. Both share one exception, a `NaN` — in `src` or as
-# `init` — which equals nothing, so the count is zero and the share is `NaN`, matching the
-# primal.
-#
-# Finite differences agree wherever nothing is tied. At a tie a central difference returns
-# the mean of the one-sided directional derivatives: with two members that mean IS the
-# symmetric split, so `test_rule` covers such a case directly, while with three or more they
-# part company — the split averages all the members, the difference only the largest and
-# smallest — and both remain subgradients. Hence the three-way case is asserted against the
-# rule rather than through finite differences.
+# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source,
+# so the gradient sums to the tie multiplicity rather than to 1 — not a subdifferential
+# member at all. Dividing by the count picks the symmetric member; `init` competes too, so a
+# source tied with it gets `1/(m+1)`. Neither division needs a zero guard: `gather(total,
+# pidx)` reads only destinations some index reaches, and where `init` is supplied it fills
+# the rest. Ties past two members are asserted against the rule, being where a central
+# difference stops agreeing.
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
-    # The count totals one per tied entry, which `Float16` cannot do past 2048: its spacing
-    # passes 1 there, so `total + 1` rounds back and a larger tie group stops counting.
-    # Every tied entry's share is then inflated by the same factor — measured 2x at 4096
-    # and 16x at 32768. `Float32` reaches the same wall only past 2^24, beyond any real tie
-    # group, so only `Float16` widens. The mask carries the accumulator's type and the share
-    # narrows back to `P` at the end.
+    # `Float16` cannot count past 2048 — its spacing passes 1, so `total + 1` rounds back
+    # and every share in a larger tie group inflates: 2x at 4096, 16x at 32768. `Float32`
+    # hits that wall past 2^24, beyond any real tie group, so only `Float16` widens.
     A = P === Float16 ? Float32 : P
     mask = A.(psrc .== NNlib.gather(y, pidx))
     total = NNlib.scatter(+, mask, pidx; dstsize=size(y))
@@ -365,28 +324,17 @@ end
         dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
         return nothing
     end
-    # NNlib fills the destination with `convert(P, init)`, so the tie test compares the
-    # rounded value. Against the caller's, an `init` not representable in `P` — a `Float64`
-    # literal over a `Float32` array — matches nothing even when it won, `total` collapses
-    # to `0`, and the divisions below return `NaN`.
+    # `convert(P, init)`, since NNlib rounds `init` into the destination: comparing the
+    # caller's value instead matches nothing when it is not representable in `P`.
     init_tie = A.(y .== convert(P, init))
     total = total .+ init_tie
     dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
-    # An `init` with no rdata — an integer, say — has no slot to take a share in, and
-    # `oftype` would throw fitting a fractional share into it. `nothing` suits this and an
-    # absent `init` alike: for both the caller answers with `zero_rdata` of the keywords,
-    # which is `NoRData`. It still competes in the maximum, taking no share of its own but
-    # counting towards everyone else's.
-    #
-    # The return has to come after both lines above, each for its own reason. Moved up as a
-    # plain early return, the `dsrc` accumulation is skipped and `src` gets no gradient at
-    # all — `[0, 0, 0]` where the shares are `[1/3, 1/3, 1/2]`. Moved up but keeping the
-    # accumulation, the division uses a `total` that `init_tie` has not been folded into
-    # yet, so an `init` that wins outright divides by zero and every share is `NaN`.
+    # `nothing` for an `init` with no rdata slot, as for an absent one; it still counts
+    # towards other shares. Must stay below both lines above: moved up, `src` loses its
+    # gradient and a winning `init` divides by a `total` it is not yet folded into.
     Mooncake.zero_rdata(init) isa Mooncake.NoRData && return nothing
     # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
-    # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised
-    # an `increment!!` MethodError.
+    # destination's type, the rdata slot carries `init`'s own.
     return oftype(init, sum(A.(dy) .* init_tie ./ total))
 end
 
@@ -423,9 +371,8 @@ function Mooncake.rrule!!(
         # gets its own specialisation and `kw_rdata` has one concrete type per call site.
         init = haskey(pkw, :init) ? pkw.init : nothing
         dinit = _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), init)
-        # `init` is a differentiable `Real`, so with it supplied the keyword `NamedTuple`'s
-        # rdata is not `NoRData` — returning `NoRData` there raises an `increment!!`
-        # `MethodError`. `dstsize` alone, or no keywords at all, still gives `NoRData`.
+        # With `init` supplied the keyword `NamedTuple`'s rdata is not `NoRData`; `dstsize`
+        # alone, or no keywords, still is.
         kw_rdata = if dinit === nothing
             Mooncake.zero_rdata(pkw)
         else

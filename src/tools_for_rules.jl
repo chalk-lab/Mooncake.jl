@@ -365,11 +365,9 @@ end
 # Functionality supporting @from_rrule
 #
 
-# The array views the bridge reconciles: index maps into a parent that `setindex!` honours.
-# `ReinterpretArray` stays out: between float widths it reinterprets bits rather than values,
-# so a cotangent written through it is meaningless, and the real-to-complex direction, though a
-# genuine iso, has a view eltype its parent does not share, so it cannot use the one
-# `mooncake_tangent` method the views here share.
+# Index maps into a parent that `setindex!` honours. `ReinterpretArray` stays out: between
+# float widths it reinterprets bits rather than values, and the real-to-complex direction,
+# though an iso, has a view eltype its parent does not share.
 const _ArrayView{P} = Union{Adjoint{P},Transpose{P},SubArray{P},Base.ReshapedArray{P}}
 
 """

@@ -2828,12 +2828,8 @@ end
 # the closure BEFORE dout is zeroed.  The frule accumulates contributions into a
 # temporary before writing to dout, for the same reason.
 #
-# The destination is `CuMaybeWrappedArray`, not just `CuMaybeComplexArray`: a broadcast into
-# an `Adjoint`/`Transpose`/`SubArray` over a `CuArray` still forms a
-# `Broadcasted{CuArrayStyle}`, so a bare-`CuArray` bound left it to the interpreter, which
-# traced the kernel launch and died in both modes on the
-# `jl_gc_disable_finalizers_internal` ccall inside `_trylock`. `arrayify` re-wraps the
-# tangent so primal and tangent index alike, as for vcat/hcat/cat/permutedims.
+# A broadcast into a wrapped `CuArray` still forms a `Broadcasted{CuArrayStyle}`, so a bare
+# `CuArray` bound left it to the interpreter, which died tracing the kernel launch.
 @is_primitive(
     MinimalCtx,
     Tuple{
