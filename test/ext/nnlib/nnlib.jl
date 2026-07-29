@@ -514,8 +514,12 @@ end
 @testset "forward mode traces reverse-only rules" begin
     x = randn(StableRNG(123), 3)
     for f in (
-        x -> sum(softmax(x)),
-        x -> sum(softmax(x; dims=1)),
+        # `softmax` is returned whole rather than summed: its outputs sum to 1 identically,
+        # so `1ᵀJ = 0` and a summed case is blind to every error inside that kernel — a JVP
+        # off by a factor or a sign passes it, and both fail once the array is compared.
+        # `logsoftmax` does not sum to a constant, so summing it stays a real check.
+        x -> softmax(x),
+        x -> softmax(x; dims=1),
         x -> sum(logsoftmax(x)),
         x -> sum(logsoftmax(x; dims=1)),
         x -> logsumexp(x),
