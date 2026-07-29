@@ -76,7 +76,7 @@ function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Real})
     return test_sum(x), test_sum_pb
 end
 
-@from_chainrules DefaultCtx Tuple{typeof(test_sum),Array{<:Base.IEEEFloat}} false
+@from_chainrules DefaultCtx Tuple{typeof(test_sum),AbstractArray{<:Base.IEEEFloat}} false
 
 # Test case with heap-allocated output.
 
@@ -304,6 +304,11 @@ end
         @testset "rules: $(typeof(fargs))" for fargs in Any[
             (ToolsForRulesResources.bleh, 5.0, 4),
             (ToolsForRulesResources.test_sum, ones(5)),
+            # A view's cotangent arrives flat while its fdata is the parent's. Non-square, so
+            # a missing transpose is a shape error rather than a silent pass.
+            (ToolsForRulesResources.test_sum, ones(2, 3)'),
+            (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
+            (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
             (ToolsForRulesResources.test_scale, 5.0, randn(3)),
             (ToolsForRulesResources.test_nothing,),
             (Core.kwcall, (y=true,), ToolsForRulesResources.test_kwargs, 5.0),

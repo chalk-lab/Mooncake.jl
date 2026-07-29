@@ -463,6 +463,14 @@ function increment_and_get_rdata!(
     increment!!(f, t)
     return NoRData()
 end
+# For the array views handled by `_cr_darg`: `increment!!` requires both arguments to have
+# the same type, and a view over the fdata never matches the plain array ChainRules returns.
+function increment_and_get_rdata!(
+    f::AbstractArray{P}, ::NoRData, t::AbstractArray{P}
+) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    f .+= t
+    return NoRData()
+end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
@@ -601,20 +609,47 @@ function notimplemented_tangent_guard(dy)
     )
 end
 
+const _CRView{P} = Union{Adjoint{P},Transpose{P},SubArray{P}}
+
+"""
+    _cr_darg(x::Union{Dual,CoDual})
+
+The derivative data of `x`, laid out the way ChainRules lays out a tangent for `primal(x)`.
+
+ChainRules indexes in the primal's layout, so for an array view it works with a flat array,
+while Mooncake's tangent is structural and belongs to the view's parent. `arrayify` presents
+that data through the primal's wrapper, so ChainRules reads, and the reverse pass increments,
+in the parent — transposed or conjugated as the view requires. Structured wrappers such as
+`Diagonal` are excluded: their data cannot be written elementwise, and ChainRules projects
+their cotangents onto the structure rather than returning something flat.
+"""
+_cr_darg(x::Dual) = to_cr_tangent(tangent(x))
+_cr_darg(x::CoDual) = tangent(x)
+function _cr_darg(
+    x::Dual{<:_CRView{P},<:Tangent}
+) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return last(arrayify(x))
+end
+function _cr_darg(
+    x::CoDual{<:_CRView{P},<:FData}
+) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    return last(arrayify(x))
+end
+
 """
     frule_wrapper(f::Dual, args::Dual...)
 
 Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
 """
 function frule_wrapper(fargs::Vararg{Dual,N}) where {N}
-    tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
+    tangents = tuple_map(_cr_darg, fargs)
     Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where {N}
     primals = map(primal, fargs)
-    tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
+    tangents = map(_cr_darg, fargs[2:end])
     Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
@@ -666,7 +701,7 @@ function rrule_wrapper(fargs::Vararg{CoDual,N}) where {N}
 
         # Increment fdata and get rdata.
         return map(fargs, lazy_rdata, cr_dfargs) do x, l_rdata, cr_dx
-            return increment_and_get_rdata!(tangent(x), instantiate(l_rdata), cr_dx)
+            return increment_and_get_rdata!(_cr_darg(x), instantiate(l_rdata), cr_dx)
         end
     end
     return CoDual(y_primal, y_fdata), pb!!
@@ -691,7 +726,7 @@ function rrule_wrapper(::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}) w
         # Increment fdata and compute rdata.
         kwargs_rdata = rdata(zero_tangent(primals[1]))
         args_rdata = map(fargs[2:end], lazy_rdata[2:end], cr_dfargs) do x, l_rdata, cr_dx
-            return increment_and_get_rdata!(tangent(x), instantiate(l_rdata), cr_dx)
+            return increment_and_get_rdata!(_cr_darg(x), instantiate(l_rdata), cr_dx)
         end
         return NoRData(), kwargs_rdata, args_rdata...
     end
