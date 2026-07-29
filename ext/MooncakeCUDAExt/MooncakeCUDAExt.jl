@@ -2830,22 +2830,29 @@ end
 # handles this correctly: contribs are computed from dual_out + dout, captured in
 # the closure BEFORE dout is zeroed.  The frule accumulates contributions into a
 # temporary before writing to dout, for the same reason.
+#
+# The destination is `CuMaybeWrappedArray`, not just `CuMaybeComplexArray`: a broadcast into
+# an `Adjoint`/`Transpose`/`SubArray` over a `CuArray` still forms a
+# `Broadcasted{CuArrayStyle}`, so a bare-`CuArray` bound left it to the interpreter, which
+# traced the kernel launch and died in both modes on the
+# `jl_gc_disable_finalizers_internal` ccall inside `_trylock`. `arrayify` re-wraps the
+# tangent so primal and tangent index alike, as for vcat/hcat/cat/permutedims.
 @is_primitive(
     MinimalCtx,
     Tuple{
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
-    } where {P<:CuMaybeComplexArray},
+    } where {P<:CuMaybeWrappedArray},
 )
 function frule!!(
     ::Dual{typeof(Base.Broadcast.materialize!)},
-    dest::Dual{P,P},
+    dest::Dual{P},
     bc::Dual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuMaybeWrappedArray}
     bc_primal = primal(bc)
     _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
 
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    pout, dout = primal(dest), tangent(dest)
+    pout, dout = arrayify(dest)
     decoded = _gpu_decode_ndual_output(
         Val(:broadcast), dual_out, flat_pargs; extract_primal=false
     )
@@ -2868,10 +2875,10 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
-    dest::CoDual{P,P},
+    dest::CoDual{P},
     bc::CoDual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
-    pout, dout = primal(dest), tangent(dest)
+) where {P<:CuMaybeWrappedArray}
+    pout, dout = arrayify(dest)
     bc_primal = primal(bc)
     bc_fdata = tangent(bc)
     bc_prepared, flat_bc, flat_pargs, flat_fdatas = _prepare_gpu_broadcast(
