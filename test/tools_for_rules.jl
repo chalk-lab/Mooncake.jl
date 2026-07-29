@@ -95,6 +95,23 @@ end
     DefaultCtx, Tuple{typeof(test_scale),Base.IEEEFloat,Vector{<:Base.IEEEFloat}}, false
 )
 
+# Test case whose output is an array view, so ChainRules works in a layout that Mooncake's
+# structural tangent does not share. The view is over a freshly allocated array, because the
+# bridge requires that the result not alias anything in the arguments.
+
+test_view_output(x) = transpose(2 .* x)
+
+function CRC.frule((_, dx), ::typeof(test_view_output), x::AbstractMatrix{<:Real})
+    return test_view_output(x), transpose(2 .* dx)
+end
+
+function CRC.rrule(::typeof(test_view_output), x::AbstractMatrix{<:Real})
+    test_view_output_pb(dy) = CRC.NoTangent(), 2 .* transpose(dy)
+    return test_view_output(x), test_view_output_pb
+end
+
+@from_chainrules DefaultCtx Tuple{typeof(test_view_output),Matrix{<:Base.IEEEFloat}} false
+
 # Test case with non-differentiable type as output.
 
 test_nothing() = nothing
@@ -309,6 +326,7 @@ end
             (ToolsForRulesResources.test_sum, ones(2, 3)'),
             (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
             (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
+            (ToolsForRulesResources.test_view_output, ones(2, 3)),
             (ToolsForRulesResources.test_scale, 5.0, randn(3)),
             (ToolsForRulesResources.test_nothing,),
             (Core.kwcall, (y=true,), ToolsForRulesResources.test_kwargs, 5.0),
