@@ -20,7 +20,8 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual
+    Dual,
+    ReverseMode
 
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
@@ -100,10 +101,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -154,8 +155,10 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(softmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -202,8 +205,10 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(logsumexp),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -277,6 +282,7 @@ end
 # accumulating straight into `src`'s fdata, avoiding its intermediate allocation.
 @is_primitive(
     MinimalCtx,
+    ReverseMode,
     Tuple{
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},

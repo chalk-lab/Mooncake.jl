@@ -504,3 +504,20 @@ end
         )
     end
 end
+
+# Each rule below exists only in reverse mode, so its `@is_primitive` has to say so; declared for
+# both modes, forward mode finds a primitive with no `frule!!` and raises a `MethodError` instead
+# of tracing the primal. CPU only: the mode declaration is what is under test, not the array type.
+@testset "forward mode traces reverse-only rules" begin
+    x = randn(StableRNG(123), 3)
+    for f in (
+        x -> sum(softmax(x)),
+        x -> sum(softmax(x; dims=1)),
+        x -> sum(logsoftmax(x)),
+        x -> logsumexp(x),
+        x -> sum(logsumexp(x; dims=1)),
+        x -> sum(NNlib.gather(x, [1, 3])),
+    )
+        test_rule(StableRNG(123), f, x; mode=Mooncake.ForwardMode, is_primitive=false)
+    end
+end
