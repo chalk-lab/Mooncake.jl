@@ -401,8 +401,9 @@ end
 # a tenth of a gradient through a large broadcast, and is bit-identical over [-5, 5]. It is
 # not done because it means restating the primal's branch here, and `sigmoid_fast`'s clamps
 # with it: 2 ns against a rule whose *value* could then drift from the function it
-# differentiates, in a formulation that has already changed once. Revisit with a profile
-# showing σ matters, and add a value-agreement test if so.
+# differentiates, in a formulation that has already changed once. `test_rule` does compare
+# the two values, but only to `√eps`, so a drift on the scale of those clamps would pass;
+# revisit with a profile showing σ matters, and with a tighter value check than that.
 #
 # Both rules differentiate the unclamped sigmoid. For large positive `x` that is not a
 # choice: σ is already exactly `1.0` in Float64 from about 36.8, so both primals are flat

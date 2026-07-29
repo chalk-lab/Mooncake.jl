@@ -1080,18 +1080,31 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 
 # Limitations
 
-Correctness is assessed only against central finite differences, so properties that finite
-differencing cannot resolve are not covered. Two cases arise in practice:
+The rule's *value* is checked directly, against `f(x)` at `√eps` tolerance, along with
+argument equality, address-map consistency and — in reverse mode — restoration of the inputs
+by the pullback. It is the *derivative* that is assessed only against central finite
+differences, so derivative properties that finite differencing cannot resolve are not
+covered. Three cases arise in practice:
 
 - derivative *precision* in a saturated regime. Where `f(x ± ε)` round to the same float for
     every `ε` on the grid, the finite-difference estimate is `0` whatever the rule returns,
     so a rule that has lost the derivative entirely passes as readily as an exact one.
 - primal types whose spacing at `x` exceeds the step grid. `Float16` hits this well inside
     its normal range, making such arguments untestable here rather than merely imprecise.
+- ties and kinks. At a tie or a kink a central difference returns the midpoint of the
+    one-sided derivatives, which is a different member of the subdifferential from the one a
+    rule is likely to pick. Neither is wrong, so a disagreement there is not evidence of a
+    defect — and an agreement is not evidence of correctness.
 
-Accepting a caller-supplied reference derivative to compare against would close both gaps.
-Until then, a rule whose value depends on either property needs that reasoning recorded
-alongside it, since no `test_rule` call can hold it in place.
+The step grid matters for the first two: the comparison passes when *any* single `ε` agrees,
+so a derivative that has collapsed to `0` passes outright if most of the grid also estimates
+`0`. That is the usual way a saturated case slips through, and it involves no tolerance
+slack at all.
+
+Accepting a caller-supplied reference derivative to compare against would close the first
+two. Until then, a rule whose derivative depends on any of these needs pinning some other
+way — calling the rule and comparing a wider-precision or analytic reference is what the
+rules in `ext/` do — since no `test_rule` call can hold it in place.
 """
 function test_rule(
     rng::AbstractRNG,
