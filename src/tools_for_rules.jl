@@ -366,8 +366,10 @@ end
 #
 
 # The array views the bridge reconciles: index maps into a parent that `setindex!` honours.
-# Structured wrappers are excluded; see `_cr_deriv`.
-const _ArrayView{P} = Union{Adjoint{P},Transpose{P},SubArray{P}}
+# Structured wrappers are excluded; see `_cr_deriv`. `ReinterpretArray` is excluded even though
+# `arrayify` supports it, because between different float widths it reinterprets bits rather
+# than preserving values, and writing a cotangent through that would be meaningless.
+const _ArrayView{P} = Union{Adjoint{P},Transpose{P},SubArray{P},Base.ReshapedArray{P}}
 
 """
     to_cr_tangent(t)

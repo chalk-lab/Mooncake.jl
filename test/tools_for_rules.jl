@@ -329,6 +329,8 @@ end
             (ToolsForRulesResources.test_sum, ones(2, 3)'),
             (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
             (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
+            # A view of a view, so `arrayify`'s recursion through nested fdata is exercised.
+            (ToolsForRulesResources.test_sum, reshape(view(ones(3, 3), 1:2, 1:3), 3, 2)),
             # An `Adjoint` view conjugates on write, a `Transpose` does not; removing that
             # conjugation from `arrayify` fails the first of these and not the second.
             (ToolsForRulesResources.test_sum, ones(ComplexF64, 3, 2)'),
