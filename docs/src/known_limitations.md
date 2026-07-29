@@ -268,36 +268,6 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
-## Forward mode over some NNlib reductions on GPU arrays
-
-`NNlib.softmax`, `logsoftmax`, `logsumexp` and `gather` have reverse-mode rules but no
-forward-mode ones, so forward mode traces their primals. On CPU arrays that works. On GPU
-arrays it does not, and the two failure modes are worth separating.
-
-For `softmax`, `logsoftmax` and `logsumexp` the traced primal reaches a GPU kernel launch,
-which is a foreigncall with no `frule!!`, so Mooncake raises
-`MissingForeigncallRuleError` — its own error, naming the foreigncall it cannot
-differentiate. That is a clear diagnosis, if not a fix.
-
-`gather` is worse: forward mode over a GPU array terminates the process with
-`signal 4 (Illegal instruction)` from inside the derived rule, with no Julia exception to
-catch. Nothing about the failure is recoverable or informative.
-
-Reverse mode over all four works on GPU arrays, as does forward mode over the same functions
-on CPU arrays. Writing `frule!!`s for them would remove the limitation; short of that, a
-GPU-array `frule!!` that raises deliberately would turn the `gather` crash into an ordinary
-error.
-
-Tracing the primal also means the two modes disagree at infinite inputs. `NNlib.logsumexp`
-returns `NaN` for `[Inf, Inf]`, `[Inf, 1]` and `[-Inf, -Inf]`, because the maximal entry
-forms `exp(Inf - Inf)`. The reverse-mode rule deliberately does not reproduce that: it
-substitutes the limit, giving `Inf` with weights `[1, 0]` where one entry attains the
-extremum and an equal share where several tie. Forward mode has no rule to substitute
-anything, so it differentiates what NNlib actually computes and returns `NaN` for both the
-value and the derivative. Neither answer is silently wrong — the primal is `NaN` there too —
-but a gradient and a JVP through the same function will not agree at those inputs until
-these functions have `frule!!`s of their own.
-
 ```@meta
 DocTestSetup = nothing
 ```

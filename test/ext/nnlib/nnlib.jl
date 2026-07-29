@@ -508,9 +508,10 @@ end
 # Each rule below exists only in reverse mode, so its `@is_primitive` has to say so;
 # declared for both modes, forward mode finds a primitive with no `frule!!` and raises a
 # `MethodError` instead of tracing the primal. CPU arrays only, and not because the array
-# type is irrelevant: on a GPU array the traced primal reaches GPUArrays' reduction
-# internals, which Mooncake's forward transform cannot yet handle, so it raises there
-# instead. See `docs/src/known_limitations.md`.
+# type is irrelevant: on a GPU array the traced primal reaches a kernel launch, which is a
+# foreigncall with no `frule!!`, so Mooncake raises `MissingForeigncallRuleError` there
+# instead. `gather` was worse still — it took the process down — which is why it has a rule
+# of its own below.
 @testset "forward mode traces reverse-only rules" begin
     x = randn(StableRNG(123), 3)
     for f in (
