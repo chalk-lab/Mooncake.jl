@@ -108,11 +108,19 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 # unchanged keeps the aliasing invariant and matches the `p > 0` path on `p`, for which
 # ChainRules gives `NoTangent()`.
 #
-# Branching on a value makes the return type a two-arm `Union`, differing only in the
-# pullback: the primal slot is the same `CoDual` either way. That is deliberate and
-# measured — it does not reach the interface, where the gradient's type stays concrete, and
-# the aliasing arm is the cheaper one (32 against 800 bytes for the rule, and an
-# allocation-free pullback against 448).
+# Branching on a value makes the return type a two-arm `Union`. For the plain-array members
+# the arms differ only in the pullback and the primal slot is the same `CoDual`, which is
+# deliberate and measured: it does not reach the interface, the gradient's type stays
+# concrete, and the aliasing arm is the cheaper one (32 against 800 bytes for the rule, and
+# an allocation-free pullback against 448).
+#
+# For the `Adjoint`/`Transpose` members the arms differ in the primal and fdata types as
+# well — aliasing returns the wrapper and its `FData`, while the wrapper arm returns the
+# plain `Array` ChainRules produces. That asymmetry is not what the branch introduced: those
+# signatures never worked through ChainRules at all, on `main` or here, because the plain
+# tangent it returns is not `tangent_type` of the wrapper and Mooncake rejects the
+# combination. The aliasing arm is the half that now does work, so `p ≤ 0` over an `Adjoint`
+# went from that error to a correct gradient, which is what the two cases below pin.
 @is_primitive MinimalCtx ReverseMode Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}

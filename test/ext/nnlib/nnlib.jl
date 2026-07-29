@@ -182,6 +182,12 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
         (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
+        # `Adjoint`/`Transpose` reach `dropout` through the aliasing arm only. The other arm
+        # returns what ChainRules produces, a plain `Array` whose tangent is not
+        # `tangent_type` of the wrapper, and errors — on `main` for every `p`, here only for
+        # `p > 0`. So these two cases pass where they used to throw.
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
+        (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
