@@ -350,19 +350,26 @@ end
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
-    mask = P.(psrc .== NNlib.gather(y, pidx))
+    # The count totals one per tied entry, which `Float16` cannot do past 2048: its spacing
+    # passes 1 there, so `total + 1` rounds back and a larger tie group stops counting.
+    # Every tied entry's share is then inflated by the same factor — measured 2x at 4096
+    # and 16x at 32768. `Float32` reaches the same wall only past 2^24, beyond any real tie
+    # group, so only `Float16` widens. The mask carries the accumulator's type and the share
+    # narrows back to `P` at the end.
+    A = P === Float16 ? Float32 : P
+    mask = A.(psrc .== NNlib.gather(y, pidx))
     total = NNlib.scatter(+, mask, pidx; dstsize=size(y))
     if init === nothing
-        dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
+        dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
         return nothing
     end
     # NNlib fills the destination with `convert(P, init)`, so the tie test compares the
     # rounded value. Against the caller's, an `init` not representable in `P` — a `Float64`
     # literal over a `Float32` array — matches nothing even when it won, `total` collapses
     # to `0`, and the divisions below return `NaN`.
-    init_tie = P.(y .== convert(P, init))
+    init_tie = A.(y .== convert(P, init))
     total = total .+ init_tie
-    dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
+    dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
     # An `init` with no rdata — an integer, say — has no slot to take a share in, and
     # `oftype` would throw fitting a fractional share into it. `nothing` suits this and an
     # absent `init` alike: for both, the caller answers with `zero_rdata` of the keywords,
@@ -380,7 +387,7 @@ end
     # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
     # destination's type while the rdata slot must carry `init`'s own. Mixing the two raised
     # an `increment!!` MethodError.
-    return oftype(init, sum(dy .* init_tie ./ total))
+    return oftype(init, sum(A.(dy) .* init_tie ./ total))
 end
 
 function Mooncake.rrule!!(

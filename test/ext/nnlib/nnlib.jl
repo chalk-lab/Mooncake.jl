@@ -533,6 +533,25 @@ end
 # still receive their share. The guard that withholds `init`'s own share sits after that
 # accumulation; hoisting it skips the accumulation and leaves `src` with no gradient at all.
 # A tie is needed to see it, and `test_rule` cannot express one, so the rule is called here.
+# The tie count totals one per tied entry, so it saturates in `Float16` past 2048 the same
+# way the logsumexp reductions do, inflating every share in a larger tie group — 2x at 4096
+# and 16x at 32768. Every source ties at one destination here, so the count is the length.
+@testset "scatter tie count does not saturate" begin
+    for n in (4096, 32768)
+        s = Mooncake.zero_fcodual(ones(Float16, n))
+        out, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(NNlib.scatter),
+            Mooncake.zero_fcodual(max),
+            s,
+            Mooncake.zero_fcodual(ones(Int, n)),
+        )
+        Mooncake.tangent(out) .= 1
+        pb(Mooncake.NoRData())
+        @test Float64(Mooncake.tangent(s)[1]) ≈ 1 / n rtol = 1e-2
+        @test eltype(Mooncake.tangent(s)) === Float16
+    end
+end
+
 @testset "scatter shares with a non-differentiable init" begin
     s = Mooncake.zero_fcodual(ones(3))
     out, pb = Mooncake.rrule!!(
