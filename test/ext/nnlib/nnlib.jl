@@ -186,8 +186,22 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # returns what ChainRules produces, a plain `Array` whose tangent is not
         # `tangent_type` of the wrapper, and errors — on `main` for every `p`, here only for
         # `p > 0`. So these two cases pass where they used to throw.
-        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
-        (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
+        #
+        # Deliberately `randn` rather than `_rand`: with a GPU present `_rand` gives a
+        # `CuArray`, and a wrapper around one of those has never worked. The primal alone
+        # defeats it — differentiating the tester's mutating broadcast reaches `cufunction`,
+        # which the transform cannot handle — so it fails on `main` too, for both wrapper
+        # kinds. `_rand` here would assert something no branch supports, and only where a
+        # device is present, which is how it escaped the CPU-only run that added these.
+        (false, :none, false, dropout_alias_tester, StableRNG, randn(rng, Float32, 2, 2)'),
+        (
+            false,
+            :none,
+            false,
+            dropout_alias_tester,
+            StableRNG,
+            transpose(randn(rng, Float32, 2, 2)),
+        ),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
