@@ -1082,29 +1082,35 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
 
 The rule's *value* is checked directly, against `f(x)` at `√eps` tolerance, along with
 argument equality, address-map consistency and — in reverse mode — restoration of the inputs
-by the pullback. It is the *derivative* that is assessed only against central finite
-differences, so derivative properties that finite differencing cannot resolve are not
-covered. Three cases arise in practice:
+by the pullback. The *derivative* is assessed against central finite differences, as one
+`isapprox` over `ȳ·ẏ + x̄·ẋ`. Note that `ẋ` is itself reconstructed by differencing, so that
+term's accuracy — not only the derivative's — decides the outcome. The comparison passes
+when *any* single `ε` on the grid agrees, which is what lets several things through:
 
 - derivative *precision* in a saturated regime. Where `f(x ± ε)` round to the same float for
-    every `ε` on the grid, the finite-difference estimate is `0` whatever the rule returns,
-    so a rule that has lost the derivative entirely passes as readily as an exact one.
-- primal types whose spacing at `x` exceeds the step grid. `Float16` hits this well inside
-    its normal range, making such arguments untestable here rather than merely imprecise.
-- ties and kinks. At a tie or a kink a central difference returns the midpoint of the
-    one-sided derivatives, which is a different member of the subdifferential from the one a
-    rule is likely to pick. Neither is wrong, so a disagreement there is not evidence of a
-    defect — and an agreement is not evidence of correctness.
+    every `ε`, the estimate is `0` whatever the rule returns, so a rule that has lost the
+    derivative entirely passes as readily as an exact one — with no tolerance slack
+    involved, since most of the grid agrees exactly.
 
-The step grid matters for the first two: the comparison passes when *any* single `ε` agrees,
-so a derivative that has collapsed to `0` passes outright if most of the grid also estimates
-`0`. That is the usual way a saturated case slips through, and it involves no tolerance
-slack at all.
+- low-precision primals, where differencing cannot reconstruct `ẋ`.
+    `(fl(x + ε) - fl(x - ε)) / 2ε` is accurate only to about a spacing over `2ε`: at
+    `Float16` it is 1 to 2.3% off for the largest step and exactly `0` for the rest, missing
+    the default `1e-3` at every magnitude — including where the spacing sits well inside the
+    grid. Such arguments are untestable here rather than merely imprecise, whatever the rule
+    returns. Loosening `atol`/`rtol` is what makes them usable at all: the BFloat16 suite
+    runs at `0.2`/`0.4`.
 
-Accepting a caller-supplied reference derivative to compare against would close the first
-two. Until then, a rule whose derivative depends on any of these needs pinning some other
-way — calling the rule and comparing a wider-precision or analytic reference is what the
-rules in `ext/` do — since no `test_rule` call can hold it in place.
+- ties and kinks, where whether they agree depends on the case. A central difference returns
+    the mean of the one-sided directional derivatives. At a two-way tie that mean *is* the
+    symmetric split, so they agree exactly and such a case is testable. With three or more
+    tied members they part company, and at a kink they part company too when the rule takes
+    a one-sided value — `abs` at zero gives `0` against the rule's `1`. Where they differ
+    both are subgradients, so a disagreement is not evidence of a defect, and an agreement
+    is not evidence of correctness.
+
+Accepting a caller-supplied reference derivative would close the first two. Until then, a
+rule whose derivative depends on any of these needs pinning some other way — calling the
+rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
 """
 function test_rule(
     rng::AbstractRNG,

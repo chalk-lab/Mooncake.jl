@@ -505,16 +505,19 @@ end
     end
     # Saturated inputs, where `Ω * (1 - Ω)` loses the derivative entirely. These cover NaN,
     # Inf and type stability out here, not the precision itself — see the "Limitations"
-    # section of `test_rule`'s docstring for why finite differences cannot see it, and why
-    # Float16 (whose spacing at such `x` exceeds every step tried) is absent.
+    # section of `test_rule`'s docstring for why finite differences cannot see it. Float16
+    # is absent for a different reason, given below.
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
 
-    # Float16 collapses first, at x >= 8, and is the one width no finite-difference test can
-    # cover: the estimate is 0 too, and `isapprox(0, 3.35e-4; atol=1e-3)` holds, so
-    # `test_rule` would pass the collapsed implementation. Compare against a wider-precision
-    # reference instead. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only tests
-    # pinning σ's precision, and the formula has three copies — one per rule and one for the
+    # Float16 collapses first, at x >= 8, and `test_rule` cannot be used on it at all —
+    # not because it would pass the collapsed formula, but because it fails whichever
+    # formula is in place. Its check compares `ȳ·ẏ + x̄·ẋ` in one `isapprox`, and the `ẋ`
+    # term is itself reconstructed by differencing, which at Float16 lands 1 to 2.3% off for
+    # the largest step and exactly 0 for the rest — outside the default `1e-3` at every
+    # magnitude, spacing well inside the grid included. So compare against a wider-precision
+    # reference. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only tests pinning
+    # σ's precision, and the formula has three copies — one per rule and one for the
     # in-kernel `NDual` method — so each gets its own. All three are directly callable, the
     # rules because they take `P<:IEEEFloat`.
     ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
