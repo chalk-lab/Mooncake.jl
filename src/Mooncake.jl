@@ -175,6 +175,7 @@ include(joinpath("tangents", "tangents.jl"))
 include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
+include(joinpath("tangents", "mirror_tangents.jl"))
 include("debug_mode.jl")
 include("stack.jl")
 
