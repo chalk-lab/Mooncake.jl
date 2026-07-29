@@ -563,6 +563,44 @@ end
     @test Mooncake.tangent(s) ≈ [1 / 3, 1 / 3, 1 / 2]
 end
 
+# The two `NaN` cases in the table above run under `interface_only`, which does not compare
+# gradients at all — so neither of them observes the behaviour that removing `max(total, 1)`
+# chose, and the value has to be read from the cotangent here. A `NaN` in `src` makes every
+# tie test at its destination a `NaN ==` comparison, so the count is zero and the share is
+# `0/0`. The guard turned that into a zero while the primal stayed `NaN`; without it the two
+# agree. Both arms have to do the same thing — them disagreeing is what the removal fixed.
+@testset "scatter NaN in src reaches the gradient" begin
+    src, idx = [NaN, 1.0, 2.0], [1, 1, 2]
+    @test isnan(NNlib.scatter(max, src, idx)[1])
+    s = Mooncake.zero_fcodual(copy(src))
+    out, pb = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(NNlib.scatter),
+        Mooncake.zero_fcodual(max),
+        s,
+        Mooncake.zero_fcodual(idx),
+    )
+    Mooncake.tangent(out) .= 1
+    pb(Mooncake.NoRData())
+    @test map(isnan, Mooncake.tangent(s)) == [true, true, false]
+    @test Mooncake.tangent(s)[3] == 1
+    s_i = Mooncake.zero_fcodual(copy(src))
+    out_i, pb_i = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(Core.kwcall),
+        Mooncake.zero_fcodual((init=2.0,)),
+        Mooncake.zero_fcodual(NNlib.scatter),
+        Mooncake.zero_fcodual(max),
+        s_i,
+        Mooncake.zero_fcodual(idx),
+    )
+    Mooncake.tangent(out_i) .= 1
+    dinit = pb_i(Mooncake.NoRData())[2].init
+    @test map(isnan, Mooncake.tangent(s_i)) == [true, true, false]
+    # `init` ties the second destination, halving the share that survives there, and takes
+    # its own share from the same count — which carries the `NaN` too.
+    @test Mooncake.tangent(s_i)[3] == 0.5
+    @test isnan(dinit)
+end
+
 # The `dropout` rules cover reverse mode only, so their primitive declarations are scoped to
 # it. Left unscoped they would claim forward mode too, where there is no `frule!!` to answer
 # the claim, and tracing the primal — which works — would give way to a `MethodError`. The
