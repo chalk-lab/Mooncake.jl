@@ -182,15 +182,26 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
         (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
-        # `Adjoint`/`Transpose` reach `dropout` through the aliasing arm only: the other arm
-        # returns what ChainRules produces, a plain `Array` whose tangent is not
-        # `tangent_type` of the wrapper, so it errors — on `main` for every `p`, here only
-        # for `p > 0`. With `_rand` these also run on a `CuArray` where a device is present,
-        # which additionally needs this branch's `materialize!` rule, without which the
-        # forward-mode broadcast into a wrapped `CuArray` is traced into the kernel launch
-        # and dies on the `jl_gc_disable_finalizers_internal` ccall. Both fail on `main`.
+        # `Adjoint`/`Transpose` through the aliasing arm, `p ≤ 0`, which returns the input
+        # `CoDual` and never reaches ChainRules. With `_rand` these run on a `CuArray` where a
+        # device is present, which needs this branch's `materialize!` rule: without it the
+        # forward-mode broadcast into a wrapped `CuArray` is traced into the kernel launch and
+        # dies on the `jl_gc_disable_finalizers_internal` ccall. Both fail on `main`.
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
         (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
+        # ... and through the other arm, `p > 0`, which calls the ChainRules bridge. There the
+        # cotangent arrives laid out like the wrapper while its fdata belongs to the parent;
+        # reconciling the two is what `Mooncake._cr_dx` does. Six such cases errored before it.
+        (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2)', float(0.5)),
+        (
+            true,
+            :none,
+            false,
+            dropout_tester_2,
+            Trng,
+            transpose(_rand(rng, 2, 2)),
+            float(0.1),
+        ),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
