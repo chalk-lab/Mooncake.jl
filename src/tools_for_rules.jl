@@ -366,8 +366,10 @@ end
 #
 
 # The array views the bridge reconciles: index maps into a parent that `setindex!` honours.
-# `ReinterpretArray` is excluded though `arrayify` supports it: between float widths it
-# reinterprets bits rather than values, so writing a cotangent through it is meaningless.
+# `ReinterpretArray` stays out: between float widths it reinterprets bits rather than values,
+# so a cotangent written through it is meaningless, and the real-to-complex direction, though a
+# genuine iso, has a view eltype its parent does not share, so it cannot use the one
+# `mooncake_tangent` method the views here share.
 const _ArrayView{P} = Union{Adjoint{P},Transpose{P},SubArray{P},Base.ReshapedArray{P}}
 
 """
