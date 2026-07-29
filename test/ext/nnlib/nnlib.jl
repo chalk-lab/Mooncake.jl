@@ -182,28 +182,15 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
         (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
-        # `Adjoint`/`Transpose` reach `dropout` through the aliasing arm only. The other arm
+        # `Adjoint`/`Transpose` reach `dropout` through the aliasing arm only: the other arm
         # returns what ChainRules produces, a plain `Array` whose tangent is not
-        # `tangent_type` of the wrapper, and errors — on `main` for every `p`, here only for
-        # `p > 0`. So these two cases pass where they used to throw.
-        #
-        # Deliberately `randn` rather than `_rand`: with a GPU present `_rand` gives a
-        # `CuArray`, and `dropout` over a wrapper around one of those works in no branch.
-        # ChainRules' rrule returns a plain `Array` tangent, which is not `tangent_type` of
-        # the wrapper, so Mooncake rejects the combination — an `ArgumentError` naming the
-        # `FData{@NamedTuple{parent::CuArray}}` mismatch, measured both on `main` and with
-        # the wrapped-broadcast fix in place. `_rand` would assert something unsupported,
-        # and only where a device is present, which is how it escaped the CPU-only run that
-        # added these.
-        (false, :none, false, dropout_alias_tester, StableRNG, randn(rng, Float32, 2, 2)'),
-        (
-            false,
-            :none,
-            false,
-            dropout_alias_tester,
-            StableRNG,
-            transpose(randn(rng, Float32, 2, 2)),
-        ),
+        # `tangent_type` of the wrapper, so it errors — on `main` for every `p`, here only
+        # for `p > 0`. With `_rand` these also run on a `CuArray` where a device is present,
+        # which additionally needs this branch's `materialize!` rule, without which the
+        # forward-mode broadcast into a wrapped `CuArray` is traced into the kernel launch
+        # and dies on the `jl_gc_disable_finalizers_internal` ccall. Both fail on `main`.
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
+        (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
