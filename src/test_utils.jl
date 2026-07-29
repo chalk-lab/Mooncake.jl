@@ -1092,13 +1092,21 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
     derivative entirely passes as readily as an exact one — with no tolerance slack
     involved, since most of the grid agrees exactly.
 
-- low-precision primals, where differencing cannot reconstruct `ẋ`.
-    `(fl(x + ε) - fl(x - ε)) / 2ε` is accurate only to about a spacing over `2ε`: at
-    `Float16` it is 1 to 2.3% off for the largest step and exactly `0` for the rest, missing
-    the default `1e-3` at every magnitude — including where the spacing sits well inside the
-    grid. Such arguments are untestable here rather than merely imprecise, whatever the rule
-    returns. Loosening `atol`/`rtol` is what makes them usable at all: the BFloat16 suite
-    runs at `0.2`/`0.4`.
+- arguments whose spacing is coarse against the step grid. What decides this is
+    `spacing(x)` versus `2ε`, not the element type: `Float16` is simply where ordinary
+    magnitudes reach it first. Once `spacing(x)` exceeds the largest step, `x ± ε` rounds
+    back to `x`, so the reconstruction of `ẋ` is exactly `0` for every step and the `x̄·ẋ`
+    term vanishes whatever the rule returns — from `Float16(64)`, whose spacing is `0.0625`,
+    and equally from `Float64` `1e15`, whose spacing is `0.125`. Below that boundary the
+    reconstruction degrades rather than vanishing: `Float16(2)` gives `0.977` then `1.465`
+    for the first two steps before collapsing to `0`.
+
+    Where the argument does move, the *output's* precision can still spoil the `ȳ·ẏ` term
+    independently. At `Float16(0)`, whose spacing is `6e-8`, `ẋ` reconstructs to within
+    0.02%, yet `exp` and a `sigmoid` differ from their true derivatives by 2.3% because the
+    output rounds to `Float16` — so a `Float16` case at zero fails on `ẏ`, not on `ẋ`.
+    Loosening `atol`/`rtol` is what makes that usable: the BFloat16 suite runs at
+    `0.2`/`0.4`. It does not help the vanishing case, where no tolerance below 1 suffices.
 
 - ties and kinks, where whether they agree depends on the case. A central difference returns
     the mean of the one-sided directional derivatives. At a two-way tie that mean *is* the
