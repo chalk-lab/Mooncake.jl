@@ -83,17 +83,31 @@ end
     # `x >= zero(P)`, taking the positive side at zero and so reporting a derivative of 1;
     # AD therefore never traces `abs` down to the `abs_float` intrinsic, whose rule
     # multiplies by `sign(x)` and collapses at zero because `sign(0) == 0`. The chain rule
-    # then recovers 1/4. So these two cases are what pin that rule's behaviour at zero: with
-    # `abs` traced through BFloat16s' own `BFloat16(abs(Float32(x)))`, the derivative here
-    # is 0 instead, exactly as for the IEEEFloat types — see #1257 for those.
+    # then recovers 1/4. With `abs` traced through BFloat16s' own
+    # `BFloat16(abs(Float32(x)))` the derivative here is 0 instead, exactly as for the
+    # IEEEFloat types — see #1257 for those.
     #
-    # `abs` itself cannot be checked at zero this way, which is why it is absent from the
-    # cases above: at a kink a central difference returns the midpoint of the one-sided
-    # derivatives, 0, against the rule's 1. This composite is smooth there — the kink
-    # cancels between the `ifelse` branches — so finite differences do agree with it.
-    # Composite, so not a primitive.
-    @testset "sigmoid_shaped at zero" for x in (P(0), P(0.5))
-        test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
+    # `test_rule` cannot tell those apart, so the derivative is pinned by calling the rule.
+    # Only ε = 1e-2 gives a nonzero finite difference here: at every smaller step
+    # `sigmoid_shaped(±ε)` rounds back to `0.5` and the estimate is exactly 0. Since the
+    # check passes when any one step agrees, a collapsed derivative of 0 matches six of the
+    # seven exactly, with no tolerance involved. Switching this rule's branch to the
+    # intrinsic's `sign(x)` moves the value below from 1/4 to 0 and leaves the whole group
+    # green.
+    #
+    # `abs` itself is absent from the cases above for the related reason that at a kink a
+    # central difference returns the midpoint of the one-sided derivatives, 0, against the
+    # rule's 1. The composite is smooth at zero — the kink cancels between the `ifelse`
+    # branches — which is what lets `test_rule` run on it at all.
+    @testset "sigmoid_shaped at zero" begin
+        rule = Mooncake.build_rrule(sigmoid_shaped, P(0))
+        _, pb = rule(Mooncake.zero_fcodual(sigmoid_shaped), Mooncake.zero_fcodual(P(0)))
+        @test Float64(pb(one(P))[2]) ≈ 0.25 rtol = 1e-2
+        # `test_rule` still earns its place either side of zero: its value-agreement,
+        # interface and caching checks are unaffected by the finite-difference blind spot.
+        for x in (P(0), P(0.5))
+            test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
+        end
     end
 
     # When x == 0 and 0 < y < 1: z = 0^y = 0, log(0) = -Inf, so z * log(x) = 0 * (-Inf) = NaN
