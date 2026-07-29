@@ -1130,21 +1130,18 @@ end
 #   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
-@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
-)
-    fill!(primal(a), primal(x))
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeWrappedArray,Any}
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuMaybeWrappedArray}, x::Dual)
+    pa, da = arrayify(a)
+    fill!(pa, primal(x))
     tx = tangent(x)
-    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    fill!(da, tx isa NoTangent ? zero(eltype(da)) : eltype(da)(tx))
     return a
 end
-function rrule!!(
-    ::CoDual{typeof(fill!)},
-    a::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    x::CoDual,
-)
-    pa, da = primal(a), tangent(a)
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuMaybeWrappedArray}, x::CoDual)
+    # Through the wrapper, so `sum(da)` sums the destination's own elements and the restore
+    # writes back through it — conjugating for an `Adjoint`, as its `setindex!` does.
+    pa, da = arrayify(a)
     old = copy(pa)
     fill!(pa, primal(x))
     function fill!_gpu_pb!!(::NoRData)

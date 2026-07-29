@@ -568,6 +568,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, true, fill!, _rand(rng, 4, 4), 0.0f0),
             # Complex CuArray: tests rdata_type(ComplexF64) + sum(da) on complex tangent.
             (false, :none, true, fill!, _rand(rng, ComplexF64, 8), 0.5 + 0.5im),
+            # Wrapped destinations fell through to the untraceable `cufunction` until the
+            # bound became `CuMaybeWrappedArray`; summing and restoring go through the wrapper.
+            (false, :none, true, fill!, _rand(rng, 4, 4)', 0.0f0),
+            (false, :none, true, fill!, transpose(_rand(rng, 4, 4)), 0.0f0),
+            (false, :none, true, fill!, view(_rand(rng, 4, 4), 1:2, :), 0.0f0),
+            (false, :none, true, fill!, _rand(rng, ComplexF64, 4, 4)', 0.5 + 0.5im),
             # Lambda wrapper: not itself a primitive; is_primitive=false so test_rule does not
             # assert that the built rule is frule!!/rrule!!.
             (false, :none, false, (a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
