@@ -359,7 +359,7 @@ end
     # literal over a `Float32` array — matches nothing even when it won, `total` collapses
     # to `0`, and the divisions below return `NaN`.
     init_tie = P.(y .== convert(P, init))
-    total = total .+ init_tie                     # >= 1 everywhere: y is one of them
+    total = total .+ init_tie
     dsrc .+= mask .* NNlib.gather(dy, pidx) ./ NNlib.gather(total, pidx)
     # An `init` with no rdata — an integer, say — has no slot to take a share in, and
     # `oftype` would throw fitting a fractional share into it. `nothing` suits this and an
