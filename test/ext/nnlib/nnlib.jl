@@ -188,11 +188,13 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # `p > 0`. So these two cases pass where they used to throw.
         #
         # Deliberately `randn` rather than `_rand`: with a GPU present `_rand` gives a
-        # `CuArray`, and a wrapper around one of those has never worked. The primal alone
-        # defeats it — differentiating the tester's mutating broadcast reaches `cufunction`,
-        # which the transform cannot handle — so it fails on `main` too, for both wrapper
-        # kinds. `_rand` here would assert something no branch supports, and only where a
-        # device is present, which is how it escaped the CPU-only run that added these.
+        # `CuArray`, and `dropout` over a wrapper around one of those works in no branch.
+        # ChainRules' rrule returns a plain `Array` tangent, which is not `tangent_type` of
+        # the wrapper, so Mooncake rejects the combination — an `ArgumentError` naming the
+        # `FData{@NamedTuple{parent::CuArray}}` mismatch, measured both on `main` and with
+        # the wrapped-broadcast fix in place. `_rand` would assert something unsupported,
+        # and only where a device is present, which is how it escaped the CPU-only run that
+        # added these.
         (false, :none, false, dropout_alias_tester, StableRNG, randn(rng, Float32, 2, 2)'),
         (
             false,
