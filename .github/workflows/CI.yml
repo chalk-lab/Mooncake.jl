@@ -53,9 +53,18 @@ jobs:
           'rules/high_order_derivative_patches',
         ]
         version:
+          - 'lts'
+          - '1.12'
           - '1.13'
         arch:
           - x64
+        include:
+          - test_group: 'basic'
+            version: 'lts'
+            arch: x86
+          - test_group: 'rules/array_legacy'
+            version: 'lts'
+            arch: x64
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
@@ -104,9 +113,15 @@ jobs:
           {test_type: 'integration_testing', label: 'temporalgps'},
         ]
         version:
+          - 'lts'
+          - '1.12'
           - '1.13'
         arch:
           - x64
+        include:
+          - test_group: { test_type: 'integration_testing', label: 'format' }
+            version: 'lts'
+            arch: x64
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
