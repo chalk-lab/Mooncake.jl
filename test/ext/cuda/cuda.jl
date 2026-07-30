@@ -689,6 +689,15 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float64, 3, 2),
                 _rand(rng, Float64, 5, 4),
             ),
+            # UnitRange dims: a spelling Base accepts, as for `varm` above.
+            (
+                false,
+                :none,
+                false,
+                _cat_cu_sum(1:2),
+                _rand(rng, Float32, 4, 3),
+                _rand(rng, Float32, 2, 5),
+            ),
             # Tuple dims, N-arg: exercises the running-offsets tuple in _cu_concat_pb!.
             (
                 false,
