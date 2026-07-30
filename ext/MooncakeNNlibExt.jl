@@ -6,7 +6,7 @@ using Base: IEEEFloat
 using LinearAlgebra
 using NNlib: conv, depthwiseconv, logsoftmax, softmax, logsumexp, dropout
 using Mooncake.Nfwd: NDual
-const CRC = Mooncake.CRC
+import ChainRulesCore as CRC
 
 import Mooncake:
     @from_rrule,
@@ -75,6 +75,8 @@ const SupportedArray{P,N} = Union{
     Adjoint{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
     Transpose{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
 }
+# `@from_rrule` does not honour the wrapper members: it adds ChainRules' cotangent into a view's
+# fdata, which is the parent's, so those signatures throw — hence `dropout`'s hand-written rule.
 
 # On Julia ≤ 1.11, `maximum(x::Adjoint/Transpose; dims, init)` routes through
 # `LinearAlgebra.mapreducedim! → switch_dim12 → PermutedDimsArray`, leaving
@@ -108,12 +110,9 @@ _maximum(x, dims, init) = maximum(x; dims, init)
     typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
 
-# Calling ChainRules here rather than through `Mooncake.rrule_wrapper`, which adds its cotangent
-# straight into the fdata: `SupportedArray` admits `Adjoint` and `Transpose`, whose fdata belongs
-# to the parent and carries its shape, so a cotangent laid out like the primal cannot be added to
-# it. `arrayify` wraps that fdata the way the primal is wrapped, and adding through the wrapper
-# relabels each index as the view does, conjugating for an `Adjoint` as its `setindex!` does.
-# ChainRules still supplies the numerics, mask and all.
+# ChainRules called here rather than through `Mooncake.rrule_wrapper`, which adds the cotangent
+# straight into the fdata: for the `Adjoint` and `Transpose` that `SupportedArray` admits, that
+# fdata is the parent's and has its shape. Adding through `arrayify`'s wrapper relabels instead.
 function Mooncake.rrule!!(
     f::CoDual{typeof(dropout)},
     rng::CoDual{<:AbstractRNG},
@@ -125,12 +124,13 @@ function Mooncake.rrule!!(
     end
     px, dx = arrayify(x)
     y, cr_pb = CRC.rrule(dropout, primal(rng), px, primal(p))
-    dy = Mooncake.zero_tangent(y)
+    res = zero_fcodual(y)
+    dp = Mooncake.zero_rdata(primal(p))
     function dropout_pb!!(::NoRData)
-        dx .+= cr_pb(dy)[3]
-        return NoRData(), NoRData(), NoRData(), Mooncake.zero_rdata(primal(p))
+        dx .+= cr_pb(tangent(res))[3]
+        return NoRData(), NoRData(), NoRData(), dp
     end
-    return CoDual(y, dy), dropout_pb!!
+    return res, dropout_pb!!
 end
 
 function Mooncake.rrule!!(
@@ -147,15 +147,14 @@ function Mooncake.rrule!!(
     end
     px, dx = arrayify(x)
     y, cr_pb = Core.kwcall(pkw, CRC.rrule, dropout, primal(rng), px, primal(p))
-    dy = Mooncake.zero_tangent(y)
+    res = zero_fcodual(y)
     kw_rdata = Mooncake.zero_rdata(pkw)
+    dp = Mooncake.zero_rdata(primal(p))
     function dropout_kw_pb!!(::NoRData)
-        dx .+= cr_pb(dy)[3]
-        return NoRData(),
-        kw_rdata, NoRData(), NoRData(), NoRData(),
-        Mooncake.zero_rdata(primal(p))
+        dx .+= cr_pb(tangent(res))[3]
+        return NoRData(), kw_rdata, NoRData(), NoRData(), NoRData(), dp
     end
-    return CoDual(y, dy), dropout_kw_pb!!
+    return res, dropout_kw_pb!!
 end
 
 # logsoftmax rrules
@@ -334,39 +333,28 @@ end
     true,
 )
 
-# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source,
-# so the gradient sums to the tie multiplicity rather than to 1 — not a subdifferential
-# member at all. Dividing by the count picks the symmetric member; `init` competes too, so a
-# source tied with it gets `1/(m+1)`. Neither division needs a zero guard: `gather(total,
-# pidx)` reads only destinations some index reaches, and where `init` is supplied it fills
-# the rest. Ties past two members are asserted against the rule, being where a central
-# difference stops agreeing.
+# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source, so
+# the gradient sums to the tie multiplicity rather than to 1 — not a subdifferential member at
+# all. Dividing by the count picks the symmetric member; `init` competes for the same extremum,
+# so a source tied with it gets `1/(m+1)`. Returns `init`'s own share, or `nothing` when it has
+# no rdata slot to receive one.
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
-    # Counted in `Int`, because a float count saturates once its spacing passes 1 — `Float16`
-    # at 2048, `Float32` at 2^24 — and every share in a larger tie group inflates with it.
-    # `A` widens `Float16` for the division alone, whose operands are all O(1). Narrowing the
-    # count back to `A` costs at most an ulp of the share, against 6% at 2^24 + 2^20.
-    A = P === Float16 ? Float32 : P
+    # `convert`, because NNlib rounds `init` into the destination before comparing.
     tied = psrc .== NNlib.gather(y, pidx)
+    init_tie = isnothing(init) ? false : y .== convert(P, init)
+    # `Int`, because a float count saturates once its spacing passes 1 — `Float16` at 2048,
+    # `Float32` at 2^24 — inflating every share in a larger tie group.
     counts = NNlib.scatter!(+, fill!(similar(y, Int), 0), tied, pidx)
-    if init === nothing
-        total = A.(counts)
-        dsrc .+= P.(tied .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
-        return nothing
-    end
-    # `convert(P, init)`, since NNlib rounds `init` into the destination: comparing the
-    # caller's value instead matches nothing when it is not representable in `P`.
-    init_tie = y .== convert(P, init)
-    total = A.(counts .+ init_tie)
+    isnothing(init) || (counts .+= init_tie)
+    # `A` widens `Float16` for the division, whose operands are all O(1). No zero guard: `gather`
+    # reads only destinations some index reaches, and each holds a tied source or `init` itself.
+    A = P === Float16 ? Float32 : P
+    total = A.(counts)
     dsrc .+= P.(tied .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
-    # `nothing` for an `init` with no rdata slot, as for an absent one; it still counts
-    # towards other shares. Must stay below both lines above: moved up, `src` loses its
-    # gradient and a winning `init` divides by a `total` it is not yet folded into.
-    Mooncake.zero_rdata(init) isa Mooncake.NoRData && return nothing
-    # `oftype`, because `init` need not share `src`'s precision: the reduction runs in the
-    # destination's type, the rdata slot carries `init`'s own.
+    # `oftype`, because `init` need not share `src`'s precision.
+    (isnothing(init) || Mooncake.zero_rdata(init) isa Mooncake.NoRData) && return nothing
     return oftype(init, sum(A.(dy) .* init_tie ./ total))
 end
 

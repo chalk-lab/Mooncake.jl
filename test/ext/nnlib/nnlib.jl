@@ -182,9 +182,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # also need the `materialize!` rule for the forward broadcast. Both fail on `main`.
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
         (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
-        # ... and through the other arm, `p > 0`, which calls the ChainRules bridge. There the
-        # cotangent arrives laid out like the wrapper while its fdata belongs to the parent;
-        # reconciling the two is what `Mooncake._cr_dx` does. Six such cases errored before it.
+        # ... and through the other arm, `p > 0`, where the rule adds ChainRules' cotangent
+        # through `arrayify`'s wrapper because the wrapper's fdata is the parent's.
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2)', float(0.5)),
         (
             true,
@@ -404,8 +403,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # An `init` with no rdata, which used to throw. It wins outright here, so nothing
-        # ties it and its place in the tie total is untestable — see the note on the helper.
+        # An `init` with no rdata, which used to throw. It wins outright here, so nothing ties
+        # it, and whether it counts towards the tie total makes no difference to this case.
         (
             false,
             :none,

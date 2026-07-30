@@ -1954,7 +1954,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
         end
-
     else
         println("Tests are skipped because no CUDA device was found.")
     end
