@@ -15,8 +15,11 @@ end
 # `_build_rule!`). `stale_fwd_lazy` reaches the callee via LazyFRule, `stale_fwd_dyn` via DynamicFRule.
 stale_fwd_inner(x) = Float32(x) * 2.0f0
 @noinline stale_fwd_callee(x) = stale_fwd_inner(x)
-stale_fwd_lazy(x) = stale_fwd_callee(x)
-const STALE_FWD_FNS = Function[stale_fwd_callee]
+# Two `:invoke` levels: one for the pinned rebuild, one for the rules that rebuild itself
+# constructs, which predicted at the current world until they were given the pinned one.
+@noinline stale_fwd_mid(x) = stale_fwd_callee(x)
+stale_fwd_lazy(x) = stale_fwd_mid(x)
+const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
 @testset "s2s_forward_mode_ad" begin

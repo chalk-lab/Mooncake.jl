@@ -28,8 +28,10 @@ rule_type_nonreturning(e::Exception) = throw(e)
 # analogue). `stale_rvs_lazy` uses LazyDerivedRule, `stale_rvs_dyn` DynamicDerivedRule.
 stale_rvs_inner(x) = Float32(x) * 2.0f0
 @noinline stale_rvs_callee(x) = stale_rvs_inner(x)
-stale_rvs_lazy(x) = stale_rvs_callee(x)
-const STALE_RVS_FNS = Function[stale_rvs_callee]
+# Two `:invoke` levels; see the forward-mode analogue for why one is not enough.
+@noinline stale_rvs_mid(x) = stale_rvs_callee(x)
+stale_rvs_lazy(x) = stale_rvs_mid(x)
+const STALE_RVS_FNS = Function[stale_rvs_mid]
 stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
 @testset "s2s_reverse_mode_ad" begin

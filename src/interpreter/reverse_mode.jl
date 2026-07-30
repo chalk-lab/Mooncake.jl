@@ -1517,9 +1517,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
             build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
-            LazyDerivedRule(mi, info.debug_mode) # Static dispatch
+            # `interp.world` rather than the current world; see `modify_fwd_ad_stmts!`.
+            LazyDerivedRule(mi, info.debug_mode, interp.world) # Static dispatch
         else
-            DynamicDerivedRule(info.debug_mode)  # Dynamic dispatch
+            DynamicDerivedRule(info.debug_mode, interp.world)  # Dynamic dispatch
         end
 
         # Wrap the raw rule in a struct which ensures that any `ZeroRData`s are stripped
@@ -2744,10 +2745,10 @@ struct DynamicDerivedRule{V}
     world::UInt
 end
 
-function DynamicDerivedRule(debug_mode::Bool)
-    return DynamicDerivedRule(
-        Dict{Any,Any}(), debug_mode, get_interpreter(ReverseMode).world
-    )
+function DynamicDerivedRule(
+    debug_mode::Bool, world::UInt=get_interpreter(ReverseMode).world
+)
+    return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, world)
 end
 
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
@@ -2840,11 +2841,13 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     mi::Core.MethodInstance
     world::UInt
     rule::Trule
-    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ReverseMode)
-        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(
-            debug_mode, mi, interp.world
-        )
+    function LazyDerivedRule(
+        mi::Core.MethodInstance,
+        debug_mode::Bool,
+        world::UInt=get_interpreter(ReverseMode).world,
+    )
+        interp = get_interpreter(ReverseMode, world)
+        return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
     end
     function LazyDerivedRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool, world::UInt
