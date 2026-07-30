@@ -377,29 +377,66 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
-# NNlib computes the smooth `σ` in overflow-safe form, `t = exp(-abs(x));
-# ifelse(x ≥ 0, inv(1 + t), t / (1 + t))`. AD through that implementation picks up a factor
-# of `sign(x)`, which is `0` at `x == 0`, so it reports `0` there instead of `1/4`: the kink
-# `abs` introduces cancels between the two branches analytically, but not via the chain
-# rule. Exactly-zero arguments are common (zero-initialised biases, dead ReLU units).
+# σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
+# `abs(x)`, so AD picks up `sign(0) == 0` and reports `0` for `1/4`. When saturated the
+# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so any
+# `δ < eps/2` is destroyed and the derivative quantises to `0` (Float64 `x ≳ 37`, Float32 `≳
+# 17`, Float16 `≳ 8`) while the true value is still normal. `t / (1 + t)^2` with `t =
+# exp(-abs(x))` holds it in an exponent instead, and `t ≤ 1` bounds the quotient.
+#
+# `exp` runs twice, here and in the primal, rather than restating the primal's branch and
+# `sigmoid_fast`'s clamps where they could drift from it — 2 ns of 5.5. Both rules
+# differentiate the unclamped σ: past `x ≈ 36.8` the analytic value is all there is, and
+# below `-80` `sigmoid_fast`'s clamp is documented as an accuracy compromise, not a
+# different function.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
-    @eval function frule!!(::Dual{typeof(NNlib.$f)}, x::Dual{P}) where {P<:IEEEFloat}
-        Ω = NNlib.$f(primal(x))
-        return Dual(Ω, tangent(x) * Ω * (one(P) - Ω))
+    @eval function Mooncake.frule!!(
+        ::Dual{typeof(NNlib.$f)}, x::Dual{P}
+    ) where {P<:IEEEFloat}
+        t = exp(-abs(primal(x)))
+        d = t / (one(P) + t)^2
+        return Dual(NNlib.$f(primal(x)), tangent(x) * d)
     end
-    @eval function rrule!!(::CoDual{typeof(NNlib.$f)}, x::CoDual{P}) where {P<:IEEEFloat}
-        Ω = NNlib.$f(primal(x))
-        sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * Ω * (one(P) - Ω)
-        return zero_fcodual(Ω), sigmoid_pb!!
+    @eval function Mooncake.rrule!!(
+        ::CoDual{typeof(NNlib.$f)}, x::CoDual{P}
+    ) where {P<:IEEEFloat}
+        t = exp(-abs(primal(x)))
+        d = t / (one(P) + t)^2
+        sigmoid_pb!!(dΩ::P) = NoRData(), dΩ * d
+        return zero_fcodual(NNlib.$f(primal(x))), sigmoid_pb!!
     end
     # GPU elementwise and reduction rules evaluate the whole fused broadcast on `NDual`s
     # inside one kernel, so they never reach the rules above and need the derivative too.
     @eval @inline function NNlib.$f(x::NDual{P,N}) where {P<:IEEEFloat,N}
-        Ω = NNlib.$f(x.value)
-        d = Ω * (one(P) - Ω)
-        return NDual{P,N}(Ω, ntuple(i -> x.partials[i] * d, Val(N)))
+        t = exp(-abs(x.value))
+        d = t / (one(P) + t)^2
+        return NDual{P,N}(NNlib.$f(x.value), ntuple(i -> x.partials[i] * d, Val(N)))
     end
+end
+
+# `tanh_fast` selects between branches with `ifelse`, which is a call, so the discarded
+# branch is computed: past `|x| ≈ 355` the Float64 body's `(exp(2x) - 1) / (exp(2x) + 1)` is
+# `Inf/Inf`, and a zero cotangent into that quotient's pullback forms `0 * Inf` and puts
+# `NaN` on the argument. The Float32 body overflows its Remez rational the same way past
+# `|x| ≈ 618587`, or `≈ 258.8` through `gelu_tanh`, well inside a Float32 pre-activation,
+# and needs its own test since Float64 cases stay green while Float32 dispatches elsewhere.
+# A rule keeps AD out of both bodies; `gelu`/`gelu_tanh` inherit from `|x| ≈ 21`. No `NDual`
+# method — it is not an `IEEEFloat`, so the in-kernel path reaches `Base.tanh`.
+#
+# `4u / (1 + u)^2` with `u = exp(-2|x|)` for σ's reason: `1 - tanh(x)^2` collapses to `0`
+# once `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
+@is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
+function Mooncake.frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
+    u = exp(-2 * abs(primal(x)))
+    d = 4u / (one(P) + u)^2
+    return Dual(tanh_fast(primal(x)), tangent(x) * d)
+end
+function Mooncake.rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
+    u = exp(-2 * abs(primal(x)))
+    d = 4u / (one(P) + u)^2
+    tanh_fast_pb!!(dΩ::P) = NoRData(), dΩ * d
+    return zero_fcodual(tanh_fast(primal(x))), tanh_fast_pb!!
 end
 
 end

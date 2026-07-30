@@ -1077,6 +1077,48 @@ signature associated to `x` corresponds to a primitive, a hand-written rule will
     so each argument is perturbed by at most `max_fd_step` in L2 norm. Set this for
     domain-restricted functions (`log`, `sqrt`, `cholesky`) to keep perturbations inside
     the domain. The FD grid ends at `1e-7`; the smallest usable cap is `1e-6`.
+
+# Limitations
+
+The rule's *value* is checked directly, against `f(x)` at `√eps` tolerance, along with
+argument equality, address-map consistency and — in reverse mode — restoration of the inputs
+by the pullback. The *derivative* is assessed against central finite differences, as one
+`isapprox` over `ȳ·ẏ + x̄·ẋ`. Note that `ẋ` is itself reconstructed by differencing, so that
+term's accuracy — not only the derivative's — decides the outcome. The comparison passes
+when *any* single `ε` on the grid agrees, which is what lets several things through:
+
+- derivative *precision* in a saturated regime. Where `f(x ± ε)` round to the same float for
+    every `ε`, the estimate is `0` whatever the rule returns, so a rule that has lost the
+    derivative entirely passes as readily as an exact one — with no tolerance slack
+    involved, since most of the grid agrees exactly.
+
+- arguments whose spacing is coarse against the step grid. What decides this is
+    `spacing(x)` versus `2ε`, not the element type: `Float16` is simply where ordinary
+    magnitudes reach it first. Once `spacing(x)` exceeds the largest step, `x ± ε` rounds
+    back to `x`, so the reconstruction of `ẋ` is exactly `0` for every step and the `x̄·ẋ`
+    term vanishes whatever the rule returns — from `Float16(64)`, whose spacing is `0.0625`,
+    and equally from `Float64` `1e15`, whose spacing is `0.125`. Below that boundary the
+    reconstruction degrades rather than vanishing: `Float16(2)` gives `0.977` then `1.465`
+    for the first two steps before collapsing to `0`.
+
+    Where the argument does move, the *output's* precision can still spoil the `ȳ·ẏ` term
+    independently. At `Float16(0)`, whose spacing is `6e-8`, `ẋ` reconstructs to within
+    0.02%, yet `exp` and a `sigmoid` differ from their true derivatives by 2.3% because the
+    output rounds to `Float16` — so a `Float16` case at zero fails on `ẏ`, not on `ẋ`.
+    Loosening `atol`/`rtol` is what makes that usable: the BFloat16 suite runs at
+    `0.2`/`0.4`. It does not help the vanishing case, where no tolerance below 1 suffices.
+
+- ties and kinks, where whether they agree depends on the case. A central difference returns
+    the mean of the one-sided directional derivatives. At a two-way tie that mean *is* the
+    symmetric split, so they agree exactly and such a case is testable. With three or more
+    tied members they part company, and at a kink they part company too when the rule takes
+    a one-sided value — `abs` at zero gives `0` against the rule's `1`. Where they differ
+    both are subgradients, so a disagreement is not evidence of a defect, and an agreement
+    is not evidence of correctness.
+
+Accepting a caller-supplied reference derivative would close the first two. Until then, a
+rule whose derivative depends on any of these needs pinning some other way — calling the
+rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
 """
 function test_rule(
     rng::AbstractRNG,

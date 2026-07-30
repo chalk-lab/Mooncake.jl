@@ -493,7 +493,7 @@ end
 end
 
 # NNlib's `exp(-abs(x))` form of σ has a kink at zero that the function itself does not.
-@testset "sigmoid at zero: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
+@testset "sigmoid at zero and saturation: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
     test_rule(StableRNG(123), f, 0.0; perf_flag=:stability)
     # The reported failure was a gradient through a broadcast containing an exact zero.
     test_rule(StableRNG(123), x -> sum(f.(x)), [0.0, 0.5, -0.5]; is_primitive=false)
@@ -503,4 +503,56 @@ end
             StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
         )
     end
+    # Saturated inputs. These cover NaN, Inf and type stability, not the precision itself —
+    # see the Limitations section of `test_rule`'s docstring.
+    test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
+    test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
+
+    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in
+    # place: both terms of its `ȳ·ẏ + x̄·ẋ` check are unusable, `ẏ` being exactly 0 for
+    # every step (spacing 4.88e-4 against a true change of 3.35e-6) and `ẋ` 2.3% off at
+    # best. So compare against a wider-precision reference. `Ω * (1 - Ω)` returns exactly 0
+    # here, so these are the only tests pinning σ's precision, once per copy of the formula.
+    ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
+    x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
+    @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(Float16(8), one(Float16))
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(Mooncake.zero_fcodual(f), Mooncake.zero_fcodual(Float16(8)))
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
+end
+
+# `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode
+# picked that branch up as `0 * Inf`, which poisoned `gelu`/`gelu_tanh` from `|x| ≈ 21`
+# upwards.
+@testset "tanh_fast across NNlib's branches" begin
+    test_rule(StableRNG(123), tanh_fast, 0.5; perf_flag=:stability)
+    test_rule(StableRNG(123), tanh_fast, 400.0; perf_flag=:stability)
+    # Below |x| ≈ 0.13 the primal switches to a polynomial while the rule stays analytic, so
+    # this pins the gap between them as small enough for finite differences not to see it.
+    test_rule(StableRNG(123), tanh_fast, 0.05; perf_flag=:stability)
+    test_rule(
+        StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
+    )
+    # NNlib's `tanh_fast(::Float32)` is a different body from the `Float64` one — a Remez
+    # rational whose discarded branch overflows, rather than an `exp` quotient — so none of
+    # the cases above reach it, and the rule kept working for `Float64` with `Float32`
+    # removed from it. Through `gelu_tanh` the Float32 gradient goes `NaN` from |x| ≈ 258.8,
+    # so a scalar there fails without the rule and passes with it.
+    test_rule(StableRNG(123), NNlib.gelu_tanh, 300.0f0; is_primitive=false)
+    # As for σ, the saturated derivative's precision is beyond finite differences, and both
+    # rules carry their own copy of `4u / (1 + u)^2`. `1 - Ω^2` returns exactly 0 at
+    # Float16(6), against a true 2.46e-5, so this separates the two forms outright.
+    ref16 = Float64(1 - tanh(big(6.0))^2)
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
+        Mooncake.Dual(Float16(6), one(Float16)),
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(tanh_fast), Mooncake.zero_fcodual(Float16(6))
+    )
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
