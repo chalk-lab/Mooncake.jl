@@ -750,14 +750,8 @@ if cuda
         @test_throws ArgumentError rule(
             Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
         )
-        # Reverse mode does work here, which is what the raise above directs users to.
-        cdx = Mooncake.zero_fcodual(copy(xg))
-        y, pb = Mooncake.rrule!!(
-            Mooncake.zero_fcodual(NNlib.gather), cdx, Mooncake.zero_fcodual([1, 3])
-        )
-        Mooncake.tangent(y) .= 1
-        pb(Mooncake.NoRData())
-        @test Array(Mooncake.tangent(cdx)) == Float32[1, 0, 1, 0]
+        # Reverse mode, which the raise directs users to, is covered by the `gather` cases
+        # in `test_cases`: under `cuda` those run on `CuArray`s.
         # `Adjoint`/`Transpose` of a GPU array are `AnyGPUArray`, so NNlib sends them to the
         # same kernel: they have to hit the guard, not slip past a bare `AbstractGPUArray`.
         @testset "$wrap" for wrap in (adjoint, transpose)
