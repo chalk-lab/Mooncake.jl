@@ -228,7 +228,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _varm_sum_drange(x, m) = sum(varm(x, m; dims=1:2, corrected=false))
         # Array m with `dims=:`: the only test hitting the array-mean rule's Colon branch.
         _varm_sum_dcolon_arraymean(x, m) = sum(varm(x, m; dims=:, corrected=false))
-        # Repeated dims (a careless ntuple could produce them): count dim 1 once, not twice.
+        # Repeated dims (a careless ntuple could produce them): the denominator must count
+        # dim 1 once, not twice.
         _varm_sum_ddup(x, m) = sum(varm(x, m; dims=(1, 1), corrected=false))
         # Empty dims: the rule's denominator must mirror _mean_denom's `init=1`.
         _varm_sum_dempty(x, m) = sum(varm(x, m; dims=(), corrected=false))
@@ -1535,8 +1536,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # No complex/mixed array-mean tests: GPUArrays' accelerated varm needs Real
             # eltypes on both arguments, and anything else falls to a generic
             # scalar-indexing path that cannot run on GPU, so there is no ground truth.
-            # The array-m rules are restricted to match rather than succeed where the
-            # primal throws; the norm layers only ever pass x and its own real mean.
+            # The array-m rules are restricted to real eltypes to match, since a wider
+            # signature would make AD succeed where the primal throws; the norm layers only
+            # ever pass x and its own real mean.
             @testset "m broadcast against x: full-shape m, dims=1 (Float32)" begin
                 # Regression: the primal broadcasts m against x, so m's gradient must
                 # reduce over exactly the dims m is broadcast along (none, here) rather than
@@ -1604,10 +1606,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
-                # Regression: an empty input must give NaN, matching the guard in
-                # Statistics._varm(A, m, corrected, ::Colon) — scalar m is not overridden
-                # by GPUArrays — not 0/(0-1) = -0.0. The unguarded value is a constant 0
-                # regardless of m, so the gradient must be 0, not NaN.
+                # Regression: an empty input must give NaN, not 0/(0-1) = -0.0, matching the
+                # guard in Statistics._varm(A, m, corrected, ::Colon) — scalar m is not
+                # overridden by GPUArrays. The unguarded value is a constant 0 regardless of
+                # m, so the gradient must be 0, not NaN.
                 x = CuArray(Float32[])
                 m = 0.0f0
                 @test isnan(_varm_nodims_scalar(x, m))
@@ -1847,7 +1849,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test Array(g_colon) == Array(g_bare)
                 @test all(iszero, Array(g_colon))
                 # Pin the frule's divide-after arithmetic too: sum(0.5-tangents) is finite
-                # (35000) and / Float16(70000) = / Inf16 gives exactly 0; λ-prescaled ≈ 0.5.
+                # (35000 < 65504) and / Float16(70000) = / Inf16 gives 0; λ-prescaled ≈ 0.5.
                 d = Mooncake.frule!!(
                     Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
                     Mooncake.Dual((; dims=:), Mooncake.NoTangent()),

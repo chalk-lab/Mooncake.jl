@@ -27,7 +27,8 @@ function dropout_alias_tester_dims(Trng, x)
     return sum(x)
 end
 
-# TODO: drop the CUDA version bound once https://github.com/JuliaGPU/CUDA.jl/issues/2886 ships
+# TODO: drop the CUDA version bound once the fix for
+# https://github.com/JuliaGPU/CUDA.jl/issues/2886 is released.
 cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
 
 @testset "nnlib" begin
@@ -411,8 +412,9 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # A `NaN` in `src` must propagate into the gradient rather than be silenced to zero,
-        # in both arms. `interface_only`, since a `NaN` gradient is not finite-differenceable.
+        # A `NaN` in `src` must reach the gradient in both arms rather than be silenced to
+        # zero by a `max(total, 1)` — removing that guard is what made the arms agree.
+        # `interface_only`, since a `NaN` gradient is not finite-differenceable.
         (true, :none, true, NNlib.scatter, max, [NaN, 1.0, 2.0], [1, 1, 2]),
         (
             true,
@@ -666,10 +668,11 @@ end
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
 
-    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in place:
-    # in its `ȳ·ẏ + x̄·ẋ` check `ẏ` is exactly 0 for every step (spacing 4.88e-4 against a true
-    # change of 3.35e-6) and `ẋ` 2.3% off at best, so compare against a wider-precision reference.
-    # `Ω * (1 - Ω)` returns exactly 0 here, so these are the only tests pinning σ's precision.
+    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in
+    # place: in its `ȳ·ẏ + x̄·ẋ` check `ẏ` is exactly 0 for every step (spacing 4.88e-4
+    # against a true change of 3.35e-6) and `ẋ` 2.3% off at best, so compare against a
+    # wider-precision reference. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only
+    # tests pinning σ's precision.
     ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
     x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2

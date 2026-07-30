@@ -523,7 +523,8 @@ _copy_output(x::Module) = x
 
 # Compiled callables hold reflection objects with cyclic references (Method.specializations
 # <-> MethodInstance.def), so field-by-field descent never terminates. They are never
-# differentiable, and `prepare_hvp_cache` copies gradient closures that capture them.
+# differentiable, so return them as-is: `prepare_hvp_cache` copies gradient closures that
+# capture a compiled rule, and would otherwise overflow.
 _copy_output(x::Core.OpaqueClosure) = x
 _copy_output(x::MistyClosure) = x
 
@@ -2271,7 +2272,8 @@ true
     # `DerivedFoRRule` wraps a pre-built `Dual(rule, rule_tangent)` so forward AD reuses
     # the rule's forward-mode-compiled dual callables; letting `zero_tangent` re-derive
     # them leaks reverse-mode primitives (e.g. inlined `IdDict()`) into the forward IR.
-    # `DerivedFoRRule{Nothing}` is a primitive rrule, with no MistyClosure IR to reuse.
+    # `DerivedFoRRule{Nothing}` instead means `f` is itself a reverse-mode primitive: no
+    # derived rule to carry, so those branches below use `grad_cache.rule` directly.
     for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
 
     # The derived branches capture only these buffers: capturing `grad_cache` would make
@@ -2753,7 +2755,8 @@ H
         return fval, g, H
     end
     local value
-    # `v[i] = one(T)` is scalar indexing and errors on CuArray; `copyto!` serves both.
+    # `v[i] = one(T)` is scalar indexing and errors on CuArray; `copyto!` from this
+    # one-element host buffer serves `Vector` and `CuArray` alike.
     e = Vector{T}(undef, 1)
     for i in 1:n
         e[1] = one(T)

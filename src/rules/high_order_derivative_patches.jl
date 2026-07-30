@@ -28,8 +28,8 @@
 #     shared by multiple LazyDerivedRule instances (different inner functions), so a
 #     single-slot cache would serve the wrong rule — see DynamicFoRRule for key design.
 #
-# Despite the shared `FoRRule` suffix, none of the three is rule-callable like reverse-mode
-# `DerivedRule`: `DerivedFoRRule` is a carrier, extracted via `get_inner_rrule`.
+# The shared `FoRRule` suffix is a family label, not a contract: unlike reverse-mode
+# `DerivedRule`, none of the three is called with primal args to return AD output.
 mutable struct LazyFoRRule{Trule,Tfwd,Trvs}
     rule::Trule
     fwd_dual_callable::Tfwd

@@ -333,7 +333,8 @@ end
 # ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source,
 # so the gradient sums to the tie multiplicity rather than to 1, not a subdifferential
 # member. Dividing by the count picks the symmetric member; `init` competes for the same
-# extremum, so a source tied with it gets `1/(m+1)`.
+# extremum, so a source tied with it gets `1/(m+1)`. Returns `init`'s share, or `nothing`
+# when it has no rdata slot to receive one.
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
@@ -531,8 +532,9 @@ end
 
 # σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
 # `abs(x)`, so AD picks up `sign(0) == 0` and reports `0` for `1/4`. When saturated the
-# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so the
-# derivative quantises to `0` (Float64 `x ≳ 37`, Float32 `≳ 17`, Float16 `≳ 8`) while the
+# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so once
+# `σ(x)` rounds to `1.0` the factor `1 - σ(x)` is exactly `0` (Float64 `x ≳ 37`, Float32
+# `≳ 17`, Float16 `≳ 8`) while the
 # true value is still normal. `t / (1 + t)^2` with `t = exp(-abs(x))` holds it in an
 # exponent instead, and `t ≤ 1` bounds the quotient. `exp` therefore runs twice, here and in
 # the primal, rather than restating the primal's branch and `sigmoid_fast`'s clamps where

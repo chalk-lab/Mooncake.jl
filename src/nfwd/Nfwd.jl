@@ -831,8 +831,8 @@ end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
 end
-# `1 - tanh(x)^2` flushes to exactly `0` once `tanh(x)` rounds to `1.0`, while the true
-# derivative is still normal (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
+# `4u / (1 + u)^2` with `u = exp(-2|x|)`: `1 - tanh(x)^2` is exactly `0` once `tanh(x)` rounds
+# to `1.0`, while the true derivative is still normal (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
     u = exp(-2 * abs(a.value))
     return NDual{T,N}(tanh(a.value), _pt_scale(a.partials, 4u / (one(T) + u)^2))

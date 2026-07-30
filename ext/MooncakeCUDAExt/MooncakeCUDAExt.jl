@@ -2163,7 +2163,7 @@ end
 
 # Single second-order chokepoint: the NDual-based GPU rules (`sum(f, x)`, `materialize`,
 # `materialize!`) all launch their kernel through `_gpu_broadcast_dual`, traced only when
-# nested AD differentiates a rule body, which nests `NDual` over `NDual` and errors
+# nested AD differentiates a rule body. Tracing it nests `NDual` over `NDual`, which errors
 # (perturbation confusion). Both modes get a throwing rule so the unsupported
 # reverse-over-* direction fails with the same clear message rather than a MethodError.
 const _GPU_SECOND_ORDER_MSG =
@@ -2938,9 +2938,9 @@ end
 #
 # Two conventions throughout the varm/mean rules below: the primal value comes from calling
 # the real function (rules run natively, so the closure only blocks tracing), inheriting its
-# kwarg validation and NaN-on-empty convention; and each hand-rolled derivative uses the
-# same arithmetic as its own primal method, so value and derivative degrade identically in
-# Float16 edge cases.
+# kwarg validation and NaN-on-empty convention; and each hand-rolled derivative uses the same
+# arithmetic as its own primal method — λ-prescaled where the primal prescales, divide-after
+# where it divides the sum — so value and derivative degrade identically in Float16 edge cases.
 
 # A real-valued fdata/rdata slot can't hold a complex value. When exactly one of x/m
 # is complex, the true partial derivative of |x-m|² is the real part of the naive
@@ -3097,7 +3097,7 @@ end
 # Statistics' scalar-m varm infers Union{Float32,Float64} (the n==0 branch types σ² off x
 # alone, the main branch promotes with m), and Mooncake's rule builder cannot handle a
 # Union-typed primitive output. Mismatched combinations are left to fail in the interpreter.
-# Hence four explicit eltype combinations, not one
+# Hence the tie takes four explicit eltype combinations, not one
 # `Tuple{..., CuArray{<:Union{P,Complex{P}}}, Union{P,Complex{P}}} where P`: there P never
 # occurs twice covariantly, so it is not diagonal and subtyping may bind it to
 # Union{Float32,Float64}, matching mixed precision anyway; the invariant CuArray{P} pins it

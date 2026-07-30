@@ -603,7 +603,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        # Build at this rule's creation world, not the current one; see _build_rule! and #1218.
+        # Build at this rule's creation world, not the current one; see _build_rule! (#1218)
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
         rule = build_frule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true

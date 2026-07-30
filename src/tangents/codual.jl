@@ -78,7 +78,7 @@ The type of the `CoDual` which contains instances of `P` and associated tangents
 @unstable function codual_type(::Type{P}) where {P}
     # The static parameter is unbound for e.g. `UnionAll(A, AbstractArray{T, A})`, whose
     # body has a free `TypeVar` `T`; touching `P` would then throw
-    # `UndefVarError(:P, :static_parameter)`. `dual_type` needs the same guard.
+    # `UndefVarError(:P, :static_parameter)`. The overloads below and `dual_type` need it too.
     @isdefined(P) || return CoDual
     return _codual_internal(P, codual_type, tangent_type)
 end

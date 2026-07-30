@@ -99,7 +99,7 @@ end
     }
 end
 
-# Also dead on 1.12+: @invokelatest no longer expands to Core._call_latest.
+# The kwargs variant is dead on 1.12+ for the same reason.
 @static if VERSION < v"1.12-"
     @zero_derivative(
         MinimalCtx,

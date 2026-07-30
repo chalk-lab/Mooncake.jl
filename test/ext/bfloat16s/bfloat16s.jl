@@ -15,7 +15,8 @@ end
 const sr = StableRNG
 const P = Core.BFloat16
 
-# NNlib's `sigmoid` shape; smooth at zero unlike `abs`: the kink cancels between branches.
+# NNlib's `sigmoid` shape: `exp(-abs(x))` under an `ifelse`, smooth at zero even though
+# `abs` is not, because the kink cancels between the two branches.
 function sigmoid_shaped(x)
     (t=exp(-abs(x)); ifelse(x >= zero(x), inv(one(x) + t), t / (one(x) + t)))
 end
@@ -80,7 +81,7 @@ end
     # on `x >= zero(P)`, never reaching the `abs_float` intrinsic's `sign(x)`. Pinned by
     # calling the rule, since `test_rule` passes when any one step agrees and a collapsed 0
     # matches six of the seven: below ε = 1e-2, `sigmoid_shaped(±ε)` rounds back to `0.5`.
-    # `abs` is absent above: its central difference returns 0 at the kink, the rule's 1.
+    # `abs` is absent above: its central difference returns 0 at the kink, the rule 1.
     @testset "sigmoid_shaped at zero" begin
         rule = Mooncake.build_rrule(sigmoid_shaped, P(0))
         _, pb = rule(Mooncake.zero_fcodual(sigmoid_shaped), Mooncake.zero_fcodual(P(0)))
