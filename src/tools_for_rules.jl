@@ -365,11 +365,6 @@ end
 # Functionality supporting @from_rrule
 #
 
-# Index maps into a parent that `setindex!` honours. `ReinterpretArray` stays out: between
-# float widths it reinterprets bits rather than values, and the real-to-complex direction,
-# though an iso, has a view eltype its parent does not share.
-const _ArrayView{P} = Union{Adjoint{P},Transpose{P},SubArray{P},Base.ReshapedArray{P}}
-
 """
     to_cr_tangent(t)
 
@@ -466,22 +461,6 @@ function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
 ) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     increment!!(f, t)
-    return NoRData()
-end
-# For the array views handled by `_cr_fdata`: `increment!!` requires both arguments to have
-# the same type, and a view over the fdata never matches the plain array ChainRules returns.
-# The size check is what `increment!!` would have done: broadcasting would stretch a singleton
-# dimension instead, so a malformed rrule's `(1, n)` cotangent would land in every row.
-function increment_and_get_rdata!(
-    f::AbstractArray{P}, ::NoRData, t::AbstractArray{P}
-) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    size(f) == size(t) || throw(
-        ArgumentError(
-            "ChainRules returned a cotangent of size $(size(t)) for an argument of size " *
-            "$(size(f)). The rrule for this signature is malformed.",
-        ),
-    )
-    f .+= t
     return NoRData()
 end
 increment_and_get_rdata!(::Any, r, ::CRC.NoTangent) = r
@@ -623,20 +602,6 @@ function notimplemented_tangent_guard(dy)
 end
 
 """
-    _cr_fdata(x::CoDual)
-
-`x`'s fdata, laid out the way ChainRules lays out a cotangent for `primal(x)`, so that a
-cotangent can be added into it. Not a ChainRules tangent, which is why this is separate from
-[`to_cr_tangent`](@ref): the result stays Mooncake fdata, only re-viewed.
-"""
-_cr_fdata(x::CoDual) = tangent(x)
-function _cr_fdata(
-    x::CoDual{<:_ArrayView{P},<:FData}
-) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    return last(arrayify(x))
-end
-
-"""
     frule_wrapper(f::Dual, args::Dual...)
 
 Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
@@ -700,8 +665,8 @@ function rrule_wrapper(fargs::Vararg{CoDual,N}) where {N}
         cr_dfargs = cr_pb(cr_tangent)
 
         # Increment fdata and get rdata.
-        return map(fargs, lazy_rdata, cr_dfargs) do x, l_rdata, cr_dfarg
-            return increment_and_get_rdata!(_cr_fdata(x), instantiate(l_rdata), cr_dfarg)
+        return map(fargs, lazy_rdata, cr_dfargs) do x, l_rdata, cr_dx
+            return increment_and_get_rdata!(tangent(x), instantiate(l_rdata), cr_dx)
         end
     end
     return CoDual(y_primal, y_fdata), pb!!
@@ -725,8 +690,8 @@ function rrule_wrapper(::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}) w
 
         # Increment fdata and compute rdata.
         kwargs_rdata = rdata(zero_tangent(primals[1]))
-        args_rdata = map(fargs[2:end], lazy_rdata[2:end], cr_dfargs) do x, l_rdata, cr_dfarg
-            return increment_and_get_rdata!(_cr_fdata(x), instantiate(l_rdata), cr_dfarg)
+        args_rdata = map(fargs[2:end], lazy_rdata[2:end], cr_dfargs) do x, l_rdata, cr_dx
+            return increment_and_get_rdata!(tangent(x), instantiate(l_rdata), cr_dx)
         end
         return NoRData(), kwargs_rdata, args_rdata...
     end

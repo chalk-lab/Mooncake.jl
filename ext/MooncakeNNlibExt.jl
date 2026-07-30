@@ -6,6 +6,7 @@ using Base: IEEEFloat
 using LinearAlgebra
 using NNlib: conv, depthwiseconv, logsoftmax, softmax, logsumexp, dropout
 using Mooncake.Nfwd: NDual
+const CRC = Mooncake.CRC
 
 import Mooncake:
     @from_rrule,
@@ -107,16 +108,29 @@ _maximum(x, dims, init) = maximum(x; dims, init)
     typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
 
+# Calling ChainRules here rather than through `Mooncake.rrule_wrapper`, which adds its cotangent
+# straight into the fdata: `SupportedArray` admits `Adjoint` and `Transpose`, whose fdata belongs
+# to the parent and carries its shape, so a cotangent laid out like the primal cannot be added to
+# it. `arrayify` wraps that fdata the way the primal is wrapped, and adding through the wrapper
+# relabels each index as the view does, conjugating for an `Adjoint` as its `setindex!` does.
+# ChainRules still supplies the numerics, mask and all.
 function Mooncake.rrule!!(
     f::CoDual{typeof(dropout)},
     rng::CoDual{<:AbstractRNG},
     x::CoDual{<:SupportedArray{P,N}},
     p::CoDual{P},
 ) where {P<:IEEEFloat,N}
-    primal(p) > 0 && return Mooncake.rrule_wrapper(f, rng, x, p)
-    dropout(primal(rng), primal(x), primal(p)) === primal(x) ||
-        return Mooncake.rrule_wrapper(f, rng, x, p)
-    return x, NoPullback(f, rng, x, p)
+    if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p)) === primal(x)
+        return x, NoPullback(f, rng, x, p)
+    end
+    px, dx = arrayify(x)
+    y, cr_pb = CRC.rrule(dropout, primal(rng), px, primal(p))
+    dy = Mooncake.zero_tangent(y)
+    function dropout_pb!!(::NoRData)
+        dx .+= cr_pb(dy)[3]
+        return NoRData(), NoRData(), NoRData(), Mooncake.zero_rdata(primal(p))
+    end
+    return CoDual(y, dy), dropout_pb!!
 end
 
 function Mooncake.rrule!!(
@@ -127,10 +141,21 @@ function Mooncake.rrule!!(
     x::CoDual{<:SupportedArray{P,N}},
     p::CoDual{P},
 ) where {P<:IEEEFloat,N}
-    primal(p) > 0 && return Mooncake.rrule_wrapper(kwcall, kw, f, rng, x, p)
-    dropout(primal(rng), primal(x), primal(p); primal(kw)...) === primal(x) ||
-        return Mooncake.rrule_wrapper(kwcall, kw, f, rng, x, p)
-    return x, NoPullback(kwcall, kw, f, rng, x, p)
+    pkw = primal(kw)
+    if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p); pkw...) === primal(x)
+        return x, NoPullback(kwcall, kw, f, rng, x, p)
+    end
+    px, dx = arrayify(x)
+    y, cr_pb = Core.kwcall(pkw, CRC.rrule, dropout, primal(rng), px, primal(p))
+    dy = Mooncake.zero_tangent(y)
+    kw_rdata = Mooncake.zero_rdata(pkw)
+    function dropout_kw_pb!!(::NoRData)
+        dx .+= cr_pb(dy)[3]
+        return NoRData(),
+        kw_rdata, NoRData(), NoRData(), NoRData(),
+        Mooncake.zero_rdata(primal(p))
+    end
+    return CoDual(y, dy), dropout_kw_pb!!
 end
 
 # logsoftmax rrules

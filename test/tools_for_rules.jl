@@ -78,21 +78,6 @@ end
 
 @from_chainrules DefaultCtx Tuple{typeof(test_sum),Array{<:Base.IEEEFloat}} false
 
-# Array views reach the bridge in reverse mode only, since every array rule imported from
-# ChainRules is `@from_rrule`. Complex too, so an `Adjoint`'s conjugation is exercised and not
-# just its transposition.
-
-test_view_sum(x) = sum(x)
-
-function CRC.rrule(::typeof(test_view_sum), x::AbstractArray{<:Number})
-    test_view_sum_pb(dy::Number) = CRC.NoTangent(), fill(dy, size(x))
-    return test_view_sum(x), test_view_sum_pb
-end
-
-@from_rrule DefaultCtx Tuple{
-    typeof(test_view_sum),AbstractArray{<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
-} false
-
 # Test case with heap-allocated output.
 
 test_scale(x::Real, y::AbstractVector{<:Real}) = x * y
@@ -331,27 +316,6 @@ end
             test_rule(sr(1), fargs...; perf_flag=:none, is_primitive=true, mode=ForwardMode)
             test_rule(
                 sr(1), fargs...; perf_flag=:stability, is_primitive=true, mode=ReverseMode
-            )
-        end
-        # One per array view the bridge admits: the cotangent arrives flat while the fdata is
-        # the parent's. Non-square so a missing transpose is a shape error; the reshape nests a
-        # view in a view; the complex pair pins the conjugation, which dropped from `arrayify`
-        # fails the `Adjoint` case and not the `Transpose`.
-        @testset "array views, reverse mode: $(typeof(x))" for x in Any[
-            ones(2, 3)',
-            transpose(ones(2, 3)),
-            view(ones(3, 3), 1:2, 1:3),
-            reshape(view(ones(3, 3), 1:2, 1:3), 3, 2),
-            ones(ComplexF64, 3, 2)',
-            transpose(ones(ComplexF64, 3, 2)),
-        ]
-            test_rule(
-                sr(1),
-                ToolsForRulesResources.test_view_sum,
-                x;
-                perf_flag=:none,
-                is_primitive=true,
-                mode=ReverseMode,
             )
         end
         @testset "bad rdata" begin
