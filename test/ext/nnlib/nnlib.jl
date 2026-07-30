@@ -756,4 +756,17 @@ if cuda
             )
         end
     end
+
+    # `arrayify` hands the pullback a wrapped fdata, and NNlib's CUDA `scatter!` kernel
+    # cannot take one: it compiled to invalid LLVM IR. Reverse mode has to keep working for
+    # a wrapper built inside the function, which is how `SupportedArray`'s members arise.
+    @testset "reverse mode over gather on a wrapped GPU array: $wrap" for wrap in (
+        adjoint, transpose
+    )
+        g(x) = sum(NNlib.gather(wrap(x), [1, 3]))
+        xv = cu(randn(StableRNG(123), Float32, 4))
+        cache = Mooncake.prepare_gradient_cache(g, xv)
+        @test Array(Mooncake.value_and_gradient!!(cache, g, xv)[2][2]) ==
+            Float32[1, 0, 1, 0]
+    end
 end

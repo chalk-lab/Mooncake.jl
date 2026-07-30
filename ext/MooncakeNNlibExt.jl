@@ -450,7 +450,15 @@ function Mooncake.rrule!!(
     res = zero_fcodual(NNlib.gather(primal(src), pidx))
     function gather_pb!!(::NoRData)
         _, dsrc = arrayify(src)
-        NNlib.scatter!(+, dsrc, tangent(res), pidx)
+        if dsrc isa Union{Array,AbstractGPUArray}
+            NNlib.scatter!(+, dsrc, tangent(res), pidx)
+        else
+            # `arrayify` keeps the wrapper and `scatter!` takes only a dense destination: a
+            # wrapped one compiles to invalid IR on the GPU and finds no method on the CPU.
+            # `similar` on an `Adjoint` re-wraps, so the buffer comes from the parent.
+            buf = fill!(similar(parent(dsrc), size(dsrc)), 0)
+            dsrc .+= NNlib.scatter!(+, buf, tangent(res), pidx)
+        end
         return NoRData(), NoRData(), NoRData()
     end
     return res, gather_pb!!
