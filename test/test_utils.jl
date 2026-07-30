@@ -13,6 +13,8 @@
         @test has_equal_data(ones(5), ones(5))
         @test has_equal_data(Base, Base)
         @test !has_equal_data(Base, Core)
+        @test has_equal_data(:a, :a)
+        @test !has_equal_data(:a, :b)
         @test has_equal_data(GlobalRef(Base, :sin), GlobalRef(Base, :sin))
         @test !has_equal_data(GlobalRef(Base, :sin), GlobalRef(Base, :cos))
         @test !has_equal_data(GlobalRef(Base, :sin), GlobalRef(Core, :sin))

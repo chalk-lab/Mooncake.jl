@@ -228,6 +228,13 @@ function has_equal_data_internal(
 )
     return x == y
 end
+# `Symbol` is neither primitive nor has fields, so the generic method below descends into
+# nothing and reports every pair as equal.
+function has_equal_data_internal(
+    x::Symbol, y::Symbol, equal_undefs::Bool, d::IdDict{Any,Bool}
+)
+    return x === y
+end
 function has_equal_data_internal(
     x::GlobalRef, y::GlobalRef; equal_undefs=true, d::IdDict{Any,Bool}
 )
