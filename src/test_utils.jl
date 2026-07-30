@@ -236,7 +236,7 @@ function has_equal_data_internal(
     return x === y
 end
 function has_equal_data_internal(
-    x::GlobalRef, y::GlobalRef; equal_undefs=true, d::IdDict{Any,Bool}
+    x::GlobalRef, y::GlobalRef, equal_undefs::Bool, d::IdDict{Any,Bool}
 )
     return x.mod == y.mod && x.name == y.name
 end
