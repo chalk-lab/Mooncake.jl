@@ -179,6 +179,9 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
         elseif S <: tangent_type(V)
             increment!!(instantiate(dval), rdata(tangent(d)[k]))
         else
+            # The slot holds `convert(V, val)`, a fresh object, so what accumulates there
+            # reaches `val`'s fdata only by an explicit copy-back.
+            increment!!(tangent(val), convert(fdata_type(S), fdata(tangent(d)[k])))
             increment!!(instantiate(dval), convert(rdata_type(S), rdata(tangent(d)[k])))
         end
 
@@ -285,6 +288,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
+        # the same width change for an array, where the gradient rides fdata, not rdata
+        (
+            false,
+            :none,
+            nothing,
+            setindex!,
+            IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
+            Float32[3.0, 4.0],
+            :b,
+        ),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.
