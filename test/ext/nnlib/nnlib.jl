@@ -468,6 +468,11 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
 
         # gather
         (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),
+        # Wrapped `src`: the pullback scatters into `arrayify`'s fdata, which keeps the
+        # wrapper, and NNlib's `scatter!` takes only a dense destination. Square, so the
+        # wrapped trailing size still admits the indices.
+        (false, :none, true, NNlib.gather, _rand(rng, 4, 4)', [1, 3, 1]),
+        (false, :none, true, NNlib.gather, transpose(_rand(rng, 4, 4)), [1, 3, 1]),
 
         # conv
         (false, :none, true, Core.kwcall, (;), conv, x, w, dense_cdims),
@@ -601,14 +606,16 @@ end
 
 @testset "logsumexp Inf/NaN stability" begin
     function test_logsumexp_inf(x, dims)
-        seed = ones(eltype(x), size(logsumexp(x; dims=dims)))
-        cache = Mooncake.prepare_pullback_cache(
-            Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        cdx = Mooncake.zero_fcodual(copy(x))
+        y, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Core.kwcall),
+            Mooncake.zero_fcodual(NamedTuple{(:dims,)}((dims=dims,))),
+            Mooncake.zero_fcodual(logsumexp),
+            cdx,
         )
-        y, (_, _, _, dx) = Mooncake.value_and_pullback!!(
-            cache, seed, Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
-        )
-        return y, dx
+        Mooncake.tangent(y) .= 1
+        pb(Mooncake.NoRData())
+        return Mooncake.primal(y), Mooncake.tangent(cdx)
     end
 
     # All Inf inputs
@@ -743,9 +750,14 @@ if cuda
         @test_throws ArgumentError rule(
             Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
         )
-        cache = Mooncake.prepare_gradient_cache(gather_sum, xg)
-        @test Array(Mooncake.value_and_gradient!!(cache, gather_sum, xg)[2][2]) ==
-            Float32[1, 0, 1, 0]
+        # Reverse mode does work here, which is what the raise above directs users to.
+        cdx = Mooncake.zero_fcodual(copy(xg))
+        y, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(NNlib.gather), cdx, Mooncake.zero_fcodual([1, 3])
+        )
+        Mooncake.tangent(y) .= 1
+        pb(Mooncake.NoRData())
+        @test Array(Mooncake.tangent(cdx)) == Float32[1, 0, 1, 0]
         # `Adjoint`/`Transpose` of a GPU array are `AnyGPUArray`, so NNlib sends them to the
         # same kernel: they have to hit the guard, not slip past a bare `AbstractGPUArray`.
         @testset "$wrap" for wrap in (adjoint, transpose)
@@ -755,18 +767,5 @@ if cuda
                 Mooncake.zero_dual(gather_sum), Mooncake.zero_dual(w)
             )
         end
-    end
-
-    # `arrayify` hands the pullback a wrapped fdata, and NNlib's CUDA `scatter!` kernel
-    # cannot take one: it compiled to invalid LLVM IR. Reverse mode has to keep working for
-    # a wrapper built inside the function, which is how `SupportedArray`'s members arise.
-    @testset "reverse mode over gather on a wrapped GPU array: $wrap" for wrap in (
-        adjoint, transpose
-    )
-        g(x) = sum(NNlib.gather(wrap(x), [1, 3]))
-        xv = cu(randn(StableRNG(123), Float32, 4))
-        cache = Mooncake.prepare_gradient_cache(g, xv)
-        @test Array(Mooncake.value_and_gradient!!(cache, g, xv)[2][2]) ==
-            Float32[1, 0, 1, 0]
     end
 end
