@@ -167,8 +167,7 @@ const TEST_MODELS = [
         rand(Float32, 5, 5, 3, 1),
         "ConvTranspose((3, 3), 3 => 2)",
     ),
-    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
-    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    # LayerNorm needs MooncakeCUDAExt's Statistics.varm GPU rrule!! (via LuxLib mean_var).
     (_gpu_enabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
     (_gpu_enabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),  # NNlib.batchnorm rrule!! (NNlibMooncakeCUDAExt, FluxML/NNlib.jl#727)
     (

@@ -73,11 +73,9 @@
     end
 
     @testset "(f)codual_type/dual_type with phantom TypeVar (#1191)" begin
-        # `UnionAll(A, AbstractArray{T, A})` normalises to a DataType whose body
-        # still references the free `T`; the generic `(f)codual_type(::Type{P})`
-        # and `dual_type(::Type{P})` binders can't bind `P` for such shapes and
-        # throw `UndefVarError`. The Tuple variant blocks a future fix that only
-        # special-cases AbstractArray.
+        # Both shapes normalise to a DataType whose body still references the free `T`, so
+        # the generic `::Type{P}` binders can't bind `P` and throw `UndefVarError`. The
+        # Tuple variant blocks a future fix that only special-cases AbstractArray.
         phantom = UnionAll(TypeVar(:A), AbstractArray{TypeVar(:T),TypeVar(:A)})
         phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
         @test codual_type(phantom) === CoDual

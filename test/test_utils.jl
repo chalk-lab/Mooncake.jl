@@ -61,7 +61,6 @@
             (b=make_indirect_circular_reference_array(); b[1][1]=2.0; b),
         )
 
-        # Test that has_equal_data works on Method and MethodInstance objects
         m = only(methods(sin, (Float64,)))
         @test has_equal_data(m, m)
         mi = first(m.specializations)

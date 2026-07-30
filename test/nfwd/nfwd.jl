@@ -213,8 +213,7 @@ using Mooncake.Nfwd
                 ],
             ),
             (
-                # Saturated: `1 - tanh(x)^2` returns exactly 0 out here, since `tanh(x)` has
-                # rounded to `1.0`, so the reference has to come from wider precision.
+                # `tanh(20)` rounds to `1.0`, so `1 - tanh(x)^2` is exactly 0 in Float64.
                 20.0,
                 [(tanh, x -> Float64(1 - tanh(big(x))^2))],
             ),
