@@ -2150,7 +2150,7 @@ function generate_ir(
                 unhandled_feature(
                     "Mooncake.jl does not support differentiating code that assigns to " *
                     "non-const global variables. Pass the state explicitly, return the " *
-                    "updated value, or provide a custom rrule!!. See the Known Limitations" *
+                    "updated value, or provide a custom rrule!!. See the Known Limitations " *
                     "documentation for more context.",
                 )
             end
