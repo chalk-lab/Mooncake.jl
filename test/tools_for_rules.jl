@@ -69,16 +69,28 @@ end
 
 test_sum(x) = sum(x)
 
-CRC.frule((_, dx), ::typeof(test_sum), x::AbstractArray{<:Number}) = sum(x), sum(dx)
+CRC.frule((_, dx), ::typeof(test_sum), x::AbstractArray{<:Real}) = sum(x), sum(dx)
 
-function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Number})
-    test_sum_pb(dy::Number) = CRC.NoTangent(), fill(dy, size(x))
+function CRC.rrule(::typeof(test_sum), x::AbstractArray{<:Real})
+    test_sum_pb(dy::Real) = CRC.NoTangent(), fill(dy, size(x))
     return test_sum(x), test_sum_pb
 end
 
-# Complex too, so an `Adjoint`'s conjugation is exercised and not just its transposition.
-@from_chainrules DefaultCtx Tuple{
-    typeof(test_sum),AbstractArray{<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
+@from_chainrules DefaultCtx Tuple{typeof(test_sum),Array{<:Base.IEEEFloat}} false
+
+# Array views reach the bridge in reverse mode only, since every array rule imported from
+# ChainRules is `@from_rrule`. Complex too, so an `Adjoint`'s conjugation is exercised and not
+# just its transposition.
+
+test_view_sum(x) = sum(x)
+
+function CRC.rrule(::typeof(test_view_sum), x::AbstractArray{<:Number})
+    test_view_sum_pb(dy::Number) = CRC.NoTangent(), fill(dy, size(x))
+    return test_view_sum(x), test_view_sum_pb
+end
+
+@from_rrule DefaultCtx Tuple{
+    typeof(test_view_sum),AbstractArray{<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
 } false
 
 # Test case with heap-allocated output.
@@ -97,22 +109,6 @@ end
 @from_chainrules(
     DefaultCtx, Tuple{typeof(test_scale),Base.IEEEFloat,Vector{<:Base.IEEEFloat}}, false
 )
-
-# Output is an array view, whose layout Mooncake's structural tangent does not share. Over a
-# freshly allocated array, since the bridge requires that the result not alias any argument.
-
-test_view_output(x) = transpose(2 .* x)
-
-function CRC.frule((_, dx), ::typeof(test_view_output), x::AbstractMatrix{<:Real})
-    return test_view_output(x), transpose(2 .* dx)
-end
-
-function CRC.rrule(::typeof(test_view_output), x::AbstractMatrix{<:Real})
-    test_view_output_pb(dy) = CRC.NoTangent(), 2 .* transpose(dy)
-    return test_view_output(x), test_view_output_pb
-end
-
-@from_chainrules DefaultCtx Tuple{typeof(test_view_output),Matrix{<:Base.IEEEFloat}} false
 
 # Test case with non-differentiable type as output.
 
@@ -323,17 +319,6 @@ end
         @testset "rules: $(typeof(fargs))" for fargs in Any[
             (ToolsForRulesResources.bleh, 5.0, 4),
             (ToolsForRulesResources.test_sum, ones(5)),
-            # One per array view the bridge admits: the cotangent arrives flat while the
-            # fdata is the parent's. Non-square so a missing transpose is a shape error; the
-            # reshape nests a view in a view; the complex pair pins the conjugation, which
-            # dropped from `arrayify` fails the `Adjoint` case and not the `Transpose`.
-            (ToolsForRulesResources.test_sum, ones(2, 3)'),
-            (ToolsForRulesResources.test_sum, transpose(ones(2, 3))),
-            (ToolsForRulesResources.test_sum, view(ones(3, 3), 1:2, 1:3)),
-            (ToolsForRulesResources.test_sum, reshape(view(ones(3, 3), 1:2, 1:3), 3, 2)),
-            (ToolsForRulesResources.test_sum, ones(ComplexF64, 3, 2)'),
-            (ToolsForRulesResources.test_sum, transpose(ones(ComplexF64, 3, 2))),
-            (ToolsForRulesResources.test_view_output, ones(2, 3)),
             (ToolsForRulesResources.test_scale, 5.0, randn(3)),
             (ToolsForRulesResources.test_nothing,),
             (Core.kwcall, (y=true,), ToolsForRulesResources.test_kwargs, 5.0),
@@ -346,6 +331,27 @@ end
             test_rule(sr(1), fargs...; perf_flag=:none, is_primitive=true, mode=ForwardMode)
             test_rule(
                 sr(1), fargs...; perf_flag=:stability, is_primitive=true, mode=ReverseMode
+            )
+        end
+        # One per array view the bridge admits: the cotangent arrives flat while the fdata is
+        # the parent's. Non-square so a missing transpose is a shape error; the reshape nests a
+        # view in a view; the complex pair pins the conjugation, which dropped from `arrayify`
+        # fails the `Adjoint` case and not the `Transpose`.
+        @testset "array views, reverse mode: $(typeof(x))" for x in Any[
+            ones(2, 3)',
+            transpose(ones(2, 3)),
+            view(ones(3, 3), 1:2, 1:3),
+            reshape(view(ones(3, 3), 1:2, 1:3), 3, 2),
+            ones(ComplexF64, 3, 2)',
+            transpose(ones(ComplexF64, 3, 2)),
+        ]
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.test_view_sum,
+                x;
+                perf_flag=:none,
+                is_primitive=true,
+                mode=ReverseMode,
             )
         end
         @testset "bad rdata" begin

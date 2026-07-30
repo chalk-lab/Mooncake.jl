@@ -392,24 +392,6 @@ function to_cr_tangent(x::PossiblyUninitTangent)
     end
 end
 
-"""
-    to_cr_tangent(p, t)
-
-The tangent of a value with primal `p` and tangent `t`, in the layout ChainRules uses. The
-primal is needed for an array view: ChainRules works with a flat array of the view's own shape,
-while Mooncake's tangent is structural and belongs to the parent, and the tangent alone does not
-say which view it came from — `Adjoint` and `Transpose` share a tangent type but need conjugate
-cotangents, and a `SubArray`'s window is `NoTangent` there. `arrayify` re-wraps the parent's
-tangent, recovering the layout. Structured wrappers such as `Diagonal` are excluded: ChainRules
-projects their cotangents onto the structure rather than returning something flat.
-"""
-to_cr_tangent(p, t) = to_cr_tangent(t)
-function to_cr_tangent(
-    p::_ArrayView{P}, t::Tangent
-) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    return last(arrayify(p, t))
-end
-
 function to_cr_tangent(t)
     throw(
         ArgumentError(
@@ -434,15 +416,6 @@ mooncake_tangent(p, t::IEEEFloat) = t
 mooncake_tangent(p::Array, t::Array{<:IEEEFloat}) = t
 mooncake_tangent(p::Array, t::Array) = map(mooncake_tangent, p, t)
 mooncake_tangent(p, t::CRC.ZeroTangent) = zero_tangent(p)
-# A view's tangent arrives in the primal's layout, so write it through the same wrapper
-# `to_cr_tangent` reads through: that lands it in the parent Mooncake's tangent is built from.
-function mooncake_tangent(
-    p::_ArrayView{P}, t::AbstractArray{P}
-) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
-    dp = zero_tangent(p)
-    last(arrayify(p, dp)) .= t
-    return dp
-end
 function mooncake_tangent(p::P, t::T) where {P,T<:Tuple}
     return tangent_type(P) == NoTangent ? NoTangent() : map(mooncake_tangent, p, t)
 end
@@ -669,14 +642,14 @@ end
 Implements an `frule!!` for `f` applied to `args` by calling `ChainRulesCore.frule`.
 """
 function frule_wrapper(fargs::Vararg{Dual,N}) where {N}
-    tangents = tuple_map(x -> to_cr_tangent(primal(x), tangent(x)), fargs)
+    tangents = tuple_map(to_cr_tangent ∘ tangent, fargs)
     Ω, dΩ = CRC.frule(tangents, tuple_map(primal, fargs)...)
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
 
 function frule_wrapper(::Dual{typeof(Core.kwcall)}, fargs::Vararg{Dual,N}) where {N}
     primals = map(primal, fargs)
-    tangents = map(x -> to_cr_tangent(primal(x), tangent(x)), fargs[2:end])
+    tangents = map(to_cr_tangent ∘ tangent, fargs[2:end])
     Ω, dΩ = Core.kwcall(primals[1], CRC.frule, tangents, primals[2:end]...)
     return Dual(Ω, mooncake_tangent(Ω, dΩ))
 end
@@ -721,7 +694,7 @@ function rrule_wrapper(fargs::Vararg{CoDual,N}) where {N}
     function pb!!(y_rdata)
 
         # Construct tangent w.r.t. output.
-        cr_tangent = to_cr_tangent(y_primal, tangent(y_fdata, y_rdata))
+        cr_tangent = to_cr_tangent(tangent(y_fdata, y_rdata))
 
         # Run reverse-pass using ChainRules.
         cr_dfargs = cr_pb(cr_tangent)
@@ -745,7 +718,7 @@ function rrule_wrapper(::CoDual{typeof(Core.kwcall)}, fargs::Vararg{CoDual,N}) w
     function pb!!(y_rdata)
 
         # Construct tangent w.r.t. output.
-        cr_tangent = to_cr_tangent(y_primal, tangent(y_fdata, y_rdata))
+        cr_tangent = to_cr_tangent(tangent(y_fdata, y_rdata))
 
         # Run reverse-pass using ChainRules.
         cr_dfargs = cr_pb(cr_tangent)
