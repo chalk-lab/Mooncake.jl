@@ -1424,12 +1424,16 @@ end
     nd = Val(ndims(dy_out))
     for i in eachindex(fdatas)
         fi = fdatas[i]
-        ranges = ntuple(nd) do d
-            k = findfirst(==(d), dims)
-            k === nothing ? Colon() : (offsets[k] + 1):(offsets[k] + size(fi, d))
+        # `let`, so the closure below captures a binding that is never reassigned:
+        # capturing `offsets` itself boxes it and costs the loop its zero-allocation.
+        offsets = let offs = offsets
+            ranges = ntuple(nd) do d
+                k = findfirst(==(d), dims)
+                k === nothing ? Colon() : (offs[k] + 1):(offs[k] + size(fi, d))
+            end
+            fi .+= view(dy_out, ranges...)
+            ntuple(k -> offs[k] + size(fi, dims[k]), Val(K))
         end
-        fi .+= view(dy_out, ranges...)
-        offsets = ntuple(k -> offsets[k] + size(fi, dims[k]), Val(K))
     end
     return nothing
 end
