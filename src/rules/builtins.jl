@@ -393,13 +393,13 @@ end
 @intrinsic copysign_float
 function frule!!(::Dual{typeof(copysign_float)}, x, y)
     z = copysign_float(primal(x), primal(y))
-    dz = sign(primal(x)) * sign(primal(y)) * tangent(x)
+    dz = flipsign(sign(primal(x)), primal(y)) * tangent(x)
     return Dual(z, dz)
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
-    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_x) * sign(_y), zero_rdata(_y)
+    copysign_float_pullback!!(dz) = NoRData(), dz * flipsign(sign(_x), _y), zero_rdata(_y)
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
 end
