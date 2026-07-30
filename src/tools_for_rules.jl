@@ -479,9 +479,17 @@ function increment_and_get_rdata!(
 end
 # For the array views handled by `_cr_dx`: `increment!!` requires both arguments to have
 # the same type, and a view over the fdata never matches the plain array ChainRules returns.
+# The size check is what `increment!!` would have done: broadcasting would stretch a singleton
+# dimension instead, so a malformed rrule's `(1, n)` cotangent would land in every row.
 function increment_and_get_rdata!(
     f::AbstractArray{P}, ::NoRData, t::AbstractArray{P}
 ) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
+    size(f) == size(t) || throw(
+        ArgumentError(
+            "ChainRules returned a cotangent of size $(size(t)) for an argument of size " *
+            "$(size(f)). The rrule for this signature is malformed.",
+        ),
+    )
     f .+= t
     return NoRData()
 end

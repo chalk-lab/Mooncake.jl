@@ -314,21 +314,23 @@ end
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
-    # `Float16` cannot count past 2048 — its spacing passes 1, so `total + 1` rounds back
-    # and every share in a larger tie group inflates: 2x at 4096, 16x at 32768. `Float32`
-    # hits that wall past 2^24, beyond any real tie group, so only `Float16` widens.
+    # Counted in `Int`, because a float count saturates once its spacing passes 1 — `Float16`
+    # at 2048, `Float32` at 2^24 — and every share in a larger tie group inflates with it.
+    # `A` widens `Float16` for the division alone, whose operands are all O(1). Narrowing the
+    # count back to `A` costs at most an ulp of the share, against 6% at 2^24 + 2^20.
     A = P === Float16 ? Float32 : P
-    mask = A.(psrc .== NNlib.gather(y, pidx))
-    total = NNlib.scatter(+, mask, pidx; dstsize=size(y))
+    tied = psrc .== NNlib.gather(y, pidx)
+    counts = NNlib.scatter!(+, fill!(similar(y, Int), 0), tied, pidx)
     if init === nothing
-        dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
+        total = A.(counts)
+        dsrc .+= P.(tied .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
         return nothing
     end
     # `convert(P, init)`, since NNlib rounds `init` into the destination: comparing the
     # caller's value instead matches nothing when it is not representable in `P`.
-    init_tie = A.(y .== convert(P, init))
-    total = total .+ init_tie
-    dsrc .+= P.(mask .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
+    init_tie = y .== convert(P, init)
+    total = A.(counts .+ init_tie)
+    dsrc .+= P.(tied .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
     # `nothing` for an `init` with no rdata slot, as for an absent one; it still counts
     # towards other shares. Must stay below both lines above: moved up, `src` loses its
     # gradient and a winning `init` divides by a `total` it is not yet folded into.

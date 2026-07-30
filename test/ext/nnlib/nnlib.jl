@@ -531,23 +531,23 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
 end
 
-# The tie count totals one per tied entry, so it saturates in `Float16` past 2048 the same
-# way the logsumexp reductions do, inflating every share in a larger tie group — 2x at 4096
-# and 16x at 32768. Every source ties at one destination here, so the count is the length.
-@testset "scatter tie count does not saturate" begin
-    for n in (4096, 32768)
-        s = Mooncake.zero_fcodual(ones(Float16, n))
-        out, pb = Mooncake.rrule!!(
-            Mooncake.zero_fcodual(NNlib.scatter),
-            Mooncake.zero_fcodual(max),
-            s,
-            Mooncake.zero_fcodual(ones(Int, n)),
-        )
-        Mooncake.tangent(out) .= 1
-        pb(Mooncake.NoRData())
-        @test Float64(Mooncake.tangent(s)[1]) ≈ 1 / n rtol = 1e-2
-        @test eltype(Mooncake.tangent(s)) === Float16
-    end
+# A float count saturates once its spacing passes 1 — `Float16` at 2048, `Float32` at 2^24 —
+# inflating every share in a larger tie group. Every source ties at one destination here, so
+# the count is the length, and the last case sits one past where `Float32` would stop.
+@testset "scatter tie count does not saturate: $P at n = $n" for (P, n) in (
+    (Float16, 4096), (Float16, 32768), (Float32, 2^24 + 1)
+)
+    s = Mooncake.zero_fcodual(ones(P, n))
+    out, pb = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(NNlib.scatter),
+        Mooncake.zero_fcodual(max),
+        s,
+        Mooncake.zero_fcodual(ones(Int, n)),
+    )
+    Mooncake.tangent(out) .= 1
+    pb(Mooncake.NoRData())
+    @test Float64(Mooncake.tangent(s)[1]) ≈ 1 / n rtol = 1e-2
+    @test eltype(Mooncake.tangent(s)) === P
 end
 
 # An `init` with no rdata still competes in the maximum, so the sources tied with it must
