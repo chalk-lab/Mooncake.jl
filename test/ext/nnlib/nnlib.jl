@@ -27,8 +27,7 @@ function dropout_alias_tester_dims(Trng, x)
     return sum(x)
 end
 
-# TODO: CUDA version bound when
-#  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
+# TODO: drop the CUDA version bound once https://github.com/JuliaGPU/CUDA.jl/issues/2886 ships
 cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
 
 @testset "nnlib" begin
@@ -182,8 +181,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # also need the `materialize!` rule for the forward broadcast. Both fail on `main`.
         (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
         (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
-        # ... and through the other arm, `p > 0`, where the rule adds ChainRules' cotangent
-        # through `arrayify`'s wrapper because the wrapper's fdata is the parent's.
+        # ... and the other arm, `p > 0`, where the cotangent goes via `arrayify`'s wrapper.
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2)', float(0.5)),
         (
             true,
@@ -343,9 +341,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
 
-        # scatter(max/min, ...) with sources tied for one destination. The tie is the point,
-        # so the values are equal by construction rather than random: ChainRules gives each
-        # tied entry the whole cotangent, summing to the tie multiplicity.
+        # `scatter(max/min, ...)` with sources tied for one destination, hence `_ones`.
         (false, :none, true, NNlib.scatter, max, _ones(3), [1, 1, 2]),
         (false, :none, true, NNlib.scatter, min, _ones(3), [1, 1, 2]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, max, _ones(3), [1, 1, 2]),
@@ -355,9 +351,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
 
         # `init` is differentiable, so the keyword NamedTuple's rdata is not NoRData. The
-        # three cases put it below every source, above every source, and tied with exactly
-        # one — the tie a central difference can express, since its mean of the one-sided
-        # derivatives is the symmetric split.
+        # cases put it below every source, above every source, and tied with one — a tie whose
+        # symmetric split is the mean of the one-sided derivatives a central difference takes.
         (
             false,
             :none,
@@ -403,8 +398,7 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # An `init` with no rdata, which used to throw. It wins outright here, so nothing ties
-        # it, and whether it counts towards the tie total makes no difference to this case.
+        # An `init` with no rdata, which used to throw. It wins outright, so nothing ties it.
         (
             false,
             :none,
@@ -417,10 +411,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # Dropping `max(total, 1)` made a `NaN` in `src` propagate into the gradient instead
-        # of being silenced to zero, which is the whole point of removing it, and it has to
-        # do so in both arms — the two disagreeing on the same input is what the removal
-        # fixed. `interface_only`, since a `NaN` gradient is not finite-differenceable.
+        # A `NaN` in `src` must propagate into the gradient rather than be silenced to zero,
+        # in both arms. `interface_only`, since a `NaN` gradient is not finite-differenceable.
         (true, :none, true, NNlib.scatter, max, [NaN, 1.0, 2.0], [1, 1, 2]),
         (
             true,
@@ -434,9 +426,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
             [1, 1, 2],
         ),
 
-        # `init` over a multi-dim `src`, where the tie count and the `init` indicator have
-        # to agree on the extra leading dimension. Winning `init` takes the whole cotangent,
-        # so `dsrc` is zero and `dinit` is the destination count.
+        # `init` over a multi-dim `src`, where the tie count and the `init` indicator have to
+        # agree on the extra leading dimension.
         (
             false,
             :none,
@@ -463,9 +454,8 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         ),
 
         # `dstsize` past the largest index leaves destinations no index reaches, holding
-        # `scatter_empty` with no tied source. Nothing gathers them, so they take no part in
-        # the gradient; summing only the reachable ones keeps the primal finite, the others
-        # being -Inf.
+        # `scatter_empty`; nothing gathers them, so they take no part in the gradient, and the
+        # slice keeps their `-Inf`s out of the sum.
         (
             false,
             :none,
@@ -672,16 +662,14 @@ end
             StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
         )
     end
-    # Saturated inputs. These cover NaN, Inf and type stability, not the precision itself —
-    # see the Limitations section of `test_rule`'s docstring.
+    # Saturated inputs: NaN, Inf and stability, not precision — see `test_rule`'s Limitations.
     test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
     test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
 
-    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in
-    # place: both terms of its `ȳ·ẏ + x̄·ẋ` check are unusable, `ẏ` being exactly 0 for
-    # every step (spacing 4.88e-4 against a true change of 3.35e-6) and `ẋ` 2.3% off at
-    # best. So compare against a wider-precision reference. `Ω * (1 - Ω)` returns exactly 0
-    # here, so these are the only tests pinning σ's precision, once per copy of the formula.
+    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in place:
+    # in its `ȳ·ẏ + x̄·ẋ` check `ẏ` is exactly 0 for every step (spacing 4.88e-4 against a true
+    # change of 3.35e-6) and `ẋ` 2.3% off at best, so compare against a wider-precision reference.
+    # `Ω * (1 - Ω)` returns exactly 0 here, so these are the only tests pinning σ's precision.
     ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
     x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
@@ -693,9 +681,8 @@ end
     @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
 
-# `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`; reverse mode
-# picked that branch up as `0 * Inf`, which poisoned `gelu`/`gelu_tanh` from `|x| ≈ 21`
-# upwards.
+# `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`, which reverse mode
+# picked up as `0 * Inf`, poisoning `gelu`/`gelu_tanh` from `|x| ≈ 21` upwards.
 @testset "tanh_fast across NNlib's branches" begin
     test_rule(StableRNG(123), tanh_fast, 0.5; perf_flag=:stability)
     test_rule(StableRNG(123), tanh_fast, 400.0; perf_flag=:stability)
@@ -705,15 +692,12 @@ end
     test_rule(
         StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
     )
-    # NNlib's `tanh_fast(::Float32)` is a different body from the `Float64` one — a Remez
-    # rational whose discarded branch overflows, rather than an `exp` quotient — so none of
-    # the cases above reach it, and the rule kept working for `Float64` with `Float32`
-    # removed from it. Through `gelu_tanh` the Float32 gradient goes `NaN` from |x| ≈ 258.8,
-    # so a scalar there fails without the rule and passes with it.
+    # NNlib's `tanh_fast(::Float32)` is a different body, so none of the cases above reach it:
+    # the rule kept working for `Float64` with `Float32` removed from it. Through `gelu_tanh`
+    # the Float32 gradient goes `NaN` from |x| ≈ 258.8, so a scalar fails without the rule.
     test_rule(StableRNG(123), NNlib.gelu_tanh, 300.0f0; is_primitive=false)
-    # As for σ, the saturated derivative's precision is beyond finite differences, and both
-    # rules carry their own copy of `4u / (1 + u)^2`. `1 - Ω^2` returns exactly 0 at
-    # Float16(6), against a true 2.46e-5, so this separates the two forms outright.
+    # As for σ, the saturated derivative's precision is beyond finite differences. `1 - Ω^2`
+    # returns exactly 0 at Float16(6), against a true 2.46e-5, so it separates the two forms.
     ref16 = Float64(1 - tanh(big(6.0))^2)
     d16 = Mooncake.frule!!(
         Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
@@ -726,17 +710,14 @@ end
     @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
 
-# Each rule below exists only in reverse mode, so its `@is_primitive` says so; declared for
-# both, forward mode finds a primitive with no `frule!!` and raises instead of tracing. CPU
-# arrays only: on a GPU array the traced primal reaches a kernel launch, a foreigncall, and
-# raises `MissingForeigncallRuleError`. `gather` took the process down, hence its own rule
-# below.
+# The rules below are reverse-only primitives, so forward mode traces the primal; declared for
+# both modes it would find no `frule!!` and raise. CPU arrays only: a traced GPU kernel launch
+# is a foreigncall, raising `MissingForeigncallRuleError`, and `gather` took the process down.
 @testset "forward mode traces reverse-only rules" begin
     x = randn(StableRNG(123), 3)
     for f in (
-        # `softmax` is returned whole rather than summed: its outputs sum to 1 identically,
-        # so `1ᵀJ = 0` and a summed case is blind to every error inside that kernel.
-        # `logsoftmax` does not sum to a constant, so summing it stays a real check.
+        # `softmax` is returned whole: its outputs sum to 1, so `1ᵀJ = 0` and a summed case is
+        # blind to every error in it. `logsoftmax` does not, so summing it stays a real check.
         x -> softmax(x),
         x -> softmax(x; dims=1),
         x -> sum(logsoftmax(x)),
@@ -749,9 +730,8 @@ end
     end
 end
 
-# `gather`'s GPU kernel launch does not survive the forward transform — an illegal
-# instruction no test can catch — so its rule raises instead, which this pins where a device
-# is available.
+# `gather`'s GPU kernel launch does not survive the forward transform — an illegal instruction
+# no test can catch — so its rule raises, which this pins where a device is available.
 if cuda
     @testset "forward mode over gather on a GPU array raises" begin
         gather_sum(z) = sum(NNlib.gather(z, [1, 3]))
