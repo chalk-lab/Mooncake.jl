@@ -180,7 +180,8 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
             increment!!(instantiate(dval), rdata(tangent(d)[k]))
         else
             # The slot holds `convert(V, val)`, a fresh object, so what accumulates there
-            # reaches `val`'s fdata only by an explicit copy-back.
+            # reaches `val`'s fdata only by an explicit copy-back. The result is discarded
+            # because every gradient carrier in fdata is mutable, so this lands in place.
             increment!!(tangent(val), convert(fdata_type(S), fdata(tangent(d)[k])))
             increment!!(instantiate(dval), convert(rdata_type(S), rdata(tangent(d)[k])))
         end

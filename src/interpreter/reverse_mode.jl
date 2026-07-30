@@ -2730,7 +2730,7 @@ Helper function emitted by `make_switch_stmts`.
 __switch_case(id::Int32, predecessor_id::Int32) = !(id === predecessor_id)
 
 """
-    DynamicDerivedRule(interp::MooncakeInterpreter, debug_mode::Bool)
+    DynamicDerivedRule(debug_mode::Bool, world::UInt)
 
 For internal use only.
 
@@ -2745,9 +2745,7 @@ struct DynamicDerivedRule{V}
     world::UInt
 end
 
-function DynamicDerivedRule(
-    debug_mode::Bool, world::UInt=get_interpreter(ReverseMode).world
-)
+function DynamicDerivedRule(debug_mode::Bool, world::UInt)
     return DynamicDerivedRule(Dict{Any,Any}(), debug_mode, world)
 end
 
@@ -2775,7 +2773,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 end
 
 """
-    LazyDerivedRule(interp, mi::Core.MethodInstance, debug_mode::Bool)
+    LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
 
 For internal use only.
 
@@ -2841,11 +2839,7 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     mi::Core.MethodInstance
     world::UInt
     rule::Trule
-    function LazyDerivedRule(
-        mi::Core.MethodInstance,
-        debug_mode::Bool,
-        world::UInt=get_interpreter(ReverseMode).world,
-    )
+    function LazyDerivedRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
         interp = get_interpreter(ReverseMode, world)
         return new{mi.specTypes,rule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
     end

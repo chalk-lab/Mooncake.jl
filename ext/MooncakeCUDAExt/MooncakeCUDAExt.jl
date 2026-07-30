@@ -1443,12 +1443,12 @@ _unwrap_cat_dim(::Val{N}) where {N} = N
 _unwrap_cat_dim(d::Tuple{Vararg{Integer}}) = d
 # `Base.dims2cat` takes any iterable, so `cat(A, B; dims=1:2)` and `dims=[1, 2]` are valid
 # calls the primal and the frule both accept; normalise to the Tuple the pullback needs.
-_unwrap_cat_dim(d::Union{AbstractRange{<:Integer},AbstractVector{<:Integer}}) = Tuple(d)
+_unwrap_cat_dim(d::AbstractVector{<:Integer}) = Tuple(d)
 function _unwrap_cat_dim(d)
     return throw(
         ArgumentError(
-            "Mooncake: cat requires dims to be an Integer, Val{N}, or an iterable of " *
-            "Integers; got dims=$(d).",
+            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple or vector " *
+            "of Integers; got dims=$(d).",
         ),
     )
 end

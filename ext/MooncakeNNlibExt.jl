@@ -436,7 +436,8 @@ function Mooncake.frule!!(
         ArgumentError(
             "forward mode over `NNlib.gather` is not supported for GPU arrays: " *
             "differentiating the traced kernel launch crashes the process. Reverse mode " *
-            "works for an unwrapped GPU array; on the CPU, so does forward mode.",
+            "has a rule for this signature and does work; on the CPU, so does forward " *
+            "mode.",
         ),
     )
 end

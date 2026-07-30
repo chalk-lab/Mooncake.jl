@@ -475,7 +475,7 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
         @benchmark Mooncake.value_and_gradient!!($rule, $f, $(Ref(0.0))[])
 
         # 660 -- ensure that the correct signature is used to construct DynamicDerivedRules
-        rule = Mooncake.DynamicDerivedRule(false)
+        rule = Mooncake.DynamicDerivedRule(false, Base.get_world_counter())
         args = (zero_fcodual(identity), zero_fcodual((v=S2SGlobals.MakeAUnionAll,)))
         @test rule(args...) isa Tuple{CoDual,Any}
     end
