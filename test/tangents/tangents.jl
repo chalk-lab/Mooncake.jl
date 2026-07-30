@@ -391,6 +391,21 @@ using DispatchDoctor: allow_unstable
             Mooncake.FriendlyTangentCache{Mooncake.AsRaw}
     end
 
+    # Adjoint and Transpose relabel their parent's entries without loss, so the friendly
+    # gradient keeps the wrapper rather than falling back to the raw Tangent (#1250).
+    @testset "$W friendly gradient keeps the wrapper (#1250)" for W in (Adjoint, Transpose)
+        x = W([1.0 2.0; 3.0 4.0; 5.0 6.0])
+        tx_parent = [0.5 1.5; 2.5 3.5; 4.5 5.5]
+        tx = Mooncake.build_tangent(typeof(x), tx_parent)
+        @test Mooncake.friendly_tangent_cache(x) isa
+            Mooncake.FriendlyTangentCache{Mooncake.AsPrimal}
+        g = Mooncake.tangent_to_friendly!!(x, tx)
+        @test g isa W
+        @test g == W(tx_parent)
+        # AsPrimal copies the primal into its buffer, so the gradient cannot alias the primal.
+        @test parent(g) !== parent(x)
+    end
+
     @testset "friendly_tangent_cache Transpose{Int} returns AsRaw (#1149)" begin
         A = transpose([1, 2])
         @test Mooncake.friendly_tangent_cache(A) isa

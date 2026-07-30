@@ -18,6 +18,23 @@
 # tangent accumulation), and the non-stored triangle is zero-initialised. copyto! copies
 # the full data matrix (including complex entries) to dest, which is a plain Matrix{T}.
 
+# Adjoint and Transpose lose nothing — each entry is one parent entry, relabelled — so AsPrimal
+# can rebuild the wrapper around the parent's gradient, giving an `AbstractMatrix` of `size(x)`
+# rather than a raw `Tangent`. Reconstruction recurses, so `Adjoint(Symmetric(A))` works too.
+#
+# The conjugation in `Adjoint(dparent)` is right: Mooncake cotangents are real gradients
+# (∂L/∂re + i ∂L/∂im) and x[i, j] == conj(parent[j, i]), so d/dx[i, j] == conj(dparent[j, i]).
+#
+# Test the parent's eltype, not `eltype(x)`, which is `Union{}` for e.g. `Matrix{Symbol}`. A
+# non-differentiable one stays AsRaw; AsPrimal would return primal entries as a gradient.
+function Mooncake.friendly_tangent_cache(
+    x::Union{LinearAlgebra.Adjoint,LinearAlgebra.Transpose}
+)
+    tangent_type(eltype(parent(x))) == NoTangent &&
+        return FriendlyTangentCache{AsRaw}(nothing)
+    return FriendlyTangentCache{AsPrimal}(_copy_output(x))
+end
+
 function Mooncake.friendly_tangent_cache(x::LinearAlgebra.Symmetric{T}) where {T}
     FriendlyTangentCache{AsCustomised}(Matrix{T}(undef, size(x)...))
 end
