@@ -212,6 +212,12 @@ using Mooncake.Nfwd
                     (cosh, sinh),
                 ],
             ),
+            (
+                # Saturated: `1 - tanh(x)^2` returns exactly 0 out here, since `tanh(x)` has
+                # rounded to `1.0`, so the reference has to come from wider precision.
+                20.0,
+                [(tanh, x -> Float64(1 - tanh(big(x))^2))],
+            ),
         ]
             for (f, df) in fns
                 d = _d(v, 1.0)
