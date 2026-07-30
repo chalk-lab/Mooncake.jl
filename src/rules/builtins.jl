@@ -250,9 +250,8 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
-    # Tangent bookkeeping uses :monotonic throughout: the primal ordering may be valid
-    # for loads only (e.g. :acquire), so reusing it for the pullback's store would
-    # throw a ConcurrencyViolationError. Only the primal load keeps the user's ordering.
+    # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
+    # throw ConcurrencyViolationError if reused for the pullback's store.
     a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
@@ -276,10 +275,8 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    # Bookkeeping loads/stores use :monotonic throughout: the primal ordering may be
-    # valid for stores only (e.g. :release), so reusing it for the save/restore loads
-    # would throw a ConcurrencyViolationError. Only the primal store keeps the user's
-    # ordering.
+    # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
+    # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
     old_tangent = atomic_pointerref(tangent(p), :monotonic)
     dp = tangent(p)

@@ -831,9 +831,8 @@ end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cosh(a.value), _pt_scale(a.partials, sinh(a.value)))
 end
-# `4u / (1 + u)^2` with `u = exp(-2|x|)`: `1 - tanh(x)^2` returns exactly `0` once `tanh(x)`
-# rounds to `1.0`, while the true derivative is still normal (Float64 `|x| ≳ 19.5`, Float32
-# `≳ 9`).
+# `1 - tanh(x)^2` flushes to exactly `0` once `tanh(x)` rounds to `1.0`, while the true
+# derivative is still normal (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
     u = exp(-2 * abs(a.value))
     return NDual{T,N}(tanh(a.value), _pt_scale(a.partials, 4u / (one(T) + u)^2))
@@ -1563,9 +1562,8 @@ for _WrapType in (:Symmetric, :Hermitian)
         # the ambiguity with LinearAlgebra's *(AbstractMatrix, AbstractMatrix) when B
         # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
         # a more specific method that wins on both).
-        # `Matrix`, not `AbstractMatrix`: these are a direct-call surface for hand-built
-        # `NDual` matrices, and a wider bound claimed device- and sparse-backed parents that
-        # they cannot serve, colliding with cuSPARSE's and cuSOLVER's methods.
+        # `Matrix`, not `AbstractMatrix`: a wider bound claimed device- and sparse-backed
+        # parents these methods cannot serve, colliding with cuSPARSE and cuSOLVER.
         function Base.:*(
             A::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
             B::Union{StridedVector,StridedMatrix},
