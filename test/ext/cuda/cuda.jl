@@ -1083,13 +1083,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         @testset "nested GPU broadcast gradients keep tree alignment" begin
             x = CuArray(randn(rng, 4))
             y = CuArray(randn(rng, 4))
-            cache = prepare_gradient_cache(
-                _bcast_nested_sin_add,
-                x,
-                y;
-                config=Mooncake.Config(; friendly_tangents=true),
+            rule = Mooncake.build_rrule(_bcast_nested_sin_add, x, y)
+            val, grads = value_and_gradient!!(
+                rule, _bcast_nested_sin_add, x, y; friendly_tangents=true
             )
-            val, grads = value_and_gradient!!(cache, _bcast_nested_sin_add, x, y)
             @test val ≈ sum(Array(sin.(x .+ y)))
             expected = Array(cos.(x .+ y))
             @test Array(grads[2]) ≈ expected
@@ -1098,12 +1095,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
         @testset "differentiable nested float casts still propagate gradients" begin
             x = CuArray(randn(rng, Float32, 4))
-            cache = prepare_gradient_cache(
-                _bcast_nested_float_cast_sin,
-                x;
-                config=Mooncake.Config(; friendly_tangents=true),
+            rule = Mooncake.build_rrule(_bcast_nested_float_cast_sin, x)
+            val, grads = value_and_gradient!!(
+                rule, _bcast_nested_float_cast_sin, x; friendly_tangents=true
             )
-            val, grads = value_and_gradient!!(cache, _bcast_nested_float_cast_sin, x)
             expected_val = sum(sin.(Float64.(Array(x))))
             expected_grad = Float32.(cos.(Float64.(Array(x))))
             @test val ≈ expected_val
@@ -1115,14 +1110,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             c = 2.5
             b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
             mask = Float64.(Array(b) .> 0)
-            cache = prepare_gradient_cache(
-                _bcast_zero_dof_nested,
-                x,
-                c,
-                b;
-                config=Mooncake.Config(; friendly_tangents=true),
+            rule = Mooncake.build_rrule(_bcast_zero_dof_nested, x, c, b)
+            val, grads = value_and_gradient!!(
+                rule, _bcast_zero_dof_nested, x, c, b; friendly_tangents=true
             )
-            val, grads = value_and_gradient!!(cache, _bcast_zero_dof_nested, x, c, b)
             @test val ≈ sum(Array(x) .+ c .* mask)
             @test Array(grads[2]) ≈ ones(length(mask))
             @test grads[3] ≈ sum(mask)
@@ -1135,8 +1126,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # from flat_pargs, crashing the reverse pass with UndefRefError.
             x = CuArray(randn(rng, 4))
             s = 0.75
-            cache = prepare_gradient_cache(_bcast_all_scalar_leaf, x, s)
-            val, grads = value_and_gradient!!(cache, _bcast_all_scalar_leaf, x, s)
+            rule = Mooncake.build_rrule(_bcast_all_scalar_leaf, x, s)
+            val, grads = value_and_gradient!!(rule, _bcast_all_scalar_leaf, x, s)
             @test val ≈ sum(Array(x) .* (s + 1.0))
             @test Array(grads[2]) ≈ fill(s + 1.0, 4)
             @test grads[3] ≈ sum(Array(x))
@@ -1148,16 +1139,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             c = -1.25
             b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
             mask = Float64.(Array(b) .> 0)
-            cache = prepare_gradient_cache(
-                _inplace_zero_dof_nested!,
-                dest,
-                x,
-                c,
-                b;
-                config=Mooncake.Config(; friendly_tangents=true),
-            )
+            rule = Mooncake.build_rrule(_inplace_zero_dof_nested!, dest, x, c, b)
             val, grads = value_and_gradient!!(
-                cache, _inplace_zero_dof_nested!, dest, x, c, b
+                rule, _inplace_zero_dof_nested!, dest, x, c, b; friendly_tangents=true
             )
             @test val ≈ sum(Array(x) .+ c .* mask)
             @test Array(grads[3]) ≈ ones(length(mask))
@@ -1178,7 +1162,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 x = _rand(rng, Float32, 4)
                 y = CuArray(randn(rng, ComplexF32, 4))
                 @test_throws r"GPU broadcast over arrays with mixed element types" value_and_gradient!!(
-                    prepare_gradient_cache(f, x, y), f, x, y
+                    Mooncake.build_rrule(f, x, y), f, x, y
                 )
             end
 
@@ -1187,14 +1171,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 f = x -> x[1]
                 x = _rand(rng, Float32, 4)
                 @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    prepare_gradient_cache(f, x), f, x
+                    Mooncake.build_rrule(f, x), f, x
                 )
             end
             @testset "scalar setindex! CuArray not differentiable" begin
                 f = x -> (x[1]=0.0f0; sum(x))
                 x = _rand(rng, Float32, 4)
                 @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    prepare_gradient_cache(f, x), f, x
+                    Mooncake.build_rrule(f, x), f, x
                 )
             end
 
@@ -1203,7 +1187,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 f = x -> sum(accumulate(*, x))
                 x = _rand(rng, Float32, 4)
                 @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
-                    prepare_gradient_cache(f, x), f, x
+                    Mooncake.build_rrule(f, x), f, x
                 )
             end
 
@@ -1215,7 +1199,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 x = _host_rand(rng, ComplexF64, 3, 3)
                 cy = _rand(rng, ComplexF64, 3, 3)
                 @test_throws r"GPU gemv with mismatched element types" value_and_gradient!!(
-                    prepare_gradient_cache(f, x, cy), f, x, cy
+                    Mooncake.build_rrule(f, x, cy), f, x, cy
                 )
             end
 
@@ -1238,19 +1222,19 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 wc = Base.get_world_counter()
 
                 @test_throws r"mix of GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_vcat_cu_sum, gpu1, cpu_vec),
+                    Mooncake.build_rrule(_vcat_cu_sum, gpu1, cpu_vec),
                     _vcat_cu_sum,
                     gpu1,
                     cpu_vec,
                 )
                 @test_throws r"mix of GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_hcat_cu_sum, gpu2, cpu_mat),
+                    Mooncake.build_rrule(_hcat_cu_sum, gpu2, cpu_mat),
                     _hcat_cu_sum,
                     gpu2,
                     cpu_mat,
                 )
                 @test_throws r"mix of GPU" value_and_gradient!!(
-                    prepare_gradient_cache(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
+                    Mooncake.build_rrule(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
                 )
 
                 @test Mooncake.is_primitive(
@@ -1362,9 +1346,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _splat_cat_sum(xs) = sum(cat(xs...; dims=1))
                 xs = [_host_rand(rng, 3) for _ in 1:3]
                 for f in (_splat_vcat_sum, _splat_hcat_sum, _splat_cat_sum)
-                    val, (_, dxs) = value_and_gradient!!(
-                        prepare_gradient_cache(f, xs), f, xs
-                    )
+                    val, (_, dxs) = value_and_gradient!!(Mooncake.build_rrule(f, xs), f, xs)
                     @test val ≈ f(xs)
                     @test length(dxs) == length(xs)
                 end
@@ -1375,7 +1357,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 x16 = _rand(rng, Float16, 4)
                 y16 = _rand(rng, Float16, 4)
                 val, (_, dx, dy) = value_and_gradient!!(
-                    prepare_gradient_cache(_vcat_cu_sum, x16, y16), _vcat_cu_sum, x16, y16
+                    Mooncake.build_rrule(_vcat_cu_sum, x16, y16), _vcat_cu_sum, x16, y16
                 )
                 @test val ≈ sum(vcat(x16, y16))
                 @test all(==(one(Float16)), Array(dx))
@@ -1390,10 +1372,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 y16_mat = _rand(rng, Float16, 2, 3)
                 f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
                 @test_throws r"mix of GPU" value_and_gradient!!(
-                    prepare_gradient_cache(f_view, x16_mat, y16_mat),
-                    f_view,
-                    x16_mat,
-                    y16_mat,
+                    Mooncake.build_rrule(f_view, x16_mat, y16_mat), f_view, x16_mat, y16_mat
                 )
             end
 
