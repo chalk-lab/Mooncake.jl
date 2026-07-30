@@ -20,7 +20,9 @@ import Mooncake:
     tangent,
     arrayify,
     frule!!,
-    Dual
+    Dual,
+    ForwardMode,
+    ReverseMode
 
 @inline function _nf_logsumexp_accum(
     grad::NTuple{N,T}, w::T, partials::NTuple{N,T}
@@ -100,10 +102,10 @@ _maximum(x, dims, init) = maximum(x; dims, init)
 )
 
 # logsoftmax rrules
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsoftmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -154,8 +156,10 @@ function Mooncake.rrule!!(
 end
 
 # softmax rrules
-@is_primitive MinimalCtx Tuple{typeof(softmax),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(softmax),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(softmax),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -202,8 +206,10 @@ function Mooncake.rrule!!(
 end
 
 # logsumexp rrules
-@is_primitive MinimalCtx Tuple{typeof(logsumexp),SupportedArray{T,N}} where {T<:IEEEFloat,N}
-@is_primitive MinimalCtx Tuple{
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(logsumexp),SupportedArray{T,N}
+} where {T<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),SupportedArray{T,N}
 } where {T<:IEEEFloat,N}
 
@@ -277,10 +283,37 @@ end
 # accumulating straight into `src`'s fdata, avoiding its intermediate allocation.
 @is_primitive(
     MinimalCtx,
+    ReverseMode,
     Tuple{
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
+# Tracing `gather`'s primal is what we want on CPU arrays, but a GPU kernel launch does not
+# survive the forward transform: the process dies with signal 4, no Julia exception to
+# catch. Declaring the GPU signature a forward primitive and raising keeps it an ordinary
+# error. Reverse mode is untouched.
+@is_primitive(
+    MinimalCtx,
+    ForwardMode,
+    Tuple{
+        typeof(NNlib.gather),AbstractGPUArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
+    } where {P<:IEEEFloat,N,M},
+)
+function Mooncake.frule!!(
+    ::Dual{typeof(NNlib.gather)},
+    ::Dual{<:AbstractGPUArray{P,N}},
+    ::Dual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    throw(
+        ArgumentError(
+            "forward mode over `NNlib.gather` is not supported for GPU arrays: " *
+            "differentiating the traced kernel launch crashes the process. Reverse mode " *
+            "has a rule for this signature and does work; on the CPU, so does forward " *
+            "mode.",
+        ),
+    )
+end
+
 function Mooncake.rrule!!(
     ::CoDual{typeof(NNlib.gather)},
     src::CoDual{<:SupportedArray{P,N}},

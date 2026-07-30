@@ -556,3 +556,43 @@ end
     )
     @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
+
+# Each rule below exists only in reverse mode, so its `@is_primitive` says so; declared for
+# both, forward mode finds a primitive with no `frule!!` and raises instead of tracing. CPU
+# arrays only: on a GPU array the traced primal reaches a kernel launch, a foreigncall, and
+# raises `MissingForeigncallRuleError`. `gather` took the process down, hence its own rule
+# below.
+@testset "forward mode traces reverse-only rules" begin
+    x = randn(StableRNG(123), 3)
+    for f in (
+        # `softmax` is returned whole rather than summed: its outputs sum to 1 identically,
+        # so `1ᵀJ = 0` and a summed case is blind to every error inside that kernel.
+        # `logsoftmax` does not sum to a constant, so summing it stays a real check.
+        x -> softmax(x),
+        x -> softmax(x; dims=1),
+        x -> sum(logsoftmax(x)),
+        x -> sum(logsoftmax(x; dims=1)),
+        x -> logsumexp(x),
+        x -> sum(logsumexp(x; dims=1)),
+        x -> sum(NNlib.gather(x, [1, 3])),
+    )
+        test_rule(StableRNG(123), f, x; mode=Mooncake.ForwardMode, is_primitive=false)
+    end
+end
+
+# `gather`'s GPU kernel launch does not survive the forward transform — an illegal
+# instruction no test can catch — so its rule raises instead, which this pins where a device
+# is available.
+if cuda
+    @testset "forward mode over gather on a GPU array raises" begin
+        gather_sum(z) = sum(NNlib.gather(z, [1, 3]))
+        xg = cu(randn(StableRNG(123), Float32, 4))
+        rule = Mooncake.build_frule(gather_sum, xg)
+        @test_throws ArgumentError rule(
+            Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
+        )
+        cache = Mooncake.prepare_gradient_cache(gather_sum, xg)
+        @test Array(Mooncake.value_and_gradient!!(cache, gather_sum, xg)[2][2]) ==
+            Float32[1, 0, 1, 0]
+    end
+end
