@@ -216,33 +216,26 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
-        _permutedims_sum(perm) = x -> sum(permutedims(x, perm))                                   # sum after permute → scalar output
+        _permutedims_sum(perm) = x -> sum(permutedims(x, perm))
         # Wrappers for Statistics.varm GPU rule tests.
         _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
         _varm_sum_d2(x, m) = sum(varm(x, m; dims=2, corrected=true))
-        # no-dims path: varm(x, m_scalar; corrected); reused for real, complex, and
-        # mixed real/complex scalar means.
+        # no-dims path; reused for real, complex, and mixed real/complex scalar means.
         _varm_nodims_scalar(x, m) = varm(x, m; corrected=true)
-        # Tuple dims: what GroupNorm/InstanceNorm/BatchNorm actually pass (ntuple(static,
-        # N-1)), not covered by the single-Int tests above.
+        # Tuple dims: what GroupNorm/InstanceNorm/BatchNorm pass (ntuple(static, N-1)).
         _varm_sum_dtuple(x, m) = sum(varm(x, m; dims=(1, 2), corrected=false))
         # UnitRange dims: default LayerNorm(shape) passes `1:(N-M)` here, not a Tuple.
         _varm_sum_drange(x, m) = sum(varm(x, m; dims=1:2, corrected=false))
-        # dims=: with an array m (not scalar, unlike _varm_nodims_scalar above): the only
-        # test that hits the array-mean rule's own Colon branch.
+        # Array m with `dims=:`: the only test hitting the array-mean rule's Colon branch.
         _varm_sum_dcolon_arraymean(x, m) = sum(varm(x, m; dims=:, corrected=false))
-        # Repeated dims (dims=(1,1), which a careless ntuple could produce e.g. in
-        # GroupNorm): denominator must count dim 1 once, not twice.
+        # Repeated dims (a careless ntuple could produce them): count dim 1 once, not twice.
         _varm_sum_ddup(x, m) = sum(varm(x, m; dims=(1, 1), corrected=false))
-        # Empty dims collection: the primal reduces over nothing and returns the full
-        # array; the rule's denominator must mirror _mean_denom's `init=1`.
+        # Empty dims: the rule's denominator must mirror _mean_denom's `init=1`.
         _varm_sum_dempty(x, m) = sum(varm(x, m; dims=(), corrected=false))
-        # Bare 2-arg spelling (no keyword syntax at all): bypasses Core.kwcall entirely,
-        # exercising the dedicated bare-call primitive rather than the kwcall one above.
+        # Bare 2-arg spelling: bypasses Core.kwcall, hitting the dedicated bare-call rule.
         _varm_bare_nodims_scalar(x, m) = varm(x, m)
-        # Kwarg sets the real function rejects must throw identically under AD (the
-        # rules call the real method for their primal): array-m without the required
-        # dims kwarg, and scalar-m with a dims kwarg its method doesn't have.
+        # Kwarg sets the real function rejects must throw identically under AD (the rules
+        # call the real method for their primal).
         _varm_arraymean_missing_dims(x, m) = varm(x, m; corrected=false)
         _varm_scalarmean_stray_dims(x, m) = varm(x, m; dims=1)
         # Wrappers for Statistics.mean GPU rule tests.
@@ -695,8 +688,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float64, 3, 2),
                 _rand(rng, Float64, 5, 4),
             ),
-            # cat on CuArrays (Tuple dims, N-arg: block-diagonal with 3 arrays, checking
-            # the running-offsets tuple in _cu_concat_pb! beyond the 2-arg case)
+            # Tuple dims, N-arg: exercises the running-offsets tuple in _cu_concat_pb!.
             (
                 false,
                 :none,
@@ -706,8 +698,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float32, 2, 5),
                 _rand(rng, Float32, 3, 2),
             ),
-            # vcat/hcat/cat/permutedims on ComplexF32/ComplexF64 CuArrays (CuMaybeWrappedArray
-            # includes complex element types via CuFloatOrComplex).
+            # Complex CuArrays: CuMaybeWrappedArray covers them via CuFloatOrComplex.
             (
                 false,
                 :none,
@@ -732,9 +723,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 3, 2),
                 _rand(rng, ComplexF64, 5, 4),
             ),
-            # vcat/hcat/cat on Adjoint/Transpose/SubArray wrapping a CuArray, and on
-            # mixes of these with each other and with bare CuArrays. Each argument is
-            # canonicalised independently via `arrayify`, so any combination works.
+            # Wrapped and mixed arguments: each is canonicalised independently via
+            # `arrayify`, so any combination works.
             (
                 false,
                 :none,
@@ -767,9 +757,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 transpose(_rand(rng, Float32, 3, 4)),
                 view(_rand(rng, Float32, 4, 2), :, :),
             ),
-            # N-arg cat/hcat mixing three different wrapper types (plus a bare CuArray
-            # for cat) in one call. Exercises Vararg{CuMaybeWrappedArray} matching each
-            # argument independently rather than requiring a uniform type.
+            # N-arg: Vararg{CuMaybeWrappedArray} matches each argument independently
+            # rather than requiring a uniform type.
             (
                 false,
                 :none,
@@ -1131,10 +1120,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
         @testset "all-scalar nested broadcast leaves keep scalar gradients" begin
             # Regression for the differentiable-scalar guard in _premat_nondiff_args:
-            # (s .+ 1.0) is a nested Broadcasted whose fdata is NoFData (scalars carry
-            # their gradient in rdata), but it has one differentiable DOF. Collapsing
-            # it to a constant dropped s from flat_pargs, crashing the reverse pass
-            # with UndefRefError; d/ds sum(x .* (s .+ 1.0)) = sum(x).
+            # (s .+ 1.0) is a nested Broadcasted with NoFData fdata (scalar gradients live
+            # in rdata) but one differentiable DOF; collapsing it to a constant dropped s
+            # from flat_pargs, crashing the reverse pass with UndefRefError.
             x = CuArray(randn(rng, 4))
             s = 0.75
             cache = prepare_gradient_cache(_bcast_all_scalar_leaf, x, s)
@@ -1356,10 +1344,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
 
             @testset "regression: pure-CPU splatted vcat/hcat/cat with CUDA loaded" begin
-                # Regression for a review finding: `_is_primitive` used to be
-                # `@generated`, which crashed/misclassified splatted calls (unknown
-                # arity -> `Vararg` type) as needing this guard even with no GPU
-                # arrays involved; fixed calls here need a fixed arity, so they don't.
+                # Regression: `_is_primitive` used to be `@generated`, which crashed or
+                # misclassified splatted calls (unknown arity -> `Vararg` type) as needing
+                # the guard even with no GPU arrays involved.
                 _splat_vcat_sum(xs) = sum(vcat(xs...))
                 _splat_hcat_sum(xs) = sum(hcat(xs...))
                 _splat_cat_sum(xs) = sum(cat(xs...; dims=1))
@@ -1374,8 +1361,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
 
             @testset "Float16 support" begin
-                # Bare Float16 CuArrays are supported; checks the analytic gradient
-                # (ones) rather than finite differences, unreliable at this precision.
+                # Analytic gradient (ones), not finite differences: unreliable at Float16.
                 x16 = _rand(rng, Float16, 4)
                 y16 = _rand(rng, Float16, 4)
                 val, (_, dx, dy) = value_and_gradient!!(
@@ -1385,12 +1371,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test all(==(one(Float16)), Array(dx))
                 @test all(==(one(Float16)), Array(dy))
 
-                # Float16 SubArrays are excluded from CuMaybeWrappedArray (Finding 3). A
-                # strided view stays a genuine SubArray (unlike the contiguous 1-D view
-                # above, which CUDA.jl collapses to a plain CuArray), and since it isn't
-                # a primitive here, the N-arg mixed-device guard doesn't recognise it as
-                # GPU either, so this errors there with "mix of GPU" instead of falling
-                # through to the interpreter's untraceable `cufunction` try/finally.
+                # Float16 SubArrays are excluded from CuMaybeWrappedArray. A strided view
+                # stays a genuine SubArray (unlike the contiguous 1-D view above, which
+                # CUDA.jl collapses to a plain CuArray) and the N-arg mixed-device guard
+                # does not count it as GPU either, so it errors with "mix of GPU" rather
+                # than reaching the interpreter's untraceable `cufunction` try/finally.
                 x16_mat = _rand(rng, Float16, 4, 3)
                 y16_mat = _rand(rng, Float16, 2, 3)
                 f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
@@ -1403,17 +1388,15 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
-                # dims must be an Integer, Val{N}, or Tuple{Vararg{Integer}} — anything
-                # else should fail loudly rather than silently misbehave.
+                # dims must be an Integer, Val{N}, or Tuple{Vararg{Integer}}.
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim(1.0)
                 @test_throws ArgumentError _MooncakeCUDAExt._unwrap_cat_dim((1, 2.0))
             end
         end
 
         @testset "Statistics.varm GPU rule" begin
-            # varm(x, m; dims, corrected) : used by LayerNorm / GroupNorm / InstanceNorm
-            # via LuxLib.Impl.mean_var → var → varm. Test both frule!! and rrule!! through
-            # wrapper functions; is_primitive=false because the wrapper is not a primitive.
+            # varm(x, m; dims, corrected): used by LayerNorm / GroupNorm / InstanceNorm via
+            # LuxLib.Impl.mean_var → var → varm. is_primitive=false: the wrapper is not one.
             @testset "dims=1, corrected=false (Float32)" begin
                 x = _rand(rng, Float32, 4, 3)
                 m = _rand(rng, Float32, 1, 3)
@@ -1549,18 +1532,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     )
                 end
             end
-            # NOTE: no complex or mixed real/complex *array*-mean tests here (unlike
-            # scalar-mean above). GPUArrays' accelerated varm requires Real eltypes on
-            # both arguments; anything else falls through to a generic scalar-indexing
-            # path that can't run on GPU at all, so there's no ground truth to test
-            # against. The array-m rules are restricted to real eltypes to match — a
-            # wider signature would make AD succeed where the primal throws — and the
-            # norm layers never produce these combinations anyway (x and its own mean
-            # always share a real eltype).
+            # No complex/mixed array-mean tests: GPUArrays' accelerated varm needs Real
+            # eltypes on both arguments, and anything else falls to a generic
+            # scalar-indexing path that cannot run on GPU, so there is no ground truth.
+            # The array-m rules are restricted to match rather than succeed where the
+            # primal throws; the norm layers only ever pass x and its own real mean.
             @testset "m broadcast against x: full-shape m, dims=1 (Float32)" begin
-                # Regression: the primal broadcasts m against x, so m need not have
-                # the reduced shape; m's gradient must reduce the elementwise gradient
-                # over exactly the dims m is broadcast along (none, here) rather than
+                # Regression: the primal broadcasts m against x, so m's gradient must
+                # reduce over exactly the dims m is broadcast along (none, here) rather than
                 # over `dims`, which used to column-sum it.
                 x = _rand(rng, Float32, 4, 3)
                 m = _rand(rng, Float32, 4, 3)
@@ -1578,9 +1557,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
             @testset "x broadcast against m: (1,3) x, full m, dims=1 (Float32)" begin
-                # Regression: x can be the broadcast-expanded operand too, not just m;
-                # the pullback must unbroadcast the elementwise gradient to BOTH
-                # operand shapes (dx used to throw DimensionMismatch here).
+                # Regression: x can be the broadcast-expanded operand too, so the pullback
+                # must unbroadcast to BOTH shapes (dx used to throw DimensionMismatch here).
                 x = _rand(rng, Float32, 1, 3)
                 m = _rand(rng, Float32, 4, 3)
                 test_rule(
@@ -1626,13 +1604,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
-                # Regression: an empty input must give NaN, matching
-                # Statistics._varm(A, m, corrected, ::Colon) (not 0/(0-1) = -0.0). This
-                # is Statistics.jl's generic method (scalar m isn't overridden by
-                # GPUArrays), the one where the NaN guard lives. NaN is a convention
-                # override, not a true singularity (x is empty, so the unguarded value
-                # is a constant 0 regardless of m), so the gradient must be 0, not NaN;
-                # checked explicitly since frule!! and rrule!! must agree here too.
+                # Regression: an empty input must give NaN, matching the guard in
+                # Statistics._varm(A, m, corrected, ::Colon) — scalar m is not overridden
+                # by GPUArrays — not 0/(0-1) = -0.0. The unguarded value is a constant 0
+                # regardless of m, so the gradient must be 0, not NaN.
                 x = CuArray(Float32[])
                 m = 0.0f0
                 @test isnan(_varm_nodims_scalar(x, m))
@@ -1645,10 +1620,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test dm == 0.0f0
             end
             @testset "empty array, array mean, dims=: (Float32)" begin
-                # Regression: unlike scalar-mean above, GPUArrays' own
-                # `varm(A::AbstractGPUArray, M::AbstractArray; dims, corrected)` has no
-                # empty-input guard and gives 0, not NaN; the scalar-mean NaN guard
-                # above must not be applied here.
+                # Regression: GPUArrays' array-m `varm` has no empty-input guard and gives
+                # 0, not NaN; the scalar-mean NaN guard above must not be applied here.
                 x = CuArray(Float32[])
                 m = CuArray(Float32[])
                 @test _varm_sum_dcolon_arraymean(x, m) == 0.0f0
@@ -1659,9 +1632,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test out == 0.0f0
             end
             @testset "empty x, non-empty m, dims=:, corrected=false (Float32)" begin
-                # Regression: coeff = 2/(0-0) = Inf; multiplying it into a pre-reduced
-                # sum_diff gave Inf * 0 = NaN in dm. The elementwise gradient is formed
-                # first now (an empty array), so its unbroadcast reduction is a clean 0.
+                # Regression: coeff = 2/(0-0) = Inf times a pre-reduced sum_diff gave
+                # Inf * 0 = NaN in dm; forming the elementwise gradient first reduces to 0.
                 x = CuArray(Float32[])
                 m = CuArray(Float32[0.0f0])
                 rule = Mooncake.build_rrule(_varm_sum_dcolon_arraymean, x, m)
@@ -1672,11 +1644,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test Array(dm) == [0.0f0]
             end
             @testset "scalar m must match x's underlying precision" begin
-                # Mixed precision (Float32 data, Float64 mean) makes Statistics'
-                # scalar-m varm infer Union{Float32,Float64} (its n==0 branch types
-                # σ² off x alone, while its main branch promotes with m), which
-                # Mooncake's rule builder cannot handle (zero(::Type{Union{...}}));
-                # such combinations are deliberately not claimed as primitives.
+                # Mixed precision makes Statistics' scalar-m varm infer
+                # Union{Float32,Float64} (its n==0 branch types σ² off x alone, its main
+                # branch promotes with m), which Mooncake's rule builder cannot handle
+                # (zero(::Type{Union{...}})).
                 x = _rand(rng, Float32, 4, 3)
                 world = Base.get_world_counter()
                 kwsig = @NamedTuple{corrected::Bool}
@@ -1696,10 +1667,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
             end
             @testset "empty x forward tangent is the zero map" begin
-                # frule!! counterpart of the reverse-mode empty test above: the
-                # primal is a constant NaN at n==0, so the JVP must be 0 — the
-                # divide-after arithmetic would otherwise give 0/0 = NaN, which is
-                # inconsistent with the rrule's zero (empty/zero-rdata) gradient map.
+                # frule!! counterpart of the empty test above: the primal is a constant
+                # NaN at n==0, so the JVP must be 0, not the divide-after 0/0 = NaN.
                 x = CuArray(Float32[])
                 d = Mooncake.frule!!(
                     Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
@@ -1722,10 +1691,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test out == Float16(1)
             end
             @testset "Float16 large n keeps λ finite in gradients" begin
-                # Regression: `one(T) / n` converts n to Float16 first, so for
-                # n > 65504 λ became 1/Inf16 = 0 and every gradient silently
-                # collapsed to zero while the primal (which inverts in Float64 and
-                # then converts, as GPUArrays does) stayed healthy.
+                # Regression: `one(T) / n` converts n to Float16 first, so at n > 65504 λ
+                # became 1/Inf16 = 0 and every gradient collapsed to zero, while the primal
+                # (inverting in Float64 first, as GPUArrays does) stayed healthy.
                 x = CUDA.ones(Float16, 70000)
                 m = CUDA.zeros(Float16, 1)
                 rule = Mooncake.build_rrule(_varm_sum_d1, x, m)
@@ -1745,11 +1713,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test only(Array(Mooncake.tangent(d))) > Float16(1.5)
             end
             @testset "scalar m: Float16 huge n matches the generic primal" begin
-                # Unlike the GPUArrays array-m method above, Statistics' scalar-m
-                # varm divides the sum by the Int denominator in Float16 arithmetic,
-                # so at n > 65504 the denominator promotes to Inf16 and the primal
-                # and its CPU-traced gradient are both exactly 0; the CUDA rule must
-                # not substitute healthier arithmetic on one backend only.
+                # Unlike the GPUArrays array-m method above, Statistics' scalar-m varm
+                # divides by the Int denominator in Float16, so at n > 65504 it promotes
+                # to Inf16 and both primal and CPU-traced gradient are exactly 0; the CUDA
+                # rule must not substitute healthier arithmetic on one backend only.
                 x = CuArray(vcat(ones(Float16, 1), zeros(Float16, 69999)))
                 m = Float16(0)
                 @test _varm_nodims_scalar(x, m) == Float16(0)
@@ -1760,10 +1727,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test out == Float16(0)
                 @test all(iszero, Array(gx))
                 @test iszero(gm)
-                # Pin the frule's divide-after arithmetic too: the residual-weighted
-                # sum is finite (2 · 1 · 0.5 = 1) and the Inf16-promoted denominator
-                # zeroes the quotient, exactly as the CPU-traced JVP; a λ-prescaled
-                # form would give ≈1.4e-5 instead.
+                # Pin the frule's divide-after arithmetic too: the residual-weighted sum
+                # is finite (2 · 1 · 0.5 = 1) and the Inf16-promoted denominator zeroes the
+                # quotient; a λ-prescaled form would give ≈1.4e-5 instead.
                 d = Mooncake.frule!!(
                     Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
                     Mooncake.Dual((; corrected=true), Mooncake.NoTangent()),
@@ -1794,9 +1760,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
 
         @testset "Statistics.mean GPU rule" begin
-            # mean(x; dims) on CuArrays. GPUArrays._mean calls sum(Fix1(*,λ), x; dims)
-            # which Mooncake cannot trace; the rule calls it natively for the value and
-            # hand-rolls only the derivative.
+            # GPUArrays._mean calls sum(Fix1(*,λ), x; dims), which Mooncake cannot trace;
+            # the rule calls it natively for the value and hand-rolls the derivative.
             @testset "dims=1 (Float32)" begin
                 x = _rand(rng, Float32, 4, 3)
                 test_rule(
@@ -1851,8 +1816,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @testset "empty array, dims=: gives NaN (Float32)" begin
                 # Regression: the primal is sum/length = 0/0 = NaN; the rule takes its
                 # value from the real function, so it must agree (a hand-rolled
-                # sum(λ .* x) sums zero terms and gives 0 instead). The gradient is
-                # empty, so there is no tangent to check beyond shape.
+                # sum(λ .* x) sums zero terms and gives 0 instead).
                 x = CuArray(Float32[])
                 @test isnan(_mean_nodims(x))
                 rule = Mooncake.build_rrule(_mean_nodims, x)
@@ -1882,9 +1846,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _, (_, g_colon) = Mooncake.value_and_gradient!!(rule_c, _mean_nodims, x)
                 @test Array(g_colon) == Array(g_bare)
                 @test all(iszero, Array(g_colon))
-                # Pin the frule's divide-after arithmetic too: sum(0.5-tangents) is
-                # finite (35000 < 65504) and / Float16(70000) = / Inf16 gives exactly
-                # 0; a λ-prescaled form would give ≈ 0.5.
+                # Pin the frule's divide-after arithmetic too: sum(0.5-tangents) is finite
+                # (35000) and / Float16(70000) = / Inf16 gives exactly 0; λ-prescaled ≈ 0.5.
                 d = Mooncake.frule!!(
                     Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
                     Mooncake.Dual((; dims=:), Mooncake.NoTangent()),
@@ -1896,8 +1859,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
 
         @testset "Statistics.varm GPU rule (complex)" begin
-            # m::Complex{IEEEFloat} scalar with a complex array: the same-precision
-            # scalar-m rule. σ² = sum(abs2(x-m))/n is always real (Float32).
+            # Complex scalar m of matching precision: σ² = sum(abs2(x-m))/n is always real.
             @testset "no dims, scalar mean (ComplexF32)" begin
                 x = _rand(rng, ComplexF32, 4, 3)
                 m_cx = randn(StableRNG(10), ComplexF32)
@@ -1913,8 +1875,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
 
         @testset "Statistics.mean GPU rule (complex)" begin
-            # mean(x::CuArray{ComplexF32}; dims=:) → ComplexF32 scalar;
-            # mean(x::CuArray{ComplexF32}; dims=1) → CuArray{ComplexF32}.
             @testset "dims=: scalar output (ComplexF32)" begin
                 x = _rand(rng, ComplexF32, 4, 3)
                 test_rule(
