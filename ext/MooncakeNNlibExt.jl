@@ -288,14 +288,10 @@ end
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
-# Scoping the declaration above to reverse mode lets forward mode trace `gather`'s primal,
-# which is what we want for CPU arrays. For GPU arrays the traced kernel launch does not
-# survive the transform: the process dies with `signal 4 (Illegal instruction)` raised from
-# inside the derived rule, with no Julia exception to catch. An unscoped declaration would
-# have given a `MethodError` naming the missing `frule!!`, so tracing trades an informative
-# error for an uncatchable crash. Declaring the GPU signature a forward primitive and
-# raising here keeps it an ordinary error. Reverse mode is untouched and works on GPU
-# arrays.
+# Tracing `gather`'s primal is what we want on CPU arrays, but a GPU kernel launch does not
+# survive the forward transform: the process dies with signal 4, no Julia exception to
+# catch. Declaring the GPU signature a forward primitive and raising keeps it an ordinary
+# error. Reverse mode is untouched.
 @is_primitive(
     MinimalCtx,
     ForwardMode,

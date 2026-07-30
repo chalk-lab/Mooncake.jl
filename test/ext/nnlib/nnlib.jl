@@ -505,19 +505,16 @@ end
     end
 end
 
-# Each rule below exists only in reverse mode, so its `@is_primitive` has to say so;
-# declared for both modes, forward mode finds a primitive with no `frule!!` and raises a
-# `MethodError` instead of tracing the primal. CPU arrays only, and not because the array
-# type is irrelevant: on a GPU array the traced primal reaches a kernel launch, which is a
-# foreigncall with no `frule!!`, so Mooncake raises `MissingForeigncallRuleError` there
-# instead. `gather` was worse still — it took the process down — which is why it has a rule
-# of its own below.
+# Each rule below exists only in reverse mode, so its `@is_primitive` says so; declared for
+# both, forward mode finds a primitive with no `frule!!` and raises instead of tracing. CPU
+# arrays only: on a GPU array the traced primal reaches a kernel launch, a foreigncall, and
+# raises `MissingForeigncallRuleError`. `gather` took the process down, hence its own rule
+# below.
 @testset "forward mode traces reverse-only rules" begin
     x = randn(StableRNG(123), 3)
     for f in (
         # `softmax` is returned whole rather than summed: its outputs sum to 1 identically,
-        # so `1ᵀJ = 0` and a summed case is blind to every error inside that kernel — a JVP
-        # off by a factor or a sign passes it, and both fail once the array is compared.
+        # so `1ᵀJ = 0` and a summed case is blind to every error inside that kernel.
         # `logsoftmax` does not sum to a constant, so summing it stays a real check.
         x -> softmax(x),
         x -> softmax(x; dims=1),
@@ -531,11 +528,9 @@ end
     end
 end
 
-# Tracing works for the CPU arrays above, but `gather`'s GPU kernel launch does not survive
-# the forward transform — it took the process down with an illegal instruction, which no
-# test
-# can catch. The rule for that signature raises instead, which this pins where a device is
-# available. Reverse mode over the same call keeps working.
+# `gather`'s GPU kernel launch does not survive the forward transform — an illegal
+# instruction no test can catch — so its rule raises instead, which this pins where a device
+# is available.
 if cuda
     @testset "forward mode over gather on a GPU array raises" begin
         gather_sum(z) = sum(NNlib.gather(z, [1, 3]))
