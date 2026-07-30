@@ -100,9 +100,8 @@ _maximum(x, dims, init) = maximum(x; dims, init)
     } where {P<:IEEEFloat},
 )
 # At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
-# from `rng` regardless: a different program from the primal. Checked, not assumed, because
-# if that fast path ever allocates, returning the input would alias where the primal does
-# not.
+# from `rng` regardless. The `===` is checked, not assumed, because if that fast path ever
+# allocates, returning the input would alias where the primal does not.
 @is_primitive MinimalCtx ReverseMode Tuple{
     typeof(dropout),AbstractRNG,SupportedArray{P,N},P
 } where {P<:IEEEFloat,N}
@@ -174,9 +173,7 @@ function Mooncake.rrule!!(
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        # TODO: Drop the fallback once NNlib >= 0.9.37 is more widely supported.
-        # Until then, use the public softmax backpass API when available and delegate
-        # NNlib < 0.9.37 to the legacy `_data` helpers.
+        # TODO: Drop the `_data` fallback once NNlib >= 0.9.37 is more widely supported.
         # See https://github.com/chalk-lab/Mooncake.jl/pull/1229 for more context.
         @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
             dx .+= NNlib.∇logsoftmax(dy, y; dims=1)
@@ -333,11 +330,11 @@ end
     true,
 )
 
-# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source, so
-# the gradient sums to the tie multiplicity rather than to 1 — not a subdifferential member at
-# all. Dividing by the count picks the symmetric member; `init` competes for the same extremum,
-# so a source tied with it gets `1/(m+1)`. Returns `init`'s own share, or `nothing` when it has
-# no rdata slot to receive one.
+# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source,
+# so the gradient sums to the tie multiplicity rather than to 1, not a subdifferential
+# member. Dividing by the count picks the symmetric member; `init` competes for the same
+# extremum, so a source tied with it gets `1/(m+1)`. Returns `init`'s share, or `nothing`
+# when it has no rdata slot to receive one.
 @inline function _scatter_extremum_grads!(
     dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
 ) where {P}
@@ -391,8 +388,7 @@ function Mooncake.rrule!!(
         # gets its own specialisation and `kw_rdata` has one concrete type per call site.
         init = haskey(pkw, :init) ? pkw.init : nothing
         dinit = _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), init)
-        # With `init` supplied the keyword `NamedTuple`'s rdata is not `NoRData`; `dstsize`
-        # alone, or no keywords, still is.
+        # With `init` supplied the keyword `NamedTuple`'s rdata is not `NoRData`; without, it is.
         kw_rdata = if dinit === nothing
             Mooncake.zero_rdata(pkw)
         else
@@ -414,10 +410,8 @@ end
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
-# Tracing `gather`'s primal is what we want on CPU arrays, but a GPU kernel launch does not
-# survive the forward transform: the process dies with signal 4, no Julia exception to
-# catch. Declaring the GPU signature a forward primitive and raising keeps it an ordinary
-# error. Reverse mode is untouched.
+# A GPU kernel launch does not survive the forward transform: the process dies with signal 4, no
+# Julia exception to catch. A forward primitive that raises keeps it an ordinary error.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
@@ -538,16 +532,15 @@ end
 
 # σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
 # `abs(x)`, so AD picks up `sign(0) == 0` and reports `0` for `1/4`. When saturated the
-# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so any
-# `δ < eps/2` is destroyed and the derivative quantises to `0` (Float64 `x ≳ 37`, Float32 `≳
-# 17`, Float16 `≳ 8`) while the true value is still normal. `t / (1 + t)^2` with `t =
-# exp(-abs(x))` holds it in an exponent instead, and `t ≤ 1` bounds the quotient.
-#
-# `exp` runs twice, here and in the primal, rather than restating the primal's branch and
-# `sigmoid_fast`'s clamps where they could drift from it — 2 ns of 5.5. Both rules
-# differentiate the unclamped σ: past `x ≈ 36.8` the analytic value is all there is, and
-# below `-80` `sigmoid_fast`'s clamp is documented as an accuracy compromise, not a
-# different function.
+# textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so once
+# `σ(x)` rounds to `1.0` the factor `1 - σ(x)` is exactly `0` (Float64 `x ≳ 37`, Float32
+# `≳ 17`, Float16 `≳ 8`) while the
+# true value is still normal. `t / (1 + t)^2` with `t = exp(-abs(x))` holds it in an
+# exponent instead, and `t ≤ 1` bounds the quotient. `exp` therefore runs twice, here and in
+# the primal, rather than restating the primal's branch and `sigmoid_fast`'s clamps where
+# they could drift from it — 2 ns of 5.5. Both rules differentiate the unclamped σ: past
+# `x ≈ 36.8` the analytic value is all there is, and below `-80` `sigmoid_fast`'s clamp is
+# documented as an accuracy compromise, not a different function.
 for f in (:σ, :sigmoid_fast)
     @eval @is_primitive MinimalCtx Tuple{typeof(NNlib.$f),P} where {P<:IEEEFloat}
     @eval function Mooncake.frule!!(
@@ -578,10 +571,9 @@ end
 # branch is computed: past `|x| ≈ 355` the Float64 body's `(exp(2x) - 1) / (exp(2x) + 1)` is
 # `Inf/Inf`, and a zero cotangent into that quotient's pullback forms `0 * Inf` and puts
 # `NaN` on the argument. The Float32 body overflows its Remez rational the same way past
-# `|x| ≈ 618587`, or `≈ 258.8` through `gelu_tanh`, well inside a Float32 pre-activation,
-# and needs its own test since Float64 cases stay green while Float32 dispatches elsewhere.
-# A rule keeps AD out of both bodies; `gelu`/`gelu_tanh` inherit from `|x| ≈ 21`. No `NDual`
-# method — it is not an `IEEEFloat`, so the in-kernel path reaches `Base.tanh`.
+# `|x| ≈ 618587`, or `≈ 258.8` through `gelu_tanh`, well inside a Float32 pre-activation.
+# `gelu`/`gelu_tanh` inherit the `NaN` from `|x| ≈ 21`. No `NDual` method — it is not an
+# `IEEEFloat`, so the in-kernel path reaches `Base.tanh`.
 #
 # `4u / (1 + u)^2` with `u = exp(-2|x|)` for σ's reason: `1 - tanh(x)^2` collapses to `0`
 # once `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).

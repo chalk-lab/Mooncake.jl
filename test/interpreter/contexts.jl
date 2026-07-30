@@ -35,10 +35,8 @@ end
         @test !Mooncake.is_primitive(MinimalCtx, mode, Tuple{Tf,Real}, world)
     end
 
-    # `is_primitive` must not specialise per signature: it is called once per call-node
-    # signature during the AD transform, so specialising would make compile time scale with
-    # the number of distinct signatures (issue #1222). Distinct signatures must add no new
-    # specialisation.
+    # `is_primitive` is called once per call-node signature during the AD transform, so
+    # specialising on the signature would make compile time scale with their count (#1222).
     @testset "no per-signature specialisation" begin
         nspecialisations(f) =
             sum(methods(f); init=0) do m

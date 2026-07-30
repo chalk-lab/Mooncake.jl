@@ -1,11 +1,9 @@
 #
 # The reverse-mode working IR: an immutable, basic-block representation of `IRCode`.
 #
-# The working representation is a bare `Vector{CFGBlock}`. The metadata that an `IRCode`
-# carries besides its statements (argtypes, sptypes, debuginfo / linetable, meta, valid
-# worlds) is not duplicated here; it is supplied from the originating `IRCode` when lowering
-# back via `lower_cfg_blocks_to_ir`. The shared IR primitives (`ID`, `new_inst`, ...) live in
-# `ir_utils.jl`.
+# The working representation is a bare `Vector{CFGBlock}`: the metadata an `IRCode` carries
+# besides its statements is not duplicated, but supplied from the originating `IRCode` by
+# `lower_cfg_blocks_to_ir`. Shared IR primitives (`ID`, `new_inst`, ...) live in `ir_utils.jl`.
 #
 
 """
@@ -335,9 +333,7 @@ Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`
 function new_inst_vec(x::CC.InstructionStream)
     stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
     @static if VERSION > v"1.12-"
-        # In Julia 1.12+, x.line is a flat Vector{Int32} of length 3n (3 codeloc values per
-        # instruction). Construct each NewInstruction with its proper Tuple{Int32,Int32,Int32}
-        # line field by reading the 3 entries for instruction i at positions 3i-2, 3i-1, 3i.
+        # In Julia 1.12+, x.line is flat: 3 codeloc entries per instruction, not one line.
         n = length(stmt)
         return [
             NewInstruction(
@@ -445,10 +441,8 @@ function lower_cfg_blocks_to_ir(blks::Vector{CFGBlock}, ir::IRCode; argtypes=ir.
     cfg = control_flow_graph(blks)
     insts = _lines_to_blocks(insts, cfg)
     @static if VERSION > v"1.12-"
-        # Reconstruct codelocs from each instruction's own line field (a Tuple{Int32,Int32,Int32}
-        # in Julia 1.12+). This is always 3n entries by construction, regardless of how many
-        # instructions were added or removed while assembling the AD blocks, keeping the debug
-        # info aligned with the instruction stream (see Mooncake.jl#1216).
+        # Rebuild codelocs from each instruction's own line field, so they stay aligned with
+        # the instruction stream after AD adds and removes instructions (Mooncake.jl#1216).
         lines = Int32[v for inst in insts for v in inst.line]
         debuginfo = CC.copy(ir.debuginfo)
         debuginfo.codelocs = lines
@@ -2147,10 +2141,9 @@ function generate_ir(
                 "function. See the known limitations documentation for more context.",
             )
         end
-        # Julia 1.12+ lowers non-const global writes (`global x = y`) to
-        # Base.setglobal! on 1.12 and Core.setglobal! on 1.13+.
-        # CC.verify_ir does not reject these calls because they are valid IR, so
-        # reject them here before rule construction reaches a missing rrule!!.
+        # Julia 1.12+ lowers non-const global writes (`global x = y`) to Base.setglobal! on
+        # 1.12 and Core.setglobal! on 1.13+. CC.verify_ir accepts these calls, so reject here
+        # rather than later on a missing rrule!!.
         @static if VERSION > v"1.12-"
             if Meta.isexpr(inst, :call) && inst.args[1] in setglobal_calls
                 unhandled_feature(
@@ -2348,12 +2341,9 @@ function forwards_pass_ir(
         # Extract the `fwds` fields from the stmts for the forwards-pass block.
         fwds = reduce(vcat, map(x -> x.fwds, ad_stmts))
 
-        # Instructions to insert before the terminator:
-        # 1. communication instructions (see `create_comms_insts!` for an explanation), and
-        # 2. an instruction logging the ID of the current basic block. This is needed to know
-        #   which basic block to jump to during the reverse-pass if the current block is not
-        #   the unique predecessor of each of its successors (in which case there is no need
-        #   to log that control passed through this block as opposed to any other).
+        # Insert before the terminator: comms instructions (see `create_comms_insts!`) and,
+        # unless this block is the unique predecessor of all its successors, an instruction
+        # logging its ID so the reverse-pass knows which block to jump back to.
         extra = copy(comms_insts)
         if !is_unique_pred[block_id]
             ins_stmt = Expr(:call, __push_blk_stack!, info.block_stack_id, block_id.id)
@@ -2363,8 +2353,7 @@ function forwards_pass_ir(
         return CFGBlock(block_id, insert_before_terminator(fwds, extra))
     end
 
-    # Lower and return the `IRCode` for the forwards-pass. Its argument types are the shared
-    # data followed by the fdata-augmented primal argument types.
+    # Lower and return the `IRCode` for the forwards-pass.
     arg_types = vcat(Tshared_data, map(fcodual_type ∘ CC.widenconst, ir.argtypes))
     all_blocks = _remove_unreachable_cfg_blocks!(vcat(entry_block, fwd_blocks))
     return lower_cfg_blocks_to_ir(all_blocks, ir; argtypes=arg_types)
@@ -2761,7 +2750,6 @@ function DynamicDerivedRule(debug_mode::Bool)
     )
 end
 
-# Create new dynamic rule with empty cache and same debug mode and build world
 _copy(x::P) where {P<:DynamicDerivedRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
 
 function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
@@ -2775,8 +2763,7 @@ function (dynamic_rule::DynamicDerivedRule)(args::Vararg{Any,N}) where {N}
 
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        # Build at the world this rule was created at (matching the enclosing rule), not the
-        # current world. See _build_rule! and issue #1218.
+        # Build at this rule's creation world, not the current one; see _build_rule! and #1218.
         interp = get_interpreter(ReverseMode, dynamic_rule.world)
         rule = build_rrule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
@@ -2866,7 +2853,6 @@ mutable struct LazyDerivedRule{primal_sig,Trule}
     end
 end
 
-# Create new lazy rule with same method instance, debug mode, and prediction world
 _copy(x::P) where {P<:LazyDerivedRule} = P(x.mi, x.debug_mode, x.world)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
@@ -2895,8 +2881,7 @@ end
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
-# Build at the world `Trule` was predicted at, not the current world. See the LazyFRule
-# analogue in forward_mode.jl and the world-advance bug #1218.
+# Build at `Trule`'s prediction world, not the current one; see LazyFRule and issue #1218.
 @noinline function _build_rule!(rule::LazyDerivedRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ReverseMode, rule.world)
     rule.rule = build_rrule(

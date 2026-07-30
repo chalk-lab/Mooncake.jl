@@ -24,9 +24,8 @@ end
 # (PR #1099).
 rule_type_nonreturning(e::Exception) = throw(e)
 
-# Helpers for the world-advance rule-staleness regression test (reverse mode); see the
-# forward-mode analogue for the scope note. `stale_rvs_lazy` reaches the callee statically
-# (LazyDerivedRule), `stale_rvs_dyn` dynamically (DynamicDerivedRule).
+# Helpers for the world-advance staleness test below (scope note in the forward-mode
+# analogue). `stale_rvs_lazy` uses LazyDerivedRule, `stale_rvs_dyn` DynamicDerivedRule.
 stale_rvs_inner(x) = Float32(x) * 2.0f0
 @noinline stale_rvs_callee(x) = stale_rvs_inner(x)
 stale_rvs_lazy(x) = stale_rvs_callee(x)
@@ -518,9 +517,8 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
         @test rule_debug_args == rule_debug_sig
     end
 
-    # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
-    # world advance; both lazy and dynamic must return the build-world result (Float32), not
-    # the post-advance world's (Float64).
+    # Without the fix the lazy path throws a `convert` MethodError in _build_rule!; both
+    # paths must return the build-world result (Float32), not the post-advance (Float64).
     @testset "stale rule build-world after world advance (issue #1218)" begin
         lazy = Mooncake.build_rrule(stale_rvs_lazy, 1.5)
         dyn = Mooncake.build_rrule(stale_rvs_dyn, 1.5)
@@ -537,8 +535,7 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 end
 
 # --- Working-IR layer (CFGBlock etc.) ---
-# The working IR lives in src/interpreter/reverse_mode.jl (shared primitives in
-# ir_utils.jl), so its tests live here too (merged from the former bbcode.jl).
+# Working IR lives in src/interpreter/reverse_mode.jl; shared primitives in ir_utils.jl.
 module CFGBlocksTestCases
 test_phi_node(x::Ref{Union{Float32,Float64}}) = sin(x[])
 end
@@ -571,13 +568,11 @@ end
 
         @test Mooncake.terminator(bb) === nothing
 
-        # CFGBlock is immutable: its fields cannot be reassigned.
         @test_throws ErrorException (bb.id = ID())
 
         # The constructor enforces inst_ids and insts having equal length.
         @test_throws AssertionError CFGBlock(ID(), ID[ID()], CC.NewInstruction[])
 
-        # terminator returns the final statement when it is a Terminator.
         bb2 = CFGBlock(ID(), Mooncake.IDInstPair[(ID(), new_inst(ReturnNode(5)))])
         @test Mooncake.terminator(bb2) === bb2.insts[end].stmt
     end
@@ -605,7 +600,6 @@ end
         @test out[end] == ret
         @test out[end - 1] == extra[1]
 
-        # Empty `extra` returns the input untouched.
         @test Mooncake.insert_before_terminator(insts, Mooncake.IDInstPair[]) === insts
 
         # Block led by a phi node: `extra` splices before the terminator, phi left in place.
@@ -640,7 +634,6 @@ end
     @testset "lower_cfg_blocks_to_ir argtypes coercion" begin
         ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
         blocks = _ircode_to_cfg_blocks(ir)
-        # A non-`Vector{Any}` argtypes override must be coerced to `Vector{Any}`.
         custom = DataType[typeof(sin), Float64]
         out = lower_cfg_blocks_to_ir(blocks, ir; argtypes=custom)
         @test out.argtypes isa Vector{Any}
@@ -648,9 +641,8 @@ end
     end
     @static if VERSION > v"1.12-"
         @testset "codelocs consistent after instruction insertion" begin
-            # In 1.12+, codelocs (and stmts.line) pack 3 Int32 per instruction, so an
-            # n-instruction IRCode has 3n entries that must stay aligned across the round-trip
-            # even when instructions are inserted (regression test for Mooncake.jl#1216).
+            # In 1.12+ codelocs and stmts.line pack 3 Int32 per instruction, so an n-stmt
+            # IRCode has 3n entries which must stay aligned (Mooncake.jl#1216).
             ir = Base.code_ircode(sin, Tuple{Float64})[1][1]
             n_orig = length(ir.stmts)
             orig_ir_codelocs = copy(ir.debuginfo.codelocs)
@@ -869,8 +861,7 @@ end
         blocks = _ircode_to_cfg_blocks(ir)
         new_blocks = Mooncake._remove_unreachable_cfg_blocks!(blocks)
 
-        # The returned vector is fresh and the input vector is not resized; surviving blocks
-        # are the same objects shared with the input (the phi edges are mutated in place).
+        # Surviving blocks are shared with the input; their phi edges are mutated in place.
         @test new_blocks !== blocks
         @test length(blocks) == 3
         @test blocks[3] === new_blocks[2]
@@ -912,8 +903,6 @@ end
         # A Switch block has all dests plus the fallthrough as successors.
         @test Mooncake._compute_cfg_successors(blks)[blk_id] == ID[d1, d2, fallthrough]
 
-        # Lowering replaces the Switch with a base block (Switch stripped), one IDGotoIfNot
-        # block per (cond, dest), and a final IDGotoNode fallthrough block.
         lowered = Mooncake._cfg_lower_switch_statements(blks)
         @test length(lowered) == length(blks) + 3
         @test lowered[1].id == blk_id
@@ -960,8 +949,7 @@ end
         @test out[2].id == c                    # reachable (distance 1) before unreachables
         @test Set([out[3].id, out[4].id]) == Set([a, b])  # both unreachable blocks land last
 
-        # Reachable chain with distinct distances, presented out of order (y before x):
-        # ordering must follow increasing distance-from-entry, not input position.
+        # Ordering must follow increasing distance-from-entry, not input position.
         e2, x, y = ID(), ID(), ID()
         chain = CFGBlock[
             CFGBlock(e2, Mooncake.IDInstPair[(ID(), new_inst(IDGotoNode(x)))]),  # distance 0

@@ -220,9 +220,7 @@ end
     end
 
     @testset "cache reuse across multiple HVP calls" begin
-        # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying;
-        # verify the cache produces consistent results when called repeatedly with
-        # different directions.
+        # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying.
         f(x) = sum(x .* x)  # H = 2I
         x = [1.0, 2.0, 3.0]
         cache = prepare_hvp_cache(f, x)
@@ -252,9 +250,8 @@ end
     end
 
     @testset "primitive f (DerivedFoRRule{Nothing} path)" begin
-        # When `f` is itself a reverse-mode primitive, `compile_for_rule` returns
-        # `DerivedFoRRule{Nothing}` and `grad_f` routes through `value_and_gradient!!`
-        # rather than an inner derived rrule.
+        # Primitive `f` ⇒ `compile_for_rule` returns `DerivedFoRRule{Nothing}`, so `grad_f`
+        # routes through `value_and_gradient!!`, not an inner derived rrule.
         @testset "single argument" begin
             f = sum  # linear ⇒ zero Hessian
             x = [1.0, 2.0, 3.0]
@@ -279,7 +276,6 @@ end
         end
     end
 
-    # Regression for https://github.com/chalk-lab/Mooncake.jl/issues/1193.
     @testset "Ref-capture under NoTangent wrapper (issue #1193)" begin
         f = _RefCaptureWrap(
             let r = Ref(3.0);
