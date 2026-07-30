@@ -65,7 +65,9 @@
 
         m = only(methods(sin, (Float64,)))
         @test has_equal_data(m, m)
-        mi = first(m.specializations)
+        # `m.specializations` is a bare `MethodInstance` or an svec with `#undef` slots;
+        # `Base.specializations` normalises both.
+        mi = first(Base.specializations(m))
         @test has_equal_data(mi, mi)
     end
     @testset "populate_address_map" begin
