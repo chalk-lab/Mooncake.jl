@@ -51,7 +51,6 @@ The overall target is: correct by construction where possible, aggressively test
 - If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
 - Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
 - Prefer clear, concise names for variables, types, and methods.
-- Comments carry only what the code, its tests and the commit message cannot: why a correct-looking alternative is wrong. One line by default, numbers left to the test that asserts them, and roughly 15% of added lines as a budget (`git diff main...HEAD | grep -cE '^\+\s*#'`). When tightening one, check the line count actually fell, and rewrap whole paragraphs — only those you authored.
 - When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
 
 ## Consistency
