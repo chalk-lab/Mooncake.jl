@@ -746,5 +746,14 @@ if cuda
         cache = Mooncake.prepare_gradient_cache(gather_sum, xg)
         @test Array(Mooncake.value_and_gradient!!(cache, gather_sum, xg)[2][2]) ==
             Float32[1, 0, 1, 0]
+        # `Adjoint`/`Transpose` of a GPU array are `AnyGPUArray`, so NNlib sends them to the
+        # same kernel: they have to hit the guard, not slip past a bare `AbstractGPUArray`.
+        @testset "$wrap" for wrap in (adjoint, transpose)
+            w = wrap(copy(xg))
+            r = Mooncake.build_frule(gather_sum, w)
+            @test_throws ArgumentError r(
+                Mooncake.zero_dual(gather_sum), Mooncake.zero_dual(w)
+            )
+        end
     end
 end
