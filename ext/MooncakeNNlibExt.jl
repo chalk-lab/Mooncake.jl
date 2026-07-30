@@ -6,6 +6,7 @@ using Base: IEEEFloat
 using LinearAlgebra
 using NNlib: conv, depthwiseconv, logsoftmax, softmax, logsumexp, dropout
 using Mooncake.Nfwd: NDual
+import ChainRulesCore as CRC
 
 import Mooncake:
     @from_rrule,
@@ -21,6 +22,7 @@ import Mooncake:
     arrayify,
     frule!!,
     Dual,
+    NoPullback,
     ForwardMode,
     ReverseMode
 
@@ -73,6 +75,8 @@ const SupportedArray{P,N} = Union{
     Adjoint{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
     Transpose{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
 }
+# `@from_rrule` does not honour the wrapper members: it adds ChainRules' cotangent into a view's
+# fdata, which is the parent's, so those signatures throw — hence `dropout`'s hand-written rule.
 
 # On Julia ≤ 1.11, `maximum(x::Adjoint/Transpose; dims, init)` routes through
 # `LinearAlgebra.mapreducedim! → switch_dim12 → PermutedDimsArray`, leaving
@@ -95,11 +99,63 @@ _maximum(x, dims, init) = maximum(x; dims, init)
         Union{Array{P,3},AbstractGPUArray{P,3}},
     } where {P<:IEEEFloat},
 )
-@from_rrule(
-    MinimalCtx,
-    Tuple{typeof(dropout),AbstractRNG,SupportedArray{P,N},P} where {P<:IEEEFloat,N},
-    true,
-)
+# At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
+# from `rng` regardless: a different program from the primal. Checked, not assumed, because
+# if that fast path ever allocates, returning the input would alias where the primal does
+# not.
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+} where {P<:IEEEFloat,N}
+@is_primitive MinimalCtx ReverseMode Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(dropout),AbstractRNG,SupportedArray{P,N},P
+} where {P<:IEEEFloat,N}
+
+# ChainRules called here rather than through `Mooncake.rrule_wrapper`, which adds the cotangent
+# straight into the fdata: for the `Adjoint` and `Transpose` that `SupportedArray` admits, that
+# fdata is the parent's and has its shape. Adding through `arrayify`'s wrapper relabels instead.
+function Mooncake.rrule!!(
+    f::CoDual{typeof(dropout)},
+    rng::CoDual{<:AbstractRNG},
+    x::CoDual{<:SupportedArray{P,N}},
+    p::CoDual{P},
+) where {P<:IEEEFloat,N}
+    if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p)) === primal(x)
+        return x, NoPullback(f, rng, x, p)
+    end
+    px, dx = arrayify(x)
+    y, cr_pb = CRC.rrule(dropout, primal(rng), px, primal(p))
+    res = zero_fcodual(y)
+    dp = Mooncake.zero_rdata(primal(p))
+    function dropout_pb!!(::NoRData)
+        dx .+= cr_pb(tangent(res))[3]
+        return NoRData(), NoRData(), NoRData(), dp
+    end
+    return res, dropout_pb!!
+end
+
+function Mooncake.rrule!!(
+    kwcall::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    f::CoDual{typeof(dropout)},
+    rng::CoDual{<:AbstractRNG},
+    x::CoDual{<:SupportedArray{P,N}},
+    p::CoDual{P},
+) where {P<:IEEEFloat,N}
+    pkw = primal(kw)
+    if primal(p) <= 0 && dropout(primal(rng), primal(x), primal(p); pkw...) === primal(x)
+        return x, NoPullback(kwcall, kw, f, rng, x, p)
+    end
+    px, dx = arrayify(x)
+    y, cr_pb = Core.kwcall(pkw, CRC.rrule, dropout, primal(rng), px, primal(p))
+    res = zero_fcodual(y)
+    kw_rdata = Mooncake.zero_rdata(pkw)
+    dp = Mooncake.zero_rdata(primal(p))
+    function dropout_kw_pb!!(::NoRData)
+        dx .+= cr_pb(tangent(res))[3]
+        return NoRData(), kw_rdata, NoRData(), NoRData(), NoRData(), dp
+    end
+    return res, dropout_kw_pb!!
+end
 
 # logsoftmax rrules
 @is_primitive MinimalCtx ReverseMode Tuple{
@@ -276,6 +332,76 @@ end
     } where {P,N,M},
     true,
 )
+
+# ChainRules' `∇scatter_src` for `max`/`min` gives the full cotangent to every tied source, so
+# the gradient sums to the tie multiplicity rather than to 1 — not a subdifferential member at
+# all. Dividing by the count picks the symmetric member; `init` competes for the same extremum,
+# so a source tied with it gets `1/(m+1)`. Returns `init`'s own share, or `nothing` when it has
+# no rdata slot to receive one.
+@inline function _scatter_extremum_grads!(
+    dsrc, psrc::AbstractArray{P}, pidx, y, dy, init
+) where {P}
+    # `convert`, because NNlib rounds `init` into the destination before comparing.
+    tied = psrc .== NNlib.gather(y, pidx)
+    init_tie = isnothing(init) ? false : y .== convert(P, init)
+    # `Int`, because a float count saturates once its spacing passes 1 — `Float16` at 2048,
+    # `Float32` at 2^24 — inflating every share in a larger tie group.
+    counts = NNlib.scatter!(+, fill!(similar(y, Int), 0), tied, pidx)
+    isnothing(init) || (counts .+= init_tie)
+    # `A` widens `Float16` for the division, whose operands are all O(1). No zero guard: `gather`
+    # reads only destinations some index reaches, and each holds a tied source or `init` itself.
+    A = P === Float16 ? Float32 : P
+    total = A.(counts)
+    dsrc .+= P.(tied .* A.(NNlib.gather(dy, pidx)) ./ NNlib.gather(total, pidx))
+    # `oftype`, because `init` need not share `src`'s precision.
+    (isnothing(init) || Mooncake.zero_rdata(init) isa Mooncake.NoRData) && return nothing
+    return oftype(init, sum(A.(dy) .* init_tie ./ total))
+end
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(NNlib.scatter)},
+    op::CoDual{<:Union{typeof(max),typeof(min)}},
+    src::CoDual{<:SupportedArray{P,N}},
+    idx::CoDual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    psrc, dsrc = arrayify(src)
+    pidx = primal(idx)
+    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx))
+    function scatter_extremum_pb!!(::NoRData)
+        _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), nothing)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return res, scatter_extremum_pb!!
+end
+
+function Mooncake.rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(NNlib.scatter)},
+    op::CoDual{<:Union{typeof(max),typeof(min)}},
+    src::CoDual{<:SupportedArray{P,N}},
+    idx::CoDual{<:SupportedArray{<:Union{Integer,Tuple},M}},
+) where {P<:IEEEFloat,N,M}
+    psrc, dsrc = arrayify(src)
+    pidx = primal(idx)
+    pkw = primal(kw)
+    res = zero_fcodual(NNlib.scatter(primal(op), psrc, pidx; pkw...))
+    function scatter_extremum_kw_pb!!(::NoRData)
+        # `haskey` on a `NamedTuple`'s type is settled at compile time, so each keyword set
+        # gets its own specialisation and `kw_rdata` has one concrete type per call site.
+        init = haskey(pkw, :init) ? pkw.init : nothing
+        dinit = _scatter_extremum_grads!(dsrc, psrc, pidx, primal(res), tangent(res), init)
+        # With `init` supplied the keyword `NamedTuple`'s rdata is not `NoRData`; `dstsize`
+        # alone, or no keywords, still is.
+        kw_rdata = if dinit === nothing
+            Mooncake.zero_rdata(pkw)
+        else
+            merge(Mooncake.zero_rdata(pkw), (; init=dinit))
+        end
+        return NoRData(), kw_rdata, NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return res, scatter_extremum_kw_pb!!
+end
 
 # ChainRules defines an `rrule` only for the in-place `gather!`, not `gather`, so without
 # this AD would trace `gather`'s scalar per-index loop (see

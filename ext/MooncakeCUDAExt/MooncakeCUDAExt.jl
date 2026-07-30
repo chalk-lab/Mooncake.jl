@@ -1130,21 +1130,18 @@ end
 #   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
-@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
-function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray}, x::Dual
-)
-    fill!(primal(a), primal(x))
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeWrappedArray,Any}
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuMaybeWrappedArray}, x::Dual)
+    pa, da = arrayify(a)
+    fill!(pa, primal(x))
     tx = tangent(x)
-    fill!(tangent(a), tx isa NoTangent ? zero(eltype(tangent(a))) : eltype(tangent(a))(tx))
+    fill!(da, tx isa NoTangent ? zero(eltype(da)) : eltype(da)(tx))
     return a
 end
-function rrule!!(
-    ::CoDual{typeof(fill!)},
-    a::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    x::CoDual,
-)
-    pa, da = primal(a), tangent(a)
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuMaybeWrappedArray}, x::CoDual)
+    # Through the wrapper, so `sum(da)` sums the destination's own elements and the restore
+    # writes back through it — conjugating for an `Adjoint`, as its `setindex!` does.
+    pa, da = arrayify(a)
     old = copy(pa)
     fill!(pa, primal(x))
     function fill!_gpu_pb!!(::NoRData)
@@ -2830,22 +2827,25 @@ end
 # handles this correctly: contribs are computed from dual_out + dout, captured in
 # the closure BEFORE dout is zeroed.  The frule accumulates contributions into a
 # temporary before writing to dout, for the same reason.
+#
+# A broadcast into a wrapped `CuArray` still forms a `Broadcasted{CuArrayStyle}`, so a bare
+# `CuArray` bound left it to the interpreter, which died tracing the kernel launch.
 @is_primitive(
     MinimalCtx,
     Tuple{
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
-    } where {P<:CuMaybeComplexArray},
+    } where {P<:CuMaybeWrappedArray},
 )
 function frule!!(
     ::Dual{typeof(Base.Broadcast.materialize!)},
-    dest::Dual{P,P},
+    dest::Dual{P},
     bc::Dual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
+) where {P<:CuMaybeWrappedArray}
     bc_primal = primal(bc)
     _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
 
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    pout, dout = primal(dest), tangent(dest)
+    pout, dout = arrayify(dest)
     decoded = _gpu_decode_ndual_output(
         Val(:broadcast), dual_out, flat_pargs; extract_primal=false
     )
@@ -2868,10 +2868,10 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
-    dest::CoDual{P,P},
+    dest::CoDual{P},
     bc::CoDual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
-    pout, dout = primal(dest), tangent(dest)
+) where {P<:CuMaybeWrappedArray}
+    pout, dout = arrayify(dest)
     bc_primal = primal(bc)
     bc_fdata = tangent(bc)
     bc_prepared, flat_bc, flat_pargs, flat_fdatas = _prepare_gpu_broadcast(

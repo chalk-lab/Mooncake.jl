@@ -457,6 +457,7 @@ function increment_and_get_rdata!(
 ) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}}}
     return r + t
 end
+# Plain arrays only: a view's fdata is the parent's, so views need a hand-written `rrule!!`.
 function increment_and_get_rdata!(
     f::Array{P}, ::NoRData, t::Array{P}
 ) where {P<:Union{IEEEFloat,Complex{<:IEEEFloat}}}

@@ -13,6 +13,20 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
+# At p == 0 `dropout` returns its input itself, so mutating the result doubles the sum. `p`
+# is fixed inside because `test_rule` would perturb it to `-ε`, outside `dropout`'s domain.
+function dropout_alias_tester(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)))
+    y .*= 2
+    return sum(x)
+end
+
+function dropout_alias_tester_dims(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)); dims=1)
+    y .*= 2
+    return sum(x)
+end
+
 # TODO: CUDA version bound when
 #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
 cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
@@ -24,6 +38,12 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (rng, size...) -> randn(rng, size...)
     end
     float = cuda ? x -> Float32(x) : identity
+    _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
+    # Wider than its `src` and not representable in it, so NNlib's rounding is observable;
+    # `2.0` round-trips and would pass either way.
+    mixed_src = cuda ? cu(ones(Float32, 3)) : ones(Float32, 3)
+    _onetwo = cuda ? () -> cu(Float32[1, 2]) : () -> [1.0, 2.0]
+    mixed_init = 2.1
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -156,6 +176,24 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
+        (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
+        # The aliasing arm, `p ≤ 0`, which returns the input `CoDual`. On a device these
+        # also need the `materialize!` rule for the forward broadcast. Both fail on `main`.
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
+        (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
+        # ... and through the other arm, `p > 0`, where the rule adds ChainRules' cotangent
+        # through `arrayify`'s wrapper because the wrapper's fdata is the parent's.
+        (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2)', float(0.5)),
+        (
+            true,
+            :none,
+            false,
+            dropout_tester_2,
+            Trng,
+            transpose(_rand(rng, 2, 2)),
+            float(0.1),
+        ),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
@@ -304,6 +342,137 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         # scatter
         (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
+
+        # scatter(max/min, ...) with sources tied for one destination. The tie is the point,
+        # so the values are equal by construction rather than random: ChainRules gives each
+        # tied entry the whole cotangent, summing to the tie multiplicity.
+        (false, :none, true, NNlib.scatter, max, _ones(3), [1, 1, 2]),
+        (false, :none, true, NNlib.scatter, min, _ones(3), [1, 1, 2]),
+        (false, :none, true, Core.kwcall, (;), NNlib.scatter, max, _ones(3), [1, 1, 2]),
+
+        # ndims(src) > ndims(idx): the tie splits per row, and the helper's gather/scatter
+        # shapes have to agree on the extra leading dimension.
+        (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
+
+        # `init` is differentiable, so the keyword NamedTuple's rdata is not NoRData. The
+        # three cases put it below every source, above every source, and tied with exactly
+        # one — the tie a central difference can express, since its mean of the one-sided
+        # derivatives is the symmetric split.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(0.5),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(1.0),),
+            NNlib.scatter,
+            max,
+            _onetwo(),
+            [1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=mixed_init,),
+            NNlib.scatter,
+            max,
+            mixed_src,
+            [1, 1, 2],
+        ),
+
+        # An `init` with no rdata, which used to throw. It wins outright here, so nothing ties
+        # it, and whether it counts towards the tie total makes no difference to this case.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=2,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
+        # Dropping `max(total, 1)` made a `NaN` in `src` propagate into the gradient instead
+        # of being silenced to zero, which is the whole point of removing it, and it has to
+        # do so in both arms — the two disagreeing on the same input is what the removal
+        # fixed. `interface_only`, since a `NaN` gradient is not finite-differenceable.
+        (true, :none, true, NNlib.scatter, max, [NaN, 1.0, 2.0], [1, 1, 2]),
+        (
+            true,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            [NaN, 1.0, 2.0],
+            [1, 1, 2],
+        ),
+
+        # `init` over a multi-dim `src`, where the tie count and the `init` indicator have
+        # to agree on the extra leading dimension. Winning `init` takes the whole cotangent,
+        # so `dsrc` is zero and `dinit` is the destination count.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(2, 3),
+            [1, 1, 2],
+        ),
+
+        # `init=nothing` is NNlib's own default and takes the no-`init` path.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=nothing,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
+        # `dstsize` past the largest index leaves destinations no index reaches, holding
+        # `scatter_empty` with no tied source. Nothing gathers them, so they take no part in
+        # the gradient; summing only the reachable ones keeps the primal finite, the others
+        # being -Inf.
+        (
+            false,
+            :none,
+            false,
+            x -> sum(NNlib.scatter(max, x, [1, 1, 2]; dstsize=(4,))[1:2]),
+            _ones(3),
+        ),
 
         # gather
         (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),

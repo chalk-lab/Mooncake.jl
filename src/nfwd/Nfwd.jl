@@ -1543,7 +1543,7 @@ end
 # Symmetric are equivalent (conj is identity), so a single `copytri!` suffices.
 for _WrapType in (:Hermitian, :Symmetric)
     @eval function LinearAlgebra.cholesky(
-        A::LinearAlgebra.$_WrapType{NDual{T,N},<:StridedMatrix{NDual{T,N}}},
+        A::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
         (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
         check::Bool=true,
     ) where {T<:IEEEFloat,N}
@@ -1563,8 +1563,11 @@ for _WrapType in (:Symmetric, :Hermitian)
         # the ambiguity with LinearAlgebra's *(AbstractMatrix, AbstractMatrix) when B
         # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
         # a more specific method that wins on both).
+        # `Matrix`, not `AbstractMatrix`: these are a direct-call surface for hand-built
+        # `NDual` matrices, and a wider bound claimed device- and sparse-backed parents that
+        # they cannot serve, colliding with cuSPARSE's and cuSOLVER's methods.
         function Base.:*(
-            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            A::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
             B::Union{StridedVector,StridedMatrix},
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
@@ -1572,7 +1575,7 @@ for _WrapType in (:Symmetric, :Hermitian)
 
         function Base.:*(
             A::Union{StridedVector,StridedMatrix},
-            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            B::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
         end
