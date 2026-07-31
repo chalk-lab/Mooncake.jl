@@ -145,6 +145,15 @@ function rrule!!(
     y = _new_(P, tuple_map(primal, x)...)
     return CoDual(y, tangent_type(P)()), NoPullback(f, p, x...)
 end
+# Forward analog: an `IdDict`'s canonical dual is `IdDict{K,dual_type(V)}`, a dedicated container
+# rather than a struct-lift, so the generic `@generated frule!!` above hits its guard. The fields a
+# `_new_`ed IdDict is built from are all non-differentiable, so its dual is the empty dual dict.
+function frule!!(
+    ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,N}
+) where {P<:IdDict,Nw,N}
+    y = _new_(P, tuple_map(primal, x)...)
+    return Lifted{P,Nw}(y, dual_type(Val(Nw), P)())
+end
 
 @inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
     return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
