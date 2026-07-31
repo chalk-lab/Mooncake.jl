@@ -99,6 +99,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_adj_lit_add(x) = sum(x' .+ 1.0)        # real adjoint
         _bcast_adj_cx_abs2(x) = sum(abs2.(x'))         # complex adjoint, non-holomorphic
         _bcast_tp_lit_add(x) = sum(transpose(x) .+ 1.0) # real transpose
+        # Non-contiguous SubArray leaf: rows 1:2 of a column-major matrix are strided, so the
+        # view stays a SubArray (a contiguous view collapses to a plain CuArray).
+        _bcast_noncontig_view(x) = sum(exp.(view(x, 1:2, :)))
         # Shape-broadcasting: vector broadcast against matrix — tests _unbroadcast
         _bcast_vec_mat_add(v, m) = sum(v .+ m)     # v:(n,) broadcast to (n,p)
         _bcast_vec_mat_mul(v, m) = sum(v .* m)     # v:(n,) broadcast to (n,p)
@@ -404,6 +407,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _bcast_adj_lit_add, _rand(rng, 16)),
             (false, :none, false, _bcast_adj_cx_abs2, _rand(rng, ComplexF64, 16)),
             (false, :none, false, _bcast_tp_lit_add, _rand(rng, 16)),
+            # Non-contiguous SubArray broadcast leaf (rows 1:2 of a 4x3 stay a SubArray)
+            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
             # Shape-broadcasting: vector vs matrix — exercises _unbroadcast in pullback
             (false, :none, false, _bcast_vec_mat_add, _rand(rng, 8), _rand(rng, 8, 4)),
             (false, :none, false, _bcast_vec_mat_mul, _rand(rng, 8), _rand(rng, 8, 4)),
