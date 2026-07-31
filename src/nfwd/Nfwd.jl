@@ -372,6 +372,9 @@ end
 )
 (::Type{I})(::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
 Base.convert(::Type{I}, ::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
+# Disambiguate against `Bool(x::Real)`: the `Integer` method above is more specific in the type
+# argument but less specific in the value, so `Bool(::NDual)` would otherwise be an ambiguity.
+Base.Bool(::NDual) = _throw_ndual_to_int(Bool)
 @inline function NDual{T,N}(x::Real, r::RoundingMode) where {T<:IEEEFloat,N}
     return NDual{T,N}(T(x, r), _fwd_zero(Val(N), T))
 end
