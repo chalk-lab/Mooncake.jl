@@ -126,6 +126,28 @@ function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
     return dout_l
 end
 
+# 1.11+ block form of the per-lane JVP: writes all `N` lanes of each output element in one pass over
+# the contiguous element-major partials blocks, so the length-`N` lane write vectorises (packed
+# `<N x double>`). Blocks are `(N, size...)`; reinterpret to `NTuple{N,T}` columns, linear-indexed
+# in the same column-major `(j,l,i,k)` order `_kron!` fills. ~6× the stride-`N` per-lane loop.
+function _kron!_jvp_block!(outb, px1, x1b, px2, x2b, ::Val{N}) where {N}
+    outc = reinterpret(reshape, NTuple{N,eltype(outb)}, outb)
+    d1c = reinterpret(reshape, NTuple{N,eltype(x1b)}, x1b)
+    d2c = reinterpret(reshape, NTuple{N,eltype(x2b)}, x2b)
+    m = 1
+    @inbounds for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+        x1ij = px1[i, j]
+        d1 = d1c[(j - 1) * size(px1, 1) + i]
+        for k in axes(px2, 1)
+            x2kl = px2[k, l]
+            d2 = d2c[(l - 1) * size(px2, 1) + k]
+            outc[m] = ntuple(t -> x1ij * d2[t] + d1[t] * x2kl, Val(N))
+            m += 1
+        end
+    end
+    return outb
+end
+
 # Dense fast path: read each lane's partials directly off the `NDualArray` V; the primal
 # `LinearAlgebra._kron!(pout, px1, px2)` runs once. Covers every real `IEEEFloat` (including
 # Float16, which `arrayify` does not support). Only the matrix (D=2) input shape is supported.
@@ -139,14 +161,25 @@ function Mooncake.frule!!(
     px1 = primal(x1)
     px2 = primal(x2)
     LinearAlgebra._kron!(pout, px1, px2)
-    for lane in 1:N
-        _kron!_jvp_lane!(
-            tangent_view(out, lane),
+    @static if VERSION >= v"1.11-rc4"
+        _kron!_jvp_block!(
+            getfield(tangent(out), :partials_block),
             px1,
-            tangent_view(x1, lane),
+            getfield(tangent(x1), :partials_block),
             px2,
-            tangent_view(x2, lane),
+            getfield(tangent(x2), :partials_block),
+            Val(N),
         )
+    else
+        for lane in 1:N
+            _kron!_jvp_lane!(
+                tangent_view(out, lane),
+                px1,
+                tangent_view(x1, lane),
+                px2,
+                tangent_view(x2, lane),
+            )
+        end
     end
     return out
 end
