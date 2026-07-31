@@ -2968,6 +2968,11 @@ end
 @inline _leaf_effective_tangent(::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, t) = transpose(
     _fields(t).parent
 )
+# A non-contiguous view stays a SubArray (a contiguous one collapses to a plain CuArray);
+# `arrayify` rebuilds its tangent as a SubArray over the parent's tangent, same indices.
+@inline _leaf_effective_tangent(pa::SubArray{P,N,A}, t) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray} = arrayify(
+    pa, t
+)[2]
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
 @inline _leaf_effective_tangent(::IEEEFloat, t) = t
 @inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
@@ -3023,6 +3028,13 @@ end
     pa::Transpose{<:CuFloatOrComplex,<:CuMaybeComplexArray}, fd, contrib
 )
     return _fields(fd).parent .+= transpose(_unbroadcast(contrib, size(pa)))
+end
+@inline function _leaf_accum_fdata!(
+    pa::SubArray{P,N,A}, fd, contrib
+) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray}
+    _, dpa = arrayify(pa, fd)
+    dpa .+= _unbroadcast(contrib, size(pa))
+    return dpa
 end
 @inline function _leaf_accum_fdata!(_, diff::_GpuBroadcastCastDiff, contrib)
     return _leaf_accum_fdata!(
