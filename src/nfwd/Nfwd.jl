@@ -2151,6 +2151,15 @@ end
         end
         return a
     end
+    # Element-type conversion (e.g. storing a `Vector{Float32}` dual into a `Vector{Float64}`
+    # container): convert primal and block to the target element type.
+    function Base.convert(
+        ::Type{NDualArray{E2,N,D,A2,W2,B2}}, x::NDualArray{E1,N,D}
+    ) where {E1,E2,N,D,A2,W2,B2}
+        return NDualArray{E2,N,D,A2,W2,B2}(
+            convert(A2, getfield(x, :primal)), convert(B2, getfield(x, :partials_block))
+        )
+    end
 
 else
 
@@ -2271,6 +2280,15 @@ else
         a.primal[i...] = Complex(x.value)
         ntuple(k -> (a.partials[k][i...]=Complex(x.partials[k]); nothing), Val(N))
         return a
+    end
+    # Element-type conversion: convert primal and each per-lane partial to the target eltype.
+    function Base.convert(
+        ::Type{NDualArray{E2,N,D,A2,W2}}, x::NDualArray{E1,N,D}
+    ) where {E1,E2,N,D,A2,W2}
+        return NDualArray{E2,N,D,A2,W2}(
+            convert(A2, getfield(x, :primal)),
+            ntuple(k -> convert(A2, getfield(x, :partials)[k]), Val(N)),
+        )
     end
 end
 
