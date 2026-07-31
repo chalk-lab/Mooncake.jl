@@ -15,21 +15,36 @@
 #   improvement over what we currently have, and helps to prevent the addition of flakey
 #   rules which cause robustness or correctness problems.
 
+# Fold the `L` lane-tangents of a chunked `NDualArray` from its contiguous element-major partials
+# block (1.11+): each element's `L` lanes are one contiguous `NTuple{L,P}` column, so
+# `reinterpret`+tuple-add vectorises across lanes (packed `<L x double>`), 5–6× over the stride-`L`
+# per-lane `tangent_view` reductions. `s` stays a plain scalar — a 3-arg tuple `muladd` boxes, so
+# scale-then-add is kept split.
+@inline _tadd(a::NTuple{L,P}, b::NTuple{L,P}) where {L,P} = ntuple(i -> a[i] + b[i], Val(L))
+@inline _tscale(a::NTuple{L,P}, s) where {L,P} = ntuple(i -> a[i] * s, Val(L))
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
 function frule!!(
     ::Lifted{typeof(sum),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ) — sum each lane's block-row view
-    # (a scalar, so the whole thing is stack-only / 0-alloc, as the `:allocs` test requires).
-    # Folding the whole `NDualArray` element-wise instead (lazy `getindex` → one `NDual` per
-    # element → the scalar `_ndual_mapreduce_impl` left-fold) is ~5x slower.
+    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ). On 1.11+ fold the contiguous element-
+    # major block across lanes (vectorised); on 1.10 (parallel arrays, no block) sum each lane's
+    # already-contiguous view. Stack-only / 0-alloc, as the `:allocs` test requires.
     nda = tangent(x)
     pv = sum(getfield(nda, :primal))
-    return Lifted{P,N}(
-        pv, _scalar_ndual(pv, ntuple(k -> sum(tangent_view(nda, k)), Val(N)))
-    )
+    lanes = @static if VERSION >= v"1.11-rc4"
+        cols = reinterpret(reshape, NTuple{N,P}, getfield(nda, :partials_block))
+        acc = ntuple(_ -> zero(P), Val(N))
+        @inbounds for j in eachindex(cols)
+            acc = _tadd(acc, cols[j])
+        end
+        acc
+    else
+        ntuple(k -> sum(tangent_view(nda, k)), Val(N))
+    end
+    return Lifted{P,N}(pv, _scalar_ndual(pv, lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
     dx = x.dx
@@ -47,15 +62,23 @@ function frule!!(
     ::Lifted{typeof(abs2),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Chain rule: `Σᵢ pᵢ²` has lane-`k` derivative `Σᵢ 2pᵢ·blockₖᵢ = 2·dot(p, block-rowₖ)` — a
-    # scalar `dot` over each lane's block-row view, so stack-only / 0-alloc (the `:allocs` test).
-    # Folding `sum(abs2, tangent(x))` element-wise is the scalar left-fold, ~5x slower.
+    # Chain rule: lane-`k` derivative of `Σᵢ pᵢ²` is `Σᵢ 2pᵢ·blockₖᵢ`. On 1.11+ fold the contiguous
+    # block, scaling each element's lane column by `2pᵢ` (vectorised); on 1.10 do `2·dot(p, lane-
+    # view)`. Stack-only / 0-alloc (the `:allocs` test).
     nda = tangent(x)
     p = getfield(nda, :primal)
     v = sum(abs2, p)
-    return Lifted{P,N}(
-        v, _scalar_ndual(v, ntuple(k -> 2 * dot(p, tangent_view(nda, k)), Val(N)))
-    )
+    lanes = @static if VERSION >= v"1.11-rc4"
+        cols = reinterpret(reshape, NTuple{N,P}, getfield(nda, :partials_block))
+        acc = ntuple(_ -> zero(P), Val(N))
+        @inbounds for j in eachindex(cols)
+            acc = _tadd(acc, _tscale(cols[j], 2 * p[j]))
+        end
+        acc
+    else
+        ntuple(k -> 2 * dot(p, tangent_view(nda, k)), Val(N))
+    end
+    return Lifted{P,N}(v, _scalar_ndual(v, lanes))
 end
 function rrule!!(
     ::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:Array{P}}
