@@ -454,7 +454,13 @@ function modify_fwd_ad_stmts!(
             end
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
+            # Predict at the world this transform runs in: inside a pinned rebuild
+            # (`_build_rule!`) the current world is later, which would reintroduce the
+            # `Trule` mismatch of #1218 one level down.
+            w = interp.world
+            push!(
+                captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm, w) : DynamicFRule(dm, w)
+            )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
@@ -508,11 +514,9 @@ mutable struct LazyFRule{primal_sig,Trule}
     mi::Core.MethodInstance
     world::UInt
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(
-            debug_mode, mi, interp.world
-        )
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
+        interp = get_interpreter(ForwardMode, world)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool, world::UInt
@@ -591,8 +595,8 @@ struct DynamicFRule{V}
     world::UInt
 end
 
-function DynamicFRule(debug_mode::Bool)
-    return DynamicFRule(Dict{Any,Any}(), debug_mode, get_interpreter(ForwardMode).world)
+function DynamicFRule(debug_mode::Bool, world::UInt)
+    return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
 end
 
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)

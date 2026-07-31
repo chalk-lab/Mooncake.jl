@@ -75,6 +75,14 @@ const SupportedArray{P,N} = Union{
     Adjoint{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
     Transpose{P,<:Union{Array{P,N},AbstractGPUArray{P,N}}},
 }
+# The GPU-backed members of `SupportedArray`. `Adjoint`/`Transpose` of a GPU array are
+# `AnyGPUArray`, which is what NNlib dispatches its kernels on, so a bound of bare
+# `AbstractGPUArray` does not cover everything that reaches a kernel.
+const GPUBackedArray{P,N} = Union{
+    AbstractGPUArray{P,N},
+    Adjoint{P,<:AbstractGPUArray{P,N}},
+    Transpose{P,<:AbstractGPUArray{P,N}},
+}
 # `@from_rrule` does not honour the wrapper members: it adds ChainRules' cotangent into a view's
 # fdata, which is the parent's, so those signatures throw — hence `dropout`'s hand-written rule.
 
@@ -416,12 +424,12 @@ end
     MinimalCtx,
     ForwardMode,
     Tuple{
-        typeof(NNlib.gather),AbstractGPUArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
+        typeof(NNlib.gather),GPUBackedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
 function Mooncake.frule!!(
     ::Dual{typeof(NNlib.gather)},
-    ::Dual{<:AbstractGPUArray{P,N}},
+    ::Dual{<:GPUBackedArray{P,N}},
     ::Dual{<:SupportedArray{<:Union{Integer,Tuple},M}},
 ) where {P<:IEEEFloat,N,M}
     throw(
@@ -443,7 +451,15 @@ function Mooncake.rrule!!(
     res = zero_fcodual(NNlib.gather(primal(src), pidx))
     function gather_pb!!(::NoRData)
         _, dsrc = arrayify(src)
-        NNlib.scatter!(+, dsrc, tangent(res), pidx)
+        if dsrc isa Union{Array,AbstractGPUArray}
+            NNlib.scatter!(+, dsrc, tangent(res), pidx)
+        else
+            # `arrayify` keeps the wrapper and `scatter!` takes only a dense destination: a
+            # wrapped one compiles to invalid IR on the GPU and finds no method on the CPU.
+            # `similar` on an `Adjoint` re-wraps, so the buffer comes from the parent.
+            buf = fill!(similar(parent(dsrc), size(dsrc)), 0)
+            dsrc .+= NNlib.scatter!(+, buf, tangent(res), pidx)
+        end
         return NoRData(), NoRData(), NoRData()
     end
     return res, gather_pb!!

@@ -1424,12 +1424,16 @@ end
     nd = Val(ndims(dy_out))
     for i in eachindex(fdatas)
         fi = fdatas[i]
-        ranges = ntuple(nd) do d
-            k = findfirst(==(d), dims)
-            k === nothing ? Colon() : (offsets[k] + 1):(offsets[k] + size(fi, d))
+        # `let`, so the closure below captures a binding that is never reassigned:
+        # capturing `offsets` itself boxes it and costs the loop its zero-allocation.
+        offsets = let offs = offsets
+            ranges = ntuple(nd) do d
+                k = findfirst(==(d), dims)
+                k === nothing ? Colon() : (offs[k] + 1):(offs[k] + size(fi, d))
+            end
+            fi .+= view(dy_out, ranges...)
+            ntuple(k -> offs[k] + size(fi, dims[k]), Val(K))
         end
-        fi .+= view(dy_out, ranges...)
-        offsets = ntuple(k -> offsets[k] + size(fi, dims[k]), Val(K))
     end
     return nothing
 end
@@ -1437,11 +1441,14 @@ end
 _unwrap_cat_dim(d::Integer) = d
 _unwrap_cat_dim(::Val{N}) where {N} = N
 _unwrap_cat_dim(d::Tuple{Vararg{Integer}}) = d
+# `Base.dims2cat` takes any iterable, so `cat(A, B; dims=1:2)` and `dims=[1, 2]` are valid
+# calls the primal and the frule both accept; normalise to the Tuple the pullback needs.
+_unwrap_cat_dim(d::AbstractVector{<:Integer}) = Tuple(d)
 function _unwrap_cat_dim(d)
     return throw(
         ArgumentError(
-            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple of " *
-            "Integers; got dims=$(d).",
+            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple or vector " *
+            "of Integers; got dims=$(d).",
         ),
     )
 end
