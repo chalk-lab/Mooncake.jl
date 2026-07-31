@@ -2138,6 +2138,19 @@ end
         end
         return a
     end
+    # A real dual stored into a complex array (e.g. `copyto!(::complex, ::real)`) promotes: the
+    # imaginary part of the value and of every partial is zero.
+    @inline function Base.setindex!(
+        a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
+    ) where {T<:IEEEFloat,Element<:Complex{T},N}
+        a.primal[i...] = Complex(x.value)
+        block = getfield(a, :partials_block)
+        off = _lane_offset(a, i...)
+        @inbounds for k in 1:N
+            block[off + k] = Complex(x.partials[k])
+        end
+        return a
+    end
 
 else
 
@@ -2249,6 +2262,14 @@ else
             k -> (a.partials[k][i...]=Complex(x.re.partials[k], x.im.partials[k]); nothing),
             Val(N),
         )
+        return a
+    end
+    # A real dual stored into a complex array promotes: imaginary part (value and partials) is zero.
+    @inline function Base.setindex!(
+        a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
+    ) where {T<:IEEEFloat,Element<:Complex{T},N}
+        a.primal[i...] = Complex(x.value)
+        ntuple(k -> (a.partials[k][i...]=Complex(x.partials[k]); nothing), Val(N))
         return a
     end
 end
