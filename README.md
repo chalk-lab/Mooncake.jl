@@ -28,7 +28,12 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 > queries lacking a minimal reproducible example sit outside what we can
 > reasonably support, as do requests for rules beyond Julia Base, or for
 > behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page; such issues will generally be closed. Accounts involved in spam
+> page; such issues will generally be closed. Direct support for mutation means
+> that most numerical Julia code differentiates without hand-written rules; the
+> exceptions usually reflect a missing rule rather than a defect. Where a
+> derivative cannot be constructed soundly, as with `Core.bitcast` or the
+> internals of another AD library, `Mooncake.jl` requires an explicit rule
+> rather than silently returning an incorrect gradient. Accounts involved in spam
 > or abuse will be blocked and reported; moderation is otherwise undertaken
 > at our discretion, as capacity permits.
 
