@@ -846,6 +846,12 @@ function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::
     return true
 end
 
+# Principle: nfwd fires only when every differentiable leaf is
+# `NDualEltype = Union{IEEEFloat, Complex{<:IEEEFloat}}` — represented as `NDual` (scalar),
+# `NDualArray` (array), or `NDualMemoryRef` (memory). Anything else (e.g. `BFloat16`, whose
+# `dual_type` is the generic `NTuple{N,·}`) is not projectable, so it routes to the frule transform.
+# This gate enforces that per argument; NDual op coverage is completed only for IEEEFloat/Complex.
+#
 # The nfwd path handles inner-dual scalars/arrays only: an argument is admissible iff it is
 # non-differentiable (dual `NoDual` → passed as its primal) or dual-lifts to a projectable inner
 # dual (`NDual`/`Complex{NDual}`/`NDualArray`/`NDualMemoryRef`, or a tuple/named-tuple of those →
