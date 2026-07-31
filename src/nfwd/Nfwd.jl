@@ -2308,6 +2308,17 @@ else
     end
 end
 
+# `maximum`/`minimum` over an `NDualArray` select the arg-extreme element's dual. The generic path
+# folds `max`/`min` over `A[i]`, building one `NDual` per element; instead scan the (real) primal for
+# the arg-extreme and take a single `getindex` — ~10×, and layout-agnostic (`getindex` handles both
+# the 1.11+ block and the 1.10 parallel-arrays form). Real elements only (max/min need a total order).
+function Base.maximum(nda::NDualArray{E}) where {E<:IEEEFloat}
+    @inbounds nda[argmax(getfield(nda, :primal))]
+end
+function Base.minimum(nda::NDualArray{E}) where {E<:IEEEFloat}
+    @inbounds nda[argmin(getfield(nda, :primal))]
+end
+
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualRef{P, N}` — canonical V for `Base.RefValue{P<:NDualEltype}` (real or complex
 # scalar), the scalar analogue of `NDualArray`. Carries the same information as a `Ref` of an
