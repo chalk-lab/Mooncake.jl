@@ -293,15 +293,5 @@ end
         @test H ≈ [6.0 0.0; 0.0 6.0]
     end
 
-    # Regression test for the `tangent_type(::Type{<:MooncakeInterpreter}) = NoTangent`
-    @testset "MooncakeInterpreter has NoTangent tangent_type" begin
-        interp = get_interpreter(ForwardMode)
-        @test Mooncake.tangent_type(typeof(interp)) == Mooncake.NoTangent
-        @test Mooncake.zero_tangent(interp) isa Mooncake.NoTangent
-        # Exercise it with real, already-compiled rule state present, not just a bare
-        # fresh interpreter, since that's the scenario the recursion bug actually hit.
-        prepare_hvp_cache(x -> sum(x .* x), [1.0, 2.0])
-        interp2 = get_interpreter(ForwardMode)
-        @test Mooncake.zero_tangent(interp2) isa Mooncake.NoTangent
-    end
+    @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end

@@ -2220,9 +2220,8 @@ function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
 end
 
 @inline function _assert_matching_tangent_shape(primal, tangent, arg_index::Int)
-    # `axes(x) = map(oneto, size(x))` is defined for any `x`, so `applicable(axes, x)` is
-    # `true` even when `x` has no `size` method (e.g. a struct-shaped `Tangent`) - check
-    # `size` itself instead, since that's what `axes` actually depends on.
+    # Base's generic `axes(x) = map(oneto, size(x))` makes `applicable(axes, x)` true even
+    # for a struct-shaped `Tangent` with no `size` method, so check `size` instead.
     if applicable(size, primal) && applicable(size, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
