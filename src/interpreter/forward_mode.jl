@@ -724,6 +724,33 @@ function _nfwd_callee(@nospecialize(a))
     return nothing
 end
 
+# Length-changing array operations. The `NDualArray` is a fixed-shape parallel structure (its
+# partials are a matching-length block/arrays) with no grow/shrink, so a function that mutates a
+# dual array's length cannot run natively on the duals. Reject such calls so nfwd fires only where
+# every op has proven NDual coverage; the transform handles length mutation correctly. A dynamic
+# `:call` to one of these on a dual is already rejected as an opaque call — the gap this closes is a
+# resolved `:invoke` (e.g. `append!` lowers to `invoke push!(::NDualArray, …)`), which is otherwise
+# recursed into rather than checked.
+const _NFWD_ARRAY_MUTATORS = Set{Any}(
+    Any[
+        push!,
+        pushfirst!,
+        pop!,
+        popfirst!,
+        append!,
+        prepend!,
+        insert!,
+        deleteat!,
+        resize!,
+        sizehint!,
+        empty!,
+        splice!,
+        keepat!,
+        filter!,
+    ],
+)
+const _NFWD_ARRAY_MUTATOR_TYPES = Set{Any}(Any[typeof(f) for f in _NFWD_ARRAY_MUTATORS])
+
 function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
     ssatypes = ci.ssavaluetypes
     for st in ci.code
@@ -749,7 +776,17 @@ function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
             _nfwd_any_dual(ssatypes, sig, st.args) && return true
         elseif st.head === :invoke
             s = _nfwd_invoke_sig(st.args[1])
-            s === nothing || push!(work, s)
+            if s !== nothing
+                # A length-changing array op on a dual array cannot run natively (fixed-shape
+                # NDualArray); reject so nfwd falls back to the transform.
+                if s isa DataType &&
+                    !isempty(s.parameters) &&
+                    s.parameters[1] in _NFWD_ARRAY_MUTATOR_TYPES &&
+                    _nfwd_any_dual(ssatypes, sig, st.args)
+                    return true
+                end
+                push!(work, s)
+            end
         end
     end
     return false

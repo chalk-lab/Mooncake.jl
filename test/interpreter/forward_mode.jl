@@ -130,3 +130,14 @@ end;
     @test isempty(setdiff(builtins, accounted))
     @test isempty(intersect(Mooncake._NFWD_SAFE_BUILTINS, Mooncake._NFWD_OPAQUE_BUILTINS))
 end
+
+@testset "nfwd rejects array-length mutation" begin
+    # A length-changing op on a dual array cannot run on the fixed-shape `NDualArray`, so the
+    # classifier must reject it and fall back to the transform (which handles growth). Regression
+    # for `append!` lowering to `invoke push!(::NDualArray, …)` → `resize!(::NDualArray)` MethodError.
+    @test !Mooncake._nfwd_safe(Any[typeof(append!), Vector{Float64}, Vector{Float64}], 1)
+    @test !Mooncake._nfwd_safe(Any[typeof(push!), Vector{Float64}, Float64], 1)
+    # A non-mutating array reduction over the same element type still fires natively.
+    reduce_fn(x) = sum(sin.(x))
+    @test Mooncake._nfwd_safe(Any[typeof(reduce_fn), Vector{Float64}], 1)
+end
