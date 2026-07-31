@@ -15,6 +15,12 @@ end
 const sr = StableRNG
 const P = Core.BFloat16
 
+# NNlib's `sigmoid` shape: `exp(-abs(x))` under an `ifelse`, smooth at zero even though
+# `abs` is not, because the kink cancels between the two branches.
+function sigmoid_shaped(x)
+    (t=exp(-abs(x)); ifelse(x >= zero(x), inv(one(x) + t), t / (one(x) + t)))
+end
+
 @testset "bfloat16s" begin
     @testset "tangent interface" begin
         rng = sr(123)
@@ -69,6 +75,21 @@ const P = Core.BFloat16
     # inputs, yielding |LHS-RHS|≈0.16 even when ẏ_fd≠0 → atol=0.2.
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
         test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
+    end
+
+    # Right at zero for BFloat16 but not the IEEEFloat types: this repo's `abs` rules branch
+    # on `x >= zero(P)`, never reaching the `abs_float` intrinsic's `sign(x)`. Pinned by
+    # calling the rule, since `test_rule` passes when any one step agrees and a collapsed 0
+    # matches six of the seven: below ε = 1e-2, `sigmoid_shaped(±ε)` rounds back to `0.5`.
+    # `abs` is absent above: its central difference returns 0 at the kink, the rule 1.
+    @testset "sigmoid_shaped at zero" begin
+        rule = Mooncake.build_rrule(sigmoid_shaped, P(0))
+        _, pb = rule(Mooncake.zero_fcodual(sigmoid_shaped), Mooncake.zero_fcodual(P(0)))
+        @test Float64(pb(one(P))[2]) ≈ 0.25 rtol = 1e-2
+        # `test_rule`'s value, interface and caching checks survive that blind spot.
+        for x in (P(0), P(0.5))
+            test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
+        end
     end
 
     # When x == 0 and 0 < y < 1: z = 0^y = 0, log(0) = -Inf, so z * log(x) = 0 * (-Inf) = NaN

@@ -587,9 +587,7 @@ end
             oc = Base.Experimental.@opaque x -> x + 1
             @test Mooncake._copy_output(oc) === oc
 
-            # End-to-end: friendly forward-over-reverse over an array function builds
-            # a gradient closure that captures the compiled reverse rule. Copying it
-            # must not StackOverflow at prepare time.
+            # The gradient closure captures the compiled rule; copying it StackOverflowed.
             f = x -> sum(abs2, x)
             @test Mooncake.prepare_hvp_cache(
                 f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; friendly_tangents=true)

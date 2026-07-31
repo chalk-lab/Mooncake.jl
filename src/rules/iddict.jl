@@ -156,9 +156,8 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
     end
 
     setindex!(primal(d), primal(val), k)
-    # `setindex!` above stored `convert(V, val)`, so the slot is `tangent_type(V)`. For a
-    # matched/abstract `V` the two-argument `zero_tangent` reuses `val`'s fdata to preserve
-    # aliasing for mutable values; a non-diff slot/value takes a fresh slot-typed zero.
+    # `setindex!` above stored `convert(V, val)`, so the slot is `tangent_type(V)`. The
+    # two-arg `zero_tangent` reuses `val`'s fdata to preserve aliasing for mutable values.
     dslot = if tangent_type(V) == NoTangent
         NoTangent()
     elseif tangent_type(typeof(primal(val))) == NoTangent

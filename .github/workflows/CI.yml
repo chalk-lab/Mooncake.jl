@@ -27,6 +27,7 @@ jobs:
       matrix:
         test_group: [
           'basic',
+          'Nfwd',
           'rules/avoiding_non_differentiable_code',
           'rules/blas_Float64',
           'rules/blas_Float32',

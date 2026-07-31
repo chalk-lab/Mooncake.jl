@@ -521,11 +521,10 @@ For types with custom copy semantics, overload this function (see `Core.SimpleVe
 _copy_output(x::Core.TypeName) = x
 _copy_output(x::Module) = x
 
-# Compiled callables retain reflection/IR objects whose reference graph is cyclic
-# (e.g. Method.specializations <-> MethodInstance.def), so field-by-field descent
-# never terminates. They are never differentiable, so return them as-is — this lets
-# the friendly `prepare_hvp_cache` path copy a gradient closure that captures a
-# compiled rule without overflowing.
+# Compiled callables hold reflection objects with cyclic references (Method.specializations
+# <-> MethodInstance.def), so field-by-field descent never terminates. They are never
+# differentiable, so return them as-is: `prepare_hvp_cache` copies gradient closures that
+# capture a compiled rule, and would otherwise overflow.
 _copy_output(x::Core.OpaqueClosure) = x
 _copy_output(x::MistyClosure) = x
 
@@ -760,7 +759,6 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     ȳ,
     f::F,
     x::Vararg{Any,N};
-    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -875,7 +873,6 @@ value_and_gradient!!(cache, f, x, y)
     cache::Cache,
     f::F,
     x::Vararg{Any,N};
-    # A `false` entry is an unsafe optimization unless the arg holds no differentiable data; see docstring / #1238.
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
@@ -2161,9 +2158,7 @@ end
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. For non-primitive `f`, the compiled
-# inner rrule lives in the `DerivedFoRRule` captured by `grad_f` (built once at prep);
-# `get_inner_rrule`'s frule serves its `Dual` to the forward pass on every
-# `value_and_hvp!!` call.
+# inner rrule is built once at prep and lives in the `DerivedFoRRule` captured by `grad_f`.
 """
     HVPCache
 
@@ -2272,24 +2267,19 @@ true
     f::F, x::Vararg{Any,N}; config=Config()
 ) where {F,N}
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
-    # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
-    # buffers reused by `grad_f`, and supplies `output_spec`. The primitive
-    # (`DerivedFoRRule{Nothing}`) branches below also evaluate gradients through
-    # `grad_cache.rule`.
+    # Built even on the derived path, which bypasses `grad_cache.rule`: it validates that
+    # `f` returns an `IEEEFloat` and supplies the tangent buffers and `output_spec` below.
     grad_cache = prepare_gradient_cache(f, x...; config)
 
     # `DerivedFoRRule` wraps a pre-built `Dual(rule, rule_tangent)` so forward AD reuses
-    # the rule's forward-mode-compiled dual callables instead of `zero_tangent`
-    # re-deriving them and leaking reverse-mode primitives (e.g. inlined `IdDict()`)
-    # into the forward IR. The type parameter `D` discriminates derived
-    # (`D <: Dual`) from primitive (`D === Nothing`) rrules — primitive rrules have
-    # no MistyClosure IR and keep using `grad_cache`'s rule directly.
+    # the rule's forward-mode-compiled dual callables; letting `zero_tangent` re-derive
+    # them leaks reverse-mode primitives (e.g. inlined `IdDict()`) into the forward IR.
+    # `DerivedFoRRule{Nothing}` instead means `f` is itself a reverse-mode primitive: no
+    # derived rule to carry, so those branches below use `grad_cache.rule` directly.
     for_rule = compile_for_rule(f, x...; debug_mode=config.debug_mode)
 
-    # The derived branches capture only these buffers: capturing `grad_cache` itself
-    # would make `zero_tangent(grad_f)` traverse `grad_cache.rule`'s MistyClosures and
-    # eagerly build dual callables over reverse-mode-optimised IR that the derived path
-    # never invokes.
+    # The derived branches capture only these buffers: capturing `grad_cache` would make
+    # `zero_tangent(grad_f)` build dual callables over MistyClosure IR it never runs.
     tangents = grad_cache.tangents
     grad_f = if N == 1
         if for_rule isa DerivedFoRRule{Nothing}
@@ -2339,9 +2329,7 @@ true
 end
 
 function _make_hessian_buffers(::Type{T}, xs::Tuple) where {T}
-    # Allocate `v`/`grad` as the input's tangent type and `H` via `similar` so that
-    # GPU-array inputs get device-resident buffers; for `Vector{T}` inputs this is
-    # identical to host `zeros`.
+    # `similar`/`zero_tangent` rather than `zeros`: GPU inputs need device-resident buffers.
     if length(xs) == 1
         x = xs[1]
         n = length(x)
@@ -2769,8 +2757,8 @@ H
         return fval, g, H
     end
     local value
-    # One-hot writes via a reused host buffer + `copyto!`: `v[i] = x` is GPU scalar
-    # indexing (errors on CuArray), while `copyto!` serves both Vector and CuArray.
+    # `v[i] = one(T)` is scalar indexing and errors on CuArray; `copyto!` from this
+    # one-element host buffer serves `Vector` and `CuArray` alike.
     e = Vector{T}(undef, 1)
     for i in 1:n
         e[1] = one(T)

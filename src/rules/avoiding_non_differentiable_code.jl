@@ -61,8 +61,7 @@ import Base.CoreLogging as CoreLogging
     Symbol,
 }
 
-# On 1.12+, @invokelatest no longer expands to Core._call_latest, it uses
-# Base.invokelatest/Base.invokelatest_gr instead.
+# On 1.12+, @invokelatest uses Base.invokelatest/invokelatest_gr, not Core._call_latest.
 @static if VERSION < v"1.12-"
     @zero_derivative MinimalCtx Tuple{
         typeof(Core._call_latest),
@@ -100,8 +99,7 @@ end
     }
 end
 
-# On 1.12+, @invokelatest no longer expands to Core._call_latest, so this kwargs
-# variant is also dead code on 1.12+.
+# The kwargs variant is dead on 1.12+ for the same reason.
 @static if VERSION < v"1.12-"
     @zero_derivative(
         MinimalCtx,
