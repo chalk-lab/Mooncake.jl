@@ -302,8 +302,7 @@ function benchmark_rules!!(
             return combine_results((args, suite), tags[n], ranges[n], default_ratios)
         end
 
-        # Perf ratios can spike spuriously on noisy CI runners, so retry an out-of-range
-        # result up to `retries` times; only a persistent failure counts as a regression.
+        # Only a persistent out-of-range ratio is a regression; CI runners are noisy.
         return map(enumerate(test_cases)) do (n, args)
             ratio = run_case(n, args)
             for _ in 1:retries

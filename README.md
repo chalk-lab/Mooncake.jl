@@ -17,7 +17,7 @@ The goal of the `Mooncake.jl` project is to produce an AD package written entire
 Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
 
 > [!IMPORTANT]
-> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded
+> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded research
 > institutions, with correspondingly limited capacity for triage and review. In the spirit of
 > long-lived projects such as R and TeX, we favour correctness, stability,
 > and tightly scoped fixes over open-ended expansion.
@@ -28,11 +28,9 @@ Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more
 > queries lacking a minimal reproducible example sit outside what we can
 > reasonably support, as do requests for rules beyond Julia Base, or for
 > behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page; such issues will generally be closed.
->
-> Organisations relying on Mooncake.jl commercially are warmly encouraged
-> to contribute, whether through focused code contributions, financial
-> support, or both.
+> page; such issues will generally be closed. Accounts involved in spam
+> or abuse will be blocked and reported; moderation is otherwise undertaken
+> at our discretion, as capacity permits.
 
 ## Getting Started
 

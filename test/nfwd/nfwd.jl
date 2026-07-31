@@ -314,6 +314,11 @@ using Mooncake.Nfwd
                     (cosh, sinh),
                 ],
             ),
+            (
+                # `tanh(20)` rounds to `1.0`, so `1 - tanh(x)^2` is exactly 0 in Float64.
+                20.0,
+                [(tanh, x -> Float64(1 - tanh(big(x))^2))],
+            ),
         ]
             for (f, df) in fns
                 d = _d(v, 1.0)

@@ -118,22 +118,13 @@ const CuGpuSumFArray = Union{
     Transpose{<:IEEEFloat,<:CuFloatArray},
 }
 
-# vcat/hcat/cat/permutedims also accept these wrapper types (Julia's own methods for
-# them already handle it at the primal level). Each argument is canonicalised via
-# `Mooncake.arrayify`, which already has generic overloads for Adjoint/Transpose/
-# SubArray (see `src/rules/blas.jl`): they recurse into `.parent` and re-wrap the
-# tangent in the same wrapper type. Without this, these wrapper types fall through to
-# the interpreter and hit the same untraceable `cufunction` try/finally the rules
-# below exist to avoid.
-#
-# Adjoint/Transpose and SubArray use different bounds because their `arrayify` methods
-# do: Adjoint/Transpose go through the generic `Union{IEEEFloat,BlasFloat}` method
-# (real `Float16` ok, `Complex{Float16}` not), while the SubArray method is bounded to
-# `BlasFloat` alone (excludes `Float16` entirely, real or complex). A wider bound here
-# than `arrayify` supports would let e.g. `vcat(view(cu_f16_mat, 1:2, :), y)` (a
-# strided view, which stays a genuine `SubArray`) through as primitive, only to fail
-# inside the rule with a misdirected `arrayify` error instead of falling through to the
-# interpreter like any other unsupported case.
+# vcat/hcat/cat/permutedims also accept these wrapper types; without them here the wrappers
+# fall through to the interpreter and hit the same untraceable `cufunction` try/finally the
+# rules below exist to avoid. `Mooncake.arrayify` canonicalises each argument (generic
+# Adjoint/Transpose/SubArray overloads in `src/rules/blas.jl`), and the bounds mirror its
+# own — `Union{IEEEFloat,BlasFloat}` for Adjoint/Transpose, `BlasFloat` alone for SubArray —
+# since a wider bound would claim a call as primitive only to fail inside the rule with a
+# misdirected `arrayify` error instead of falling through to the interpreter.
 const CuMaybeWrappedArray = Union{
     CuMaybeComplexArray,
     Adjoint{<:Union{IEEEFloat,LinearAlgebra.BlasFloat},<:CuMaybeComplexArray},
@@ -1586,12 +1577,10 @@ function frule!!(
     end
     return a
 end
-function rrule!!(
-    ::CoDual{typeof(fill!)},
-    a::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    x::CoDual,
-)
-    pa, da = primal(a), tangent(a)
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuMaybeWrappedArray}, x::CoDual)
+    # Through the wrapper, so `sum(da)` sums the destination's own elements and the restore
+    # writes back through it — conjugating for an `Adjoint`, as its `setindex!` does.
+    pa, da = arrayify(a)
     old = copy(pa)
     fill!(pa, primal(x))
     function fill!_gpu_pb!!(::NoRData)
@@ -1929,22 +1918,24 @@ end
 end
 
 # `dims` a Tuple of K distinct dimensions: cat(A, B, ...; dims=(d1, d2, ...)) builds a
-# block-diagonal result, growing every listed dimension simultaneously for each array
-# and zero-filling elsewhere. Each input's gradient is the rectangular sub-block of
-# dy_out obtained by slicing every listed dimension by its own running offset, and
-# taking the full range on every dimension not in `dims` (inputs must already agree in
-# size there, per `cat`'s own requirements).
+# block-diagonal result, growing every listed dimension simultaneously and zero-filling
+# elsewhere. Each input's gradient is the sub-block of dy_out at its own running offset in
+# each listed dimension, full range elsewhere (`cat` requires equal sizes there).
 @inline function _cu_concat_pb!(fdatas, dy_out, dims::NTuple{K,Integer}) where {K}
     offsets = ntuple(_ -> 0, Val(K))
     nd = Val(ndims(dy_out))
     for i in eachindex(fdatas)
         fi = fdatas[i]
-        ranges = ntuple(nd) do d
-            k = findfirst(==(d), dims)
-            k === nothing ? Colon() : (offsets[k] + 1):(offsets[k] + size(fi, d))
+        # `let`, so the closure below captures a binding that is never reassigned:
+        # capturing `offsets` itself boxes it and costs the loop its zero-allocation.
+        offsets = let offs = offsets
+            ranges = ntuple(nd) do d
+                k = findfirst(==(d), dims)
+                k === nothing ? Colon() : (offs[k] + 1):(offs[k] + size(fi, d))
+            end
+            fi .+= view(dy_out, ranges...)
+            ntuple(k -> offs[k] + size(fi, dims[k]), Val(K))
         end
-        fi .+= view(dy_out, ranges...)
-        offsets = ntuple(k -> offsets[k] + size(fi, dims[k]), Val(K))
     end
     return nothing
 end
@@ -1952,11 +1943,14 @@ end
 _unwrap_cat_dim(d::Integer) = d
 _unwrap_cat_dim(::Val{N}) where {N} = N
 _unwrap_cat_dim(d::Tuple{Vararg{Integer}}) = d
+# `Base.dims2cat` takes any iterable, so `cat(A, B; dims=1:2)` and `dims=[1, 2]` are valid
+# calls the primal and the frule both accept; normalise to the Tuple the pullback needs.
+_unwrap_cat_dim(d::AbstractVector{<:Integer}) = Tuple(d)
 function _unwrap_cat_dim(d)
     return throw(
         ArgumentError(
-            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple of " *
-            "Integers; got dims=$(d).",
+            "Mooncake: cat requires dims to be an Integer, Val{N}, or a Tuple or vector " *
+            "of Integers; got dims=$(d).",
         ),
     )
 end
@@ -2064,22 +2058,14 @@ end
     )
 end
 
-# Mixed CPU/GPU device guard for vcat/hcat/cat, covering array/array and array/scalar
-# mixing together, at any arity and any argument order.
-#
-# Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}} above is a strict
-# subtype of Tuple{typeof(vcat),Vararg{Union{AbstractArray,Number}}} below with a
-# matching function-argument type (both `Dual{typeof(vcat)}`, no `<:`), so Julia's
-# method specificity picks it for pure-GPU calls; this guard is never consulted then.
-# Pure-CPU calls do reach this guard, but has_gpu=false there, so it returns false and
-# they fall through to the interpreter unaffected (this is what keeps CPU code, e.g.
-# NNlib's softmax, working). Only genuinely mixed CPU+GPU calls (any N, any order,
-# arrays or scalars) make `_is_primitive` return true, at which point frule!!/rrule!!
-# below throw a clear error instead of the opaque `cufunction` crash.
-#
-# `@is_primitive` can't express this: a plain declaration is always primitive for its
-# whole signature, but this decision has to depend on the concrete argument types, so
-# `_is_primitive` is implemented directly instead.
+# Mixed CPU/GPU device guard for vcat/hcat/cat, at any arity and any argument order, arrays
+# or scalars: only genuinely mixed calls make `_is_primitive` return true, at which point
+# frule!!/rrule!! below throw a clear error instead of the opaque `cufunction` crash.
+# Pure-GPU calls match the strictly more specific GPU-only signature above (same
+# function-argument type, so specificity decides); pure-CPU calls do reach here, get
+# has_gpu=false, and fall through to the interpreter, which keeps CPU code such as NNlib's
+# softmax working. `@is_primitive` can't express a decision that depends on the concrete
+# argument types, hence the direct `_is_primitive` method.
 _cu_isa_gpu_side(::Type{T}) where {T} = T <: CuMaybeWrappedArray
 
 # `any_matches_primitive` feeds every call site's type into `_is_primitive`, including
@@ -2785,13 +2771,11 @@ function _gpu_broadcast_dual(f::F, args...) where {F}
     return ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
 
-# Single second-order chokepoint: the NDual-based GPU rules (`sum(f, x)`,
-# `materialize`, `materialize!`) all launch their kernel through
-# `_gpu_broadcast_dual`, traced only when nested AD differentiates a rule body.
-# Tracing it nests `NDual` over `NDual`, which raises an error (perturbation
-# confusion) — so intercept here; one primitive covers every NDual rule. Both modes
-# get a throwing rule so the unsupported reverse-over-* direction fails with the
-# same clear message rather than a missing-rule MethodError.
+# Single second-order chokepoint: the NDual-based GPU rules (`sum(f, x)`, `materialize`,
+# `materialize!`) all launch their kernel through `_gpu_broadcast_dual`, traced only when
+# nested AD differentiates a rule body. Tracing it nests `NDual` over `NDual`, which errors
+# (perturbation confusion). Both modes get a throwing rule so the unsupported
+# reverse-over-* direction fails with the same clear message rather than a MethodError.
 const _GPU_SECOND_ORDER_MSG =
     "Mooncake: HVP / Hessian over a custom CUDA kernel (broadcasting, or " *
     "`sum(f, x)`-style mapped reductions) is not yet supported — the kernel is a " *
@@ -3491,11 +3475,14 @@ end
 # handles this correctly: contribs are computed from dual_out + dout, captured in
 # the closure BEFORE dout is zeroed.  The frule accumulates contributions into a
 # temporary before writing to dout, for the same reason.
+#
+# A broadcast into a wrapped `CuArray` still forms a `Broadcasted{CuArrayStyle}`, so a bare
+# `CuArray` bound left it to the interpreter, which died tracing the kernel launch.
 @is_primitive(
     MinimalCtx,
     Tuple{
         typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
-    } where {P<:CuMaybeComplexArray},
+    } where {P<:CuMaybeWrappedArray},
 )
 function frule!!(
     ::Lifted{typeof(Base.Broadcast.materialize!),Nw},
@@ -3538,10 +3525,10 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
-    dest::CoDual{P,P},
+    dest::CoDual{P},
     bc::CoDual{<:Broadcasted{<:CuArrayStyle}},
-) where {P<:CuMaybeComplexArray}
-    pout, dout = primal(dest), tangent(dest)
+) where {P<:CuMaybeWrappedArray}
+    pout, dout = arrayify(dest)
     bc_primal = primal(bc)
     bc_fdata = tangent(bc)
     bc_prepared, flat_bc, flat_pargs, flat_fdatas = _prepare_gpu_broadcast(
@@ -3632,13 +3619,11 @@ end
 # Mooncake can't trace. Split into two primitives: this one for array-valued m (dims
 # gives a CuArray output), and one below for scalar m (dims=: gives a scalar output).
 #
-# Two conventions hold throughout the varm/mean rules below. First, the primal value
-# comes from calling the real function — rules execute natively, so the mapreduce
-# closure only blocks tracing — which inherits the primal's kwarg validation,
-# NaN-on-empty convention, and exact value arithmetic. Second, each hand-rolled
-# derivative uses the same arithmetic as its own primal method — λ-prescaled where
-# the primal λ-prescales, divide-after-sum where it divides after — so value and
-# derivative degrade identically in Float16 edge cases.
+# Two conventions throughout the varm/mean rules below: the primal value comes from calling
+# the real function (rules run natively, so the closure only blocks tracing), inheriting its
+# kwarg validation and NaN-on-empty convention; and each hand-rolled derivative uses the same
+# arithmetic as its own primal method — λ-prescaled where the primal prescales, divide-after
+# where it divides the sum — so value and derivative degrade identically in Float16 edge cases.
 
 # A real-valued fdata/rdata slot can't hold a complex value. When exactly one of x/m
 # is complex, the true partial derivative of |x-m|² is the real part of the naive
@@ -3797,20 +3782,16 @@ function _varm_scalar_colon_pb(px, dx, pm, corrected::Bool)
     return pb!!
 end
 
-# Scalar m must share x's underlying precision. With e.g. Float32 data and a Float64
-# mean, Statistics' scalar-m varm infers Union{Float32,Float64} (the n==0 branch
-# types σ² off x alone; the main branch promotes with m), and Mooncake's rule builder
-# cannot handle a Union-typed primitive output. Only same-precision combinations —
-# all concretely typed — are claimed as primitives; mismatched ones fail loudly in
-# the interpreter instead.
-#
-# The tie takes four explicit eltype combinations. In a single
-# `Tuple{..., CuArray{<:Union{P,Complex{P}}}, Union{P,Complex{P}}} where P`, P never
-# occurs twice covariantly, so it is not diagonal and subtyping may bind it to a
-# Union — e.g. P = Union{Float32,Float64} — letting mixed precision match anyway.
-# The invariant occurrence CuArray{P} pins P to one concrete eltype. The
-# frule!!/rrule!! methods below keep broad signatures; they are only reached for
-# claimed primitives.
+# Scalar m must share x's underlying precision: with e.g. Float32 data and a Float64 mean,
+# Statistics' scalar-m varm infers Union{Float32,Float64} (the n==0 branch types σ² off x
+# alone, the main branch promotes with m), and Mooncake's rule builder cannot handle a
+# Union-typed primitive output. Mismatched combinations are left to fail in the interpreter.
+# Hence the tie takes four explicit eltype combinations, not one
+# `Tuple{..., CuArray{<:Union{P,Complex{P}}}, Union{P,Complex{P}}} where P`: there P never
+# occurs twice covariantly, so it is not diagonal and subtyping may bind it to
+# Union{Float32,Float64}, matching mixed precision anyway; the invariant CuArray{P} pins it
+# to one concrete eltype. frule!!/rrule!! below keep broad signatures; they are only reached
+# for claimed primitives.
 for A in (:(CuArray{P}), :(CuArray{Complex{P}})), M in (:P, :(Complex{P}))
     @eval @is_primitive(
         MinimalCtx,
@@ -3858,12 +3839,10 @@ function rrule!!(
     return CoDual(σ², NoFData()), varm_scalar_mean_pb!!
 end
 
-# Bare `varm(x, m::scalar)`: a kwarg-less call dispatches straight to varm rather
-# than through Core.kwcall, so it needs its own rules. Statistics.jl's
-# `varm(A::AbstractArray, m; corrected=true) = _varm(A, m, corrected, :)` has no
+# Bare `varm(x, m::scalar)`: a kwarg-less call dispatches straight to varm rather than
+# through Core.kwcall, so it needs its own rules. Statistics.jl's scalar-m method has no
 # `dims` kwarg, so this spelling is always the Colon case with corrected=true. Its
-# @is_primitive declarations live in the loop above so the precision tie is stated
-# once.
+# @is_primitive declarations live in the loop above so the precision tie is stated once.
 function frule!!(
     ::Lifted{typeof(varm),Nw},
     x::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},

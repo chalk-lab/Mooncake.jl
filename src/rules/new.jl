@@ -135,9 +135,22 @@ function rrule!!(
     end
     return CoDual(y, dy), pb!!
 end
+# A `_new_`ed IdDict has an empty tangent (itself an IdDict, which `fdata_type` maps to
+# itself), and a pullback that returns nothing, every field it is built from having
+# `NoRData` rdata. The generic method above instead reads the raw `ht::Memory` field as an
+# iterable of `(k, v)` pairs, and builds a pullback expecting a `MutableTangent`.
+function rrule!!(
+    f::CoDual{typeof(_new_)}, p::CoDual{Type{P}}, x::Vararg{CoDual,N}
+) where {P<:IdDict,N}
+    y = _new_(P, tuple_map(primal, x)...)
+    return CoDual(y, tangent_type(P)()), NoPullback(f, p, x...)
+end
 
 @inline function build_output_tangent(::Type{P}, x::Tuple, t::Tuple) where {P}
     return _build_output_tangent_cartesian(P, x, t, Val(fieldcount(P)), Val(fieldnames(P)))
+end
+@inline function build_output_tangent(::Type{P}, ::Tuple, ::Tuple) where {P<:IdDict}
+    return tangent_type(P)()   # see the IdDict `rrule!!` above
 end
 @generated function _build_output_tangent_cartesian(
     ::Type{P}, x::Tuple, t::Tt, ::Val{nfield}, ::Val{names}
@@ -305,6 +318,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
             _new_,
             UnitUpperTriangular{Float64,Matrix{Float64}},
             randn(2, 2),
+        ),
+        # `ht` is `Memory{Any}` on 1.11+ but `Vector{Any}` on 1.10. Omitting the fields
+        # entirely leaves `ht` undefined, which segfaults for reasons of its own.
+        (
+            false,
+            :none,
+            nothing,
+            _new_,
+            IdDict{Int,Float64},
+            fieldtype(IdDict{Int,Float64}, :ht)(undef, 0),
+            0,
+            0,
         ),
     ]
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)

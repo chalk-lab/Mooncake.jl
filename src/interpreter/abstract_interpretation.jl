@@ -360,7 +360,6 @@ yields a fresh, uncached interpreter, leaving the shared current-world cache unt
 """
 function get_interpreter(mode::Type{<:Mode}, world::UInt)
     world == Base.get_world_counter() && return get_interpreter(mode)
-    # Pinned older world (Lazy/Dynamic rule rebuild): fresh, never cached.
     return MooncakeInterpreter(DefaultCtx, mode; world)
 end
 

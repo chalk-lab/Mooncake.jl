@@ -12,17 +12,37 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
-@testset "nnlib" begin
-    # TODO: CUDA version bound when 
-    #  https://github.com/JuliaGPU/CUDA.jl/issues/2886 is fixed and released
-    cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
+# At p == 0 `dropout` returns its input itself, so mutating the result doubles the sum. `p`
+# is fixed inside because `test_rule` would perturb it to `-ε`, outside `dropout`'s domain.
+function dropout_alias_tester(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)))
+    y .*= 2
+    return sum(x)
+end
 
+function dropout_alias_tester_dims(Trng, x)
+    y = dropout(Trng(1), x, zero(eltype(x)); dims=1)
+    y .*= 2
+    return sum(x)
+end
+
+# TODO: drop the CUDA version bound once the fix for
+# https://github.com/JuliaGPU/CUDA.jl/issues/2886 is released.
+cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
+
+@testset "nnlib" begin
     _rand = if cuda
         (rng, size...) -> cu(randn(rng, size...))
     else
         (rng, size...) -> randn(rng, size...)
     end
     float = cuda ? x -> Float32(x) : identity
+    _ones = cuda ? (d...) -> cu(ones(Float32, d...)) : (d...) -> ones(d...)
+    # Wider than its `src` and not representable in it, so NNlib's rounding is observable;
+    # `2.0` round-trips and would pass either way.
+    mixed_src = cuda ? cu(ones(Float32, 3)) : ones(Float32, 3)
+    _onetwo = cuda ? () -> cu(Float32[1, 2]) : () -> [1.0, 2.0]
+    mixed_init = 2.1
     Trng = cuda ? CUDA.RNG : StableRNG
 
     rng = StableRNG(123)
@@ -155,6 +175,23 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2), float(0.5)),
         (true, :none, false, dropout_tester_2, Trng, _rand(rng, 2, 2), float(0.1)),
         (true, :none, false, dropout_tester_3, Trng, _rand(rng, 2, 2), float(0.4)),
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)),
+        (false, :none, false, dropout_alias_tester_dims, Trng, _rand(rng, 2, 2)),
+        # The aliasing arm, `p ≤ 0`, which returns the input `CoDual`. On a device these
+        # also need the `materialize!` rule for the forward broadcast. Both fail on `main`.
+        (false, :none, false, dropout_alias_tester, Trng, _rand(rng, 2, 2)'),
+        (false, :none, false, dropout_alias_tester, Trng, transpose(_rand(rng, 2, 2))),
+        # ... and the other arm, `p > 0`, where the cotangent goes via `arrayify`'s wrapper.
+        (true, :none, false, dropout_tester_1, Trng, _rand(rng, 2, 2)', float(0.5)),
+        (
+            true,
+            :none,
+            false,
+            dropout_tester_2,
+            Trng,
+            transpose(_rand(rng, 2, 2)),
+            float(0.1),
+        ),
 
         # softmax
         (false, :stability, true, softmax, _rand(rng, 2)),
@@ -304,8 +341,137 @@ dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
         (false, :none, true, NNlib.scatter, +, _rand(rng, 2), [1, 3]),
         (false, :none, true, Core.kwcall, (;), NNlib.scatter, +, _rand(rng, 2), [1, 3]),
 
+        # `scatter(max/min, ...)` with sources tied for one destination, hence `_ones`.
+        (false, :none, true, NNlib.scatter, max, _ones(3), [1, 1, 2]),
+        (false, :none, true, NNlib.scatter, min, _ones(3), [1, 1, 2]),
+        (false, :none, true, Core.kwcall, (;), NNlib.scatter, max, _ones(3), [1, 1, 2]),
+
+        # ndims(src) > ndims(idx): the tie splits per row, and the helper's gather/scatter
+        # shapes have to agree on the extra leading dimension.
+        (false, :none, true, NNlib.scatter, max, _ones(2, 3), [1, 1, 2]),
+
+        # `init` is differentiable, so the keyword NamedTuple's rdata is not NoRData. The
+        # cases put it below every source, above every source, and tied with one — a tie whose
+        # symmetric split is the mean of the one-sided derivatives a central difference takes.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(0.5),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(1.0),),
+            NNlib.scatter,
+            max,
+            _onetwo(),
+            [1, 2],
+        ),
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=mixed_init,),
+            NNlib.scatter,
+            max,
+            mixed_src,
+            [1, 1, 2],
+        ),
+
+        # An `init` with no rdata, which used to throw. It wins outright, so nothing ties it.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=2,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
+        # A `NaN` in `src` must reach the gradient in both arms rather than be silenced to
+        # zero by a `max(total, 1)` — removing that guard is what made the arms agree.
+        # `interface_only`, since a `NaN` gradient is not finite-differenceable.
+        (true, :none, true, NNlib.scatter, max, [NaN, 1.0, 2.0], [1, 1, 2]),
+        (
+            true,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            [NaN, 1.0, 2.0],
+            [1, 1, 2],
+        ),
+
+        # `init` over a multi-dim `src`, where the tie count and the `init` indicator have to
+        # agree on the extra leading dimension.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=float(2.0),),
+            NNlib.scatter,
+            max,
+            _ones(2, 3),
+            [1, 1, 2],
+        ),
+
+        # `init=nothing` is NNlib's own default and takes the no-`init` path.
+        (
+            false,
+            :none,
+            true,
+            Core.kwcall,
+            (init=nothing,),
+            NNlib.scatter,
+            max,
+            _ones(3),
+            [1, 1, 2],
+        ),
+
+        # `dstsize` past the largest index leaves destinations no index reaches, holding
+        # `scatter_empty`; nothing gathers them, so they take no part in the gradient, and the
+        # slice keeps their `-Inf`s out of the sum.
+        (
+            false,
+            :none,
+            false,
+            x -> sum(NNlib.scatter(max, x, [1, 1, 2]; dstsize=(4,))[1:2]),
+            _ones(3),
+        ),
+
         # gather
         (false, :none, true, NNlib.gather, _rand(rng, 2, 4), [1, 3, 1]),
+        # Wrapped `src`: the pullback scatters into `arrayify`'s fdata, which keeps the
+        # wrapper, and NNlib's `scatter!` takes only a dense destination. Square, so the
+        # wrapped trailing size still admits the indices.
+        (false, :none, true, NNlib.gather, _rand(rng, 4, 4)', [1, 3, 1]),
+        (false, :none, true, NNlib.gather, transpose(_rand(rng, 4, 4)), [1, 3, 1]),
 
         # conv
         (false, :none, true, Core.kwcall, (;), conv, x, w, dense_cdims),
@@ -472,14 +638,16 @@ end
 
 @testset "logsumexp Inf/NaN stability" begin
     function test_logsumexp_inf(x, dims)
-        seed = ones(eltype(x), size(logsumexp(x; dims=dims)))
-        cache = Mooncake.prepare_pullback_cache(
-            Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
+        cdx = Mooncake.zero_fcodual(copy(x))
+        y, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Core.kwcall),
+            Mooncake.zero_fcodual(NamedTuple{(:dims,)}((dims=dims,))),
+            Mooncake.zero_fcodual(logsumexp),
+            cdx,
         )
-        y, (_, _, _, dx) = Mooncake.value_and_pullback!!(
-            cache, seed, Core.kwcall, NamedTuple{(:dims,)}((dims=dims,)), logsumexp, x
-        )
-        return y, dx
+        Mooncake.tangent(y) .= 1
+        pb(Mooncake.NoRData())
+        return Mooncake.primal(y), Mooncake.tangent(cdx)
     end
 
     # All Inf inputs
@@ -522,4 +690,108 @@ end
     @test isinf(ndual_value(y_nd_neg)) && ndual_value(y_nd_neg) < 0
     @test !isnan(ndual_partial(y_nd_neg, 1))
     @test ndual_partial(y_nd_neg, 1) ≈ 0.5f0
+end
+
+# NNlib's `exp(-abs(x))` form of σ has a kink at zero that the function itself does not.
+@testset "sigmoid at zero and saturation: $f" for f in (NNlib.σ, NNlib.sigmoid_fast)
+    test_rule(StableRNG(123), f, 0.0; perf_flag=:stability)
+    # The reported failure was a gradient through a broadcast containing an exact zero.
+    test_rule(StableRNG(123), x -> sum(f.(x)), [0.0, 0.5, -0.5]; is_primitive=false)
+    # On GPU that broadcast is evaluated on `NDual`s in-kernel, an independent code path.
+    if cuda
+        test_rule(
+            StableRNG(123), x -> sum(f.(x)), cu([0.0f0, 0.5f0, -0.5f0]); is_primitive=false
+        )
+    end
+    # Saturated inputs: NaN, Inf and stability, not precision — see `test_rule`'s Limitations.
+    test_rule(StableRNG(123), f, 37.0; perf_flag=:stability)
+    test_rule(StableRNG(123), f, 17.0f0; perf_flag=:stability)
+
+    # Float16 collapses first, at x >= 8, where `test_rule` fails whichever formula is in
+    # place: in its `ȳ·ẏ + x̄·ẋ` check `ẏ` is exactly 0 for every step (spacing 4.88e-4
+    # against a true change of 3.35e-6) and `ẋ` 2.3% off at best, so compare against a
+    # wider-precision reference. `Ω * (1 - Ω)` returns exactly 0 here, so these are the only
+    # tests pinning σ's precision.
+    ref16 = (b=big(8.0); y=inv(1 + exp(-b)); Float64(y * (1 - y)))
+    x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
+    @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(Float16(8), one(Float16))
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(Mooncake.zero_fcodual(f), Mooncake.zero_fcodual(Float16(8)))
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
+end
+
+# `tanh_fast`'s primal discards an `ifelse` branch that overflows to `NaN`, which reverse mode
+# picked up as `0 * Inf`, poisoning `gelu`/`gelu_tanh` from `|x| ≈ 21` upwards.
+@testset "tanh_fast across NNlib's branches" begin
+    test_rule(StableRNG(123), tanh_fast, 0.5; perf_flag=:stability)
+    test_rule(StableRNG(123), tanh_fast, 400.0; perf_flag=:stability)
+    # Below |x| ≈ 0.13 the primal switches to a polynomial while the rule stays analytic, so
+    # this pins the gap between them as small enough for finite differences not to see it.
+    test_rule(StableRNG(123), tanh_fast, 0.05; perf_flag=:stability)
+    test_rule(
+        StableRNG(123), x -> sum(NNlib.gelu_tanh.(x)), [1.0, 25.0]; is_primitive=false
+    )
+    # NNlib's `tanh_fast(::Float32)` is a different body, so none of the cases above reach it:
+    # the rule kept working for `Float64` with `Float32` removed from it. Through `gelu_tanh`
+    # the Float32 gradient goes `NaN` from |x| ≈ 258.8, so a scalar fails without the rule.
+    test_rule(StableRNG(123), NNlib.gelu_tanh, 300.0f0; is_primitive=false)
+    # As for σ, the saturated derivative's precision is beyond finite differences. `1 - Ω^2`
+    # returns exactly 0 at Float16(6), against a true 2.46e-5, so it separates the two forms.
+    ref16 = Float64(1 - tanh(big(6.0))^2)
+    d16 = Mooncake.frule!!(
+        Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
+        Mooncake.Dual(Float16(6), one(Float16)),
+    )
+    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    _, pb16 = Mooncake.rrule!!(
+        Mooncake.zero_fcodual(tanh_fast), Mooncake.zero_fcodual(Float16(6))
+    )
+    @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
+end
+
+# The rules below are reverse-only primitives, so forward mode traces the primal; declared for
+# both modes it would find no `frule!!` and raise. CPU arrays only: a traced GPU kernel launch
+# is a foreigncall, raising `MissingForeigncallRuleError`, and `gather` took the process down.
+@testset "forward mode traces reverse-only rules" begin
+    x = randn(StableRNG(123), 3)
+    for f in (
+        # `softmax` is returned whole: its outputs sum to 1, so `1ᵀJ = 0` and a summed case is
+        # blind to every error in it. `logsoftmax` does not, so summing it stays a real check.
+        x -> softmax(x),
+        x -> softmax(x; dims=1),
+        x -> sum(logsoftmax(x)),
+        x -> sum(logsoftmax(x; dims=1)),
+        x -> logsumexp(x),
+        x -> sum(logsumexp(x; dims=1)),
+        x -> sum(NNlib.gather(x, [1, 3])),
+    )
+        test_rule(StableRNG(123), f, x; mode=Mooncake.ForwardMode, is_primitive=false)
+    end
+end
+
+# `gather`'s GPU kernel launch does not survive the forward transform — an illegal instruction
+# no test can catch — so its rule raises, which this pins where a device is available.
+if cuda
+    @testset "forward mode over gather on a GPU array raises" begin
+        gather_sum(z) = sum(NNlib.gather(z, [1, 3]))
+        xg = cu(randn(StableRNG(123), Float32, 4))
+        rule = Mooncake.build_frule(gather_sum, xg)
+        @test_throws ArgumentError rule(
+            Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
+        )
+        # Reverse mode, which the raise directs users to, is covered by the `gather` cases
+        # in `test_cases`: under `cuda` those run on `CuArray`s.
+        # `Adjoint`/`Transpose` of a GPU array are `AnyGPUArray`, so NNlib sends them to the
+        # same kernel: they have to hit the guard, not slip past a bare `AbstractGPUArray`.
+        @testset "$wrap" for wrap in (adjoint, transpose)
+            w = wrap(copy(xg))
+            r = Mooncake.build_frule(gather_sum, w)
+            @test_throws ArgumentError r(
+                Mooncake.zero_dual(gather_sum), Mooncake.zero_dual(w)
+            )
+        end
+    end
 end

@@ -13,6 +13,8 @@
         @test has_equal_data(ones(5), ones(5))
         @test has_equal_data(Base, Base)
         @test !has_equal_data(Base, Core)
+        @test has_equal_data(:a, :a)
+        @test !has_equal_data(:a, :b)
         @test has_equal_data(GlobalRef(Base, :sin), GlobalRef(Base, :sin))
         @test !has_equal_data(GlobalRef(Base, :sin), GlobalRef(Base, :cos))
         @test !has_equal_data(GlobalRef(Base, :sin), GlobalRef(Core, :sin))
@@ -61,10 +63,11 @@
             (b=make_indirect_circular_reference_array(); b[1][1]=2.0; b),
         )
 
-        # Test that has_equal_data works on Method and MethodInstance objects
         m = only(methods(sin, (Float64,)))
         @test has_equal_data(m, m)
-        mi = first(m.specializations)
+        # `m.specializations` is a bare `MethodInstance` or an svec with `#undef` slots;
+        # `Base.specializations` normalises both.
+        mi = first(Base.specializations(m))
         @test has_equal_data(mi, mi)
     end
     @testset "populate_address_map" begin

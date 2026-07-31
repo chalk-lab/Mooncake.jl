@@ -1,3 +1,6 @@
+# Without this, zeroing the `@zero_derivative` return value below duals every cached rule.
+tangent_type(::Type{<:MooncakeInterpreter}) = NoTangent
+
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode}}
 @zero_derivative MinimalCtx Tuple{typeof(get_interpreter),Type{<:Mode},UInt}
 @zero_derivative MinimalCtx Tuple{

@@ -745,9 +745,11 @@ end
 @inline function Base.cosh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(cosh(a.value), _fwd_scale(a.partials, sinh(a.value)))
 end
+# `4u / (1 + u)^2` with `u = exp(-2|x|)`: `1 - tanh(x)^2` is exactly `0` once `tanh(x)` rounds
+# to `1.0`, while the true derivative is still normal (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @inline function Base.tanh(a::NDual{T,N}) where {T,N}
-    tv = tanh(a.value)
-    return NDual{T,N}(tv, _fwd_scale(a.partials, one(T) - tv^2))
+    u = exp(-2 * abs(a.value))
+    return NDual{T,N}(tanh(a.value), _fwd_scale(a.partials, 4u / (one(T) + u)^2))
 end
 @inline function Base.asinh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(asinh(a.value), _fwd_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
@@ -1437,7 +1439,7 @@ end
 # Symmetric are equivalent (conj is identity), so a single `copytri!` suffices.
 for _WrapType in (:Hermitian, :Symmetric)
     @eval function LinearAlgebra.cholesky(
-        A::LinearAlgebra.$_WrapType{NDual{T,N},<:StridedMatrix{NDual{T,N}}},
+        A::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
         (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
         check::Bool=true,
     ) where {T<:IEEEFloat,N}
@@ -1457,8 +1459,10 @@ for _WrapType in (:Symmetric, :Hermitian)
         # the ambiguity with LinearAlgebra's *(AbstractMatrix, AbstractMatrix) when B
         # is a plain Matrix (LinearAlgebra wins on B, we win on A — ambiguous without
         # a more specific method that wins on both).
+        # `Matrix`, not `AbstractMatrix`: a wider bound claimed device- and sparse-backed
+        # parents these methods cannot serve, colliding with cuSPARSE and cuSOLVER.
         function Base.:*(
-            A::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            A::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
             B::Union{StridedVector,StridedMatrix},
         ) where {T<:IEEEFloat,N}
             return Matrix(A) * B
@@ -1466,7 +1470,7 @@ for _WrapType in (:Symmetric, :Hermitian)
 
         function Base.:*(
             A::Union{StridedVector,StridedMatrix},
-            B::LinearAlgebra.$_WrapType{NDual{T,N},<:AbstractMatrix{NDual{T,N}}},
+            B::LinearAlgebra.$_WrapType{NDual{T,N},<:Matrix{NDual{T,N}}},
         ) where {T<:IEEEFloat,N}
             return A * Matrix(B)
         end

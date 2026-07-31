@@ -386,9 +386,8 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
-    # Tangent bookkeeping uses :monotonic throughout: the primal ordering may be valid
-    # for loads only (e.g. :acquire), so reusing it for the pullback's store would
-    # throw a ConcurrencyViolationError. Only the primal load keeps the user's ordering.
+    # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
+    # throw ConcurrencyViolationError if reused for the pullback's store.
     a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData()))
@@ -457,10 +456,8 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    # Bookkeeping loads/stores use :monotonic throughout: the primal ordering may be
-    # valid for stores only (e.g. :release), so reusing it for the save/restore loads
-    # would throw a ConcurrencyViolationError. Only the primal store keeps the user's
-    # ordering.
+    # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
+    # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
     old_tangent = atomic_pointerref(tangent(p), :monotonic)
     dp = tangent(p)
@@ -601,17 +598,17 @@ function frule!!(
     ::Lifted{typeof(copysign_float),N}, x::Lifted{T,N,NDual{T,N}}, y::Lifted{T,N,NDual{T,N}}
 ) where {N,T<:IEEEFloat}
     z = copysign_float(primal(x), primal(y))
-    # d copysign(x,y)/dx = sign(x) * sign(y). Scale only the partials and set V.value to `z`.
-    # A naive `sign(y) * tangent(x)` both drops the sign(x) factor (wrong derivative for x<0)
-    # and scales the inner NDual's `.value` to `sign(y) * x_p` (≠ z), breaking V.value === primal.
-    s = sign(primal(x)) * sign(primal(y))
+    # d copysign(x,y)/dx = flipsign(sign(x), y): sign(x) when y≥0, −sign(x) when y<0 — and
+    # correct at y=0 too, where sign(x)*sign(y) would wrongly give 0. Scale only the partials;
+    # keep the inner NDual's `.value` at `z` so V.value === primal.
+    s = flipsign(sign(primal(x)), primal(y))
     return Lifted{T,N}(z, NDual{T,N}(z, s .* tangent(x).partials))
 end
 function rrule!!(::CoDual{typeof(copysign_float)}, x, y)
     _x = primal(x)
     _y = primal(y)
-    # d copysign(x,y)/dx = sign(x) * sign(y); the derivative w.r.t. y is zero.
-    copysign_float_pullback!!(dz) = NoRData(), dz * sign(_x) * sign(_y), zero_rdata(_y)
+    # d copysign(x,y)/dx = flipsign(sign(x), y) (correct at y=0); derivative w.r.t. y is zero.
+    copysign_float_pullback!!(dz) = NoRData(), dz * flipsign(sign(_x), _y), zero_rdata(_y)
     z = copysign_float(_x, _y)
     return CoDual(z, NoFData()), copysign_float_pullback!!
 end

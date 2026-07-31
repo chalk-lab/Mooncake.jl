@@ -2017,7 +2017,9 @@ end
 #
 
 @inline function _assert_matching_tangent_shape(primal, tangent)
-    if applicable(axes, primal) && applicable(axes, tangent)
+    # Base's generic `axes(x) = map(oneto, size(x))` makes `applicable(axes, x)` true even
+    # for a struct-shaped `Tangent` with no `size` method, so check `size` instead.
+    if applicable(size, primal) && applicable(size, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
                 "Tangent direction for argument 1 must match the primal axes; got axes " *

@@ -21,8 +21,7 @@ const _gpu_disabled = false
 #   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
 #      explicit rules:
 #        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
-#        • Base.permutedims(::CuArray) — fixed in MooncakeCUDAExt; MHA now enabled
-#        • SkipConnection with vcat — fixed in MooncakeCUDAExt; now enabled
+#        • Base.permutedims(::CuArray), SkipConnection+vcat — rules in MooncakeCUDAExt
 #        • GroupNorm / InstanceNorm — call Statistics.varm; needs an rrule!! for varm
 #        • StatefulRecurrentCell (RNN/LSTM/GRU) — state mutation (setfield! on cell)
 #          not yet differentiable on GPU
@@ -56,8 +55,7 @@ _model_name(f::MultiHeadAttention) = "MultiHeadAttention($(f.q_proj.in_dims))"
 const TEST_MODELS = Any[
     (false, _gpu_enabled, Dense(2, 4), randn(sr(1), P, 2, 3)),
     # tests for https://github.com/chalk-lab/Mooncake.jl/issues/563
-    # MooncakeCUDAExt now has an explicit rrule!! for Base.permutedims(::CuArray),
-    # which is called by LuxLib.batched_matmul in the MultiHeadAttention path.
+    # MHA needs MooncakeCUDAExt's Base.permutedims(::CuArray) rule (LuxLib.batched_matmul).
     (
         true,
         _gpu_enabled,
@@ -177,11 +175,9 @@ const TEST_MODELS = Any[
         Chain(Conv((3, 3), 2 => 6, tanh), BatchNorm(6)),
         randn(sr(28), P, 6, 6, 2, 2),
     ),
-    # GroupNorm calls varm via LuxLib.Impl.mean_var → var → varm. 2D inputs (sr(29),
-    # sr(30)) are disabled on GPU: LuxLib's groupnorm_affine_normalize_internal! CUDA
-    # kernel calls rsqrt which does not support the complex-valued perturbations used by
-    # Mooncake's correctness checker, causing a DomainError during the Correctness test.
-    # 4D spatial inputs (sr(31), sr(32)) use a different kernel path and are unaffected.
+    # GroupNorm needs the Statistics.varm GPU rrule!! (via LuxLib mean_var). 2D is disabled:
+    # its groupnorm_affine_normalize_internal! kernel calls rsqrt, which DomainErrors on the
+    # correctness checker's complex perturbations; 4D takes another kernel path.
     (
         false,
         _gpu_disabled,
@@ -201,16 +197,14 @@ const TEST_MODELS = Any[
         Chain(Conv((3, 3), 2 => 6, tanh), GroupNorm(6, 3)),
         randn(sr(32), P, 6, 6, 2, 2),
     ),
-    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
-    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    # LayerNorm needs MooncakeCUDAExt's Statistics.varm GPU rrule!! (via LuxLib mean_var).
     (
         false,
         _gpu_enabled,
         Chain(Conv((3, 3), 2 => 3, gelu), LayerNorm((1, 1, 3))),
         randn(sr(33), P, 4, 4, 2, 2),
     ),
-    # InstanceNorm calls varm via the same path as GroupNorm and LayerNorm. Enabled by
-    # the Statistics.varm GPU rrule!! in MooncakeCUDAExt.
+    # InstanceNorm needs the Statistics.varm GPU rrule!! too, via the same LuxLib path.
     (false, _gpu_enabled, InstanceNorm(6), randn(sr(34), P, 6, 6, 2, 2)),
     (
         false,
@@ -226,8 +220,6 @@ const TEST_MODELS = Any[
     ),
     # From Flux TEST_MODELS: Scale with non-default activation (abs2)
     (false, _gpu_enabled, Scale(4, abs2), randn(sr(37), P, 4, 3)),
-    # LayerNorm calls varm via LuxLib.Impl.mean_var → var → varm. Enabled by the
-    # Statistics.varm GPU rrule!! in MooncakeCUDAExt.
     (false, _gpu_enabled, LayerNorm(2), randn(sr(38), P, 2, 10)),
     # From Flux TEST_MODELS: standalone BatchNorm — same batchnorm_cudnn! issue.
     (true, _gpu_disabled, BatchNorm(2), randn(sr(39), P, 2, 10)),

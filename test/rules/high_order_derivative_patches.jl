@@ -220,9 +220,7 @@ end
     end
 
     @testset "cache reuse across multiple HVP calls" begin
-        # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying;
-        # verify the cache produces consistent results when called repeatedly with
-        # different directions.
+        # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying.
         f(x) = sum(x .* x)  # H = 2I
         x = [1.0, 2.0, 3.0]
         cache = prepare_hvp_cache(f, x)
@@ -263,7 +261,6 @@ end
         @test hvp ≈ [0.0, 0.0, 0.0]
     end
 
-    # Regression for https://github.com/chalk-lab/Mooncake.jl/issues/1193.
     @testset "Ref-capture under NoTangent wrapper (issue #1193)" begin
         f = _RefCaptureWrap(
             let r = Ref(3.0);
@@ -276,6 +273,8 @@ end
         _, _, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
         @test H ≈ [6.0 0.0; 0.0 6.0]
     end
+
+    @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end
 
 # The `jl_genericmemory_owner` forward rule (a forward-over-reverse `dataids`-inlining workaround)
