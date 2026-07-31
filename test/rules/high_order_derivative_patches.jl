@@ -288,4 +288,6 @@ end
         _, _, H = value_gradient_and_hessian!!(prepare_hessian_cache(f, x), f, x)
         @test H ≈ [6.0 0.0; 0.0 6.0]
     end
+
+    @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end
