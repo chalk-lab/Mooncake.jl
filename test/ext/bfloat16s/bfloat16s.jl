@@ -35,7 +35,8 @@ end
         (sqrt, P(0.5)),
         (cbrt, P(0.4)),
         (exp, P(0.2)),
-        (exp2, P(1.12)),
+        (exp2, P(0.15)),  # in the fine-spacing range: at P(1.12) the reverse rule is correct
+        # (grad == exp2(x)·log 2) but BF16's coarse spacing there can't reconstruct the FD oracle.
         (exp10, P(0.249)),
         (expm1, P(-0.3)),
         (log, P(0.1)),
@@ -72,8 +73,18 @@ end
     # and is captured, but snaps to one grid step (0.000977), giving ~24% relative error
     # → rtol=0.4. Two functions (acos, exp10) also suffer output-side absorption at some
     # inputs, yielding |LHS-RHS|≈0.16 even when ẏ_fd≠0 → atol=0.2.
+    # BFloat16 is not an `IEEEFloat`, so it has no `NDual` forward-dual representation — forward
+    # mode is unsupported for it. Exercise these BFloat16 rules in reverse mode only.
     @testset "$(f) $(map(typeof, xs))" for (f, xs...) in cases
-        test_rule(sr(123), f, xs...; is_primitive=true, atol=0.2, rtol=0.4)
+        test_rule(
+            sr(123),
+            f,
+            xs...;
+            is_primitive=true,
+            atol=0.2,
+            rtol=0.4,
+            mode=Mooncake.ReverseMode,
+        )
     end
 
     # Right at zero for BFloat16 but not the IEEEFloat types: this repo's `abs` rules branch
@@ -87,7 +98,15 @@ end
         @test Float64(pb(one(P))[2]) ≈ 0.25 rtol = 1e-2
         # `test_rule`'s value, interface and caching checks survive that blind spot.
         for x in (P(0), P(0.5))
-            test_rule(sr(123), sigmoid_shaped, x; is_primitive=false, atol=0.2, rtol=0.4)
+            test_rule(
+                sr(123),
+                sigmoid_shaped,
+                x;
+                is_primitive=false,
+                atol=0.2,
+                rtol=0.4,
+                mode=Mooncake.ReverseMode,
+            )
         end
     end
 
