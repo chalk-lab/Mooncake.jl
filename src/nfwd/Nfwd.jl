@@ -890,12 +890,15 @@ Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _fwd_zero(Val(N
     NDual{T,N}(cv, _fwd_scale(a.partials, -sv))
 end
 
-# sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor.
+# sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor. One `sincospi` call yields both
+# the value and the other function (the derivative factor), halving the transcendental cost.
 @inline function Base.sinpi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(sinpi(a.value), _fwd_scale(a.partials, T(π) * cospi(a.value)))
+    sv, cv = sincospi(a.value)
+    return NDual{T,N}(sv, _fwd_scale(a.partials, T(π) * cv))
 end
 @inline function Base.cospi(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cospi(a.value), _fwd_scale(a.partials, -T(π) * sinpi(a.value)))
+    sv, cv = sincospi(a.value)
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -T(π) * sv))
 end
 
 # tanpi(x) = tan(π·x); derivative = π·sec²(π·x) = π·(1 + tan²(π·x)).
