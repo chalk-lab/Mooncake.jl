@@ -137,7 +137,11 @@ end
     # for `append!` lowering to `invoke push!(::NDualArray, …)` → `resize!(::NDualArray)` MethodError.
     @test !Mooncake._nfwd_safe(Any[typeof(append!), Vector{Float64}, Vector{Float64}], 1)
     @test !Mooncake._nfwd_safe(Any[typeof(push!), Vector{Float64}, Float64], 1)
-    # A non-mutating array reduction over the same element type still fires natively.
+    # A non-mutating array reduction fires natively on 1.11+. On 1.10 the broadcast materialises
+    # an out-of-protocol `Array{NDual}` intermediate whose reduction takes `jl_array_ptr` (not a
+    # whitelisted foreigncall), so the classifier conservatively routes it to the transform — which
+    # handles it correctly (verified). Assert the actual per-version behaviour, not a false positive.
     reduce_fn(x) = sum(sin.(x))
-    @test Mooncake._nfwd_safe(Any[typeof(reduce_fn), Vector{Float64}], 1)
+    @test Mooncake._nfwd_safe(Any[typeof(reduce_fn), Vector{Float64}], 1) ==
+        (VERSION >= v"1.11-rc4")
 end
