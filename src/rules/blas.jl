@@ -408,6 +408,23 @@ end
     return nothing
 end
 
+# Per-lane nrm2 JVP: `dy_k = Σᵢ real(conj(Xᵢ)·dXₖᵢ)/y` with a removable-singularity guard. Fallback
+# for the Ptr slot and strided (incx≠1) inputs, where the contiguous-block fast path does not apply.
+@inline function _nrm2_lanes_perlane(
+    _n, X_dX, _inc, Xv, y, ::Type{R}, ::Val{Nw}
+) where {R,Nw}
+    return ntuple(Val(Nw)) do lane
+        dX_lane = _blas_lane_partial(X_dX, lane)
+        dXv = _viewify_one(_n, dX_lane, _inc)
+        s = zero(R)
+        @inbounds for i in eachindex(Xv)
+            # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
+            s += 2 * real(Xv[i]' * dXv[i])
+        end
+        iszero(s) ? zero(R) : s / (2 * y)
+    end
+end
+
 # nrm2 — output is real (real or complex T); per-lane dy is real.
 function frule!!(
     ::Lifted{typeof(BLAS.nrm2),Nw},
@@ -422,16 +439,26 @@ function frule!!(
     # `viewify`-equivalent on the primal side; per-lane partial view.
     Xv = _viewify_one(_n, Xp, _inc)
     R = typeof(y)  # nrm2 returns the real-valued norm.
-    dy_lanes = ntuple(Val(Nw)) do lane
-        dX_lane = _blas_lane_partial(X_dX, lane)
-        dXv = _viewify_one(_n, dX_lane, _inc)
-        s = zero(R)
-        @inbounds for i in eachindex(Xv)
-            # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
-            s += 2 * real(Xv[i]' * dXv[i])
+    # On 1.11+ with a contiguous array slot (incx == 1), accumulate all Nw lanes in one pass over the
+    # element-major partials block — each element's Nw lanes are a contiguous NTuple column, so the
+    # length-Nw update vectorises, replacing the Nw strided per-lane reductions (~4×). Ptr slots and
+    # strided inputs keep the per-lane path. Removable singularity: `s == 0` ⇒ `s/(2y)` is `0/0` ⇒ 0.
+    dy_lanes = @static if VERSION >= v"1.11-rc4"
+        if Xp isa AbstractArray && _inc == 1
+            cols = reinterpret(
+                reshape, NTuple{Nw,T}, getfield(tangent(X_dX), :partials_block)
+            )
+            acc = ntuple(_ -> zero(R), Val(Nw))
+            @inbounds for i in eachindex(Xv)
+                xi = Xv[i]
+                acc = ntuple(k -> acc[k] + 2 * real(xi' * cols[i][k]), Val(Nw))
+            end
+            ntuple(k -> iszero(acc[k]) ? zero(R) : acc[k] / (2 * y), Val(Nw))
+        else
+            _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
         end
-        # Removable singularity at the zero vector: `s == 0` there, so `s / (2y)` is `0/0`.
-        iszero(s) ? zero(R) : s / (2 * y)
+    else
+        _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
     end
     return Lifted{R,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
@@ -480,10 +507,21 @@ function frule!!(
 ) where {Nw,P<:BlasRealFloat}
     x, y = primal(x_dx), primal(y_dy)
     result = dot(x, y)
-    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. Each lane's partial is the stride-`Nw` block row,
-    # read correctly through the `NDualArray`/view path (`_blas_lane_partial`).
-    dresult_lanes = ntuple(Val(Nw)) do lane
-        return dot(_blas_lane_partial(x_dx, lane), y) + dot(x, _blas_lane_partial(y_dy, lane))
+    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. On 1.11+ each term is one matvec of the contiguous
+    # (Nw, K) partials block against the primal — `out = Xblock·y + Yblock·x` in two `gemv!`s,
+    # replacing the Nw strided per-lane dots (~3.5×; the length-Nw output alloc is fine — no `:allocs`
+    # guard here). On 1.10 the parallel-arrays lanes are contiguous, so dot each directly.
+    dresult_lanes = @static if VERSION >= v"1.11-rc4"
+        Xb = getfield(tangent(x_dx), :partials_block)
+        Yb = getfield(tangent(y_dy), :partials_block)
+        out = Vector{P}(undef, Nw)
+        BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
+        BLAS.gemv!('N', one(P), Yb, x, one(P), out)
+        ntuple(k -> out[k], Val(Nw))
+    else
+        ntuple(Val(Nw)) do lane
+            dot(_blas_lane_partial(x_dx, lane), y) + dot(x, _blas_lane_partial(y_dy, lane))
+        end
     end
     return Lifted{P,Nw}(result, _scalar_ndual(result, dresult_lanes))
 end
