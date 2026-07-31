@@ -484,7 +484,9 @@ __get_primal(x::Lifted) = primal(x)
 _nfwd_primal(y::Nfwd.NDual) = y.value
 _nfwd_primal(y::Complex{<:Nfwd.NDual}) = Complex(y.re.value, y.im.value)
 _nfwd_primal(y::Nfwd.NDualArray) = getfield(y, :primal)
-_nfwd_primal(y::Nfwd.NDualMemoryRef) = getfield(y, :primal)
+@static if VERSION >= v"1.11-rc4"  # `NDualMemoryRef` wraps `MemoryRef`, absent on Julia 1.10
+    _nfwd_primal(y::Nfwd.NDualMemoryRef) = getfield(y, :primal)
+end
 _nfwd_primal(y::Tuple) = map(_nfwd_primal, y)
 _nfwd_primal(y::NamedTuple) = map(_nfwd_primal, y)
 _nfwd_primal(@nospecialize(y)) = y
@@ -542,7 +544,13 @@ _copy(nf::NfwdFRule) = nf
 
 const _TN_NDUAL = Base.unwrap_unionall(Nfwd.NDual).name
 const _TN_NDARRAY = Base.unwrap_unionall(Nfwd.NDualArray).name
-const _TN_NDMEMREF = Base.unwrap_unionall(Nfwd.NDualMemoryRef).name
+# Julia 1.10 has no `MemoryRef`, hence no `NDualMemoryRef`; alias the sentinel to the array
+# TypeName (already tested alongside it) so the memref branches stay inert there.
+@static if VERSION >= v"1.11-rc4"
+    const _TN_NDMEMREF = Base.unwrap_unionall(Nfwd.NDualMemoryRef).name
+else
+    const _TN_NDMEMREF = _TN_NDARRAY
+end
 
 function _nfwd_has_ndual(@nospecialize(T), depth::Int=0)
     depth > 12 && return true
