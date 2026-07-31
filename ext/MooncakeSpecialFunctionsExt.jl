@@ -378,6 +378,27 @@ end
     return NDual{T,N}(SpecialFunctions.digamma(v), ntuple(k -> dv * x.partials[k], Val(N)))
 end
 
+# `_erfcx` is the scaled complementary error function's internal entry, reached (on non-hardware
+# float types like `NDual`) by `erfcx`/`logerfcx`/`logerf`. d/dx erfcx(x) = 2x·erfcx(x) − 2/√π.
+@inline function SpecialFunctions._erfcx(x::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = x.value
+    ex = SpecialFunctions.erfcx(v)
+    dv = 2 * v * ex - 2 / sqrt(T(pi))
+    return NDual{T,N}(ex, ntuple(k -> dv * x.partials[k], Val(N)))
+end
+
+# Complex `loggamma` internal on a complex dual: d/dz loggamma(z) = digamma(z); propagate the
+# per-lane complex tangent `dz_k = re.partialsₖ + im·im.partialsₖ` by the complex factor `digamma`.
+@inline function SpecialFunctions._loggamma(z::Complex{NDual{T,N}}) where {T<:IEEEFloat,N}
+    zc = Complex(z.re.value, z.im.value)
+    lg = SpecialFunctions.loggamma(zc)
+    dg = SpecialFunctions.digamma(zc)
+    dz = ntuple(k -> dg * Complex(z.re.partials[k], z.im.partials[k]), Val(N))
+    re_nd = NDual{T,N}(real(lg), ntuple(k -> real(dz[k]), Val(N)))
+    im_nd = NDual{T,N}(imag(lg), ntuple(k -> imag(dz[k]), Val(N)))
+    return Complex{NDual{T,N}}(re_nd, im_nd)
+end
+
 @inline function SpecialFunctions.trigamma(x::NDual{T,N}) where {T<:IEEEFloat,N}
     v = x.value
     dv = SpecialFunctions.polygamma(2, v)

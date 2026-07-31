@@ -359,6 +359,19 @@ end
 @inline function Base.convert(::Type{NDual{T,N}}, d::NDual{S,N}) where {T,N,S<:IEEEFloat}
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
+
+# Converting a forward dual to an integer discards the tangent — a non-differentiable operation.
+# Fail loudly rather than silently dropping the derivative (dual-laundering), so a function that
+# reaches this path is flagged as not forward-mode differentiable there instead of returning a
+# silently wrong (zero) gradient.
+@noinline _throw_ndual_to_int(::Type{I}) where {I<:Integer} = throw(
+    ArgumentError(
+        "cannot convert a forward-mode dual (NDual) to $I: an integer conversion is not " *
+        "differentiable, so the enclosing function is not forward-mode differentiable here.",
+    ),
+)
+(::Type{I})(::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
+Base.convert(::Type{I}, ::NDual) where {I<:Integer} = _throw_ndual_to_int(I)
 @inline function NDual{T,N}(x::Real, r::RoundingMode) where {T<:IEEEFloat,N}
     return NDual{T,N}(T(x, r), _fwd_zero(Val(N), T))
 end
