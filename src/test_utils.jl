@@ -1349,6 +1349,18 @@ end
 
 __get_primals(xs) = map(x -> x isa Union{Lifted,CoDual} ? primal(x) : x, xs)
 
+# CI splits the heavy rule groups into separate forward and reverse jobs — one test script, the mode
+# chosen by the `TEST_MODE` env var — so no single job's compile time (forward frules × chunk widths
+# × complex codegen roughly doubled the reverse-only compile) exceeds the runner's time budget.
+# `"forward"`/`"reverse"` restrict `test_rule`/`run_rule_test_cases` to that mode; anything else
+# (including unset) runs both, so downstream users and local runs are unaffected by default.
+function _test_mode_filter()
+    m = get(ENV, "TEST_MODE", "")
+    m == "forward" && return ForwardMode
+    m == "reverse" && return ReverseMode
+    return nothing
+end
+
 """
     test_rule(
         rng::AbstractRNG,
@@ -1476,18 +1488,6 @@ Accepting a caller-supplied reference derivative would close the first two. Unti
 rule whose derivative depends on any of these needs pinning some other way — calling the
 rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
 """
-# CI splits the heavy rule groups into separate forward and reverse jobs — one test script, the mode
-# chosen by the `TEST_MODE` env var — so no single job's compile time (forward frules × chunk widths
-# × complex codegen roughly doubled the reverse-only compile) exceeds the runner's time budget.
-# `"forward"`/`"reverse"` restrict `test_rule`/`run_rule_test_cases` to that mode; anything else
-# (including unset) runs both, so downstream users and local runs are unaffected by default.
-function _test_mode_filter()
-    m = get(ENV, "TEST_MODE", "")
-    m == "forward" && return ForwardMode
-    m == "reverse" && return ReverseMode
-    return nothing
-end
-
 function test_rule(
     rng::AbstractRNG,
     x...;
