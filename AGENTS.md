@@ -78,6 +78,7 @@ The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type
 - Changing Julia version support touches `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
 - A rule that depends on an external package's internals needs a tightened `[compat]` bound.
 - Keep source, test-group wiring (`test/runtests.jl`), and CI coverage in sync when adding rules or internals.
+- CI runs each `rules/*` group as separate forward and reverse jobs via the `TEST_MODE` env var (`forward`/`reverse`; unset ⇒ both) — the redesign's forward compile (frules × chunk widths × complex codegen) roughly doubled the reverse-only compile, so a combined complex-BLAS job overran the runner's time budget. `TestUtils.test_rule`/`run_rule_test_cases` honour `TEST_MODE`; a new rule group added to the matrix inherits the split automatically. Groups doing non-rule work too (`basic`/`Nfwd`/`array_legacy`) stay single `both`-mode jobs so that work isn't run twice.
 
 ## Testing
 

@@ -1476,6 +1476,18 @@ Accepting a caller-supplied reference derivative would close the first two. Unti
 rule whose derivative depends on any of these needs pinning some other way — calling the
 rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
 """
+# CI splits the heavy rule groups into separate forward and reverse jobs — one test script, the mode
+# chosen by the `TEST_MODE` env var — so no single job's compile time (forward frules × chunk widths
+# × complex codegen roughly doubled the reverse-only compile) exceeds the runner's time budget.
+# `"forward"`/`"reverse"` restrict `test_rule`/`run_rule_test_cases` to that mode; anything else
+# (including unset) runs both, so downstream users and local runs are unaffected by default.
+function _test_mode_filter()
+    m = get(ENV, "TEST_MODE", "")
+    m == "forward" && return ForwardMode
+    m == "reverse" && return ReverseMode
+    return nothing
+end
+
 function test_rule(
     rng::AbstractRNG,
     x...;
@@ -1500,8 +1512,10 @@ function test_rule(
 
     # Construct the rule.
     sig = _typeof(__get_primals(x))
-    test_fwd = mode in [nothing, ForwardMode]
-    test_rvs = mode in [nothing, ReverseMode]
+    # `TEST_MODE` (the CI fwd/rvs split) further restricts which modes run; unset ⇒ both.
+    _filter = _test_mode_filter()
+    test_fwd = mode in [nothing, ForwardMode] && _filter in [nothing, ForwardMode]
+    test_rvs = mode in [nothing, ReverseMode] && _filter in [nothing, ReverseMode]
     fwd_interp = (test_fwd && isnothing(frule)) ? get_interpreter(ForwardMode) : missing
     rvs_interp = (test_rvs && isnothing(rrule)) ? get_interpreter(ReverseMode) : missing
     frule = if !isnothing(frule)
@@ -1658,7 +1672,9 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 end
 
 function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
+    _filter = _test_mode_filter()  # `TEST_MODE` fwd/rvs split; unset ⇒ both.
     for m in (mode === nothing ? (ForwardMode, ReverseMode) : (mode,))
+        (_filter === nothing || _filter === m) || continue
         run_rule_test_cases(rng_ctor, v, m, false)
         run_rule_test_cases(rng_ctor, v, m, true)
     end

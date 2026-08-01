@@ -162,6 +162,10 @@ end
 
 const test_group = determine_test_group()
 
+# CI runs the heavy rule groups as separate forward/reverse jobs (`TEST_MODE`, honoured inside
+# `TestUtils.test_rule`/`run_rule_test_cases`); unset ⇒ both, so local runs are unchanged.
+@info "Running test group '$(test_group)' in TEST_MODE=$(get(ENV, "TEST_MODE", "both"))"
+
 sr(n::Int) = StableRNG(n)
 
 # This is annoying and hacky and should be improved.
