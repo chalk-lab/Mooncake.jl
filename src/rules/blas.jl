@@ -425,6 +425,49 @@ end
     end
 end
 
+# Block fast path: accumulate all Nw lanes in one pass over the contiguous element-major partials
+# block (each element's Nw lanes are a contiguous NTuple column, so the length-Nw update vectorises,
+# ~4×). Removable singularity: `s == 0` ⇒ `s/(2y)` is `0/0` ⇒ 0.
+# Lane accumulate / final scale as helpers taking `acc` by value: an inline `acc = ntuple(k -> acc[k]
+# + …)` would capture the reassigned `acc` in the closure, boxing it to `Any` (runtime dispatch JET
+# flags). Bind only `Nw` — `NTuple{Nw,R}` degenerates to `Tuple{}` at `Nw=0`, unbinding `R` (Aqua).
+@inline _nrm2_accum(acc::NTuple{Nw}, xi, col) where {Nw} = ntuple(
+    k -> acc[k] + 2 * real(xi' * col[k]), Val(Nw)
+)
+@inline _nrm2_scale(acc::NTuple{Nw}, y) where {Nw} = ntuple(
+    k -> iszero(acc[k]) ? acc[k] : acc[k] / (2 * y), Val(Nw)
+)
+@inline function _nrm2_lanes_block(blk, Xv, y, ::Type{R}, ::Val{Nw}) where {R,Nw}
+    cols = reinterpret(reshape, NTuple{Nw,eltype(blk)}, blk)
+    acc = ntuple(_ -> zero(R), Val(Nw))
+    @inbounds for i in eachindex(Xv)
+        acc = _nrm2_accum(acc, Xv[i], cols[i])
+    end
+    return _nrm2_scale(acc, y)
+end
+
+# Dispatch the lane JVP on the slot kind — a function barrier that keeps the frule type-stable
+# despite its `Union{Ptr,AbstractArray}` signature (`getfield(tangent(X_dX), :partials_block)` on the
+# Union is a dynamic access JET flags). Array slot: block fast path on 1.11+ with `incx == 1` (the
+# block accessor `_partials_block` needs a dense, unit-stride layout); per-lane otherwise. Ptr slot:
+# always per-lane (raw pointers, no block).
+@inline function _nrm2_lanes(
+    X_dX::Lifted{P,Nw}, _n, _inc, Xv, y, ::Type{R}
+) where {T,P<:AbstractArray{T},Nw,R}
+    @static if VERSION >= v"1.11-rc4"
+        if _inc == 1
+            blk, _ = _partials_block(X_dX)
+            return _nrm2_lanes_block(blk, Xv, y, R, Val(Nw))
+        end
+    end
+    return _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
+end
+@inline function _nrm2_lanes(
+    X_dX::Lifted{P,Nw}, _n, _inc, Xv, y, ::Type{R}
+) where {T,P<:Ptr{T},Nw,R}
+    return _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
+end
+
 # nrm2 — output is real (real or complex T); per-lane dy is real.
 function frule!!(
     ::Lifted{typeof(BLAS.nrm2),Nw},
@@ -436,31 +479,9 @@ function frule!!(
     _inc = primal(incx)
     Xp = primal(X_dX)
     y = BLAS.nrm2(_n, Xp, _inc)
-    # `viewify`-equivalent on the primal side; per-lane partial view.
-    Xv = _viewify_one(_n, Xp, _inc)
+    Xv = _viewify_one(_n, Xp, _inc)  # `viewify`-equivalent on the primal side.
     R = typeof(y)  # nrm2 returns the real-valued norm.
-    # On 1.11+ with a contiguous array slot (incx == 1), accumulate all Nw lanes in one pass over the
-    # element-major partials block — each element's Nw lanes are a contiguous NTuple column, so the
-    # length-Nw update vectorises, replacing the Nw strided per-lane reductions (~4×). Ptr slots and
-    # strided inputs keep the per-lane path. Removable singularity: `s == 0` ⇒ `s/(2y)` is `0/0` ⇒ 0.
-    dy_lanes = @static if VERSION >= v"1.11-rc4"
-        if Xp isa AbstractArray && _inc == 1
-            cols = reinterpret(
-                reshape, NTuple{Nw,T}, getfield(tangent(X_dX), :partials_block)
-            )
-            acc = ntuple(_ -> zero(R), Val(Nw))
-            @inbounds for i in eachindex(Xv)
-                xi = Xv[i]
-                acc = ntuple(k -> acc[k] + 2 * real(xi' * cols[i][k]), Val(Nw))
-            end
-            ntuple(k -> iszero(acc[k]) ? zero(R) : acc[k] / (2 * y), Val(Nw))
-        else
-            _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
-        end
-    else
-        _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
-    end
-    return Lifted{R,Nw}(y, _scalar_ndual(y, dy_lanes))
+    return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, _n, _inc, Xv, y, R)))
 end
 # Shared single-side viewify: handles both Ptr and Array uniformly so the
 # Lifted bodies don't have to branch on input shape.
