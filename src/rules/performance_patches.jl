@@ -20,8 +20,10 @@
 # `reinterpret`+tuple-add vectorises across lanes (packed `<L x double>`), 5–6× over the stride-`L`
 # per-lane `tangent_view` reductions. `s` stays a plain scalar — a 3-arg tuple `muladd` boxes, so
 # scale-then-add is kept split.
-@inline _tadd(a::NTuple{L,P}, b::NTuple{L,P}) where {L,P} = ntuple(i -> a[i] + b[i], Val(L))
-@inline _tscale(a::NTuple{L,P}, s) where {L,P} = ntuple(i -> a[i] * s, Val(L))
+# Bind only `L` (not the element type): `NTuple{L,P}` degenerates to `Tuple{}` at `L=0`, which
+# mentions no `P`, so a `where {L,P}` there trips Aqua's unbound-args check.
+@inline _tadd(a::NTuple{L}, b::NTuple{L}) where {L} = ntuple(i -> a[i] + b[i], Val(L))
+@inline _tscale(a::NTuple{L}, s) where {L} = ntuple(i -> a[i] * s, Val(L))
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),Array{<:IEEEFloat}})
