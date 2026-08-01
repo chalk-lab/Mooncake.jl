@@ -53,6 +53,18 @@ zero_tester_forward_only(x) = 0
 zero_tester_reverse_only(x) = 0
 @zero_derivative MinimalCtx Tuple{typeof(zero_tester_reverse_only),Float64} ReverseMode
 
+# A primitive with a type-valued (DataType) argument; see the regression test below.
+datatype_arg_zero_tester(::DataType) = 0
+@zero_derivative MinimalCtx Tuple{typeof(datatype_arg_zero_tester),DataType}
+
+# Same, but with a `where`-parametric signature: the kind-typed (DataType) argument must still be
+# widened to `Type` (the static param `S` must not be), so the forward frule covers the existential
+# `Lifted{Type{_A}} where _A` inference infers. See the regression test below.
+datatype_arg_zero_tester_param(::DataType, ::S) where {S<:Real} = 0
+@zero_derivative MinimalCtx Tuple{
+    typeof(datatype_arg_zero_tester_param),DataType,S
+} where {S<:Real}
+
 # Test case with isbits data.
 
 bleh(x::Float64, y::Int) = x * y
@@ -128,6 +140,16 @@ function CRC.rrule(::typeof(test_add), x, y)
     return x + y, test_add_pb
 end
 @from_rrule DefaultCtx Tuple{typeof(test_add),T,T} where {T<:IEEEFloat} false
+
+# Test case whose rrule returns a ZeroTangent for a differentiable argument (a common CRC idiom for a
+# structurally-zero gradient slot). Regression: increment_and_get_rdata! must handle
+# CRC.ZeroTangent (zero increment) rather than throwing the generic ArgumentError.
+test_zerotangent(x::Float64, y::Float64) = x^2
+function CRC.rrule(::typeof(test_zerotangent), x::Float64, y::Float64)
+    test_zerotangent_pb(dz::Float64) = CRC.NoTangent(), 2x * dz, CRC.ZeroTangent()
+    return x^2, test_zerotangent_pb
+end
+@from_rrule DefaultCtx Tuple{typeof(test_zerotangent),Float64,Float64} false
 
 # Test case for rule with non-differentiable kwargs.
 test_kwargs(x; y::Bool=false) = y ? x : 2x
@@ -248,6 +270,36 @@ end
             perf_flag=:stability_and_allocs,
         )
 
+        @testset "type-valued (DataType) argument" begin
+            # Regression: a DataType-valued argument's forward slot can be inferred as the
+            # existential `Lifted{Type{_A}} where _A`, which a naive `Lifted{<:DataType}`
+            # frule bound does not cover (`Lifted` is invariant) — inference then bakes an
+            # `unreachable` that crashes at runtime. `@zero_derivative` widens kind-typed
+            # bounds to `Type`. Was: `Base.padding` forward on Julia 1.12.
+            f_slot = Mooncake.Lifted{
+                typeof(ToolsForRulesResources.datatype_arg_zero_tester),1,Mooncake.NoDual
+            }
+            existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
+            @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
+
+            # Regression: the same widening must apply to a `where`-parametric signature — the
+            # kind-typed `DataType` arg widened to `Type`, but NOT the static parameter `S` (wrapping
+            # it in a function call would be invalid in signature position). Without the fix the frule
+            # bound was `Lifted{<:DataType}`, which does not cover the existential.
+            fp_slot = Mooncake.Lifted{
+                typeof(ToolsForRulesResources.datatype_arg_zero_tester_param),
+                1,
+                Mooncake.NoDual,
+            }
+            s_slot = Mooncake.Lifted{Float64,1,Mooncake.Nfwd.NDual{Float64,1}}
+            @test hasmethod(Mooncake.frule!!, Tuple{fp_slot,existential,s_slot})
+            # The static-parameter argument still dispatches (a concrete `S` slot matches).
+            @test hasmethod(
+                Mooncake.frule!!,
+                Tuple{fp_slot,Mooncake.Lifted{Type{Float64},1,Mooncake.NoDual},s_slot},
+            )
+        end
+
         @test_throws(
             r"@zero_derivative: `Vararg` may only appear as the last element of",
             Mooncake.@zero_derivative MinimalCtx Tuple{Vararg,typeof(zero_tester)}
@@ -301,6 +353,16 @@ end
         ]
             @test Mooncake.mooncake_tangent(p, t) isa tangent_type(typeof(p))
         end
+        # Regression: a NotImplemented tangent must FULLY poison the value. For a complex
+        # tangent, `L(NaN)` gave `Complex(NaN, 0.0)` — the imaginary part leaked an unpoisoned zero.
+        @testset "notimplemented_tangent_guard poisons both complex components" begin
+            r = Mooncake.notimplemented_tangent_guard(ComplexF64(1.0, 2.0))
+            @test isnan(real(r))
+            @test isnan(imag(r))
+            @test iszero(Mooncake.notimplemented_tangent_guard(ComplexF64(0.0, 0.0)))
+            @test isnan(Mooncake.notimplemented_tangent_guard(3.0))
+            @test iszero(Mooncake.notimplemented_tangent_guard(0.0))
+        end
         @testset "rules: $(typeof(fargs))" for fargs in Any[
             (ToolsForRulesResources.bleh, 5.0, 4),
             (ToolsForRulesResources.test_sum, ones(5)),
@@ -322,6 +384,18 @@ end
             f = ToolsForRulesResources.test_bad_rdata
             out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
             @test_throws ArgumentError pb!!(5.0)
+        end
+        @testset "ZeroTangent gradient slot" begin
+            # A CRC pullback returning ZeroTangent() for a differentiable arg must apply a zero
+            # increment, not throw. Previously increment_and_get_rdata! had no ZeroTangent method.
+            f = ToolsForRulesResources.test_zerotangent
+            out, pb!! = Mooncake.rrule!!(
+                zero_fcodual(f), zero_fcodual(3.0), zero_fcodual(5.0)
+            )
+            @test primal(out) == 9.0
+            _, dx, dy = pb!!(1.0)
+            @test dx == 6.0        # d(x^2)/dx = 2x = 6 at x=3
+            @test iszero(dy)       # ZeroTangent slot → zero gradient, no crash
         end
         @testset "forward mode only" begin
             world = Base.get_world_counter()
@@ -355,7 +429,7 @@ end
                 mode=ReverseMode,
             )
             frule_sig = Tuple{
-                Dual{typeof(ToolsForRulesResources.rev_only_chainrules)},Dual{Float64}
+                Lifted{typeof(ToolsForRulesResources.rev_only_chainrules)},Lifted{Float64}
             }
             @test !hasmethod(Mooncake.frule!!, frule_sig)
         end
@@ -372,6 +446,16 @@ end
                 err = @test_throws LoadError eval(expr)
                 @test err.value.error isa ArgumentError
             end
+        end
+
+        @testset "@from_chainrules width>1 unsupported result errors loudly" begin
+            # The width-N result packing covers only scalars/dense-arrays/tuples/non-diff results;
+            # an unsupported result (e.g. a `NamedTuple`) succeeds at width 1 via the generic
+            # `lift` but must fail with a clear `ArgumentError` at width > 1, not a bare
+            # `MethodError`.
+            @test_throws ArgumentError Mooncake._lift_from_lanes(
+                (a=1.0, b=2.0), ((a=0.1, b=0.2), (a=0.3, b=0.4))
+            )
         end
 
         @testset "increment_and_get_rdata!(f, r, t) specialized dispatches" begin

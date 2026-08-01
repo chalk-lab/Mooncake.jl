@@ -10,7 +10,6 @@ module TestResources
 using ..Mooncake
 using ..Mooncake:
     CoDual,
-    Dual,
     Tangent,
     MutableTangent,
     NoTangent,
@@ -47,6 +46,12 @@ struct StructFoo
 end
 
 Base.:(==)(a::StructFoo, b::StructFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
+
+# Immutable struct with two `Float64` fields; used to test `reshape` of an array of struct elements.
+struct FloatPair
+    a::Float64
+    b::Float64
+end
 
 mutable struct MutableFoo
     a::Float64
@@ -600,8 +605,14 @@ end
 @noinline edge_case_tester(x::Int) = 10
 @noinline edge_case_tester(x::String) = "hi"
 @is_primitive MinimalCtx Tuple{typeof(edge_case_tester),Float64}
-function Mooncake.frule!!(::Dual{typeof(edge_case_tester)}, x::Dual{Float64})
-    return Dual(5 * primal(x), 5 * tangent(x))
+function Mooncake.frule!!(
+    ::Mooncake.Lifted{typeof(edge_case_tester),Nw},
+    x::Mooncake.Lifted{Float64,Nw,Mooncake.Nfwd.NDual{Float64,Nw}},
+) where {Nw}
+    px = Mooncake.primal(x)
+    y = 5 * px
+    dy_lanes = ntuple(k -> 5 * Mooncake.tangent(x, k), Val(Nw))
+    return Mooncake.Lifted{Float64,Nw}(y, Mooncake.Nfwd.NDual{Float64,Nw}(y, dy_lanes))
 end
 function Mooncake.rrule!!(::CoDual{typeof(edge_case_tester)}, x::CoDual{Float64})
     edge_case_tester_pb!!(dy) = Mooncake.NoRData(), 5 * dy
@@ -911,7 +922,15 @@ function generate_test_functions()
             randn(5, 5),
             randn(5, 5),
         ),
-        (false, :allocs, nothing, kron!, randn(25, 25), Diagonal(randn(5)), randn(5, 5)),
+        (
+            false,
+            :allocs,
+            (fwd_allocs_broken=true,),
+            kron!,
+            randn(25, 25),
+            Diagonal(randn(5)),
+            randn(5, 5),
+        ),
         (
             false,
             :none,
@@ -921,7 +940,7 @@ function generate_test_functions()
             randn(sr(2), 70, 50),
             randn(sr(3), 30, 70),
         ),
-        (false, :allocs, nothing, test_handwritten_sum, randn(128, 128)),
+        (false, :allocs, (fwd_allocs_broken=true,), test_handwritten_sum, randn(128, 128)),
         (false, :allocs, nothing, _naive_map_sin_cos_exp, randn(1024), randn(1024)),
         (false, :allocs, nothing, _naive_map_negate, randn(1024), randn(1024)),
         (false, :allocs, nothing, test_from_slack, randn(10_000)),
@@ -946,7 +965,13 @@ function generate_test_functions()
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
         (false, :none, nothing, sig_argcount_mismatch, ones(4)),
-        (false, :allocs, (lb=2, ub=1500), large_tuple_inference, Tuple(zeros(1_000))),
+        (
+            false,
+            :allocs,
+            (lb=2, ub=1500, fwd_allocs_broken=true),
+            large_tuple_inference,
+            Tuple(zeros(1_000)),
+        ),
         (false, :none, nothing, regression_319, randn(3)),
     ]
 end

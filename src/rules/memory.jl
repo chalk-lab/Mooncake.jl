@@ -244,14 +244,28 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
+# Copy the partials of the `_n` copied elements in sync with the primal copy. In the element-major
+# block the copied elements' partials are `_n` adjacent columns — one contiguous `Nw * _n` backing
+# range — so the whole tangent copy is a single flat `unsafe_copyto!` (memmove, overlap-safe), with
+# no per-lane striding at any pair of offsets. `P <: NDualEltype` (float or complex), matching the
+# sibling MemoryRef frules (e.g. the `copy_similar` / `copyto_axcheck!` path of complex
+# `logdet`/`logabsdet`).
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{MemoryRef{P}},
-    src::Dual{MemoryRef{P}},
-    n::Dual{Int},
-) where {P}
-    unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    src::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    n::Lifted,
+) where {Nw,P<:NDualEltype}
+    _n = primal(n)
+    unsafe_copyto!(primal(dest), primal(src), _n)
+    if _n > 0
+        dv, sv = tangent(dest), tangent(src)
+        unsafe_copyto!(
+            Nfwd._block_column_ref(getfield(dv, :partials_ref), getfield(dv, :col), Nw),
+            Nfwd._block_column_ref(getfield(sv, :partials_ref), getfield(sv, :col), Nw),
+            Nw * _n,
+        )
+    end
     return dest
 end
 function rrule!!(
@@ -405,16 +419,18 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefget),MemoryRef,Val,Val}
 @inline function frule!!(
-    ::Dual{typeof(lmemoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{<:Val},
-    _boundscheck::Dual{<:Val},
-)
+    ::Lifted{typeof(lmemoryrefget),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    _ordering::Lifted{<:Val},
+    _boundscheck::Lifted{<:Val},
+) where {Nw,P<:NDualEltype}
     ordering = primal(_ordering)
     bc = primal(_boundscheck)
     y = memoryrefget(primal(x), _val(ordering), _val(bc))
-    dy = memoryrefget(tangent(x), _val(ordering), _val(bc))
-    return Dual(y, dy)
+    v = tangent(x)
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    dy_partials = Nfwd._read_lanes(colref, Val(Nw))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline function rrule!!(
     ::CoDual{typeof(lmemoryrefget)},
@@ -436,16 +452,18 @@ end
 end
 
 @inline Base.@propagate_inbounds function frule!!(
-    ::Dual{typeof(memoryrefget)},
-    x::Dual{<:MemoryRef},
-    _ordering::Dual{Symbol},
-    _boundscheck::Dual{Bool},
-)
+    ::Lifted{typeof(memoryrefget),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    _ordering::Lifted{Symbol},
+    _boundscheck::Lifted{Bool},
+) where {Nw,P<:NDualEltype}
     ordering = primal(_ordering)
-    boundscheck = primal(_boundscheck)
-    y = memoryrefget(primal(x), ordering, boundscheck)
-    dy = memoryrefget(tangent(x), ordering, boundscheck)
-    return Dual(y, dy)
+    bc = primal(_boundscheck)
+    y = memoryrefget(primal(x), ordering, bc)
+    v = tangent(x)
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    dy_partials = Nfwd._read_lanes(colref, Val(Nw))
+    return Lifted{P,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 @inline Base.@propagate_inbounds function rrule!!(
     ::CoDual{typeof(memoryrefget)},
@@ -465,15 +483,38 @@ end
 
 # Core.memoryrefmodify!
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory})
-    return Dual(memoryrefnew(primal(x)), memoryrefnew(tangent(x)))
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
+) where {Nw,P<:NDualEltype}
+    # Share the Memory V's block (column j ↔ mem slot j); the fresh ref is at slot 1 = column 1.
+    y = memoryrefnew(primal(x))
+    block = getfield(tangent(x), :partials_block)
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, block, 1))
 end
 @inline function rrule!!(f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Memory})
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
-    return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
+# One vararg method covers both the index and index+boundscheck forms for the float
+# `NDualMemoryRef`-V slot, mirroring the element-wise `memoryrefnew` sibling below.
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    ii::Lifted,
+    rest::Vararg{Lifted,K},
+) where {Nw,P<:NDualEltype,K}
+    a = (primal(ii), map(primal, rest)...)
+    y = memoryrefnew(primal(x), a...)
+    # Same block, column advanced in lockstep with the primal ref's offset.
+    v = tangent(x)
+    newcol = getfield(v, :col) + primal(ii) - 1
+    return Lifted{MemoryRef{P},Nw}(
+        y,
+        NDualMemoryRef{P,Nw,Memory{P}}(
+            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
+        ),
+    )
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
@@ -481,16 +522,6 @@ end
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
-@inline function frule!!(
-    ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:MemoryRef},
-    ii::Dual{Int},
-    boundscheck::Dual{Bool},
-)
-    y = memoryrefnew(primal(x), primal(ii), primal(boundscheck))
-    dy = memoryrefnew(tangent(x), primal(ii), primal(boundscheck))
-    return Dual(y, dy)
-end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
     x::CoDual{<:MemoryRef},
@@ -515,14 +546,17 @@ end
 @is_primitive MinimalCtx Tuple{typeof(lmemoryrefset!),MemoryRef,Any,Val,Val}
 
 @inline function frule!!(
-    ::Dual{typeof(lmemoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ::Dual{Val{ordering}},
-    ::Dual{Val{boundscheck}},
-) where {P,V,ordering,boundscheck}
+    ::Lifted{typeof(lmemoryrefset!),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    value::Lifted{P,Nw},
+    ::Lifted{Val{ordering},Nw},
+    ::Lifted{Val{boundscheck},Nw},
+) where {Nw,P<:NDualEltype,ordering,boundscheck}
     memoryrefset!(primal(x), primal(value), ordering, boundscheck)
-    memoryrefset!(tangent(x), tangent(value), ordering, boundscheck)
+    v = tangent(x)
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    vals = ntuple(lane -> _nfwd_dual_partial(tangent(value), lane), Val(Nw))
+    Nfwd._write_lanes!(colref, vals, Val(Nw))
     return value
 end
 @inline function rrule!!(
@@ -578,19 +612,20 @@ function isbits_lmemoryrefset!_rule(x::CoDual, value::CoDual, ordering::Val, bc:
 end
 
 @inline function frule!!(
-    ::Dual{typeof(memoryrefset!)},
-    x::Dual{<:MemoryRef{P},<:MemoryRef{V}},
-    value::Dual,
-    ordering::Dual{Symbol},
-    boundscheck::Dual{Bool},
-) where {P,V}
-    return frule!!(
-        zero_dual(lmemoryrefset!),
-        x,
-        value,
-        zero_dual(Val(primal(ordering))),
-        zero_dual(Val(primal(boundscheck))),
-    )
+    ::Lifted{typeof(memoryrefset!),Nw},
+    x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    value::Lifted{P,Nw},
+    ordering::Lifted{Symbol},
+    boundscheck::Lifted{Bool},
+) where {Nw,P<:NDualEltype}
+    ord = primal(ordering)
+    bc = primal(boundscheck)
+    memoryrefset!(primal(x), primal(value), ord, bc)
+    v = tangent(x)
+    colref = Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw)
+    vals = ntuple(lane -> _nfwd_dual_partial(tangent(value), lane), Val(Nw))
+    Nfwd._write_lanes!(colref, vals, Val(Nw))
+    return value
 end
 @inline function rrule!!(
     ::CoDual{typeof(memoryrefset!)},
@@ -610,6 +645,179 @@ end
     return y, memoryrefset_adjoint
 end
 
+# ── Element-wise (plain `Array` of inner duals) memory ops ──────────────────
+#
+# For a differentiable non-float-element array, the forward V is the element-wise array
+# `Array{dual_type(Val(N), elt), D}` (see `dual_type(Array{T,D})` in lifted.jl).
+# Its `.ref` is a plain `MemoryRef{V_elt}` (a MemoryRef into the V array),
+# parallel to the primal's `MemoryRef{P_elt}`. These memory ops thread both refs
+# in lockstep — `memoryrefget` returns `Lifted{P_elt, Nw, V_elt}` with
+# `V_elt === dual_type(Val(Nw), P_elt)`, so the V chain stays coherent. They
+# dispatch on a *plain* `MemoryRef` V, distinct from the float-element parallel-arrays
+# `NDualMemoryRef` frules above. Forward-over-reverse exercises this path for the
+# reverse rule's `Vector{Tuple{pullback}}` pullback storage.
+@static if VERSION >= v"1.11-rc4"
+    # `memoryrefnew` over a differentiable V (`MemoryRef`/element-wise `Memory`): thread the primal
+    # and the parallel V ref/memory in lockstep. One vararg method covers the 1-arg (ref-to-start)
+    # and trailing-index forms for both `MemoryRef`-V and `Memory`-V slots (the no-arg case is K=0).
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw},
+        x::Lifted{<:Union{Memory,MemoryRef},Nw,<:Union{Memory,MemoryRef}},
+        args::Vararg{Lifted,K},
+    ) where {Nw,K}
+        a = map(primal, args)
+        yp = memoryrefnew(primal(x), a...)
+        return Lifted{typeof(yp),Nw}(yp, memoryrefnew(tangent(x), a...))
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        ordering::Lifted,
+        boundscheck::Lifted,
+    ) where {Nw}
+        ord = primal(ordering)
+        bc = primal(boundscheck)
+        y = memoryrefget(primal(x), ord, bc)
+        return Lifted{typeof(y),Nw}(y, memoryrefget(tangent(x), ord, bc))
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        y = lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))
+        return Lifted{typeof(y),Nw}(
+            y, lmemoryrefget(tangent(x), Val(ordering), Val(boundscheck))
+        )
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        value::Lifted,
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        lmemoryrefset!(primal(x), primal(value), Val(ordering), Val(boundscheck))
+        lmemoryrefset!(tangent(x), tangent(value), Val(ordering), Val(boundscheck))
+        return value
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        value::Lifted,
+        ordering::Lifted{Symbol},
+        boundscheck::Lifted{Bool},
+    ) where {Nw}
+        ord = primal(ordering)
+        bc = primal(boundscheck)
+        memoryrefset!(primal(x), primal(value), ord, bc)
+        memoryrefset!(tangent(x), tangent(value), ord, bc)
+        return value
+    end
+    # Element-wise `unsafe_copyto!(dest, src, n)`: copy the primal and the element-wise V memrefs in
+    # lockstep (used by `Memory`/`Array` growth over `Vector{Tuple{pullback}}`).
+    @inline function frule!!(
+        ::Lifted{typeof(unsafe_copyto!),Nw},
+        dest::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        src::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+        n::Lifted,
+    ) where {Nw}
+        _n = primal(n)
+        unsafe_copyto!(primal(dest), primal(src), _n)
+        unsafe_copyto!(tangent(dest), tangent(src), _n)
+        return dest
+    end
+    # Element-wise array field write (`Array` growth sets `.ref` / `.size`): set the field
+    # on the primal array and the parallel element-wise V array. `.size` (field 2) is metadata
+    # shared with the primal; every other field — i.e. `.ref` (field 1), the differentiable
+    # storage — takes the element-wise V ref. Key on `:size`/`2` (not `:ref`) so the integer
+    # alias `Val(1)` for `.ref` is handled, matching the reverse rrule and the NDualArray sibling.
+    @inline function frule!!(
+        ::Lifted{typeof(lsetfield!),Nw},
+        value::Lifted{<:Array,Nw,<:Array},
+        ::Lifted{Val{name}},
+        x::Lifted,
+    ) where {Nw,name}
+        lsetfield!(primal(value), Val(name), primal(x))
+        lsetfield!(
+            tangent(value),
+            Val(name),
+            (name === :size || name === 2) ? primal(x) : tangent(x),
+        )
+        return x
+    end
+    # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
+    # forward V is `NoDual`, so each op threads only the primal and keeps a
+    # `NoDual` result V. Reached in forward-over-reverse over reverse-rule infra.
+    #
+    # Not covered by `test_rule` by design: the canonical seed harness
+    # (`dual_type`/`zero_lifted`/`randn_lifted`) over a standalone `Memory`/`MemoryRef` primal always
+    # yields the wrapper V (`NDualArray`/`NDualMemoryRef`, or `MemoryRef{NoDual}` for a non-diff
+    # *element*), never this bare-`NoDual` sentinel — which only arises for a non-differentiable
+    # whole-buffer slot inside the reverse rule's own storage during forward-over-reverse. These
+    # methods are therefore exercised only through forward-over-reverse HVP/Hessian tests, not the
+    # per-rule battery; that is intentional, not a coverage gap.
+    # `memoryrefnew` over a non-differentiable (`NoDual`-V) `Memory`/`MemoryRef`: thread only the
+    # primal, keep a `NoDual` result V. One vararg method covers the 1-arg and trailing-index forms
+    # (the no-arg case is K=0), so there is no zero-vararg overlap to disambiguate.
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefnew),Nw},
+        x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual},
+        args::Vararg{Lifted,K},
+    ) where {Nw,K}
+        yp = memoryrefnew(primal(x), map(primal, args)...)
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        ordering::Lifted,
+        boundscheck::Lifted,
+    ) where {Nw}
+        yp = memoryrefget(primal(x), primal(ordering), primal(boundscheck))
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefget),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        yp = lmemoryrefget(primal(x), Val(ordering), Val(boundscheck))
+        return Lifted{typeof(yp),Nw}(yp, NoDual())
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(lmemoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        value::Lifted,
+        ::Lifted{Val{ordering}},
+        ::Lifted{Val{boundscheck}},
+    ) where {Nw,ordering,boundscheck}
+        lmemoryrefset!(primal(x), primal(value), Val(ordering), Val(boundscheck))
+        return value
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(memoryrefset!),Nw},
+        x::Lifted{<:MemoryRef,Nw,NoDual},
+        value::Lifted,
+        ordering::Lifted{Symbol},
+        boundscheck::Lifted{Bool},
+    ) where {Nw}
+        memoryrefset!(primal(x), primal(value), primal(ordering), primal(boundscheck))
+        return value
+    end
+    @inline function frule!!(
+        ::Lifted{typeof(unsafe_copyto!),Nw},
+        dest::Lifted{<:MemoryRef,Nw,NoDual},
+        src::Lifted{<:MemoryRef,Nw,NoDual},
+        n::Lifted,
+    ) where {Nw}
+        unsafe_copyto!(primal(dest), primal(src), primal(n))
+        return dest
+    end
+end
+
 # Core.memoryrefsetonce!
 # Core.memoryrefswap!
 # Core.set_binding_type!
@@ -619,11 +827,15 @@ end
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
     function frule!!(
-        ::Dual{typeof(Core.memorynew)}, ::Dual{Type{Memory{P}}}, n::Dual{Int}
-    ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return Dual(x, dx)
+        ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
+    ) where {Nw,P<:NDualEltype}
+        _n = primal(n)
+        x = Core.memorynew(Memory{P}, _n)
+        # Zero the block: `Core.memorynew` returns uninitialized memory, which whole-buffer
+        # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
+        # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently lowered).
+        block = fill!(Matrix{P}(undef, Nw, _n), zero(P))
+        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
     end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
@@ -635,9 +847,13 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{Type{<:Memory},UndefInitializer,Int}
-function frule!!(::Dual{Type{Memory{P}}}, ::Dual{UndefInitializer}, n::Dual{Int}) where {P}
+function frule!!(
+    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
-    return Dual(x, zero_tangent_internal(x, NoCache()))
+    # Zero-initialized partials block covering the fresh memory (column j ↔ mem slot j).
+    block = fill!(Matrix{P}(undef, Nw, primal(n)), zero(P))
+    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
 end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
@@ -645,6 +861,65 @@ function rrule!!(
     x = Memory{P}(undef, primal(n))
     dx = zero_tangent_internal(x, NoCache())
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
+end
+
+# Element-wise `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
+# the element-wise `Memory{dual_type(P)}`. Non-diff element → `NoDual`. The `NDualEltype`
+# overload above (`NDualArray` parallel-arrays) is more specific and wins for scalar
+# IEEEFloat/Complex elements. For an isbits element the fresh V slots are readable garbage,
+# which whole-buffer copies would propagate as nonzero partials — fill each with the coherent
+# zero dual of the (also garbage, also readable) primal element; non-isbits slots stay `#undef`
+# and are written by the parallel element-wise `memoryrefset!`.
+@generated function frule!!(
+    ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
+) where {Nw,P}
+    # `isbitstype(P)` is world-independent (structural), so it stays in the generator body. But
+    # `dual_type(Val(Nw), Memory{P})` MUST be emitted into the RETURNED expression, not computed
+    # here: a generator-body call bakes its resolution at this generator's first-expansion world,
+    # so an extension's `dual_type` (e.g. CUDA's `CuArray → NDualArray`) loaded afterwards can never
+    # take effect — under forward-over-reverse the element `P` can be a reverse-pullback closure
+    # capturing `CuArray`s, and the baked generic recursion then descends into `CuPtr{Nothing}` and
+    # errors. In the returned expression `dual_type` resolves at the call world (extension visible),
+    # and stays `@foldable`-folded to a concrete type, so `MemV`/the `NoDual` branch remain stable.
+    fill_expr = if isbitstype(P)
+        :(@inbounds for i in eachindex(dv)
+            dv[i] = zero_dual(Val($Nw), x[i])
+        end)
+    else
+        nothing
+    end
+    return quote
+        x = Memory{$P}(undef, primal(n))
+        MemV = dual_type(Val($Nw), Memory{$P})
+        MemV === NoDual && return Lifted{Memory{$P},$Nw}(x, NoDual())
+        dv = MemV(undef, primal(n))
+        $fill_expr
+        return Lifted{Memory{$P},$Nw}(x, dv)
+    end
+end
+@static if VERSION >= v"1.12-"
+    @generated function frule!!(
+        ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
+    ) where {Nw,P}
+        # Emit `dual_type(Val(Nw), Memory{P})` into the RETURNED expression, not the generator
+        # body — same world-age reason as the `Memory{P}(undef, n)` frule above. `isbitstype(P)`
+        # is structural (world-independent) and stays here.
+        fill_expr = if isbitstype(P)
+            :(@inbounds for i in eachindex(dv)
+                dv[i] = zero_dual(Val($Nw), x[i])
+            end)
+        else
+            nothing
+        end
+        return quote
+            x = Core.memorynew(Memory{$P}, primal(n))
+            MemV = dual_type(Val($Nw), Memory{$P})
+            MemV === NoDual && return Lifted{Memory{$P},$Nw}(x, NoDual())
+            dv = MemV(undef, primal(n))
+            $fill_expr
+            return Lifted{Memory{$P},$Nw}(x, dv)
+        end
+    end
 end
 
 function rrule!!(
@@ -659,14 +934,38 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_new_)},
-    ::Dual{Type{Array{P,N}}},
-    ref::Dual{MemoryRef{P}},
-    size::Dual{<:NTuple{N,Int}},
-) where {P,N}
-    y = _new_(Array{P,N}, primal(ref), primal(size))
-    dy = _new_(Array{tangent_type(P),N}, tangent(ref), primal(size))
-    return Dual(y, dy)
+    ::Lifted{typeof(_new_),Nw},
+    ::Lifted{Type{Array{P,D}},Nw},
+    ref::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
+    sz::Lifted,
+) where {Nw,P<:NDualEltype,D}
+    _sz = primal(sz)
+    y = _new_(Array{P,D}, primal(ref), _sz)
+    # The array's block is a window over the ref's SHARED block backing, starting at the ref's
+    # column (array element 1) with one extra leading lane dimension — mutations through the
+    # array V and through the ref V land in the same storage, mirroring the primal aliasing.
+    v = tangent(ref)
+    block = _new_(
+        Array{P,D + 1},
+        Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw),
+        (Nw, _sz...),
+    )
+    return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, block))
+end
+# Element-wise `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
+# is the element-wise `Array{dual_type(P),D}` built from the element-wise V ref (a plain
+# `MemoryRef`) and the same size. Mirrors the reverse `rrule!!` below
+# (`_new_(Array{tangent_type(P),N}, ref.dx, size)`).
+@inline function frule!!(
+    ::Lifted{typeof(_new_),Nw},
+    ::Lifted{Type{Array{P,D}},Nw},
+    ref::Lifted{<:MemoryRef,Nw,<:MemoryRef},
+    sz::Lifted,
+) where {Nw,P,D}
+    _sz = primal(sz)
+    y = _new_(Array{P,D}, primal(ref), _sz)
+    yv = _new_(Array{dual_type(Val(Nw), P),D}, tangent(ref), _sz)
+    return Lifted{Array{P,D},Nw}(y, yv)
 end
 function rrule!!(
     ::CoDual{typeof(_new_)},
@@ -680,15 +979,36 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_genericmemory_copy}},
-    ::Dual,
-    ::Dual{Tuple{Val{Any}}},
-    ::Dual{Val{0}},
-    ::Dual{Val{:ccall}},
-    x::Dual{<:Memory},
-)
-    return Dual(primal(copy(x)), tangent(copy(x)))
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_genericmemory_copy},Nw},
+    ::Lifted,
+    ::Lifted{Tuple{Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
+) where {Nw,P<:NDualEltype}
+    new_primal = copy(primal(x))
+    new_block = copy(getfield(tangent(x), :partials_block))
+    return Lifted{Memory{P},Nw}(
+        new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_block)
+    )
+end
+# Element-wise-V `Memory` copy: the V is itself a `Memory` (per-element forward Vs), not the
+# parallel-arrays `NDualArray`. Covers non-diff concrete elements (`Memory{NoDual}`, e.g. the
+# `Memory{UInt8}` metadata `copy(::Dict)` copies on 1.11+) and abstract `Memory{Any}`. Shallow-copy
+# the V to match `copy`'s own shallow element semantics, mirroring the reverse `rrule!!`. The
+# `NDualArray`-V method above is more specific and is not a `Memory`, so the two never overlap.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_genericmemory_copy},Nw},
+    ::Lifted,
+    ::Lifted{Tuple{Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    x::Lifted{<:Memory,Nw,<:Memory},
+) where {Nw}
+    new_primal = copy(primal(x))
+    return Lifted{typeof(new_primal),Nw}(new_primal, copy(tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -711,17 +1031,11 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Memory,<:Memory},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_length = name === 1 || name === :length
-    dy = wants_length ? NoTangent() : bitcast(Ptr{NoTangent}, tangent(x).ptr)
-    return Dual(y, dy)
-end
+# No forward `lgetfield` frules for Memory/MemoryRef/Array here: the generic `lgetfield` frule in
+# misc.jl projects the field V through the same `_get_lifted_field` methods (which handle `.ref` ->
+# `NDualMemoryRef`, `.mem` -> `NDualArray`, metadata -> `NoDual`; see their docstrings in misc.jl),
+# so an element-type-restricted frule here would only duplicate that path. The reverse `rrule!!`s
+# below are kept — they do their own field-specific projection.
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -734,17 +1048,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:MemoryRef,<:MemoryRef},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, tangent(x).ptr_or_offset) : tangent(x).mem
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:MemoryRef,<:MemoryRef},
@@ -757,17 +1060,6 @@ function rrule!!(
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
-function frule!!(
-    ::Dual{typeof(lgetfield)},
-    x::Dual{<:Array,<:Array},
-    ::Dual{Val{name}},
-    ::Dual{Val{order}},
-) where {name,order}
-    y = getfield(primal(x), name, order)
-    wants_size = name === 2 || name === :size
-    dy = wants_size ? NoTangent() : tangent(x).ref
-    return Dual(y, dy)
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Array,<:Array},
@@ -782,11 +1074,6 @@ end
 
 const _MemTypes = Union{Memory,MemoryRef,DenseArray,Array}
 
-function frule!!(
-    f::Dual{typeof(lgetfield)}, x::Dual{<:_MemTypes,<:_MemTypes}, name::Dual{<:Val}
-)
-    return frule!!(f, x, name, zero_dual(Val(:not_atomic)))
-end
 function rrule!!(
     f::CoDual{typeof(lgetfield)}, x::CoDual{<:_MemTypes,<:_MemTypes}, name::CoDual{<:Val}
 )
@@ -795,16 +1082,9 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-    order::Dual{Symbol},
-)
-    return frule!!(
-        zero_dual(lgetfield), x, zero_dual(Val(primal(name))), zero_dual(Val(primal(order)))
-    )
-end
+# No 4-arg `getfield` frule here: builtins' runtime-name `getfield` frule is type-stable
+# (no `Val(primal(name))` round-trip) and projects memory-type fields through the same
+# `_get_lifted_field` methods, so a delegator in this file would only shadow that path.
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -821,13 +1101,8 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-function frule!!(
-    ::Dual{typeof(getfield)},
-    x::Dual{<:_MemTypes,<:_MemTypes},
-    name::Dual{<:Union{Int,Symbol}},
-)
-    return frule!!(zero_dual(lgetfield), x, zero_dual(Val(primal(name))))
-end
+# The 2-arg `getfield(x, name)` frule is version-agnostic and lives in builtins.jl
+# (so it is also available on Julia 1.10, which does not load this file).
 function rrule!!(
     f::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -838,11 +1113,30 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
+# Write the primal field, then retarget the block IN PLACE (`setfield!` on the block Array's own
+# `ref`/`size` fields), preserving the block object's identity so every V sharing it keeps
+# aliasing. `:size` maps to the block shape `(Nw, size...)`; `:ref` (array growth installing new
+# storage) maps to the incoming ref V's block backing at its column — the array's elements start
+# there, one column each. As in the primal (`_growend!` writes `.size` and `.ref` separately),
+# the block may be transiently inconsistent between the two writes; nothing reads in between.
 @inline function frule!!(
-    ::Dual{typeof(lsetfield!)}, value::Dual{<:Array,<:Array}, ::Dual{Val{name}}, x::Dual
-) where {name}
+    ::Lifted{typeof(lsetfield!),Nw},
+    value::Lifted{<:Array,Nw,<:NDualArray},
+    ::Lifted{Val{name},Nw},
+    x::Lifted,
+) where {Nw,name}
     setfield!(primal(value), name, primal(x))
-    setfield!(tangent(value), name, (name === :size || name === 2) ? primal(x) : tangent(x))
+    block = getfield(tangent(value), :partials_block)
+    if name === :size || name === 2
+        setfield!(block, :size, (Nw, primal(x)...))
+    else
+        xv = tangent(x)
+        setfield!(
+            block,
+            :ref,
+            Nfwd._block_column_ref(getfield(xv, :partials_ref), getfield(xv, :col), Nw),
+        )
+    end
     return x
 end
 @inline function rrule!!(
@@ -866,7 +1160,6 @@ end
 # Misc. other rules which are required for correctness.
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-frule!!(::Dual{typeof(copy)}, a::Dual{<:Array}) = Dual(copy(primal(a)), copy(tangent(a)))
 function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     dx = tangent(a)
     dy = copy(dx)
@@ -877,13 +1170,30 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     end
     return y, copy_pullback!!
 end
+# Forward `copy(::Array)`: copy primal and V together. `NDualArray` float/complex array → copy
+# each lane's partial; element-wise `Array`-of-duals V → copy the (immutable-element) V array;
+# non-diff → NoDual. `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex
+# `NDualArray`s (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
+function frule!!(
+    ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
+) where {N,T<:NDualEltype,D}
+    yp = copy(primal(a))
+    block = copy(getfield(tangent(a), :partials_block))
+    return Lifted{Array{T,D},N}(yp, NDualArray{T,N,D,Array{T,D}}(yp, block))
+end
+@inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
+    return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
+end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
+# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
+# update needed.
 function frule!!(
-    ::Dual{typeof(fill!)}, a::Dual{T}, x::Dual{<:Integer}
-) where {V<:Union{UInt8,Int8},T<:Union{Array{V},Memory{V}}}
-    return Dual(fill!(primal(a), primal(x)), tangent(a))
+    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:Union{Array{V},Memory{V}},Nw}, x::Lifted
+) where {Nw,V<:Union{UInt8,Int8}}
+    fill!(primal(a), primal(x))
+    return a
 end
 function rrule!!(
     ::CoDual{typeof(fill!)}, a::CoDual{T}, x::CoDual{<:Integer}
@@ -965,6 +1275,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         # Rules for `Memory`
         (true, :stability, nothing, Memory{Float64}, undef, 5),
         (true, :stability, nothing, Memory{Memory{Float64}}, undef, 5),
+        # Non-scalar isbits element: exercises the generic `Memory{P}(undef, n)` constructor rule
+        # for a struct/tuple eltype (the `bitstype` branch of `_dot_internal`).
+        (true, :stability, nothing, Memory{Tuple{Float64,Int}}, undef, 4),
         [(false, :stability_and_allocs, nothing, lgetfield, m, Val(:length)) for m in mems],
         [(false, :stability_and_allocs, nothing, lgetfield, m, Val(1)) for m in mems],
         [(false, :none, nothing, getfield, m, :length) for m in mems],
@@ -978,6 +1291,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
         [
             (false, :none, nothing, memoryrefget, mem_ref, :not_atomic, bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [false, true]
+        ],
+        # `lmemoryrefget` (literal Val-wrapped ordering/boundscheck), the get-analogue of the
+        # `lmemoryrefset!` entry below.
+        [
+            (false, :none, nothing, lmemoryrefget, mem_ref, Val(:not_atomic), bc) for
+            mem_ref in filter(isassigned, mem_refs) for bc in [Val(false), Val(true)]
         ],
         [(false, :none, nothing, memoryrefnew, mem) for mem in mems],
         [
@@ -1071,6 +1390,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             f in [Val(:ref), Val(:size), Val(1), Val(2)]
         ],
         [(false, :none, nothing, getfield, randn(rng, 10), f) for f in [:ref, :size, 1, 2]],
+        # Element-wise V parent (non-NDualEltype elements): the Symbol AND Int field forms
+        # must both project through `_get_lifted_field(::Array, ...)`.
+        [
+            (false, :none, nothing, getfield, [randn(rng, 2) for _ in 1:3], f) for
+            f in [:ref, :size, 1, 2]
+        ],
         (
             false,
             :stability_and_allocs,
@@ -1088,6 +1413,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             randn(rng, 10),
             Val(1),
             randn(rng, 10).ref,
+        ),
+        # Element-wise V parent: writing `.ref` (field 1) by integer index `Val(1)` must thread the
+        # tangent ref, not the primal. The symbol form `Val(:ref)` took the right branch but the
+        # integer alias did not (regression vs the reverse rrule / NDualArray sibling predicate).
+        (
+            false,
+            :none,
+            nothing,
+            lsetfield!,
+            [randn(rng, 2) for _ in 1:3],
+            Val(1),
+            [randn(rng, 2) for _ in 1:3].ref,
         ),
         (
             false,
@@ -1144,6 +1481,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (true, :none, nothing, Base._growend!, randn(5), 3),
         (true, :none, nothing, Base._growat!, randn(5), 2, 2),
         (false, :none, nothing, sizehint!, randn(5), 10),
+        # Forward AD over growing a `Vector{ComplexF64}` runs `memoryrefnew` on a complex `Memory`,
+        # whose canonical forward V must be `NDualMemoryRef`: before the
+        # `dual_type(MemoryRef{Complex})` overload the slot was typed `MemoryRef{Complex{NDual}}` and
+        # the writeback threw a MethodError. Reverse mode is the oracle.
+        (
+            false,
+            :none,
+            nothing,
+            x -> (v=ComplexF64[]; push!(v, x); push!(v, 2x); sum(abs2, v)),
+            ComplexF64(1.0, 2.0),
+        ),
         (false, :none, nothing, unsafe_copyto!, randn(4), 2, randn(3), 1, 2),
         (
             false,

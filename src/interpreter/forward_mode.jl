@@ -26,10 +26,12 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(args...; debug_mode=false, silence_debug_messages=true)
+function build_frule(
+    args...; debug_mode=false, silence_debug_messages=true, chunk_size=1, nfwd::Bool=true
+)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size, nfwd)
 end
 
 struct DualRuleInfo
@@ -60,6 +62,8 @@ function build_frule(
     debug_mode=false,
     silence_debug_messages=true,
     skip_world_age_check=false,
+    chunk_size::Int=1,
+    nfwd::Bool=true,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -86,17 +90,33 @@ function build_frule(
         return debug_mode ? DebugFRule(rule) : rule
     end
 
+    # If the whole function is nfwd-safe, run it directly on the inner dual values (bypassing the
+    # per-op `Lifted`/frule transform envelope) rather than deriving a rule. This is the default;
+    # `nfwd=false` or `debug_mode` keeps the fully-checked transform path.
+    if nfwd && !debug_mode && _nfwd_safe(Any[sig.parameters...], chunk_size)
+        return NfwdFRule{chunk_size}()
+    end
+
     # We don't have a hand-coded rule, so derive one.
     lock(MOONCAKE_INFERENCE_LOCK)
     try
         # If we've already derived the OpaqueClosures and info, do not re-derive, just
         # create a copy and pass in new shared data.
-        oc_cache_key = ClosureCacheKey(interp.world, (sig_or_mi, debug_mode, :forward))
+        oc_cache_key = ClosureCacheKey(
+            interp.world, (sig_or_mi, debug_mode, :forward, chunk_size)
+        )
         if haskey(interp.oc_cache, oc_cache_key)
-            return interp.oc_cache[oc_cache_key]
+            # Mirror reverse-mode `build_derived_rrule`: return an independent copy so each
+            # retrieval gets its own mutable OpaqueClosure-capture state (a `DynamicFRule`'s
+            # `cache::Dict`, a `LazyFRule`'s rebuilt `rule`). Returning the shared cached
+            # object would race under threads / nested AD, which is exactly what the forward
+            # `_copy` machinery (and reverse's eager copy) exist to prevent.
+            return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
-            dual_ir, captures, info = generate_dual_ir(interp, sig_or_mi; debug_mode)
+            dual_ir, captures, info = generate_dual_ir(
+                interp, sig_or_mi; debug_mode, chunk_width=chunk_size
+            )
             dual_oc = misty_closure(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
@@ -117,19 +137,25 @@ struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
 end
 
+# Invoke the wrapped OpaqueClosure (`fwd_oc.oc`) directly rather than the `MistyClosure`
+# wrapper — the wrapper carries tangent metadata used elsewhere, not on this call path. The
+# call goes through `__call_rule`: on Julia 1.10 the `OpaqueClosure` method routes via
+# `jl_apply_generic` (no specsig OC call, avoiding the julia#51016/#61368 codegen segfaults)
+# behind an argument-type guard; on Julia 1.11+ it is a direct specsig call.
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
-    args::Vararg{Dual,N}
+    args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
-    return fwd.fwd_oc(__unflatten_dual_varargs(isva, args, Val(nargs))...)
+    return __call_rule(fwd.fwd_oc.oc, __unflatten_dual_varargs(isva, args, Val(nargs)))
 end
 
-# On Julia 1.10, restore type stability lost to the inferencebarrier in __call_rule by
-# asserting the return type, which is encoded in the MistyClosure type parameter.
+# On Julia 1.10 the call above goes through the dynamic `__call_rule` barrier and is inferred as
+# `Any`; assert the rule's return type `R` (encoded in the MistyClosure type parameter) to
+# restore type stability for callers.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
     ) where {P,A,R,isva,nargs}
-        return __call_rule_erased!(Base.inferencebarrier(rule), args)::R
+        return rule(args...)::R
     end
 end
 
@@ -150,20 +176,31 @@ function verify_args(r::DerivedFRule{sig}, x) where {sig}
     throw(ArgumentError("Arguments with sig $Tx do not subtype rule signature, $sig"))
 end
 
+@inline _lifted_width(::Lifted{P,N}) where {P,N} = N
+
 """
     __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
 
-If isva and nargs=2, then inputs `(Dual(5.0, 0.0), Dual(4.0, 0.0), Dual(3.0, 0.0))`
-are transformed into `(Dual(5.0, 0.0), Dual((5.0, 4.0), (0.0, 0.0)))`.
+If isva and nargs=2, then inputs `(lift(5.0, 0.0), lift(4.0, 0.0), lift(3.0, 0.0))`
+are transformed into `(lift(5.0, 0.0), lift((4.0, 3.0), (0.0, 0.0)))` (each a `Lifted`).
 """
 function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     isva || return args
+    # The grouped vararg slot must carry the same chunk width as the incoming slots
+    # (read from any arg's type parameter — all slots share the rule's build width).
+    W = _lifted_width(first(args))
     group_primal = map(primal, args[nargs:end])
-    if tangent_type(_typeof(group_primal)) == NoTangent
-        grouped_args = zero_dual(group_primal)
-    else
-        grouped_args = Dual(group_primal, map(tangent, args[nargs:end]))
-    end
+    # Plain `typeof`, not `_typeof`: `_typeof` per-element-sharpens, so a tuple of `Type` values
+    # becomes `Tuple{Type{X},…}`, but the value's runtime type is `Tuple{DataType,…}` — not a
+    # subtype (`isa` is `typeof <: T`), so that sharpened slot type is one no `Lifted` ctor can
+    # build. `typeof` is always instance-valid and agrees with `_typeof` for non-Type-valued tuples.
+    GP = typeof(group_primal)
+    # An all-non-differentiable (or empty) vararg group has `dual_type === NoDual`; its slot
+    # carries a single `NoDual`, not the element-wise `Tuple{NoDual,…}`. Collapse to match the
+    # canonical V (otherwise the grouped `Lifted`'s V mismatches the rule's slot typeassert,
+    # e.g. in debug-mode forward-over-reverse where the reverse args are non-diff CoDuals).
+    group_v = dual_type(Val(W), GP) === NoDual ? NoDual() : map(tangent, args[nargs:end])
+    grouped_args = Lifted{GP,W}(group_primal, group_v)
     return (args[1:(nargs - 1)]..., grouped_args)
 end
 
@@ -172,6 +209,9 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
+    # Chunk width of the forward rule: every lifted slot / constant in the dual IR is
+    # `Lifted{P, width, V}`. `width == 1` is the ordinary single-direction rule.
+    width::Int
 end
 
 function generate_dual_ir(
@@ -180,6 +220,7 @@ function generate_dual_ir(
     debug_mode=false,
     do_inline=true,
     do_optimize=true,
+    chunk_width::Int=1,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -219,9 +260,9 @@ function generate_dual_ir(
 
     # Modify dual argument types:
     # - add one for the captures in the first position, with placeholder type for now
-    # - convert the rest to dual types
+    # - convert the rest to lifted types (`Lifted{P, chunk_width, V}` per arg)
     for (a, P) in enumerate(primal_ir.argtypes)
-        dual_ir.argtypes[a] = dual_type(CC.widenconst(P))
+        dual_ir.argtypes[a] = lifted_type(Val(chunk_width), CC.widenconst(P))
     end
     pushfirst!(dual_ir.argtypes, Any)
 
@@ -233,7 +274,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, chunk_width)
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -252,24 +293,29 @@ function generate_dual_ir(
     # Inspection tools need the pre-optimization dual IR, while the AD pipeline still
     # wants the optimized form by default.
     dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
-    return dual_ir, captures_tuple, DualRuleInfo(isva, nargs, dual_ret_type(primal_ir))
+    return dual_ir,
+    captures_tuple,
+    DualRuleInfo(isva, nargs, dual_ret_type(primal_ir, Val(chunk_width)))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+    const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int}
 
-Build a `Dual` from `stmt`, with zero / uninitialised tangent. If the resulting `Dual` is
-a bits type, then it is returned. If it is not, then the `Dual` is put into captures,
-and its location in `captures` returned.
+Build a width-`N` `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose
+derivative is zero, so its tangent must be zeroed (an uninitialised array tangent would leak
+garbage into any op that reads the constant's tangent). `N` is the chunk width, threaded into
+`zero_lifted(Val(N), v)` so the constant's V matches the surrounding chunked slots (`Val(1)`
+for a standard forward rule). If the resulting `Lifted` is a bits type, then it is returned. If
+it is not, then the `Lifted` is put into captures, and its location in `captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt)::Union{Dual,Int}
+function const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int} where {N}
     v = get_const_primal_value(stmt)
-    x = uninit_dual(v)
+    x = zero_lifted(Val(N), v)
     if safe_for_literal(v)
         return x
     else
@@ -300,10 +346,10 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isconst(stmt)
-        d = const_dual!(captures, stmt)
+        d = const_dual!(captures, stmt, Val(info.width))
         if d isa Int
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, get_capture, Argument(1), d))
         else
@@ -311,15 +357,15 @@ function modify_fwd_ad_stmts!(
         end
     else
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
-        zero_dual_call = Expr(:call, Mooncake.zero_dual, new_ssa)
-        Mooncake.replace_call!(dual_ir, ssa, zero_dual_call)
+        zero_lifted_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
+        Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
     end
 
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::ReturnNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     # undefined `val` field means that stmt is unreachable.
     isdefined(stmt, :val) || return nothing
@@ -331,7 +377,7 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    d = const_dual!(captures, stmt.val)
+    d = const_dual!(captures, stmt.val, Val(info.width))
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
         get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
@@ -343,51 +389,72 @@ function modify_fwd_ad_stmts!(
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::PhiNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = zero_lifted(
+            Val(info.width), get_const_primal_value(stmt.values[n])
+        )
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
+    )
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, ::DualInfo
+    stmt::PiNode, dual_ir::IRCode, ssa::SSAValue, ::Vector{Any}, info::DualInfo
 )
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = uninit_dual(get_const_primal_value(stmt.val))
+        v = zero_lifted(Val(info.width), get_const_primal_value(stmt.val))
     end
-    replace_call!(dual_ir, ssa, PiNode(v, dual_type(CC.widenconst(stmt.typ))))
+    replace_call!(
+        dual_ir, ssa, PiNode(v, lifted_type(Val(info.width), CC.widenconst(stmt.typ)))
+    )
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(uninit_dual(get_const_primal_value(stmt.val)))
+        stmt = UpsilonNode(zero_lifted(Val(info.width), get_const_primal_value(stmt.val)))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
+    )
     return nothing
 end
 
 function modify_fwd_ad_stmts!(
-    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, ::DualInfo
+    stmt::PhiCNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = uninit_dual(get_const_primal_value(stmt.values[n]))
+        stmt.values[n] = zero_lifted(
+            Val(info.width), get_const_primal_value(stmt.values[n])
+        )
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
-    set_ir!(dual_ir, ssa, :type, dual_type(CC.widenconst(get_ir(dual_ir, ssa, :type))))
+    set_ir!(
+        dual_ir,
+        ssa,
+        :type,
+        lifted_type(Val(info.width), CC.widenconst(get_ir(dual_ir, ssa, :type))),
+    )
     return nothing
 end
 
@@ -401,7 +468,7 @@ end
 
 ## Modification of IR nodes - expressions
 
-__get_primal(x::Dual) = primal(x)
+__get_primal(x::Lifted) = primal(x)
 
 function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
@@ -435,10 +502,10 @@ function modify_fwd_ad_stmts!(
             return nothing
         end
 
-        # Dual-ise arguments.
+        # Lift arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return uninit_dual(get_const_primal_value(arg))
+            return zero_lifted(Val(info.width), get_const_primal_value(arg))
         end
 
         interp = info.interp
@@ -459,23 +526,30 @@ function modify_fwd_ad_stmts!(
             # `Trule` mismatch of #1218 one level down.
             w = interp.world
             push!(
-                captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm, w) : DynamicFRule(dm, w)
+                captures,
+                if isexpr(stmt, :invoke)
+                    LazyFRule(mi, dm, info.width, w)
+                else
+                    DynamicFRule(dm, info.width, w)
+                end,
             )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
         end
     elseif isexpr(stmt, :boundscheck)
-        # Keep the boundscheck, but put it in a Dual.
+        # Keep the boundscheck, but wrap it in a width-`info.width` Lifted.
         inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         bc_ssa = CC.insert_node!(dual_ir, ssa, inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, bc_ssa))
+        replace_call!(dual_ir, ssa, Expr(:call, zero_lifted, Val(info.width), bc_ssa))
     elseif isexpr(stmt, :code_coverage_effect)
         replace_call!(dual_ir, ssa, nothing)
     elseif Meta.isexpr(stmt, :copyast)
         new_copyast_inst = CC.NewInstruction(get_ir(info.primal_ir, ssa))
         new_copyast_ssa = CC.insert_node!(dual_ir, ssa, new_copyast_inst, ATTACH_BEFORE)
-        replace_call!(dual_ir, ssa, Expr(:call, zero_dual, new_copyast_ssa))
+        replace_call!(
+            dual_ir, ssa, Expr(:call, zero_lifted, Val(info.width), new_copyast_ssa)
+        )
     elseif Meta.isexpr(stmt, :loopinfo)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
@@ -512,25 +586,31 @@ end
 mutable struct LazyFRule{primal_sig,Trule}
     debug_mode::Bool
     mi::Core.MethodInstance
+    width::Int
     world::UInt
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, width::Int, world::UInt)
         interp = get_interpreter(ForwardMode, world)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode,chunk_size=width)}(
+            debug_mode, mi, width, world
+        )
     end
     function LazyFRule{Tprimal_sig,Trule}(
-        mi::Core.MethodInstance, debug_mode::Bool, world::UInt
+        mi::Core.MethodInstance, debug_mode::Bool, width::Int, world::UInt
     ) where {Tprimal_sig,Trule}
-        return new{Tprimal_sig,Trule}(debug_mode, mi, world)
+        return new{Tprimal_sig,Trule}(debug_mode, mi, width, world)
     end
 end
 
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
+# Create new lazy rule with same method instance, debug mode, chunk width, and prediction world
+function _copy(x::P) where {P<:LazyFRule}
+    return P(x.mi, x.debug_mode, x.width, x.world)
+end
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
 # Add type-asserting specialisations so callers in @stable contexts see a concrete type.
-# LazyFRule doesn't contain an OpaqueClosure directly, so no inferencebarrier needed.
+# LazyFRule doesn't contain an OpaqueClosure directly, so no dispatch barrier needed.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::LazyFRule{sig,DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}},
@@ -557,24 +637,32 @@ end
 # Not covered: the inference-complexity-widening case in #1209's headline MWE.
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
+    # `nfwd=false`: nfwd is a top-level whole-function decision. This is a sub-rule build, and its
+    # result type must match `Trule` (the transform-rule type `frule_type` predicted at
+    # construction); an `NfwdFRule` here would fail to `convert` into the `rule.rule` field.
     rule.rule = build_frule(
-        interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
+        interp,
+        rule.mi;
+        debug_mode=rule.debug_mode,
+        chunk_size=rule.width,
+        skip_world_age_check=true,
+        nfwd=false,
     )
     return __call_rule(rule.rule, args)
 end
 
-function dual_ret_type(primal_ir::IRCode)
-    return dual_type(compute_ir_rettype(primal_ir))
+function dual_ret_type(primal_ir::IRCode, ::Val{N}) where {N}
+    return lifted_type(Val(N), compute_ir_rettype(primal_ir))
 end
 
 function frule_type(
-    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode
+    interp::MooncakeInterpreter{C}, mi::CC.MethodInstance; debug_mode, chunk_size::Int=1
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
-        # (e.g. NfwdMooncake.Rule) this allocates a throwaway instance; the cost is compile-
-        # time only and does not affect hot-path performance.
+        # this allocates a throwaway instance; the cost is compile-time only and does not
+        # affect hot-path performance.
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule{typeof(rule)} : typeof(rule)
     end
@@ -583,8 +671,8 @@ function frule_type(
     isva, _ = is_vararg_and_sparam_names(mi)
     arg_types = map(CC.widenconst, ir.argtypes)
     sig = Tuple{arg_types...}
-    dual_args_type = Tuple{map(dual_type, arg_types)...}
-    closure_type = RuleMC{dual_args_type,dual_ret_type(ir)}
+    dual_args_type = Tuple{map(T -> lifted_type(Val(chunk_size), T), arg_types)...}
+    closure_type = RuleMC{dual_args_type,dual_ret_type(ir, Val(chunk_size))}
     Tderived_rule = DerivedFRule{sig,closure_type,isva,nargs}
     return debug_mode ? DebugFRule{Tderived_rule} : Tderived_rule
 end
@@ -592,16 +680,20 @@ end
 struct DynamicFRule{V}
     cache::V
     debug_mode::Bool
+    width::Int
     world::UInt
 end
 
-function DynamicFRule(debug_mode::Bool, world::UInt)
-    return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
+function DynamicFRule(debug_mode::Bool, width::Int, world::UInt)
+    return DynamicFRule(Dict{Any,Any}(), debug_mode, width, world)
 end
 
-_copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
+# Create new dynamic rule with empty cache, same debug mode, chunk width, and build world
+function _copy(x::P) where {P<:DynamicFRule}
+    return P(Dict{Any,Any}(), x.debug_mode, x.width, x.world)
+end
 
-function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
+function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     # `Base._stable_typeof` must be used here, rather than `typeof` or `Mooncake._typeof`.
     # See DynamicDerivedRule for details, the same reasoning applies.
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
@@ -609,8 +701,15 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     if rule === nothing
         # Build at this rule's creation world, not the current one; see _build_rule! (#1218)
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
+        # `nfwd=false`: nfwd is a top-level whole-function decision, not a sub-rule one (see
+        # `_build_rule!`).
         rule = build_frule(
-            interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true
+            interp,
+            sig;
+            debug_mode=dynamic_rule.debug_mode,
+            chunk_size=dynamic_rule.width,
+            skip_world_age_check=true,
+            nfwd=false,
         )
         dynamic_rule.cache[sig] = rule
     end

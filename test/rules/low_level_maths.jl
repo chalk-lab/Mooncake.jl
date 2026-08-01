@@ -36,13 +36,13 @@
 
     @testset "hypot singular-point consistency across arities" begin
         for T in (Float16, Float32, Float64)
-            x = Dual(zero(T), one(T))
-            y = Dual(zero(T), one(T))
-            z = Dual(zero(T), one(T))
+            x = Mooncake.lift(zero(T), one(T))
+            y = Mooncake.lift(zero(T), one(T))
+            z = Mooncake.lift(zero(T), one(T))
 
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z)) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x), 1) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y), 1) === zero(T)
+            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z), 1) === zero(T)
 
             _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
             _, dx1 = pb1(one(T))
@@ -68,48 +68,99 @@
         end
     end
 
+    @testset "fused trig forward pole guard (inactive lane stays 0, not NaN)" begin
+        # `tand(90)` hits an EXACT Float64 pole: `cosd(90) == 0` (90 is representable, unlike π/2
+        # in radians), so `tand(90) = Inf` and its derivative `1 + tand^2 = Inf`. The fused-family
+        # frule!! must scale partials with `_fwd_guarded_scale`, so an inactive (zero-seed) lane
+        # stays exactly 0 rather than 0*Inf = NaN — matching main's forward robustness.
+        for T in (Float32, Float64)
+            for x in (T(90), T(270))
+                @test tangent(
+                    Mooncake.frule!!(zero_dual(tand), Mooncake.lift(x, zero(T))), 1
+                ) === zero(T)
+            end
+        end
+    end
+
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
             @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
+                Mooncake.frule!!(
+                    zero_dual(^),
+                    Mooncake.lift(zero(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
+                ),
+                1,
             ) === one(T)
             @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
+                Mooncake.frule!!(
+                    zero_dual(^),
+                    Mooncake.lift(zero(T), one(T)),
+                    Mooncake.lift(T(2), zero(T)),
+                ),
+                1,
             ) === zero(T)
             @test isinf(
                 tangent(
                     Mooncake.frule!!(
-                        zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
+                        zero_dual(^),
+                        Mooncake.lift(zero(T), one(T)),
+                        Mooncake.lift(T(0.5), zero(T)),
                     ),
+                    1,
                 ),
             )
 
             @test isnan(
                 tangent(
                     Mooncake.frule!!(
-                        zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
+                        zero_dual(mod),
+                        Mooncake.lift(T(4), one(T)),
+                        Mooncake.lift(T(2), zero(T)),
                     ),
+                    1,
                 ),
             )
-            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+            @test isnan(
+                tangent(
+                    Mooncake.frule!!(zero_dual(mod2pi), Mooncake.lift(T(2π), one(T))), 1
+                ),
+            )
+            # Regression: reverse mod2pi must also be NaN at the 2π wrap — matching forward
+            # and `main` — not a constant slope 1. `x=0` (a multiple of 2π) is the common case.
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(zero(T)))
+                @test isnan(pb(one(T))[2])
+            end
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(T(0.7)))
+                @test pb(one(T))[2] === one(T)
+            end
 
             @test tangent(
                 Mooncake.frule!!(
-                    zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                    zero_dual(max),
+                    Mooncake.lift(one(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
                 ),
+                1,
             ) === zero(T)
             @test tangent(
                 Mooncake.frule!!(
-                    zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                    zero_dual(min),
+                    Mooncake.lift(one(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
                 ),
+                1,
             ) === one(T)
 
-            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
-                zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
-                one(T)
-            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
-                one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(Base.eps), Mooncake.lift(one(T), one(T))), 1
+            ) === zero(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(nextfloat), Mooncake.lift(one(T), one(T))), 1
+            ) === one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(prevfloat), Mooncake.lift(one(T), one(T))), 1
+            ) === one(T)
         end
     end
 

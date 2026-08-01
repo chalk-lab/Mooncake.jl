@@ -20,7 +20,8 @@ using AbstractGPs,
     Zygote
 
 using Mooncake:
-    Dual,
+    Lifted,
+    lift,
     CoDual,
     hand_written_rule_test_cases,
     derived_rule_test_cases,
@@ -28,12 +29,12 @@ using Mooncake:
     _typeof,
     primal,
     tangent,
-    zero_dual,
+    zero_lifted,
     zero_codual
 
 using Mooncake.TestUtils: _deepcopy
 
-to_benchmark(__frule!!::R, dx::Vararg{Dual,N}) where {R,N} = __frule!!(dx...)
+to_benchmark(__frule!!::R, dx::Vararg{Lifted,N}) where {R,N} = __frule!!(dx...)
 
 function to_benchmark(__rrule!!::R, dx::Vararg{CoDual,N}) where {R,N}
     dx_f = Mooncake.tuple_map(x -> CoDual(primal(x), Mooncake.fdata(tangent(x))), dx)
@@ -180,6 +181,7 @@ function benchmark_rules!!(
     include_other_frameworks::Bool,
     seconds=nothing;
     retries=0,
+    fwd_chunk=(_ -> 1),
 )
     test_cases = reduce(vcat, map(first, test_case_data))
     memory = map(x -> x[2], test_case_data)
@@ -225,20 +227,30 @@ function benchmark_rules!!(
                 seconds=seconds,
             )
 
-            # Benchmark AD via Mooncake.
-            @info "Mooncake (Forward)"
-            rule = Mooncake.build_frule(args...)
-            duals = map(x -> x isa CoDual ? Dual(x.x, x.dx) : zero_dual(x), args)
-            to_benchmark(rule, copy_coduals(duals...)...)
-            include_other_frameworks && GC.gc(true)
-            suite["mooncake_fwd"] = Chairmarks.benchmark(
-                () -> (rule, duals),
-                ((rule, duals),) -> (rule, copy_coduals(duals...)),
-                a -> to_benchmark(a[1], a[2]...),
-                _ -> GC.gc(false);
-                evals=1,
-                seconds=seconds,
-            )
+            # Benchmark AD via Mooncake (forward), skipping cases that opt out via
+            # `skip_forward` (forward mode cannot represent them; the frule throws when run).
+            if !TestUtils._case_skip_forward(ranges[n])
+                @info "Mooncake (Forward)"
+                # One forward pass at chunk width `fwd_chunk(args)` (default 1; the inter-AD
+                # comparison overrides it — see `_inter_fwd_chunk`).
+                W = fwd_chunk(args)
+                rule = Mooncake.build_frule(args...; chunk_size=W)
+                lifts = map(
+                    x ->
+                        x isa CoDual ? lift(primal(x), tangent(x)) : zero_lifted(Val(W), x),
+                    args,
+                )
+                to_benchmark(rule, copy_coduals(lifts...)...)
+                include_other_frameworks && GC.gc(true)
+                suite["mooncake_fwd"] = Chairmarks.benchmark(
+                    () -> (rule, lifts),
+                    ((rule, lifts),) -> (rule, copy_coduals(lifts...)),
+                    a -> to_benchmark(a[1], a[2]...),
+                    _ -> GC.gc(false);
+                    evals=1,
+                    seconds=seconds,
+                )
+            end
 
             if include_other_frameworks
                 if should_run_benchmark(Val(:zygote), args...)
@@ -307,11 +319,15 @@ function combine_results(result, tag, _range, default_range)
     d = result[2]
     primal_time = median(d["primal"]).time
     mooncake_time = median(d["mooncake"]).time
-    mooncake_fwd_time = median(d["mooncake_fwd"]).time
+    mooncake_fwd_time =
+        in("mooncake_fwd", keys(d)) ? median(d["mooncake_fwd"]).time : missing
     zygote_time = in("zygote", keys(d)) ? median(d["zygote"]).time : missing
     rd_time = in("rd", keys(d)) ? median(d["rd"]).time : missing
     ez_time = in("enzyme", keys(d)) ? median(d["enzyme"]).time : missing
     fallback_tag = string((result[1][1], map(Mooncake._typeof, result[1][2:end])...))
+    # `_range` (the case opts) may also carry flags like `skip_forward`; take the perf
+    # bounds from it when present, else fall back to the default.
+    opts = _range isa NamedTuple ? _range : (;)
     return (
         tag=tag === nothing ? fallback_tag : tag,
         primal_time=primal_time,
@@ -325,7 +341,7 @@ function combine_results(result, tag, _range, default_range)
         ReverseDiff=rd_time / primal_time,
         enzyme_time=ez_time,
         Enzyme=ez_time / primal_time,
-        range=_range === nothing ? default_range : _range,
+        range=(lb=get(opts, :lb, default_range.lb), ub=get(opts, :ub, default_range.ub)),
     )
 end
 
@@ -360,6 +376,11 @@ function benchmark_derived_rrules!!(rng_ctor)
     return benchmark_rules!!(test_case_data, (lb=1e-3, ub=200), false, 0.1; retries=5)
 end
 
+# Inter-AD forward timing is a SINGLE chunked JVP at chunk width min(8, dof), where dof is the
+# total number of scalar inputs (`args[1]` is the function). This measures forward-mode cost per
+# chunk rather than a full Rⁿ gradient, which forward mode would build from ceil(dof / 8) passes.
+_inter_fwd_chunk(args) = clamp(sum(length, args[2:end]; init=0), 1, 8)
+
 function benchmark_inter_framework_rules()
     test_case_data = generate_inter_framework_tests()
     tags = map(first, test_case_data)
@@ -367,7 +388,11 @@ function benchmark_inter_framework_rules()
     memory = []
     ranges = fill(nothing, length(test_cases))
     return benchmark_rules!!(
-        [(test_cases, memory, ranges, tags)], (lb=0.1, ub=200), true, 1.0
+        [(test_cases, memory, ranges, tags)],
+        (lb=0.1, ub=200),
+        true,
+        1.0;
+        fwd_chunk=_inter_fwd_chunk,
     )
 end
 

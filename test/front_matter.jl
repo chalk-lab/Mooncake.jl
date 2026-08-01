@@ -16,6 +16,7 @@ using Mooncake
 using Mooncake:
     primal,
     tangent,
+    tangent_view,
     randn_tangent,
     increment!!,
     NoTangent,
@@ -28,7 +29,7 @@ using Mooncake:
     _scale,
     _add_to_primal,
     _dot,
-    Dual,
+    Lifted,
     zero_dual,
     zero_codual,
     codual_type,
@@ -105,6 +106,8 @@ using .TestUtils:
     populate_address_map_internal,
     populate_address_map,
     test_tangent,
+    test_lifted,
+    test_lifted_type,
     check_allocs
 
 using .TestResources:
@@ -158,6 +161,10 @@ function determine_test_group()
 end
 
 const test_group = determine_test_group()
+
+# CI runs the heavy rule groups as separate forward/reverse jobs (`TEST_MODE`, honoured inside
+# `TestUtils.test_rule`/`run_rule_test_cases`); unset ⇒ both, so local runs are unchanged.
+@info "Running test group '$(test_group)' in TEST_MODE=$(get(ENV, "TEST_MODE", "both"))"
 
 sr(n::Int) = StableRNG(n)
 

@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "NNlib")
 
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.Nfwd: NDual, ndual_partial, ndual_value
@@ -524,6 +523,39 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         perf_flag = cuda ? :none : perf_flag
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
+    end
+
+    # The loop above runs reverse mode only. The `bias_act!` forward frule must accept x and b with
+    # DIFFERENT float element types (e.g. Float64 input + Float32 bias, common in mixed-precision
+    # models) — the `@is_primitive` and reverse rule allow it, but the frule previously bound both to
+    # a shared eltype, raising a forward MethodError. Exercise it explicitly (Array-only forward; CPU).
+    @testset "bias_act! mixed-eltype forward" begin
+        test_rule(
+            StableRNG(123),
+            bias_act!,
+            identity,
+            randn(StableRNG(1), 8, 4),
+            randn(StableRNG(2), Float32, 8);
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
+
+    # `gather` is a both-modes primitive; the loop above is reverse-only, so exercise its
+    # forward frule explicitly across chunk widths (plain-Array src). Guards against the
+    # frule regressing to `gather`'s raw-pointer body, which the block layout cannot address
+    # per lane at width > 1.
+    @testset "gather forward" begin
+        test_rule(
+            StableRNG(123),
+            NNlib.gather,
+            randn(StableRNG(1), 3, 4),
+            [1, 3, 1];
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
     end
 end
 

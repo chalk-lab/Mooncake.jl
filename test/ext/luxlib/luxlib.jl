@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "LuxLib")
 
 using JET, Lux, LuxLib, Mooncake, NNlib, SLEEFPirates, StableRNGs, Test
 using LuxLib.Impl: sleefpirates_fast_act

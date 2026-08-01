@@ -2,87 +2,103 @@
 
 ## Purpose
 
-Mooncake.jl is a Julia-first automatic differentiation package focused on:
+Mooncake.jl is a Julia-first automatic differentiation package. Priorities, in order:
 
-- broad coverage of real Julia behaviour, especially mutation, dynamic control flow, foreign calls, intrinsics, arrays, structs, tasks, closures, and package-extension code
+- broad coverage of real Julia behaviour: mutation, dynamic control flow, foreign calls, intrinsics, arrays, structs, tasks, closures, package extensions
 - correctness and testability before aggressive optimisation, verified empirically through wide test coverage and tangent-type design
-- composability: rules should compose predictably across primitives, custom tangents, nested AD, and mixed-mode AD
-- representation discipline: tangent and cotangent types should be canonical enough that invariants are easy to state, test, and preserve
-- strong diagnostics: malformed rules, tangent mismatches, world-age/compiler issues, and mutation mistakes should be easy to surface and debug
-- clear validity boundaries: unsupported cases should fail loudly and locally, not silently produce wrong derivatives
-- numerical robustness, including removable-singularity cases that would otherwise produce NaNs/Infs
-- performance via hand-written low-level `rrule!!` / `frule!!`, strict tangent and cotangent types, and cached prepare/run APIs
+- composability: rules must compose predictably across primitives, custom tangents, nested AD, and mixed-mode AD
+- representation discipline: tangent/dual types canonical enough that invariants are easy to state, test, and preserve
+- clear validity boundaries and strong diagnostics: unsupported cases fail loudly and locally, never silently produce wrong derivatives
+- numerical robustness (e.g. removable singularities must not produce NaN/Inf)
+- performance via hand-written low-level `rrule!!` / `frule!!`, strict tangent types, and cached prepare/run APIs
 
-The overall target is: correct by construction where possible, aggressively testable where not, and explicit about every place where semantics depend on a rule.
+Target: correct by construction where possible, aggressively testable where not, and explicit about every place where semantics depend on a rule.
 
 ## Repository Layout
 
-- `src/`: main package code
-- `src/interpreter/`: IR and interpreter machinery for forward and reverse mode
-- `src/rules/`: primitive- and domain-specific differentiation rules
+- `src/`: main package code (`src/interpreter/`: IR/interpreter machinery; `src/rules/`: differentiation rules)
 - `ext/`: package extensions
-- `test/`: core test suite
-- `test/ext/`: extension tests in separate environments
-- `test/integration_testing/`: broader integration suites in separate environments
+- `test/`: core suite; `test/ext/` and `test/integration_testing/`: separate-environment suites
 - `docs/src/`: user, conceptual, utility, and developer documentation
 
 ## Working Conventions
 
-- Keep changes aligned with the existing source/test layout: tests for `src/.../foo.jl` usually live at `test/.../foo.jl`.
-- Put shared test setup in `test/front_matter.jl`; test-group dispatch lives in `test/runtests.jl`.
-- For complex rules, especially array-heavy rules, prefer canonicalising inputs at the rule boundary with utilities such as `arrayify` rather than proliferating specialised methods.
-- Mooncake provides helpers for importing rules from ChainRules via `@from_rrule` / `@from_chainrules`, but use them conservatively. In practice, restrict to scalar and array-like cases whose element types are `IEEEFloat` or `Complex` numbers, for which tangent conversions are well-defined and round-trip correctly.
-- World-age issues can arise when generated functions call back into Julia dispatch. `tangent_type` and `build_fdata` are generated functions; all sub-function calls must be in the returned expression (runtime), not in the generator body (generation time). If you add or modify either function, verify this.
-- Avoid modifying `src/interpreter/` unless the task explicitly targets it. `Mooncake.primal_ir`, `Mooncake.dual_ir`, `Mooncake.fwd_ir`, and `Mooncake.rvs_ir` (see `docs/src/developer_documentation/developer_tools.md`) are available for inspection, but do not write rules or code that depends on their output — they are not semver-stable.
-- Prefer writing rules at the lowest practical level, often around foreign-call boundaries (see `src/rules/blas.jl`), to reduce the total number of rules that need to be maintained.
-- Implement both `frule!!` and `rrule!!` for new primitives where possible; rules that cover only one mode limit composability.
-- Every custom rule must be accompanied by an `@is_primitive` declaration; without it, the AD will not dispatch to the rule.
-- Use `@zero_derivative` for rules with a zero derivative rather than writing a manual rule. Check `src/rules/` for other convenience macros before writing a rule from scratch.
-- When choosing a tangent type: use `NoTangent` for non-differentiable types (e.g. integers, booleans, symbols); use `ZeroTangent` when the type is differentiable, but the derivative is structurally zero in a given rule.
-- Prefer the narrowest rule signature that covers the intended cases; overly broad signatures can silently shadow more specific rules or cause method ambiguity errors.
-- Only forward-over-reverse nested AD is tested. Do not assume rules compose correctly under reverse-over-reverse or other higher-order combinations unless explicitly verified.
+- Mirror the source/test layout: tests for `src/.../foo.jl` live at `test/.../foo.jl`. Shared test setup goes in `test/front_matter.jl`; group dispatch in `test/runtests.jl` (see it for how to run groups, including interactively).
+- Write rules at the lowest practical level (often foreign-call boundaries, see `src/rules/blas.jl`) to minimise the rule count. Canonicalise array-like inputs at the rule boundary (`arrayify`) instead of proliferating specialised methods.
+- Implement both `frule!!` and `rrule!!` for new primitives where possible. Use `@zero_derivative` for zero-derivative rules; check `src/rules/` for other convenience macros first.
+- Every custom rule needs an `@is_primitive` declaration, and the declaration must stay in lockstep with the rule's method coverage: a broader `@is_primitive` than the rule methods fails only at call time with a `MethodError`. Prefer the narrowest signature that covers the intended cases — overly broad signatures shadow more-specific rules or create ambiguities.
+- `@from_rrule` / `@from_chainrules` import ChainRules rules; restrict them to scalar/array cases with `IEEEFloat` or `Complex` element types, where tangent conversions round-trip.
+- Tangent-type choice: `NoTangent` for non-differentiable types; `ZeroTangent` for differentiable types whose derivative is structurally zero in a given rule.
+- In `@generated` functions of the `tangent_type` family (`tangent_type`, `build_fdata`, `dual_type`, …): all sub-function calls **and all throws** belong in the returned expression, never in the generator body. For fallbacks, use the deferred-error pattern (`msg = "..."; return :(error($msg))`): an expansion-time throw gets baked into callers' compiled IR (and cached past invalidation under `@foldable`), so a later, more-specific extension overload could never take effect.
+- For a signature or cache key that must match what `rule(args...)` dispatches to, use `Base._stable_typeof` (gives `Type{T}` for type values). `Mooncake._typeof` additionally sharpens `Tuple`/`NamedTuple` elements to `Type{X}` — use it only where that per-element sharpening is wanted (e.g. `fcodual_type`); in a cache key it silently mismatches runtime dispatch.
+- Aliasing invariants: in **reverse mode**, `primal(a) === primal(b)` implies `fdata(a) === fdata(b)` (aliased primals share fdata so cotangent accumulation lands in one storage; see the "Aliasing Invariant" section of `docs/src/understanding_mooncake/rule_system.md`; a rule that intentionally breaks this must not let the shared primal be mutated in-place while both `CoDual`s are live). In **forward mode** the contract is asymmetric: `primal(slot)` aliases the user's storage, but tangent storage is slot-local — two `Lifted` slots over one primal carry independent JVP directions, by design.
+- `Ptr` has no ownable zero-derivative storage: `zero_tangent`/`zero_codual`/`zero_fcodual` fall back to the `uninit_*` bitcast convention (primal address reinterpreted as `Ptr{tangent_type(P)}`) — a type-correct placeholder that must never be dereferenced as a derivative.
+- In in-place tangent-set rules (`arrayset`/`memoryset`), zero the destination with the two-argument `zero_tangent(primal(v), tangent(v))` so the zero matches the existing runtime tangent's structure, not just the primal's type.
+- Reverse mode restores mutations on the pullback by default; stateful exceptions need explicit rules and focused tests.
+- Only forward-over-reverse nested AD is tested; do not assume other higher-order combinations compose without verifying.
 - Perturbation confusion / CUDA higher-order limit: GPU kernels are foreign calls with no Julia IR, so the CUDA extension differentiates elementwise/reduction ops (`sum(f, x)`, broadcasts) by running the mapped function on `Nfwd.NDual` forward-mode numbers inside the kernel. `NDual` is untagged and cannot nest (`NDual{NDual}` raises an error), so HVP/Hessian (forward-over-reverse) through these rules would collide the two perturbation levels — perturbation confusion. They error loudly instead (never silently wrong); HVP/Hessian for non-elementwise ops (`sum(x)`, `dot`, BLAS) works. Fix: a nested second-order dual (`HyperDual`).
-- Prefer clear Julia error messages, especially around malformed rules, unsupported cases, and rule-construction failures.
-- Mooncake's AD transform should preserve core execution properties: if the primal has zero allocation, the pullback should also have zero allocation; otherwise, pullbacks should allocate only a small constant-factor times the primal allocation (`c *` primal allocation); and type-stable primals should yield type-stable pullbacks.
-- Preserve the aliasing invariant (`primal(a) === primal(b)` implies `fdata(a) === fdata(b)`): aliased primals must share fdata. Custom rules that intentionally break this must not allow the shared primal to be mutated in-place while both `CoDual`s are live. See the "Aliasing Invariant" subsection of `docs/src/understanding_mooncake/rule_system.md`.
-- In reverse mode, Mooncake usually restores mutations on the pullback; stateful exceptions need explicit rules and focused tests.
-- Internal helper APIs may change freely, but exported and public behaviour should come with tests, documentation, and clear error messages.
-- Prepared caches are shape/type dependent; when cache construction changes, test reuse semantics and failure modes.
-- If you change public APIs, developer tooling, or core internals, update docs under `docs/src/` when needed.
-- Prefer targeted changes over broad refactors unless the task explicitly requires restructuring.
-- Prefer clear, concise names for variables, types, and methods.
-- When fixing bugs or performance issues (allocations, type instability), prefer minimal inline fixes over new helper functions; make multiple pruning passes before committing to arrive at the smallest correct diff. Use the `minimise` skill before committing.
+- The AD transform must preserve execution properties: zero-allocation primals yield zero-allocation pullbacks (otherwise small constant-factor), and type-stable primals yield type-stable pullbacks.
+- Fix representation problems by making `CoDual`/`Lifted` types correct inside rules, not by normalising in the transform or public interfaces.
+- Avoid `src/interpreter/` unless the task targets it. `Mooncake.primal_ir`/`dual_ir`/`fwd_ir`/`rvs_ir` are for inspection only — not semver-stable.
+- Internal helpers may change freely; exported/public behaviour needs tests, docs, and clear error messages. Prepared caches are shape/type dependent — when cache construction changes, test reuse and failure modes.
+- Write clear error messages, especially for malformed rules, unsupported cases, and rule-construction failures; prefer clear, concise names for variables, types, and methods.
+- No internal work-stage refs (task numbers, `D1`-style labels, ad-hoc `#NNN` tags) in comments, docstrings, or docs. A bare `#NNN` reads as a GitHub issue/PR: use one only when it resolves to a real issue/PR whose content matches — verify relevance, not existence (low legacy numbers often collide with unrelated issues). Prefix external refs: `julia#61368`.
+- Investigate before editing: root-cause and verify the intended fix first; keep investigation notes in `temp/` (untracked scratch). Prefer targeted changes and minimal inline fixes over new helpers or broad refactors; run the `minimise` skill before committing.
+- Run JuliaFormatter only from `test/integration_testing/format` (pins the CI version): `julia --project=test/integration_testing/format -e 'using JuliaFormatter; JuliaFormatter.format(".")'`.
+
+## Forward-mode representation (Lifted / dual_type)
+
+The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type(Val(N), P)`. The legacy two-field `Dual{P,T}` is gone. A *lane* is one derivative slot in a width-`N` seed; use the term consistently.
+
+- `Lifted{P,N,V}` is the slot wrapper (fields `primal::P, value::V`), parallel to `CoDual`. For concrete runtime values, `P` is concrete and `V === dual_type(Val(N), P)`; abstract slots use broad width-preserving annotations from `lifted_type`.
+- **Recursive coherence**: for every accessible field/element of `P`, the reverse representation is `tangent_type(component)` and the forward one is `dual_type(Val(N), component)`, mirroring each other shape-for-shape:
+  - structs → `Tangent`/`MutableTangent` ↔ `ImmutableDual`/`MutableDual` (single-field wrappers holding the per-field `NamedTuple`; the slot primal lives in `Lifted`, not in them);
+  - arrays → `Array{tangent_type(T),D}` ↔ `NDualArray{T,N,D,A,W}`, the parallel-arrays wrapper: `primal::A` aliases user storage, `partials::NTuple{N,A}` is slot-local, `W` is the per-element dual eltype (`NDual{T,N}` / `Complex{NDual{T,N}}`);
+  - tuples/named-tuples → element-wise recursion; wrapper types (Diagonal, Adjoint, SubArray, …) recurse through the parent.
+
+  Both rule families rely on this. A non-coherent `dual_type` breaks `lgetfield` chains and silently corrupts forward AD on mutable structs with array fields (`docs/src/known_limitations.md`).
+- `NDual` lives only inside `V`, never as a field of the user's primal. `V` is built from bare inner duals (`NDual`, `Complex{NDual}`, `NDualArray`, `NDualMemoryRef`, tuples/named-tuples of those, `Immutable`/`MutableDual`); `Lifted` wraps exactly once at the top — never nested. `Array{<:NDual}` is **not** part of the protocol (arrays use `NDualArray`); rule signatures must match only shapes `dual_type` returns. Keep NDual-specific scalar rules in `src/rules/low_level_maths.jl` (forward `frule!!`s run the `f(::NDual)` overloads; reverse `rrule!!`s are direct native analytic pullbacks — no NDual/Nfwd/ChainRules dependency).
+- `frule!!` must return the canonical `dual_type(Val(N), typeof(result))` shape — `zero_dual(Val(N), result)` for zero derivatives; never double-wrap (nested `Lifted`, or `NoDual`/`NoTangent` paired with a differentiable value).
+- **Inner-value invariant**: an inner `NDual`'s `.value` must equal the primal result; rules scale only `partials`. Violations are silent correctness bugs. For width-`N` in-place rules, apply the in-place primal update once, hoisted out of the per-lane loop — repeating it corrupts the shared primal and later lanes.
+- Read the primal from the dual result; don't recompute it. `f(tangent(x))` already runs the primal op and stores it in the result's `.value` (inner-value invariant), so a separate `f(primal(x))` evaluates a non-trivial op (transcendental/BLAS/allocation) twice — ~1.5× slower per scalar call, the dominant cost in element-wise forward AD. Write `dy = f(tangent(x)); y = dy.value; Lifted{_typeof(y),N}(y, dy)` (read `dy.value` directly; for a tuple output, `map(d -> d.value, dy)`), as the scalar rules in `low_level_maths.jl` do.
+- Exploit fused primitives so value and derivative come from one call: `sincos(value)` yields `sin` (value) and `cos` (its derivative factor), so the `NDual` `sin`/`cos`/`tan` overloads call it once; likewise `muladd`/`fma`.
+- Array `frule!!`s operate on the `NDualArray`'s fields directly: `nda.primal` is a plain `Array` and the `N` lane tangents live in ONE element-major block `getfield(nda, :partials_block)` of shape `(N, size...)` — element `i`'s lanes are the contiguous column `block[:, i...]`; a single lane is a stride-`N` view (the `nda.partials[k]` shim), which pointer-based BLAS/LAPACK wrappers reject (or misread) at `N > 1`. BLAS/LAPACK rules therefore work on the block via `_partials_block(slot)` (dense; gathered for wrapper primals) in `src/rules/blas.jl`: a lane-invariant linear map applies to all lanes in one wide call by right-multiplying the `(N, len)` lane matrix by the map's transpose (contiguous column slabs / flat reshapes for matrix operands); genuinely lane-varying matrix factors (`op(dA_k)`) gather each lane into a hoisted dense scratch. Element-wise iteration of the whole `NDualArray` (`sum(tangent(x))`, `mapreduce`/`dot`/`nda[i]`) builds one `NDual` per element via the scalar left-fold — no SIMD, ~5× slower; prefer block-level loops that walk the contiguous per-element lane columns.
+- Chunked-forward allocation: a temp inside a per-lane loop costs `O(N)`. Hoist scratch above the loop (refill per lane via `copyto!` + in-place op), compute lane-independent work once, and prefer direct `BLAS.trsm!`/`trmm!`/`gemm!` over wrapped LinearAlgebra `!` ops (which allocate internally). Verify `@allocated` at width 1 vs 8 — the width-8 count must equal width-1 (no per-lane temporaries).
+- Performance parity with reverse: a width-`N` `frule!!` computes `N` directional derivatives, so it uses more memory (the `N` partial buffers) and, for direction-scaling ops (matmul, solve, reductions), does up to `N×` a VJP's derivative work (`C = A·B` is `2N` matmuls vs `2`) — fundamental, not a bug. So judge per-lane, not per-pass: a width-1 pass should match one `rrule!!` VJP, and nothing lane-invariant may repeat across lanes — hoist the primal, factorizations, and shared products (`op(A)⁻¹·B`, `A·B`, softmax weights) above the loop, hoist scratch, prefer fused BLAS. If a `frule!!` exceeds that (width-1 slower than reverse, or per-lane work above the irreducible directional derivative — redundant solve/recompute, unhoisted allocation), profile and fix.
+- Batching `N` per-lane calls into fewer wide ones is a **GPU** win (launch-bound): `CUDA.CUBLAS.gemm_batched!`/`gemv_batched!` take the separate partial arrays with no gather; scalar reductions read back once. On **CPU** it rarely pays — a shared-factor solve's amortization is eaten by the un-batchable per-lane product and the gather (erratic, matrix-RHS only, ~break-even for vector RHS), and products have no factor at all — so micro-bench first, never a default; guard `Nw == 1`.
+- The clean CPU lever is collapsing, not batching: two solves sharing a factor fold into one by linearity of `op(A)⁻¹` — `α·op(A)⁻¹·(dB − op(dA)·X)`, not separate solves of `dB` and `op(dA)·X` (`trsm!`/`trtrs!`/`trsv!`; ~1.5–1.9×, every shape, no gather or guard).
+- Construct outputs with `Lifted{P,N}(primal, value_or_seed_tangent)`, not raw `NDual{T,N}(...)`. Abstract/nonconcrete `P` must sharpen through `typeof(primal)` and stay compatible with the abstract slot.
+- Do not branch on inner-`V` shape in rule bodies: `dual_type` determines `V`; use `primal(slot)`, `tangent(slot)`, `tangent(slot, lane)` and construct the output. `_unlift`/`_lift` are for boundaries and centralized compatibility only, not per-primitive scaffolding.
+- Mutable-struct lane tangents are `MutableDualTangentView` proxies (writes delegate to the parent `MutableDual`; internals are underscore-prefixed so user fields named `parent`/`primal`/`lane` resolve correctly). There is no supertype shared with reverse `MutableTangent`: code handling both must use property syntax, not type dispatch.
+- `Lifted` is invariant in `P`: never annotate an IR join as `Lifted{Union{A,B},...}` when runtime values are `Lifted{A,...}`/`Lifted{B,...}` — use `Union{Lifted{A,...}, Lifted{B,...}}`, a broad `UnionAll`, or an unwrapped join, or downstream `PiNode`s/OpaqueClosures lower valid paths to `unreachable`.
+- `dual_type(Val(N), Ptr{T}) === NTuple{N, Ptr{T}}`: per-lane tangent pointers, valid whenever a separate tangent buffer exists to point at. A `pointer_from_objref` → `pointerref` round-trip through a value's *own* address has no addressable tangent (the partial is interleaved inside the dual), so that lane is deliberately left incoherent and fails loudly (a clear `ArgumentError`) rather than silently dropping the derivative.
 
 ## Consistency
 
-- When changing Julia version support, update `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
-- When a new rule depends on internals of an external package, tighten the corresponding `[compat]` bound in `Project.toml`.
-- For new rules and internals, keep source, test-group wiring, and CI coverage in sync: add the matching test file, wire it into `test/runtests.jl` when applicable, and update CI if it deserves its own group.
+- Changing Julia version support touches `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
+- A rule that depends on an external package's internals needs a tightened `[compat]` bound.
+- Keep source, test-group wiring (`test/runtests.jl`), and CI coverage in sync when adding rules or internals.
+- CI runs each `rules/*` group as separate forward and reverse jobs via the `TEST_MODE` env var (`forward`/`reverse`; unset ⇒ both) — the redesign's forward compile (frules × chunk widths × complex codegen) roughly doubled the reverse-only compile, so a combined complex-BLAS job overran the runner's time budget. `TestUtils.test_rule`/`run_rule_test_cases` honour `TEST_MODE`; a new rule group added to the matrix inherits the split automatically. Groups doing non-rule work too (`basic`/`Nfwd`/`array_legacy`) stay single `both`-mode jobs so that work isn't run twice.
 
 ## Testing
 
-- Prefer constructing a minimal working example (MWE) first, then running the smallest focused test group that validates the fix, and only then broader test groups if needed.
-- Before adding a new test or test helper, check whether the behaviour is already covered; prefer extending an existing case over introducing a new one, make multiple pruning passes, and keep additions minimal.
-- Use the canonical test utilities: `Mooncake.TestUtils.test_rule` for new differentiation rules; `TestUtils.test_tangent_splitting` on a concrete value (add constructors to `src/test_resources.jl`) for tangent/fdata/rdata correctness rather than direct `@test tangent_type(...)` assertions; `TestUtils.test_data` for custom tangent type implementations.
-- Do not disable tests or weaken performance assertions just to get CI green; if that appears necessary, stop and ask for confirmation first.
-- Ensure supported primal types and their tangent types are exercised against the relevant rules for compatibility and composability.
-- Mooncake has a debug mode which is useful for testing malformed rules and diagnosing rule failures; see `docs/src/utilities/debug_mode.md`.
-- For performance-sensitive rules, verify by running the `frule!!` or `rrule!!` directly and checking allocations and runtime against the primal. Use `@allocated` to ensure that zero-allocation primals still yield zero-allocation AD paths, and `@code_warntype` to check for type stability.
-- Bug fixes should land with a focused regression test; if the fix depends on compiler or world-age behaviour, isolate it and test directly.
-- `friendly_tangents` can display a misleading value for structured or wrapped types even when the underlying tangent data is correct. Do not treat a surprising `friendly_tangents` result as proof of a bug without also inspecting the raw tangent.
-- `src/test_resources.jl` is shared test infrastructure, not dead code. It feeds broad interpreter/rule tests indirectly via `TestResources.generate_test_functions()`, so do not judge it by one-file-one-test symmetry.
-- Treat `temp/` as local scratch space, preferably untracked. Put ad hoc experiments, scratch scripts, and debugging MWEs there rather than in source or test files.
-- See `test/runtests.jl` for how to run tests (interactively or in groups).
-- When running multiple Julia minor versions locally, prefer version-specific manifests such as `Manifest-v1.10.toml` and `Manifest-v1.12.toml` instead of re-resolving a shared `Manifest.toml`. Julia will pick the matching manifest automatically, which avoids cross-version resolver breakage.
-- Extension and integration tests should generally be run from their own files/environments under `test/ext/` and `test/integration_testing/`. These are part of the package contract, not optional extras, so changes to weakdeps/extensions often need updates there even if core tests still pass.
+- MWE first, then the smallest focused test group, then broader groups only if needed. Before adding a test, check the behaviour isn't already covered; extend existing cases over adding new ones, and prune additions.
+- Canonical utilities: `TestUtils.test_rule` for rules; `TestUtils.test_tangent_splitting` on a concrete value (constructors in `src/test_resources.jl`) for tangent/fdata/rdata correctness; `TestUtils.test_data` for custom tangent types.
+- ALWAYS reach for the registered test infrastructure FIRST, before writing any bespoke test in `test/`. For a new rule or a rule change, the default is a registry entry, not hand-written `test/` code — check for a fitting registry before you write a `@testset`. Concretely: a normal rule → a `hand_written_rule_test_cases` entry (in the rule's `src/rules/*.jl` file) or a `src/test_resources.jl` constructor; a rule GUARD that must fail loudly → a `throwing_rule_test_cases` entry (expected exception + hand-built slots; run through `@test_throws` by the same driver). Registered cases get the full battery (both modes, widths 1–3, stability/allocs flags) automatically. Only hand-write a bespoke `test/` test for what no registry can express (e.g. specific seed shapes, mutation-aliasing assertions), and say why the registry didn't fit.
+- `test_rule` exercises forward rules at chunk widths 1, 2, 3 by default (via `TestUtils.test_frule`): width-1 finite-difference correctness, plus chunked checks that the primal is unchanged, inner `.value` tracks the primal, and — for primitive rules with plain numeric-dual arguments — per-lane partials match the width-1 oracle. Gaps to know: the per-lane oracle skips struct-lift/`Dict`/closure/`Ref` V shapes; derived (`is_primitive=false`) rules skip chunked widths entirely; seedless cases (raw `Ptr`) opt out via `skip_chunked`; random seeds rarely hit numeric edge cases — exercise those by hand (e.g. `x < 0` for `copysign`/`powi`).
+- Ensure supported primal types and their tangent types are exercised against the relevant rules, for compatibility and composability.
+- Never disable tests or weaken performance assertions to get CI green; stop and ask first.
+- Debug mode helps test malformed rules and diagnose failures: `docs/src/utilities/debug_mode.md`.
+- For performance-sensitive rules, run the rule directly: `@allocated` (zero-alloc primal ⇒ zero-alloc AD) and `@code_warntype` (type stability).
+- Bug fixes land with a focused regression test; compiler/world-age-dependent fixes get isolated direct tests.
+- `friendly_tangents` can mislead for structured/wrapped types; inspect the raw tangent before concluding a bug.
+- `src/test_resources.jl` is shared infrastructure feeding broad interpreter/rule tests via `TestResources.generate_test_functions()` — not dead code.
+- Prefer version-specific manifests (`Manifest-v1.10.toml`, `Manifest-v1.12.toml`) when running multiple Julia versions locally.
+- Extension/integration suites under `test/ext/` and `test/integration_testing/` run in their own environments and are part of the package contract: weakdep/extension changes usually need updates there even when core tests pass.
 
 ## Documentation
 
-- `docs/make.jl` defines the Documenter build and navigation structure.
-- Main docs sections include top-level user pages such as `index.md`, `tutorial.md`, and `interface.md`.
-- Known unsupported or incomplete behaviour is documented in `docs/src/known_limitations.md`.
-- Conceptual material lives under `docs/src/understanding_mooncake/`.
-- Utility docs live under `docs/src/utilities/`.
-- Internal and contributor material lives under `docs/src/developer_documentation/`.
-- For defining or adapting rules, see `docs/src/utilities/defining_rules.md`; for complex array-like rules, see its `Canonicalising Tangent Types` section for `arrayify`/`matrixify` guidance.
-- For recursive types or custom tangent implementations, start with `docs/src/developer_documentation/custom_tangent_type.md`.
+- `docs/make.jl` defines the Documenter build and navigation; top-level user pages include `index.md`, `tutorial.md`, and `interface.md`.
+- Known unsupported/incomplete behaviour: `docs/src/known_limitations.md`. Conceptual material: `docs/src/understanding_mooncake/`. Utilities: `docs/src/utilities/`. Contributor material: `docs/src/developer_documentation/`.
+- Defining/adapting rules: `docs/src/utilities/defining_rules.md` (its "Canonicalising Tangent Types" section covers `arrayify`/`matrixify`). Custom tangent types and recursive types: `docs/src/developer_documentation/custom_tangent_type.md`.
+- Update docs when changing public APIs, developer tooling, or core internals.
