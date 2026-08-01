@@ -184,6 +184,9 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
+# The nfwd-native classifier and rule wrapper: mode-agnostic, so it precedes the mode transforms
+# that dispatch to it (`forward_mode.jl` today, reverse mode in future).
+include(joinpath("interpreter", "nfwd_utils.jl"))
 include(joinpath("interpreter", "forward_mode.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
 end
