@@ -498,8 +498,16 @@ _nfwd_primal(@nospecialize(y)) = y
 # primal field, mismatching `lifted_type`. Rejected calls fall back to the frule transform.
 function _nfwd_projectable(@nospecialize(T))
     T isa DataType || return false
-    (T.name === _TN_NDUAL || T.name === _TN_NDARRAY || T.name === _TN_NDMEMREF) &&
-        return true
+    T.name === _TN_NDUAL && return true
+    # An `NDualArray` is nfwd-projectable only when its backing array can be scalar-iterated
+    # cheaply on the host. A GPU backing (`CuArray`) cannot: nfwd runs the primal element-wise
+    # over the dual array, scalar-indexing the device array (disallowed) — such ops must route to
+    # the transform's device frules. `T.parameters[4]` is the backing array type; the default is
+    # `true`, and the CUDA extension overrides `_nfwd_backing_projectable` to `false` for `CuArray`.
+    # This must precede the `_TN_NDMEMREF` check: on Julia 1.10 that sentinel aliases the
+    # `NDualArray` TypeName, so an earlier unguarded return would admit GPU-backed dual arrays.
+    T.name === _TN_NDARRAY && return _nfwd_backing_projectable(T.parameters[4])
+    T.name === _TN_NDMEMREF && return true
     if T <: Complex
         p = T.parameters[1]
         return p isa DataType && p.name === _TN_NDUAL
@@ -521,6 +529,11 @@ function _nfwd_projectable(@nospecialize(T))
     end
     return false
 end
+
+# Backing-array trait for the `NDualArray` branch of `_nfwd_projectable`. Host arrays support the
+# cheap scalar iteration nfwd needs; the CUDA extension overrides this to `false` for `CuArray`, so
+# GPU-backed dual arrays route to the transform's device frules instead of scalar-indexing.
+_nfwd_backing_projectable(@nospecialize(A)) = true
 
 # Unwrap an nfwd-call operand into a value the primal function can be applied to. A differentiable
 # slot yields its inner dual value (`NDual`/`NDualArray`/`NDualMemoryRef`, dispatch-compatible with

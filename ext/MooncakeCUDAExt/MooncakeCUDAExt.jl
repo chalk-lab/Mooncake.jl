@@ -210,6 +210,13 @@ end
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 
+# Keep GPU-backed `NDualArray`s out of the nfwd-native path: running the primal element-wise over
+# the dual array scalar-indexes the device array (disallowed). Forcing `_nfwd_projectable` false
+# routes every CuArray forward op to the transform, which uses the device frules below. (Without
+# this, on Julia 1.10 the classifier admitted composed reductions like `sum(f, ::CuArray)` to nfwd
+# and they scalar-indexed; 1.12's block layout differs but the hazard is identical.)
+Mooncake._nfwd_backing_projectable(::Type{<:CuArray}) = false
+
 # Forward-mode canonical V for CUDA primitives — mirrors the host
 # (`Array{T,D}` / `Ptr{T}` / etc.) V shapes:
 #
