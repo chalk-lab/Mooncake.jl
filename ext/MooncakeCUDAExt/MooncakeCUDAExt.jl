@@ -269,6 +269,12 @@ end
     ) where {E,N,D,A<:CuArray}
         return view(getfield(a, :partials_block), ntuple(_ -> Colon(), Val(D))..., k)
     end
+    # Whole per-lane tuple. Overrides the host generic, which slices the block's LEADING axis
+    # (element-major `(N, dims...)`); the CuArray block is lane-major `(dims..., N)`, so build
+    # from the lane-major `tangent_view` above instead.
+    @inline Nfwd._lane_views(a::NDualArray{E,N,D,A}) where {E,N,D,A<:CuArray} = ntuple(
+        k -> Nfwd.tangent_view(a, k), Val(N)
+    )
     # GPU-friendly pack: the generic `_pack_block` fills element-by-element (scalar `setindex!`,
     # which a `CuArray` forbids). Copy each lane's partial into its block slice `[dims..., k]` — one
     # device copy per lane, no scalar indexing. `copyto!` accepts any-typed source, so lane views of
@@ -1557,12 +1563,16 @@ end
 #   - d(output_i)/d(x) = 1          → tangent(x) (if any) broadcasts into tangent(a)
 # For integer x the tangent is NoTangent, so the tangent array is zeroed.
 # For float x the tangent array is filled with tangent(x).
-@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeComplexArray,Any}
+@is_primitive MinimalCtx Tuple{typeof(fill!),CuMaybeWrappedArray,Any}
 function frule!!(
-    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray}, x::Lifted
+    ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeWrappedArray,Nw}, x::Lifted
 ) where {Nw}
-    fill!(primal(a), primal(x))
-    a_partials = Nfwd._lane_views(tangent(a))
+    # `arrayify` handles a dense CuArray and Adjoint/Transpose/SubArray wrappers alike: `pa` is
+    # the destination (filled through the wrapper) and each `a_partials[lane]` is the same wrapper
+    # shape over lane `k`'s partials, so `fill!` writes the constant into exactly the region the
+    # primal touches — matching the reverse rrule, which also goes through `arrayify`.
+    pa, a_partials = arrayify(a)
+    fill!(pa, primal(x))
     Eout = eltype(a_partials[1])
     if tangent(x) isa NoDual
         for partial in a_partials
@@ -3375,6 +3385,14 @@ end
 # Wrapper-arg fall-throughs: Transpose/Adjoint primals with parent NDualArray V.
 @inline function _bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint}, lane)
     parent_tangent = _bc_tangent(v.value.parent, parent(p), lane)
+    return Tangent((; parent=parent_tangent))
+end
+# Non-contiguous SubArray leaf (a contiguous view collapses to a plain CuArray). `copy`
+# materialises the parent's lane partial as a plain device array — `_leaf_effective_tangent`
+# feeds `.parent` to `arrayify(::SubArray, …)`, which requires a `CuArray` there and re-applies
+# the primal's indices; the lazy block-row view is a `SubArray`, which that `arrayify` rejects.
+@inline function _bc_tangent(v::ImmutableDual, p::SubArray, lane)
+    parent_tangent = copy(_bc_tangent(v.value.parent, parent(p), lane))
     return Tangent((; parent=parent_tangent))
 end
 # Generic Ref/struct primal with ImmutableDual or MutableDual V — the Broadcast `args`
