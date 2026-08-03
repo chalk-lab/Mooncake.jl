@@ -11,14 +11,15 @@ function foo(x)
     return y
 end
 
-# Helpers for the world-advance rule-staleness regression test (issue #1218;
-# see `_build_rule!` in forward_mode.jl for the scope caveat). Defining `stale_fwd_inner(::Float64)`
-# later tightens `stale_fwd_callee`'s return type Float32->Float64 via a mid-pass world advance.
-# `stale_fwd_lazy` reaches the callee statically (LazyFRule), `stale_fwd_dyn` dynamically (DynamicFRule).
+# Helpers for the world-advance staleness test below (issue #1218; scope caveat at
+# `_build_rule!`). `stale_fwd_lazy` reaches the callee via LazyFRule, `stale_fwd_dyn` via DynamicFRule.
 stale_fwd_inner(x) = Float32(x) * 2.0f0
 @noinline stale_fwd_callee(x) = stale_fwd_inner(x)
-stale_fwd_lazy(x) = stale_fwd_callee(x)
-const STALE_FWD_FNS = Function[stale_fwd_callee]
+# Two `:invoke` levels: one for the pinned rebuild, one for the rules that rebuild itself
+# constructs, which predicted at the current world until they were given the pinned one.
+@noinline stale_fwd_mid(x) = stale_fwd_callee(x)
+stale_fwd_lazy(x) = stale_fwd_mid(x)
+const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
 @testset "s2s_forward_mode_ad" begin
@@ -62,9 +63,8 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
         )
     end
 
-    # Without the fix the lazy path throws a `convert` MethodError in _build_rule! after the
-    # world advance; both lazy and dynamic must return the build-world result (Float32), not
-    # the post-advance world's (Float64).
+    # Without the fix the lazy path throws a `convert` MethodError in _build_rule!; both
+    # paths must return the build-world result (Float32), not the post-advance (Float64).
     @testset "stale rule build-world after world advance (issue #1218)" begin
         lazy = Mooncake.build_frule(stale_fwd_lazy, 1.5)
         dyn = Mooncake.build_frule(stale_fwd_dyn, 1.5)

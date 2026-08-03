@@ -587,9 +587,7 @@ end
             oc = Base.Experimental.@opaque x -> x + 1
             @test Mooncake._copy_output(oc) === oc
 
-            # End-to-end: friendly forward-over-reverse over an array function builds
-            # a gradient closure that captures the compiled reverse rule. Copying it
-            # must not StackOverflow at prepare time.
+            # The gradient closure captures the compiled rule; copying it StackOverflowed.
             f = x -> sum(abs2, x)
             @test Mooncake.prepare_hvp_cache(
                 f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; friendly_tangents=true)
@@ -1408,6 +1406,14 @@ end
 
                 cache2 = prepare_hvp_cache(f, x, y)
                 @test_throws ArgumentError value_and_hvp!!(cache2, f, ([1.0], [0.0]), x, y)
+
+                # A struct-shaped primal has no `size`, so the check must skip it rather
+                # than throw a MethodError from `axes`.
+                g(p::SimplePair) = p.x1^2 + p.x2^2
+                p = SimplePair(3.0, 4.0)
+                v = Mooncake.Tangent((; x1=1.0, x2=0.0))
+                _, _, hvp = value_and_hvp!!(prepare_hvp_cache(g, p), g, v, p)
+                @test hvp.fields.fields == (; x1=2.0, x2=0.0)
             end
 
             @testset "HVP cache mismatch errors" begin

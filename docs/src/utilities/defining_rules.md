@@ -93,6 +93,7 @@ When `friendly_tangents=true` is passed to `value_and_gradient!!` or `prepare_gr
 - **`AbstractArray` with `IEEEFloat` (or complex) eltype**: plain array tangent, unchanged.
 - **Callables with no captured differentiable state**: `NoTangent()`, unchanged.
 - **`AbstractDict`**: a dict of the same type as the primal, with the same keys and gradient values.
+- **`LinearAlgebra.Adjoint` / `Transpose`** over a differentiable parent eltype: the same wrapper around the parent's gradient — an `AbstractMatrix` of `size(x)`, not a dense `Matrix`.
 - **Everything else** (primitive types, zero-field types, mutable structs with custom tangent types): raw Mooncake tangent, unchanged unless customised as described below.
 
 For example, with `friendly_tangents=false` (default), an immutable struct `Foo` with fields `a::Float64` and `b::Vector{Float64}` returns a `Mooncake.Tangent` wrapping `(a = da, b = db)`, and a mutable struct `Bar` with the same fields returns a `Mooncake.MutableTangent` wrapping `(a = da, b = db)`. With `friendly_tangents=true` both unwrap to the plain `NamedTuple` `(a = da, b = db)` where `da::Float64` and `db::Vector{Float64}`.

@@ -156,9 +156,8 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
     end
 
     setindex!(primal(d), primal(val), k)
-    # `setindex!` above stored `convert(V, val)`, so the slot is `tangent_type(V)`. For a
-    # matched/abstract `V` the two-argument `zero_tangent` reuses `val`'s fdata to preserve
-    # aliasing for mutable values; a non-diff slot/value takes a fresh slot-typed zero.
+    # `setindex!` above stored `convert(V, val)`, so the slot is `tangent_type(V)`. The
+    # two-arg `zero_tangent` reuses `val`'s fdata to preserve aliasing for mutable values.
     dslot = if tangent_type(V) == NoTangent
         NoTangent()
     elseif tangent_type(typeof(primal(val))) == NoTangent
@@ -180,6 +179,10 @@ function rrule!!(::CoDual{typeof(setindex!)}, d::CoDual{IdDict{K,V}}, val, key) 
         elseif S <: tangent_type(V)
             increment!!(instantiate(dval), rdata(tangent(d)[k]))
         else
+            # The slot holds `convert(V, val)`, a fresh object, so what accumulates there
+            # reaches `val`'s fdata only by an explicit copy-back. The result is discarded
+            # because every gradient carrier in fdata is mutable, so this lands in place.
+            increment!!(tangent(val), convert(fdata_type(S), fdata(tangent(d)[k])))
             increment!!(instantiate(dval), convert(rdata_type(S), rdata(tangent(d)[k])))
         end
 
@@ -286,6 +289,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => 1.0), 2.0, :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Any}(:a => [1.0]), [2.0, 3.0], :b),
         (false, :none, nothing, setindex!, IdDict{Symbol,Float64}(:a => 1.0), 2.0f0, :b),
+        # the same width change for an array, where the gradient rides fdata, not rdata
+        (
+            false,
+            :none,
+            nothing,
+            setindex!,
+            IdDict{Symbol,Vector{Float64}}(:a => [1.0, 2.0]),
+            Float32[3.0, 4.0],
+            :b,
+        ),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.

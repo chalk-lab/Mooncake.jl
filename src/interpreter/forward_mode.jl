@@ -193,11 +193,9 @@ function generate_dual_ir(
     end
     nargs = length(primal_ir.argtypes)
 
-    # Check for unsupported features before normalise! runs.
-    # Julia 1.12+ lowers non-const global writes (`global x = y`) to
-    # Base.setglobal! on 1.12 and Core.setglobal! on 1.13+.
-    # CC.verify_ir does not reject these calls because they are valid IR, so
-    # reject them here before rule construction reaches a missing frule!!.
+    # Reject before normalise! runs: Julia 1.12+ lowers non-const global writes
+    # (`global x = y`) to Base.setglobal! on 1.12 and Core.setglobal! on 1.13+. CC.verify_ir
+    # accepts these calls, so without this check the failure surfaces as a missing frule!!.
     @static if VERSION > v"1.12-"
         setglobal_calls = (GlobalRef(Base, :setglobal!), GlobalRef(Core, :setglobal!))
         for inst in stmt(primal_ir.stmts)
@@ -456,7 +454,13 @@ function modify_fwd_ad_stmts!(
             end
         else
             dm = info.debug_mode
-            push!(captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm) : DynamicFRule(dm))
+            # Predict at the world this transform runs in: inside a pinned rebuild
+            # (`_build_rule!`) the current world is later, which would reintroduce the
+            # `Trule` mismatch of #1218 one level down.
+            w = interp.world
+            push!(
+                captures, isexpr(stmt, :invoke) ? LazyFRule(mi, dm, w) : DynamicFRule(dm, w)
+            )
             get_rule = Expr(:call, get_capture, Argument(1), length(captures))
             rule_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_rule), ATTACH_BEFORE)
             replace_call!(dual_ir, ssa, Expr(:call, rule_ssa, dual_args...))
@@ -510,11 +514,9 @@ mutable struct LazyFRule{primal_sig,Trule}
     mi::Core.MethodInstance
     world::UInt
     rule::Trule
-    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool)
-        interp = get_interpreter(ForwardMode)
-        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(
-            debug_mode, mi, interp.world
-        )
+    function LazyFRule(mi::Core.MethodInstance, debug_mode::Bool, world::UInt)
+        interp = get_interpreter(ForwardMode, world)
+        return new{mi.specTypes,frule_type(interp, mi;debug_mode)}(debug_mode, mi, world)
     end
     function LazyFRule{Tprimal_sig,Trule}(
         mi::Core.MethodInstance, debug_mode::Bool, world::UInt
@@ -523,7 +525,6 @@ mutable struct LazyFRule{primal_sig,Trule}
     end
 end
 
-# Create new lazy rule with same method instance, debug mode, and prediction world
 _copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, x.world)
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
@@ -551,10 +552,9 @@ end
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
-# Build at the world `Trule` was predicted at, not the current world: a world advance since
-# prediction can re-tighten `mi`'s inferred return type, yielding a rule that no longer
-# matches `Trule` and fails to `convert` on assignment below. Fixes the world-advance bug
-# #1218 (not the inference-complexity-widening case in #1209's headline MWE).
+# Build at the world `Trule` was predicted at: a later world can re-tighten `mi`'s inferred
+# return type, giving a rule that no longer matches `Trule` and fails to `convert` (#1218).
+# Not covered: the inference-complexity-widening case in #1209's headline MWE.
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(
@@ -595,11 +595,10 @@ struct DynamicFRule{V}
     world::UInt
 end
 
-function DynamicFRule(debug_mode::Bool)
-    return DynamicFRule(Dict{Any,Any}(), debug_mode, get_interpreter(ForwardMode).world)
+function DynamicFRule(debug_mode::Bool, world::UInt)
+    return DynamicFRule(Dict{Any,Any}(), debug_mode, world)
 end
 
-# Create new dynamic rule with empty cache and same debug mode and build world
 _copy(x::P) where {P<:DynamicFRule} = P(Dict{Any,Any}(), x.debug_mode, x.world)
 
 function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
@@ -608,8 +607,7 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Dual,N}) where {N}
     sig = Tuple{map(Base._stable_typeof ∘ primal, args)...}
     rule = get(dynamic_rule.cache, sig, nothing)
     if rule === nothing
-        # Build at the world this rule was created at (matching the enclosing rule), not the
-        # current world. See _build_rule! and issue #1218.
+        # Build at this rule's creation world, not the current one; see _build_rule! (#1218)
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
         rule = build_frule(
             interp, sig; debug_mode=dynamic_rule.debug_mode, skip_world_age_check=true

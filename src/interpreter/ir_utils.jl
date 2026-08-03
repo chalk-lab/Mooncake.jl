@@ -1,8 +1,7 @@
 #
-# Shared IR primitives, used by both forward- and reverse-mode (and by `ir_utils` itself).
-# They live here, rather than alongside the reverse-mode working-IR layer in `reverse_mode.jl`,
-# because this file is loaded before `forward_mode.jl` / `reverse_mode.jl`, both of which use
-# them.
+# Shared IR primitives, used by both modes and by `ir_utils` itself. They live here, not with
+# the reverse-mode working IR in `reverse_mode.jl`, because both mode files are loaded after
+# this one.
 #
 
 const _id_count::Dict{Int,Int32} = Dict{Int,Int32}()
