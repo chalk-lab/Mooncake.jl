@@ -31,14 +31,14 @@ end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 #
-# Known 1.13 caveat: this rule's `:stability_and_allocs` assertion fails on Julia 1.13
-# because `BLAS.dot` ccalls through `libblastrampoline`, which is now a `LazyLibrary`.
-# Each ccall registers one extra GC event (visible to `gc_alloc_count`, 0 bytes via
-# `@allocated`) from the lock acquisition inside `jl_lazy_load_and_lookup`. The cost
-# is structural to 1.13 and not specific to Mooncake; upstream is tracking a revert
-# for 1.13.x (https://github.com/JuliaLang/julia/pull/61735) with a proper fix planned
-# for 1.14 via TypedCallable / AbstractLibrary changes. Until then the alloc CI on
-# 1.13 is expected to fail here.
+# Known 1.13.0-rc1 caveat: this rule's `:stability_and_allocs` assertion fails on Julia
+# 1.13.0-rc1 because `BLAS.dot` ccalls through `libblastrampoline`, which rc1 makes a
+# `LazyLibrary`. Each ccall registers one extra GC event (visible to `gc_alloc_count`,
+# 0 bytes via `@allocated`) from the lock acquisition inside `jl_lazy_load_and_lookup`.
+# The revert of JLL LazyLibrary usage (https://github.com/JuliaLang/julia/pull/61735)
+# landed on release-1.13 after rc1 was cut: the assertion fails on rc1 but passes on
+# release-1.13 nightlies (verified on 1.13.0-rc1.105). Alloc CI on 1.13 is therefore
+# expected to fail only until a release containing the revert (rc2/final) ships.
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
