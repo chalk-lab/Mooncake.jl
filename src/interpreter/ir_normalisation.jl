@@ -168,19 +168,17 @@ function __extract_foreigncall_name(x::Expr)
     # On Julia 1.13+, the foreigncall name is emitted as an `Expr(:tuple, ...)`.
     # On older versions it is `Expr(:call, Core.tuple, ...)`. Either way, evaluating
     # yields the tuple `(name,)` or `(name, lib)`.
-    if Meta.isexpr(x, :tuple) || (
-        Meta.isexpr(x, :call) &&
-        isa(x.args[1], GlobalRef) &&
-        x.args[1].name === :tuple
-    )
+    if Meta.isexpr(x, :tuple) ||
+        (Meta.isexpr(x, :call) && isa(x.args[1], GlobalRef) && x.args[1].name === :tuple)
         v = eval(x)
         return __extract_foreigncall_name(v)
     end
     error("unexpected expr $x")
 end
 __extract_foreigncall_name(v::Tuple{Any}) = Val(Symbol(v[1]))
-__extract_foreigncall_name(v::Tuple{Any,Any}) =
+function __extract_foreigncall_name(v::Tuple{Any,Any})
     Val((Symbol(v[1]), _foreigncall_libsym(v[2])))
+end
 
 # Stable Symbol identifier for a ccall library reference.
 # In Julia 1.13, libraries like `BLAS.libblastrampoline` are `LazyLibrary` objects

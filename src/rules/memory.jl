@@ -504,9 +504,7 @@ end
 
 # `memoryrefnew(::Memory, ::Int[, ::Bool])` accepts a `Memory` directly on Julia 1.13+.
 @static if VERSION ≥ v"1.13-"
-    @inline function frule!!(
-        ::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory}, ii::Dual{Int}
-    )
+    @inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:Memory}, ii::Dual{Int})
         return Dual(
             memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii))
         )
