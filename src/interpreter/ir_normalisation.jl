@@ -24,6 +24,7 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
+    ir = recover_foreigncall_gc_roots!(ir)
     for (n, inst) in enumerate(stmt(ir.stmts))
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
@@ -43,6 +44,68 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
 
     return ir
 end
+
+"""
+    recover_foreigncall_gc_roots!(ir::IRCode)
+
+On Julia 1.13+ the optimiser may replace the GC-root arguments of a `:foreigncall` with
+pointers derived from them (e.g. the `ptr_or_offset` field of a `MemoryRef`). This is
+valid natively because codegen recovers the base object of a derived pointer when placing
+GC roots, but Mooncake converts `:foreigncall`s into ordinary calls (see
+`foreigncall_to_call`), and a raw pointer passed to a rule roots nothing. The buffers
+behind the pointer arguments can then be freed mid-rule — for example by a GC triggered
+while the first call into a rule compiles its callees — producing silently-wrong results.
+
+This pass rewrites each pointer-valued root slot to the object the pointer was derived
+from, restoring the invariant relied upon by ccall-boundary rules (such as those in
+`src/rules/blas.jl`) that `GC.@preserve`-ing the trailing arguments of `_foreigncall_`
+keeps the memory behind its pointer arguments alive.
+"""
+function recover_foreigncall_gc_roots!(ir::IRCode)
+    stmts = stmt(ir.stmts)
+    for inst in stmts
+        Meta.isexpr(inst, :foreigncall) || continue
+        arg_types = inst.args[3]
+        arg_types isa SimpleVector || continue
+        any(Base.isvarargtype, arg_types) && continue
+        for n in (6 + length(arg_types)):length(inst.args)
+            root = inst.args[n]
+            root isa SSAValue || continue
+            CC.widenconst(CC.argextype(root, ir)) <: Ptr || continue
+            base = _pointer_base(ir, stmts, root)
+            base === nothing || (inst.args[n] = base)
+        end
+    end
+    return ir
+end
+
+# Walk the def chain of the pointer-valued SSA value `x` back to the GC-managed object the
+# pointer was derived from. Returns `nothing` (leaving the root unchanged) if the chain
+# has an unrecognised shape.
+function _pointer_base(ir::IRCode, stmts::Vector{Any}, x::SSAValue)
+    while true
+        def = stmts[x.id]
+        (Meta.isexpr(def, :call) && length(def.args) >= 3) || return nothing
+        f = def.args[1]
+        f isa GlobalRef && (f = getglobal(f.mod, f.name))
+        if f === Base.bitcast || f === Intrinsics.bitcast
+            arg = def.args[3]
+        elseif f === getfield && _field_name(def.args[3]) === :ptr_or_offset
+            base = def.args[2]
+            base isa Union{SSAValue,Argument} || return nothing
+            T = CC.widenconst(CC.argextype(base, ir))
+            return (isbitstype(T) || T <: Ptr) ? nothing : base
+        else
+            return nothing
+        end
+        arg isa SSAValue || return nothing
+        x = arg
+    end
+end
+
+_field_name(x::QuoteNode) = x.value
+_field_name(x::Symbol) = x
+_field_name(::Any) = nothing
 
 """
     interpolate_boundschecks!(ir::IRCode)

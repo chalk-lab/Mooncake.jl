@@ -21,6 +21,39 @@
         @test Meta.isexpr(call, :call)
         @test call.args[1] == Mooncake._foreigncall_
     end
+    @testset "recover_foreigncall_gc_roots!" begin
+        if VERSION >= v"1.11" # MemoryRef does not exist on 1.10.
+            # Mimic the optimised IR shape in which a foreigncall's GC-root slot holds a
+            # pointer derived from a MemoryRef rather than the MemoryRef itself.
+            ir = Mooncake.ircode(
+                Any[
+                    Expr(:call, getfield, Argument(2), QuoteNode(:ref)),
+                    Expr(:call, getfield, SSAValue(1), QuoteNode(:ptr_or_offset)),
+                    Expr(:call, Base.bitcast, Ptr{Float64}, SSAValue(2)),
+                    Expr(
+                        :foreigncall,
+                        :(:dummy),
+                        Float64,
+                        svec(Ptr{Float64}),
+                        0,
+                        :(:ccall),
+                        SSAValue(3),
+                        SSAValue(3),
+                    ),
+                    ReturnNode(SSAValue(4)),
+                ],
+                Any[Any, Vector{Float64}],
+            )
+            ir.stmts.type[1] = MemoryRef{Float64}
+            ir.stmts.type[2] = Ptr{Nothing}
+            ir.stmts.type[3] = Ptr{Float64}
+            ir.stmts.type[4] = Float64
+            ir = Mooncake.recover_foreigncall_gc_roots!(ir)
+            foreigncall = Mooncake.stmt(ir.stmts)[4]
+            @test foreigncall.args[6] === SSAValue(3)  # ccall argument: still the pointer
+            @test foreigncall.args[7] === SSAValue(1)  # GC root: rewritten to the MemoryRef
+        end
+    end
     @testset "fix_up_invoke_inference!" begin
         if VERSION >= v"1.11" # Base.method_instance does not exist on 1.10.
             mi = Base.method_instance(TestResources.inplace_invoke!, (Vector{Float64},))
