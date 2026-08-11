@@ -22,6 +22,22 @@ end
 MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
 Base.empty!(c::MooncakeCache) = (empty!(c.dict); c)
 
+# Julia 1.14 reworked how external `AbstractInterpreter`s hold their caches:
+# - JuliaLang/julia#59413 removed `CC.WorldView` (caches now carry their own world range)
+#   and added `CC.OverlayCodeCache`, the replacement wrapper for interpreters like ours
+#   which keep a separate global code cache alongside the local inference cache.
+# - JuliaLang/julia#60795 replaced the `Vector{CC.InferenceResult}` inference cache with
+#   `CC.InferenceCache`.
+@static if isdefined(CC, :InferenceCache)
+    const InferenceCacheType = CC.InferenceCache
+    new_inference_cache() = CC.InferenceCache()
+    empty_inference_cache!(c::CC.InferenceCache) = (empty!(c.results); empty!(c.index); c)
+else
+    const InferenceCacheType = Vector{CC.InferenceResult}
+    new_inference_cache() = CC.InferenceResult[]
+    empty_inference_cache!(c::Vector{CC.InferenceResult}) = empty!(c)
+end
+
 # The method table used by `Mooncake.@mooncake_overlay`.
 Base.Experimental.@MethodTable mooncake_method_table
 
@@ -30,7 +46,7 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
     world::UInt
     inf_params::CC.InferenceParams
     opt_params::CC.OptimizationParams
-    inf_cache::Vector{CC.InferenceResult}
+    inf_cache::InferenceCacheType
     code_cache::MooncakeCache
     oc_cache::Dict{ClosureCacheKey,Any}
     function MooncakeInterpreter(
@@ -40,7 +56,7 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         world::UInt=Base.get_world_counter(),
         inf_params::CC.InferenceParams=CC.InferenceParams(),
         opt_params::CC.OptimizationParams=CC.OptimizationParams(),
-        inf_cache::Vector{CC.InferenceResult}=CC.InferenceResult[],
+        inf_cache::InferenceCacheType=new_inference_cache(),
         code_cache::MooncakeCache=MooncakeCache(),
         oc_cache::Dict{ClosureCacheKey,Any}=Dict{ClosureCacheKey,Any}(),
     ) where {C,M<:Mode}
@@ -84,22 +100,44 @@ context_type(::MooncakeInterpreter{C}) where {C} = C
 CC.InferenceParams(interp::MooncakeInterpreter) = interp.inf_params
 CC.OptimizationParams(interp::MooncakeInterpreter) = interp.opt_params
 CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
-function CC.code_cache(interp::MooncakeInterpreter)
-    return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
-end
-function CC.get(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance, default)
-    return get(wvc.cache.dict, mi, default)
-end
-function CC.getindex(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
-    return getindex(wvc.cache.dict, mi)
-end
-function CC.haskey(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
-    return haskey(wvc.cache.dict, mi)
-end
-function CC.setindex!(
-    wvc::CC.WorldView{MooncakeCache}, ci::Core.CodeInstance, mi::Core.MethodInstance
-)
-    return setindex!(wvc.cache.dict, ci, mi)
+@static if isdefined(CC, :WorldView)
+    function CC.code_cache(interp::MooncakeInterpreter)
+        return CC.WorldView(interp.code_cache, CC.WorldRange(interp.world))
+    end
+    function CC.get(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance, default)
+        return get(wvc.cache.dict, mi, default)
+    end
+    function CC.getindex(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
+        return getindex(wvc.cache.dict, mi)
+    end
+    function CC.haskey(wvc::CC.WorldView{MooncakeCache}, mi::Core.MethodInstance)
+        return haskey(wvc.cache.dict, mi)
+    end
+    function CC.setindex!(
+        wvc::CC.WorldView{MooncakeCache}, ci::Core.CodeInstance, mi::Core.MethodInstance
+    )
+        return setindex!(wvc.cache.dict, ci, mi)
+    end
+else
+    # Julia 1.14+: the cache is accessed directly rather than through a `WorldView`, and
+    # `OverlayCodeCache` pairs our global code cache with the local inference cache.
+    function CC.code_cache(interp::MooncakeInterpreter)
+        return CC.OverlayCodeCache(interp.code_cache, interp.inf_cache)
+    end
+    function CC.get(cache::MooncakeCache, mi::Core.MethodInstance, default)
+        return get(cache.dict, mi, default)
+    end
+    function CC.getindex(cache::MooncakeCache, mi::Core.MethodInstance)
+        return getindex(cache.dict, mi)
+    end
+    function CC.haskey(cache::MooncakeCache, mi::Core.MethodInstance)
+        return haskey(cache.dict, mi)
+    end
+    function CC.setindex!(
+        cache::MooncakeCache, ci::Core.CodeInstance, mi::Core.MethodInstance
+    )
+        return setindex!(cache.dict, ci, mi)
+    end
 end
 function CC.method_table(interp::MooncakeInterpreter)
     return CC.OverlayMethodTable(interp.world, mooncake_method_table)
@@ -383,7 +421,7 @@ function empty_mooncake_caches!()
     for interp in values(GLOBAL_INTERPRETERS)
         empty!(interp.oc_cache)
         empty!(interp.code_cache)
-        empty!(interp.inf_cache)
+        empty_inference_cache!(interp.inf_cache)
     end
     return nothing
 end
