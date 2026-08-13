@@ -823,18 +823,12 @@ for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
         $_msg
     )
-    @eval frule!!(
-        ::Dual{typeof(Core.kwcall)},
-        ::Dual{<:NamedTuple},
-        ::Dual{typeof($_fn)},
-        x::Dual{<:CuArray},
-    ) = _throw_gpu_argument_error($_msg)
-    @eval rrule!!(
-        ::CoDual{typeof(Core.kwcall)},
-        ::CoDual{<:NamedTuple},
-        ::CoDual{typeof($_fn)},
-        x::CoDual{<:CuArray},
-    ) = _throw_gpu_argument_error($_msg)
+    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, x::Dual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
 end
 
 # maximum(f, x) / minimum(f, x) and their keyword spellings are separate methods
@@ -855,20 +849,12 @@ for _fn in (:maximum, :minimum)
     @eval rrule!!(::CoDual{typeof($_fn)}, f::CoDual, x::CoDual{<:CuArray}) = _throw_gpu_argument_error(
         $_msg
     )
-    @eval frule!!(
-        ::Dual{typeof(Core.kwcall)},
-        ::Dual{<:NamedTuple},
-        ::Dual{typeof($_fn)},
-        f::Dual,
-        x::Dual{<:CuArray},
-    ) = _throw_gpu_argument_error($_msg)
-    @eval rrule!!(
-        ::CoDual{typeof(Core.kwcall)},
-        ::CoDual{<:NamedTuple},
-        ::CoDual{typeof($_fn)},
-        f::CoDual,
-        x::CoDual{<:CuArray},
-    ) = _throw_gpu_argument_error($_msg)
+    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, f::Dual, x::Dual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, f::CoDual, x::CoDual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
 end
 
 # Real rules for maximum/minimum on real float CuArrays: the bare spelling and

@@ -1223,6 +1223,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # friendly errors instead of dying inside cufunction (#1273).
             @testset "keyword/mapped reduction fallbacks throw ArgumentError" begin
                 x = _rand(rng, Float32, 4)
+                dx = Mooncake.zero_tangent(x)
                 for f in (
                     z -> sum(sum(abs2, z; dims=1)),     # kwcall sum(f, x; dims)
                     z -> maximum(abs, z),               # maximum(f, x)
@@ -1233,6 +1234,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 )
                     @test_throws r"not yet differentiable" value_and_gradient!!(
                         Mooncake.build_rrule(f, x), f, x
+                    )
+                    @test_throws r"not yet differentiable" Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, x),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(x, dx),
                     )
                 end
                 # Non-float eltypes keep the friendly fallback in keyword position;
@@ -1947,7 +1953,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 (47, "dims=: scalar output", _sum_kw_nodims, _rand(rng, Float32, 4, 3)),
                 (48, "init=1, dims=1", _sum_kw_init_d1, _rand(rng, Float32, 4, 3)),
                 (49, "dims=1 (ComplexF32)", _sum_kw_cx_d1, _rand(rng, ComplexF32, 4, 3)),
-                (50, "dims=: (ComplexF32)", _sum_kw_cx_nodims, _rand(rng, ComplexF32, 4, 3)),
+                (
+                    50,
+                    "dims=: (ComplexF32)",
+                    _sum_kw_cx_nodims,
+                    _rand(rng, ComplexF32, 4, 3),
+                ),
                 (51, "empty array, dims=1", _sum_kw_d1, _rand(rng, Float32, 0, 3)),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
