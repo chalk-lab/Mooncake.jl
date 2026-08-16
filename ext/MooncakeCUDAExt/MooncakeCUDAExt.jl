@@ -92,6 +92,9 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+# Index and mask arrays. A whitelist: an eltype outside it whose tangent_type is
+# NoTangent (Char, Symbol, Enum) still falls through to the struct handler.
+const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 
 # Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
 # Julia-visible fields — wrong for GPU arrays.
@@ -453,18 +456,11 @@ _register_cudataref_internal_types!()
 # for those, but Mooncake may infer MutableTangent for the inner RefCounted struct,
 # causing a tangent type mismatch.
 @zero_derivative MinimalCtx Tuple{typeof(Base.mightalias),T,S} where {T<:CuArray,S<:CuArray}
-# CuArray{<:Integer}, {<:Bool} and {<:CartesianIndex} are index/mask arrays — not
-# differentiable. Assigning NoTangent stops Mooncake from building a struct tangent from
-# CuArray's internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
+# Assigning NoTangent stops Mooncake from building a struct tangent from CuArray's
+# internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
 # The CuMaybeComplexArray rule above takes priority for float and complex arrays.
-# This is a whitelist: an eltype outside it whose tangent_type is NoTangent (Char, Symbol,
-# Enum) still falls through to the struct handler and builds an unconstructible tangent.
-tangent_type(::Type{<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}) = NoTangent
-function tangent_type(
-    ::Type{<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}, ::Type{NoRData}
-)
-    NoTangent
-end
+tangent_type(::Type{<:CuNonDiffArray}) = NoTangent
+tangent_type(::Type{<:CuNonDiffArray}, ::Type{NoRData}) = NoTangent
 
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
@@ -494,7 +490,7 @@ function TestUtils.has_equal_data_internal(
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {P<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}
+) where {P<:CuNonDiffArray}
     # For non-differentiable CuArrays, compare by content by downloading to CPU.
     size(x) != size(y) && return false
     return Array(x) == Array(y)
@@ -1198,19 +1194,30 @@ end
 # `unsafe_copyto!` and `fill!` into a device array whose elements carry no derivative
 # information (index arrays, masks).  The rules above all require a tangent array, so
 # these spellings had no rule at all and died in the same try/catch and fill kernel.
-# Keying the methods on the tangent being NoTangent keeps them disjoint from those rules
-# without enumerating element types.  There is no gradient to propagate, but the pullback
-# must still undo the mutation, or re-running the rule would see a different array.
+# There is no gradient to propagate, but the pullback must still undo the mutation, or
+# re-running the rule would see a different array.
+#
+# CuNonDiffArray is disjoint from CuMaybeComplexArray and CuMaybeWrappedArray, so these
+# claims are unambiguous with the rules above, and it is exactly what they can serve: an
+# eltype off the whitelist has no NoTangent tangent, so claiming it would only turn a
+# trace failure into a MethodError.
 #
 # Note the asymmetry in `src`: a CPU Array{Int} has fdata Vector{NoTangent}, and only the
 # CuArray side collapses to NoTangent, so `src`'s tangent is left unconstrained.
 @is_primitive(
     MinimalCtx,
-    Tuple{typeof(unsafe_copyto!),CuArray,Integer,Union{Array,CuArray},Integer,Integer},
+    Tuple{
+        typeof(unsafe_copyto!),
+        <:CuNonDiffArray,
+        Integer,
+        <:Union{Array,CuArray},
+        Integer,
+        Integer,
+    },
 )
 function frule!!(
     ::Dual{typeof(unsafe_copyto!)},
-    dest::Dual{<:CuArray,NoTangent},
+    dest::Dual{<:CuNonDiffArray},
     doffs::Dual{<:Integer,NoTangent},
     src::Dual{<:Union{Array,CuArray}},
     soffs::Dual{<:Integer,NoTangent},
@@ -1221,7 +1228,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)},
-    dest::CoDual{<:CuArray,NoFData},
+    dest::CoDual{<:CuNonDiffArray},
     doffs::CoDual{<:Integer,NoFData},
     src::CoDual{<:Union{Array,CuArray}},
     soffs::CoDual{<:Integer,NoFData},
@@ -1239,12 +1246,12 @@ function rrule!!(
     return dest, unsafe_copyto!_nodiff_pb!!
 end
 
-@is_primitive(MinimalCtx, Tuple{typeof(fill!),CuArray,Any})
-function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuArray,NoTangent}, x::Dual)
+@is_primitive(MinimalCtx, Tuple{typeof(fill!),<:CuNonDiffArray,Any})
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuNonDiffArray}, x::Dual)
     fill!(primal(a), primal(x))
     return a
 end
-function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuArray,NoFData}, x::CoDual)
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuNonDiffArray}, x::CoDual)
     pa = primal(a)
     old = copy(pa)
     fill!(pa, primal(x))
@@ -1610,13 +1617,8 @@ function _repeat_reduce(
 ) where {N}
     triples = ntuple(3N) do d
         dim, which = fldmod1(d, 3)
-        if which == 1
-            inner[dim]
-        elseif which == 2
-            S[dim]
-        else
-            outer[dim]
-        end
+        which == 1 && return inner[dim]
+        return which == 2 ? S[dim] : outer[dim]
     end
     reduced_axes = ntuple(2N) do d
         dim, which = fldmod1(d, 2)
@@ -1646,10 +1648,10 @@ function rrule!!(
     N = ndims(y)
     S = _repeat_pad(size(px), Val(N))
     outer = _repeat_pad(c, Val(N))
-    ones_ = ntuple(_ -> 1, Val(N))
+    inner = ntuple(_ -> 1, Val(N))
     dy = zero(y)
     function repeat_pb!!(::NoRData)
-        dx .+= reshape(_repeat_reduce(dy, S, ones_, outer), size(dx))
+        dx .+= reshape(_repeat_reduce(dy, S, inner, outer), size(dx))
         return ntuple(_ -> NoRData(), length(counts) + 2)
     end
     return CoDual(y, dy), repeat_pb!!
@@ -2242,14 +2244,10 @@ end
     )
 end
 
-_geam_op(t::Char, M) =
-    if t == 'N'
-        M
-    elseif t == 'T'
-        transpose(M)
-    else
-        adjoint(M)
-    end
+function _geam_op(t::Char, M)
+    t == 'N' && return M
+    return t == 'T' ? transpose(M) : adjoint(M)
+end
 
 @is_primitive(
     MinimalCtx,

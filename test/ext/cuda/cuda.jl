@@ -191,7 +191,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
         # Device arrays with no derivative information: the index upload goes through
         # unsafe_copyto!(CuArray{Int}, Array{Int}), the zeros through the fill kernel.
-        _nodiff_index_copy(x) = (i=CuArray([1, 2]); sum(x) * Float32(length(i)))
+        _nodiff_index_copy(x) = (i=CuArray([1, 2]); sum(x[i]))
         _nodiff_fill(x) = (i=CUDA.zeros(Int64, 2); fill!(i, 3); sum(x))
         # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
         _geam_add(a, b) = sum(a + b)
