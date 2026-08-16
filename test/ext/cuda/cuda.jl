@@ -255,7 +255,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
         _mean_cx_sum_d1(x) = real(sum(mean(x; dims=1)))
-        # Wrappers for keyword sum / maximum / minimum GPU rule tests (#1273).
+        # Wrappers for keyword sum GPU rule tests (#1273).
         _sum_kw_d1(x) = sum(sum(x; dims=1))
         _sum_kw_d2(x) = sum(sum(x; dims=2))
         _sum_kw_dtuple(x) = sum(sum(x; dims=(1, 2)))
@@ -266,17 +266,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _sum_kw_init_d1(x) = sum(sum(x; dims=1, init=one(eltype(x))))
         _sum_kw_cx_d1(x) = real(sum(sum(x; dims=1)))
         _sum_kw_cx_nodims(x) = real(sum(x; dims=:))
-        _max_sum_d1(x) = sum(maximum(x; dims=1))
-        _max_sum_d2(x) = sum(maximum(x; dims=2))
-        _max_sum_dtuple(x) = sum(maximum(x; dims=(1, 2)))
-        _max_sum_ddup(x) = sum(maximum(x; dims=(1, 1)))
-        _max_sum_dempty(x) = sum(maximum(x; dims=()))
-        _max_nodims(x) = maximum(x; dims=:)
-        _max_init_d1(x) = sum(maximum(x; dims=1, init=zero(eltype(x))))
-        _min_sum_d1(x) = sum(minimum(x; dims=1))
-        _min_nodims(x) = minimum(x; dims=:)
-        _min_init_d1(x) = sum(minimum(x; dims=1, init=one(eltype(x))))
-        _max_init5_d1(x) = sum(maximum(x; dims=1, init=5.0f0))
         _sum_kw_badkw(x) = sum(x; bad=1)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
@@ -1228,6 +1217,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     z -> sum(sum(abs2, z; dims=1)),     # kwcall sum(f, x; dims)
                     z -> maximum(abs, z),               # maximum(f, x)
                     z -> sum(maximum(abs, z; dims=1)),  # kwcall maximum(f, x; dims)
+                    z -> sum(maximum(z; dims=1)),       # kwcall maximum(x; dims)
                     z -> sum(sort(z)),                  # positional catch-all
                     z -> sum(sort(z; rev=true)),        # kwcall sort
                     z -> sum(diff(z; dims=1)),          # kwcall diff
@@ -1241,13 +1231,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                         Mooncake.Dual(x, dx),
                     )
                 end
-                # Non-float eltypes keep the friendly fallback in keyword position;
-                # the real maximum rule is scoped to real float arrays.
-                zc = CuArray(randn(rng, ComplexF32, 4))
-                fc = z -> real(sum(maximum(z; dims=1)))
-                @test_throws r"maximum on CuArray is not yet differentiable" value_and_gradient!!(
-                    Mooncake.build_rrule(fc, zc), fc, zc
-                )
             end
 
             # Complex slice-adjoint-matvec: cu(x[:, 1])' * cy — cu() downcasts ComplexF64
@@ -1980,98 +1963,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test_throws MethodError Mooncake.value_and_gradient!!(
                     rule, _sum_kw_badkw, x
                 )
-            end
-        end
-
-        @testset "maximum / minimum GPU rules (#1273)" begin
-            # Even-split subgradient rules; the tie, NaN, and init conventions
-            # pinned below are documented at the rules' definition.
-            @testset "$name" for (seed, name, f, x) in [
-                (60, "maximum dims=1 (Float32)", _max_sum_d1, _rand(rng, Float32, 4, 3)),
-                (61, "maximum dims=2 (Float32)", _max_sum_d2, _rand(rng, Float32, 4, 3)),
-                (62, "maximum dims=1 (Float64)", _max_sum_d1, _rand(rng, Float64, 4, 3)),
-                (63, "maximum dims=(1,2)", _max_sum_dtuple, _rand(rng, Float32, 4, 3)),
-                (64, "maximum dims=(1,1)", _max_sum_ddup, _rand(rng, Float32, 4, 3)),
-                (65, "maximum empty dims=()", _max_sum_dempty, _rand(rng, Float32, 4, 3)),
-                (66, "maximum dims=: scalar", _max_nodims, _rand(rng, Float32, 4, 3)),
-                (67, "maximum init below data", _max_init_d1, _rand_pos(rng, 4, 3)),
-                (68, "minimum dims=1 (Float32)", _min_sum_d1, _rand(rng, Float32, 4, 3)),
-                (69, "minimum dims=: scalar", _min_nodims, _rand(rng, Float32, 4, 3)),
-                (70, "minimum init above data", _min_init_d1, _rand(rng, Float32, 4, 3)),
-            ]
-                test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
-            end
-            @testset "bare $fn is itself a primitive" for (seed, fn) in
-                                                          [(71, maximum), (72, minimum)]
-                x = _rand(rng, Float32, 4, 3)
-                test_rule(StableRNG(seed), fn, x; is_primitive=true, perf_flag=:none)
-            end
-            @testset "ties split the cotangent evenly" begin
-                x = CuArray(Float32[1 2; 1 0; 0 2])
-                rule = Mooncake.build_rrule(_max_sum_d1, x)
-                _, (_, gx) = Mooncake.value_and_gradient!!(rule, _max_sum_d1, x)
-                @test Array(gx) == Float32[0.5 0.5; 0.5 0.0; 0.0 0.5]
-            end
-            @testset "constant array: bare maximum splits over all elements" begin
-                x = CUDA.ones(Float32, 8)
-                rule = Mooncake.build_rrule(maximum, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, maximum, x)
-                @test out == 1.0f0
-                @test all(==(0.125f0), Array(gx))
-                d = Mooncake.frule!!(
-                    Mooncake.Dual(maximum, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, CUDA.ones(Float32, 8)),
-                )
-                @test Mooncake.tangent(d) ≈ 1.0f0
-            end
-            @testset "NaN result routes the cotangent to the NaN" begin
-                # Pinned against the CPU-traced gradient of the same functions
-                # (Julia 1.12): the NaN wins the reduction and receives the
-                # cotangent; clean slices are unaffected.
-                x = CuArray(Float32[1 5; NaN 2; 3 4])
-                rule = Mooncake.build_rrule(_max_sum_d1, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, _max_sum_d1, x)
-                @test isnan(out)
-                @test Array(gx) == Float32[0 1; 1 0; 0 0]
-                rule2 = Mooncake.build_rrule(_min_sum_d1, x)
-                out2, (_, gx2) = Mooncake.value_and_gradient!!(rule2, _min_sum_d1, x)
-                @test isnan(out2)
-                @test Array(gx2) == Float32[0 0; 1 1; 0 0]
-            end
-            @testset "strictly dominating init zeroes the slice gradient" begin
-                x = CuArray(Float32[-1 -2; -3 -4])
-                rule = Mooncake.build_rrule(_max_init5_d1, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, _max_init5_d1, x)
-                @test out == 10.0f0
-                @test all(iszero, Array(gx))
-            end
-            @testset "Float16: tie counts above 65504 keep weights finite" begin
-                # A naive Float16 tie count rounds to Inf16 and every weight
-                # collapses to zero; the rule inverts the count in Float64 first.
-                x = CUDA.zeros(Float16, 70000)
-                rule = Mooncake.build_rrule(maximum, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, maximum, x)
-                @test out == Float16(0)
-                @test all(>(Float16(0)), Array(gx))
-                @test isapprox(sum(Float64.(Array(gx))), 1.0; rtol=0.05)
-                d = Mooncake.frule!!(
-                    Mooncake.Dual(maximum, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, CUDA.ones(Float16, 70000)),
-                )
-                @test Mooncake.tangent(d) > Float16(0.9)
-            end
-            @testset "empty array: AD matches the GPU primal" begin
-                # Unlike Base on CPU (which throws reducing over an empty
-                # collection), GPUArrays fills the output with the neutral
-                # element, so maximum(::CuMatrix(0×3); dims=1) is [-Inf -Inf -Inf]
-                # and the sum is -Inf; the rule is faithful to that, with an
-                # empty gradient (the init-dominates count guard keeps the
-                # empty-slice weights at zero rather than NaN).
-                x = _rand(rng, Float32, 0, 3)
-                rule = Mooncake.build_rrule(_max_sum_d1, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, _max_sum_d1, x)
-                @test out == _max_sum_d1(x) == -Inf32
-                @test size(gx) == size(x)
             end
         end
 
