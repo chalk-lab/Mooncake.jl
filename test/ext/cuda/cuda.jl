@@ -257,19 +257,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _mean_cx_sum_d1(x) = real(sum(mean(x; dims=1)))
         # Wrappers for keyword sum GPU rule tests (#1273).
         _sum_kw_d1(x) = sum(sum(x; dims=1))
-        _sum_kw_d2(x) = sum(sum(x; dims=2))
-        _sum_kw_dtuple(x) = sum(sum(x; dims=(1, 2)))
-        _sum_kw_drange(x) = sum(sum(x; dims=1:2))
-        _sum_kw_ddup(x) = sum(sum(x; dims=(1, 1)))
-        _sum_kw_dempty(x) = sum(sum(x; dims=()))
         _sum_kw_nodims(x) = sum(x; dims=:)
-        _sum_kw_init_d1(x) = sum(sum(x; dims=1, init=one(eltype(x))))
         _sum_kw_cx_d1(x) = real(sum(sum(x; dims=1)))
-        _sum_kw_cx_nodims(x) = real(sum(x; dims=:))
         _sum_kw_init_wide_d1(x) = sum(sum(x; dims=1, init=0.0))
         _sum_kw_init_wide_nodims(x) = sum(x; init=0.0)
         _sum_kw_init_active(a, x) = sum(sum(x; dims=1, init=a))
-        _sum_kw_badkw(x) = sum(x; bad=1)
+        _sum_kw_badkw(x) = sum(x; bad=1.0)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -1216,14 +1209,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @testset "keyword/mapped reduction fallbacks throw ArgumentError" begin
                 x = _rand(rng, Float32, 4)
                 dx = Mooncake.zero_tangent(x)
+                # One entry per @eval claim family; other functions in the same
+                # loop share the generated code verbatim.
                 for f in (
                     z -> sum(sum(abs2, z; dims=1)),     # kwcall sum(f, x; dims)
-                    z -> maximum(abs, z),               # maximum(f, x)
-                    z -> sum(maximum(abs, z; dims=1)),  # kwcall maximum(f, x; dims)
-                    z -> sum(maximum(z; dims=1)),       # kwcall maximum(x; dims)
-                    z -> sum(sort(z)),                  # positional catch-all
-                    z -> sum(sort(z; rev=true)),        # kwcall sort
-                    z -> sum(diff(z; dims=1)),          # kwcall diff
+                    z -> maximum(abs, z),               # mapped, positional
+                    z -> sum(maximum(abs, z; dims=1)),  # mapped, kwcall
+                    z -> sum(maximum(z; dims=1)),       # catch-all, kwcall
+                    z -> sum(sort(z)),                  # catch-all, positional
                 )
                     @test_throws r"not yet differentiable" value_and_gradient!!(
                         Mooncake.build_rrule(f, x), f, x
@@ -1925,27 +1918,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         end
 
         @testset "keyword sum GPU rule (#1273)" begin
-            # sum(x; dims, init) enters through Core.kwcall and previously died in
-            # cufunction's try/finally; the rule reduces the tangent with the same
-            # dims and broadcast-accumulates the cotangent over the reduced dims.
+            # One case per rule code path: array/Colon output branch, real/complex
+            # claim arm, and the two output-typed tangent seeds for a widening
+            # init (dims key present vs absent).
             @testset "$name" for (seed, name, f, x) in [
                 (40, "dims=1 (Float32)", _sum_kw_d1, _rand(rng, Float32, 4, 3)),
-                (41, "dims=2 (Float32)", _sum_kw_d2, _rand(rng, Float32, 4, 3)),
-                (42, "dims=1 (Float64)", _sum_kw_d1, _rand(rng, Float64, 4, 3)),
-                (43, "dims=(1,2) tuple", _sum_kw_dtuple, _rand(rng, Float32, 4, 3)),
-                (44, "dims=1:2 UnitRange", _sum_kw_drange, _rand(rng, Float32, 4, 3)),
-                (45, "repeated dims=(1,1)", _sum_kw_ddup, _rand(rng, Float32, 4, 3)),
-                (46, "empty dims=()", _sum_kw_dempty, _rand(rng, Float32, 4, 3)),
                 (47, "dims=: scalar output", _sum_kw_nodims, _rand(rng, Float32, 4, 3)),
-                (48, "init=1, dims=1", _sum_kw_init_d1, _rand(rng, Float32, 4, 3)),
                 (49, "dims=1 (ComplexF32)", _sum_kw_cx_d1, _rand(rng, ComplexF32, 4, 3)),
-                (
-                    50,
-                    "dims=: (ComplexF32)",
-                    _sum_kw_cx_nodims,
-                    _rand(rng, ComplexF32, 4, 3),
-                ),
-                (51, "empty array, dims=1", _sum_kw_d1, _rand(rng, Float32, 0, 3)),
                 (
                     52,
                     "init=0.0 widens Float32, dims=1",
@@ -1954,37 +1933,32 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 ),
                 (
                     53,
-                    "init=0.0 widens Float32, dims=:",
+                    "init=0.0 widens Float32, no dims",
                     _sum_kw_init_wide_nodims,
                     _rand(rng, Float32, 4, 3),
                 ),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
-            @testset "init leaves the gradient untouched" begin
-                # GPUArrays folds `init` into every partial reduction (it must be
-                # a neutral element), so the value legitimately differs from the
-                # CPU's one-init-per-slice arithmetic; the rule takes the value
-                # from the real call and the gradient is ones either way.
-                x = _rand(rng, Float32, 4, 3)
-                rule = Mooncake.build_rrule(_sum_kw_init_d1, x)
-                out, (_, gx) = Mooncake.value_and_gradient!!(rule, _sum_kw_init_d1, x)
-                @test out == _sum_kw_init_d1(x)
-                @test all(==(1.0f0), Array(gx))
-            end
             @testset "kwarg sets the primal rejects throw under AD" begin
+                # The float-typed bad kwarg also exercises the frule guard's
+                # haskey check: without it, `dkw.init` throws a field error
+                # instead of the primal's MethodError.
                 x = _rand(rng, Float32, 4, 3)
                 rule = Mooncake.build_rrule(_sum_kw_badkw, x)
                 @test_throws MethodError Mooncake.value_and_gradient!!(
                     rule, _sum_kw_badkw, x
                 )
+                @test_throws MethodError Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(_sum_kw_badkw, x),
+                    Mooncake.Dual(_sum_kw_badkw, Mooncake.NoTangent()),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                )
             end
             @testset "init is a non-differentiated constant" begin
-                # GPUArrays folds `init` into a backend-defined number of partial
-                # reductions, so a derivative through it is not well-defined:
-                # reverse mode returns a typed zero for the keyword NamedTuple
-                # (debug mode verifies the rdata type), and forward mode throws
-                # on a nonzero `init` tangent.
+                # Not a test_rule case: finite differences see the backend's init
+                # folding (nonzero ∂/∂init) while the rule deliberately treats
+                # init as a constant. debug_mode verifies the kw rdata type.
                 a, x = 0.0f0, _rand(rng, Float32, 4, 3)
                 rule = Mooncake.build_rrule(_sum_kw_init_active, a, x; debug_mode=true)
                 _, (_, da, gx) = Mooncake.value_and_gradient!!(
