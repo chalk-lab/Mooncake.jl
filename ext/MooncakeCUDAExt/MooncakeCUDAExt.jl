@@ -802,11 +802,7 @@ function rrule!!(
 end
 
 # Catch-all error rules for GPU reductions that use opaque CUDA kernels.
-# These ops are differentiable in principle but lack explicit rules. The keyword
-# (Core.kwcall) spellings are claimed too: without them, `sort(x; rev=true)` and
-# friends bypass these rules and die deep inside `cufunction`'s try/finally
-# instead (#1273). maximum/minimum on real float arrays have real rules below,
-# which win over these fallbacks by dispatch; other eltypes still land here.
+# These ops are differentiable in principle but lack explicit rules.
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 # NB: the messages are built here and spliced as finished strings: `$_fn` inside
 # a string literal under @eval is runtime interpolation of a global that never
