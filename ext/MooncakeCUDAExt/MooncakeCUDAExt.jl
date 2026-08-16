@@ -815,13 +815,127 @@ end
 # Catch-all error rules for GPU reductions that use opaque CUDA kernels.
 # These ops are differentiable in principle but lack explicit rules.
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
+# NB: `$_fn` inside a string literal under @eval is runtime interpolation of a
+# global that never exists, so build each message here and splice it whole.
 for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
+    _msg = "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuArray}
+    )
     @eval frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+        $_msg
     )
     @eval rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}; kwargs...) = _throw_gpu_argument_error(
-        "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
+        $_msg
+    )
+    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, x::Dual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, x::CoDual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+end
+
+# Rules for `maximum`/`minimum` on real CuArrays, bare and `dims` spellings.
+# Claimed on CuFloatArray, narrower than the CuArray catch-alls above, so
+# integer and complex arrays keep the friendly error.
+#
+# Ties go to the lowest linear index, because that is what findmax/findmin do.
+# Mooncake's CPU path disagrees: it decomposes to `max(acc, xᵢ)`, which returns
+# `xᵢ` when they are equal, so the gradient lands on the last tied element.
+# Both are valid subgradients; this one matches Base and ChainRules.
+#
+# The one-hot mask must stay fused inside the enclosing GPU broadcast.
+# `CartesianIndices(px) .== _winner(ind)` alone has two host operands, so it
+# evaluates to a BitArray that cannot then combine with a CuArray.
+#
+# GPUArrays returns a linear `Int` index when `ndims(x) == 1` and a
+# `CartesianIndex` otherwise; comparing the two is silently `false`, which would
+# give an all-zero mask and a silently zero gradient.
+_winner(i::Integer) = Ref(CartesianIndex(i))
+_winner(i::CartesianIndex) = Ref(i)
+_winner(i::AbstractArray{<:CartesianIndex}) = i
+_winner(i::AbstractArray{<:Integer}) = CartesianIndex.(i)
+
+for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuFloatArray}
+    )
+
+    @eval function frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuFloatArray})
+        px, dx = arrayify(x)
+        y, ind = $_find(px)
+        return Dual(y, sum(dx .* (CartesianIndices(px) .== _winner(ind))))
+    end
+    @eval function rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuFloatArray})
+        px, dx = arrayify(x)
+        y, ind = $_find(px)
+        function minmax_pb!!(dy)
+            dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
+            return NoRData(), NoRData()
+        end
+        return CoDual(y, NoFData()), minmax_pb!!
+    end
+
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof($_fn)},
+        x::Dual{<:CuFloatArray},
+    )
+        pkw = primal(kw)
+        px, dx = arrayify(x)
+        dims = get(pkw, :dims, :)
+        y, ind = $_find(px; dims=dims)
+        return Dual(y, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof($_fn)},
+        x::CoDual{<:CuFloatArray},
+    )
+        pkw = primal(kw)
+        px, dx = arrayify(x)
+        dims = get(pkw, :dims, :)
+        y, ind = $_find(px; dims=dims)
+        if dims isa Colon
+            function minmax_kw_scalar_pb!!(dy)
+                dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
+                return NoRData(), NoRData(), NoRData(), NoRData()
+            end
+            return CoDual(y, NoFData()), minmax_kw_scalar_pb!!
+        end
+        dy_out = zero(y)
+        function minmax_kw_array_pb!!(::NoRData)
+            dx .+= dy_out .* (CartesianIndices(px) .== _winner(ind))
+            return NoRData(), NoRData(), NoRData(), NoRData()
+        end
+        return CoDual(y, dy_out), minmax_kw_array_pb!!
+    end
+end
+
+# maximum(f, x) / minimum(f, x) are separate methods that escape the claims
+# above. A real rule needs sum(f, x)'s NDual machinery plus winner selection.
+for _fn in (:maximum, :minimum)
+    _msg = "Mooncake: $_fn(f, x) on CuArray is not yet differentiable. " * _UNIMPL_MSG
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),Any,CuArray})
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),Any,CuArray}
+    )
+    @eval frule!!(::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval rrule!!(::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval frule!!(::Dual{typeof(Core.kwcall)}, ::Dual{<:NamedTuple}, ::Dual{typeof($_fn)}, ::Dual, ::Dual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
+    )
+    @eval rrule!!(::CoDual{typeof(Core.kwcall)}, ::CoDual{<:NamedTuple}, ::CoDual{typeof($_fn)}, ::CoDual, ::CoDual{<:CuArray}) = _throw_gpu_argument_error(
+        $_msg
     )
 end
 
@@ -1575,6 +1689,94 @@ function rrule!!(
     return CoDual(y, dy), repeat_kw_pb!!
 end
 
+# Rule for keyword `sum(x; dims, init)`. The bare-sum primitive above does not
+# claim the Core.kwcall spelling, so Base lowers it onto GPUArrays'
+# mapreducedim! and finally `cufunction`, whose `@lock` try/finally kills
+# reverse-mode tracing (#1273).
+#
+# `init` is treated as a non-differentiated constant: Julia requires it to be a
+# neutral element, and GPUArrays folds it into a backend-defined number of
+# partial reductions, so a derivative through it is not well-defined; the frule
+# rejects a nonzero `init` tangent instead. `init` also sets the output eltype
+# (GPUArrays takes it from typeof(init), so init=0.0 on a Float32 array gives a
+# Float64 result), hence the output-typed zero seeding the tangent reduction.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(sum)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    dkw = tangent(kw)
+    dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
+    if !(dinit isa NoTangent) && !iszero(dinit)
+        _throw_gpu_argument_error(
+            "Mooncake: keyword sum on CuArray treats `init` as a constant, but it " *
+            "received a nonzero tangent. Differentiating with respect to `init` is " *
+            "not supported. " *
+            _UNIMPL_MSG,
+        )
+    end
+    px, dx = arrayify(x)
+    y = sum(px; pkw...)
+    return Dual(y, sum(dx; dims=get(pkw, :dims, :), init=zero(eltype(y))))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(sum)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    kw_rdata = zero_rdata(pkw)
+    px, dx = arrayify(x)
+    y = sum(px; pkw...)
+    if get(pkw, :dims, :) isa Colon
+        function sum_kw_scalar_pb!!(dy)
+            dx .+= dy
+            return NoRData(), kw_rdata, NoRData(), NoRData()
+        end
+        return CoDual(y, NoFData()), sum_kw_scalar_pb!!
+    end
+    dy_out = zero(y)
+    function sum_kw_array_pb!!(::NoRData)
+        dx .+= dy_out
+        return NoRData(), kw_rdata, NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), sum_kw_array_pb!!
+end
+
+# sum(f, x; dims): the mapped keyword spelling needs the NDual machinery of the
+# sum(f, x) rule combined with per-slice geometry; not yet written.
+@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),Any,CuArray})
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    ::Dual{typeof(sum)},
+    ::Dual,
+    ::Dual{<:CuArray},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword sum(f, x; ...) on CuArray is not yet differentiable. " *
+        _UNIMPL_MSG,
+    )
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    ::CoDual{typeof(sum)},
+    ::CoDual,
+    ::CoDual{<:CuArray},
+)
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword sum(f, x; ...) on CuArray is not yet differentiable. " *
+        _UNIMPL_MSG,
+    )
+end
+
 # vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that
 # includes and why).
 # frule:    tangent of concatenation = concatenation of tangents (concat is linear).
@@ -2040,13 +2242,14 @@ end
     )
 end
 
-_geam_op(t::Char, M) = if t == 'N'
-    M
-elseif t == 'T'
-    transpose(M)
-else
-    adjoint(M)
-end
+_geam_op(t::Char, M) =
+    if t == 'N'
+        M
+    elseif t == 'T'
+        transpose(M)
+    else
+        adjoint(M)
+    end
 
 @is_primitive(
     MinimalCtx,
