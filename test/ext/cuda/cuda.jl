@@ -189,6 +189,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             copyto!(dest, Array(x))
             return sum(dest)
         end
+        # Device arrays with no derivative information: the index upload goes through
+        # unsafe_copyto!(CuArray{Int}, Array{Int}), the zeros through the fill kernel.
+        _nodiff_index_copy(x) = (i=CuArray([1, 2]); sum(x) * Float32(length(i)))
+        _nodiff_fill(x) = (i=CUDA.zeros(Int64, 2); fill!(i, 3); sum(x))
+        # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
+        _geam_add(a, b) = sum(a + b)
+        _geam_sub_adj(a, b) = sum(a' - b)
+        _geam_add_cx(a, b) = real(sum(a + b'))
+        # repeat: positional counts and the keyword spelling (separate rules).
+        _repeat_counts(x) = sum(repeat(x, 2, 3))
+        _repeat_extends(x) = sum(repeat(x, 2, 3, 2))
+        _repeat_inner_outer(x) = sum(repeat(x; inner=(2, 1), outer=(1, 2)))
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
         # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
         # offset, which is CuPtr{Float32} + Integer (differentiable T).
@@ -470,6 +482,34 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 16),
                 CuArray(Int32[2, 5, 7, 3, 1, 8]),
             ),
+            # Gather with Cartesian indices: without the CartesianIndex arm of the claim
+            # the trace falls into checkbounds, which reduces with `&`.
+            (
+                false,
+                :none,
+                false,
+                _gather_sum,
+                _rand(rng, 4, 4),
+                CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
+            ),
+            # Non-differentiable device arrays: copy and fill had no rule at all.
+            (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
+            (false, :none, false, _nodiff_fill, _rand(rng, 8)),
+            # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
+            (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            (
+                false,
+                :none,
+                false,
+                _geam_add_cx,
+                _rand(rng, ComplexF64, 3, 3),
+                _rand(rng, ComplexF64, 3, 3),
+            ),
+            # repeat: counts, counts that add a dimension, and the keyword spelling.
+            (false, :none, false, _repeat_counts, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_extends, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_inner_outer, _rand(rng, 2, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
             # sum(f, x) with non-smooth f (abs)

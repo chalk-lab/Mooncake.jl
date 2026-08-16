@@ -453,12 +453,18 @@ _register_cudataref_internal_types!()
 # for those, but Mooncake may infer MutableTangent for the inner RefCounted struct,
 # causing a tangent type mismatch.
 @zero_derivative MinimalCtx Tuple{typeof(Base.mightalias),T,S} where {T<:CuArray,S<:CuArray}
-# CuArray{<:Integer} and CuArray{<:Bool} are index/mask arrays — not differentiable.
-# Assigning NoTangent stops Mooncake from building a struct tangent from CuArray's
-# internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
+# CuArray{<:Integer}, {<:Bool} and {<:CartesianIndex} are index/mask arrays — not
+# differentiable. Assigning NoTangent stops Mooncake from building a struct tangent from
+# CuArray's internal fields (data::CuDataRef, maxsize::Int, offset::Int, dims::NTuple).
 # The CuMaybeComplexArray rule above takes priority for float and complex arrays.
-tangent_type(::Type{<:CuArray{<:Union{Integer,Bool}}}) = NoTangent
-tangent_type(::Type{<:CuArray{<:Union{Integer,Bool}}}, ::Type{NoRData}) = NoTangent
+# This is a whitelist: an eltype outside it whose tangent_type is NoTangent (Char, Symbol,
+# Enum) still falls through to the struct handler and builds an unconstructible tangent.
+tangent_type(::Type{<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}) = NoTangent
+function tangent_type(
+    ::Type{<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}, ::Type{NoRData}
+)
+    NoTangent
+end
 
 tangent(p::CuMaybeComplexArray, ::NoRData) = p
 
@@ -488,8 +494,8 @@ function TestUtils.has_equal_data_internal(
 end
 function TestUtils.has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
-) where {P<:CuArray{<:Union{Integer,Bool}}}
-    # For integer/bool CuArrays, compare by content by downloading to CPU.
+) where {P<:CuArray{<:Union{Integer,Bool,CartesianIndex}}}
+    # For non-differentiable CuArrays, compare by content by downloading to CPU.
     size(x) != size(y) && return false
     return Array(x) == Array(y)
 end
@@ -725,7 +731,9 @@ function rrule!!(
     return _throw_gpu_argument_error(_SCALAR_IDX_MSG)
 end
 
-# Vector indexing: y = x[idx] where idx is a vector of integers (gather).
+# Vector indexing: y = x[idx] where idx is a vector of linear or Cartesian indices
+# (gather).  Without the CartesianIndex arm the trace falls into `checkbounds`, which
+# reduces with `&` and hits the mapreduce catch-all.
 #
 # frule:    dy = dx[idx]          (gather tangents)
 # pullback: dx[idx] .+= dy_out   (scatter-add cotangents)
@@ -733,12 +741,15 @@ end
 # Note: repeated indices in idx are undefined (last write wins on GPU without atomics).
 # Distinct-index usage (e.g. embedding lookup, slicing) is safe.
 @is_primitive(
-    MinimalCtx, Tuple{typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Integer}}
+    MinimalCtx,
+    Tuple{
+        typeof(getindex),CuMaybeComplexArray,AbstractVector{<:Union{Integer,CartesianIndex}}
+    },
 )
 function frule!!(
     ::Dual{typeof(getindex)},
     x::Dual{<:CuMaybeComplexArray},
-    idx::Dual{<:AbstractVector{<:Integer}},
+    idx::Dual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
     px, dx = arrayify(x)
     return Dual(px[primal(idx)], dx[primal(idx)])
@@ -746,7 +757,7 @@ end
 function rrule!!(
     ::CoDual{typeof(getindex)},
     x::CoDual{<:CuMaybeComplexArray},
-    idx::CoDual{<:AbstractVector{<:Integer}},
+    idx::CoDual{<:AbstractVector{<:Union{Integer,CartesianIndex}}},
 )
     px, dx = arrayify(x)
     pidx = primal(idx)
@@ -1068,6 +1079,73 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return dest, mixed_copyto!_pb!!
+end
+
+# `unsafe_copyto!` and `fill!` into a device array whose elements carry no derivative
+# information (index arrays, masks).  The rules above all require a tangent array, so
+# these spellings had no rule at all and died in the same try/catch and fill kernel.
+# Keying the methods on the tangent being NoTangent keeps them disjoint from those rules
+# without enumerating element types.  There is no gradient to propagate, but the pullback
+# must still undo the mutation, or re-running the rule would see a different array.
+#
+# Note the asymmetry in `src`: a CPU Array{Int} has fdata Vector{NoTangent}, and only the
+# CuArray side collapses to NoTangent, so `src`'s tangent is left unconstrained.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(unsafe_copyto!),CuArray,Integer,Union{Array,CuArray},Integer,Integer},
+)
+function frule!!(
+    ::Dual{typeof(unsafe_copyto!)},
+    dest::Dual{<:CuArray,NoTangent},
+    doffs::Dual{<:Integer,NoTangent},
+    src::Dual{<:Union{Array,CuArray}},
+    soffs::Dual{<:Integer,NoTangent},
+    n::Dual{<:Integer,NoTangent},
+)
+    unsafe_copyto!(primal(dest), primal(doffs), primal(src), primal(soffs), primal(n))
+    return dest
+end
+function rrule!!(
+    ::CoDual{typeof(unsafe_copyto!)},
+    dest::CoDual{<:CuArray,NoFData},
+    doffs::CoDual{<:Integer,NoFData},
+    src::CoDual{<:Union{Array,CuArray}},
+    soffs::CoDual{<:Integer,NoFData},
+    n::CoDual{<:Integer,NoFData},
+)
+    pdest = primal(dest)
+    doffs_v, n_v = primal(doffs), primal(n)
+    dest_range = doffs_v:(doffs_v + n_v - 1)
+    saved = copy(view(pdest, dest_range))
+    unsafe_copyto!(pdest, doffs_v, primal(src), primal(soffs), n_v)
+    function unsafe_copyto!_nodiff_pb!!(::NoRData)
+        copyto!(view(pdest, dest_range), saved)
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return dest, unsafe_copyto!_nodiff_pb!!
+end
+
+@is_primitive(MinimalCtx, Tuple{typeof(fill!),CuArray,Any})
+function frule!!(::Dual{typeof(fill!)}, a::Dual{<:CuArray,NoTangent}, x::Dual)
+    fill!(primal(a), primal(x))
+    return a
+end
+function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuArray,NoFData}, x::CoDual)
+    pa = primal(a)
+    old = copy(pa)
+    fill!(pa, primal(x))
+    function fill!_nodiff_pb!!(::NoRData)
+        copyto!(pa, old)
+        # `a` has no tangent, so nothing reaches `x`: a typed zero, not NoRData, unless
+        # `x` is itself non-differentiable.
+        dx = if tangent_type(typeof(primal(x))) == NoTangent
+            NoRData()
+        else
+            zero_rdata(primal(x))
+        end
+        return NoRData(), NoRData(), dx
+    end
+    return a, fill!_nodiff_pb!!
 end
 
 # unsafe_free! releases GPU memory early (normally handled by GC finalizer).
@@ -1398,6 +1476,103 @@ function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
+end
+
+# repeat on GPU arrays, both the `counts...` and the `inner=`/`outer=` spellings.
+# Both launch a kernel Mooncake cannot trace, and the keyword form needs its own claim
+# because the positional one does not cover Core.kwcall.
+#
+# repeat places the copy of x[i] for inner offset k and outer offset o at
+# k + (i-1)*I + (o-1)*I*S along each dimension, which is exactly column-major
+# (inner, size, outer).  So the pullback reshapes the cotangent into those triples and
+# sums the inner and outer axes away — reshape plus a dims-reduction, with no scalar
+# indexing.  ChainRules instead loops over `pairs(IndexCartesian(), dY)` for the keyword
+# form, which cannot run on a device.
+#
+# `counts` may be shorter than ndims(x) (padded with 1) or longer (the result gains
+# dimensions), so sizes are padded to ndims of the output and the result reshaped back.
+function _repeat_reduce(
+    dY, S::NTuple{N,Int}, inner::NTuple{N,Int}, outer::NTuple{N,Int}
+) where {N}
+    triples = ntuple(3N) do d
+        dim, which = fldmod1(d, 3)
+        if which == 1
+            inner[dim]
+        elseif which == 2
+            S[dim]
+        else
+            outer[dim]
+        end
+    end
+    reduced_axes = ntuple(2N) do d
+        dim, which = fldmod1(d, 2)
+        which == 1 ? 3dim - 2 : 3dim
+    end
+    return reshape(sum(reshape(dY, triples); dims=reduced_axes), S)
+end
+
+_repeat_pad(t, ::Val{N}) where {N} = ntuple(d -> d <= length(t) ? Int(t[d]) : 1, N)
+
+@is_primitive(MinimalCtx, Tuple{typeof(repeat),CuMaybeComplexArray,Vararg{Integer}})
+function frule!!(
+    ::Dual{typeof(repeat)}, x::Dual{<:CuMaybeComplexArray}, counts::Vararg{Dual{<:Integer}}
+)
+    px, dx = arrayify(x)
+    c = map(primal, counts)
+    return Dual(repeat(px, c...), repeat(dx, c...))
+end
+function rrule!!(
+    ::CoDual{typeof(repeat)},
+    x::CoDual{<:CuMaybeComplexArray},
+    counts::Vararg{CoDual{<:Integer}},
+)
+    px, dx = arrayify(x)
+    c = map(primal, counts)
+    y = repeat(px, c...)
+    N = ndims(y)
+    S = _repeat_pad(size(px), Val(N))
+    outer = _repeat_pad(c, Val(N))
+    ones_ = ntuple(_ -> 1, Val(N))
+    dy = zero(y)
+    function repeat_pb!!(::NoRData)
+        dx .+= reshape(_repeat_reduce(dy, S, ones_, outer), size(dx))
+        return ntuple(_ -> NoRData(), length(counts) + 2)
+    end
+    return CoDual(y, dy), repeat_pb!!
+end
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(repeat),CuMaybeComplexArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(repeat)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    return Dual(repeat(px; pkw...), repeat(dx; pkw...))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(repeat)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    y = repeat(px; pkw...)
+    N = ndims(y)
+    S = _repeat_pad(size(px), Val(N))
+    inner = _repeat_pad(get(pkw, :inner, ()), Val(N))
+    outer = _repeat_pad(get(pkw, :outer, ()), Val(N))
+    dy = zero(y)
+    function repeat_kw_pb!!(::NoRData)
+        dx .+= reshape(_repeat_reduce(dy, S, inner, outer), size(dx))
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy), repeat_kw_pb!!
 end
 
 # vcat / hcat / cat on CuMaybeWrappedArray (see its definition above for what that
@@ -1844,6 +2019,104 @@ function rrule!!(
         NoRData()
     end
     return C, generic_matmatmul!_7arg_pb!!
+end
+
+# cuBLAS.geam!: C := alpha*op_a(A) + beta*op_b(B).  This is the foreign-call boundary
+# reached by `A + B` and `A - B` on CuMatrix, which cuBLAS generates for all nine
+# Transpose/Adjoint combinations (cuBLAS/src/linalg.jl).  Tracing further reaches the
+# ccall, whose scalars are passed as CuRef{T} — a primitive type with no tangent_type,
+# which is the error users actually see; defining that tangent_type would only move the
+# failure to the ccall itself.
+#
+# alpha and beta are treated as constants.  Unlike the gemm! rules, they cannot be typed
+# as NoTangent: the generated `+`/`-` pass `one(T)`, a float literal, so they arrive with
+# a real (zero) tangent.  A nonzero tangent would be silently dropped, so reject it.
+@inline function _check_geam_scalar(t, name)
+    (t isa NoTangent || iszero(t)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: geam! treats `$name` as a constant, but it received a nonzero " *
+        "tangent. Differentiating with respect to it is not supported. " *
+        _UNIMPL_MSG,
+    )
+end
+
+_geam_op(t::Char, M) = if t == 'N'
+    M
+elseif t == 'T'
+    transpose(M)
+else
+    adjoint(M)
+end
+
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(cuBLAS.geam!),
+        Char,
+        Char,
+        Number,
+        CuMaybeComplexArray,
+        Number,
+        CuMaybeComplexArray,
+        CuMaybeComplexArray,
+    },
+)
+function frule!!(
+    ::Dual{typeof(cuBLAS.geam!)},
+    ta::Dual{Char,NoTangent},
+    tb::Dual{Char,NoTangent},
+    alpha::Dual{<:Number},
+    A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    beta::Dual{<:Number},
+    B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    _check_geam_scalar(tangent(alpha), "alpha")
+    _check_geam_scalar(tangent(beta), "beta")
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    pC, dC = matrixify(C)
+    T = eltype(pA)
+    tav, tbv = primal(ta), primal(tb)
+    _a, _b = T(primal(alpha)), T(primal(beta))
+    cuBLAS.geam!(tav, tbv, _a, pA, _b, pB, pC)
+    cuBLAS.geam!(tav, tbv, _a, dA, _b, dB, dC)
+    return C
+end
+function rrule!!(
+    ::CoDual{typeof(cuBLAS.geam!)},
+    ta::CoDual{Char,NoFData},
+    tb::CoDual{Char,NoFData},
+    alpha::CoDual{<:Number},
+    A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    beta::CoDual{<:Number},
+    B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+    C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
+)
+    pA, dA = matrixify(A)
+    pB, dB = matrixify(B)
+    pC, dC = matrixify(C)
+    T = eltype(pA)
+    tav, tbv = primal(ta), primal(tb)
+    _a, _b = T(primal(alpha)), T(primal(beta))
+    pC_copy = copy(pC)
+    cuBLAS.geam!(tav, tbv, _a, pA, _b, pB, pC)
+    function geam!_pb!!(::NoRData)
+        dA .+= conj(_a) .* _geam_op(tav, dC)
+        dB .+= conj(_b) .* _geam_op(tbv, dC)
+        copyto!(pC, pC_copy)
+        # geam has no C_old term, so C's cotangent is consumed rather than scaled.
+        fill!(dC, zero(T))
+        return NoRData(),
+        NoRData(),
+        NoRData(),
+        zero_rdata(primal(alpha)),
+        NoRData(),
+        zero_rdata(primal(beta)),
+        NoRData(),
+        NoRData()
+    end
+    return C, geam!_pb!!
 end
 
 # Rule for `LinearAlgebra.generic_matvecmul!` on real and complex GPU arrays.
