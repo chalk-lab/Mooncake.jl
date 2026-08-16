@@ -266,6 +266,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _sum_kw_init_d1(x) = sum(sum(x; dims=1, init=one(eltype(x))))
         _sum_kw_cx_d1(x) = real(sum(sum(x; dims=1)))
         _sum_kw_cx_nodims(x) = real(sum(x; dims=:))
+        _sum_kw_init_wide_d1(x) = sum(sum(x; dims=1, init=0.0))
+        _sum_kw_init_wide_nodims(x) = sum(x; init=0.0)
+        _sum_kw_init_active(a, x) = sum(sum(x; dims=1, init=a))
         _sum_kw_badkw(x) = sum(x; bad=1)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
@@ -1943,6 +1946,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     _rand(rng, ComplexF32, 4, 3),
                 ),
                 (51, "empty array, dims=1", _sum_kw_d1, _rand(rng, Float32, 0, 3)),
+                (
+                    52,
+                    "init=0.0 widens Float32, dims=1",
+                    _sum_kw_init_wide_d1,
+                    _rand(rng, Float32, 4, 3),
+                ),
+                (
+                    53,
+                    "init=0.0 widens Float32, dims=:",
+                    _sum_kw_init_wide_nodims,
+                    _rand(rng, Float32, 4, 3),
+                ),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
@@ -1962,6 +1977,27 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 rule = Mooncake.build_rrule(_sum_kw_badkw, x)
                 @test_throws MethodError Mooncake.value_and_gradient!!(
                     rule, _sum_kw_badkw, x
+                )
+            end
+            @testset "init is a non-differentiated constant" begin
+                # GPUArrays folds `init` into a backend-defined number of partial
+                # reductions, so a derivative through it is not well-defined:
+                # reverse mode returns a typed zero for the keyword NamedTuple
+                # (debug mode verifies the rdata type), and forward mode throws
+                # on a nonzero `init` tangent.
+                a, x = 0.0f0, _rand(rng, Float32, 4, 3)
+                rule = Mooncake.build_rrule(_sum_kw_init_active, a, x; debug_mode=true)
+                _, (_, da, gx) = Mooncake.value_and_gradient!!(
+                    rule, _sum_kw_init_active, a, x
+                )
+                @test da == 0.0f0
+                @test all(==(1.0f0), Array(gx))
+                frule = Mooncake.build_frule(_sum_kw_init_active, a, x)
+                @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
+                    frule,
+                    Mooncake.Dual(_sum_kw_init_active, Mooncake.NoTangent()),
+                    Mooncake.Dual(a, 1.0f0),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
                 )
             end
         end

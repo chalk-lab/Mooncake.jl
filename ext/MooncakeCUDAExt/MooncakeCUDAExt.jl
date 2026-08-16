@@ -1443,10 +1443,18 @@ end
 # claim the Core.kwcall spelling, so Base lowers it onto GPUArrays'
 # mapreducedim! and finally `cufunction`, whose `@lock` try/finally kills
 # reverse-mode tracing (#1273). sum is linear: the tangent is the same dims
-# reduction of the tangent (`init` is a constant offset and does not appear),
-# and the pullback broadcast-accumulates the cotangent over the reduced dims.
-# The value comes from the real call, so keyword sets the primal rejects throw
-# identically under AD.
+# reduction of the tangent, and the pullback broadcast-accumulates the cotangent
+# over the reduced dims. The value comes from the real call, so keyword sets the
+# primal rejects throw identically under AD.
+#
+# `init` is treated as a non-differentiated constant: Julia requires it to be a
+# neutral element, and GPUArrays folds it into a backend-defined number of
+# partial reductions, so a derivative through it is not well-defined. The
+# pullback returns `zero_rdata(pkw)` (typed zero) for the keyword NamedTuple,
+# and the frule rejects a nonzero `init` tangent. `init` also sets the output
+# eltype (GPUArrays takes it from typeof(init), so init=0.0 on a Float32 array
+# gives a Float64 result); the tangent reduction is seeded with an output-typed
+# zero so the tangent type matches the primal.
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
 )
@@ -1457,11 +1465,23 @@ function frule!!(
     x::Dual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    dkw = tangent(kw)
+    if dkw isa NamedTuple &&
+        haskey(dkw, :init) &&
+        !(dkw.init isa NoTangent) &&
+        !iszero(dkw.init)
+        _throw_gpu_argument_error(
+            "Mooncake: keyword sum on CuArray treats `init` as a constant, but it " *
+            "received a nonzero tangent. Differentiating with respect to `init` is " *
+            "not supported. " *
+            _UNIMPL_MSG,
+        )
+    end
     px, dx = arrayify(x)
     y = sum(px; pkw...)
     raw_dims = get(pkw, :dims, :)
-    raw_dims isa Colon && return Dual(y, sum(dx))
-    return Dual(y, sum(dx; dims=raw_dims))
+    raw_dims isa Colon && return Dual(y, sum(dx; init=zero(y)))
+    return Dual(y, sum(dx; dims=raw_dims, init=zero(eltype(y))))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1470,19 +1490,20 @@ function rrule!!(
     x::CoDual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
     y = sum(px; pkw...)
     if get(pkw, :dims, :) isa Colon
         function sum_kw_scalar_pb!!(dy)
             dx .+= dy
-            return NoRData(), NoRData(), NoRData(), NoRData()
+            return NoRData(), kw_rdata, NoRData(), NoRData()
         end
         return CoDual(y, NoFData()), sum_kw_scalar_pb!!
     end
     dy_out = zero(y)
     function sum_kw_array_pb!!(::NoRData)
         dx .+= dy_out
-        return NoRData(), NoRData(), NoRData(), NoRData()
+        return NoRData(), kw_rdata, NoRData(), NoRData()
     end
     return CoDual(y, dy_out), sum_kw_array_pb!!
 end
