@@ -262,6 +262,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _sum_kw_init_wide(x) = sum(sum(x; dims=1, init=0.0))
         _sum_kw_init_active(a, x) = sum(sum(x; dims=1, init=a))
         _sum_kw_badkw(x) = sum(x; bad=1.0)
+        # Wrappers for the maximum/minimum GPU rules.
+        _max_bare(x) = maximum(x)
+        _max_nodims(x) = maximum(x; dims=:)
+        _max_d1(x) = sum(maximum(x; dims=1))
+        _min_d1(x) = sum(minimum(x; dims=1))
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -1214,7 +1219,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     z -> sum(sum(abs2, z; dims=1)),     # kwcall sum(f, x; dims)
                     z -> maximum(abs, z),               # mapped, positional
                     z -> sum(maximum(abs, z; dims=1)),  # mapped, kwcall
-                    z -> sum(maximum(z; dims=1)),       # catch-all, kwcall
+                    z -> sum(sort(z; rev=true)),        # catch-all, kwcall
                     z -> sum(sort(z)),                  # catch-all, positional
                 )
                     @test_throws r"not yet differentiable" value_and_gradient!!(
@@ -1955,6 +1960,33 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(a, 1.0f0),
                     Mooncake.Dual(x, Mooncake.zero_tangent(x)),
                 )
+            end
+        end
+
+        @testset "maximum/minimum GPU rules" begin
+            # One case per rule path. The vector cases are not eltype padding:
+            # GPUArrays returns a linear Int index when ndims == 1 and a
+            # CartesianIndex otherwise, and comparing the two kinds is silently
+            # false, which would give an all-zero gradient.
+            @testset "$name" for (seed, name, f, x) in [
+                (60, "maximum(x) vector", _max_bare, _rand(rng, Float32, 6)),
+                (61, "maximum(x) 3d", _max_bare, _rand(rng, Float32, 3, 3, 2)),
+                (62, "maximum(x; dims=:)", _max_nodims, _rand(rng, Float32, 4, 3)),
+                (63, "maximum(x; dims=1)", _max_d1, _rand(rng, Float32, 4, 3)),
+                (64, "maximum(vec; dims=1)", _max_d1, _rand(rng, Float32, 6)),
+                (65, "minimum(x; dims=1)", _min_d1, _rand(rng, Float32, 4, 3)),
+            ]
+                test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
+            end
+            @testset "ties pick the lowest linear index" begin
+                # Not reachable from test_rule's random inputs. findmax names the
+                # first tied element, matching Base and ChainRules; the CPU
+                # decomposition of mapreduce(identity, max, x) lands on the last.
+                x = CuArray(Float32[5, 5, 3])
+                _, g = value_and_gradient!!(
+                    Mooncake.build_rrule(_max_bare, x), _max_bare, x
+                )
+                @test Array(g[2]) == Float32[1, 0, 0]
             end
         end
 
