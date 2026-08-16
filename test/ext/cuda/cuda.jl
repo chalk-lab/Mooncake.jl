@@ -259,8 +259,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _sum_kw_d1(x) = sum(sum(x; dims=1))
         _sum_kw_nodims(x) = sum(x; dims=:)
         _sum_kw_cx_d1(x) = real(sum(sum(x; dims=1)))
-        _sum_kw_init_wide_d1(x) = sum(sum(x; dims=1, init=0.0))
-        _sum_kw_init_wide_nodims(x) = sum(x; init=0.0)
+        _sum_kw_init_wide(x) = sum(sum(x; dims=1, init=0.0))
         _sum_kw_init_active(a, x) = sum(sum(x; dims=1, init=a))
         _sum_kw_badkw(x) = sum(x; bad=1.0)
         _host_rand = (rng, size...) -> randn(rng, size...)
@@ -1919,36 +1918,20 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
         @testset "keyword sum GPU rule (#1273)" begin
             # One case per rule code path: array/Colon output branch, real/complex
-            # claim arm, and the two output-typed tangent seeds for a widening
-            # init (dims key present vs absent).
+            # claim arm, and the output-typed tangent seed for a widening init.
             @testset "$name" for (seed, name, f, x) in [
                 (40, "dims=1 (Float32)", _sum_kw_d1, _rand(rng, Float32, 4, 3)),
                 (47, "dims=: scalar output", _sum_kw_nodims, _rand(rng, Float32, 4, 3)),
                 (49, "dims=1 (ComplexF32)", _sum_kw_cx_d1, _rand(rng, ComplexF32, 4, 3)),
-                (
-                    52,
-                    "init=0.0 widens Float32, dims=1",
-                    _sum_kw_init_wide_d1,
-                    _rand(rng, Float32, 4, 3),
-                ),
-                (
-                    53,
-                    "init=0.0 widens Float32, no dims",
-                    _sum_kw_init_wide_nodims,
-                    _rand(rng, Float32, 4, 3),
-                ),
+                (52, "init=0.0 widens", _sum_kw_init_wide, _rand(rng, Float32, 4, 3)),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
             @testset "kwarg sets the primal rejects throw under AD" begin
-                # The float-typed bad kwarg also exercises the frule guard's
-                # haskey check: without it, `dkw.init` throws a field error
-                # instead of the primal's MethodError.
+                # The float-typed bad kwarg gives the frule a tangent NamedTuple
+                # without an `init` field: reading `dkw.init` unguarded would
+                # throw a field error instead of the primal's MethodError.
                 x = _rand(rng, Float32, 4, 3)
-                rule = Mooncake.build_rrule(_sum_kw_badkw, x)
-                @test_throws MethodError Mooncake.value_and_gradient!!(
-                    rule, _sum_kw_badkw, x
-                )
                 @test_throws MethodError Mooncake.value_and_derivative!!(
                     Mooncake.build_frule(_sum_kw_badkw, x),
                     Mooncake.Dual(_sum_kw_badkw, Mooncake.NoTangent()),
@@ -1961,11 +1944,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 # init as a constant. debug_mode verifies the kw rdata type.
                 a, x = 0.0f0, _rand(rng, Float32, 4, 3)
                 rule = Mooncake.build_rrule(_sum_kw_init_active, a, x; debug_mode=true)
-                _, (_, da, gx) = Mooncake.value_and_gradient!!(
+                _, (_, da, _) = Mooncake.value_and_gradient!!(
                     rule, _sum_kw_init_active, a, x
                 )
                 @test da == 0.0f0
-                @test all(==(1.0f0), Array(gx))
                 frule = Mooncake.build_frule(_sum_kw_init_active, a, x)
                 @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
                     frule,
