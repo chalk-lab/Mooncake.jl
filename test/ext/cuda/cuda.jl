@@ -223,6 +223,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _geam_add(a, b) = sum(a + b)
         _geam_sub_adj(a, b) = sum(a' - b)
         _geam_add_cx(a, b) = real(sum(a + b'))
+        # A complex alpha against a transposed operand: the pullback folds the two
+        # conjugations together instead of conjugating alpha.
+        _mul_adj_alpha(c, a, b) = real(sum(mul!(c, a', b', 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mulv_adj_alpha(y, a, x) = real(sum(mul!(y, a', x, 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mulv_alpha(y, a, x) = real(sum(mul!(y, a, x, 2.0 + 3.0im, -1.0 + 0.5im)))
         # repeat: positional counts and the keyword spelling (separate rules).
         _repeat_counts(x) = sum(repeat(x, 2, 3))
         _repeat_extends(x) = sum(repeat(x, 2, 3, 2))
@@ -962,6 +967,49 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # unrelated to our rules, so stability checks are not meaningful on GPU.
             test_rule(
                 StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
+            )
+        end
+
+        # Reverse mode only: a complex alpha carries a tangent, so it cannot dispatch the
+        # gemm/gemv frules, which take alpha as NoTangent.
+        @testset "$name" for (seed, name, fargs) in [
+            (
+                71,
+                "mul! matrix, complex alpha, both operands adjoint",
+                (
+                    _mul_adj_alpha,
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                ),
+            ),
+            (
+                72,
+                "mul! vector, complex alpha, adjoint operand",
+                (
+                    _mulv_adj_alpha,
+                    _rand(rng, ComplexF64, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4),
+                ),
+            ),
+            (
+                73,
+                "mul! vector, complex alpha",
+                (
+                    _mulv_alpha,
+                    _rand(rng, ComplexF64, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4),
+                ),
+            ),
+        ]
+            test_rule(
+                StableRNG(seed),
+                fargs...;
+                is_primitive=false,
+                perf_flag=:none,
+                mode=Mooncake.ReverseMode,
             )
         end
 

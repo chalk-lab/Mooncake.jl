@@ -2294,19 +2294,20 @@ function rrule!!(
     pC_copy = copy(pC)
     cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
     function generic_matmatmul!_7arg_pb!!(::NoRData)
-        # Adjoint of C = α*op_A(A)*op_B(B) + β*C_old requires conj(α) and conj(β).
-        # For real scalars conj is identity, so this is backward-compatible.
+        # Adjoint of C = α*op_A(A)*op_B(B) + β*C_old requires conj(α) and conj(β), except
+        # against a transposed operand: adjoint(α*adjoint(A)) folds the two conjugations
+        # together, leaving α itself.  For real scalars conj is identity either way.
         _cα = conj(_α)
         _cβ = conj(_β)
         if tAv == 'N'
             cuBLAS.gemm!('N', tBv == 'N' ? 'C' : 'N', _cα, dC, pB, _1, dA) # dA += conj(α)*dC*op_B(B)^H
         else
-            cuBLAS.gemm!(tBv, 'C', _cα, pB, dC, _1, dA)                     # dA += conj(α)*op_B(B)*dC^H
+            cuBLAS.gemm!(tBv, 'C', _α, pB, dC, _1, dA)                      # dA += α*op_B(B)*dC^H
         end
         if tBv == 'N'
             cuBLAS.gemm!(tAv == 'N' ? 'C' : 'N', 'N', _cα, pA, dC, _1, dB) # dB += conj(α)*op_A(A)^H*dC
         else
-            cuBLAS.gemm!('C', tAv, _cα, dC, pA, _1, dB)                     # dB += conj(α)*dC^H*op_A(A)
+            cuBLAS.gemm!('C', tAv, _α, dC, pA, _1, dB)                      # dB += α*dC^H*op_A(A)
         end
         copyto!(pC, pC_copy)
         dC .*= _cβ  # gradient w.r.t. C_old: ΔC_old = conj(β) * ΔC_new
@@ -2425,11 +2426,12 @@ end
 # (an outer product) reshape both vectors to (n,1) matrices and use cuBLAS.gemm!.
 #
 # Backward formulas for Y = alpha*op(A)*B + beta*Y_old (ȳ = cotangent of Y):
-#   tA='N': dA += alpha * ȳ * B^H  (outer product via gemm!('N','C'))
-#   tA≠'N': dA += alpha * B * ȳ^H  (outer product via gemm!('N','C'), roles swapped)
-#   tA='N': dB += alpha * A^H * ȳ  (gemv!('C'))
-#   tA≠'N': dB += alpha * A   * ȳ  (gemv!('N'), since op(A)^H = A)
-#   dY_old  = beta * ȳ             (pass-through scaled by beta)
+#   tA='N': dA += conj(alpha) * ȳ * B^H  (outer product via gemm!('N','C'))
+#   tA≠'N': dA += alpha * B * ȳ^H        (roles swapped; adjoint(alpha*adjoint(A)) folds
+#                                         the two conjugations together)
+#   tA='N': dB += conj(alpha) * A^H * ȳ  (gemv!('C'))
+#   tA≠'N': dB += conj(alpha) * A   * ȳ  (gemv!('N'), since op(A)^H = A)
+#   dY_old  = conj(beta) * ȳ             (pass-through scaled by beta)
 #
 # Limitation: 'T' flag for complex arrays is rejected (same as generic_matmatmul!).
 
@@ -2497,18 +2499,18 @@ function rrule!!(
         dY_mat = reshape(dY, :, 1)
         pB_mat = reshape(pB, :, 1)
         if tAv == 'N'
-            cuBLAS.gemm!('N', 'C', av, dY_mat, pB_mat, _1, dA) # dA += av * ȳ * B^H
+            cuBLAS.gemm!('N', 'C', conj(av), dY_mat, pB_mat, _1, dA) # dA += conj(av)*ȳ*B^H
         else
             cuBLAS.gemm!('N', 'C', av, pB_mat, dY_mat, _1, dA) # dA += av * B * ȳ^H
         end
         # dB update: gemv with Hermitian conjugate of op(A)
         if tAv == 'N'
-            cuBLAS.gemv!('C', av, pA, dY, _1, dB) # dB += av * A^H * ȳ
+            cuBLAS.gemv!('C', conj(av), pA, dY, _1, dB) # dB += conj(av) * A^H * ȳ
         else
-            cuBLAS.gemv!('N', av, pA, dY, _1, dB) # dB += av * A   * ȳ  (op(A)^H = A)
+            cuBLAS.gemv!('N', conj(av), pA, dY, _1, dB) # dB += conj(av)*A*ȳ (op(A)^H = A)
         end
         # Y tangent passes through scaled by beta
-        dY .*= bv
+        dY .*= conj(bv)
         copyto!(pY, pY_copy)
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
