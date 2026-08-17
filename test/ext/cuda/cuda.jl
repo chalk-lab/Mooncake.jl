@@ -2210,6 +2210,27 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(x, Mooncake.zero_tangent(x)),
                 )
             end
+            @testset "a non-identity init is refused in both modes" begin
+                # + and * are not idempotent, so the backend's folding changes the value
+                # itself: sum(CuArray([1, 2, 3]); init=1.0) is 101.0, not 7.0.  Reading the
+                # value rather than a tangent is what lets reverse mode refuse it too.
+                x = _rand(rng, Float32, 4)
+                for f in (
+                    z -> sum(z; init=1.0f0),
+                    z -> sum(sum(z; dims=1, init=5.0)),
+                    z -> sum(prod(z; dims=1, init=2.0)),
+                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
+                )
+                    @test_throws r"not its identity" Mooncake.value_and_gradient!!(
+                        Mooncake.build_rrule(f, x), f, x
+                    )
+                    @test_throws r"not its identity" Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, x),
+                        Mooncake.Dual(f, Mooncake.zero_tangent(f)),
+                        Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                    )
+                end
+            end
             @testset "a constant init still differentiates in reverse" begin
                 # Reverse mode cannot tell this literal from an init the caller wants a
                 # gradient for, so it must not reject either: ∂/∂x is well defined here.

@@ -1034,6 +1034,7 @@ function frule!!(
     x::Dual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    _check_reduction_identity(prod, pkw)
     _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
@@ -1050,6 +1051,7 @@ function rrule!!(
     x::CoDual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    _check_reduction_identity(prod, pkw)
     kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
     dims = get(pkw, :dims, :)
@@ -1324,6 +1326,28 @@ end
 # This covers sum and prod, whose `init` folding is what makes the derivative undefined, and
 # diff/sort/sortperm, which take no `init` at all.  maximum and minimum are idempotent, so
 # their `init` derivative survives the folding exactly; they get it below.
+# `sum` and `prod` fold `init` into a backend-defined number of partial reductions, and + and
+# * are not idempotent, so anything but the identity changes the result itself:
+# sum(CuArray([1, 2, 3]); init=1.0) is 101.0, not 7.0, and prod(…; init=2.0) is 2.4e29, not
+# 12.  Neither that value nor a derivative through it is defined, so both modes refuse it.
+# Unlike the tangent check below, this reads the value, which reverse mode can also see.
+# maximum/minimum need no such guard: max and min are idempotent, so their fold is exact and
+# a non-identity `init` is the point of passing one.
+_reduction_identity(::typeof(sum)) = 0
+_reduction_identity(::typeof(prod)) = 1
+_reduction_identity(_) = nothing
+function _check_reduction_identity(f, pkw)
+    identity = _reduction_identity(f)
+    (identity === nothing || !haskey(pkw, :init) || pkw.init == identity) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: $f over CuArray was given init=$(pkw.init), which is not its identity " *
+        "($identity). GPUArrays folds `init` into a backend-defined number of partial " *
+        "reductions, so the result itself is undefined — sum(CuArray([1, 2, 3]); init=1.0) " *
+        "returns 101.0, not 7.0. Pass the identity, or add `init` to the array instead. " *
+        _UNIMPL_MSG,
+    )
+end
+
 function _check_reduction_init(dkw)
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
@@ -1345,6 +1369,7 @@ for _fn in (:sum, :prod, :diff, :sort, :sortperm)
         ::Dual{typeof($_fn)},
         x::Dual{<:CuNonDiffArray},
     )
+        _check_reduction_identity($_fn, primal(kw))
         _check_reduction_init(tangent(kw))
         y = $_fn(primal(x); primal(kw)...)
         return Dual(y, zero_tangent(y))
@@ -1356,6 +1381,7 @@ for _fn in (:sum, :prod, :diff, :sort, :sortperm)
         x::CoDual{<:CuNonDiffArray},
     )
         pkw = primal(kw)
+        _check_reduction_identity($_fn, pkw)
         kw_rdata = zero_rdata(pkw)
         y = $_fn(primal(x); pkw...)
         # `::Any`: the output is an Integer without `init` and a float with one, so the
@@ -2051,6 +2077,7 @@ function frule!!(
     x::Dual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    _check_reduction_identity(sum, pkw)
     _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
     y = sum(px; pkw...)
@@ -2063,6 +2090,7 @@ function rrule!!(
     x::CoDual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
+    _check_reduction_identity(sum, pkw)
     kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
     y = sum(px; pkw...)
