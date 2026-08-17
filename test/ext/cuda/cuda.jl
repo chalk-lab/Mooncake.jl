@@ -327,6 +327,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
         _min_init(a, x) = minimum(x; init=a)
         _max_badkw(x) = maximum(x; bad=1.0)
+        # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
+        # Float64 array narrows the result and its tangent has to follow.
+        _max_init_widens(x) = maximum(x; init=0.0f0)
+        _prod_init_widens(x) = sum(prod(x; dims=1, init=1.0f0))
+        # An index or mask array has no derivative, but `init` competes with its elements.
+        _max_idx_init(a, x) = maximum(CuArray([1, 2, 3]); init=a) * sum(x)
+        _max_idx_init_d1(a, x) = sum(maximum(CuArray([1 2; 3 4]); dims=1, init=a)) * sum(x)
+        _min_idx_init(a, x) = minimum(CuArray([1, 2, 3]); init=a) * sum(x)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -2221,6 +2229,45 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     is_primitive=false,
                     perf_flag=:none,
                 )
+            end
+            # An index array contributes nothing, so `init` carries the whole gradient.
+            @testset "$name" for (seed, name, f, a) in [
+                (90, "index array, init wins", _max_idx_init, 10.0),
+                (91, "index array, init loses", _max_idx_init, -10.0),
+                (92, "index array, init wins, dims=1", _max_idx_init_d1, 10.0),
+                (93, "index array, minimum", _min_idx_init, -10.0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    _rand(rng, Float32, 4);
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "a narrowing init narrows the tangent too" begin
+                @testset "$name" for (seed, name, f) in [
+                    (96, "maximum", _max_init_widens),
+                    (97, "prod dims=1", _prod_init_widens),
+                ]
+                    test_rule(
+                        StableRNG(seed),
+                        f,
+                        _rand(rng, Float64, 4, 3);
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+            end
+            @testset "a NaN slice keeps the keyword-free gradient" begin
+                # `won` is a negated comparison because NaN == NaN is false, which would
+                # zero the whole slice and disagree with the positional rule.
+                x = CuArray(Float32[1, NaN, 3])
+                grads = map((_max_bare, _max_nodims)) do f
+                    Array(value_and_gradient!!(Mooncake.build_rrule(f, x), f, x)[2][2])
+                end
+                @test grads[1] == grads[2] == Float32[0, 1, 0]
             end
             @testset "an unsupported keyword fails like the primal" begin
                 # The value has to come from the primal call, not from findmax, which

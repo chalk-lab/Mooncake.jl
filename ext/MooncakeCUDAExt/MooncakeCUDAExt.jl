@@ -876,8 +876,10 @@ function _minmax_init_rdata(kw_rdata::NamedTuple, dy, won)
     (haskey(kw_rdata, :init) && !(kw_rdata.init isa NoRData)) || return kw_rdata
     return merge(kw_rdata, (; init=oftype(kw_rdata.init, sum(dy .* .!won))))
 end
+# findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
+_minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 
-for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
+for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuFloatArray}
@@ -898,9 +900,11 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         return CoDual(y, NoFData()), minmax_pb!!
     end
 
-    # The value comes from the primal call, not from findmax, which reads only `dims`: an
-    # `init` that beats every element leaves the result independent of x, and an unsupported
-    # keyword has to raise the primal's own MethodError.  findmax supplies just the argmax.
+    # Any keyword beyond `dims` needs the value from the primal call: `init` can beat every
+    # element, leaving the result independent of x, and it also fixes the output eltype, so
+    # the tangent is converted to follow it.  A keyword the primal rejects then still raises
+    # its MethodError.  `won` is a negated comparison so that a slice whose max is NaN keeps
+    # the argmax gradient, where the keyword-free rule puts it.
     @eval function frule!!(
         ::Dual{typeof(Core.kwcall)},
         kw::Dual{<:NamedTuple},
@@ -910,11 +914,17 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         pkw = primal(kw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
-        y = $_fn(px; pkw...)
         m, ind = $_find(px; dims=dims)
-        won = m .== y
-        dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims) .* won
-        return Dual(y, _minmax_init_jvp(dy, _minmax_init_tangent(tangent(kw)), won))
+        if _minmax_kw_is_plain(pkw)
+            return Dual(m, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
+        end
+        y = $_fn(px; pkw...)
+        won = .!broadcast($_beat, m, y)
+        dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims)
+        return Dual(
+            y,
+            _minmax_init_jvp(eltype(y).(dy) .* won, _minmax_init_tangent(tangent(kw)), won),
+        )
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -926,9 +936,13 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         kw_rdata = zero_rdata(pkw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
-        y = $_fn(px; pkw...)
         m, ind = $_find(px; dims=dims)
-        won = m .== y
+        y, won = if _minmax_kw_is_plain(pkw)
+            m, true
+        else
+            y_kw = $_fn(px; pkw...)
+            y_kw, .!broadcast($_beat, m, y_kw)
+        end
         if dims isa Colon
             function minmax_kw_scalar_pb!!(dy)
                 dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
@@ -1015,7 +1029,11 @@ function frule!!(
     px, dx = arrayify(x)
     y = prod(px; pkw...)
     inv_px = nan_tangent_guard.(px, inv.(px))
-    return Dual(y, y .* sum(dx .* inv_px; dims=get(pkw, :dims, :)))
+    # `init` fixes the output eltype, and the tangent has to follow it.  Converting after
+    # the reduction rather than seeding it: a widening seed over a broadcast fails to
+    # compile a kernel.
+    dy = eltype(y).(sum(dx .* inv_px; dims=get(pkw, :dims, :)))
+    return Dual(y, y .* dy)
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1268,8 +1286,9 @@ end
 # frules can check it: reverse mode sees no tangent, and cannot tell a constant `init` from
 # one the caller wants a gradient for, so a guard there rejects correct programs.
 #
-# sum, prod, maximum and minimum all accept `init`; diff/sort/sortperm do not, so the guard
-# is a no-op for those three and one path covers all seven.
+# This covers sum and prod, whose `init` folding is what makes the derivative undefined, and
+# diff/sort/sortperm, which take no `init` at all.  maximum and minimum are idempotent, so
+# their `init` derivative survives the folding exactly; they get it below.
 function _check_reduction_init(dkw)
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
@@ -1281,7 +1300,7 @@ function _check_reduction_init(dkw)
     )
 end
 
-for _fn in (:sum, :prod, :maximum, :minimum, :diff, :sort, :sortperm)
+for _fn in (:sum, :prod, :diff, :sort, :sortperm)
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuNonDiffArray}
     )
@@ -1308,6 +1327,56 @@ for _fn in (:sum, :prod, :maximum, :minimum, :diff, :sort, :sortperm)
         # incoming rdata is NoRData or a number depending on the call.
         nodiff_reduction_kw_pb!!(::Any) = (NoRData(), kw_rdata, NoRData(), NoRData())
         return zero_fcodual(y), nodiff_reduction_kw_pb!!
+    end
+end
+
+# maximum/minimum over an index or mask array: the array carries no derivative, but a float
+# `init` competes with its elements and takes the whole derivative of every slice it beats.
+# The array's own max, which decides that, needs a second reduction, so plain `dims` calls
+# keep the zero-derivative path.
+for (_fn, _beat) in ((:maximum, :<), (:minimum, :>))
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuNonDiffArray}
+    )
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof($_fn)},
+        x::Dual{<:CuNonDiffArray},
+    )
+        pkw = primal(kw)
+        px = primal(x)
+        y = $_fn(px; pkw...)
+        won = if _minmax_kw_is_plain(pkw)
+            true
+        else
+            .!broadcast($_beat, $_fn(px; dims=get(pkw, :dims, :)), y)
+        end
+        dinit = _minmax_init_tangent(tangent(kw))
+        return Dual(y, _minmax_init_jvp(zero_tangent(y), dinit, won))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof($_fn)},
+        x::CoDual{<:CuNonDiffArray},
+    )
+        pkw = primal(kw)
+        kw_rdata = zero_rdata(pkw)
+        px = primal(x)
+        out = zero_fcodual($_fn(px; pkw...))
+        won = if _minmax_kw_is_plain(pkw)
+            true
+        else
+            .!broadcast($_beat, $_fn(px; dims=get(pkw, :dims, :)), primal(out))
+        end
+        # `::Any`: a `dims` reduction carries its cotangent in the output's fdata, a scalar
+        # one in the incoming rdata.
+        function nodiff_minmax_kw_pb!!(dy::Any)
+            dkw = _minmax_init_rdata(kw_rdata, dy isa NoRData ? tangent(out) : dy, won)
+            return NoRData(), dkw, NoRData(), NoRData()
+        end
+        return out, nodiff_minmax_kw_pb!!
     end
 end
 
