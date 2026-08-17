@@ -1708,6 +1708,8 @@ function _repeat_reduce(
 end
 
 _repeat_pad(t, ::Val{N}) where {N} = ntuple(d -> d <= length(t) ? Int(t[d]) : 1, N)
+# `inner`/`outer` default to `nothing` in Base.repeat, so callers may pass it explicitly.
+_repeat_pad(::Nothing, v::Val) = _repeat_pad((), v)
 
 @is_primitive(MinimalCtx, Tuple{typeof(repeat),CuMaybeComplexArray,Vararg{Integer}})
 function frule!!(

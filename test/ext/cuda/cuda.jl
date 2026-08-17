@@ -227,6 +227,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _repeat_counts(x) = sum(repeat(x, 2, 3))
         _repeat_extends(x) = sum(repeat(x, 2, 3, 2))
         _repeat_inner_outer(x) = sum(repeat(x; inner=(2, 1), outer=(1, 2)))
+        # `nothing` is Base.repeat's own default for inner/outer, so it can arrive here.
+        _repeat_nothing(x) = sum(repeat(x; inner=nothing, outer=(2, 2)))
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
         # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
         # offset, which is CuPtr{Float32} + Integer (differentiable T).
@@ -577,6 +579,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _repeat_counts, _rand(rng, 2, 3)),
             (false, :none, false, _repeat_extends, _rand(rng, 2, 3)),
             (false, :none, false, _repeat_inner_outer, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_nothing, _rand(rng, 2, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
             # sum(f, x) with non-smooth f (abs)
