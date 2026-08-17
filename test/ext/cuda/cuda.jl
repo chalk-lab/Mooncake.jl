@@ -223,6 +223,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _geam_add(a, b) = sum(a + b)
         _geam_sub_adj(a, b) = sum(a' - b)
         _geam_add_cx(a, b) = real(sum(a + b'))
+        # C === A is cuBLAS's in-place geam: dC is then the buffer dA accumulates into.
+        _geam_alias(x, y) = sum(CUDA.cuBLAS.geam!('N', 'N', 1.0f0, x, 1.0f0, y, x))
         # A complex alpha against a transposed operand: the pullback folds the two
         # conjugations together instead of conjugating alpha.
         _mul_adj_alpha(c, a, b) = real(sum(mul!(c, a', b', 2.0 + 3.0im, -1.0 + 0.5im)))
@@ -553,9 +555,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _nodiff_sort_rev, _rand(rng, 8)),
             # geam! called directly (is_primitive=true): the only case that reaches the
             # restore of C and the consumption of its cotangent, since `+`/`-` always
-            # allocate a fresh C.  alpha/beta are passed as Bool, which has no tangent, so
-            # test_rule cannot hand them the nonzero tangent the rule rejects — the same
-            # way MulAddMul supplies them to the gemm! rules.
+            # allocate a fresh C.  Bool alpha/beta, as MulAddMul supplies them to the gemm!
+            # rules, have no tangent and so take the no-derivative arm of the scalars.
             (
                 false,
                 :none,
@@ -569,6 +570,34 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float32, 3, 3),
                 _rand(rng, Float32, 3, 3),
             ),
+            # Differentiable alpha/beta, real and complex.  The complex case is also the
+            # only one where the 'C' flag's unconjugated alpha differs from conj(alpha).
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'T',
+                'N',
+                2.0f0,
+                _rand(rng, Float32, 3, 3),
+                -1.5f0,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
+            ),
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'C',
+                'T',
+                2.0 + 3.0im,
+                _rand(rng, ComplexF64, 3, 3),
+                -1.0 + 0.5im,
+                _rand(rng, ComplexF64, 3, 3),
+                _rand(rng, ComplexF64, 3, 3),
+            ),
             # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
             (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
             (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
@@ -579,6 +608,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _geam_add_cx,
                 _rand(rng, ComplexF64, 3, 3),
                 _rand(rng, ComplexF64, 3, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _geam_alias,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
             ),
             # repeat: counts, counts that add a dimension, and the keyword spelling.
             (false, :none, false, _repeat_counts, _rand(rng, 2, 3)),

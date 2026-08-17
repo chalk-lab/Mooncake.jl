@@ -2324,23 +2324,26 @@ end
 # ccall, whose scalars are passed as CuRef{T} — a primitive type with no tangent_type,
 # which is the error users actually see; defining that tangent_type would only move the
 # failure to the ccall itself.
-#
-# alpha and beta are treated as constants.  Unlike the gemm! rules, they cannot be typed
-# as NoTangent: the generated `+`/`-` pass `one(T)`, a float literal, so they arrive with
-# a real (zero) tangent.  A nonzero tangent would be silently dropped, so reject it.
-@inline function _check_geam_scalar(t, name)
-    (t isa NoTangent || iszero(t)) && return nothing
-    return _throw_gpu_argument_error(
-        "Mooncake: geam! treats `$name` as a constant, but it received a nonzero " *
-        "tangent. Differentiating with respect to it is not supported. " *
-        _UNIMPL_MSG,
-    )
-end
-
 function _geam_op(t::Char, M)
     t == 'N' && return M
     return t == 'T' ? transpose(M) : adjoint(M)
 end
+
+# alpha and beta are differentiated: the generated `+`/`-` pass `one(T)`, a float literal,
+# so they cannot be typed as NoTangent the way the gemm! rules type theirs, and reverse
+# mode has no way to tell that literal from a scalar the caller wants a gradient for.
+_geam_scalar_jvp!(dC, ::NoTangent, ::Char, X) = dC
+function _geam_scalar_jvp!(dC, ds::Number, t::Char, X)
+    iszero(ds) && return dC
+    return dC .+= convert(eltype(dC), ds) .* _geam_op(t, X)
+end
+
+# C = s*op(X) + …, so s's cotangent is sum(conj(op(X)) .* dC), projected onto s's own type:
+# a real s over a complex array keeps the real part.  A Bool or Integer s has no derivative;
+# the assertion makes a scalar type that does carry one an error, not a silent zero.
+_geam_scalar_rdata(s::IEEEFloat, X, dC) = oftype(s, real(sum(conj.(X) .* dC)))
+_geam_scalar_rdata(s::Complex{<:IEEEFloat}, X, dC) = oftype(s, sum(conj.(X) .* dC))
+_geam_scalar_rdata(s::Number, X, dC) = zero_rdata(s)::NoRData
 
 @is_primitive(
     MinimalCtx,
@@ -2365,16 +2368,18 @@ function frule!!(
     B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     C::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
 )
-    _check_geam_scalar(tangent(alpha), "alpha")
-    _check_geam_scalar(tangent(beta), "beta")
     pA, dA = matrixify(A)
     pB, dB = matrixify(B)
     pC, dC = matrixify(C)
     T = eltype(pA)
     tav, tbv = primal(ta), primal(tb)
     _a, _b = T(primal(alpha)), T(primal(beta))
-    cuBLAS.geam!(tav, tbv, _a, pA, _b, pB, pC)
+    # The tangent runs first: cuBLAS geam runs in place for C === A or C === B, so the
+    # primal call would otherwise overwrite the pA/pB that the scalar terms read.
     cuBLAS.geam!(tav, tbv, _a, dA, _b, dB, dC)
+    _geam_scalar_jvp!(dC, tangent(alpha), tav, pA)
+    _geam_scalar_jvp!(dC, tangent(beta), tbv, pB)
+    cuBLAS.geam!(tav, tbv, _a, pA, _b, pB, pC)
     return C
 end
 function rrule!!(
@@ -2396,17 +2401,22 @@ function rrule!!(
     pC_copy = copy(pC)
     cuBLAS.geam!(tav, tbv, _a, pA, _b, pB, pC)
     function geam!_pb!!(::NoRData)
-        dA .+= conj(_a) .* _geam_op(tav, dC)
-        dB .+= conj(_b) .* _geam_op(tbv, dC)
+        # C may be A or B (cuBLAS geam runs in place for C === A or C === B), so restore the
+        # primal and read dC out before touching pA/pB or dA/dB, which alias them.
         copyto!(pC, pC_copy)
+        dC_copy = copy(dC)
         # geam has no C_old term, so C's cotangent is consumed rather than scaled.
         fill!(dC, zero(T))
+        # 'C' takes alpha unconjugated: adjoint(alpha * adjoint(A)) folds the two
+        # conjugations together.  Real scalars are unaffected either way.
+        dA .+= (tav == 'C' ? _a : conj(_a)) .* _geam_op(tav, dC_copy)
+        dB .+= (tbv == 'C' ? _b : conj(_b)) .* _geam_op(tbv, dC_copy)
         return NoRData(),
         NoRData(),
         NoRData(),
-        zero_rdata(primal(alpha)),
+        _geam_scalar_rdata(primal(alpha), _geam_op(tav, pA), dC_copy),
         NoRData(),
-        zero_rdata(primal(beta)),
+        _geam_scalar_rdata(primal(beta), _geam_op(tbv, pB), dC_copy),
         NoRData(),
         NoRData()
     end
