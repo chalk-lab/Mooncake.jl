@@ -17,6 +17,12 @@ using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
+# A callable struct carrying a differentiable field, for the captured-state tests.
+struct _CapScale{T}
+    a::T
+end
+(s::_CapScale)(t) = s.a * t
+
 @testset "cuda" begin
     cuda = CUDA.functional()
     if cuda
@@ -156,6 +162,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _accumulate_init_d1(a, x) = sum(accumulate(+, x; dims=1, init=a))
         _accumulate_init_widens(x) = sum(accumulate(+, x; init=1.0f0))
         # Without `dims` CUDA scans an N-d array in linear order, not column by column.
+        # Passing the captured value as an argument is what the refusal message recommends;
+        # a capture the kernel cannot thread must not be silently zeroed instead.
+        _hoisted_capture(a, x) = sum(((t, c) -> c * t).(x, a))
+        _int_capture(x) = (n=3; sum((t -> n * t).(x)))
         _accumulate_flat(x) = sum(accumulate(+, x))
         _accumulate_flat_init(a, x) = sum(accumulate(+, x; init=a))
         # vector indexing — gather/scatter-add
@@ -576,6 +586,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
+            (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
+            (false, :none, false, _int_capture, _rand(rng, 4)),
             (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
             (false, :none, false, _accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback
@@ -1419,6 +1431,35 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # explicit catch-all rule that blocks an unimplemented differentiation path.
         # If a case gains a proper rule in the future, move it back into test_cases above
         # and delete it from here.
+        @testset "state carried by a mapped function is refused, not zeroed" begin
+            # Partials thread through GPU array elements and float scalars only, so anything
+            # the function itself carries — a closure capture, a callable struct's field, a
+            # Ref argument — would come back an exact zero.  Both modes refuse it.  This is
+            # the boundary the sum(f, x) guard was written for; it never fired, because
+            # rdata_type was applied to a primal type and threw inside fields_type.
+            x = _rand(rng, Float64, 4)
+            for f in (
+                (a, z) -> sum((t -> a * t).(z)),
+                (a, z) -> sum((t -> exp(a * t)).(z)),
+                (a, z) -> (w=similar(z); w.=(t -> a * t).(z); sum(w)),
+                (a, z) -> sum((t -> a * t).(z) .+ z),
+                (a, z) -> sum(map(t -> a * t, z)),
+                (a, z) -> sum(t -> a * t, z),
+                (a, z) -> sum(_CapScale(a).(z)),
+                (a, z) -> sum(((t, r) -> r[] * t).(z, Ref(a))),
+            )
+                @test_throws r"does not support" Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(f, 3.0, x), f, 3.0, x
+                )
+                @test_throws r"does not support" Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(f, 3.0, x),
+                    Mooncake.Dual(f, Mooncake.zero_tangent(f)),
+                    Mooncake.Dual(3.0, 1.0),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                )
+            end
+        end
+
         @testset "unsupported operations throw ArgumentError" begin
             # Mixed-precision GPU broadcast (Float32 array .+ ComplexF32 array) is not
             # supported.  The materialize frule/rrule detects mismatched GPU element types

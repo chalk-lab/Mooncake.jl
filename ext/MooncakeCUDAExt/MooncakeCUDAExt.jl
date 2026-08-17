@@ -1795,34 +1795,50 @@ end
 # CuComplexArray overload below.  This correctly handles non-holomorphic f (e.g. abs2)
 # via Wirtinger calculus.
 #
-# Limitation: the NDual pass threads duals only through the CuArray *elements*.
-# Scalars or other state captured inside f's closure are invisible to the kernel
-# and receive no gradient.  If f has differentiable captured variables
-# (rdata_type(f) ≠ NoRData), the pullback would silently return zero for them,
-# producing wrong gradients and a type mismatch in increment!!.
-# _check_gpu_sum_f detects this case early and raises an informative error.
-function _check_gpu_sum_f(f)
-    F = typeof(f)
-    # Zero-field types (singletons such as typeof(abs2), typeof(sin)) have no captured
-    # state and are always safe. Calling rdata_type on them can hit an internal
-    # fields_type MethodError for plain function types, so we short-circuit here.
-    fieldcount(F) == 0 && return nothing
-    RT = rdata_type(F)
-    if RT !== NoRData
-        throw(
-            ArgumentError(
-                "Mooncake GPU sum/mapreduce rule does not support $F as the mapping " *
-                "function because it has rdata type $RT, meaning it captures " *
-                "differentiable state (e.g. a closed-over Float32 scalar). The GPU rule " *
-                "threads NDuals only through the CuArray elements and cannot propagate " *
-                "gradients back through captured variables. To fix this, implement a " *
-                "custom rrule!! for the enclosing function (e.g. Statistics.varm) or " *
-                "restructure the computation to avoid differentiable closures.",
-            ),
-        )
-    end
-    return nothing
+# Limitation: the NDual pass threads partials through the CuArray *elements* and the scalar
+# arguments only.  Anything a function carries itself — a closed-over scalar or array, a
+# callable struct's field — is invisible to the kernel, so its gradient would come back an
+# exact zero.  Both the mapped reductions and the broadcast rules refuse that instead.
+#
+# Keyed on `tangent_type`, not `rdata_type`: a captured CuArray has no rdata at all yet is
+# every bit as differentiable, and `rdata_type` applied to a primal type throws inside
+# `fields_type` — which is what used to reach the user in place of this message.
+function _throw_gpu_unthreaded(T, spelling, noun)
+    return _throw_gpu_argument_error(
+        "Mooncake: $spelling over CuArray does not support $noun of type $T. Partials are " *
+        "threaded through GPU array elements and real or complex float scalars only, so " *
+        "this one's gradient would silently be zero. Pass captured state as an argument " *
+        "instead — `((t, c) -> c * t).(x, a)` differentiates correctly — or write a rule " *
+        "for the enclosing operation. " *
+        _UNIMPL_MSG,
+    )
 end
+# Does a tangent type bottom out in anything a kernel would have to thread?  NoTangent does
+# not, and a struct or Ref tangent does only if one of its fields does — `x .^ 7` lowers to
+# `literal_pow.(Ref(^), x, Ref(Val(7)))`, whose Ref tangents are MutableTangents over
+# NoTangent and must pass.  Unrecognised tangent types count as carrying data: refusing a
+# case that turns out to be inert is a visible error, while passing one that is not is a
+# silent zero.
+_carries_tangent(::Type{NoTangent}) = false
+_carries_tangent(::Type{Mooncake.PossiblyUninitTangent{T}}) where {T} = _carries_tangent(T)
+function _carries_tangent(::Type{T}) where {T}
+    T <: Union{Tangent,Mooncake.MutableTangent} || return true
+    return any(_carries_tangent, fieldtypes(Mooncake.fields_type(T)))
+end
+_carries_differentiable_state(x) = _carries_tangent(tangent_type(typeof(x)))
+
+function _check_gpu_captured_state(f, spelling)
+    _carries_differentiable_state(f) || return nothing
+    return _throw_gpu_unthreaded(typeof(f), spelling, "a function carrying its own state")
+end
+_check_gpu_sum_f(f) = _check_gpu_captured_state(f, "sum(f, x) / mapreduce")
+
+# A leaf the kernel can thread: a GPU array (wrappers included) or a float/complex scalar.
+# Anything else that carries a tangent — a Ref over a float, a struct, a host array — would be
+# dropped in silence by _leaf_effective_tangent's catch-all.
+_gpu_threads_leaf(::CuMaybeWrappedArray) = true
+_gpu_threads_leaf(::CuFloatOrComplex) = true
+_gpu_threads_leaf(x) = !_carries_differentiable_state(x)
 
 function _gpu_sum_f_frule(f, x)
     _check_gpu_sum_f(f)
@@ -3364,7 +3380,25 @@ end
     end
 end
 
+# The functions are checked before flattening, so the type named in the error is the one the
+# caller wrote rather than a Broadcast-internal composition wrapper.
+_check_gpu_bcast_captures(::Tuple{}) = nothing
+function _check_gpu_bcast_captures(args::Tuple)
+    a = first(args)
+    if a isa Broadcasted
+        _check_gpu_bcast_captures(a)
+    elseif !_gpu_threads_leaf(a)
+        _throw_gpu_unthreaded(typeof(a), "broadcasting", "a differentiable argument")
+    end
+    return _check_gpu_bcast_captures(Base.tail(args))
+end
+function _check_gpu_bcast_captures(bc::Broadcasted)
+    _check_gpu_captured_state(bc.f, "broadcasting")
+    return _check_gpu_bcast_captures(bc.args)
+end
+
 function _prepare_gpu_broadcast(bc_primal, tangent_or_fdata)
+    _check_gpu_bcast_captures(bc_primal)
     bc_prepared = _premat_nondiff_args(bc_primal, tangent_or_fdata)
     flat_bc = Base.Broadcast.flatten(bc_prepared)
     flat_pargs, flat_tangent_or_fdata = _gpu_bcast_leaves(
