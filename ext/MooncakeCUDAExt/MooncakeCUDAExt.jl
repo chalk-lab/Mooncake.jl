@@ -861,6 +861,22 @@ _winner(i::CartesianIndex) = Ref(i)
 _winner(i::AbstractArray{<:CartesianIndex}) = i
 _winner(i::AbstractArray{<:Integer}) = CartesianIndex.(i)
 
+# `init` competes with the elements rather than seeding an accumulator, so it takes the
+# whole derivative of every reduced slice it beats.  Unlike `sum`, whose `init` derivative
+# is backend-defined because GPUArrays folds it into each partial reduction, max and min are
+# idempotent, so the folding is invisible and this derivative is exact.  A tie counts as a
+# win for the array, matching how findmax breaks ties.
+_minmax_init_tangent(dkw) = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
+_minmax_init_jvp(dy, ::NoTangent, won) = dy
+_minmax_init_jvp(dy, dinit::Number, won) = dy .+ dinit .* .!won
+# Takes dy rather than a finished cotangent so that a call with no differentiable `init`
+# never launches the reduction.  `sum` also covers the scalar branch, where dy is a number.
+_minmax_init_rdata(kw_rdata::NoRData, dy, won) = kw_rdata
+function _minmax_init_rdata(kw_rdata::NamedTuple, dy, won)
+    (haskey(kw_rdata, :init) && !(kw_rdata.init isa NoRData)) || return kw_rdata
+    return merge(kw_rdata, (; init=oftype(kw_rdata.init, sum(dy .* .!won))))
+end
+
 for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
     @eval @is_primitive(
@@ -882,6 +898,9 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         return CoDual(y, NoFData()), minmax_pb!!
     end
 
+    # The value comes from the primal call, not from findmax, which reads only `dims`: an
+    # `init` that beats every element leaves the result independent of x, and an unsupported
+    # keyword has to raise the primal's own MethodError.  findmax supplies just the argmax.
     @eval function frule!!(
         ::Dual{typeof(Core.kwcall)},
         kw::Dual{<:NamedTuple},
@@ -891,8 +910,11 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         pkw = primal(kw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
-        y, ind = $_find(px; dims=dims)
-        return Dual(y, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
+        y = $_fn(px; pkw...)
+        m, ind = $_find(px; dims=dims)
+        won = m .== y
+        dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims) .* won
+        return Dual(y, _minmax_init_jvp(dy, _minmax_init_tangent(tangent(kw)), won))
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -901,20 +923,25 @@ for (_fn, _find) in ((:maximum, :findmax), (:minimum, :findmin))
         x::CoDual{<:CuFloatArray},
     )
         pkw = primal(kw)
+        kw_rdata = zero_rdata(pkw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
-        y, ind = $_find(px; dims=dims)
+        y = $_fn(px; pkw...)
+        m, ind = $_find(px; dims=dims)
+        won = m .== y
         if dims isa Colon
             function minmax_kw_scalar_pb!!(dy)
-                dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
-                return NoRData(), NoRData(), NoRData(), NoRData()
+                dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
+                dkw = _minmax_init_rdata(kw_rdata, dy, won)
+                return NoRData(), dkw, NoRData(), NoRData()
             end
             return CoDual(y, NoFData()), minmax_kw_scalar_pb!!
         end
         dy_out = zero(y)
         function minmax_kw_array_pb!!(::NoRData)
-            dx .+= dy_out .* (CartesianIndices(px) .== _winner(ind))
-            return NoRData(), NoRData(), NoRData(), NoRData()
+            dx .+= dy_out .* (CartesianIndices(px) .== _winner(ind)) .* won
+            dkw = _minmax_init_rdata(kw_rdata, dy_out, won)
+            return NoRData(), dkw, NoRData(), NoRData()
         end
         return CoDual(y, dy_out), minmax_kw_array_pb!!
     end

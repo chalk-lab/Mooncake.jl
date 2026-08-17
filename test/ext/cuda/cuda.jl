@@ -314,6 +314,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _max_nodims(x) = maximum(x; dims=:)
         _max_d1(x) = sum(maximum(x; dims=1))
         _min_d1(x) = sum(minimum(x; dims=1))
+        _max_init(a, x) = maximum(x; init=a)
+        _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
+        _min_init(a, x) = minimum(x; init=a)
+        _max_badkw(x) = maximum(x; bad=1.0)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Test the `_new_` frule!!/rrule!! interfaces directly.
@@ -2180,6 +2184,33 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 (65, "minimum(x; dims=1)", _min_d1, _rand(rng, Float32, 4, 3)),
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
+            end
+            # `init` reaches the value and both derivatives: 1 on each slice it wins, 0
+            # elsewhere.  test_rule's finite differences check the value and both arms; the
+            # margins keep the perturbation from crossing the kink.
+            @testset "$name" for (seed, name, f, a) in [
+                (66, "maximum, init wins", _max_init, 2.0f0),
+                (67, "maximum, init loses", _max_init, -2.0f0),
+                (68, "maximum, init wins, dims=1", _max_init_d1, 2.0f0),
+                (69, "minimum, init wins", _min_init, -2.0f0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    _rand(rng, Float32, 4, 3);
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "an unsupported keyword fails like the primal" begin
+                # The value has to come from the primal call, not from findmax, which
+                # accepts only `dims` and would silently ignore the rest.
+                x = _rand(rng, Float32, 4, 3)
+                @test_throws MethodError _max_badkw(x)
+                @test_throws MethodError Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(_max_badkw, x), _max_badkw, x
+                )
             end
             @testset "ties pick the lowest linear index" begin
                 # Not reachable from test_rule's random inputs. findmax names the
