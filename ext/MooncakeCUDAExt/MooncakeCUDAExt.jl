@@ -92,8 +92,12 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
-# Index and mask arrays. A whitelist: an eltype outside it whose tangent_type is
-# NoTangent (Char, Symbol, Enum) still falls through to the struct handler.
+# Index and mask arrays. Deliberately a whitelist rather than a predicate on
+# tangent_type(eltype), which cannot be written as a dispatch signature without also
+# capturing the differentiable eltypes handled above. An eltype outside it whose
+# derivative is nonetheless structurally zero (Char, Symbol, Enum) therefore falls to the
+# generic struct handler, which fails building CuArray's inner DataRef; extend the union
+# if such a case turns up.
 const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
 
 # Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
@@ -1079,6 +1083,13 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     return zero_fcodual(sum(primal(x))), sum_pb!!
 end
 
+# Summing an index or mask array has no derivative at all: the array has no tangent and
+# the result is an Integer.  Without a rule it decomposes onto one of GPUArrays'
+# untraceable reduction paths, which one depending on spelling and eltype.  Both spellings
+# need claiming, as the positional claim does not cover Core.kwcall.
+@zero_derivative MinimalCtx Tuple{typeof(sum),CuNonDiffArray}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuNonDiffArray}
+
 # Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
 # This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
 # Mooncake cannot trace. It implements a GPU memcpy — the gradient is identity:
@@ -1570,15 +1581,17 @@ end
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
 function frule!!(::Dual{typeof(mapreduce)}, f::Dual, op::Dual, x::Dual{<:CuArray})
     return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
-        "got op=$(primal(op)). " *
+        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
+        "float or complex arrays; got op=$(primal(op)) over " *
+        "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
 end
 function rrule!!(::CoDual{typeof(mapreduce)}, f::CoDual, op::CoDual, x::CoDual{<:CuArray})
     return _throw_gpu_argument_error(
-        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum; " *
-        "got op=$(primal(op)). " *
+        "Mooncake: mapreduce on CuArray only supports op=+ or op=Base.add_sum over " *
+        "float or complex arrays; got op=$(primal(op)) over " *
+        "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
 end

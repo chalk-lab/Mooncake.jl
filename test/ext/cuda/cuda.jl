@@ -193,6 +193,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # unsafe_copyto!(CuArray{Int}, Array{Int}), the zeros through the fill kernel.
         _nodiff_index_copy(x) = (i=CuArray([1, 2]); sum(x[i]))
         _nodiff_fill(x) = (i=CUDA.zeros(Int64, 2); fill!(i, 3); sum(x))
+        # Reducing an index or mask array: no derivative, but it still needs a rule.
+        # The Bool case reaches GPUArrays._mapreduce by a different internal route.
+        _nodiff_sum(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(sum(i)))
+        _nodiff_sum_dims(x) = (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(sum(i; dims=1))))
+        _nodiff_sum_mask(x) = (m=CuArray([true, false, true]); sum(x) * Float32(sum(m)))
         # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
         _geam_add(a, b) = sum(a + b)
         _geam_sub_adj(a, b) = sum(a' - b)
@@ -504,9 +509,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, 4, 4),
                 CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
             ),
-            # Non-differentiable device arrays: copy and fill had no rule at all.
+            # Non-differentiable device arrays: copy, fill and reductions had no rule.
             (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
             (false, :none, false, _nodiff_fill, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum_dims, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum_mask, _rand(rng, 8)),
             # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
             (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
             (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
