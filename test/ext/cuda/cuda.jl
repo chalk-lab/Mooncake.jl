@@ -141,6 +141,15 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _cumprod_cx_sum(x) = real(sum(cumprod(x)))
         _accumulate_plus_sum(x) = sum(accumulate(+, x))
         _accumulate_plus_cx_sum(x) = real(sum(accumulate(+, x)))
+        # The `dims` spellings, which Base requires for anything past one dimension. These
+        # go through Core.kwcall, so they need their own claims.
+        _prod_d1(x) = sum(prod(x; dims=1))
+        _prod_d2(x) = sum(prod(x; dims=2))
+        _prod_colon(x) = prod(x; dims=:)
+        _prod_cx_d1(x) = real(sum(prod(x; dims=1)))
+        _cumsum_d1(x) = sum(cumsum(x; dims=1))
+        _cumprod_d1(x) = sum(cumprod(x; dims=1))
+        _accumulate_plus_d1(x) = sum(accumulate(+, x; dims=1))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -516,6 +525,15 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # accumulate(+) — explicit rule (real and complex)
             (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
             (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
+            # The `dims` spellings. prod has its own rule per reduced slice, so it gets the
+            # complex arm and both output branches; the others forward to the rules above.
+            (false, :none, false, _prod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_d2, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_colon, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
+            (false, :none, false, _cumsum_d1, _rand(rng, 4, 3)),
+            (false, :none, false, _cumprod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _accumulate_plus_d1, _rand(rng, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
@@ -1388,11 +1406,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 
             # accumulate with unsupported op — catch-all rule throws ArgumentError.
             @testset "accumulate non-+ CuArray not differentiable" begin
-                f = x -> sum(accumulate(*, x))
                 x = _rand(rng, Float32, 4)
-                @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
+                for f in (x -> sum(accumulate(*, x)), x -> sum(accumulate(*, x; dims=1)))
+                    @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
+                        Mooncake.build_rrule(f, x), f, x
+                    )
+                end
             end
 
             # Keyword and mapped-form reductions without real rules fall back to

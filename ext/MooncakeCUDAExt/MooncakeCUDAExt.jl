@@ -996,6 +996,53 @@ function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     return zero_fcodual(y), prod_pb!!
 end
 
+# `prod(x; dims)`: the same derivative per reduced slice, y_j/x_i for x_i in slice j, which
+# broadcasts because the reduced dimensions stay singleton.  The zero-element caveat is also
+# per slice, and nan_tangent_guard applies it without the bare rule's device→host sync: a
+# slice containing a zero has y_j == 0, so every term in it drops.  `init` multiplies into a
+# backend-defined number of partial reductions, so like `sum` it stays a constant.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(prod),CuMaybeComplexArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(prod)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    _check_reduction_init(tangent(kw))
+    px, dx = arrayify(x)
+    y = prod(px; pkw...)
+    inv_px = nan_tangent_guard.(px, inv.(px))
+    return Dual(y, y .* sum(dx .* inv_px; dims=get(pkw, :dims, :)))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(prod)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    kw_rdata = zero_rdata(pkw)
+    px, dx = arrayify(x)
+    y = prod(px; pkw...)
+    inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
+    if get(pkw, :dims, :) isa Colon
+        function prod_kw_scalar_pb!!(dy)
+            dx .+= dy .* conj.(y) .* inv_cx_px
+            return NoRData(), kw_rdata, NoRData(), NoRData()
+        end
+        return CoDual(y, NoFData()), prod_kw_scalar_pb!!
+    end
+    dy_out = zero(y)
+    function prod_kw_array_pb!!(::NoRData)
+        dx .+= dy_out .* conj.(y) .* inv_cx_px
+        return NoRData(), kw_rdata, NoRData(), NoRData()
+    end
+    return CoDual(y, dy_out), prod_kw_array_pb!!
+end
+
 # Rules for `cumsum(x)` on GPU arrays.
 #
 # y[k] = Σᵢ₌₁ᵏ x[i],  so ∂y[k]/∂x[i] = 1 if i≤k else 0
@@ -1058,6 +1105,35 @@ function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw
     return CoDual(y, dy_out), cumprod_pb!!
 end
 
+# Mooncake lowers every keyword call to Core.kwcall, which the positional claims above do
+# not cover, so `cumsum(x; dims=1)` decomposed onto the untraceable kernel instead.  Base
+# requires `dims` for an array of more than one dimension, so those rules reached only
+# vectors.  The keyword-free bodies already take the keywords, hence the forwarding.
+for _fn in (:cumsum, :cumprod)
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuMaybeComplexArray}
+    )
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        f::Dual{typeof($_fn)},
+        x::Dual{<:CuMaybeComplexArray},
+    )
+        return frule!!(f, x; primal(kw)...)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        f::CoDual{typeof($_fn)},
+        x::CoDual{<:CuMaybeComplexArray},
+    )
+        kw_rdata = zero_rdata(primal(kw))
+        y, pb = rrule!!(f, x; primal(kw)...)
+        cum_kw_pb!!(dy) = (NoRData(), kw_rdata, pb(dy)...)
+        return y, cum_kw_pb!!
+    end
+end
+
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
@@ -1095,6 +1171,53 @@ function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray};
         "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
+end
+# The Core.kwcall spellings of both, `accumulate(+, x; dims=1)` and its error arm.
+@is_primitive(
+    MinimalCtx,
+    Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),typeof(+),CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    f::Dual{typeof(accumulate)},
+    op::Dual{typeof(+)},
+    x::Dual{<:CuMaybeComplexArray},
+)
+    return frule!!(f, op, x; primal(kw)...)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    f::CoDual{typeof(accumulate)},
+    op::CoDual{typeof(+)},
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    kw_rdata = zero_rdata(primal(kw))
+    y, pb = rrule!!(f, op, x; primal(kw)...)
+    accumulate_plus_kw_pb!!(dy) = (NoRData(), kw_rdata, pb(dy)...)
+    return y, accumulate_plus_kw_pb!!
+end
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),Any,CuArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    f::Dual{typeof(accumulate)},
+    op::Dual,
+    x::Dual{<:CuArray},
+)
+    return frule!!(f, op, x)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    f::CoDual{typeof(accumulate)},
+    op::CoDual,
+    x::CoDual{<:CuArray},
+)
+    return rrule!!(f, op, x)
 end
 
 # Rule for `sum(x)` — widened from CuFloatArray to also cover complex CuArrays.
