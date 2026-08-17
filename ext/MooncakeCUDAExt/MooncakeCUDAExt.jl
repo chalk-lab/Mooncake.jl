@@ -861,20 +861,22 @@ _winner(i::CartesianIndex) = Ref(i)
 _winner(i::AbstractArray{<:CartesianIndex}) = i
 _winner(i::AbstractArray{<:Integer}) = CartesianIndex.(i)
 
-# `init` competes with the elements rather than seeding an accumulator, so it takes the
-# whole derivative of every reduced slice it beats.  Unlike `sum`, whose `init` derivative
-# is backend-defined because GPUArrays folds it into each partial reduction, max and min are
-# idempotent, so the folding is invisible and this derivative is exact.  A tie counts as a
-# win for the array, matching how findmax breaks ties.
-_minmax_init_tangent(dkw) = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
-_minmax_init_jvp(dy, ::NoTangent, won) = dy
-_minmax_init_jvp(dy, dinit::Number, won) = dy .+ dinit .* .!won
+# Two of these reductions have an `init` whose derivative survives the backend's folding:
+# maximum/minimum, where it competes with the elements and takes the whole derivative of each
+# reduced slice it beats, and accumulate(+, …), where it adds to every element.  Both are
+# idempotent in the folding — unlike sum and prod, whose `init` is folded into a
+# backend-defined number of partial reductions, leaving it a constant.  `from_init` says
+# where `init` decided the output: a mask for max/min, `true` throughout for accumulate.  A
+# tie counts against `init`, matching how findmax breaks ties.
+_kw_init_tangent(dkw) = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
+_kw_init_jvp(dy, ::NoTangent, from_init) = dy
+_kw_init_jvp(dy, dinit::Number, from_init) = dy .+ dinit .* from_init
 # Takes dy rather than a finished cotangent so that a call with no differentiable `init`
 # never launches the reduction.  `sum` also covers the scalar branch, where dy is a number.
-_minmax_init_rdata(kw_rdata::NoRData, dy, won) = kw_rdata
-function _minmax_init_rdata(kw_rdata::NamedTuple, dy, won)
+_kw_init_rdata(kw_rdata::NoRData, dy, from_init) = kw_rdata
+function _kw_init_rdata(kw_rdata::NamedTuple, dy, from_init)
     (haskey(kw_rdata, :init) && !(kw_rdata.init isa NoRData)) || return kw_rdata
-    return merge(kw_rdata, (; init=oftype(kw_rdata.init, sum(dy .* .!won))))
+    return merge(kw_rdata, (; init=oftype(kw_rdata.init, sum(dy .* from_init))))
 end
 # findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
 _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
@@ -922,8 +924,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         won = .!broadcast($_beat, m, y)
         dy = sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims)
         return Dual(
-            y,
-            _minmax_init_jvp(eltype(y).(dy) .* won, _minmax_init_tangent(tangent(kw)), won),
+            y, _kw_init_jvp(eltype(y).(dy) .* won, _kw_init_tangent(tangent(kw)), .!won)
         )
     end
     @eval function rrule!!(
@@ -946,7 +947,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         if dims isa Colon
             function minmax_kw_scalar_pb!!(dy)
                 dx .+= dy .* (CartesianIndices(px) .== _winner(ind)) .* won
-                dkw = _minmax_init_rdata(kw_rdata, dy, won)
+                dkw = _kw_init_rdata(kw_rdata, dy, .!won)
                 return NoRData(), dkw, NoRData(), NoRData()
             end
             return CoDual(y, NoFData()), minmax_kw_scalar_pb!!
@@ -954,7 +955,7 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         dy_out = zero(y)
         function minmax_kw_array_pb!!(::NoRData)
             dx .+= dy_out .* (CartesianIndices(px) .== _winner(ind)) .* won
-            dkw = _minmax_init_rdata(kw_rdata, dy_out, won)
+            dkw = _kw_init_rdata(kw_rdata, dy_out, .!won)
             return NoRData(), dkw, NoRData(), NoRData()
         end
         return CoDual(y, dy_out), minmax_kw_array_pb!!
@@ -1190,7 +1191,10 @@ function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray};
         _UNIMPL_MSG,
     )
 end
-# The Core.kwcall spellings of both, `accumulate(+, x; dims=1)` and its error arm.
+# The Core.kwcall spellings of both, `accumulate(+, x; dims=1)` and its error arm.  These do
+# not forward to the rules above because `accumulate` takes an `init` that cumsum does not:
+# it adds to every output element, so it collects the whole cotangent, and it widens the
+# output eltype, which the tangent has to follow.
 @is_primitive(
     MinimalCtx,
     Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),typeof(+),CuMaybeComplexArray},
@@ -1198,23 +1202,36 @@ end
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
-    f::Dual{typeof(accumulate)},
-    op::Dual{typeof(+)},
+    ::Dual{typeof(accumulate)},
+    ::Dual{typeof(+)},
     x::Dual{<:CuMaybeComplexArray},
 )
-    return frule!!(f, op, x; primal(kw)...)
+    pkw = primal(kw)
+    px, dx = arrayify(x)
+    y = accumulate(+, px; pkw...)
+    dy = eltype(y).(cumsum(dx; dims=get(pkw, :dims, 1)))
+    return Dual(y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), true))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
     kw::CoDual{<:NamedTuple},
-    f::CoDual{typeof(accumulate)},
-    op::CoDual{typeof(+)},
+    ::CoDual{typeof(accumulate)},
+    ::CoDual{typeof(+)},
     x::CoDual{<:CuMaybeComplexArray},
 )
-    kw_rdata = zero_rdata(primal(kw))
-    y, pb = rrule!!(f, op, x; primal(kw)...)
-    accumulate_plus_kw_pb!!(dy) = (NoRData(), kw_rdata, pb(dy)...)
-    return y, accumulate_plus_kw_pb!!
+    pkw = primal(kw)
+    kw_rdata = zero_rdata(pkw)
+    px, dx = arrayify(x)
+    y = accumulate(+, px; pkw...)
+    dy_out = zero(y)
+    d = get(pkw, :dims, 1)
+    function accumulate_plus_kw_pb!!(::NoRData)
+        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        return NoRData(),
+        _kw_init_rdata(kw_rdata, dy_out, true), NoRData(), NoRData(),
+        NoRData()
+    end
+    return CoDual(y, dy_out), accumulate_plus_kw_pb!!
 end
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),Any,CuArray}
@@ -1352,8 +1369,8 @@ for (_fn, _beat) in ((:maximum, :<), (:minimum, :>))
         else
             .!broadcast($_beat, $_fn(px; dims=get(pkw, :dims, :)), y)
         end
-        dinit = _minmax_init_tangent(tangent(kw))
-        return Dual(y, _minmax_init_jvp(zero_tangent(y), dinit, won))
+        dinit = _kw_init_tangent(tangent(kw))
+        return Dual(y, _kw_init_jvp(zero_tangent(y), dinit, .!won))
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -1373,7 +1390,7 @@ for (_fn, _beat) in ((:maximum, :<), (:minimum, :>))
         # `::Any`: a `dims` reduction carries its cotangent in the output's fdata, a scalar
         # one in the incoming rdata.
         function nodiff_minmax_kw_pb!!(dy::Any)
-            dkw = _minmax_init_rdata(kw_rdata, dy isa NoRData ? tangent(out) : dy, won)
+            dkw = _kw_init_rdata(kw_rdata, dy isa NoRData ? tangent(out) : dy, .!won)
             return NoRData(), dkw, NoRData(), NoRData()
         end
         return out, nodiff_minmax_kw_pb!!

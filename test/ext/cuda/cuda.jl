@@ -150,6 +150,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _cumsum_d1(x) = sum(cumsum(x; dims=1))
         _cumprod_d1(x) = sum(cumprod(x; dims=1))
         _accumulate_plus_d1(x) = sum(accumulate(+, x; dims=1))
+        # accumulate's `init` adds to every output element, so its derivative is the output
+        # length, and a narrower init narrows the result and its tangent.
+        _accumulate_init(a, x) = sum(accumulate(+, x; init=a))
+        _accumulate_init_d1(a, x) = sum(accumulate(+, x; dims=1, init=a))
+        _accumulate_init_widens(x) = sum(accumulate(+, x; init=1.0f0))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -542,6 +547,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _cumsum_d1, _rand(rng, 4, 3)),
             (false, :none, false, _cumprod_d1, _rand_pos(rng, 4, 3)),
             (false, :none, false, _accumulate_plus_d1, _rand(rng, 4, 3)),
+            (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
