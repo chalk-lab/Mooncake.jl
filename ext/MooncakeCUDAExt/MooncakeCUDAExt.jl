@@ -1114,8 +1114,10 @@ end
 # The keyword spellings cannot be zero-derivative outright: a float `init` makes the output
 # differentiable, so dropping its derivative would be silently wrong.  Nor is it 1 —
 # GPUArrays folds `init` into a backend-defined number of partial reductions, so `init=1.0`
-# over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected instead.  Only the
-# frules can check it; reverse mode has no incoming `init` tangent.
+# over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected instead.  Reverse
+# mode has no incoming `init` tangent, and detects the same case from the far side: over a
+# non-differentiable array `init` is the only path a gradient can take, so a nonzero
+# cotangent on the output means the zero rdata would be wrong, not merely conservative.
 #
 # sum, prod, maximum and minimum all accept `init`; diff/sort/sortperm do not, so the guard
 # is a no-op for those three and one path covers all seven.
@@ -1125,6 +1127,17 @@ function _check_reduction_init(dkw)
     return _throw_gpu_argument_error(
         "Mooncake: keyword reductions over CuArray treat `init` as a constant, but it " *
         "received a nonzero tangent. Differentiating with respect to `init` is not " *
+        "supported. " *
+        _UNIMPL_MSG,
+    )
+end
+
+function _check_reduction_init_cotangent(kw_rdata, dy)
+    (kw_rdata isa NoRData || dy isa NoFData || iszero(dy)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword reductions over CuArray treat `init` as a constant, but this " *
+        "reduction over a non-differentiable array has a nonzero output cotangent, which " *
+        "only `init` could carry. Differentiating with respect to `init` is not " *
         "supported. " *
         _UNIMPL_MSG,
     )
@@ -1152,11 +1165,15 @@ for _fn in (:sum, :prod, :maximum, :minimum, :diff, :sort, :sortperm)
     )
         pkw = primal(kw)
         kw_rdata = zero_rdata(pkw)
-        y = $_fn(primal(x); pkw...)
+        out = zero_fcodual($_fn(primal(x); pkw...))
         # `::Any`: the output is an Integer without `init` and a float with one, so the
-        # incoming rdata is NoRData or a number depending on the call.
-        nodiff_reduction_kw_pb!!(::Any) = (NoRData(), kw_rdata, NoRData(), NoRData())
-        return zero_fcodual(y), nodiff_reduction_kw_pb!!
+        # incoming rdata is NoRData or a number depending on the call; a `dims` reduction
+        # carries its cotangent in the output's fdata instead.
+        function nodiff_reduction_kw_pb!!(dy::Any)
+            _check_reduction_init_cotangent(kw_rdata, dy isa NoRData ? tangent(out) : dy)
+            return (NoRData(), kw_rdata, NoRData(), NoRData())
+        end
+        return out, nodiff_reduction_kw_pb!!
     end
 end
 
@@ -1781,9 +1798,11 @@ end
 # `init` is treated as a non-differentiated constant: Julia requires it to be a
 # neutral element, and GPUArrays folds it into a backend-defined number of
 # partial reductions, so a derivative through it is not well-defined; the frule
-# rejects a nonzero `init` tangent instead. `init` also sets the output eltype
-# (GPUArrays takes it from typeof(init), so init=0.0 on a Float32 array gives a
-# Float64 result), hence the output-typed zero seeding the tangent reduction.
+# rejects a nonzero `init` tangent instead. Reverse mode gets no such signal, so
+# `dx` is correct and `init`'s component is silently zero. `init` also sets the
+# output eltype (GPUArrays takes it from typeof(init), so init=0.0 on a Float32
+# array gives a Float64 result), hence the output-typed zero seeding the tangent
+# reduction.
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuMaybeComplexArray}
 )

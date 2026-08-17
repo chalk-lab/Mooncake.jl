@@ -2061,13 +2061,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
             @testset "init over a non-differentiable array is rejected" begin
                 # The output is a Float64 here, so a zero derivative w.r.t. init would be
-                # silently wrong rather than merely conservative.
+                # silently wrong rather than merely conservative.  Reverse mode never sees
+                # an init tangent, but init is the only gradient path over an index array,
+                # so a nonzero output cotangent is the same error seen from the far side.
                 a, x = 0.0, _rand(rng, Float32, 4)
                 @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
                     Mooncake.build_frule(_nodiff_sum_init, a, x),
                     Mooncake.Dual(_nodiff_sum_init, Mooncake.NoTangent()),
                     Mooncake.Dual(a, 1.0),
                     Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                )
+                @test_throws r"init.*constant" Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(_nodiff_sum_init, a, x), _nodiff_sum_init, a, x
                 )
             end
         end
