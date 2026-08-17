@@ -50,7 +50,10 @@ import Mooncake:
     primal,
     tangent,
     lgetfield,
+    zero_adjoint,
+    zero_derivative,
     zero_fcodual,
+    zero_tangent,
     zero_tangent_internal,
     randn_tangent_internal,
     increment_internal!!,
@@ -1083,12 +1086,75 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     return zero_fcodual(sum(primal(x))), sum_pb!!
 end
 
-# Summing an index or mask array has no derivative at all: the array has no tangent and
-# the result is an Integer.  Without a rule it decomposes onto one of GPUArrays'
-# untraceable reduction paths, which one depending on spelling and eltype.  Both spellings
-# need claiming, as the positional claim does not cover Core.kwcall.
+# Reductions over an index or mask array have no derivative: the array has no tangent and
+# the result is an Integer.  Without a rule they decompose onto one of GPUArrays'
+# untraceable reduction paths, which one depending on spelling and eltype.
+#
+# `maximum`/`minimum` cannot use @zero_derivative: it generates `CoDual{<:typeof(f)}`,
+# which is equal in extent to their catch-all error rules' `CoDual{typeof(f)}` but not
+# comparable with it, so the two would be ambiguous.  Spelling the signature the same way
+# lets the narrower array type decide, leaving those rules to report float arrays.
 @zero_derivative MinimalCtx Tuple{typeof(sum),CuNonDiffArray}
-@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),CuNonDiffArray}
+@zero_derivative MinimalCtx Tuple{typeof(prod),CuNonDiffArray}
+for _fn in (:maximum, :minimum)
+    @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuNonDiffArray})
+    @eval frule!!(f::Dual{typeof($_fn)}, x::Dual{<:CuNonDiffArray}) = zero_derivative(f, x)
+    @eval rrule!!(f::CoDual{typeof($_fn)}, x::CoDual{<:CuNonDiffArray}) = zero_adjoint(f, x)
+end
+
+# `count` returns an Integer for every array, float included, so it never has a derivative.
+# It reaches GPUArrays through `mapreduce(pred, add_sum, A; init=0)`, a Core.kwcall the
+# positional mapreduce catch-all does not claim, so claim `count` itself.
+@zero_derivative MinimalCtx Tuple{typeof(count),CuArray}
+@zero_derivative MinimalCtx Tuple{typeof(count),Any,CuArray}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),CuArray}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),Any,CuArray}
+
+# The keyword spellings cannot be zero-derivative outright: a float `init` makes the output
+# differentiable, so dropping its derivative would be silently wrong.  Nor is it 1 —
+# GPUArrays folds `init` into a backend-defined number of partial reductions, so
+# `init=1.0` over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected.  Only
+# the frules can check it; reverse mode has no incoming `init` tangent.
+function _check_reduction_init(dkw)
+    dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
+    (dinit isa NoTangent || iszero(dinit)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword reductions over CuArray treat `init` as a constant, but it " *
+        "received a nonzero tangent. Differentiating with respect to `init` is not " *
+        "supported. " *
+        _UNIMPL_MSG,
+    )
+end
+
+for _fn in (:sum, :prod, :maximum, :minimum)
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuNonDiffArray}
+    )
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof($_fn)},
+        x::Dual{<:CuNonDiffArray},
+    )
+        _check_reduction_init(tangent(kw))
+        y = $_fn(primal(x); primal(kw)...)
+        return Dual(y, zero_tangent(y))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof($_fn)},
+        x::CoDual{<:CuNonDiffArray},
+    )
+        pkw = primal(kw)
+        kw_rdata = zero_rdata(pkw)
+        y = $_fn(primal(x); pkw...)
+        # `::Any`: the output is an Integer without `init` and a float with one, so the
+        # incoming rdata is NoRData or a number depending on the call.
+        nodiff_reduction_kw_pb!!(::Any) = (NoRData(), kw_rdata, NoRData(), NoRData())
+        return zero_fcodual(y), nodiff_reduction_kw_pb!!
+    end
+end
 
 # Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
 # This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
@@ -1209,9 +1275,7 @@ end
 # re-running the rule would see a different array.
 #
 # CuNonDiffArray is disjoint from CuMaybeComplexArray and CuMaybeWrappedArray, so these
-# claims are unambiguous with the rules above, and it is exactly what they can serve: an
-# eltype off the whitelist has no NoTangent tangent, so claiming it would only turn a
-# trace failure into a MethodError.
+# claims are unambiguous with the rules above and cover exactly what they can serve.
 #
 # Note the asymmetry in `src`: a CPU Array{Int} has fdata Vector{NoTangent}, and only the
 # CuArray side collapses to NoTangent, so `src`'s tangent is left unconstrained.
@@ -1618,10 +1682,9 @@ end
 #
 # repeat places the copy of x[i] for inner offset k and outer offset o at
 # k + (i-1)*I + (o-1)*I*S along each dimension, which is exactly column-major
-# (inner, size, outer).  So the pullback reshapes the cotangent into those triples and
-# sums the inner and outer axes away — reshape plus a dims-reduction, with no scalar
-# indexing.  ChainRules instead loops over `pairs(IndexCartesian(), dY)` for the keyword
-# form, which cannot run on a device.
+# (inner, size, outer), so reshaping into those triples and summing the inner and outer
+# axes needs no scalar indexing.  ChainRules instead loops over
+# `pairs(IndexCartesian(), dY)` for the keyword form, which cannot run on a device.
 #
 # `counts` may be shorter than ndims(x) (padded with 1) or longer (the result gains
 # dimensions), so sizes are padded to ndims of the output and the result reshaped back.
@@ -1725,16 +1788,7 @@ function frule!!(
     x::Dual{<:CuMaybeComplexArray},
 )
     pkw = primal(kw)
-    dkw = tangent(kw)
-    dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
-    if !(dinit isa NoTangent) && !iszero(dinit)
-        _throw_gpu_argument_error(
-            "Mooncake: keyword sum on CuArray treats `init` as a constant, but it " *
-            "received a nonzero tangent. Differentiating with respect to `init` is " *
-            "not supported. " *
-            _UNIMPL_MSG,
-        )
-    end
+    _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
     y = sum(px; pkw...)
     return Dual(y, sum(dx; dims=get(pkw, :dims, :), init=zero(eltype(y))))

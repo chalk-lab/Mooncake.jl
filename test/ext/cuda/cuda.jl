@@ -198,6 +198,18 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _nodiff_sum(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(sum(i)))
         _nodiff_sum_dims(x) = (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(sum(i; dims=1))))
         _nodiff_sum_mask(x) = (m=CuArray([true, false, true]); sum(x) * Float32(sum(m)))
+        # A float `init` makes the output differentiable, and GPUArrays folds init into a
+        # backend-defined number of partial reductions, so its derivative is rejected
+        # rather than silently zeroed.
+        _nodiff_sum_init(a, x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=a))
+        # The other reductions over an index or mask array. `count` returns an Integer for
+        # any array, so the float case has no derivative either.
+        _nodiff_prod(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(prod(i)))
+        _nodiff_max(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(maximum(i)))
+        _nodiff_min_dims(x) =
+            (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(minimum(i; dims=1))))
+        _nodiff_count(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(count(>(1), i)))
+        _nodiff_count_float(x) = sum(x) * Float32(count(>(0.0f0), x))
         # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
         _geam_add(a, b) = sum(a + b)
         _geam_sub_adj(a, b) = sum(a' - b)
@@ -515,6 +527,11 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _nodiff_sum, _rand(rng, 8)),
             (false, :none, false, _nodiff_sum_dims, _rand(rng, 8)),
             (false, :none, false, _nodiff_sum_mask, _rand(rng, 8)),
+            (false, :none, false, _nodiff_prod, _rand(rng, 8)),
+            (false, :none, false, _nodiff_max, _rand(rng, 8)),
+            (false, :none, false, _nodiff_min_dims, _rand(rng, 8)),
+            (false, :none, false, _nodiff_count, _rand(rng, 8)),
+            (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
             # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
             (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
             (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
@@ -2006,6 +2023,17 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     frule,
                     Mooncake.Dual(_sum_kw_init_active, Mooncake.NoTangent()),
                     Mooncake.Dual(a, 1.0f0),
+                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                )
+            end
+            @testset "init over a non-differentiable array is rejected" begin
+                # The output is a Float64 here, so a zero derivative w.r.t. init would be
+                # silently wrong rather than merely conservative.
+                a, x = 0.0, _rand(rng, Float32, 4)
+                @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(_nodiff_sum_init, a, x),
+                    Mooncake.Dual(_nodiff_sum_init, Mooncake.NoTangent()),
+                    Mooncake.Dual(a, 1.0),
                     Mooncake.Dual(x, Mooncake.zero_tangent(x)),
                 )
             end
