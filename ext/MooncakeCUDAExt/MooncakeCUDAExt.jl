@@ -1086,17 +1086,18 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:CuMaybeComplexArray})
     return zero_fcodual(sum(primal(x))), sum_pb!!
 end
 
-# Reductions over an index or mask array have no derivative: the array has no tangent and
-# the result is an Integer.  Without a rule they decompose onto one of GPUArrays'
-# untraceable reduction paths, which one depending on spelling and eltype.
+# Reductions and orderings over an index or mask array have no derivative: the array has no
+# tangent, and the result is an Integer or another such array.  Without a rule they
+# decompose onto one of GPUArrays' untraceable paths, which one depending on spelling and
+# eltype.
 #
-# `maximum`/`minimum` cannot use @zero_derivative: it generates `CoDual{<:typeof(f)}`,
-# which is equal in extent to their catch-all error rules' `CoDual{typeof(f)}` but not
-# comparable with it, so the two would be ambiguous.  Spelling the signature the same way
-# lets the narrower array type decide, leaving those rules to report float arrays.
+# sum and prod can use @zero_derivative; for the other five it generates
+# `CoDual{<:typeof(f)}`, equal in extent to their catch-all error rules' `CoDual{typeof(f)}`
+# but not comparable with it, so the two would be ambiguous.  Spelling the signature the
+# same way lets the narrower array type decide, leaving those rules to report float arrays.
 @zero_derivative MinimalCtx Tuple{typeof(sum),CuNonDiffArray}
 @zero_derivative MinimalCtx Tuple{typeof(prod),CuNonDiffArray}
-for _fn in (:maximum, :minimum)
+for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuNonDiffArray})
     @eval frule!!(f::Dual{typeof($_fn)}, x::Dual{<:CuNonDiffArray}) = zero_derivative(f, x)
     @eval rrule!!(f::CoDual{typeof($_fn)}, x::CoDual{<:CuNonDiffArray}) = zero_adjoint(f, x)
@@ -1112,9 +1113,12 @@ end
 
 # The keyword spellings cannot be zero-derivative outright: a float `init` makes the output
 # differentiable, so dropping its derivative would be silently wrong.  Nor is it 1 —
-# GPUArrays folds `init` into a backend-defined number of partial reductions, so
-# `init=1.0` over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected.  Only
-# the frules can check it; reverse mode has no incoming `init` tangent.
+# GPUArrays folds `init` into a backend-defined number of partial reductions, so `init=1.0`
+# over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected instead.  Only the
+# frules can check it; reverse mode has no incoming `init` tangent.
+#
+# sum, prod, maximum and minimum all accept `init`; diff/sort/sortperm do not, so the guard
+# is a no-op for those three and one path covers all seven.
 function _check_reduction_init(dkw)
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
@@ -1126,7 +1130,7 @@ function _check_reduction_init(dkw)
     )
 end
 
-for _fn in (:sum, :prod, :maximum, :minimum)
+for _fn in (:sum, :prod, :maximum, :minimum, :diff, :sort, :sortperm)
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuNonDiffArray}
     )

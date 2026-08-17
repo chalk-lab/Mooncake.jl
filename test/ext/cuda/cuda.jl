@@ -209,7 +209,16 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _nodiff_min_dims(x) =
             (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(minimum(i; dims=1))))
         _nodiff_count(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(count(>(1), i)))
-        _nodiff_count_float(x) = sum(x) * Float32(count(>(0.0f0), x))
+        # `isfinite`, not a threshold predicate: count is piecewise constant in x, so a
+        # predicate whose value can flip within a finite-difference step would leave
+        # test_rule comparing a zero rule derivative against a 1/h estimate.
+        _nodiff_count_float(x) = sum(x) * Float32(count(isfinite, x))
+        # Orderings over an index array: no derivative, and the catch-all error rules keep
+        # reporting float arrays.
+        _nodiff_diff(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(diff(i))))
+        _nodiff_sortperm(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sortperm(i))))
+        _nodiff_sort_rev(x) =
+            (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sort(i; rev=true))))
         # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
         _geam_add(a, b) = sum(a + b)
         _geam_sub_adj(a, b) = sum(a' - b)
@@ -532,6 +541,27 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _nodiff_min_dims, _rand(rng, 8)),
             (false, :none, false, _nodiff_count, _rand(rng, 8)),
             (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
+            (false, :none, false, _nodiff_diff, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sort_rev, _rand(rng, 8)),
+            # geam! called directly (is_primitive=true): the only case that reaches the
+            # restore of C and the consumption of its cotangent, since `+`/`-` always
+            # allocate a fresh C.  alpha/beta are passed as Bool, which has no tangent, so
+            # test_rule cannot hand them the nonzero tangent the rule rejects — the same
+            # way MulAddMul supplies them to the gemm! rules.
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'N',
+                'N',
+                true,
+                _rand(rng, Float32, 3, 3),
+                true,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
+            ),
             # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
             (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
             (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
