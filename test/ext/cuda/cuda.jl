@@ -265,10 +265,13 @@ end
         # C === A is cuBLAS's in-place geam: dC is then the buffer dA accumulates into.
         _geam_alias(x, y) = sum(CUDA.cuBLAS.geam!('N', 'N', 1.0f0, x, 1.0f0, y, x))
         # A complex alpha against a transposed operand: the pullback folds the two
-        # conjugations together instead of conjugating alpha.
+        # conjugations together instead of conjugating alpha.  Scalars passed as arguments
+        # check the alpha/beta derivatives themselves.
         _mul_adj_alpha(c, a, b) = real(sum(mul!(c, a', b', 2.0 + 3.0im, -1.0 + 0.5im)))
         _mulv_adj_alpha(y, a, x) = real(sum(mul!(y, a', x, 2.0 + 3.0im, -1.0 + 0.5im)))
         _mulv_alpha(y, a, x) = real(sum(mul!(y, a, x, 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mul_scalars(c, a, b, al, be) = sum(mul!(c, a, b, al, be))
+        _mulv_scalars(y, a, x, al, be) = sum(mul!(y, a, x, al, be))
         # repeat: positional counts and the keyword spelling (separate rules).
         _repeat_counts(x) = sum(repeat(x, 2, 3))
         _repeat_extends(x) = sum(repeat(x, 2, 3, 2))
@@ -432,6 +435,30 @@ end
                 _rand(rng, 16, 32),
                 _rand(rng, 16, 8),
                 _rand(rng, 8, 32),
+            ),
+            # mul!(C, A, B, alpha, beta) with the scalars as differentiable arguments: their
+            # cotangents are the inner products against A*B and C_old.
+            (
+                false,
+                :none,
+                false,
+                _mul_scalars,
+                _rand(rng, 4, 5),
+                _rand(rng, 4, 3),
+                _rand(rng, 3, 5),
+                2.0,
+                0.5,
+            ),
+            (
+                false,
+                :none,
+                false,
+                _mulv_scalars,
+                _rand(rng, 4),
+                _rand(rng, 4, 3),
+                _rand(rng, 3),
+                2.0,
+                0.5,
             ),
             # mul! (matrix × vector, Float64)
             (false, :none, false, mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
@@ -1103,8 +1130,6 @@ end
             )
         end
 
-        # Reverse mode only: a complex alpha carries a tangent, so it cannot dispatch the
-        # gemm/gemv frules, which take alpha as NoTangent.
         @testset "$name" for (seed, name, fargs) in [
             (
                 71,
@@ -1137,13 +1162,7 @@ end
                 ),
             ),
         ]
-            test_rule(
-                StableRNG(seed),
-                fargs...;
-                is_primitive=false,
-                perf_flag=:none,
-                mode=Mooncake.ReverseMode,
-            )
+            test_rule(StableRNG(seed), fargs...; is_primitive=false, perf_flag=:none)
         end
 
         # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.

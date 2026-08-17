@@ -2532,8 +2532,9 @@ end
 # covers the pure LinearAlgebra fallback path; this rule covers the CUDA.jl path
 # (cublas/linalg.jl line 349) that is reached from `A * B` → `mul!` → matmul dispatch.
 #
-# alpha / beta are treated as non-differentiable (NoTangent / NoFData): they are
-# typically `true`/`false` (from `MulAddMul`) and we never differentiate w.r.t. them.
+# alpha / beta are differentiated.  They are usually `true`/`false` (from `MulAddMul`), which
+# carry no derivative and cost nothing here, but a caller may pass floats — `mul!(C, A, B, α,
+# β)` — and their derivatives are simple: ⟨op_A(A)·op_B(B), dC⟩ and ⟨C_old, dC⟩.
 
 @is_primitive(
     MinimalCtx,
@@ -2555,8 +2556,8 @@ function frule!!(
     tB::Dual{Char,NoTangent},
     A::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     B::Dual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
+    alpha::Dual{<:Number},
+    beta::Dual{<:Number},
 )
     pC, dC = matrixify(C)
     pA, dA = matrixify(A)
@@ -2568,11 +2569,15 @@ function frule!!(
     _α = T(primal(alpha))
     _β = T(primal(beta))
     _1 = one(T)
-    # primal: C := α*op_A(A)*op_B(B) + β*C
-    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
-    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC
+    # tangent: dC := α*(op_A(dA)*op_B(pB) + op_A(pA)*op_B(dB)) + β*dC + dα*op_A(A)*op_B(B)
+    #               + dβ*C_old.  It runs before the primal so that the dβ term still sees the
+    # old C, which the primal overwrites.
     cuBLAS.gemm!(tAv, tBv, _α, dA, pB, _β, dC)
     cuBLAS.gemm!(tAv, tBv, _α, pA, dB, _1, dC)
+    _geam_scalar_jvp!(dC, tangent(beta), 'N', pC)
+    _blas_product_jvp!(dC, tangent(alpha), _geam_op(tAv, pA), _geam_op(tBv, pB))
+    # primal: C := α*op_A(A)*op_B(B) + β*C
+    cuBLAS.gemm!(tAv, tBv, _α, pA, pB, _β, pC)
     return C
 end
 function rrule!!(
@@ -2582,8 +2587,8 @@ function rrule!!(
     tB::CoDual{Char,NoFData},
     A::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     B::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
-    alpha::CoDual{<:Number,NoFData},
-    beta::CoDual{<:Number,NoFData},
+    alpha::CoDual{<:Number},
+    beta::CoDual{<:Number},
 )
     pC, dC = matrixify(C)
     pA, dA = matrixify(A)
@@ -2613,11 +2618,12 @@ function rrule!!(
         else
             cuBLAS.gemm!('C', tAv, _α, dC, pA, _1, dB)                      # dB += α*dC^H*op_A(A)
         end
+        # Both scalar cotangents read the incoming dC, before β rescales it below.
+        dα = _blas_product_rdata(primal(alpha), _geam_op(tAv, pA), _geam_op(tBv, pB), dC)
+        dβ = _blas_scalar_rdata(primal(beta), pC_copy, dC)
         copyto!(pC, pC_copy)
         dC .*= _cβ  # gradient w.r.t. C_old: ΔC_old = conj(β) * ΔC_new
-        return NoRData(),
-        NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(),
-        NoRData()
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), dα, dβ
     end
     return C, generic_matmatmul!_7arg_pb!!
 end
@@ -2642,12 +2648,27 @@ function _geam_scalar_jvp!(dC, ds::Number, t::Char, X)
     return dC .+= convert(eltype(dC), ds) .* _geam_op(t, X)
 end
 
-# C = s*op(X) + …, so s's cotangent is sum(conj(op(X)) .* dC), projected onto s's own type:
-# a real s over a complex array keeps the real part.  A Bool or Integer s has no derivative;
-# the assertion makes a scalar type that does carry one an error, not a silent zero.
-_geam_scalar_rdata(s::IEEEFloat, X, dC) = oftype(s, real(sum(conj.(X) .* dC)))
-_geam_scalar_rdata(s::Complex{<:IEEEFloat}, X, dC) = oftype(s, sum(conj.(X) .* dC))
-_geam_scalar_rdata(s::Number, X, dC) = zero_rdata(s)::NoRData
+# A scalar factor s multiplying a matrix X into the output takes the real inner product
+# ⟨X, dC⟩ = sum(conj(X) .* dC), projected onto s's own type: a real s over a complex array
+# keeps the real part.  A Bool or Integer s has no derivative; the assertion makes a scalar
+# type that does carry one an error, not a silent zero.
+_blas_scalar_rdata(s::IEEEFloat, X, dC) = oftype(s, real(sum(conj.(X) .* dC)))
+_blas_scalar_rdata(s::Complex{<:IEEEFloat}, X, dC) = oftype(s, sum(conj.(X) .* dC))
+_blas_scalar_rdata(s::Number, X, dC) = zero_rdata(s)::NoRData
+
+# The same, where X is a product the rule never formed: `mul!(C, A, B)` passes Bool scalars,
+# whose rdata is NoRData, and dispatch then skips the matmul rather than computing it to
+# throw it away.  The JVP counterpart skips it for a zero tangent, which is what the float
+# literal in a keyword-free `mul!` carries.
+_blas_product_rdata(s::Number, X1, X2, dC) = zero_rdata(s)::NoRData
+function _blas_product_rdata(s::CuFloatOrComplex, X1, X2, dC)
+    return _blas_scalar_rdata(s, X1 * X2, dC)
+end
+_blas_product_jvp!(dC, ::NoTangent, X1, X2) = dC
+function _blas_product_jvp!(dC, ds::Number, X1, X2)
+    iszero(ds) && return dC
+    return dC .+= convert(eltype(dC), ds) .* (X1 * X2)
+end
 
 @is_primitive(
     MinimalCtx,
@@ -2718,9 +2739,9 @@ function rrule!!(
         return NoRData(),
         NoRData(),
         NoRData(),
-        _geam_scalar_rdata(primal(alpha), _geam_op(tav, pA), dC_copy),
+        _blas_scalar_rdata(primal(alpha), _geam_op(tav, pA), dC_copy),
         NoRData(),
-        _geam_scalar_rdata(primal(beta), _geam_op(tbv, pB), dC_copy),
+        _blas_scalar_rdata(primal(beta), _geam_op(tbv, pB), dC_copy),
         NoRData(),
         NoRData()
     end
@@ -2767,8 +2788,8 @@ function frule!!(
     tA::Dual{<:AbstractChar,NoTangent},
     A::Dual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
     B::Dual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    alpha::Dual{<:Number,NoTangent},
-    beta::Dual{<:Number,NoTangent},
+    alpha::Dual{<:Number},
+    beta::Dual{<:Number},
 )
     pY, dY = primal(Y), tangent(Y)
     pA, dA = primal(A), tangent(A)
@@ -2780,9 +2801,13 @@ function frule!!(
     _check_gemv_eltypes(T, eltype(pB))
     _check_complex_matvecmul_transpose(T, tAv)
     _1 = one(T)
-    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY
+    # tangent (product rule): dY = av*op(dA)*pB + av*op(pA)*dB + bv*dY + dav*op(pA)*pB
+    #                              + dbv*Y_old.  The dbv term needs the old Y, so the primal
+    # runs last.
     cuBLAS.gemv!(tAv, av, dA, pB, bv, dY) # dY  = av*op(dA)*pB + bv*dY
     cuBLAS.gemv!(tAv, av, pA, dB, _1, dY) # dY += av*op(pA)*dB
+    _geam_scalar_jvp!(dY, tangent(beta), 'N', pY)
+    _blas_product_jvp!(dY, tangent(alpha), _geam_op(tAv, pA), pB)
     # primal: pY = av*op(pA)*pB + bv*pY
     cuBLAS.gemv!(tAv, av, pA, pB, bv, pY)
     return Y
@@ -2793,8 +2818,8 @@ function rrule!!(
     tA::CoDual{<:AbstractChar,NoFData},
     A::CoDual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},
     B::CoDual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
-    alpha::CoDual{<:Number,NoFData},
-    beta::CoDual{<:Number,NoFData},
+    alpha::CoDual{<:Number},
+    beta::CoDual{<:Number},
 )
     pY, dY = primal(Y), tangent(Y)
     pA, dA = primal(A), tangent(A)
@@ -2823,10 +2848,13 @@ function rrule!!(
         else
             cuBLAS.gemv!('N', conj(av), pA, dY, _1, dB) # dB += conj(av)*A*ȳ (op(A)^H = A)
         end
+        # Both scalar cotangents read the incoming dY, before beta rescales it below.
+        dav = _blas_product_rdata(av, _geam_op(tAv, pA), pB, dY)
+        dbv = _blas_scalar_rdata(bv, pY_copy, dY)
         # Y tangent passes through scaled by beta
         dY .*= conj(bv)
         copyto!(pY, pY_copy)
-        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
+        return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), dav, dbv
     end
     return Y, generic_matvecmul!_pb!!
 end
