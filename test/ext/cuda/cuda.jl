@@ -199,9 +199,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _nodiff_sum_dims(x) = (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(sum(i; dims=1))))
         _nodiff_sum_mask(x) = (m=CuArray([true, false, true]); sum(x) * Float32(sum(m)))
         # A float `init` makes the output differentiable, and GPUArrays folds init into a
-        # backend-defined number of partial reductions, so its derivative is rejected
-        # rather than silently zeroed.
+        # backend-defined number of partial reductions, so the frule rejects its derivative.
         _nodiff_sum_init(a, x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=a))
+        _nodiff_sum_init_const(x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=0.0))
         # The other reductions over an index or mask array. `count` returns an Integer for
         # any array, so the float case has no derivative either.
         _nodiff_prod(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(prod(i)))
@@ -2146,9 +2146,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
             @testset "init over a non-differentiable array is rejected" begin
                 # The output is a Float64 here, so a zero derivative w.r.t. init would be
-                # silently wrong rather than merely conservative.  Reverse mode never sees
-                # an init tangent, but init is the only gradient path over an index array,
-                # so a nonzero output cotangent is the same error seen from the far side.
+                # silently wrong rather than merely conservative.
                 a, x = 0.0, _rand(rng, Float32, 4)
                 @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
                     Mooncake.build_frule(_nodiff_sum_init, a, x),
@@ -2156,9 +2154,15 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     Mooncake.Dual(a, 1.0),
                     Mooncake.Dual(x, Mooncake.zero_tangent(x)),
                 )
-                @test_throws r"init.*constant" Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(_nodiff_sum_init, a, x), _nodiff_sum_init, a, x
-                )
+            end
+            @testset "a constant init still differentiates in reverse" begin
+                # Reverse mode cannot tell this literal from an init the caller wants a
+                # gradient for, so it must not reject either: ∂/∂x is well defined here.
+                x = _rand(rng, Float32, 4)
+                rule = Mooncake.build_rrule(_nodiff_sum_init_const, x)
+                v, (_, dx) = Mooncake.value_and_gradient!!(rule, _nodiff_sum_init_const, x)
+                @test v ≈ _nodiff_sum_init_const(x)
+                @test all(Array(dx) .≈ 6.0f0)
             end
         end
 
