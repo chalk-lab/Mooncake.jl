@@ -1153,6 +1153,14 @@ for _fn in (:cumsum, :cumprod)
     end
 end
 
+# CUDA scans a `dims`-less `accumulate` in linear order — `reshape(accumulate(op, A[:]),
+# size(A))` — rather than column by column, so an N-d array's adjoint is the vectorised one.
+# cumsum needs no such split: Base rejects it without `dims` past one dimension.
+_scan_jvp(dx, ::Nothing) = reshape(cumsum(vec(dx)), size(dx))
+_scan_jvp(dx, d) = cumsum(dx; dims=d)
+_scan_pullback(dy, ::Nothing) = reshape(reverse(cumsum(reverse(vec(dy)))), size(dy))
+_scan_pullback(dy, d) = reverse(cumsum(reverse(dy; dims=d); dims=d); dims=d)
+
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),typeof(+),CuMaybeComplexArray})
@@ -1160,7 +1168,7 @@ function frule!!(
     ::Dual{typeof(accumulate)}, ::Dual{typeof(+)}, x::Dual{<:CuMaybeComplexArray}; kw...
 )
     px, dx = arrayify(x)
-    return Dual(accumulate(+, px; kw...), cumsum(dx; kw...))
+    return Dual(accumulate(+, px; kw...), _scan_jvp(dx, get(kw, :dims, nothing)))
 end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
@@ -1171,9 +1179,9 @@ function rrule!!(
     px, dx = arrayify(x)
     y = accumulate(+, px; kw...)
     dy_out = zero(y)
-    d = get(kw, :dims, 1)
+    d = get(kw, :dims, nothing)
     function accumulate_plus_pb!!(::NoRData)
-        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        dx .+= _scan_pullback(dy_out, d)
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy_out), accumulate_plus_pb!!
@@ -1181,13 +1189,15 @@ end
 @is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuArray})
 function frule!!(::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuArray}; kwargs...)
     return _throw_gpu_argument_error(
-        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+        "Mooncake: accumulate on CuArray supports only op=+ over a float or complex " *
+        "array; got op=$(primal(op)) over $(typeof(primal(x))). " *
         _UNIMPL_MSG,
     )
 end
 function rrule!!(::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuArray}; kwargs...)
     return _throw_gpu_argument_error(
-        "Mooncake: accumulate on CuArray only supports op=+; got op=$(primal(op)). " *
+        "Mooncake: accumulate on CuArray supports only op=+ over a float or complex " *
+        "array; got op=$(primal(op)) over $(typeof(primal(x))). " *
         _UNIMPL_MSG,
     )
 end
@@ -1209,7 +1219,7 @@ function frule!!(
     pkw = primal(kw)
     px, dx = arrayify(x)
     y = accumulate(+, px; pkw...)
-    dy = eltype(y).(cumsum(dx; dims=get(pkw, :dims, 1)))
+    dy = eltype(y).(_scan_jvp(dx, get(pkw, :dims, nothing)))
     return Dual(y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), true))
 end
 function rrule!!(
@@ -1224,9 +1234,9 @@ function rrule!!(
     px, dx = arrayify(x)
     y = accumulate(+, px; pkw...)
     dy_out = zero(y)
-    d = get(pkw, :dims, 1)
+    d = get(pkw, :dims, nothing)
     function accumulate_plus_kw_pb!!(::NoRData)
-        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        dx .+= _scan_pullback(dy_out, d)
         return NoRData(),
         _kw_init_rdata(kw_rdata, dy_out, true), NoRData(), NoRData(),
         NoRData()

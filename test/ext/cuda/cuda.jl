@@ -155,6 +155,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _accumulate_init(a, x) = sum(accumulate(+, x; init=a))
         _accumulate_init_d1(a, x) = sum(accumulate(+, x; dims=1, init=a))
         _accumulate_init_widens(x) = sum(accumulate(+, x; init=1.0f0))
+        # Without `dims` CUDA scans an N-d array in linear order, not column by column.
+        _accumulate_flat(x) = sum(accumulate(+, x))
+        _accumulate_flat_init(a, x) = sum(accumulate(+, x; init=a))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -332,6 +335,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
         _min_init(a, x) = minimum(x; init=a)
         _max_badkw(x) = maximum(x; bad=1.0)
+        _max_nan_init(x) = maximum(x; init=-1.0f0)
         # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
         # Float64 array narrows the result and its tangent has to follow.
         _max_init_widens(x) = maximum(x; init=0.0f0)
@@ -550,6 +554,8 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
+            (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
+            (false, :none, false, _accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
@@ -1424,7 +1430,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @testset "accumulate non-+ CuArray not differentiable" begin
                 x = _rand(rng, Float32, 4)
                 for f in (x -> sum(accumulate(*, x)), x -> sum(accumulate(*, x; dims=1)))
-                    @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
+                    @test_throws r"supports only op=\+ over a float or complex array" value_and_gradient!!(
                         Mooncake.build_rrule(f, x), f, x
                     )
                 end
@@ -2270,9 +2276,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             end
             @testset "a NaN slice keeps the keyword-free gradient" begin
                 # `won` is a negated comparison because NaN == NaN is false, which would
-                # zero the whole slice and disagree with the positional rule.
+                # zero the whole slice and disagree with the positional rule.  The `init`
+                # case is the one that computes `won` at all; the bare rule is the baseline.
                 x = CuArray(Float32[1, NaN, 3])
-                grads = map((_max_bare, _max_nodims)) do f
+                grads = map((_max_bare, _max_nan_init)) do f
                     Array(value_and_gradient!!(Mooncake.build_rrule(f, x), f, x)[2][2])
                 end
                 @test grads[1] == grads[2] == Float32[0, 1, 0]
