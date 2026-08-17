@@ -546,6 +546,17 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # cumprod — explicit rule (real and complex, nonzero inputs)
             (false, :none, false, _cumprod_sum, _rand_pos(rng, 16)),
             (false, :none, false, _cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
+            # A zero: every prefix from it on is zero, but the zero's own derivative is the
+            # rest of its prefix, and a second zero takes the tail to zero.
+            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0])),
+            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0, 0.0, 5.0])),
+            (
+                false,
+                :none,
+                false,
+                _cumprod_cx_sum,
+                CuArray(ComplexF64[1 + 2im, 0, 3 - 1im]),
+            ),
             # accumulate(+) — explicit rule (real and complex)
             (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
             (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
@@ -560,6 +571,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
             (false, :none, false, _cumsum_d1, _rand(rng, 4, 3)),
             (false, :none, false, _cumprod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _cumprod_d1, CuArray([1.0 2.0; 0.0 4.0])),
             (false, :none, false, _accumulate_plus_d1, _rand(rng, 4, 3)),
             (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),

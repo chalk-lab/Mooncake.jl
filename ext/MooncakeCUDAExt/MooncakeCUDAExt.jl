@@ -1098,37 +1098,59 @@ end
 
 # Rules for `cumprod(x)` on GPU arrays.
 #
-# y[k] = Πᵢ₌₁ᵏ x[i],  ∂y[k]/∂x[i] = y[k]/x[i] if i≤k else 0
-# frule:    dy[k] = y[k] · cumsum(dx ./ x)[k]
-# pullback: dx[i] += (1/x[i]) · Σₖ≥ᵢ dy[k]·y[k]
-#           i.e.  dx .+= reverse(cumsum(reverse(dy .* y))) ./ x
+# y[k] = Πᵢ₌₁ᵏ x[i], so ∂y[k]/∂x[i] for i ≤ k is that prefix product with x[i] excluded.
+# Excluding it by dividing y[k] by x[i] fails at a zero, exactly as it did for `prod`, and the
+# same accounting fixes it — per prefix rather than per slice: a nonzero x[i] contributes only
+# to prefixes that hold no zero at all, a zero x[i] only to prefixes where it is the only
+# zero, and a prefix holding two zeros has no derivative anywhere. `nzeros` and `pnz` are the
+# cumulative forms of the two reductions `_prod_exclusive` uses; `denom` is x with its zeros
+# replaced by ones, so nothing ever divides by zero.
 #
-# Zero elements: when x[i] == 0 the cumulative product y[k] == 0 for all k ≥ i,
-# so the Jacobian at that position is zero (the zero annihilates the product).
-# nan_tangent_guard is used to return zero instead of NaN/Inf from 0/0 or x/0.
+#   dy[k] = pnz[k] · (nzeros[k] == 0 ? cumsum(dx ./ denom)[k] :
+#                     nzeros[k] == 1 ? cumsum(dx at the zeros)[k] : 0)
+#   dx[i] += (Σ over k ≥ i of dy[k]·pnz[k], masked to the prefixes i contributes to) / denom[i]
+function _cumprod_pieces(px, d)
+    T = eltype(px)
+    zero_at = iszero.(px)
+    denom = ifelse.(zero_at, one(T), px)
+    return zero_at, cumsum(zero_at; dims=d), cumprod(denom; dims=d), denom
+end
+
 @is_primitive(MinimalCtx, Tuple{typeof(cumprod),CuMaybeComplexArray})
 function frule!!(::Dual{typeof(cumprod)}, x::Dual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
+    d = get(kw, :dims, 1)
     y = cumprod(px; kw...)
-    inv_px = nan_tangent_guard.(px, inv.(px))
-    dy = y .* cumsum(dx .* inv_px; kw...)
-    return Dual(y, dy)
+    zero_at, nzeros, pnz, denom = _cumprod_pieces(px, d)
+    from_nonzeros = cumsum(dx ./ denom; dims=d)
+    from_the_zero = cumsum(ifelse.(zero_at, dx, zero(eltype(dx))); dims=d)
+    contribution = ifelse.(
+        iszero.(nzeros),
+        from_nonzeros,
+        ifelse.(nzeros .== 1, from_the_zero, zero(eltype(dx))),
+    )
+    return Dual(y, pnz .* contribution)
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
     y = cumprod(px; kw...)
     dy_out = zero(y)
     d = get(kw, :dims, 1)
-    # Pre-compute once at rule construction time: reused on every pullback call.
-    # nan_tangent_guard: where px == 0 the product is annihilated (zero gradient).
-    inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
+    # Pre-computed once at rule construction time: reused on every pullback call.
+    zero_at, nzeros, pnz, denom = _cumprod_pieces(px, d)
+    clean, only_zero = iszero.(nzeros), nzeros .== 1
+    cpnz, cdenom = conj.(pnz), conj.(denom)
     function cumprod_pb!!(::NoRData)
-        # Wirtinger chain rule: Δxᵢ = (1/conj(xᵢ)) · Σₖ≥ᵢ Δyₖ · conj(yₖ)
-        # i.e. dx .+= reverse(cumsum(reverse(dy .* conj.(y)))) ./ conj.(px)
-        # For real inputs conj is a no-op, so this is backward compatible.
+        # Wirtinger chain rule: Δxᵢ = Σₖ≥ᵢ Δyₖ · conj(∂yₖ/∂xᵢ).  For real inputs conj is a
+        # no-op.  A nonzero xᵢ reads the prefixes with no zero, a zero xᵢ those where it is
+        # the only one, so the two masked reverse scans cover every case.
+        weighted = dy_out .* cpnz
         dx .+=
-            reverse(cumsum(reverse(dy_out .* conj.(y); dims=d); dims=d); dims=d) .*
-            inv_cx_px
+            ifelse.(
+                zero_at,
+                _scan_pullback(weighted .* only_zero, d),
+                _scan_pullback(weighted .* clean, d),
+            ) ./ cdenom
         return NoRData(), NoRData()
     end
     return CoDual(y, dy_out), cumprod_pb!!
