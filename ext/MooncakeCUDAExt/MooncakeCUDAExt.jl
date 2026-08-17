@@ -3795,6 +3795,12 @@ function rrule!!(
     # shared NDual-value extraction): eltype(pout) is always IEEEFloat for CuMaybeComplexArray.
     if !decoded.is_diff
         function materialize!_nodiff_pb!!(::NoRData)
+            # dest was overwritten by a result that does not depend on its old value, so the
+            # cotangent standing in dest's fdata belongs to that result and is consumed here
+            # — there is nothing to redistribute it to.  Leaving it would hand it back to
+            # dest's own history, as if the broadcast had passed dest through.  The
+            # differentiable branch below consumes it the same way, after distributing it.
+            fill!(dout, zero(eltype(dout)))
             copyto!(pout, old_pout)
             return NoRData(), NoRData(), zero_rdata(bc_primal)
         end

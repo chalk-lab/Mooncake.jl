@@ -164,6 +164,14 @@ end
         # Without `dims` CUDA scans an N-d array in linear order, not column by column.
         # Passing the captured value as an argument is what the refusal message recommends;
         # a capture the kernel cannot thread must not be silently zeroed instead.
+        # An in-place broadcast overwrites dest, so a non-differentiable result has to consume
+        # dest's cotangent; letting it through credits dest's own history for a value that
+        # does not depend on it.  The mid-chain case is the sharp one: the leak showed up as
+        # exactly 2cos(x) where the derivative is cos(x).
+        _bcast_kill(x) = (y=x .* 2; y.=y .> 0; sum(y))
+        _bcast_kill_mid(x) = (y=x .* 1; y.=sin.(y); s=sum(y); y.=y .> 0; s + sum(y))
+        _bcast_kill_view(x) = (y=x .* 2; v=view(y, 3:4); v.=v .> 0; sum(y))
+        _bcast_kill_cast(x) = (y=x .* 2; y.=Float64.(y .> 0); sum(y))
         _hoisted_capture(a, x) = sum(((t, c) -> c * t).(x, a))
         _int_capture(x) = (n=3; sum((t -> n * t).(x)))
         _accumulate_flat(x) = sum(accumulate(+, x))
@@ -586,6 +594,10 @@ end
             (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
+            (false, :none, false, _bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _bcast_kill_view, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
             (false, :none, false, _int_capture, _rand(rng, 4)),
             (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
