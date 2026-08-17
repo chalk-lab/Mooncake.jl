@@ -984,38 +984,46 @@ for _fn in (:maximum, :minimum)
     )
 end
 
-# Rules for `prod(x)` on GPU arrays.
+# Rules for `prod(x)` on GPU arrays, bare and `dims`.
 #
-# prod(x) = x₁·x₂·…·xₙ,  ∂prod/∂xᵢ = prod(x)/xᵢ
-# frule:    dy = prod(x) · sum(dx ./ x)
-# pullback: dx[i] += dy · prod(x) / x[i]
+# ∂prod/∂xᵢ is the product of xᵢ's slice excluding xᵢ.  Reading that off as y/xᵢ divides by
+# zero precisely where the answer is not zero, so it is built from two reductions instead: a
+# nonzero xᵢ contributes only when its slice holds no zero at all, and a zero xᵢ contributes
+# the product of the rest when it is its slice's only zero.  Two zeros in a slice leave every
+# derivative in it zero.  `prod` is a polynomial, so none of this is a non-differentiable
+# point — the exclusion is what the division could not express.
 #
-# Note: undefined when any element of x is zero (gradient is skipped in that case).
+# Both quantities come from the same reduction the primal ran, over `px` with its zeros
+# replaced by ones, so an `init` folded into a backend-defined number of partial reductions
+# scales the derivative exactly as it scaled the value.
+function _prod_exclusive(px, dims, kw)
+    T = eltype(px)
+    nonzero = ifelse.(iszero.(px), one(T), px)
+    pnz = prod(nonzero; kw...)
+    nzeros = sum(iszero.(px); dims=dims)
+    contributes = ifelse.(iszero.(px), nzeros .== 1, iszero.(nzeros))
+    return ifelse.(contributes, pnz ./ nonzero, zero(T))
+end
+
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})
 function frule!!(::Dual{typeof(prod)}, x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
-    y = prod(px)
-    dy = iszero(y) ? zero(y) : y * sum(dx ./ px)
-    return Dual(y, dy)
+    return Dual(prod(px), sum(dx .* _prod_exclusive(px, :, (;))))
 end
 function rrule!!(::CoDual{typeof(prod)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
-    y = prod(px)
+    excl = _prod_exclusive(px, :, (;))
     function prod_pb!!(dy)
-        # Wirtinger chain rule for holomorphic prod: Δxᵢ = Δy · conj(y/xᵢ)
-        # For real inputs conj is a no-op, so this is backward compatible.
-        # iszero triggers a device→host sync — inherent since we branch on the scalar result.
-        iszero(y) || (dx .+= dy .* conj.(y ./ px))
+        # Wirtinger chain rule for holomorphic prod: Δxᵢ = Δy · conj(∂prod/∂xᵢ).
+        # For real inputs conj is a no-op.
+        dx .+= dy .* conj.(excl)
         return NoRData(), NoRData()
     end
-    return zero_fcodual(y), prod_pb!!
+    return zero_fcodual(prod(px)), prod_pb!!
 end
 
-# `prod(x; dims)`: the same derivative per reduced slice, y_j/x_i for x_i in slice j, which
-# broadcasts because the reduced dimensions stay singleton.  The zero-element caveat is also
-# per slice, and nan_tangent_guard applies it without the bare rule's device→host sync: a
-# slice containing a zero has y_j == 0, so every term in it drops.  `init` multiplies into a
-# backend-defined number of partial reductions, so like `sum` it stays a constant.
+# The `dims` spelling: the same exclusive product per reduced slice, which broadcasts because
+# the reduced dimensions stay singleton.
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(prod),CuMaybeComplexArray}
 )
@@ -1028,13 +1036,12 @@ function frule!!(
     pkw = primal(kw)
     _check_reduction_init(tangent(kw))
     px, dx = arrayify(x)
+    dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
-    inv_px = nan_tangent_guard.(px, inv.(px))
     # `init` fixes the output eltype, and the tangent has to follow it.  Converting after
     # the reduction rather than seeding it: a widening seed over a broadcast fails to
     # compile a kernel.
-    dy = eltype(y).(sum(dx .* inv_px; dims=get(pkw, :dims, :)))
-    return Dual(y, y .* dy)
+    return Dual(y, eltype(y).(sum(dx .* _prod_exclusive(px, dims, pkw); dims=dims)))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1045,18 +1052,19 @@ function rrule!!(
     pkw = primal(kw)
     kw_rdata = zero_rdata(pkw)
     px, dx = arrayify(x)
+    dims = get(pkw, :dims, :)
     y = prod(px; pkw...)
-    inv_cx_px = nan_tangent_guard.(px, inv.(conj.(px)))
-    if get(pkw, :dims, :) isa Colon
+    excl = conj.(_prod_exclusive(px, dims, pkw))
+    if dims isa Colon
         function prod_kw_scalar_pb!!(dy)
-            dx .+= dy .* conj.(y) .* inv_cx_px
+            dx .+= dy .* excl
             return NoRData(), kw_rdata, NoRData(), NoRData()
         end
         return CoDual(y, NoFData()), prod_kw_scalar_pb!!
     end
     dy_out = zero(y)
     function prod_kw_array_pb!!(::NoRData)
-        dx .+= dy_out .* conj.(y) .* inv_cx_px
+        dx .+= dy_out .* excl
         return NoRData(), kw_rdata, NoRData(), NoRData()
     end
     return CoDual(y, dy_out), prod_kw_array_pb!!

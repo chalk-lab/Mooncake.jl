@@ -533,6 +533,13 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # prod — explicit rule (real and complex)
             (false, :none, false, _prod, _rand_pos(rng, 16)),
             (false, :none, false, _prod_cx, _rand(rng, ComplexF64, 16)),
+            # An exact zero is where reading the derivative off as y/xᵢ used to break: the
+            # zero's own derivative is the product of the rest, and a second zero in the
+            # slice takes the whole slice to zero.  prod is a polynomial, so finite
+            # differences pin these exactly.
+            (false, :none, false, _prod, CuArray([1.0, 0.0, 3.0])),
+            (false, :none, false, _prod, CuArray([1.0, 0.0, 0.0])),
+            (false, :none, false, _prod_cx, CuArray(ComplexF64[1 + 2im, 0, 3 - 1im])),
             # cumsum — explicit rule (real and complex)
             (false, :none, false, _cumsum_sum, _rand(rng, 16)),
             (false, :none, false, _cumsum_cx_sum, _rand(rng, ComplexF64, 16)),
@@ -545,6 +552,9 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # The `dims` spellings. prod has its own rule per reduced slice, so it gets the
             # complex arm and both output branches; the others forward to the rules above.
             (false, :none, false, _prod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_d1, CuArray([1.0 2.0; 0.0 4.0])),
+            (false, :none, false, _prod_d1, CuArray([0.0 2.0; 0.0 4.0])),
+            (false, :none, false, _prod_colon, CuArray([1.0 0.0; 3.0 4.0])),
             (false, :none, false, _prod_d2, _rand_pos(rng, 4, 3)),
             (false, :none, false, _prod_colon, _rand_pos(rng, 4, 3)),
             (false, :none, false, _prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
