@@ -183,6 +183,10 @@ end
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
         _diagonal_field_bcast(x) = sum(exp.(Diagonal(x).diag))  # Diagonal + lgetfield + broadcast
+        # Diagonal(v).diag === v, so a mutation of v after wrapping has to be visible through
+        # the wrapper: the two share one cotangent buffer.
+        _diagonal_mutate(v) = (D=Diagonal(v); v.=v .* 2; sum(D.diag))
+        _diagonal_fill(v, c) = (D=Diagonal(v); fill!(v, c); sum(D.diag .^ 2))
         _sum_f_abs(x) = sum(abs, x)          # sum(f, x) with non-smooth f
         _sum_f_abs2(x) = sum(abs2, x)        # sum(f, x) real abs2
         _sum_adj_pow3(x) = real(sum(y -> y^3, x'))  # sum(f, Adjoint)
@@ -714,6 +718,8 @@ end
             (false, :none, false, _repeat_nothing, _rand(rng, 2, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
+            (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
+            (false, :none, false, _diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
             # sum(f, x) with non-smooth f (abs)
             (false, :none, false, _sum_f_abs, _rand(rng, 16)),
             # sum(f, Adjoint) — tests sum(f, x) dispatch when input is an Adjoint wrapper

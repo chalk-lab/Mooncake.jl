@@ -2879,13 +2879,15 @@ function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray})
 end
 function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
     pv, dv = arrayify(v)
-    dD = zero(pv)  # fdata for .diag of the Diagonal output
-    function diagonal_pb!!(::NoRData)
-        dv .+= dD
-        return NoRData(), NoRData()
-    end
+    # `Diagonal(v).diag === v`, so the aliasing invariant — primal(a) === primal(b) implies
+    # fdata(a) === fdata(b) — requires the output's `.diag` fdata to *be* v's.  Accumulating a
+    # separate zero(pv) into dv at the end of the pullback instead credits v with the
+    # wrapper's cotangent as of the wrong moment, which a mutation of v in between makes
+    # visible.  Sharing the buffer leaves the pullback nothing to do: downstream rules
+    # accumulate into dv directly, and the frule already aliases the same way.
     # fdata_type(Diagonal{T, CuArray{T,1}}) = FData{(; diag::CuArray{T,1})}
-    return CoDual(Diagonal(pv), FData((; diag=dD))), diagonal_pb!!
+    diagonal_pb!!(::NoRData) = (NoRData(), NoRData())
+    return CoDual(Diagonal(pv), FData((; diag=dv))), diagonal_pb!!
 end
 
 # ===== GPU broadcasting rule (materialize-level, NDual-based forward pass) =====
