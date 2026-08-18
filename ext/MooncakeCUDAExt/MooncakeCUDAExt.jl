@@ -764,12 +764,18 @@ function _gpu_scatter_add_complex_kernel!(rdx, lin, rdy)
     return nothing
 end
 function _gpu_scatter_add!(dx, pidx, dy)
-    n = length(pidx)
+    # A logical mask is a claimed spelling as well, since Bool <: Integer, but it names its
+    # positions by where it sits rather than by value: scattering it as written would send
+    # every selected element to index 1 or to one slot before the buffer. Base converts it
+    # for the primal and for the frule's indexing; the kernel needs it done here.
+    idx = eltype(pidx) === Bool ? findall(pidx) : pidx
+    # The output is what sets the launch size — a mask is longer than the gather it selects.
+    n = length(dy)
     iszero(n) && return dx
     # The complex kernel indexes the reinterpreted halves arithmetically, so both paths take
     # linear indices; a Cartesian index vector is converted once, on the device.
     li = LinearIndices(size(dx))
-    idx_lin = eltype(pidx) <: Integer ? pidx : map(I -> li[I], pidx)
+    idx_lin = eltype(idx) <: Integer ? idx : map(I -> li[I], idx)
     # The index vector may live on the host — `x[[1, 2, 3]]` is a perfectly ordinary
     # spelling — and a kernel argument has to be on the device.
     lin = idx_lin isa CuArray ? idx_lin : CuArray(idx_lin)

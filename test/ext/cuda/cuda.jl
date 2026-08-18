@@ -199,6 +199,16 @@ end
         _gather_dup_cartesian(m) = sum(
             m[CuArray([CartesianIndex(1, 1), CartesianIndex(1, 1), CartesianIndex(2, 2)])]
         )
+        # A logical mask selects by position, not by value.  The weighted case is what
+        # separates a correct scatter from one that credits index 1 for every hit.
+        _gather_mask(x) = sum(x[CuArray(Bool[true, false, true, false])])
+        _gather_mask_weighted(x) = sum(
+            x[CuArray(Bool[true, false, true, false])] .* CuArray(Float32[1, 2])
+        )
+        _gather_mask_host(x) = sum(x[Bool[true, false, true, false]])
+        _gather_mask_bits(x) = sum(x[BitVector([true, false, true, false])])
+        _gather_mask_cx(x) = real(sum(x[CuArray(Bool[true, false, true, false])]))
+        _gather_mask_none(x) = sum(x[CuArray(falses(4))]) + sum(x)
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
         # unsafe_free! releases the primal early; in reverse mode the fdata is still the
         # accumulator earlier pullbacks write into, so it has to outlive the call.
@@ -709,6 +719,12 @@ end
             (false, :none, false, _gather_dup_host, _rand(rng, Float32, 4)),
             (false, :none, false, _gather_dup_cx, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _gather_dup_cartesian, _rand(rng, Float32, 2, 2)),
+            (false, :none, false, _gather_mask, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_weighted, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_host, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
             (
                 false,
                 :none,
