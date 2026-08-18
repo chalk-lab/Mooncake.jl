@@ -939,6 +939,16 @@ end
 # findmax answers `dims` and nothing else, so those calls keep the plain argmax path.
 _minmax_kw_is_plain(::NamedTuple{K}) where {K} = K === () || K === (:dims,)
 
+# Reducing over an empty extent has a well-defined primal — GPUArrays fills each slice with
+# `init`, or with the eltype's identity when there is none — but no argmax to report, and
+# findmax/findmin read out of bounds there: a device-side BoundsError that surfaces at some
+# later synchronisation.  A Colon reduction over an empty non-vector instead hands `_winner`
+# a linear index outside CartesianIndices.  Since no element competes, x's derivative is
+# zero and `init` takes all of it.
+_empty_minmax_slice(px, ::Colon) = isempty(px)
+_empty_minmax_slice(px, dims::Integer) = size(px, dims) == 0
+_empty_minmax_slice(px, dims) = any(d -> size(px, d) == 0, dims)
+
 for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuFloatArray})
     @eval @is_primitive(
@@ -947,11 +957,13 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
 
     @eval function frule!!(::Dual{typeof($_fn)}, x::Dual{<:CuFloatArray})
         px, dx = arrayify(x)
+        isempty(px) && return Dual($_fn(px), zero(eltype(px)))
         y, ind = $_find(px)
         return Dual(y, sum(dx .* (CartesianIndices(px) .== _winner(ind))))
     end
     @eval function rrule!!(::CoDual{typeof($_fn)}, x::CoDual{<:CuFloatArray})
         px, dx = arrayify(x)
+        isempty(px) && return CoDual($_fn(px), NoFData()), _nopb(Val(2))
         y, ind = $_find(px)
         function minmax_pb!!(dy)
             dx .+= dy .* (CartesianIndices(px) .== _winner(ind))
@@ -974,6 +986,10 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         pkw = primal(kw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
+        if _empty_minmax_slice(px, dims)
+            y_e = $_fn(px; pkw...)
+            return Dual(y_e, _kw_init_jvp(zero(y_e), _kw_init_tangent(tangent(kw)), true))
+        end
         m, ind = $_find(px; dims=dims)
         if _minmax_kw_is_plain(pkw)
             return Dual(m, sum(dx .* (CartesianIndices(px) .== _winner(ind)); dims=dims))
@@ -995,6 +1011,22 @@ for (_fn, _find, _beat) in ((:maximum, :findmax, :<), (:minimum, :findmin, :>))
         kw_rdata = zero_rdata(pkw)
         px, dx = arrayify(x)
         dims = get(pkw, :dims, :)
+        if _empty_minmax_slice(px, dims)
+            y_e = $_fn(px; pkw...)
+            if dims isa Colon
+                function minmax_empty_scalar_pb!!(dy)
+                    dkw = _kw_init_rdata(kw_rdata, dy, true)
+                    return NoRData(), dkw, NoRData(), NoRData()
+                end
+                return CoDual(y_e, NoFData()), minmax_empty_scalar_pb!!
+            end
+            dy_e = zero(y_e)
+            function minmax_empty_array_pb!!(::NoRData)
+                dkw = _kw_init_rdata(kw_rdata, dy_e, true)
+                return NoRData(), dkw, NoRData(), NoRData()
+            end
+            return CoDual(y_e, dy_e), minmax_empty_array_pb!!
+        end
         m, ind = $_find(px; dims=dims)
         y, won = if _minmax_kw_is_plain(pkw)
             m, true

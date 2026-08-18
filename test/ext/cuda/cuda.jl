@@ -407,6 +407,7 @@ end
         _max_init(a, x) = maximum(x; init=a)
         _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
         _min_init(a, x) = minimum(x; init=a)
+        _min_init_d1(a, x) = sum(minimum(x; dims=1, init=a))
         _max_badkw(x) = maximum(x; bad=1.0)
         _max_nan_init(x) = maximum(x; init=-1.0f0)
         # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
@@ -2549,6 +2550,44 @@ end
                     is_primitive=false,
                     perf_flag=:none,
                 )
+            end
+            # An empty reduced extent has a well-defined primal — every slice takes
+            # `init` — but no argmax to report, and findmax/findmin used to read out of
+            # bounds there, throwing a device-side BoundsError in both modes.  `init`
+            # takes the whole derivative, one unit per output slice.
+            @testset "$name" for (seed, name, f, a) in [
+                (97, "empty slice, dims=1", _max_init_d1, -9.0f0),
+                (98, "empty slice, Colon", _max_init, -9.0f0),
+                (99, "empty slice, minimum, dims=1", _min_init_d1, 9.0f0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    CuArray(zeros(Float32, 0, 3));
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            # The same reduction without `init` returns the eltype's identity, so
+            # test_rule cannot cover it: its finite differences subtract two infinite
+            # outputs and compare the resulting NaN against the rule's correct zero.
+            # What regressed was that AD threw at all, so check the value and the shape.
+            @testset "empty slice, no init" begin
+                e = CuArray(zeros(Float32, 0, 3))
+                @testset "$f" for (f, expected) in
+                                  ((_max_bare, -Inf32), (_max_d1, -Inf32), (_min_d1, Inf32))
+                    val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
+                    @test val == expected
+                    @test size(grads[2]) == (0, 3)
+                    d = Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, e),
+                        Mooncake.Dual(f, Mooncake.NoTangent()),
+                        Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                    )
+                    @test Mooncake.primal(d) == expected
+                    @test Mooncake.tangent(d) == 0.0f0
+                end
             end
             # An index array contributes nothing, so `init` carries the whole gradient.
             @testset "$name" for (seed, name, f, a) in [
