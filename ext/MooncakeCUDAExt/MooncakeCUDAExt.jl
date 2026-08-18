@@ -3271,7 +3271,10 @@ function rrule!!(
     dx = tangent(x)
     dy_cpu = Array(zero(primal(x)))  # output fdata, accumulated into by downstream
     function array_pb!!(::NoRData)
-        dx .+= cu(dy_cpu)            # transfer gradient back to GPU in-place
+        # `cu` is an adaptor, not a transfer: it narrows Float64 to Float32 and ComplexF64
+        # to ComplexF32. The primal is an exact same-eltype copy, so its adjoint has to be
+        # one too; `similar(dx)` also matches dx's memory kind.
+        dx .+= copyto!(similar(dx), dy_cpu)
         return NoRData(), NoRData()
     end
     return CoDual(Array(primal(x)), dy_cpu), array_pb!!

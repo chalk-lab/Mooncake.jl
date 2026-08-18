@@ -275,6 +275,7 @@ end
         _inplace_cx_abs2!(x, y) = (x.=abs2.(y); real(sum(x)))
         # GPU→CPU transfer inside the function: Array(x::CuArray) path.
         _gpu_to_cpu(x) = sum(Array(x) .^ 2)
+        _gpu_to_cpu_cx(z) = real(sum(Array(z) .^ 2))
         # CPU→GPU transfer: copies a host Array into a GPU dest via unsafe_copyto!(GPU←CPU).
         # Exercises the mixed-device rrule (dest::CuArray, src::Array).
         # The gradient flows back from the GPU cotangent to the CPU src tangent.
@@ -1460,6 +1461,24 @@ end
             @test Mooncake.tangent(out) isa typeof(tref)
             @test Mooncake.tangent(out) !== tref
             @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
+        end
+
+        @testset "Array(x) pullback keeps the eltype it was given" begin
+            # `cu` is an adaptor, not a transfer — it narrows Float64 to Float32 — so
+            # routing the cotangent home through it cost about seven digits while leaving
+            # the gradient's eltype Float64, so nothing errored.  test_rule cannot see this:
+            # its finite differences are themselves only good to about 1e-6, which is why
+            # `_gpu_to_cpu` passes either way.  Compare against the exact derivative.
+            x = CuArray([1.234567890123, 2.345678901234])
+            _, grads = value_and_gradient!!(
+                Mooncake.build_rrule(_gpu_to_cpu, x), _gpu_to_cpu, x
+            )
+            @test Array(grads[2]) ≈ 2 .* Array(x) rtol = 1e-14
+            z = CuArray(ComplexF64[1.234567890123 - 0.7im, 2.345678901234 + 0.3im])
+            _, cgrads = value_and_gradient!!(
+                Mooncake.build_rrule(_gpu_to_cpu_cx, z), _gpu_to_cpu_cx, z
+            )
+            @test Array(cgrads[2]) ≈ 2 .* conj.(Array(z)) rtol = 1e-14
         end
 
         @testset "norm frule!! rescales an overflowing dot" begin
