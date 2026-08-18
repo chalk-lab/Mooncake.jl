@@ -304,22 +304,18 @@ function frule!!(
 ) where {T<:BlasFloat}
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
+    # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, though the JVP it
+    # divides down to is representable. Scaling X by the power of two nearest y is exact,
+    # so in-range results are unchanged; a subnormal y has no representable reciprocal,
+    # and with every X[i] subnormal too it needs none.
+    r = isfinite(y) && !iszero(y) ? ldexp(one(y), -exponent(y)) : one(y)
+    isfinite(r) || (r = one(y))
     dy = zero(y)
     @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
+        xi = X[i] * r
+        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
     end
-    # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, while the JVP it
-    # divides down to is still representable. Retry scaled, but only from a non-finite
-    # accumulator, so a correct result never pays for the second pass.
-    if !isfinite(dy) && isfinite(y) && !iszero(y)
-        dy = zero(y)
-        @inbounds for i in eachindex(X)
-            xi = X[i] / y
-            dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
-        end
-        return Dual(y, dy / 2)
-    end
-    return Dual(y, dy / 2y)
+    return Dual(y, dy / 2(y * r))
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
