@@ -262,6 +262,12 @@ end
         # reporting float arrays.
         _nodiff_diff(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(diff(i))))
         _nodiff_sortperm(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sortperm(i))))
+        # sortperm returns Int indices, so it is zero-derivative for a float array too, and
+        # the gather that uses them carries the gradient.  The weighted case is asymmetric,
+        # so a permutation applied the wrong way round would not pass.
+        _sortperm_gather(x) = sum(x[sortperm(x)] .^ 2)
+        _sortperm_weighted(x, w) = sum(x[sortperm(x)] .* w)
+        _sortperm_rev(x) = sum(x[sortperm(x; rev=true)] .^ 2)
         _nodiff_sort_rev(x) =
             (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sort(i; rev=true))))
         # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
@@ -691,6 +697,16 @@ end
             (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
             (false, :none, false, _nodiff_diff, _rand(rng, 8)),
             (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
+            (false, :none, false, _sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            (false, :none, false, _sortperm_rev, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            (
+                false,
+                :none,
+                false,
+                _sortperm_weighted,
+                CuArray(Float32[0.3, 0.7, 0.2, 0.9]),
+                CuArray(Float32[1, 2, 3, 4]),
+            ),
             (false, :none, false, _nodiff_sort_rev, _rand(rng, 8)),
             # geam! called directly (is_primitive=true): the only case that reaches the
             # restore of C and the consumption of its cotangent, since `+`/`-` always

@@ -820,7 +820,13 @@ end
 const _UNIMPL_MSG = "Add a new rule or open an issue at https://github.com/chalk-lab/Mooncake.jl."
 # NB: `$_fn` inside a string literal under @eval is runtime interpolation of a
 # global that never exists, so build each message here and splice it whole.
-for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
+# sortperm is not in this list: it returns a permutation of Int indices, so it has no
+# derivative for any element type, and the program that uses those indices to gather is
+# differentiable through the gather rule.  sort and diff return values and do belong here.
+@zero_derivative MinimalCtx Tuple{typeof(sortperm),CuArray}
+@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(sortperm),CuArray}
+
+for _fn in (:maximum, :minimum, :diff, :sort)
     _msg = "Mooncake: $_fn on CuArray is not yet differentiable. " * _UNIMPL_MSG
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuArray})
     @eval @is_primitive(
@@ -1324,7 +1330,7 @@ end
 # same way lets the narrower array type decide, leaving those rules to report float arrays.
 @zero_derivative MinimalCtx Tuple{typeof(sum),CuNonDiffArray}
 @zero_derivative MinimalCtx Tuple{typeof(prod),CuNonDiffArray}
-for _fn in (:maximum, :minimum, :diff, :sort, :sortperm)
+for _fn in (:maximum, :minimum, :diff, :sort)
     @eval @is_primitive(MinimalCtx, Tuple{typeof($_fn),CuNonDiffArray})
     @eval frule!!(f::Dual{typeof($_fn)}, x::Dual{<:CuNonDiffArray}) = zero_derivative(f, x)
     @eval rrule!!(f::CoDual{typeof($_fn)}, x::CoDual{<:CuNonDiffArray}) = zero_adjoint(f, x)
@@ -1381,7 +1387,7 @@ function _check_reduction_init(dkw)
     )
 end
 
-for _fn in (:sum, :prod, :diff, :sort, :sortperm)
+for _fn in (:sum, :prod, :diff, :sort)
     @eval @is_primitive(
         MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof($_fn),CuNonDiffArray}
     )
