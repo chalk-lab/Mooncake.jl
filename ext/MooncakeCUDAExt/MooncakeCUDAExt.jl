@@ -102,6 +102,11 @@ const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
 # generic struct handler, which fails building CuArray's inner DataRef; extend the union
 # if such a case turns up.
 const CuNonDiffArray = CuArray{<:Union{Integer,Bool,CartesianIndex}}
+# `x .= 0f0` reaches the two-argument `materialize!` as a zero-dimensional Broadcasted: it is
+# handed the right-hand side's style alone, and the destination is combined in only inside
+# the three-argument method, so a scalar right-hand side never carries `CuArrayStyle`. A
+# `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
+const _GpuMaterializeStyle = Union{CuArrayStyle,Base.Broadcast.DefaultArrayStyle{0}}
 
 # Without these overloads the generic struct handler would recurse into CuMaybeComplexArray's
 # Julia-visible fields — wrong for GPU arrays.
@@ -4212,16 +4217,23 @@ end
 #
 # A broadcast into a wrapped `CuArray` still forms a `Broadcasted{CuArrayStyle}`, so a bare
 # `CuArray` bound left it to the interpreter, which died tracing the kernel launch.
+#
+# `x .= 0f0` is claimed here too, through `DefaultArrayStyle{0}`: the two-argument
+# materialize! is handed the right-hand side's style alone, and the destination is combined
+# in only inside the three-argument method below this claim, so a scalar right-hand side
+# never reaches `CuArrayStyle`. Its args are all scalars, so the kernel hands back a scalar
+# NDual, which the primal write and the JVP accumulation each broadcast over `dest`. A
+# `DefaultArrayStyle{N}` for N > 0 means host arrays are involved and stays out.
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:CuArrayStyle}
+        typeof(Base.Broadcast.materialize!),P,<:Broadcasted{<:_GpuMaterializeStyle}
     } where {P<:CuMaybeWrappedArray},
 )
 function frule!!(
     ::Dual{typeof(Base.Broadcast.materialize!)},
     dest::Dual{P},
-    bc::Dual{<:Broadcasted{<:CuArrayStyle}},
+    bc::Dual{<:Broadcasted{<:_GpuMaterializeStyle}},
 ) where {P<:CuMaybeWrappedArray}
     bc_primal = primal(bc)
     _, flat_bc, flat_pargs, flat_ts = _prepare_gpu_broadcast(bc_primal, tangent(bc))
@@ -4251,7 +4263,7 @@ end
 function rrule!!(
     ::CoDual{typeof(Base.Broadcast.materialize!),NoFData},
     dest::CoDual{P},
-    bc::CoDual{<:Broadcasted{<:CuArrayStyle}},
+    bc::CoDual{<:Broadcasted{<:_GpuMaterializeStyle}},
 ) where {P<:CuMaybeWrappedArray}
     pout, dout = arrayify(dest)
     bc_primal = primal(bc)
