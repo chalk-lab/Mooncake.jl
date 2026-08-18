@@ -178,6 +178,13 @@ end
         _accumulate_nodiff_init(a, idx) = sum(accumulate(+, idx; init=a))
         _accumulate_nodiff_init_d1(a, idx) = sum(accumulate(+, idx; dims=1, init=a))
         _accumulate_nodiff_init_outdim(a, idx) = sum(accumulate(+, idx; dims=2, init=a))
+        # `reverse` refuses an empty array while `cumsum` accepts one, so an empty input
+        # reached the pullback and only the pullback.  The 0x3 reduced along dim 2 is not an
+        # empty reduction at all — it is simply an empty array — so both need covering.
+        _cumsum_empty(y) = sum(cumsum(y; dims=1))
+        _cumsum_empty_d2(y) = sum(cumsum(y; dims=2))
+        _cumprod_empty(y) = sum(cumprod(y; dims=1))
+        _accumulate_empty(y) = sum(accumulate(+, y))
         # Without `dims` CUDA scans an N-d array in linear order, not column by column.
         # Passing the captured value as an argument is what the refusal message recommends;
         # a capture the kernel cannot thread must not be silently zeroed instead.
@@ -768,6 +775,10 @@ end
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
             (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _cumsum_empty, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _accumulate_empty, CuArray{Float32}(undef, 0)),
             (false, :none, false, _accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
             (false, :none, false, _accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
             (

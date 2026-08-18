@@ -1326,12 +1326,18 @@ end
 # cumsum needs no such split: Base rejects it without `dims` past one dimension.
 _scan_jvp(dx, ::Nothing) = reshape(cumsum(vec(dx)), size(dx))
 _scan_jvp(dx, d) = cumsum(dx; dims=d)
-_scan_pullback(dy, ::Nothing) = reshape(reverse(cumsum(reverse(vec(dy)))), size(dy))
+# `reverse` sizes its grid from the element count and refuses an empty one, while `cumsum`
+# over an empty array is fine — so an empty input reached the pullback and only the pullback.
+# Its adjoint is empty whatever the scan was, including a 0x3 reduced along its non-empty
+# dimension.
+function _scan_pullback(dy, ::Nothing)
+    isempty(dy) ? dy : reshape(reverse(cumsum(reverse(vec(dy)))), size(dy))
+end
 function _scan_pullback(dy, d)
     # Scanning along a dimension the array does not have is the identity — the primal and the
     # JVP both accept it — so the adjoint is the identity too.  `reverse` would refuse that
     # dimension, which is what used to make the pullback the only mode to reject it.
-    d > ndims(dy) && return dy
+    (isempty(dy) || d > ndims(dy)) && return dy
     return reverse(cumsum(reverse(dy; dims=d); dims=d); dims=d)
 end
 # Same boundary seen from `init`: on that identity path CUDA's scan copies the input and
