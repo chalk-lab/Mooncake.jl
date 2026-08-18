@@ -283,6 +283,14 @@ end
         _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
         _bcast_cast_chain_same(x) = sum(Float32.(Float32.(x)) .^ 2)
         _bcast_cast_chain_cx(z) = sum(abs2.(ComplexF64.(ComplexF32.(z))))
+        # A cast at the top of the tree is never materialized away, so it is the one place
+        # the kernel sees the cast itself: as a bare `DataType`, which cannot be captured,
+        # and applied to duals, which have no conversion of their own.
+        _bcast_cast_top(x) = sum(Float64.(x))
+        _bcast_cast_top_narrow(x) = sum(Float32.(x))
+        _bcast_cast_top_chain(x) = sum(Float64.(Float32.(x)))
+        _bcast_cast_top_nodiff(x) =
+            (i=CuArray(Int32[1, 2, 3, 4]); sum(Float64.(i)) * sum(x))
         # `x .= scalar` reaches materialize! as a zero-dimensional Broadcasted, whose style
         # is DefaultArrayStyle rather than CuArrayStyle; before the claim covered it the
         # call decomposed and tracing died inside cufunction.
@@ -815,6 +823,10 @@ end
             (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
             (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
             (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            (false, :none, false, _bcast_cast_top, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_cast_top_narrow, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_top_chain, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_cast_top_nodiff, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_chain_exp, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_chain_sq, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_chain_same, _rand(rng, Float64, 4)),

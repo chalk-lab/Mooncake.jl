@@ -3899,10 +3899,32 @@ function _check_gpu_bcast_captures(bc::Broadcasted)
     return _check_gpu_bcast_captures(bc.args)
 end
 
+# A `Type` used as a broadcast function is a `DataType`, which is not a bitstype and so
+# cannot be captured by a GPU kernel. `flatten` either hands it over raw, which fails to
+# compile, or folds it into a closure whose element type inference is version-dependent —
+# Julia 1.10 gives up and infers `Any` where 1.12 does not. Swapping in a singleton that
+# carries the target type as a parameter removes the question: it is a bitstype either way,
+# and it composes into whatever `flatten` builds. The tree is rebuilt before flattening and
+# only the functions change, so the leaves walk still pairs it with the original arg by arg.
+struct _CastTo{T} end
+@inline (::_CastTo{T})(x) where {T} = T(x)
+# Converting a dual has no method of its own, so a cast reaching the kernel over live
+# partials infers `Union{}` and the launch is refused. The cast is the identity up to
+# rounding, so it applies to the partials exactly as it does to the value.
+@inline function (::_CastTo{T})(x::Nfwd.NDual{V,N}) where {T,V,N}
+    return Nfwd.NDual{T,N}(T(x.value), map(T, x.partials))
+end
+# Only the outermost function needs this. A cast nested inside the tree is materialized by
+# `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
+# that survives, because nothing materializes the tree's own root.
+_desugar_casts(x) = x
+_desugar_casts(bc::Broadcasted{S}) where {S} =
+    bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
+
 function _prepare_gpu_broadcast(bc_primal, tangent_or_fdata)
     _check_gpu_bcast_captures(bc_primal)
     bc_prepared = _premat_nondiff_args(bc_primal, tangent_or_fdata)
-    flat_bc = Base.Broadcast.flatten(bc_prepared)
+    flat_bc = Base.Broadcast.flatten(_desugar_casts(bc_prepared))
     flat_pargs, flat_tangent_or_fdata = _gpu_bcast_leaves(
         bc_prepared, bc_primal, tangent_or_fdata
     )
