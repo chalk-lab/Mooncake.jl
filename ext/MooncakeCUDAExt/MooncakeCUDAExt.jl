@@ -1341,8 +1341,46 @@ end
 # positional mapreduce catch-all does not claim, so claim `count` itself.
 @zero_derivative MinimalCtx Tuple{typeof(count),CuArray}
 @zero_derivative MinimalCtx Tuple{typeof(count),Any,CuArray}
-@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),CuArray}
-@zero_derivative MinimalCtx Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),Any,CuArray}
+
+# The positional spellings above take no `init` and are zero-derivative outright.  The keyword
+# ones accept one, and GPUArrays sums it like `sum`'s: a float `init` makes the result a float
+# that visibly depends on it, folded into a backend-defined number of partial reductions, so
+# `count(>(0.0), x; init=1.0)` returns 98.0 where the count is 3.  Same identity check as
+# `sum`, so the wrong value is refused rather than its derivative silently zeroed.
+for _n_args in (0, 1)
+    _pred_d = _n_args == 1 ? (:(pred::Dual),) : ()
+    _pred_c = _n_args == 1 ? (:(pred::CoDual),) : ()
+    _pred_v = _n_args == 1 ? (:(primal(pred)),) : ()
+    _slot = _n_args == 1 ? (:Any,) : ()
+    @eval @is_primitive(
+        MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(count),$(_slot...),CuArray}
+    )
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof(count)},
+        $(_pred_d...),
+        x::Dual{<:CuArray},
+    )
+        pkw = primal(kw)
+        _check_reduction_identity(count, pkw)
+        y = count($(_pred_v...), primal(x); pkw...)
+        return Dual(y, zero_tangent(y))
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof(count)},
+        $(_pred_c...),
+        x::CoDual{<:CuArray},
+    )
+        pkw = primal(kw)
+        _check_reduction_identity(count, pkw)
+        y = count($(_pred_v...), primal(x); pkw...)
+        count_kw_pb!!(::Any) = ntuple(_ -> NoRData(), $(_n_args + 4))
+        return zero_fcodual(y), count_kw_pb!!
+    end
+end
 
 # The keyword spellings cannot be zero-derivative outright: a float `init` makes the output
 # differentiable, so dropping its derivative would be silently wrong.  Nor is it 1 —
@@ -1362,6 +1400,7 @@ end
 # maximum/minimum need no such guard: max and min are idempotent, so their fold is exact and
 # a non-identity `init` is the point of passing one.
 _reduction_identity(::typeof(sum)) = 0
+_reduction_identity(::typeof(count)) = 0
 _reduction_identity(::typeof(prod)) = 1
 _reduction_identity(_) = nothing
 function _check_reduction_identity(f, pkw)

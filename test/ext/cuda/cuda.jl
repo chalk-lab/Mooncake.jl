@@ -258,6 +258,9 @@ end
         # predicate whose value can flip within a finite-difference step would leave
         # test_rule comparing a zero rule derivative against a 1/h estimate.
         _nodiff_count_float(x) = sum(x) * Float32(count(isfinite, x))
+        # count's keyword spellings sum `init` like `sum` does, so a non-identity one
+        # corrupts the count itself: count(>(0.0), x; init=1.0) is 98.0 where the count is 3.
+        _count_init_identity(x) = Float64(count(>(0.0), x; init=0)) * sum(x)
         # Orderings over an index array: no derivative, and the catch-all error rules keep
         # reporting float arrays.
         _nodiff_diff(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(diff(i))))
@@ -695,6 +698,7 @@ end
             (false, :none, false, _nodiff_min_dims, _rand(rng, 8)),
             (false, :none, false, _nodiff_count, _rand(rng, 8)),
             (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
+            (false, :none, false, _count_init_identity, _rand(rng, 8)),
             (false, :none, false, _nodiff_diff, _rand(rng, 8)),
             (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
             (false, :none, false, _sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
@@ -1588,6 +1592,25 @@ end
             end
 
             # accumulate with unsupported op — catch-all rule throws ArgumentError.
+            @testset "count refuses a non-identity init" begin
+                # The count is summed with `init` folded into a backend-defined number of
+                # partial reductions, so a nonzero one changes the value, not just its
+                # derivative: 98.0 where the count is 3, with sensitivity 95.
+                x = CuArray([1.0, -2.0, 3.0, 4.0])
+                for f in
+                    ((i, z) -> count(>(0.0), z; init=i), (i, z) -> count(z .> 0; init=i))
+                    @test_throws r"not its identity" Mooncake.value_and_gradient!!(
+                        Mooncake.build_rrule(f, 1.0, x), f, 1.0, x
+                    )
+                    @test_throws r"not its identity" Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, 1.0, x),
+                        Mooncake.Dual(f, Mooncake.zero_tangent(f)),
+                        Mooncake.Dual(1.0, 1.0),
+                        Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                    )
+                end
+            end
+
             @testset "keyword reduce/mapreduce spellings report their own limits" begin
                 # Before these claims the keyword forms escaped to GPUArrays' reduction
                 # kernel and failed there; an unsupported op or a `dims` the mapped rule
