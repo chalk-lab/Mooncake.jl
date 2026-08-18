@@ -3917,7 +3917,6 @@ end
 # Only the outermost function needs this. A cast nested inside the tree is materialized by
 # `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
 # that survives, because nothing materializes the tree's own root.
-_desugar_casts(x) = x
 function _desugar_casts(bc::Broadcasted{S}) where {S}
     bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
 end

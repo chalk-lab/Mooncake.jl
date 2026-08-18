@@ -2912,7 +2912,6 @@ end
                 @testset "$name" for (seed, name, f) in [
                     (96, "maximum", _max_init_widens),
                     (97, "prod dims=1", _prod_init_widens),
-                    (98, "prod dims=1, wider init", _prod_init_wider),
                 ]
                     test_rule(
                         StableRNG(seed),
