@@ -1342,6 +1342,52 @@ for _fn in (:maximum, :minimum, :diff, :sort)
     @eval rrule!!(f::CoDual{typeof($_fn)}, x::CoDual{<:CuNonDiffArray}) = zero_adjoint(f, x)
 end
 
+# The scans over such an array are zero-derivative for the same reason, whatever the operator
+# accumulates: the array carries no derivative, so nothing built from it does either.  Without
+# these, `x[cumsum(idx)]` decomposed onto the untraceable scan kernel, and `cumprod(idx)` —
+# which lowers to `accumulate(*, …)` — reported the accumulate rule's operator restriction as
+# though the operator were the problem.  cumsum and cumprod have no catch-all error rules to
+# be ambiguous with, so they can use the macro; accumulate does, hence the manual spelling.
+@zero_derivative MinimalCtx Tuple{typeof(cumsum),CuNonDiffArray}
+@zero_derivative MinimalCtx Tuple{typeof(cumprod),CuNonDiffArray}
+@zero_derivative MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(cumsum),CuNonDiffArray
+}
+@zero_derivative MinimalCtx Tuple{
+    typeof(Core.kwcall),NamedTuple,typeof(cumprod),CuNonDiffArray
+}
+@is_primitive(MinimalCtx, Tuple{typeof(accumulate),Any,CuNonDiffArray})
+function frule!!(f::Dual{typeof(accumulate)}, op::Dual, x::Dual{<:CuNonDiffArray})
+    zero_derivative(f, op, x)
+end
+function rrule!!(f::CoDual{typeof(accumulate)}, op::CoDual, x::CoDual{<:CuNonDiffArray})
+    zero_adjoint(f, op, x)
+end
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),Any,CuNonDiffArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(accumulate)},
+    op::Dual,
+    x::Dual{<:CuNonDiffArray},
+)
+    y = accumulate(primal(op), primal(x); primal(kw)...)
+    return Dual(y, zero_tangent(y))
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(accumulate)},
+    op::CoDual,
+    x::CoDual{<:CuNonDiffArray},
+)
+    y = accumulate(primal(op), primal(x); primal(kw)...)
+    accumulate_nodiff_kw_pb!!(::Any) = ntuple(_ -> NoRData(), 5)
+    return zero_fcodual(y), accumulate_nodiff_kw_pb!!
+end
+
 # `count` returns an Integer for every array, float included, so it never has a derivative.
 # It reaches GPUArrays through `mapreduce(pred, add_sum, A; init=0)`, a Core.kwcall the
 # positional mapreduce catch-all does not claim, so claim `count` itself.

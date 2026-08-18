@@ -274,6 +274,13 @@ end
         # reporting float arrays.
         _nodiff_diff(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(diff(i))))
         _nodiff_sortperm(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sortperm(i))))
+        # Scans over an index array carry no derivative either, whatever the operator, so the
+        # indices they build can be used to gather.  Distinct indices here: a repeated one
+        # exercises the gather rule's scatter, which is a separate matter.
+        _cumsum_idx_gather(x) = sum(x[cumsum(CuArray([1, 1, 1]))])
+        _cumsum_idx_kw(x) = sum(x[cumsum(CuArray([1, 1, 1]); dims=1)])
+        _accumulate_idx_gather(x) = sum(x[accumulate(+, CuArray([1, 1, 1]))])
+        _cumsum_mask_gather(x) = sum(x[cumsum(CuArray([true, true, true]))])
         # sortperm returns Int indices, so it is zero-derivative for a float array too, and
         # the gather that uses them carries the gradient.  The weighted case is asymmetric,
         # so a permutation applied the wrong way round would not pass.
@@ -718,6 +725,10 @@ end
             (false, :none, false, _count_init_identity, _rand(rng, 8)),
             (false, :none, false, _nodiff_diff, _rand(rng, 8)),
             (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
+            (false, :none, false, _cumsum_idx_gather, _rand(rng, Float32, 4)),
+            (false, :none, false, _cumsum_idx_kw, _rand(rng, Float32, 4)),
+            (false, :none, false, _accumulate_idx_gather, _rand(rng, Float32, 4)),
+            (false, :none, false, _cumsum_mask_gather, _rand(rng, Float32, 4)),
             (false, :none, false, _sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
             (false, :none, false, _sortperm_rev, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
             (
