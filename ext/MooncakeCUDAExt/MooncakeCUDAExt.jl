@@ -1138,7 +1138,12 @@ function _prod_exclusive(px, dims, kw)
     pnz = prod(nonzero; kw...)
     nzeros = sum(iszero.(px); dims=dims)
     contributes = ifelse.(iszero.(px), nzeros .== 1, iszero.(nzeros))
-    return ifelse.(contributes, pnz ./ nonzero, zero(T))
+    # `pnz` follows `init`'s type when there is one, since GPUArrays takes the output eltype
+    # from it, so the zero has to come from the quotient rather than from either side: `T`
+    # would join two eltypes into an `AbstractFloat` the kernel cannot hold, and `eltype(pnz)`
+    # would do the same the other way round when `init` is the narrower of the two.
+    q = pnz ./ nonzero
+    return ifelse.(contributes, q, zero(eltype(q)))
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(prod),CuMaybeComplexArray})

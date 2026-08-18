@@ -501,6 +501,10 @@ end
         # Float64 array narrows the result and its tangent has to follow.
         _max_init_widens(x) = maximum(x; init=0.0f0)
         _prod_init_widens(x) = sum(prod(x; dims=1, init=1.0f0))
+        # The mirror of the above: an `init` wider than the array.  GPUArrays takes the
+        # output eltype from `init`, so the exclusive product and the zero it falls back to
+        # are two different types unless the zero is taken from the quotient itself.
+        _prod_init_wider(x) = sum(prod(x; dims=1, init=1.0))
         # An index or mask array has no derivative, but `init` competes with its elements.
         _max_idx_init(a, x) = maximum(CuArray([1, 2, 3]); init=a) * sum(x)
         _max_idx_init_d1(a, x) = sum(maximum(CuArray([1 2; 3 4]); dims=1, init=a)) * sum(x)
@@ -775,6 +779,8 @@ end
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
             (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _prod_init_wider, _rand(rng, Float32, 2, 2)),
+            (false, :none, false, _prod_init_wider, CuArray(Float32[1 0; 3 2])),
             (false, :none, false, _cumsum_empty, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
@@ -2906,6 +2912,7 @@ end
                 @testset "$name" for (seed, name, f) in [
                     (96, "maximum", _max_init_widens),
                     (97, "prod dims=1", _prod_init_widens),
+                    (98, "prod dims=1, wider init", _prod_init_wider),
                 ]
                     test_rule(
                         StableRNG(seed),
