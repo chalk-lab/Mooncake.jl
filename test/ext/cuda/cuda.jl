@@ -296,6 +296,13 @@ end
         _bcast_cast_top(x) = sum(Float64.(x))
         _bcast_cast_top_narrow(x) = sum(Float32.(x))
         _bcast_cast_top_chain(x) = sum(Float64.(Float32.(x)))
+        # A complex leaf reaches the kernel as `Complex{<:NDual}`, one dual per degree of
+        # freedom, so a complex cast has to convert the parts rather than the whole; a real
+        # leaf widened to complex keeps its derivative in the real part.
+        _bcast_cast_cx_narrow(z) = real(sum(ComplexF32.(z) .* (1 + 2im)))
+        _bcast_cast_cx_widen(z) = real(sum(ComplexF64.(z) .* (1 + 2im)))
+        _bcast_cast_cx_abs2(z) = sum(abs2.(ComplexF32.(z)))
+        _bcast_cast_real_to_cx(x) = real(sum(ComplexF64.(x) .* (1 + 2im)))
         _bcast_cast_top_nodiff(x) =
             (i=CuArray(Int32[1, 2, 3, 4]); sum(Float64.(i)) * sum(x))
         # `x .= scalar` reaches materialize! as a zero-dimensional Broadcasted, whose style
@@ -840,6 +847,10 @@ end
             (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
             (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
             (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
+            (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _bcast_cast_cx_abs2, _rand(rng, ComplexF64, 4)),
+            (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_top, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_cast_top_narrow, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_top_chain, _rand(rng, Float32, 4)),

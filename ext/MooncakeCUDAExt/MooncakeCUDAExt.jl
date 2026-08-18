@@ -3911,8 +3911,18 @@ struct _CastTo{T} end
 # Converting a dual has no method of its own, so a cast reaching the kernel over live
 # partials infers `Union{}` and the launch is refused. The cast is the identity up to
 # rounding, so it applies to the partials exactly as it does to the value.
-@inline function (::_CastTo{T})(x::Nfwd.NDual{V,N}) where {T,V,N}
+@inline function (::_CastTo{T})(x::Nfwd.NDual{V,N}) where {T<:Real,V,N}
     return Nfwd.NDual{T,N}(T(x.value), map(T, x.partials))
+end
+# A complex leaf reaches the kernel as `Complex{<:NDual}`, one dual per degree of freedom
+# rather than one dual holding a complex, so a complex target converts the two parts. Casting
+# a real leaf to a complex one leaves its derivative wholly in the real part.
+@inline (::_CastTo{T})(x::Complex{<:Nfwd.NDual}) where {T<:Complex} = Complex(
+    _CastTo{real(T)}()(real(x)), _CastTo{real(T)}()(imag(x))
+)
+@inline function (::_CastTo{T})(x::Nfwd.NDual) where {T<:Complex}
+    re = _CastTo{real(T)}()(x)
+    return Complex(re, zero(re))
 end
 # Only the outermost function needs this. A cast nested inside the tree is materialized by
 # `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
