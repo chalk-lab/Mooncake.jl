@@ -168,6 +168,11 @@ end
         _accumulate_init(a, x) = sum(accumulate(+, x; init=a))
         _accumulate_init_d1(a, x) = sum(accumulate(+, x; dims=1, init=a))
         _accumulate_init_widens(x) = sum(accumulate(+, x; init=1.0f0))
+        # Scanning along a dimension the array does not have copies the input and returns
+        # before `init` is applied, so the primal does not depend on it and neither may the
+        # derivative — the array's adjoint already took that path, only `init` had not.
+        _accumulate_init_outdim(a, x) = sum(accumulate(+, x; dims=2, init=a))
+        _accumulate_init_outdim3(a, m) = sum(accumulate(+, m; dims=3, init=a))
         # Without `dims` CUDA scans an N-d array in linear order, not column by column.
         # Passing the captured value as an argument is what the refusal message recommends;
         # a capture the kernel cannot thread must not be silently zeroed instead.
@@ -715,6 +720,15 @@ end
             (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
+            (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            (
+                false,
+                :none,
+                false,
+                _accumulate_init_outdim3,
+                1.0f0,
+                _rand(rng, Float32, 2, 3),
+            ),
             (false, :none, false, _bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _bcast_kill_view, CuArray([0.3, -0.7, 1.2, 2.5])),

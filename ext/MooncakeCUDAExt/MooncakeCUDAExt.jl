@@ -1328,6 +1328,11 @@ function _scan_pullback(dy, d)
     d > ndims(dy) && return dy
     return reverse(cumsum(reverse(dy; dims=d); dims=d); dims=d)
 end
+# Same boundary seen from `init`: on that identity path CUDA's scan copies the input and
+# returns before applying `init`, so the primal does not depend on it and neither may the
+# derivative.
+_scan_applies_init(px, ::Nothing) = true
+_scan_applies_init(px, d) = d <= ndims(px)
 
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
@@ -1386,9 +1391,12 @@ function frule!!(
 )
     pkw = primal(kw)
     px, dx = arrayify(x)
+    d = get(pkw, :dims, nothing)
     y = accumulate(+, px; pkw...)
-    dy = eltype(y).(_scan_jvp(dx, get(pkw, :dims, nothing)))
-    return Dual(y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), true))
+    dy = eltype(y).(_scan_jvp(dx, d))
+    return Dual(
+        y, _kw_init_jvp(dy, _kw_init_tangent(tangent(kw)), _scan_applies_init(px, d))
+    )
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1405,9 +1413,8 @@ function rrule!!(
     d = get(pkw, :dims, nothing)
     function accumulate_plus_kw_pb!!(::NoRData)
         dx .+= _scan_pullback(dy_out, d)
-        return NoRData(),
-        _kw_init_rdata(kw_rdata, dy_out, true), NoRData(), NoRData(),
-        NoRData()
+        dkw = _kw_init_rdata(kw_rdata, dy_out, _scan_applies_init(px, d))
+        return NoRData(), dkw, NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy_out), accumulate_plus_kw_pb!!
 end
