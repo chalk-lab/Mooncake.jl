@@ -189,6 +189,15 @@ end
         _accumulate_flat_init(a, x) = sum(accumulate(+, x; init=a))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
+        # A repeated index is read more than once, so its element is owed the sum of those
+        # reads.  The weighted case distinguishes a correct sum from a single surviving write.
+        _gather_dup(x) = sum(x[CuArray([1, 1, 2])])
+        _gather_dup_weighted(x) = sum(x[CuArray([1, 1, 2])] .* CuArray(Float32[1, 2, 3]))
+        _gather_dup_host(x) = sum(x[[1, 1, 2]])
+        _gather_dup_cx(x) = real(sum(x[CuArray([1, 1, 2])]))
+        _gather_dup_cartesian(m) = sum(
+            m[CuArray([CartesianIndex(1, 1), CartesianIndex(1, 1), CartesianIndex(2, 2)])]
+        )
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
         # unsafe_free! releases the primal early; in reverse mode the fdata is still the
         # accumulator earlier pullbacks write into, so it has to outlive the call.
@@ -693,6 +702,11 @@ end
                 _rand(rng, 16),
                 CuArray(Int32[2, 5, 7, 3, 1, 8]),
             ),
+            (false, :none, false, _gather_dup, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_weighted, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_host, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_cx, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _gather_dup_cartesian, _rand(rng, Float32, 2, 2)),
             (
                 false,
                 :none,

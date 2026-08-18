@@ -739,10 +739,54 @@ end
 # reduces with `&` and hits the mapreduce catch-all.
 #
 # frule:    dy = dx[idx]          (gather tangents)
-# pullback: dx[idx] .+= dy_out   (scatter-add cotangents)
+# pullback: scatter-add the output cotangents back to the elements they were read from
 #
-# Note: repeated indices in idx are undefined (last write wins on GPU without atomics).
-# Distinct-index usage (e.g. embedding lookup, slicing) is safe.
+# A repeated index means several outputs read one element, so that element is owed the sum of
+# their cotangents.  `dx[idx] .+= dy` is a read-modify-write per output: where an index
+# repeats the reads race and a single contribution survives, silently.  An embedding lookup is
+# exactly a repeated gather, so this is scattered atomically instead.  `@atomic` has no
+# Complex method, so a complex buffer is scattered as its interleaved real and imaginary
+# halves, which are independent sums.
+function _gpu_scatter_add_kernel!(dx, lin, dy)
+    i = (CUDACore.blockIdx().x - 1) * CUDACore.blockDim().x + CUDACore.threadIdx().x
+    @inbounds if i <= length(lin)
+        CUDACore.@atomic dx[lin[i]] += dy[i]
+    end
+    return nothing
+end
+function _gpu_scatter_add_complex_kernel!(rdx, lin, rdy)
+    i = (CUDACore.blockIdx().x - 1) * CUDACore.blockDim().x + CUDACore.threadIdx().x
+    @inbounds if i <= length(lin)
+        j = lin[i]
+        CUDACore.@atomic rdx[2j - 1] += rdy[2i - 1]
+        CUDACore.@atomic rdx[2j] += rdy[2i]
+    end
+    return nothing
+end
+function _gpu_scatter_add!(dx, pidx, dy)
+    n = length(pidx)
+    iszero(n) && return dx
+    # The complex kernel indexes the reinterpreted halves arithmetically, so both paths take
+    # linear indices; a Cartesian index vector is converted once, on the device.
+    li = LinearIndices(size(dx))
+    idx_lin = eltype(pidx) <: Integer ? pidx : map(I -> li[I], pidx)
+    # The index vector may live on the host — `x[[1, 2, 3]]` is a perfectly ordinary
+    # spelling — and a kernel argument has to be on the device.
+    lin = idx_lin isa CuArray ? idx_lin : CuArray(idx_lin)
+    threads = min(n, 256)
+    blocks = cld(n, threads)
+    if eltype(dx) <: Complex
+        R = real(eltype(dx))
+        CUDACore.@cuda threads = threads blocks = blocks _gpu_scatter_add_complex_kernel!(
+            reinterpret(R, dx), lin, reinterpret(R, dy)
+        )
+    else
+        CUDACore.@cuda threads = threads blocks = blocks _gpu_scatter_add_kernel!(
+            dx, lin, dy
+        )
+    end
+    return dx
+end
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -767,7 +811,7 @@ function rrule!!(
     y = px[pidx]
     dy_out = zero(y)
     function getindex_pb!!(::NoRData)
-        dx[pidx] .+= dy_out
+        _gpu_scatter_add!(dx, pidx, dy_out)
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy_out), getindex_pb!!
