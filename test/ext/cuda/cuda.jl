@@ -180,6 +180,11 @@ end
         _bcast_kill_cast(x) = (y=x .* 2; y.=Float64.(y .> 0); sum(y))
         _hoisted_capture(a, x) = sum(((t, c) -> c * t).(x, a))
         _int_capture(x) = (n=3; sum((t -> n * t).(x)))
+        # A `dims` past ndims is a no-op scan the primal and the JVP both accept, so the
+        # pullback has to treat it as the identity rather than hand it to `reverse`.
+        _cumsum_trailing(x) = sum(cumsum(x; dims=2) .^ 2)
+        _cumprod_trailing(x) = sum(cumprod(x; dims=2) .^ 2)
+        _accumulate_trailing(x) = sum(accumulate(+, x; dims=3) .^ 2)
         _accumulate_flat(x) = sum(accumulate(+, x))
         _accumulate_flat_init(a, x) = sum(accumulate(+, x; init=a))
         # vector indexing — gather/scatter-add
@@ -658,6 +663,9 @@ end
             (false, :none, false, _bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
             (false, :none, false, _int_capture, _rand(rng, 4)),
+            (false, :none, false, _cumsum_trailing, _rand(rng, 4)),
+            (false, :none, false, _cumprod_trailing, _rand_pos(rng, 4)),
+            (false, :none, false, _accumulate_trailing, _rand(rng, 2, 3)),
             (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
             (false, :none, false, _accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback

@@ -1096,7 +1096,7 @@ function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw.
     dy_out = zero(y)
     d = get(kw, :dims, 1)
     function cumsum_pb!!(::NoRData)
-        dx .+= reverse(cumsum(reverse(dy_out; dims=d); dims=d); dims=d)
+        dx .+= _scan_pullback(dy_out, d)
         return NoRData(), NoRData()
     end
     return CoDual(y, dy_out), cumsum_pb!!
@@ -1197,7 +1197,13 @@ end
 _scan_jvp(dx, ::Nothing) = reshape(cumsum(vec(dx)), size(dx))
 _scan_jvp(dx, d) = cumsum(dx; dims=d)
 _scan_pullback(dy, ::Nothing) = reshape(reverse(cumsum(reverse(vec(dy)))), size(dy))
-_scan_pullback(dy, d) = reverse(cumsum(reverse(dy; dims=d); dims=d); dims=d)
+function _scan_pullback(dy, d)
+    # Scanning along a dimension the array does not have is the identity — the primal and the
+    # JVP both accept it — so the adjoint is the identity too.  `reverse` would refuse that
+    # dimension, which is what used to make the pullback the only mode to reject it.
+    d > ndims(dy) && return dy
+    return reverse(cumsum(reverse(dy; dims=d); dims=d); dims=d)
+end
 
 # Rules for `accumulate(+, x)` — identical to cumsum but via the accumulate interface.
 # Other operators are not supported and throw an informative error (catch-all below).
