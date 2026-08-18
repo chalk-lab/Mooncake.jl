@@ -29,7 +29,7 @@ using CUDA: CUDACore
 using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
-using CUDA.CUDACore.GPUArrays: unsafe_free!
+using CUDA.CUDACore.GPUArrays: derive, unsafe_free!
 using Base.Broadcast: Broadcasted
 # Statistics is a weakdep triggering this extension alongside CUDA; always loaded
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
@@ -597,9 +597,42 @@ function rrule!!(
     return CoDual(reshape(primal(x), _dims), reshape(x.dx, _dims)), _nopb(Val(3))
 end
 
-# `_new_` rules for the DataRef-based inner CuArray constructor (used by views and
-# similar operations). The tangent reuses the DataRef from the input tangent so that
-# gradient accumulation propagates automatically.
+# GPUArrays.derive is the single funnel for `view`, `reshape` and both `reinterpret`
+# spellings. Claiming it keeps the derivation on the arrays, where the offset it adds is
+# relative to whichever array it is handed, so the tangent is sliced from its own base. The
+# `_new_` rules below cannot do that: they see the primal's offset already resolved against
+# the primal's allocation, while a tangent from `zero_tangent` starts at offset 0, and
+# applying one to the other lands `x.offset` bytes too far in — silently shifted while it
+# stays inside the buffer, and writing into whatever the pool handed out next once it does
+# not. The derived tangent shares the source tangent's DataRef, so accumulation into a view
+# reaches the parent's tangent and the pullback has nothing to do.
+@is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuMaybeComplexArray,Dims,Int})
+function frule!!(
+    ::Dual{typeof(derive)},
+    ::Dual{Type{T}},
+    a::Dual{<:CuMaybeComplexArray},
+    dims::Dual,
+    offset::Dual,
+) where {T}
+    pa, da = arrayify(a)
+    d, o = primal(dims), primal(offset)
+    return Dual(derive(T, pa, d, o), derive(T, da, d, o))
+end
+function rrule!!(
+    ::CoDual{typeof(derive)},
+    ::CoDual{Type{T}},
+    a::CoDual{<:CuMaybeComplexArray},
+    dims::CoDual,
+    offset::CoDual,
+) where {T}
+    pa, da = arrayify(a)
+    d, o = primal(dims), primal(offset)
+    return CoDual(derive(T, pa, d, o), derive(T, da, d, o)), _nopb(Val(5))
+end
+
+# `_new_` rules for the DataRef-based inner CuArray constructor. Correct for the offset-0
+# constructions that remain once `derive` is claimed above; see the note there for why an
+# offset resolved against the primal's allocation cannot be applied to a tangent's.
 function frule!!(
     ::Dual{typeof(_new_)},
     ::Dual{Type{P}},

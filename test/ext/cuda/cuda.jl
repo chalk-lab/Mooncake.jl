@@ -209,6 +209,17 @@ end
         _gather_mask_bits(x) = sum(x[BitVector([true, false, true, false])])
         _gather_mask_cx(x) = real(sum(x[CuArray(Bool[true, false, true, false])]))
         _gather_mask_none(x) = sum(x[CuArray(falses(4))]) + sum(x)
+        # A view carries an offset into its parent's allocation, while its tangent starts at
+        # the beginning of a buffer of its own; deriving the tangent from the primal's offset
+        # shifts every gradient by that many elements.  The weighted case pins which element
+        # each cotangent reached, and the parent fixtures are longer than the views so the
+        # offsets are nonzero.
+        _view_sum(a) = sum(view(a, 1:3))
+        _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
+        _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
+        _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
+        _view_cols(m) = sum(view(m, :, 1) .* CuArray(Float32[1, 2, 3]))
+        _view_weighted_cx(a) = real(sum(view(a, 1:3) .* CuArray(ComplexF32[1, 2im, 3])))
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
         # unsafe_free! releases the primal early; in reverse mode the fdata is still the
         # accumulator earlier pullbacks write into, so it has to outlive the call.
@@ -725,6 +736,12 @@ end
             (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
             (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
+            (false, :none, false, _view_sum, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_weighted, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
+            (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
             (
                 false,
                 :none,
