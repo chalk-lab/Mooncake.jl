@@ -242,6 +242,12 @@ end
         # accumulator earlier pullbacks write into, so it has to outlive the call.
         _free_intermediate(x) = (y=x .* 2; s=sum(y); CUDA.unsafe_free!(y); s)
         _free_input(x) = (s=sum(x .* 2); CUDA.unsafe_free!(x); s)
+        # Freeing an array a pullback still needs.  The gather keeps its index array to
+        # scatter with, and constructing one is itself an `unsafe_copyto!` whose rule keeps
+        # the destination to restore, so both reach the reverse sweep after the free.
+        _free_nodiff(x) = (i=CuArray([1, 2, 3]); CUDA.unsafe_free!(i); sum(x))
+        _free_gathered_idx(x) = (i=CuArray([1, 2, 3]); s=sum(x[i]); CUDA.unsafe_free!(i); s)
+        _free_mask(x) = (m=CuArray([true, false, true]); CUDA.unsafe_free!(m); sum(x))
         _cu_sum(x) = sum(cu(x))
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
@@ -635,6 +641,9 @@ end
             ),
             # CPU→GPU transfer (cu)
             (false, :none, false, _free_intermediate, _rand(rng, 4)),
+            (false, :none, false, _free_nodiff, _rand(rng, Float32, 3)),
+            (false, :none, false, _free_gathered_idx, _rand(rng, Float32, 3)),
+            (false, :none, false, _free_mask, _rand(rng, Float32, 3)),
             (false, :none, false, _cu_sum, _host_rand(rng, 16)),
             # `cu` of an argument that is already on the device: the cotangent must come back
             # to the device buffer rather than being pulled to the host.

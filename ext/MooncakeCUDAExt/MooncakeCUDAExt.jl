@@ -1917,11 +1917,14 @@ end
 # unsafe_free! releases GPU memory early (normally handled by GC finalizer).
 # It is a pure side-effect with no mathematical output — gradient is zero.
 #
-# The primal and its fdata are independent allocations with different lifetimes, and only
-# forward mode may free both: there the tangent travels with the primal and dies with it.  In
-# reverse mode the fdata is the accumulator that the pullbacks of *earlier* operations write
-# into, long after the forward sweep reaches this call, so freeing it hands the reverse pass a
-# freed reference.  Reverse therefore frees the primal only, and gives up half the saving.
+# Only forward mode may free anything: there the tangent travels with the primal and dies with
+# it.  Reverse mode frees neither, because the reverse sweep runs long after the forward sweep
+# reaches this call and may reference both.  The fdata is the accumulator earlier pullbacks
+# write into.  The primal is no safer: pullbacks close over it routinely — this extension's own
+# gather keeps the index array to scatter with, and the non-differentiable `unsafe_copyto!`
+# rule keeps its destination to restore — so `CuArray([1, 2, 3])` freed after use took the
+# reverse pass through `view` on released memory.  Reverse therefore gives up the saving
+# entirely; it is a memory hint, and doing nothing is the only sound reading of it here.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
 function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     unsafe_free!(primal(x))
@@ -1932,9 +1935,8 @@ function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     dx isa CuArray && unsafe_free!(dx)
     return Dual(nothing, NoTangent())
 end
-function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
-    unsafe_free!(primal(x))
-    return CoDual(nothing, NoFData()), _nopb(Val(2))
+function rrule!!(::CoDual{typeof(unsafe_free!)}, ::CoDual{<:CuArray})
+    CoDual(nothing, NoFData()), _nopb(Val(2))
 end
 
 # Core.finalizer(f, x) registers f as a GC finalizer for x. This is a pure side-effect
