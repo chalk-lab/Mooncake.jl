@@ -830,8 +830,9 @@ function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
     s = real(dot(px, dx))
     # dot overflows once norm(px)*norm(dx) leaves the eltype's range, while the JVP it
     # divides down to is still representable — reachable in Float16, whose dot saturates
-    # at 65504. Rescaling costs a temporary, so only fall back to it from a non-finite
-    # dot, matching the core `BLAS.nrm2` frule.
+    # at 65504. The core `BLAS.nrm2` frule scales every element as it accumulates, which
+    # here would mean either a temporary or a fused mapreduce costing 25x a cuBLAS dot,
+    # so this one pays for the rescale only when the dot has already overflowed.
     if !isfinite(s) && isfinite(y)
         return Dual(y, real(dot(px ./ y, dx)))
     end

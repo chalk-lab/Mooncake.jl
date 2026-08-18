@@ -1263,6 +1263,76 @@ function test_rule(
     return ts
 end
 
+"""
+    test_rule_throws(
+        rng::AbstractRNG, f, x...;
+        err::Union{Nothing,Type}=nothing,
+        msg::Union{Nothing,AbstractString,Regex}=nothing,
+        mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
+        primal::Bool=false,
+    )
+
+Assert that differentiating `f(x...)` throws, in both modes unless `mode` names one. Use it
+for calls a rule deliberately refuses, in place of a `@test_throws` written out per mode.
+
+Give `err`, an exception type the thrown error must be an instance of, or `msg`, a string or
+regex that `showerror` output must contain, or both -- `@test_throws` accepts only one of the
+two, which is the gap this fills. A rule that re-raises inside a wrapper error matches `msg`
+while failing `err`, so pin the type only where the rule throws it directly.
+
+`primal=true` also requires `f(x...)` itself to throw, separating a call that is already
+invalid before AD sees it from one whose primal is fine and which only AD refuses.
+
+Tangents come from `rng`, not from `zero_tangent`: a guard that fires only when an argument
+carries a derivative -- a keyword the rule treats as constant, say -- sees nothing to refuse
+in a zero seed and would let the case pass while asserting nothing.
+"""
+function test_rule_throws(
+    rng::AbstractRNG,
+    f,
+    x...;
+    err::Union{Nothing,Type}=nothing,
+    msg::Union{Nothing,AbstractString,Regex}=nothing,
+    mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
+    primal::Bool=false,
+)
+    if isnothing(err) && isnothing(msg)
+        throw(
+            ArgumentError(
+                "test_rule_throws needs `err`, `msg`, or both: with neither it would only " *
+                "assert that something was thrown.",
+            ),
+        )
+    end
+    primal && _test_throws(() -> f(x...), err, msg)
+    if mode in [nothing, ReverseMode]
+        _test_throws(err, msg) do
+            Mooncake.value_and_gradient!!(build_rrule(f, x...), f, x...)
+        end
+    end
+    if mode in [nothing, ForwardMode]
+        duals = map(v -> randn_dual(rng, v), (f, x...))
+        _test_throws(err, msg) do
+            Mooncake.value_and_derivative!!(build_frule(f, x...), duals...)
+        end
+    end
+    return nothing
+end
+
+function _test_throws(thunk, err, msg)
+    caught = try
+        thunk()
+        nothing
+    catch e
+        e
+    end
+    @test caught !== nothing
+    isnothing(caught) && return nothing
+    isnothing(err) || @test caught isa err
+    isnothing(msg) || @test occursin(msg, sprint(showerror, caught))
+    return nothing
+end
+
 function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
     test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
         Mooncake.hand_written_rule_test_cases(rng_ctor, v)

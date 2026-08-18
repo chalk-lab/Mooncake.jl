@@ -11,6 +11,7 @@ using Mooncake.TestUtils:
     test_tangent_interface,
     test_tangent_splitting,
     test_rule,
+    test_rule_throws,
     test_frule_interface,
     test_rrule_interface
 using LinearAlgebra, Statistics
@@ -1602,65 +1603,317 @@ end
         # explicit catch-all rule that blocks an unimplemented differentiation path.
         # If a case gains a proper rule in the future, move it back into test_cases above
         # and delete it from here.
-        @testset "state carried by a mapped function is refused, not zeroed" begin
-            # Partials thread through GPU array elements and float scalars only, so anything
-            # the function itself carries — a closure capture, a callable struct's field, a
-            # Ref argument — would come back an exact zero.  Both modes refuse it.  This is
-            # the boundary the sum(f, x) guard was written for; it never fired, because
-            # rdata_type was applied to a primal type and threw inside fields_type.
-            x = _rand(rng, Float64, 4)
-            for f in (
-                (a, z) -> sum((t -> a * t).(z)),
-                (a, z) -> sum((t -> exp(a * t)).(z)),
-                (a, z) -> (w=similar(z); w.=(t -> a * t).(z); sum(w)),
-                (a, z) -> sum((t -> a * t).(z) .+ z),
-                (a, z) -> sum(map(t -> a * t, z)),
-                (a, z) -> sum(t -> a * t, z),
-                (a, z) -> sum(_CapScale(a).(z)),
-                (a, z) -> sum(((t, r) -> r[] * t).(z, Ref(a))),
-            )
-                @test_throws r"does not support" Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(f, 3.0, x), f, 3.0, x
-                )
-                @test_throws r"does not support" Mooncake.value_and_derivative!!(
-                    Mooncake.build_frule(f, 3.0, x),
-                    Mooncake.Dual(f, Mooncake.zero_tangent(f)),
-                    Mooncake.Dual(3.0, 1.0),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                )
+        # Every guard that refuses a call outright, one entry each. `kw` says what the
+        # refusal must carry: `msg` a pattern the message matches, `err` an exception type,
+        # `mode` a single direction where only one guard exists, and `primal` for calls the
+        # primal rejects before AD sees them. Cases that gain a real rule move up into
+        # test_cases; cases whose guard is not reached through AD stay below.
+        @testset "guards that refuse a call" begin
+            x64 = _rand(rng, Float64, 4)
+            x32 = _rand(rng, Float32, 4)
+            M32 = _rand(rng, Float32, 4, 3)
+            cx32 = CuArray(randn(rng, ComplexF32, 4))
+            counted = CuArray([1.0, -2.0, 3.0, 4.0])
+            host_cx = _host_rand(rng, ComplexF64, 3, 3)
+            gpu_cx = _rand(rng, ComplexF64, 3, 3)
+            cpu_vec = _host_rand(rng, Float32, 4)
+            cpu_mat = _host_rand(rng, Float32, 4, 2)
+            x16 = _rand(rng, Float16, 4, 3)
+            y16 = _rand(rng, Float16, 2, 3)
+            m_row = _rand(rng, Float32, 1, 3)
+            m_scalar = randn(StableRNG(28), Float32)
+            @testset "$name" for (seed, name, f, args, kw) in [
+                # Partials thread through GPU array elements and float scalars only, so
+                # anything the mapped function itself carries — a closure capture, a
+                # callable struct's field, a Ref argument — would come back an exact zero.
+                # This is the boundary the sum(f, x) guard was written for; it never fired,
+                # because rdata_type was applied to a primal type and threw in fields_type.
+                (
+                    200,
+                    "capture, broadcast",
+                    (a, z) -> sum((t -> a * t).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    201,
+                    "capture, nonlinear",
+                    (a, z) -> sum((t -> exp(a * t)).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    202,
+                    "capture, in-place",
+                    (a, z) -> (w=similar(z); w.=(t -> a * t).(z); sum(w)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    203,
+                    "capture, fused with z",
+                    (a, z) -> sum((t -> a * t).(z) .+ z),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    204,
+                    "capture, map",
+                    (a, z) -> sum(map(t -> a * t, z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    205,
+                    "capture, sum(f, x)",
+                    (a, z) -> sum(t -> a * t, z),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    206,
+                    "callable struct field",
+                    (a, z) -> sum(_CapScale(a).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    207,
+                    "Ref argument",
+                    (a, z) -> sum(((t, r) -> r[] * t).(z, Ref(a))),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                # Mismatched GPU element types are caught before any kernel launch.
+                (
+                    208,
+                    "mixed-eltype broadcast",
+                    _bcast_cx_mixed,
+                    (x32, cx32),
+                    (; msg=r"GPU broadcast over arrays with mixed element types"),
+                ),
+                # Scalar indexing would silently run a one-element GPU op per index.
+                (209, "scalar getindex", z -> z[1], (x32,), (; msg=r"scalar indexing")),
+                (
+                    210,
+                    "scalar setindex!",
+                    z -> (z[1]=0.0f0; sum(z)),
+                    (x32,),
+                    (; msg=r"scalar indexing"),
+                ),
+                # `init` is folded into a backend-defined number of partial reductions, so
+                # for the non-idempotent ops it changes the value itself, not just its
+                # derivative: count gives 98.0 where the count is 3.
+                (
+                    211,
+                    "count init, predicate",
+                    (i, z) -> count(>(0.0), z; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    212,
+                    "count init, mask",
+                    (i, z) -> count(z .> 0; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    213,
+                    "sum init",
+                    z -> sum(z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    214,
+                    "sum init, dims",
+                    z -> sum(sum(z; dims=1, init=5.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    215,
+                    "prod init, dims",
+                    z -> sum(prod(z; dims=1, init=2.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    216,
+                    "sum init over an index array",
+                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    217,
+                    "reduce init",
+                    z -> reduce(+, z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                # Before the keyword claims these escaped to GPUArrays' reduction kernel and
+                # failed inside cufunction; an unsupported op or a `dims` the mapped rule
+                # cannot do yet has to say so itself.
+                (
+                    218,
+                    "reduce, unsupported op",
+                    z -> reduce(max, z; init=0.0f0),
+                    (x32,),
+                    (; msg=r"only supports op"),
+                ),
+                (
+                    219,
+                    "mapreduce, dims",
+                    z -> sum(mapreduce(abs2, +, z; dims=1)),
+                    (M32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    220,
+                    "accumulate, non-+",
+                    z -> sum(accumulate(*, z)),
+                    (x32,),
+                    (; msg=r"supports only op=\+ over a float or complex array"),
+                ),
+                (
+                    221,
+                    "accumulate, non-+, dims",
+                    z -> sum(accumulate(*, z; dims=1)),
+                    (x32,),
+                    (; msg=r"supports only op=\+ over a float or complex array"),
+                ),
+                # One entry per @eval claim family; other functions in the same loop share
+                # the generated code verbatim.
+                (
+                    222,
+                    "kwcall sum(f, x; dims)",
+                    z -> sum(sum(abs2, z; dims=1)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    223,
+                    "mapped maximum",
+                    z -> maximum(abs, z),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    224,
+                    "mapped maximum, kwcall",
+                    z -> sum(maximum(abs, z; dims=1)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    225,
+                    "sort, kwcall",
+                    z -> sum(sort(z; rev=true)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    226,
+                    "sort, positional",
+                    z -> sum(sort(z)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                # cu() downcasts ComplexF64 to ComplexF32, so the adjoint matvec sees two
+                # element types; the rule detects that before any cuBLAS call.
+                (
+                    227,
+                    "matvec eltype mismatch",
+                    _cu_cx_slice_adj_mul,
+                    (host_cx, gpu_cx),
+                    (; msg=r"GPU gemv with mismatched element types"),
+                ),
+                # One Vararg guard per function covers array/scalar mixing at any arity.
+                (
+                    228,
+                    "vcat GPU with host",
+                    _vcat_cu_sum,
+                    (x32, cpu_vec),
+                    (; msg=r"mix of GPU"),
+                ),
+                (
+                    229,
+                    "hcat GPU with host",
+                    _hcat_cu_sum,
+                    (M32, cpu_mat),
+                    (; msg=r"mix of GPU"),
+                ),
+                (
+                    230,
+                    "cat GPU with a scalar",
+                    _cat_cu_sum(1),
+                    (x32, 1.0f0),
+                    (; msg=r"mix of GPU"),
+                ),
+                # A strided Float16 view stays a genuine SubArray, which
+                # CuMaybeWrappedArray excludes, so the mixed-device guard catches it rather
+                # than the interpreter reaching cufunction's untraceable try/finally.
+                (
+                    231,
+                    "Float16 strided view",
+                    (a, b) -> sum(vcat(view(a, 1:2, :), b)),
+                    (x16, y16),
+                    (; msg=r"mix of GPU"),
+                ),
+                # Keywords the primal itself rejects must surface the primal's own error,
+                # not a field error from the frule reading a tangent slot that is absent.
+                (
+                    232,
+                    "varm, missing dims",
+                    _varm_arraymean_missing_dims,
+                    (M32, m_row),
+                    (; err=UndefKeywordError, primal=true),
+                ),
+                (
+                    233,
+                    "varm, stray dims",
+                    _varm_scalarmean_stray_dims,
+                    (M32, m_scalar),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    234,
+                    "sum, bad keyword",
+                    _sum_kw_badkw,
+                    (M32,),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    235,
+                    "maximum, bad keyword",
+                    _max_badkw,
+                    (M32,),
+                    (; err=MethodError, primal=true),
+                ),
+                # Forward mode alone refuses a differentiated `init` the rule treats as a
+                # constant; reverse mode reports a zero derivative for it instead.
+                (
+                    236,
+                    "differentiated init, float",
+                    _sum_kw_init_active,
+                    (0.0f0, M32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    237,
+                    "differentiated init, index array",
+                    _nodiff_sum_init,
+                    (0.0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+            ]
+                test_rule_throws(StableRNG(seed), f, args...; kw...)
             end
         end
 
         @testset "unsupported operations throw ArgumentError" begin
-            # Mixed-precision GPU broadcast (Float32 array .+ ComplexF32 array) is not
-            # supported.  The materialize frule/rrule detects mismatched GPU element types
-            # and throws before any kernel launch.
-            @testset "mixed-eltype GPU broadcast" begin
-                f = _bcast_cx_mixed
-                x = _rand(rng, Float32, 4)
-                y = CuArray(randn(rng, ComplexF32, 4))
-                @test_throws r"GPU broadcast over arrays with mixed element types" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x, y), f, x, y
-                )
-            end
-
-            # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
-            @testset "scalar getindex CuArray not differentiable" begin
-                f = x -> x[1]
-                x = _rand(rng, Float32, 4)
-                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
-            end
-            @testset "scalar setindex! CuArray not differentiable" begin
-                f = x -> (x[1]=0.0f0; sum(x))
-                x = _rand(rng, Float32, 4)
-                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
-            end
-
-            # accumulate with unsupported op — catch-all rule throws ArgumentError.
             @testset "freeing the input itself still differentiates" begin
                 # Not a test_rule case: the function frees its own argument, so it cannot be
                 # called twice.  The fdata must outlive the free — reverse mode accumulates
@@ -1672,91 +1925,6 @@ end
                 )
                 @test v == 20.0
                 @test Array(dx) == [2.0, 2.0, 2.0, 2.0]
-            end
-
-            @testset "count refuses a non-identity init" begin
-                # The count is summed with `init` folded into a backend-defined number of
-                # partial reductions, so a nonzero one changes the value, not just its
-                # derivative: 98.0 where the count is 3, with sensitivity 95.
-                x = CuArray([1.0, -2.0, 3.0, 4.0])
-                for f in
-                    ((i, z) -> count(>(0.0), z; init=i), (i, z) -> count(z .> 0; init=i))
-                    @test_throws r"not its identity" Mooncake.value_and_gradient!!(
-                        Mooncake.build_rrule(f, 1.0, x), f, 1.0, x
-                    )
-                    @test_throws r"not its identity" Mooncake.value_and_derivative!!(
-                        Mooncake.build_frule(f, 1.0, x),
-                        Mooncake.Dual(f, Mooncake.zero_tangent(f)),
-                        Mooncake.Dual(1.0, 1.0),
-                        Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                    )
-                end
-            end
-
-            @testset "keyword reduce/mapreduce spellings report their own limits" begin
-                # Before these claims the keyword forms escaped to GPUArrays' reduction
-                # kernel and failed there; an unsupported op or a `dims` the mapped rule
-                # cannot do yet must say so itself.
-                x = _rand(rng, Float32, 4)
-                M = _rand(rng, Float32, 4, 3)
-                fmax = z -> reduce(max, z; init=0.0f0)
-                @test_throws r"only supports op" Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(fmax, x), fmax, x
-                )
-                fdims = z -> sum(mapreduce(abs2, +, z; dims=1))
-                @test_throws r"not yet differentiable" Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(fdims, M), fdims, M
-                )
-                finit = z -> reduce(+, z; init=1.0f0)
-                @test_throws r"not its identity" Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(finit, x), finit, x
-                )
-            end
-
-            @testset "accumulate non-+ CuArray not differentiable" begin
-                x = _rand(rng, Float32, 4)
-                for f in (x -> sum(accumulate(*, x)), x -> sum(accumulate(*, x; dims=1)))
-                    @test_throws r"supports only op=\+ over a float or complex array" value_and_gradient!!(
-                        Mooncake.build_rrule(f, x), f, x
-                    )
-                end
-            end
-
-            # Keyword and mapped-form reductions without real rules fall back to
-            # friendly errors instead of dying inside cufunction (#1273).
-            @testset "keyword/mapped reduction fallbacks throw ArgumentError" begin
-                x = _rand(rng, Float32, 4)
-                dx = Mooncake.zero_tangent(x)
-                # One entry per @eval claim family; other functions in the same
-                # loop share the generated code verbatim.
-                for f in (
-                    z -> sum(sum(abs2, z; dims=1)),     # kwcall sum(f, x; dims)
-                    z -> maximum(abs, z),               # mapped, positional
-                    z -> sum(maximum(abs, z; dims=1)),  # mapped, kwcall
-                    z -> sum(sort(z; rev=true)),        # catch-all, kwcall
-                    z -> sum(sort(z)),                  # catch-all, positional
-                )
-                    @test_throws r"not yet differentiable" value_and_gradient!!(
-                        Mooncake.build_rrule(f, x), f, x
-                    )
-                    @test_throws r"not yet differentiable" Mooncake.value_and_derivative!!(
-                        Mooncake.build_frule(f, x),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(x, dx),
-                    )
-                end
-            end
-
-            # Complex slice-adjoint-matvec: cu(x[:, 1])' * cy — cu() downcasts ComplexF64
-            # to ComplexF32, producing a type mismatch with cy::CuMatrix{ComplexF64}.
-            # The generic_matvecmul! frule/rrule detects the mismatch before any cuBLAS call.
-            @testset "complex slice-adjoint-matvec type mismatch" begin
-                f = _cu_cx_slice_adj_mul
-                x = _host_rand(rng, ComplexF64, 3, 3)
-                cy = _rand(rng, ComplexF64, 3, 3)
-                @test_throws r"GPU gemv with mismatched element types" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x, cy), f, x, cy
-                )
             end
 
             @testset "mixed GPU/CPU cat guards" begin
@@ -1776,22 +1944,6 @@ end
                 tgpu3 = Mooncake.zero_tangent(gpu3)
                 s = 1.0f0
                 wc = Base.get_world_counter()
-
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_vcat_cu_sum, gpu1, cpu_vec),
-                    _vcat_cu_sum,
-                    gpu1,
-                    cpu_vec,
-                )
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_hcat_cu_sum, gpu2, cpu_mat),
-                    _hcat_cu_sum,
-                    gpu2,
-                    cpu_mat,
-                )
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
-                )
 
                 @test Mooncake.is_primitive(
                     Mooncake.MinimalCtx,
@@ -1918,18 +2070,6 @@ end
                 @test val ≈ sum(vcat(x16, y16))
                 @test all(==(one(Float16)), Array(dx))
                 @test all(==(one(Float16)), Array(dy))
-
-                # Float16 SubArrays are excluded from CuMaybeWrappedArray. A strided view
-                # stays a genuine SubArray (unlike the contiguous 1-D view above, which
-                # CUDA.jl collapses to a plain CuArray) and the N-arg mixed-device guard
-                # does not count it as GPU either, so it errors with "mix of GPU" rather
-                # than reaching the interpreter's untraceable `cufunction` try/finally.
-                x16_mat = _rand(rng, Float16, 4, 3)
-                y16_mat = _rand(rng, Float16, 2, 3)
-                f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(f_view, x16_mat, y16_mat), f_view, x16_mat, y16_mat
-                )
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
@@ -2134,19 +2274,6 @@ end
                     m;
                     is_primitive=false,
                     perf_flag=:none,
-                )
-            end
-            @testset "kwarg sets the primal rejects throw under AD" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                rule = Mooncake.build_rrule(_varm_arraymean_missing_dims, x, m)
-                @test_throws UndefKeywordError Mooncake.value_and_gradient!!(
-                    rule, _varm_arraymean_missing_dims, x, m
-                )
-                m_scalar = randn(StableRNG(28), Float32)
-                rule2 = Mooncake.build_rrule(_varm_scalarmean_stray_dims, x, m_scalar)
-                @test_throws MethodError Mooncake.value_and_gradient!!(
-                    rule2, _varm_scalarmean_stray_dims, x, m_scalar
                 )
             end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
@@ -2446,17 +2573,6 @@ end
             ]
                 test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
             end
-            @testset "kwarg sets the primal rejects throw under AD" begin
-                # The float-typed bad kwarg gives the frule a tangent NamedTuple
-                # without an `init` field: reading `dkw.init` unguarded would
-                # throw a field error instead of the primal's MethodError.
-                x = _rand(rng, Float32, 4, 3)
-                @test_throws MethodError Mooncake.value_and_derivative!!(
-                    Mooncake.build_frule(_sum_kw_badkw, x),
-                    Mooncake.Dual(_sum_kw_badkw, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                )
-            end
             @testset "init is a non-differentiated constant" begin
                 # Not a test_rule case: finite differences see the backend's init
                 # folding (nonzero ∂/∂init) while the rule deliberately treats
@@ -2467,45 +2583,6 @@ end
                     rule, _sum_kw_init_active, a, x
                 )
                 @test da == 0.0f0
-                frule = Mooncake.build_frule(_sum_kw_init_active, a, x)
-                @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
-                    frule,
-                    Mooncake.Dual(_sum_kw_init_active, Mooncake.NoTangent()),
-                    Mooncake.Dual(a, 1.0f0),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                )
-            end
-            @testset "init over a non-differentiable array is rejected" begin
-                # The output is a Float64 here, so a zero derivative w.r.t. init would be
-                # silently wrong rather than merely conservative.
-                a, x = 0.0, _rand(rng, Float32, 4)
-                @test_throws r"init.*constant" Mooncake.value_and_derivative!!(
-                    Mooncake.build_frule(_nodiff_sum_init, a, x),
-                    Mooncake.Dual(_nodiff_sum_init, Mooncake.NoTangent()),
-                    Mooncake.Dual(a, 1.0),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                )
-            end
-            @testset "a non-identity init is refused in both modes" begin
-                # + and * are not idempotent, so the backend's folding changes the value
-                # itself: sum(CuArray([1, 2, 3]); init=1.0) is 101.0, not 7.0.  Reading the
-                # value rather than a tangent is what lets reverse mode refuse it too.
-                x = _rand(rng, Float32, 4)
-                for f in (
-                    z -> sum(z; init=1.0f0),
-                    z -> sum(sum(z; dims=1, init=5.0)),
-                    z -> sum(prod(z; dims=1, init=2.0)),
-                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
-                )
-                    @test_throws r"not its identity" Mooncake.value_and_gradient!!(
-                        Mooncake.build_rrule(f, x), f, x
-                    )
-                    @test_throws r"not its identity" Mooncake.value_and_derivative!!(
-                        Mooncake.build_frule(f, x),
-                        Mooncake.Dual(f, Mooncake.zero_tangent(f)),
-                        Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                    )
-                end
             end
             @testset "a constant init still differentiates in reverse" begin
                 # Reverse mode cannot tell this literal from an init the caller wants a
@@ -2628,15 +2705,6 @@ end
                     Array(value_and_gradient!!(Mooncake.build_rrule(f, x), f, x)[2][2])
                 end
                 @test grads[1] == grads[2] == Float32[0, 1, 0]
-            end
-            @testset "an unsupported keyword fails like the primal" begin
-                # The value has to come from the primal call, not from findmax, which
-                # accepts only `dims` and would silently ignore the rest.
-                x = _rand(rng, Float32, 4, 3)
-                @test_throws MethodError _max_badkw(x)
-                @test_throws MethodError Mooncake.value_and_gradient!!(
-                    Mooncake.build_rrule(_max_badkw, x), _max_badkw, x
-                )
             end
             @testset "ties pick the lowest linear index" begin
                 # Not reachable from test_rule's random inputs. findmax names the
