@@ -247,6 +247,15 @@ end
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
         _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
         _bcast_nested_float_cast_sin(x) = sum(sin.(Float64.(x)))
+        # A cast whose argument is itself a cast.  The inner one is materialized first,
+        # which collapses the whole chain to a plain leaf, so the tangent that has to be
+        # reattached belongs to the array at the bottom rather than to the outer cast's
+        # immediate argument.  Both modes agreed on an exact zero before, so nothing but a
+        # value comparison catches it.
+        _bcast_cast_chain_exp(x) = sum(exp.(Float64.(Float32.(x))))
+        _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
+        _bcast_cast_chain_same(x) = sum(Float32.(Float32.(x)) .^ 2)
+        _bcast_cast_chain_cx(z) = sum(abs2.(ComplexF64.(ComplexF32.(z))))
         _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
         _bcast_all_scalar_leaf(x, s) = sum(x .* (s .+ 1.0))
         _inplace_zero_dof_nested!(dest, x, c, b) =
@@ -742,6 +751,10 @@ end
             (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
             (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
             (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            (false, :none, false, _bcast_cast_chain_exp, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_sq, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_same, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_cx, _rand(rng, ComplexF64, 4)),
             (
                 false,
                 :none,

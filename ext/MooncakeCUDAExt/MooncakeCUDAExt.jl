@@ -3575,6 +3575,22 @@ end
            !(first(bc.args) isa Broadcasted)
 end
 
+# `Float64.(Float32.(x))` — a cast whose argument is itself a cast. `_premat_nondiff_args`
+# materializes the inner one first, which makes the outer a simple cast and collapses the
+# whole chain to a plain leaf, so the tangent that has to be reattached belongs to the array
+# at the bottom rather than to the outer cast's immediate argument.
+@inline _gpu_is_cast_chain(::Any) = false
+@inline function _gpu_is_cast_chain(bc::Broadcasted)
+    bc.f isa Type{<:CuFloatOrComplex} || return false
+    length(bc.args) == 1 || return false
+    a = first(bc.args)
+    return !(a isa Broadcasted) || _gpu_is_cast_chain(a)
+end
+@inline _gpu_cast_chain_leaf(a, td) = (a, td)
+@inline _gpu_cast_chain_leaf(bc::Broadcasted, td) = _gpu_cast_chain_leaf(
+    first(bc.args), first(_fields(td).args)
+)
+
 @inline _gpu_bcast_arg_dof(x::IEEEFloat) = 1
 @inline _gpu_bcast_arg_dof(x::Complex{<:IEEEFloat}) = 2
 @inline _gpu_bcast_arg_dof(x::AbstractArray{<:IEEEFloat}) = 1
@@ -3766,7 +3782,11 @@ end
     args_prepared
 )
 @inline function _gpu_cast_diff_arg(bc::Broadcasted, td)
-    return _gpu_broadcast_cast_diff(bc.f, first(bc.args), first(_fields(td).args))
+    # Casting is the identity up to rounding, so the whole chain contributes the bottom
+    # leaf's tangent under the outermost cast; the value itself comes from the prepared
+    # (already fully cast) leaf.
+    p, t = _gpu_cast_chain_leaf(first(bc.args), first(_fields(td).args))
+    return _gpu_broadcast_cast_diff(bc.f, p, t)
 end
 @inline function _gpu_bcast_leaves_args(
     args_prepared::Tuple, args_primal::Tuple, tds::Tuple
@@ -3787,7 +3807,7 @@ end
         # the cast explicitly in the JVP/pullback.
         diff = if td1 isa Union{NoTangent,NoFData}
             NoTangent()
-        elseif _gpu_is_simple_cast_broadcast(a1_primal)
+        elseif _gpu_is_cast_chain(a1_primal)
             _gpu_cast_diff_arg(a1_primal, td1)
         else
             NoTangent()
