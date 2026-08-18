@@ -238,6 +238,13 @@ end
         _cu_sum(x) = sum(cu(x))
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
+        # Both rules assume the argument's fdata is the array itself.  A wrapper's is an
+        # FData over its parent, and `Diagonal(::CuMatrix)` is `Diagonal(diag(A))`, whose
+        # `.diag` is not the argument at all — so these spellings have to decompose.
+        _cu_adjoint(m) = sum(cu(m'))
+        _cu_transpose(m) = sum(cu(transpose(m)))
+        _cu_diagonal(v) = sum(cu(Diagonal(v)))
+        _diagonal_of_matrix(m) = sum(Diagonal(m))
         _diagonal_field_bcast(x) = sum(exp.(Diagonal(x).diag))  # Diagonal + lgetfield + broadcast
         # Diagonal(v).diag === v, so a mutation of v after wrapping has to be visible through
         # the wrapper: the two share one cotangent buffer.
@@ -610,6 +617,10 @@ end
             # GPU→CPU transfer (Array)
             (false, :none, false, _array_sum, _rand(rng, 16)),
             # GPU Diagonal construction
+            (false, :none, false, _cu_adjoint, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _cu_transpose, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _cu_diagonal, _rand(rng, Float32, 3)),
+            (false, :none, false, _diagonal_of_matrix, _rand(rng, Float32, 2, 3)),
             (false, :none, false, _diagonal_sum, _rand(rng, 16)),
             # sum(::CuComplexArray) — 1-arg widened rule, sum itself is the primitive
             (false, :none, true, sum, _rand(rng, ComplexF64, 16)),

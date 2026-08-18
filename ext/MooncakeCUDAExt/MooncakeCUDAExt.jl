@@ -95,6 +95,7 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+const CuMaybeComplexVector = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose
@@ -3292,11 +3293,16 @@ end
 _cu_pullback_like(::AbstractArray, dy) = Array(dy)
 _cu_pullback_like(::CuArray, dy) = dy
 
-@is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
-function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
+# Claimed for the two shapes whose fdata is the array itself. An `Adjoint`, `Transpose` or
+# `Diagonal` argument has an `FData{@NamedTuple{parent::…}}` instead, which the body would
+# accumulate into as though it were a bare array; those spellings decompose through the
+# wrapper's own rules.
+const _CuTransferable = Union{Array{<:CuFloatOrComplex},CuArray{<:CuFloatOrComplex}}
+@is_primitive(MinimalCtx, Tuple{typeof(cu),_CuTransferable})
+function frule!!(::Dual{typeof(cu)}, x::Dual{<:_CuTransferable})
     return Dual(cu(primal(x)), cu(tangent(x)))
 end
-function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComplex}})
+function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:_CuTransferable})
     dx = tangent(x)
     dy_gpu = cu(zero(primal(x)))  # output fdata, accumulated into by downstream
     function cu_pb!!(::NoRData)
@@ -3335,12 +3341,16 @@ end
 # Diagonal is a thin wrapper: its only differentiable field is `.diag`.
 # frule:    d(Diagonal(v)) = Diagonal(dv)
 # pullback: dv += diag(dD)  (i.e. extract the diagonal from the output cotangent)
-@is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexArray})
-function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexArray})
+# Vectors only: `Diagonal(A::CuMatrix)` is `Diagonal(diag(A))`, whose `.diag` is a length-n
+# vector, while these rules put the argument's own fdata in that slot and the pullback
+# returns nothing on the assumption `.diag === v`. The matrix spelling decomposes through
+# `diag`, which carries the gradient back to the right elements.
+@is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexVector})
+function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexVector})
     # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
     return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
 end
-function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexArray})
+function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexVector})
     pv, dv = arrayify(v)
     # `Diagonal(v).diag === v`, so the aliasing invariant — primal(a) === primal(b) implies
     # fdata(a) === fdata(b) — requires the output's `.diag` fdata to *be* v's.  Accumulating a
