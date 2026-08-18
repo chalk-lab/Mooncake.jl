@@ -3060,6 +3060,14 @@ function rrule!!(
 end
 # The tangent of Array{T} is Array{T} (fdata, accumulated in-place).
 # The tangent of CuArray{T} is CuArray{T} (fdata, accumulated in-place).
+#
+# `cu` is a host-to-device transfer for a host argument and a copy for a device one, and the
+# claim admits both, so the cotangent has to travel back to whichever side the argument's
+# fdata lives on.  Pulling it to the host unconditionally asked a device buffer to accumulate
+# a host array, which is a kernel-compilation failure rather than a scalar-indexing error.
+_cu_pullback_like(::AbstractArray, dy) = Array(dy)
+_cu_pullback_like(::CuArray, dy) = dy
+
 @is_primitive(MinimalCtx, Tuple{typeof(cu),AbstractArray{<:CuFloatOrComplex}})
 function frule!!(::Dual{typeof(cu)}, x::Dual{<:AbstractArray{<:CuFloatOrComplex}})
     return Dual(cu(primal(x)), cu(tangent(x)))
@@ -3068,7 +3076,7 @@ function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:AbstractArray{<:CuFloatOrComp
     dx = tangent(x)
     dy_gpu = cu(zero(primal(x)))  # output fdata, accumulated into by downstream
     function cu_pb!!(::NoRData)
-        dx .+= Array(dy_gpu)      # transfer gradient back to CPU in-place
+        dx .+= _cu_pullback_like(dx, dy_gpu)
         return NoRData(), NoRData()
     end
     return CoDual(cu(primal(x)), dy_gpu), cu_pb!!

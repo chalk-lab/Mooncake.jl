@@ -516,6 +516,10 @@ end
             ),
             # CPU→GPU transfer (cu)
             (false, :none, false, _cu_sum, _host_rand(rng, 16)),
+            # `cu` of an argument that is already on the device: the cotangent must come back
+            # to the device buffer rather than being pulled to the host.
+            (false, :none, false, _cu_sum, _rand(rng, Float32, 4)),
+            (false, :none, false, _cu_sum, _rand(rng, Float64, 4)),
             # GPU→CPU transfer (Array)
             (false, :none, false, _array_sum, _rand(rng, 16)),
             # GPU Diagonal construction
