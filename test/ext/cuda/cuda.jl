@@ -243,6 +243,10 @@ end
         # the wrapper: the two share one cotangent buffer.
         _diagonal_mutate(v) = (D=Diagonal(v); v.=v .* 2; sum(D.diag))
         _diagonal_fill(v, c) = (D=Diagonal(v); fill!(v, c); sum(D.diag .^ 2))
+        # A real value filling a complex array is owed only dL/dRe, so the summed cotangent
+        # has to be projected before it is narrowed back to the value's own type.
+        _fill_real_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
+        _fill_cx_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
         _sum_f_abs(x) = sum(abs, x)          # sum(f, x) with non-smooth f
         _sum_f_abs2(x) = sum(abs2, x)        # sum(f, x) real abs2
         _sum_adj_pow3(x) = real(sum(y -> y^3, x'))  # sum(f, Adjoint)
@@ -967,6 +971,22 @@ end
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
             (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
             (false, :none, false, _diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
+            (
+                false,
+                :none,
+                false,
+                _fill_real_into_cx,
+                CuArray(ComplexF32[0, 0, 0, 0]),
+                2.0f0,
+            ),
+            (
+                false,
+                :none,
+                false,
+                _fill_cx_into_cx,
+                CuArray(ComplexF32[0, 0, 0, 0]),
+                2.0f0 + 0.5f0im,
+            ),
             # sum(f, x) with non-smooth f (abs)
             (false, :none, false, _sum_f_abs, _rand(rng, 16)),
             # sum(f, Adjoint) — tests sum(f, x) dispatch when input is an Adjoint wrapper

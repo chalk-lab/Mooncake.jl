@@ -1992,7 +1992,10 @@ function rrule!!(::CoDual{typeof(fill!)}, a::CoDual{<:CuMaybeWrappedArray}, x::C
         dx = if tangent_type(typeof(primal(x))) == NoTangent
             NoRData()
         else
-            rdata_type(typeof(primal(x)))(sum(da))
+            # A real `x` filling a complex array is owed only dL/dRe, so the sum is
+            # projected onto x's own field before it is narrowed to x's type — narrowing a
+            # complex sum to a real would throw instead.
+            rdata_type(typeof(primal(x)))(_project_cotangent(primal(x), sum(da)))
         end
         fill!(da, zero(eltype(da)))
         return NoRData(), NoRData(), dx
