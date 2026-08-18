@@ -308,6 +308,14 @@ end
         _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
+        # Concatenating a real array with a complex one promotes the output, so the real
+        # argument's slice of the output cotangent arrives complex and has to be projected
+        # onto its own field before accumulating; `imag` keeps the projected part nonzero.
+        _vcat_mixed(a, b) = imag(sum(vcat(a, b)))
+        _hcat_mixed(a, b) = imag(sum(hcat(a, b)))
+        _cat_mixed(a, b) = imag(sum(cat(a, b; dims=1)))
+        # Same projection, reached through a real->complex cast leaf inside a broadcast.
+        _cast_to_complex(a) = real(sum(ComplexF32.(a) .* (2.0f0 + 3.0f0im)))
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))
         # Wrappers for Statistics.varm GPU rule tests.
         _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
@@ -743,6 +751,33 @@ end
             (false, :none, false, _repeat_extends, _rand(rng, 2, 3)),
             (false, :none, false, _repeat_inner_outer, _rand(rng, 2, 3)),
             (false, :none, false, _repeat_nothing, _rand(rng, 2, 3)),
+            # A real argument concatenated with a complex one, and a real->complex cast leaf:
+            # both hand a real fdata buffer a complex cotangent.
+            (
+                false,
+                :none,
+                false,
+                _vcat_mixed,
+                _rand(rng, Float32, 3),
+                _rand(rng, ComplexF32, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_mixed,
+                _rand(rng, Float32, 3),
+                _rand(rng, ComplexF32, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_mixed,
+                _rand(rng, Float32, 3, 2),
+                _rand(rng, ComplexF32, 3, 2),
+            ),
+            (false, :none, false, _cast_to_complex, _rand(rng, Float32, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
             (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),

@@ -2180,11 +2180,22 @@ end
 # frule:    tangent of concatenation = concatenation of tangents (concat is linear).
 # pullback: selectdim returns a view (no allocation per slice); running-offset loop
 #           avoids pre-allocating an offsets array.
+# A real variable's cotangent is real even where the operation that consumed it produced a
+# complex output: Mooncake's convention carries dL/dRe in the real field, and the imaginary
+# part of a real leaf's contribution belongs to no variable.  Concatenating or casting a real
+# array alongside a complex one is where that shows up, and accumulating unprojected would ask
+# the device to convert a Complex to a Float — a kernel-side exception, not a clean error.
+@inline _project_cotangent(dst, contrib) = contrib
+@inline _project_cotangent(dst::AbstractArray{<:Real}, contrib) = real.(contrib)
+@inline _project_cotangent(::Real, contrib) = real(contrib)
+
 @inline function _cu_concat_pb!(fdatas, dy_out, dim::Integer)
     offset = 0
     for i in eachindex(fdatas)
         n = size(fdatas[i], dim)
-        fdatas[i] .+= selectdim(dy_out, dim, (offset + 1):(offset + n))
+        fdatas[i] .+= _project_cotangent(
+            fdatas[i], selectdim(dy_out, dim, (offset + 1):(offset + n))
+        )
         offset += n
     end
     return nothing
@@ -2206,7 +2217,7 @@ end
                 k = findfirst(==(d), dims)
                 k === nothing ? Colon() : (offs[k] + 1):(offs[k] + size(fi, d))
             end
-            fi .+= view(dy_out, ranges...)
+            fi .+= _project_cotangent(fi, view(dy_out, ranges...))
             ntuple(k -> offs[k] + size(fi, dims[k]), Val(K))
         end
     end
@@ -3292,8 +3303,15 @@ end
 
 @inline _gpu_cast_like(::Type{T}, x::AbstractArray) where {T} = T.(x)
 @inline _gpu_cast_like(::Type{T}, x::CuFloatOrComplex) where {T} = convert(T, x)
-@inline _gpu_cast_back_like(pa::AbstractArray, contrib) = eltype(pa).(contrib)
-@inline _gpu_cast_back_like(pa::CuFloatOrComplex, contrib) = convert(typeof(pa), contrib)
+# A real->complex cast leaf gets a complex contribution back; project before narrowing, or
+# the eltype conversion is Float32(::ComplexF32).  Widening casts (Float64.(x32)) are real
+# throughout and unaffected.
+@inline _gpu_cast_back_like(pa::AbstractArray, contrib) = eltype(pa).(
+    _project_cotangent(pa, contrib)
+)
+@inline _gpu_cast_back_like(pa::CuFloatOrComplex, contrib) = convert(
+    typeof(pa), _project_cotangent(pa, contrib)
+)
 
 @inline function _leaf_effective_tangent(_, diff::_GpuBroadcastCastDiff{T}) where {T}
     t_eff = _leaf_effective_tangent(diff.primal_arg, diff.diff_arg)
