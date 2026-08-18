@@ -1704,7 +1704,12 @@ end
 
 # unsafe_free! releases GPU memory early (normally handled by GC finalizer).
 # It is a pure side-effect with no mathematical output — gradient is zero.
-# Both the primal and its fdata (if any) are independent GPU allocations; free both.
+#
+# The primal and its fdata are independent allocations with different lifetimes, and only
+# forward mode may free both: there the tangent travels with the primal and dies with it.  In
+# reverse mode the fdata is the accumulator that the pullbacks of *earlier* operations write
+# into, long after the forward sweep reaches this call, so freeing it hands the reverse pass a
+# freed reference.  Reverse therefore frees the primal only, and gives up half the saving.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
 function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     unsafe_free!(primal(x))
@@ -1714,8 +1719,6 @@ function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
     unsafe_free!(primal(x))
-    dx = tangent(x)
-    dx isa NoFData || unsafe_free!(dx)
     return CoDual(nothing, NoFData()), _nopb(Val(2))
 end
 

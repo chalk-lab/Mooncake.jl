@@ -190,6 +190,10 @@ end
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
+        # unsafe_free! releases the primal early; in reverse mode the fdata is still the
+        # accumulator earlier pullbacks write into, so it has to outlive the call.
+        _free_intermediate(x) = (y=x .* 2; s=sum(y); CUDA.unsafe_free!(y); s)
+        _free_input(x) = (s=sum(x .* 2); CUDA.unsafe_free!(x); s)
         _cu_sum(x) = sum(cu(x))
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
@@ -515,6 +519,7 @@ end
                 _rand(rng, Float32, 8),
             ),
             # CPU→GPU transfer (cu)
+            (false, :none, false, _free_intermediate, _rand(rng, 4)),
             (false, :none, false, _cu_sum, _host_rand(rng, 16)),
             # `cu` of an argument that is already on the device: the cotangent must come back
             # to the device buffer rather than being pulled to the host.
@@ -1604,6 +1609,19 @@ end
             end
 
             # accumulate with unsupported op — catch-all rule throws ArgumentError.
+            @testset "freeing the input itself still differentiates" begin
+                # Not a test_rule case: the function frees its own argument, so it cannot be
+                # called twice.  The fdata must outlive the free — reverse mode accumulates
+                # into it after the forward sweep has released the primal.
+                v, (_, dx) = Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(_free_input, CuArray([1.0, 2.0, 3.0, 4.0])),
+                    _free_input,
+                    CuArray([1.0, 2.0, 3.0, 4.0]),
+                )
+                @test v == 20.0
+                @test Array(dx) == [2.0, 2.0, 2.0, 2.0]
+            end
+
             @testset "count refuses a non-identity init" begin
                 # The count is summed with `init` folded into a backend-defined number of
                 # partial reductions, so a nonzero one changes the value, not just its
