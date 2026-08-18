@@ -247,6 +247,12 @@ end
         # has to be projected before it is narrowed back to the value's own type.
         _fill_real_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
         _fill_cx_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
+        # A float array built only from index arrays carries a tangent type even though no
+        # partials flow into it, so the rule owes a zeroed array rather than NoFData.  The
+        # Bool output of a comparison is the case the branch was written for and stays.
+        _bcast_nodiff_ratio(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(i ./ 2) * sum(x))
+        _bcast_nodiff_float(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(float.(i)) * sum(x))
+        _bcast_nodiff_bool(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(i .> 2) * sum(x))
         _sum_f_abs(x) = sum(abs, x)          # sum(f, x) with non-smooth f
         _sum_f_abs2(x) = sum(abs2, x)        # sum(f, x) real abs2
         _sum_adj_pow3(x) = real(sum(y -> y^3, x'))  # sum(f, Adjoint)
@@ -971,6 +977,9 @@ end
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
             (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
             (false, :none, false, _diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
+            (false, :none, false, _bcast_nodiff_ratio, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_nodiff_float, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_nodiff_bool, _rand(rng, Float64, 4)),
             (
                 false,
                 :none,

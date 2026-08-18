@@ -4159,9 +4159,14 @@ function frule!!(
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
 
-    # Non-differentiable output (e.g. Bool from comparisons): zero tangent.
+    # `is_diff` says the kernel's element type carried no partials, which is not the same as
+    # the output being non-differentiable: a float array built only from index arrays, say
+    # `cnt ./ 2`, carries a tangent type even though nothing flows into it. Bool output from
+    # a comparison is the case this branch was written for, and there tangent_type really is
+    # NoTangent.
     if !decoded.is_diff
-        return Dual(out, NoTangent())
+        T = tangent_type(typeof(out))
+        return Dual(out, T === NoTangent ? NoTangent() : zero_tangent(out))
     end
 
     dy = _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts, out)
@@ -4186,9 +4191,11 @@ function rrule!!(
         Val(:broadcast), out, flat_pargs; extract_partials=true
     )
 
-    # Non-differentiable output (e.g. Bool from x .!= 0): return zero gradients.
+    # As in the frule: a float output with no differentiable leaf still needs an fdata of
+    # its declared type, or the caller is handed a NoFData where it expects a CuArray.
     if !decoded.is_diff
-        return CoDual(out, NoFData()), NoPullback(mat_fn, bc)
+        fd = tangent_type(typeof(out)) === NoTangent ? NoFData() : zero_tangent(out)
+        return CoDual(out, fd), NoPullback(mat_fn, bc)
     end
 
     dy_out = zero(decoded.primal_out)  # accumulated into by the downstream reverse pass
