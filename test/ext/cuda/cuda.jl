@@ -132,6 +132,12 @@ end
         _reduce_plus_cx(x) = reduce(+, x)
         _reduce_mul(x) = reduce(*, x)
         _reduce_mul_cx(x) = reduce(*, x)
+        # The Core.kwcall spellings: `reduce` forwards to the sum/prod keyword rules, and
+        # `mapreduce` to the positional sum(f, x) when the keywords leave the reduction alone.
+        _reduce_plus_d1(x) = sum(reduce(+, x; dims=1))
+        _reduce_plus_init(x) = reduce(+, x; init=0.0f0)
+        _reduce_mul_init(x) = reduce(*, x; init=1.0f0)
+        _mapreduce_abs2_init(x) = mapreduce(abs2, +, x; init=0.0f0)
         # norm / dot — cuBLAS routines with explicit rules.
         # norm() always returns a real scalar regardless of element type, so _norm_cx has
         # the same body as _norm; the alias exists solely to label the complex-input testset.
@@ -568,6 +574,10 @@ end
             (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, ComplexF64, 16)),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
+            (false, :none, false, _reduce_plus_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _reduce_plus_init, _rand(rng, Float32, 6)),
+            (false, :none, false, _reduce_mul_init, _rand_pos(rng, 6)),
+            (false, :none, false, _mapreduce_abs2_init, _rand(rng, Float32, 6)),
             (false, :none, false, _mapreduce_sin, _rand(rng, 16)),
             (false, :none, false, _mapreduce_exp, _rand(rng, 16)),
             (false, :none, false, _mapreduce_cx_abs2, _rand(rng, ComplexF64, 16)),
@@ -1562,6 +1572,26 @@ end
             end
 
             # accumulate with unsupported op — catch-all rule throws ArgumentError.
+            @testset "keyword reduce/mapreduce spellings report their own limits" begin
+                # Before these claims the keyword forms escaped to GPUArrays' reduction
+                # kernel and failed there; an unsupported op or a `dims` the mapped rule
+                # cannot do yet must say so itself.
+                x = _rand(rng, Float32, 4)
+                M = _rand(rng, Float32, 4, 3)
+                fmax = z -> reduce(max, z; init=0.0f0)
+                @test_throws r"only supports op" Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(fmax, x), fmax, x
+                )
+                fdims = z -> sum(mapreduce(abs2, +, z; dims=1))
+                @test_throws r"not yet differentiable" Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(fdims, M), fdims, M
+                )
+                finit = z -> reduce(+, z; init=1.0f0)
+                @test_throws r"not its identity" Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(finit, x), finit, x
+                )
+            end
+
             @testset "accumulate non-+ CuArray not differentiable" begin
                 x = _rand(rng, Float32, 4)
                 for f in (x -> sum(accumulate(*, x)), x -> sum(accumulate(*, x; dims=1)))

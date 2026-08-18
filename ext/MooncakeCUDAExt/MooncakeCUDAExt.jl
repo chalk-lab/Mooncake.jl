@@ -1963,6 +1963,101 @@ for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
     end
 end
 
+# The Core.kwcall spellings.  Mooncake lowers every keyword call to Core.kwcall, which the
+# positional claims above do not cover, so `reduce(+, x; dims=1)` and friends escaped to
+# GPUArrays' untraceable reduction kernel.  `reduce` forwards to the sum/prod *keyword* rules,
+# picking up `dims`, `init` and the identity check with them.
+for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(Core.kwcall),NamedTuple,typeof(reduce),typeof($_op),CuMaybeComplexArray
+        },
+    )
+    @eval function frule!!(
+        kc::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof(reduce)},
+        ::Dual{typeof($_op)},
+        x::Dual{<:CuMaybeComplexArray},
+    )
+        return frule!!(kc, kw, Dual($_fn, NoTangent()), x)
+    end
+    @eval function rrule!!(
+        kc::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof(reduce)},
+        ::CoDual{typeof($_op)},
+        x::CoDual{<:CuMaybeComplexArray},
+    )
+        y, pb!! = rrule!!(kc, kw, zero_fcodual($_fn), x)
+        function reduce_kw_pb!!(dy)
+            _, r_kw, _, r_x = pb!!(dy)     # delegate pullback: (kwcall, kw, fn, x)
+            return NoRData(), r_kw, NoRData(), NoRData(), r_x
+        end
+        return y, reduce_kw_pb!!
+    end
+end
+
+# mapreduce's keyword spelling equals its positional one exactly when the keywords do not
+# change the reduction: no `dims` (or `dims=:`) and an `init` at the operator's identity.  A
+# real `dims` would need the `sum(f, x; dims)` rule that is not written yet, and a
+# non-identity `init` is refused for the folding reason `sum` refuses it.
+_mapreduce_kw_is_plain(pkw) = get(pkw, :dims, :) isa Colon
+for _op in (:(+), :(Base.add_sum))
+    @eval @is_primitive(
+        MinimalCtx,
+        Tuple{
+            typeof(Core.kwcall),
+            NamedTuple,
+            typeof(mapreduce),
+            Any,
+            typeof($_op),
+            CuMaybeComplexArray,
+        },
+    )
+    @eval function frule!!(
+        ::Dual{typeof(Core.kwcall)},
+        kw::Dual{<:NamedTuple},
+        ::Dual{typeof(mapreduce)},
+        f::Dual,
+        ::Dual{typeof($_op)},
+        x::Dual{<:CuMaybeComplexArray},
+    )
+        pkw = primal(kw)
+        _check_reduction_identity(sum, pkw)
+        _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
+        return frule!!(Dual(sum, NoTangent()), f, x)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof(Core.kwcall)},
+        kw::CoDual{<:NamedTuple},
+        ::CoDual{typeof(mapreduce)},
+        f::CoDual,
+        ::CoDual{typeof($_op)},
+        x::CoDual{<:CuMaybeComplexArray},
+    )
+        pkw = primal(kw)
+        _check_reduction_identity(sum, pkw)
+        _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
+        kw_rdata = zero_rdata(pkw)
+        y, pb!! = rrule!!(zero_fcodual(sum), f, x)
+        function mapreduce_kw_pb!!(dy)
+            _, r_f, r_x = pb!!(dy)          # delegate pullback: (sum, f, x)
+            return NoRData(), kw_rdata, NoRData(), r_f, NoRData(), r_x
+        end
+        return y, mapreduce_kw_pb!!
+    end
+end
+function _throw_gpu_mapreduce_dims()
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword mapreduce(f, op, x; dims) on CuArray is not yet differentiable, " *
+        "for the same reason keyword sum(f, x; dims) is not: it needs the mapped rule's " *
+        "NDual machinery combined with per-slice geometry. " *
+        _UNIMPL_MSG,
+    )
+end
+
 # Catch-all rules for unsupported operators — give a clear error rather than letting
 # Mooncake attempt to trace into an opaque CUDA reduction kernel.
 @is_primitive(MinimalCtx, Tuple{typeof(mapreduce),Any,Any,CuArray})
@@ -1997,6 +2092,49 @@ function rrule!!(::CoDual{typeof(reduce)}, op::CoDual, x::CoDual{<:CuArray})
         "got op=$(primal(op)). " *
         _UNIMPL_MSG,
     )
+end
+
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(mapreduce),Any,Any,CuArray}
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    f::Dual{typeof(mapreduce)},
+    mf::Dual,
+    op::Dual,
+    x::Dual{<:CuArray},
+)
+    return frule!!(f, mf, op, x)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    f::CoDual{typeof(mapreduce)},
+    mf::CoDual,
+    op::CoDual,
+    x::CoDual{<:CuArray},
+)
+    return rrule!!(f, mf, op, x)
+end
+@is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(reduce),Any,CuArray})
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    ::Dual{<:NamedTuple},
+    f::Dual{typeof(reduce)},
+    op::Dual,
+    x::Dual{<:CuArray},
+)
+    return frule!!(f, op, x)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    ::CoDual{<:NamedTuple},
+    f::CoDual{typeof(reduce)},
+    op::CoDual,
+    x::CoDual{<:CuArray},
+)
+    return rrule!!(f, op, x)
 end
 
 # repeat on GPU arrays, both the `counts...` and the `inner=`/`outer=` spellings.
