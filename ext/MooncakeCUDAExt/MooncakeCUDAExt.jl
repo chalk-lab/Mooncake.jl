@@ -965,13 +965,12 @@ _winner(i::CartesianIndex) = Ref(i)
 _winner(i::AbstractArray{<:CartesianIndex}) = i
 _winner(i::AbstractArray{<:Integer}) = CartesianIndex.(i)
 
-# Two of these reductions have an `init` whose derivative survives the backend's folding:
-# maximum/minimum, where it competes with the elements and takes the whole derivative of each
-# reduced slice it beats, and accumulate(+, …), where it adds to every element.  Both are
-# idempotent in the folding — unlike sum and prod, whose `init` is folded into a
-# backend-defined number of partial reductions, leaving it a constant.  `from_init` says
-# where `init` decided the output: a mask for max/min, `true` throughout for accumulate.  A
-# tie counts against `init`, matching how findmax breaks ties.
+# Two reductions have an `init` whose derivative survives the folding, because theirs is
+# idempotent where sum's and prod's is not: maximum/minimum, where it competes with the
+# elements and takes the whole derivative of every slice it beats, and accumulate(+, …),
+# where it adds to each element.  `from_init` says where `init` decided the output: a mask
+# for max/min, `true` throughout for accumulate.  A tie counts against `init`, as findmax
+# breaks them.
 _kw_init_tangent(dkw) = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
 _kw_init_jvp(dy, ::NoTangent, from_init) = dy
 _kw_init_jvp(dy, dinit::Number, from_init) = dy .+ dinit .* from_init
@@ -1130,8 +1129,7 @@ end
 # point — the exclusion is what the division could not express.
 #
 # Both quantities come from the same reduction the primal ran, over `px` with its zeros
-# replaced by ones, so an `init` folded into a backend-defined number of partial reductions
-# scales the derivative exactly as it scaled the value.
+# replaced by ones, so a folded `init` scales the derivative exactly as it scaled the value.
 function _prod_exclusive(px, dims, kw)
     T = eltype(px)
     nonzero = ifelse.(iszero.(px), one(T), px)
@@ -1559,10 +1557,9 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(count),Any,CuArray}
 
 # The positional spellings above take no `init` and are zero-derivative outright.  The keyword
-# ones accept one, and GPUArrays sums it like `sum`'s: a float `init` makes the result a float
-# that visibly depends on it, folded into a backend-defined number of partial reductions, so
-# `count(>(0.0), x; init=1.0)` returns 98.0 where the count is 3.  Same identity check as
-# `sum`, so the wrong value is refused rather than its derivative silently zeroed.
+# ones accept one, and GPUArrays folds it as it does `sum`'s: `count(>(0.0), x; init=1.0)`
+# returns 98.0 where the count is 3.  Same identity check, so the wrong value is refused
+# rather than its derivative silently zeroed.
 for _n_args in (0, 1)
     _pred_d = _n_args == 1 ? (:(pred::Dual),) : ()
     _pred_c = _n_args == 1 ? (:(pred::CoDual),) : ()
@@ -1598,23 +1595,12 @@ for _n_args in (0, 1)
     end
 end
 
-# The keyword spellings cannot be zero-derivative outright: a float `init` makes the output
-# differentiable, so dropping its derivative would be silently wrong.  Nor is it 1 —
-# GPUArrays folds `init` into a backend-defined number of partial reductions, so `init=1.0`
-# over `[1,2,3]` gives 101.0 — so a nonzero `init` tangent is rejected instead.  Only the
-# frules can check it: reverse mode sees no tangent, and cannot tell a constant `init` from
-# one the caller wants a gradient for, so a guard there rejects correct programs.
-#
-# This covers sum and prod, whose `init` folding is what makes the derivative undefined, and
-# diff/sort/sortperm, which take no `init` at all.  maximum and minimum are idempotent, so
-# their `init` derivative survives the folding exactly; they get it below.
-# `sum` and `prod` fold `init` into a backend-defined number of partial reductions, and + and
-# * are not idempotent, so anything but the identity changes the result itself:
-# sum(CuArray([1, 2, 3]); init=1.0) is 101.0, not 7.0, and prod(…; init=2.0) is 2.4e29, not
-# 12.  Neither that value nor a derivative through it is defined, so both modes refuse it.
-# Unlike the tangent check below, this reads the value, which reverse mode can also see.
-# maximum/minimum need no such guard: max and min are idempotent, so their fold is exact and
-# a non-identity `init` is the point of passing one.
+# GPUArrays folds `init` into a backend-defined number of partial reductions, so for the
+# non-idempotent ops it changes the value itself: sum(CuArray([1, 2, 3]); init=1.0) is 101.0,
+# not 7.0. Neither that value nor a derivative through it is defined, so both modes refuse a
+# non-identity `init` — a check on the value, which reverse mode can see too, unlike the
+# tangent check below. max and min fold exactly, so a non-identity `init` is the point of
+# passing one to them and they need no guard; diff/sort/sortperm take no `init` at all.
 _reduction_identity(::typeof(sum)) = 0
 _reduction_identity(::typeof(count)) = 0
 _reduction_identity(::typeof(prod)) = 1

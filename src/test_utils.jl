@@ -1304,7 +1304,9 @@ function test_rule_throws(
             ),
         )
     end
-    primal && _test_throws(() -> f(x...), err, msg)
+    primal && _test_throws(err, msg) do
+        f(x...)
+    end
     if mode in [nothing, ReverseMode]
         _test_throws(err, msg) do
             Mooncake.value_and_gradient!!(build_rrule(f, x...), f, x...)

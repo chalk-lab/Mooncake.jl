@@ -122,7 +122,7 @@ end
         # intercept op=+ / op=Base.add_sum and redirect to the ForwardDiff.Dual machinery.
         # Note: in Julia 1.11, sum(f, x) dispatches through Base._sum → mapreduce(f, add_sum, x)
         # rather than being intercepted by our sum(f, x) primitive; both code paths are tested.
-        # Note: _sum_f_sin is defined above (line 79); _sum_f_abs2 is defined below (line 135).
+        # Note: _sum_f_sin is defined above; _sum_f_abs2 below.
         _mapreduce_sin(x) = mapreduce(sin, +, x)
         _mapreduce_exp(x) = mapreduce(exp, +, x)
         _mapreduce_cx_abs2(x) = mapreduce(abs2, +, x)
