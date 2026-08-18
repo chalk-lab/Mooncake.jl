@@ -508,6 +508,11 @@ end
         _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
         _min_init(a, x) = minimum(x; init=a)
         _min_init_d1(a, x) = sum(minimum(x; dims=1, init=a))
+        # A tuple `dims` reduces over several axes at once, which is its own branch in the
+        # empty-extent test and was the one dispatch of that helper no case reached.
+        _max_dtuple(x) = sum(maximum(x; dims=(1, 2)))
+        _min_dtuple(x) = sum(minimum(x; dims=(1, 2)))
+        _max_dtuple_init(a, x) = sum(maximum(x; dims=(1, 2), init=a))
         _max_badkw(x) = maximum(x; bad=1.0)
         _max_nan_init(x) = maximum(x; init=-1.0f0)
         # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
@@ -801,6 +806,13 @@ end
             (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _accumulate_empty, CuArray{Float32}(undef, 0)),
+            (false, :none, false, _max_dtuple, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _min_dtuple, _rand(rng, Float32, 2, 3)),
+            # init above every element, then below: it takes the whole derivative or none.
+            (false, :none, false, _max_dtuple_init, 9.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            (false, :none, false, _max_dtuple_init, 0.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            # every reduced slice empty, so `init` decides the output alone.
+            (false, :none, false, _max_dtuple_init, -9.0f0, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
             (false, :none, false, _accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
             (
