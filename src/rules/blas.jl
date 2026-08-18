@@ -308,6 +308,17 @@ function frule!!(
     @inbounds for i in eachindex(X)
         dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
     end
+    # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, while the JVP it
+    # divides down to is still representable. Retry scaled, but only from a non-finite
+    # accumulator, so a correct result never pays for the second pass.
+    if !isfinite(dy) && isfinite(y) && !iszero(y)
+        dy = zero(y)
+        @inbounds for i in eachindex(X)
+            xi = X[i] / y
+            dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
+        end
+        return Dual(y, dy / 2)
+    end
     return Dual(y, dy / 2y)
 end
 function rrule!!(

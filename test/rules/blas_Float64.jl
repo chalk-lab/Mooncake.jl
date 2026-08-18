@@ -33,6 +33,24 @@
         end
     end
 
+    @testset "nrm2 frule!! rescales an overflowing accumulator" begin
+        # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, while the JVP it
+        # divides down to is still representable. The pullback scales by dy/y first and
+        # was never affected, so only forward mode returned Inf here.
+        @testset "$T" for (T, v) in ((Float32, 1.0f19), (Float64, 1e160))
+            x = fill(v, 100)
+            dx = fill(v, 100)
+            d = Mooncake.frule!!(
+                Mooncake.Dual(BLAS.nrm2, Mooncake.NoTangent()),
+                Mooncake.Dual(100, Mooncake.NoTangent()),
+                Mooncake.Dual(x, dx),
+                Mooncake.Dual(1, Mooncake.NoTangent()),
+            )
+            # dx === x here, so the JVP is norm(x) itself.
+            @test Mooncake.tangent(d) ≈ BLAS.nrm2(100, x, 1) rtol = 1e-5
+        end
+    end
+
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 end
 

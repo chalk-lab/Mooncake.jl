@@ -1414,6 +1414,32 @@ end
             @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
         end
 
+        @testset "norm frule!! rescales an overflowing dot" begin
+            # dot(px, dx) overflows once norm(px)*norm(dx) leaves the eltype's range,
+            # while the JVP it divides down to is still representable. Float16 saturates
+            # at 65504, so ones(65536) reaches it; the reverse rule already scales by
+            # 1/y first and was never affected.
+            for (x, dx) in (
+                (CUDA.fill(Float16(1), 65536), CUDA.fill(Float16(1), 65536)),
+                (CUDA.fill(1.0f19, 100), CUDA.fill(1.0f19, 100)),
+                (CUDA.fill(1e160, 100), CUDA.fill(1e160, 100)),
+            )
+                @test !isfinite(dot(x, dx))  # the input the guard exists for
+                d = _MooncakeCUDAExt.frule!!(
+                    Mooncake.Dual(norm, Mooncake.NoTangent()), Mooncake.Dual(x, dx)
+                )
+                # dx === x here, so the JVP is norm(x) itself.
+                @test Mooncake.tangent(d) ≈ norm(x) rtol = 1.0f-3
+            end
+            # A well-scaled input must still take the single-dot path unchanged.
+            x = _rand(rng, Float32, 64)
+            dx = _rand(rng, Float32, 64)
+            d = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(norm, Mooncake.NoTangent()), Mooncake.Dual(x, dx)
+            )
+            @test Mooncake.tangent(d) == real(dot(x, dx)) / norm(x)
+        end
+
         @testset "unsafe_free! frule!! / rrule!!" begin
             # unsafe_free! releases GPU memory early; pure side-effect, no gradient.
             # frule!!: returns Dual(nothing, NoTangent()); both primal and tangent freed.

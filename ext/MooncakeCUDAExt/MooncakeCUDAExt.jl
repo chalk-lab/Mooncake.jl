@@ -826,8 +826,16 @@ end
 function frule!!(::Dual{typeof(norm)}, x::Dual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
     y = norm(px)
-    dy = iszero(y) ? zero(real(eltype(px))) : real(dot(px, dx)) / y
-    return Dual(y, dy)
+    iszero(y) && return Dual(y, zero(real(eltype(px))))
+    s = real(dot(px, dx))
+    # dot overflows once norm(px)*norm(dx) leaves the eltype's range, while the JVP it
+    # divides down to is still representable — reachable in Float16, whose dot saturates
+    # at 65504. Rescaling costs a temporary, so only fall back to it from a non-finite
+    # dot, matching the core `BLAS.nrm2` frule.
+    if !isfinite(s) && isfinite(y)
+        return Dual(y, real(dot(px ./ y, dx)))
+    end
+    return Dual(y, s / y)
 end
 function rrule!!(::CoDual{typeof(norm)}, x::CoDual{<:CuMaybeComplexArray})
     px, dx = arrayify(x)
@@ -4323,8 +4331,10 @@ end
 # Statistics' generic `centralize_sumabs2(A, m) / (n - Int(corrected))`, which divides
 # AFTER summing in T/Int promotion arithmetic. The tangent does the same: this method
 # also runs (traced) on the CPU, and a CUDA-only rule must not give it a different
-# derivative — at Float16 n > 65504 the promoted denominator is Inf16, zeroing the
-# quotient on both backends.
+# derivative. Dividing each summand first would be better conditioned — it returns
+# 46677.3 where summing first overflows Float16 to Inf — but only here, so the two
+# backends would then disagree. At Float16 n > 65504 both orderings give NaN, since
+# the summand overflows before the Inf16-promoted denominator can zero the quotient.
 function _varm_scalar_colon_tangent(px, dx, pm, dm, corrected::Bool)
     # n == 0: the primal takes Statistics' constant-NaN branch, so the derivative is
     # the zero map (dividing the empty sum by 0 would instead manufacture a NaN).
