@@ -4064,7 +4064,10 @@ function _gpu_accum_pullback!(
                 (p, d) -> real(conj(d) * p), partial_slots[meta.slot1], dy_out
             )
             if meta.is_scalar
-                (scalar_grads::Vector{Any})[scalar_index] = sum(contrib)
+                # The partials carry whatever type the broadcast promoted to, which is the
+                # array's eltype whenever it is the wider one, but a leaf's rdata follows
+                # the leaf — the same `oftype` the BLAS scalars take.
+                (scalar_grads::Vector{Any})[scalar_index] = oftype(pa, sum(contrib))
                 scalar_index += 1
             else
                 _leaf_accum_fdata!(pa, fd, contrib)
@@ -4077,7 +4080,10 @@ function _gpu_accum_pullback!(
                 dy_out,
             )
             if meta.is_scalar
-                (scalar_grads::Vector{Any})[scalar_index] = sum(contrib)
+                # The partials carry whatever type the broadcast promoted to, which is the
+                # array's eltype whenever it is the wider one, but a leaf's rdata follows
+                # the leaf — the same `oftype` the BLAS scalars take.
+                (scalar_grads::Vector{Any})[scalar_index] = oftype(pa, sum(contrib))
                 scalar_index += 1
             else
                 _leaf_accum_fdata!(pa, fd, contrib)

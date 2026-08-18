@@ -273,6 +273,12 @@ end
         _bcast_setscalar_live(x) = (y=x .* 2; s=sum(y); y.=1.0f0; s + sum(y))
         _bcast_setscalar_expr(x) = (y=x .* 2; y.=3.0f0 .* 2; sum(y))
         _bcast_setscalar_arg(c, x) = (y=x .* 2; y.=c; sum(y))
+        # A scalar leaf narrower than the array's eltype: the kernel's partials carry the
+        # promoted type, but the leaf's rdata has to follow the leaf, or it lands in a slot
+        # of the wrong type.
+        _bcast_narrow_scalar(c, x) = sum(c .* x)
+        _bcast_narrow_scalar_add(c, x) = sum(c .+ x .^ 2)
+        _bcast_narrow_scalar_cx(c, z) = real(sum(c .* z))
         _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
         _bcast_all_scalar_leaf(x, s) = sum(x .* (s .+ 1.0))
         _inplace_zero_dof_nested!(dest, x, c, b) =
@@ -796,6 +802,24 @@ end
             (false, :none, false, _bcast_setscalar_live, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_setscalar_expr, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
+            (
+                false,
+                :none,
+                false,
+                _bcast_narrow_scalar_cx,
+                1.5f0 + 0.5f0im,
+                _rand(rng, ComplexF64, 4),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _bcast_narrow_scalar_cx,
+                1.5f0,
+                _rand(rng, ComplexF64, 4),
+            ),
             (
                 false,
                 :none,
