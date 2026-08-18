@@ -1928,8 +1928,11 @@ end
 @is_primitive MinimalCtx Tuple{typeof(unsafe_free!),CuArray}
 function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     unsafe_free!(primal(x))
+    # The claim covers index and mask arrays too, whose forward tangent is `NoTangent`, so
+    # test for the thing to be freed rather than against the reverse mode's empty type: a
+    # float array's forward tangent is a CuArray and never `NoFData` anyway.
     dx = tangent(x)
-    dx isa NoFData || unsafe_free!(dx)
+    dx isa CuArray && unsafe_free!(dx)
     return Dual(nothing, NoTangent())
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, x::CoDual{<:CuArray})
@@ -3918,8 +3921,9 @@ end
 # `_premat_nondiff_args` before the kernel ever sees it; the one at the top is the only one
 # that survives, because nothing materializes the tree's own root.
 _desugar_casts(x) = x
-_desugar_casts(bc::Broadcasted{S}) where {S} =
+function _desugar_casts(bc::Broadcasted{S}) where {S}
     bc.f isa Type ? Broadcasted{S}(_CastTo{bc.f}(), bc.args, bc.axes) : bc
+end
 
 function _prepare_gpu_broadcast(bc_primal, tangent_or_fdata)
     _check_gpu_bcast_captures(bc_primal)

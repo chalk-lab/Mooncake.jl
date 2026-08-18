@@ -1637,6 +1637,17 @@ end
             @test Mooncake.primal(result) === nothing
             @test Mooncake.tangent(result) isa Mooncake.NoTangent
 
+            # The claim covers index and mask arrays as well, whose forward tangent is
+            # `NoTangent`; guarding against the reverse mode's `NoFData` let that through
+            # and tried to free it.
+            idx = CuArray([1, 2, 3])
+            idx_result = _MooncakeCUDAExt.frule!!(
+                Mooncake.Dual(unsafe_free!, Mooncake.NoTangent()),
+                Mooncake.Dual(idx, Mooncake.NoTangent()),
+            )
+            @test Mooncake.primal(idx_result) === nothing
+            @test Mooncake.tangent(idx_result) isa Mooncake.NoTangent
+
             arr2 = _rand(rng, Float32, 4)
             tarr2 = Mooncake.zero_tangent(arr2)
             out, pb = _MooncakeCUDAExt.rrule!!(
