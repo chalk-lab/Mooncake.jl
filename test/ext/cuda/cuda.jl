@@ -173,6 +173,11 @@ end
         # derivative — the array's adjoint already took that path, only `init` had not.
         _accumulate_init_outdim(a, x) = sum(accumulate(+, x; dims=2, init=a))
         _accumulate_init_outdim3(a, m) = sum(accumulate(+, m; dims=3, init=a))
+        # An index array carries no derivative, but a float `init` widens the output and
+        # adds to every element of it, so it collects the whole cotangent.
+        _accumulate_nodiff_init(a, idx) = sum(accumulate(+, idx; init=a))
+        _accumulate_nodiff_init_d1(a, idx) = sum(accumulate(+, idx; dims=1, init=a))
+        _accumulate_nodiff_init_outdim(a, idx) = sum(accumulate(+, idx; dims=2, init=a))
         # Without `dims` CUDA scans an N-d array in linear order, not column by column.
         # Passing the captured value as an argument is what the refusal message recommends;
         # a capture the kernel cannot thread must not be silently zeroed instead.
@@ -721,6 +726,16 @@ end
             (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
             (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
+            (false, :none, false, _accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
+            (
+                false,
+                :none,
+                false,
+                _accumulate_nodiff_init_outdim,
+                1.0,
+                CuArray(Int32[1, 2, 3]),
+            ),
             (
                 false,
                 :none,
@@ -1970,6 +1985,23 @@ end
                     _max_badkw,
                     (M32,),
                     (; err=MethodError, primal=true),
+                ),
+                # mapreduce delegates to the keyword-free rule, so a differentiated `init`
+                # would be dropped instead of folded, and an `init` of another type would
+                # change an output type the delegate cannot produce.
+                (
+                    250,
+                    "mapreduce, differentiated init",
+                    (c, z) -> mapreduce(abs2, +, z; init=c),
+                    (0.0f0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    251,
+                    "mapreduce, init widens the output",
+                    z -> mapreduce(abs2, +, z; init=0.0),
+                    (x32,),
+                    (; msg=r"init::Float64 where the reduction produces"),
                 ),
                 # Forward mode alone refuses a differentiated `init` the rule treats as a
                 # constant; reverse mode reports a zero derivative for it instead.

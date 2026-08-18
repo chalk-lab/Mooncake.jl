@@ -1497,6 +1497,10 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(accumulate),Any,CuNonDiffArray}
 )
+# The array carries no derivative, but a float `init` widens the output to a float array and
+# adds to every element of it, so it collects the whole cotangent — the same accounting the
+# differentiable accumulate rules do, including the identity path where the scan dimension
+# exceeds the array's and `init` never reaches the result.
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     kw::Dual{<:NamedTuple},
@@ -1504,8 +1508,11 @@ function frule!!(
     op::Dual,
     x::Dual{<:CuNonDiffArray},
 )
-    y = accumulate(primal(op), primal(x); primal(kw)...)
-    return Dual(y, zero_tangent(y))
+    pkw = primal(kw)
+    px = primal(x)
+    y = accumulate(primal(op), px; pkw...)
+    applies = _scan_applies_init(px, get(pkw, :dims, nothing))
+    return Dual(y, _kw_init_jvp(zero_tangent(y), _kw_init_tangent(tangent(kw)), applies))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -1514,9 +1521,18 @@ function rrule!!(
     op::CoDual,
     x::CoDual{<:CuNonDiffArray},
 )
-    y = accumulate(primal(op), primal(x); primal(kw)...)
-    accumulate_nodiff_kw_pb!!(::Any) = ntuple(_ -> NoRData(), 5)
-    return zero_fcodual(y), accumulate_nodiff_kw_pb!!
+    pkw = primal(kw)
+    px = primal(x)
+    kw_rdata = zero_rdata(pkw)
+    y = accumulate(primal(op), px; pkw...)
+    applies = _scan_applies_init(px, get(pkw, :dims, nothing))
+    out = zero_fcodual(y)
+    dy_out = tangent(out)
+    function accumulate_nodiff_kw_pb!!(::Any)
+        dkw = _kw_init_rdata(kw_rdata, dy_out, applies)
+        return NoRData(), dkw, NoRData(), NoRData(), NoRData()
+    end
+    return out, accumulate_nodiff_kw_pb!!
 end
 
 # `count` returns an Integer for every array, float included, so it never has a derivative.
@@ -1594,6 +1610,22 @@ function _check_reduction_identity(f, pkw)
         "($identity). GPUArrays folds `init` into a backend-defined number of partial " *
         "reductions, so the result itself is undefined — sum(CuArray([1, 2, 3]); init=1.0) " *
         "returns 101.0, not 7.0. Pass the identity, or add `init` to the array instead. " *
+        _UNIMPL_MSG,
+    )
+end
+
+# The keyword mapreduce rules delegate to the keyword-free `sum(f, x)` rule, which seeds its
+# accumulator from the array. GPUArrays instead takes the output eltype from `init`, so an
+# `init` of any other type returns a value the delegate cannot produce — and a tangent typed
+# to match it. Compare against what the delegate actually returned rather than guessing the
+# natural output type, which the mapped function decides.
+function _check_mapreduce_init_type(pkw, y)
+    (!haskey(pkw, :init) || typeof(pkw.init) === typeof(y)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: mapreduce over CuArray was given init::$(typeof(pkw.init)) where the " *
+        "reduction produces $(typeof(y)). GPUArrays takes the output eltype from `init`, " *
+        "so this changes the result type, which the rule cannot follow. Pass an init of " *
+        "type $(typeof(y)). " *
         _UNIMPL_MSG,
     )
 end
@@ -2257,8 +2289,11 @@ for _op in (:(+), :(Base.add_sum))
     )
         pkw = primal(kw)
         _check_reduction_identity(sum, pkw)
+        _check_reduction_init(tangent(kw))
         _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
-        return frule!!(Dual(sum, NoTangent()), f, x)
+        out = frule!!(Dual(sum, NoTangent()), f, x)
+        _check_mapreduce_init_type(pkw, primal(out))
+        return out
     end
     @eval function rrule!!(
         ::CoDual{typeof(Core.kwcall)},
@@ -2273,6 +2308,7 @@ for _op in (:(+), :(Base.add_sum))
         _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
         kw_rdata = zero_rdata(pkw)
         y, pb!! = rrule!!(zero_fcodual(sum), f, x)
+        _check_mapreduce_init_type(pkw, primal(y))
         function mapreduce_kw_pb!!(dy)
             _, r_f, r_x = pb!!(dy)          # delegate pullback: (sum, f, x)
             return NoRData(), kw_rdata, NoRData(), r_f, NoRData(), r_x
