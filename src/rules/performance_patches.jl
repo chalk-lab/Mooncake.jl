@@ -32,15 +32,15 @@ function frule!!(
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ): fold the contiguous element-major
-    # block across lanes (vectorised). Walk the flat block directly rather than through a
-    # `reinterpret` view, which costs one header allocation per call. Stack-only / 0-alloc, as
-    # the `:allocs` test requires.
+    # block across lanes. Reinterpreting the flat parent to `NTuple{N,P}` loads each element's
+    # lane column in one wide load; `N` separate scalar loads costs ~2x at width 8. Stack-only /
+    # 0-alloc, as the `:allocs` test requires.
     nda = tangent(x)
     pv = sum(getfield(nda, :primal))
-    blk = getfield(getfield(nda, :partials_block), :parent)
+    cols = reinterpret(NTuple{N,P}, getfield(getfield(nda, :partials_block), :parent))
     acc = ntuple(_ -> zero(P), Val(N))
-    @inbounds for off in 0:N:(length(blk) - 1)
-        acc = _tadd(acc, ntuple(k -> blk[off + k], Val(N)))
+    @inbounds for j in eachindex(cols)
+        acc = _tadd(acc, cols[j])
     end
     lanes = acc
     return Lifted{P,N}(pv, _scalar_ndual(pv, lanes))
@@ -62,16 +62,16 @@ function frule!!(
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
     # Chain rule: lane-`k` derivative of `Σᵢ pᵢ²` is `Σᵢ 2pᵢ·blockₖᵢ`: fold the contiguous block,
-    # scaling each element's lane column by `2pᵢ` (vectorised). Stack-only / 0-alloc (the
-    # `:allocs` test).
+    # scaling each element's lane column by `2pᵢ`. Reinterpreting the flat parent to `NTuple{N,P}`
+    # loads each lane column in one wide load; `N` separate scalar loads costs ~2x at width 8.
+    # Stack-only / 0-alloc (the `:allocs` test).
     nda = tangent(x)
     p = getfield(nda, :primal)
     v = sum(abs2, p)
-    blk = getfield(getfield(nda, :partials_block), :parent)
+    cols = reinterpret(NTuple{N,P}, getfield(getfield(nda, :partials_block), :parent))
     acc = ntuple(_ -> zero(P), Val(N))
     @inbounds for j in eachindex(p)
-        off = (j - 1) * N
-        acc = _tadd(acc, _tscale(ntuple(k -> blk[off + k], Val(N)), 2 * p[j]))
+        acc = _tadd(acc, _tscale(cols[j], 2 * p[j]))
     end
     lanes = acc
     return Lifted{P,N}(v, _scalar_ndual(v, lanes))

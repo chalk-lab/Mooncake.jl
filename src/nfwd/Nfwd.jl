@@ -2160,6 +2160,28 @@ end
     return (LinearIndices(getfield(a, :primal))[i...] - 1) * N
 end
 
+# Element-wise reduction over a flat block. Reading each element's lane column as one
+# `NTuple{N,Element}` load matters twice over: `getindex` would reload the block's parent pointer
+# per element, and `N` separate scalar loads do not vectorise. Together those cost ~25% at width
+# 8. Wrapper primals and GPU blocks keep the generic `getindex` path.
+@inline function _ndual_mapreduce_impl(
+    f::F,
+    op::O,
+    A::NDualArray{Element,N,D,<:Array,W,<:NDualBlock},
+    ifirst::Integer,
+    ilast::Integer,
+) where {F,O,Element,N,D,W}
+    ifirst > ilast && return Base.mapreduce_empty(f, op, eltype(A))
+    i0, i1 = Int(ifirst), Int(ilast)
+    p = getfield(A, :primal)
+    cols = reinterpret(NTuple{N,Element}, getfield(getfield(A, :partials_block), :parent))
+    @inbounds acc = f(_scalar_ndual(p[i0], cols[i0]))
+    @inbounds for i in (i0 + 1):i1
+        acc = op(acc, f(_scalar_ndual(p[i], cols[i])))
+    end
+    return acc
+end
+
 # One `getindex` for both real and complex eltypes: `_scalar_ndual` builds an `NDual{T,N}` from a
 # real element and a `Complex{NDual{T,N}}` from a complex one. `setindex!` stays split — its `x`
 # argument type differs by eltype.
