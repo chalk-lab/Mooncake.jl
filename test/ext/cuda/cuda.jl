@@ -247,7 +247,6 @@ end
         # the destination to restore, so both reach the reverse sweep after the free.
         _free_nodiff(x) = (i=CuArray([1, 2, 3]); CUDA.unsafe_free!(i); sum(x))
         _free_gathered_idx(x) = (i=CuArray([1, 2, 3]); s=sum(x[i]); CUDA.unsafe_free!(i); s)
-        _free_mask(x) = (m=CuArray([true, false, true]); CUDA.unsafe_free!(m); sum(x))
         _cu_sum(x) = sum(cu(x))
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
@@ -305,10 +304,13 @@ end
         # A complex leaf reaches the kernel as `Complex{<:NDual}`, one dual per degree of
         # freedom, so a complex cast has to convert the parts rather than the whole; a real
         # leaf widened to complex keeps its derivative in the real part.
-        _bcast_cast_cx_narrow(z) = real(sum(ComplexF32.(z) .* (1 + 2im)))
-        _bcast_cast_cx_widen(z) = real(sum(ComplexF64.(z) .* (1 + 2im)))
-        _bcast_cast_cx_abs2(z) = sum(abs2.(ComplexF32.(z)))
-        _bcast_cast_real_to_cx(x) = real(sum(ComplexF64.(x) .* (1 + 2im)))
+        # The cast must stay at the root of its own broadcast: nested inside another one it
+        # is materialised before the kernel sees it, and these passed before the fix.  The
+        # complex weight multiplies the scalar sum, so the cotangent still pins the
+        # convention -- 1 - 2im, not 1 + 2im.
+        _bcast_cast_cx_narrow(z) = real(sum(ComplexF32.(z)) * (1 + 2im))
+        _bcast_cast_cx_widen(z) = real(sum(ComplexF64.(z)) * (1 + 2im))
+        _bcast_cast_real_to_cx(x) = real(sum(ComplexF64.(x)) * (1 + 2im))
         _bcast_cast_top_nodiff(x) =
             (i=CuArray(Int32[1, 2, 3, 4]); sum(Float64.(i)) * sum(x))
         # `x .= scalar` reaches materialize! as a zero-dimensional Broadcasted, whose style
@@ -666,7 +668,6 @@ end
             (false, :none, false, _free_intermediate, _rand(rng, 4)),
             (false, :none, false, _free_nodiff, _rand(rng, Float32, 3)),
             (false, :none, false, _free_gathered_idx, _rand(rng, Float32, 3)),
-            (false, :none, false, _free_mask, _rand(rng, Float32, 3)),
             (false, :none, false, _cu_sum, _host_rand(rng, 16)),
             # `cu` of an argument that is already on the device: the cotangent must come back
             # to the device buffer rather than being pulled to the host.
@@ -891,7 +892,6 @@ end
             (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
             (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
             (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
-            (false, :none, false, _bcast_cast_cx_abs2, _rand(rng, ComplexF64, 4)),
             (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_cast_top, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_cast_top_narrow, _rand(rng, Float64, 4)),

@@ -1959,7 +1959,7 @@ function frule!!(::Dual{typeof(unsafe_free!)}, x::Dual{<:CuArray})
     return Dual(nothing, NoTangent())
 end
 function rrule!!(::CoDual{typeof(unsafe_free!)}, ::CoDual{<:CuArray})
-    CoDual(nothing, NoFData()), _nopb(Val(2))
+    return CoDual(nothing, NoFData()), _nopb(Val(2))
 end
 
 # Core.finalizer(f, x) registers f as a GC finalizer for x. This is a pure side-effect
@@ -3673,7 +3673,6 @@ end
 # still decides the result, which is a Bool, so the capture's derivative is genuinely zero and
 # the state guard below has nothing to protect.
 @inline _gpu_bcast_has_nondiff_result(f::Base.Fix2) = _gpu_bcast_has_nondiff_result(f.f)
-@inline _gpu_bcast_has_nondiff_result(f::Base.Fix1) = _gpu_bcast_has_nondiff_result(f.f)
 @inline _gpu_bcast_has_nondiff_result(::Any) = false
 @inline _gpu_is_simple_cast_broadcast(::Any) = false
 @inline function _gpu_is_simple_cast_broadcast(bc::Broadcasted)
