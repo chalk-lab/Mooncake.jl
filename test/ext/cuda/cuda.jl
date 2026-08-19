@@ -318,6 +318,14 @@ end
         _bcast_setscalar_live(x) = (y=x .* 2; s=sum(y); y.=1.0f0; s + sum(y))
         _bcast_setscalar_expr(x) = (y=x .* 2; y.=3.0f0 .* 2; sum(y))
         _bcast_setscalar_arg(c, x) = (y=x .* 2; y.=c; sum(y))
+        # An Int right-hand side seeds no dual, so the kernel hands back the scalar itself
+        # rather than an array of duals; writing it with `copyto!` indexed one element.
+        _bcast_setscalar_int(x) = (y=x .* 2; y.=1; sum(y))
+        # A float range is refused: it may have been built from differentiated endpoints and
+        # nothing at the leaf can tell.  An integer range carries no derivative and is
+        # threaded as a constant, and materialising a float one restores the gradient.
+        _bcast_int_range(x) = sum(x .* (1:4))
+        _bcast_materialised_range(x) = sum(x .* CuArray(collect(0.0f0:0.25f0:0.75f0)))
         # A scalar leaf narrower than the array's eltype: the kernel's partials carry the
         # promoted type, but the leaf's rdata has to follow the leaf, or it lands in a slot
         # of the wrong type.
@@ -897,6 +905,9 @@ end
             (false, :none, false, _bcast_setscalar_live, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_setscalar_expr, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_setscalar_int, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_int_range, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_materialised_range, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
             (
@@ -2169,6 +2180,20 @@ end
                     _max_badkw,
                     (M32,),
                     (; err=MethodError, primal=true),
+                ),
+                (
+                    280,
+                    "float range leaf",
+                    z -> sum(z .* (0.0f0:0.25f0:0.75f0)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"Materialise the range first"),
+                ),
+                (
+                    281,
+                    "range from a differentiated endpoint",
+                    (a, z) -> sum(z .* range(a, 1.0f0; length=4)),
+                    (0.0f0, _rand(rng, Float32, 4)),
+                    (; msg=r"would silently be zero"),
                 ),
                 # A reinterpret that changes the underlying real field would hand back a
                 # tangent whose elements are bit-halves of the primal's.

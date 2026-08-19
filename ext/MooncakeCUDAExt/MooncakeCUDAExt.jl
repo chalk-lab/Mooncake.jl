@@ -95,7 +95,6 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
-const CuMaybeComplexVector = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose
@@ -2102,12 +2101,21 @@ end
 # every bit as differentiable, and `rdata_type` applied to a primal type throws inside
 # `fields_type` — which is what used to reach the user in place of this message.
 function _throw_gpu_unthreaded(T, spelling, noun)
+    # A float range is the one refusal here with an easy remedy, and the one users are most
+    # likely to hit: the range itself is usually constant, but it may be built from
+    # differentiated endpoints, and nothing at this point can tell the two apart.
+    hint = if T <: AbstractRange
+        "Materialise the range first — `x .* CuArray(collect(r))` — or, if its endpoints " *
+        "carry no derivative, use an integer range, which is threaded as a constant. "
+    else
+        "Pass captured state as an argument instead — `((t, c) -> c * t).(x, a)` " *
+        "differentiates correctly — or write a rule for the enclosing operation. "
+    end
     return _throw_gpu_argument_error(
         "Mooncake: $spelling over CuArray does not support $noun of type $T. Partials are " *
         "threaded through GPU array elements and real or complex float scalars only, so " *
-        "this one's gradient would silently be zero. Pass captured state as an argument " *
-        "instead — `((t, c) -> c * t).(x, a)` differentiates correctly — or write a rule " *
-        "for the enclosing operation. " *
+        "this one's gradient would silently be zero. " *
+        hint *
         _UNIMPL_MSG,
     )
 end
@@ -3371,12 +3379,12 @@ end
 # vector, while these rules put the argument's own fdata in that slot and the pullback
 # returns nothing on the assumption `.diag === v`. The matrix spelling decomposes through
 # `diag`, which carries the gradient back to the right elements.
-@is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexVector})
-function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexVector})
+@is_primitive(MinimalCtx, Tuple{Type{<:Diagonal},CuMaybeComplexVec})
+function frule!!(::Dual{<:Type{<:Diagonal}}, v::Dual{<:CuMaybeComplexVec})
     # Diagonal is a non-mutable struct; its tangent type is Tangent{(; diag::CuArray)}.
     return Dual(Diagonal(primal(v)), Tangent((; diag=tangent(v))))
 end
-function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexVector})
+function rrule!!(::CoDual{<:Type{<:Diagonal}}, v::CoDual{<:CuMaybeComplexVec})
     pv, dv = arrayify(v)
     # `Diagonal(v).diag === v`, so the aliasing invariant — primal(a) === primal(b) implies
     # fdata(a) === fdata(b) — requires the output's `.diag` fdata to *be* v's.  Accumulating a
@@ -3619,8 +3627,12 @@ end
 @inline function _gpu_write_broadcast_primal!(dest, out, is_diff::Bool)
     if is_diff
         broadcast!(Nfwd._nfwd_dual_value, dest, out)
-    else
+    elseif out isa AbstractArray
         copyto!(dest, out)
+    else
+        # `x .= 1` seeds no dual, so the kernel hands back the scalar itself; `copyto!`
+        # would iterate it and set one element by scalar indexing.
+        fill!(dest, out)
     end
     return dest
 end

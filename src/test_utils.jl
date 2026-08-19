@@ -1283,9 +1283,11 @@ while failing `err`, so pin the type only where the rule throws it directly.
 `primal=true` also requires `f(x...)` itself to throw, separating a call that is already
 invalid before AD sees it from one whose primal is fine and which only AD refuses.
 
-Tangents come from `rng`, not from `zero_tangent`: a guard that fires only when an argument
-carries a derivative -- a keyword the rule treats as constant, say -- sees nothing to refuse
-in a zero seed and would let the case pass while asserting nothing.
+Forward-mode tangents come from `rng`, not from `zero_tangent`: a guard that fires only when
+an argument carries a derivative -- a keyword the rule treats as constant, say -- sees
+nothing to refuse in a zero seed and would let the case pass while asserting nothing.
+Reverse mode seeds its inputs itself and has no such tangent to offer, so name
+`mode=ForwardMode` for a guard only a nonzero tangent reaches.
 """
 function test_rule_throws(
     rng::AbstractRNG,
