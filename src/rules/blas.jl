@@ -408,20 +408,30 @@ end
     return nothing
 end
 
+# `X[i]*dX[i]` overflows once `norm(X)*norm(dX)` leaves `T`'s range, though the JVP it divides down
+# to is representable. Scaling `X` by the power of two nearest `y` is exact, so in-range results are
+# unchanged; a subnormal `y` has no representable reciprocal, and with every `X[i]` subnormal too it
+# needs none. Both lane paths scale by this `r` and divide by `2(y*r)`.
+@inline function _nrm2_scale_factor(y)
+    r = isfinite(y) && !iszero(y) ? ldexp(one(y), -exponent(y)) : one(y)
+    return isfinite(r) ? r : one(y)
+end
+
 # Per-lane nrm2 JVP: `dy_k = Σᵢ real(conj(Xᵢ)·dXₖᵢ)/y` with a removable-singularity guard. Fallback
 # for the Ptr slot and strided (incx≠1) inputs, where the contiguous-block fast path does not apply.
 @inline function _nrm2_lanes_perlane(
     _n, X_dX, _inc, Xv, y, ::Type{R}, ::Val{Nw}
 ) where {R,Nw}
+    r = _nrm2_scale_factor(y)
     return ntuple(Val(Nw)) do lane
         dX_lane = _blas_lane_partial(X_dX, lane)
         dXv = _viewify_one(_n, dX_lane, _inc)
         s = zero(R)
         @inbounds for i in eachindex(Xv)
             # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
-            s += 2 * real(Xv[i]' * dXv[i])
+            s += 2 * real((Xv[i] * r)' * dXv[i])
         end
-        iszero(s) ? zero(R) : s / (2 * y)
+        iszero(s) ? zero(R) : s / (2 * (y * r))
     end
 end
 
@@ -434,16 +444,17 @@ end
 @inline _nrm2_accum(acc::NTuple{Nw}, xi, col) where {Nw} = ntuple(
     k -> acc[k] + 2 * real(xi' * col[k]), Val(Nw)
 )
-@inline _nrm2_scale(acc::NTuple{Nw}, y) where {Nw} = ntuple(
-    k -> iszero(acc[k]) ? acc[k] : acc[k] / (2 * y), Val(Nw)
+@inline _nrm2_scale(acc::NTuple{Nw}, yr) where {Nw} = ntuple(
+    k -> iszero(acc[k]) ? acc[k] : acc[k] / (2 * yr), Val(Nw)
 )
 @inline function _nrm2_lanes_block(blk, Xv, y, ::Type{R}, ::Val{Nw}) where {R,Nw}
     cols = reinterpret(reshape, NTuple{Nw,eltype(blk)}, blk)
     acc = ntuple(_ -> zero(R), Val(Nw))
+    r = _nrm2_scale_factor(y)
     @inbounds for i in eachindex(Xv)
-        acc = _nrm2_accum(acc, Xv[i], cols[i])
+        acc = _nrm2_accum(acc, Xv[i] * r, cols[i])
     end
-    return _nrm2_scale(acc, y)
+    return _nrm2_scale(acc, y * r)
 end
 
 # Dispatch the lane JVP on the slot kind — a function barrier that keeps the frule type-stable

@@ -7,10 +7,21 @@ using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
 using Mooncake: lgetfield
 using Mooncake.TestUtils:
-    test_tangent_interface, test_tangent_splitting, test_rule, test_rrule_interface
+    test_tangent_interface,
+    test_tangent_splitting,
+    test_rule,
+    test_rule_throws,
+    test_frule_interface,
+    test_rrule_interface
 using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
+
+# A callable struct carrying a differentiable field, for the captured-state tests.
+struct _CapScale{T}
+    a::T
+end
+(s::_CapScale)(t) = s.a * t
 
 @testset "cuda" begin
     cuda = CUDA.functional()
@@ -114,7 +125,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # intercept op=+ / op=Base.add_sum and redirect to the ForwardDiff.Dual machinery.
         # Note: in Julia 1.11, sum(f, x) dispatches through Base._sum → mapreduce(f, add_sum, x)
         # rather than being intercepted by our sum(f, x) primitive; both code paths are tested.
-        # Note: _sum_f_sin is defined above (line 79); _sum_f_abs2 is defined below (line 135).
+        # Note: _sum_f_sin is defined above; _sum_f_abs2 below.
         _mapreduce_sin(x) = mapreduce(sin, +, x)
         _mapreduce_exp(x) = mapreduce(exp, +, x)
         _mapreduce_cx_abs2(x) = mapreduce(abs2, +, x)
@@ -125,6 +136,12 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _reduce_plus_cx(x) = reduce(+, x)
         _reduce_mul(x) = reduce(*, x)
         _reduce_mul_cx(x) = reduce(*, x)
+        # The Core.kwcall spellings: `reduce` forwards to the sum/prod keyword rules, and
+        # `mapreduce` to the positional sum(f, x) when the keywords leave the reduction alone.
+        _reduce_plus_d1(x) = sum(reduce(+, x; dims=1))
+        _reduce_plus_init(x) = reduce(+, x; init=0.0f0)
+        _reduce_mul_init(x) = reduce(*, x; init=1.0f0)
+        _mapreduce_abs2_init(x) = mapreduce(abs2, +, x; init=0.0f0)
         # norm / dot — cuBLAS routines with explicit rules.
         # norm() always returns a real scalar regardless of element type, so _norm_cx has
         # the same body as _norm; the alias exists solely to label the complex-input testset.
@@ -140,13 +157,124 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _cumprod_cx_sum(x) = real(sum(cumprod(x)))
         _accumulate_plus_sum(x) = sum(accumulate(+, x))
         _accumulate_plus_cx_sum(x) = real(sum(accumulate(+, x)))
+        # The `dims` spellings, which Base requires for anything past one dimension. These
+        # go through Core.kwcall, so they need their own claims.
+        _prod_d1(x) = sum(prod(x; dims=1))
+        _prod_d2(x) = sum(prod(x; dims=2))
+        _prod_colon(x) = prod(x; dims=:)
+        _prod_cx_d1(x) = real(sum(prod(x; dims=1)))
+        _cumsum_d1(x) = sum(cumsum(x; dims=1))
+        _cumprod_d1(x) = sum(cumprod(x; dims=1))
+        _accumulate_plus_d1(x) = sum(accumulate(+, x; dims=1))
+        # accumulate's `init` adds to every output element, so its derivative is the output
+        # length, and a narrower init narrows the result and its tangent.
+        _accumulate_init(a, x) = sum(accumulate(+, x; init=a))
+        _accumulate_init_d1(a, x) = sum(accumulate(+, x; dims=1, init=a))
+        _accumulate_init_widens(x) = sum(accumulate(+, x; init=1.0f0))
+        # Scanning along a dimension the array does not have copies the input and returns
+        # before `init` is applied, so the primal does not depend on it and neither may the
+        # derivative — the array's adjoint already took that path, only `init` had not.
+        _accumulate_init_outdim(a, x) = sum(accumulate(+, x; dims=2, init=a))
+        _accumulate_init_outdim3(a, m) = sum(accumulate(+, m; dims=3, init=a))
+        # An index array carries no derivative, but a float `init` widens the output and
+        # adds to every element of it, so it collects the whole cotangent.
+        _accumulate_nodiff_init(a, idx) = sum(accumulate(+, idx; init=a))
+        _accumulate_nodiff_init_d1(a, idx) = sum(accumulate(+, idx; dims=1, init=a))
+        _accumulate_nodiff_init_outdim(a, idx) = sum(accumulate(+, idx; dims=2, init=a))
+        # `reverse` refuses an empty array while `cumsum` accepts one, so an empty input
+        # reached the pullback and only the pullback.  The 0x3 reduced along dim 2 is not an
+        # empty reduction at all — it is simply an empty array — so both need covering.
+        _cumsum_empty(y) = sum(cumsum(y; dims=1))
+        _cumsum_empty_d2(y) = sum(cumsum(y; dims=2))
+        _cumprod_empty(y) = sum(cumprod(y; dims=1))
+        _accumulate_empty(y) = sum(accumulate(+, y))
+        # Without `dims` CUDA scans an N-d array in linear order, not column by column.
+        # Passing the captured value as an argument is what the refusal message recommends;
+        # a capture the kernel cannot thread must not be silently zeroed instead.
+        # An in-place broadcast overwrites dest, so a non-differentiable result has to consume
+        # dest's cotangent; letting it through credits dest's own history for a value that
+        # does not depend on it.  The mid-chain case is the sharp one: the leak showed up as
+        # exactly 2cos(x) where the derivative is cos(x).
+        _bcast_kill(x) = (y=x .* 2; y.=y .> 0; sum(y))
+        _bcast_kill_mid(x) = (y=x .* 1; y.=sin.(y); s=sum(y); y.=y .> 0; s + sum(y))
+        _bcast_kill_view(x) = (y=x .* 2; v=view(y, 3:4); v.=v .> 0; sum(y))
+        _bcast_kill_cast(x) = (y=x .* 2; y.=Float64.(y .> 0); sum(y))
+        _hoisted_capture(a, x) = sum(((t, c) -> c * t).(x, a))
+        _int_capture(x) = (n=3; sum((t -> n * t).(x)))
+        # A `dims` past ndims is a no-op scan the primal and the JVP both accept, so the
+        # pullback has to treat it as the identity rather than hand it to `reverse`.
+        _cumsum_trailing(x) = sum(cumsum(x; dims=2) .^ 2)
+        _cumprod_trailing(x) = sum(cumprod(x; dims=2) .^ 2)
+        _accumulate_trailing(x) = sum(accumulate(+, x; dims=3) .^ 2)
+        _accumulate_flat(x) = sum(accumulate(+, x))
+        _accumulate_flat_init(a, x) = sum(accumulate(+, x; init=a))
         # vector indexing — gather/scatter-add
         _gather_sum(x, idx) = sum(x[idx])
+        # A repeated index is read more than once, so its element is owed the sum of those
+        # reads.  The weighted case distinguishes a correct sum from a single surviving write.
+        _gather_dup(x) = sum(x[CuArray([1, 1, 2])])
+        _gather_dup_weighted(x) = sum(x[CuArray([1, 1, 2])] .* CuArray(Float32[1, 2, 3]))
+        _gather_dup_host(x) = sum(x[[1, 1, 2]])
+        _gather_dup_cx(x) = real(sum(x[CuArray([1, 1, 2])]))
+        _gather_dup_cartesian(m) = sum(
+            m[CuArray([CartesianIndex(1, 1), CartesianIndex(1, 1), CartesianIndex(2, 2)])]
+        )
+        # A logical mask selects by position, not by value.  The weighted case is what
+        # separates a correct scatter from one that credits index 1 for every hit.
+        _gather_mask(x) = sum(x[CuArray(Bool[true, false, true, false])])
+        _gather_mask_weighted(x) = sum(
+            x[CuArray(Bool[true, false, true, false])] .* CuArray(Float32[1, 2])
+        )
+        _gather_mask_host(x) = sum(x[Bool[true, false, true, false]])
+        _gather_mask_bits(x) = sum(x[BitVector([true, false, true, false])])
+        _gather_mask_cx(x) = real(sum(x[CuArray(Bool[true, false, true, false])]))
+        _gather_mask_none(x) = sum(x[CuArray(falses(4))]) + sum(x)
+        # A view carries an offset into its parent's allocation, while its tangent starts at
+        # the beginning of a buffer of its own; deriving the tangent from the primal's offset
+        # shifts every gradient by that many elements.  The weighted case pins which element
+        # each cotangent reached, and the parent fixtures are longer than the views so the
+        # offsets are nonzero.
+        _view_sum(a) = sum(view(a, 1:3))
+        _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
+        _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
+        _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
+        _view_cols(m) = sum(view(m, :, 1) .* CuArray(Float32[1, 2, 3]))
+        _view_weighted_cx(a) = real(sum(view(a, 1:3) .* CuArray(ComplexF32[1, 2im, 3])))
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
+        # unsafe_free! releases the primal early; in reverse mode the fdata is still the
+        # accumulator earlier pullbacks write into, so it has to outlive the call.
+        _free_intermediate(x) = (y=x .* 2; s=sum(y); CUDA.unsafe_free!(y); s)
+        _free_input(x) = (s=sum(x .* 2); CUDA.unsafe_free!(x); s)
+        # Freeing an array a pullback still needs.  The gather keeps its index array to
+        # scatter with, and constructing one is itself an `unsafe_copyto!` whose rule keeps
+        # the destination to restore, so both reach the reverse sweep after the free.
+        _free_nodiff(x) = (i=CuArray([1, 2, 3]); CUDA.unsafe_free!(i); sum(x))
+        _free_gathered_idx(x) = (i=CuArray([1, 2, 3]); s=sum(x[i]); CUDA.unsafe_free!(i); s)
         _cu_sum(x) = sum(cu(x))
         _array_sum(x) = sum(Array(x))     # GPU→CPU transfer
         _diagonal_sum(x) = sum(Diagonal(x)) # GPU Diagonal construction
+        # Both rules assume the argument's fdata is the array itself.  A wrapper's is an
+        # FData over its parent, and `Diagonal(::CuMatrix)` is `Diagonal(diag(A))`, whose
+        # `.diag` is not the argument at all — so these spellings have to decompose.
+        _cu_adjoint(m) = sum(cu(m'))
+        _cu_transpose(m) = sum(cu(transpose(m)))
+        _cu_diagonal(v) = sum(cu(Diagonal(v)))
+        _diagonal_of_matrix(m) = sum(Diagonal(m))
         _diagonal_field_bcast(x) = sum(exp.(Diagonal(x).diag))  # Diagonal + lgetfield + broadcast
+        # Diagonal(v).diag === v, so a mutation of v after wrapping has to be visible through
+        # the wrapper: the two share one cotangent buffer.
+        _diagonal_mutate(v) = (D=Diagonal(v); v.=v .* 2; sum(D.diag))
+        _diagonal_fill(v, c) = (D=Diagonal(v); fill!(v, c); sum(D.diag .^ 2))
+        # A real value filling a complex array is owed only dL/dRe, so the summed cotangent
+        # has to be projected before it is narrowed back to the value's own type.
+        _fill_real_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
+        _fill_cx_into_cx(z, c) = (fill!(z, c); real(sum(z .* (1.0f0 + 2.0f0im))))
+        # A float array built only from index arrays carries a tangent type even though no
+        # partials flow into it, so the rule owes a zeroed array rather than NoFData.  The
+        # Bool output of a comparison is the case the branch was written for and stays.
+        _bcast_nodiff_ratio(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(i ./ 2) * sum(x))
+        _bcast_nodiff_float(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(float.(i)) * sum(x))
+        _bcast_nodiff_bool(x) = (i=CuArray(Int32[1, 2, 3, 4]); sum(i .> 2) * sum(x))
         _sum_f_abs(x) = sum(abs, x)          # sum(f, x) with non-smooth f
         _sum_f_abs2(x) = sum(abs2, x)        # sum(f, x) real abs2
         _sum_adj_pow3(x) = real(sum(y -> y^3, x'))  # sum(f, Adjoint)
@@ -161,6 +289,54 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _bcast_cx_cx_scalar_mul(x, c) = real(sum(c .* x))  # complex scalar, complex array
         _bcast_nested_sin_add(x, y) = sum(sin.(x .+ y))
         _bcast_nested_float_cast_sin(x) = sum(sin.(Float64.(x)))
+        # A cast whose argument is itself a cast.  The inner one is materialized first,
+        # which collapses the whole chain to a plain leaf, so the tangent that has to be
+        # reattached belongs to the array at the bottom rather than to the outer cast's
+        # immediate argument.  Both modes agreed on an exact zero before, so nothing but a
+        # value comparison catches it.
+        _bcast_cast_chain_exp(x) = sum(exp.(Float64.(Float32.(x))))
+        _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
+        _bcast_cast_chain_same(x) = sum(Float32.(Float32.(x)) .^ 2)
+        _bcast_cast_chain_cx(z) = sum(abs2.(ComplexF64.(ComplexF32.(z))))
+        # A cast at the top of the tree is never materialized away, so it is the one place
+        # the kernel sees the cast itself: as a bare `DataType`, which cannot be captured,
+        # and applied to duals, which have no conversion of their own.
+        _bcast_cast_top(x) = sum(Float64.(x))
+        _bcast_cast_top_narrow(x) = sum(Float32.(x))
+        _bcast_cast_top_chain(x) = sum(Float64.(Float32.(x)))
+        # A complex leaf reaches the kernel as `Complex{<:NDual}`, one dual per degree of
+        # freedom, so a complex cast has to convert the parts rather than the whole; a real
+        # leaf widened to complex keeps its derivative in the real part.
+        # The cast must stay at the root of its own broadcast: nested inside another one it
+        # is materialised before the kernel sees it, and these passed before the fix.  The
+        # complex weight multiplies the scalar sum, so the cotangent still pins the
+        # convention -- 1 - 2im, not 1 + 2im.
+        _bcast_cast_cx_narrow(z) = real(sum(ComplexF32.(z)) * (1 + 2im))
+        _bcast_cast_cx_widen(z) = real(sum(ComplexF64.(z)) * (1 + 2im))
+        _bcast_cast_real_to_cx(x) = real(sum(ComplexF64.(x)) * (1 + 2im))
+        _bcast_cast_top_nodiff(x) =
+            (i=CuArray(Int32[1, 2, 3, 4]); sum(Float64.(i)) * sum(x))
+        # `x .= scalar` reaches materialize! as a zero-dimensional Broadcasted, whose style
+        # is DefaultArrayStyle rather than CuArrayStyle; before the claim covered it the
+        # call decomposed and tracing died inside cufunction.
+        _bcast_setscalar(x) = (y=x .* 2; y.=0.0f0; sum(y))
+        _bcast_setscalar_live(x) = (y=x .* 2; s=sum(y); y.=1.0f0; s + sum(y))
+        _bcast_setscalar_expr(x) = (y=x .* 2; y.=3.0f0 .* 2; sum(y))
+        _bcast_setscalar_arg(c, x) = (y=x .* 2; y.=c; sum(y))
+        # An Int right-hand side seeds no dual, so the kernel hands back the scalar itself
+        # rather than an array of duals; writing it with `copyto!` indexed one element.
+        _bcast_setscalar_int(x) = (y=x .* 2; y.=1; sum(y))
+        # A float range is refused: it may have been built from differentiated endpoints and
+        # nothing at the leaf can tell.  An integer range carries no derivative and is
+        # threaded as a constant, and materialising a float one restores the gradient.
+        _bcast_int_range(x) = sum(x .* (1:4))
+        _bcast_materialised_range(x) = sum(x .* CuArray(collect(0.0f0:0.25f0:0.75f0)))
+        # A scalar leaf narrower than the array's eltype: the kernel's partials carry the
+        # promoted type, but the leaf's rdata has to follow the leaf, or it lands in a slot
+        # of the wrong type.
+        _bcast_narrow_scalar(c, x) = sum(c .* x)
+        _bcast_narrow_scalar_add(c, x) = sum(c .+ x .^ 2)
+        _bcast_narrow_scalar_cx(c, z) = real(sum(c .* z))
         _bcast_zero_dof_nested(x, c, b) = sum(x .+ c .* Float64.(b .> 0))
         _bcast_all_scalar_leaf(x, s) = sum(x .* (s .+ 1.0))
         _inplace_zero_dof_nested!(dest, x, c, b) =
@@ -180,6 +356,7 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _inplace_cx_abs2!(x, y) = (x.=abs2.(y); real(sum(x)))
         # GPU→CPU transfer inside the function: Array(x::CuArray) path.
         _gpu_to_cpu(x) = sum(Array(x) .^ 2)
+        _gpu_to_cpu_cx(z) = real(sum(Array(z) .^ 2))
         # CPU→GPU transfer: copies a host Array into a GPU dest via unsafe_copyto!(GPU←CPU).
         # Exercises the mixed-device rrule (dest::CuArray, src::Array).
         # The gradient flows back from the GPU cotangent to the CPU src tangent.
@@ -188,6 +365,72 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             copyto!(dest, Array(x))
             return sum(dest)
         end
+        # Device arrays with no derivative information: the index upload goes through
+        # unsafe_copyto!(CuArray{Int}, Array{Int}), the zeros through the fill kernel.
+        _nodiff_index_copy(x) = (i=CuArray([1, 2]); sum(x[i]))
+        _nodiff_fill(x) = (i=CUDA.zeros(Int64, 2); fill!(i, 3); sum(x))
+        # Reducing an index or mask array: no derivative, but it still needs a rule.
+        # The Bool case reaches GPUArrays._mapreduce by a different internal route.
+        _nodiff_sum(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(sum(i)))
+        _nodiff_sum_dims(x) = (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(sum(i; dims=1))))
+        _nodiff_sum_mask(x) = (m=CuArray([true, false, true]); sum(x) * Float32(sum(m)))
+        # A float `init` makes the output differentiable, and GPUArrays folds init into a
+        # backend-defined number of partial reductions, so the frule rejects its derivative.
+        _nodiff_sum_init(a, x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=a))
+        _nodiff_sum_init_const(x) = sum(x) * Float32(sum(CuArray([1, 2, 3]); init=0.0))
+        # The other reductions over an index or mask array. `count` returns an Integer for
+        # any array, so the float case has no derivative either.
+        _nodiff_prod(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(prod(i)))
+        _nodiff_max(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(maximum(i)))
+        _nodiff_min_dims(x) =
+            (i=CuArray([1 2; 3 4]); sum(x) * Float32(sum(minimum(i; dims=1))))
+        _nodiff_count(x) = (i=CuArray([1, 2, 3]); sum(x) * Float32(count(>(1), i)))
+        # `isfinite`, not a threshold predicate: count is piecewise constant in x, so a
+        # predicate whose value can flip within a finite-difference step would leave
+        # test_rule comparing a zero rule derivative against a 1/h estimate.
+        _nodiff_count_float(x) = sum(x) * Float32(count(isfinite, x))
+        # count's keyword spellings sum `init` like `sum` does, so a non-identity one
+        # corrupts the count itself: count(>(0.0), x; init=1.0) is 98.0 where the count is 3.
+        _count_init_identity(x) = Float64(count(>(0.0), x; init=0)) * sum(x)
+        # Orderings over an index array: no derivative, and the catch-all error rules keep
+        # reporting float arrays.
+        _nodiff_diff(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(diff(i))))
+        _nodiff_sortperm(x) = (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sortperm(i))))
+        # Scans over an index array carry no derivative either, whatever the operator, so the
+        # indices they build can be used to gather.  Distinct indices here: a repeated one
+        # exercises the gather rule's scatter, which is a separate matter.
+        _cumsum_idx_gather(x) = sum(x[cumsum(CuArray([1, 1, 1]))])
+        _cumsum_idx_kw(x) = sum(x[cumsum(CuArray([1, 1, 1]); dims=1)])
+        _accumulate_idx_gather(x) = sum(x[accumulate(+, CuArray([1, 1, 1]))])
+        _cumsum_mask_gather(x) = sum(x[cumsum(CuArray([true, true, true]))])
+        # sortperm returns Int indices, so it is zero-derivative for a float array too, and
+        # the gather that uses them carries the gradient.  The weighted case is asymmetric,
+        # so a permutation applied the wrong way round would not pass.
+        _sortperm_gather(x) = sum(x[sortperm(x)] .^ 2)
+        _sortperm_weighted(x, w) = sum(x[sortperm(x)] .* w)
+        _sortperm_rev(x) = sum(x[sortperm(x; rev=true)] .^ 2)
+        _nodiff_sort_rev(x) =
+            (i=CuArray([3, 1, 2]); sum(x) * Float32(sum(sort(i; rev=true))))
+        # CuMatrix +/- lowers to cuBLAS.geam!; the wrapper arms pick the 'T'/'C' flags.
+        _geam_add(a, b) = sum(a + b)
+        _geam_sub_adj(a, b) = sum(a' - b)
+        _geam_add_cx(a, b) = real(sum(a + b'))
+        # C === A is cuBLAS's in-place geam: dC is then the buffer dA accumulates into.
+        _geam_alias(x, y) = sum(CUDA.cuBLAS.geam!('N', 'N', 1.0f0, x, 1.0f0, y, x))
+        # A complex alpha against a transposed operand: the pullback folds the two
+        # conjugations together instead of conjugating alpha.  Scalars passed as arguments
+        # check the alpha/beta derivatives themselves.
+        _mul_adj_alpha(c, a, b) = real(sum(mul!(c, a', b', 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mulv_adj_alpha(y, a, x) = real(sum(mul!(y, a', x, 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mulv_alpha(y, a, x) = real(sum(mul!(y, a, x, 2.0 + 3.0im, -1.0 + 0.5im)))
+        _mul_scalars(c, a, b, al, be) = sum(mul!(c, a, b, al, be))
+        _mulv_scalars(y, a, x, al, be) = sum(mul!(y, a, x, al, be))
+        # repeat: positional counts and the keyword spelling (separate rules).
+        _repeat_counts(x) = sum(repeat(x, 2, 3))
+        _repeat_extends(x) = sum(repeat(x, 2, 3, 2))
+        _repeat_inner_outer(x) = sum(repeat(x; inner=(2, 1), outer=(1, 2)))
+        # `nothing` is Base.repeat's own default for inner/outer, so it can arrive here.
+        _repeat_nothing(x) = sum(repeat(x; inner=nothing, outer=(2, 2)))
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
         # _view_sum: a contiguous-range view of a CuArray returns a CuArray (via
         # unsafe_contiguous_view → unsafe_convert(CuPtr{T}, parent) + offset). In REVERSE mode
@@ -223,6 +466,14 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         _vcat_cu_sum(xs...) = sum(vcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _hcat_cu_sum(xs...) = sum(hcat(xs...))  # vararg: reused for 2-arg and N-arg tests
         _cat_cu_sum(d) = (xs...) -> sum(cat(xs...; dims=d))  # vararg: reused for 2-arg and N-arg tests
+        # Concatenating a real array with a complex one promotes the output, so the real
+        # argument's slice of the output cotangent arrives complex and has to be projected
+        # onto its own field before accumulating; `imag` keeps the projected part nonzero.
+        _vcat_mixed(a, b) = imag(sum(vcat(a, b)))
+        _hcat_mixed(a, b) = imag(sum(hcat(a, b)))
+        _cat_mixed(a, b) = imag(sum(cat(a, b; dims=1)))
+        # Same projection, reached through a real->complex cast leaf inside a broadcast.
+        _cast_to_complex(a) = real(sum(ComplexF32.(a) .* (2.0f0 + 3.0f0im)))
         _permutedims_sum(perm) = x -> sum(permutedims(x, perm))
         # Wrappers for Statistics.varm GPU rule tests.
         _varm_sum_d1(x, m) = sum(varm(x, m; dims=1, corrected=false))
@@ -259,6 +510,51 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # Complex CuArray mean variants
         _mean_cx_nodims(x) = real(mean(x; dims=:))   # ComplexF32 → real part for scalar grad test
         _mean_cx_sum_d1(x) = real(sum(mean(x; dims=1)))
+        # Wrappers for keyword sum GPU rule tests (#1273).
+        _sum_kw_d1(x) = sum(sum(x; dims=1))
+        _sum_kw_nodims(x) = sum(x; dims=:)
+        _sum_kw_cx_d1(x) = real(sum(sum(x; dims=1)))
+        _sum_kw_init_wide(x) = sum(sum(x; dims=1, init=0.0))
+        _sum_kw_init_active(a, x) = sum(sum(x; dims=1, init=a))
+        _sum_kw_badkw(x) = sum(x; bad=1.0)
+        # Wrappers for the maximum/minimum GPU rules.
+        _max_bare(x) = maximum(x)
+        _max_nodims(x) = maximum(x; dims=:)
+        _max_d1(x) = sum(maximum(x; dims=1))
+        _min_d1(x) = sum(minimum(x; dims=1))
+        _max_init(a, x) = maximum(x; init=a)
+        _max_init_d1(a, x) = sum(maximum(x; dims=1, init=a))
+        _min_init(a, x) = minimum(x; init=a)
+        _min_init_d1(a, x) = sum(minimum(x; dims=1, init=a))
+        # A tuple `dims` reduces over several axes at once, which is its own branch in the
+        # empty-extent test and was the one dispatch of that helper no case reached.
+        _max_dtuple(x) = sum(maximum(x; dims=(1, 2)))
+        _min_dtuple(x) = sum(minimum(x; dims=(1, 2)))
+        _max_dtuple_init(a, x) = sum(maximum(x; dims=(1, 2), init=a))
+        # `count`'s keyword slot owes a NamedTuple rdata once a float `init` makes the count a
+        # float, so reverse mode has to fill it rather than return NoRData.
+        _count_init(a, x) = count(>(0.0f0), x; init=a) * sum(x)
+        _count_init_mask(a, x) = count(x .> 0.0f0; init=a) * sum(x)
+        # A reinterpret between a complex eltype and its own real part interleaves the parts,
+        # and the tangent interleaves identically, so it stays differentiable.
+        _reinterpret_cx_to_real(z) = sum(reinterpret(Float64, z))
+        _reinterpret_real_to_cx(x) = real(sum(reinterpret(ComplexF64, x)))
+        # A predicate carrying its threshold has a Bool result, so nothing of it is zeroed.
+        _map_predicate(x) = sum(map(>(0.5f0), x)) * sum(x)
+        _max_badkw(x) = maximum(x; bad=1.0)
+        _max_nan_init(x) = maximum(x; init=-1.0f0)
+        # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
+        # Float64 array narrows the result and its tangent has to follow.
+        _max_init_widens(x) = maximum(x; init=0.0f0)
+        _prod_init_widens(x) = sum(prod(x; dims=1, init=1.0f0))
+        # The mirror of the above: an `init` wider than the array.  GPUArrays takes the
+        # output eltype from `init`, so the exclusive product and the zero it falls back to
+        # are two different types unless the zero is taken from the quotient itself.
+        _prod_init_wider(x) = sum(prod(x; dims=1, init=1.0))
+        # An index or mask array has no derivative, but `init` competes with its elements.
+        _max_idx_init(a, x) = maximum(CuArray([1, 2, 3]); init=a) * sum(x)
+        _max_idx_init_d1(a, x) = sum(maximum(CuArray([1 2; 3 4]); dims=1, init=a)) * sum(x)
+        _min_idx_init(a, x) = minimum(CuArray([1, 2, 3]); init=a) * sum(x)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
             # Reverse-only: `_new_(CuArray, DataRef, …)` is the reconstruction path for the
@@ -321,6 +617,30 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, 16, 8),
                 _rand(rng, 8, 32),
             ),
+            # mul!(C, A, B, alpha, beta) with the scalars as differentiable arguments: their
+            # cotangents are the inner products against A*B and C_old.
+            (
+                false,
+                :none,
+                false,
+                _mul_scalars,
+                _rand(rng, 4, 5),
+                _rand(rng, 4, 3),
+                _rand(rng, 3, 5),
+                2.0,
+                0.5,
+            ),
+            (
+                false,
+                :none,
+                false,
+                _mulv_scalars,
+                _rand(rng, 4),
+                _rand(rng, 4, 3),
+                _rand(rng, 3),
+                2.0,
+                0.5,
+            ),
             # mul! (matrix × vector, Float64)
             (false, :none, false, mul!, _rand(rng, 16), _rand(rng, 16, 8), _rand(rng, 8)),
             # mul! (matrix × matrix, ComplexF64) — cuBLAS bug on Julia ≤ 1.10, skip.
@@ -348,10 +668,21 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, Float32, 8),
             ),
             # CPU→GPU transfer (cu)
+            (false, :none, false, _free_intermediate, _rand(rng, 4)),
+            (false, :none, false, _free_nodiff, _rand(rng, Float32, 3)),
+            (false, :none, false, _free_gathered_idx, _rand(rng, Float32, 3)),
             (false, :none, false, _cu_sum, _host_rand(rng, 16)),
+            # `cu` of an argument that is already on the device: the cotangent must come back
+            # to the device buffer rather than being pulled to the host.
+            (false, :none, false, _cu_sum, _rand(rng, Float32, 4)),
+            (false, :none, false, _cu_sum, _rand(rng, Float64, 4)),
             # GPU→CPU transfer (Array)
             (false, :none, false, _array_sum, _rand(rng, 16)),
             # GPU Diagonal construction
+            (false, :none, false, _cu_adjoint, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _cu_transpose, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _cu_diagonal, _rand(rng, Float32, 3)),
+            (false, :none, false, _diagonal_of_matrix, _rand(rng, Float32, 2, 3)),
             (false, :none, false, _diagonal_sum, _rand(rng, 16)),
             # sum(::CuComplexArray) — 1-arg widened rule, sum itself is the primitive
             (false, :none, true, sum, _rand(rng, ComplexF64, 16)),
@@ -424,6 +755,10 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             (false, :none, false, _sum_f_pred, _rand(rng, 16)),
             (false, :none, false, _sum_f_pred, _rand(rng, 4, 3)'),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
+            (false, :none, false, _reduce_plus_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _reduce_plus_init, _rand(rng, Float32, 6)),
+            (false, :none, false, _reduce_mul_init, _rand_pos(rng, 6)),
+            (false, :none, false, _mapreduce_abs2_init, _rand(rng, Float32, 6)),
             (false, :none, false, _mapreduce_sin, _rand(rng, 16)),
             (false, :none, false, _mapreduce_exp, _rand(rng, 16)),
             (false, :none, false, _mapreduce_cx_abs2, _rand(rng, ComplexF64, 16)),
@@ -446,15 +781,94 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             # prod — explicit rule (real and complex)
             (false, :none, false, _prod, _rand_pos(rng, 16)),
             (false, :none, false, _prod_cx, _rand(rng, ComplexF64, 16)),
+            # An exact zero is where reading the derivative off as y/xᵢ used to break: the
+            # zero's own derivative is the product of the rest, and a second zero in the
+            # slice takes the whole slice to zero.  prod is a polynomial, so finite
+            # differences pin these exactly.
+            (false, :none, false, _prod, CuArray([1.0, 0.0, 3.0])),
+            (false, :none, false, _prod, CuArray([1.0, 0.0, 0.0])),
+            (false, :none, false, _prod_cx, CuArray(ComplexF64[1 + 2im, 0, 3 - 1im])),
             # cumsum — explicit rule (real and complex)
             (false, :none, false, _cumsum_sum, _rand(rng, 16)),
             (false, :none, false, _cumsum_cx_sum, _rand(rng, ComplexF64, 16)),
             # cumprod — explicit rule (real and complex, nonzero inputs)
             (false, :none, false, _cumprod_sum, _rand_pos(rng, 16)),
             (false, :none, false, _cumprod_cx_sum, _rand(rng, ComplexF64, 16)),
+            # A zero: every prefix from it on is zero, but the zero's own derivative is the
+            # rest of its prefix, and a second zero takes the tail to zero.
+            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0])),
+            (false, :none, false, _cumprod_sum, CuArray([2.0, 0.0, 3.0, 0.0, 5.0])),
+            (
+                false,
+                :none,
+                false,
+                _cumprod_cx_sum,
+                CuArray(ComplexF64[1 + 2im, 0, 3 - 1im]),
+            ),
             # accumulate(+) — explicit rule (real and complex)
             (false, :none, false, _accumulate_plus_sum, _rand(rng, 16)),
             (false, :none, false, _accumulate_plus_cx_sum, _rand(rng, ComplexF64, 16)),
+            # The `dims` spellings. prod has its own rule per reduced slice, so it gets the
+            # complex arm and both output branches; the others forward to the rules above.
+            (false, :none, false, _prod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_d1, CuArray([1.0 2.0; 0.0 4.0])),
+            (false, :none, false, _prod_d1, CuArray([0.0 2.0; 0.0 4.0])),
+            (false, :none, false, _prod_colon, CuArray([1.0 0.0; 3.0 4.0])),
+            (false, :none, false, _prod_d2, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_colon, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _prod_cx_d1, _rand(rng, ComplexF64, 4, 3)),
+            (false, :none, false, _cumsum_d1, _rand(rng, 4, 3)),
+            (false, :none, false, _cumprod_d1, _rand_pos(rng, 4, 3)),
+            (false, :none, false, _cumprod_d1, CuArray([1.0 2.0; 0.0 4.0])),
+            (false, :none, false, _accumulate_plus_d1, _rand(rng, 4, 3)),
+            (false, :none, false, _accumulate_init, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _accumulate_init_d1, 1.0f0, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _accumulate_init_widens, _rand(rng, Float64, 6)),
+            (false, :none, false, _accumulate_init_outdim, 1.0f0, _rand(rng, Float32, 6)),
+            (false, :none, false, _prod_init_wider, _rand(rng, Float32, 2, 2)),
+            (false, :none, false, _prod_init_wider, CuArray(Float32[1 0; 3 2])),
+            (false, :none, false, _cumsum_empty, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _accumulate_empty, CuArray{Float32}(undef, 0)),
+            (false, :none, false, _reinterpret_cx_to_real, _rand(rng, ComplexF64, 3)),
+            (false, :none, false, _reinterpret_real_to_cx, _rand(rng, Float64, 4)),
+            (false, :none, false, _map_predicate, _rand(rng, Float32, 4)),
+            (false, :none, false, _max_dtuple, _rand(rng, Float32, 2, 3)),
+            (false, :none, false, _min_dtuple, _rand(rng, Float32, 2, 3)),
+            # init above every element, then below: it takes the whole derivative or none.
+            (false, :none, false, _max_dtuple_init, 9.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            (false, :none, false, _max_dtuple_init, 0.0f0, CuArray(Float32[1 5 2; 3 2 4])),
+            # every reduced slice empty, so `init` decides the output alone.
+            (false, :none, false, _max_dtuple_init, -9.0f0, CuArray{Float32}(undef, 0, 3)),
+            (false, :none, false, _accumulate_nodiff_init, 1.0, CuArray(Int32[1, 2, 3])),
+            (false, :none, false, _accumulate_nodiff_init_d1, 1.0, CuArray(Int32[1, 2, 3])),
+            (
+                false,
+                :none,
+                false,
+                _accumulate_nodiff_init_outdim,
+                1.0,
+                CuArray(Int32[1, 2, 3]),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _accumulate_init_outdim3,
+                1.0f0,
+                _rand(rng, Float32, 2, 3),
+            ),
+            (false, :none, false, _bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
+            (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
+            (false, :none, false, _int_capture, _rand(rng, 4)),
+            (false, :none, false, _cumsum_trailing, _rand(rng, 4)),
+            (false, :none, false, _cumprod_trailing, _rand_pos(rng, 4)),
+            (false, :none, false, _accumulate_trailing, _rand(rng, 2, 3)),
+            (false, :none, false, _accumulate_flat, _rand(rng, 4, 3)),
+            (false, :none, false, _accumulate_flat_init, 1.0f0, _rand(rng, Float32, 4, 3)),
             # vector indexing — gather forward, scatter-add pullback
             (
                 false,
@@ -464,6 +878,58 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, 16),
                 CuArray(Int32[2, 5, 7, 3, 1, 8]),
             ),
+            (false, :none, false, _gather_dup, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_weighted, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_host, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_dup_cx, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _gather_dup_cartesian, _rand(rng, Float32, 2, 2)),
+            (false, :none, false, _gather_mask, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_weighted, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_host, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
+            (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
+            (false, :none, false, _view_sum, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_weighted, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
+            (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
+            (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
+            (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
+            (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_top, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_cast_top_narrow, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_top_chain, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_cast_top_nodiff, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_exp, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_sq, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_same, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_cast_chain_cx, _rand(rng, ComplexF64, 4)),
+            (false, :none, false, _bcast_setscalar, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_setscalar_live, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_setscalar_expr, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_setscalar_int, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_int_range, _rand(rng, Float32, 4)),
+            (false, :none, false, _bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
+            (
+                false,
+                :none,
+                false,
+                _bcast_narrow_scalar_cx,
+                1.5f0 + 0.5f0im,
+                _rand(rng, ComplexF64, 4),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _bcast_narrow_scalar_cx,
+                1.5f0,
+                _rand(rng, ComplexF64, 4),
+            ),
             (
                 false,
                 :none,
@@ -472,8 +938,164 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 _rand(rng, ComplexF64, 16),
                 CuArray(Int32[2, 5, 7, 3, 1, 8]),
             ),
+            # Gather with Cartesian indices: without the CartesianIndex arm of the claim
+            # the trace falls into checkbounds, which reduces with `&`.
+            (
+                false,
+                :none,
+                false,
+                _gather_sum,
+                _rand(rng, 4, 4),
+                CuArray([CartesianIndex(1, 1), CartesianIndex(2, 3)]),
+            ),
+            # Non-differentiable device arrays: copy, fill and reductions had no rule.
+            (false, :none, false, _nodiff_index_copy, _rand(rng, 8)),
+            (false, :none, false, _nodiff_fill, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum_dims, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sum_mask, _rand(rng, 8)),
+            (false, :none, false, _nodiff_prod, _rand(rng, 8)),
+            (false, :none, false, _nodiff_max, _rand(rng, 8)),
+            (false, :none, false, _nodiff_min_dims, _rand(rng, 8)),
+            (false, :none, false, _nodiff_count, _rand(rng, 8)),
+            (false, :none, false, _nodiff_count_float, _rand(rng, 8)),
+            (false, :none, false, _count_init_identity, _rand(rng, 8)),
+            (false, :none, false, _nodiff_diff, _rand(rng, 8)),
+            (false, :none, false, _nodiff_sortperm, _rand(rng, 8)),
+            (false, :none, false, _cumsum_idx_gather, _rand(rng, Float32, 4)),
+            (false, :none, false, _cumsum_idx_kw, _rand(rng, Float32, 4)),
+            (false, :none, false, _accumulate_idx_gather, _rand(rng, Float32, 4)),
+            (false, :none, false, _cumsum_mask_gather, _rand(rng, Float32, 4)),
+            (false, :none, false, _sortperm_gather, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            (false, :none, false, _sortperm_rev, CuArray(Float32[0.3, 0.7, 0.2, 0.9])),
+            (
+                false,
+                :none,
+                false,
+                _sortperm_weighted,
+                CuArray(Float32[0.3, 0.7, 0.2, 0.9]),
+                CuArray(Float32[1, 2, 3, 4]),
+            ),
+            (false, :none, false, _nodiff_sort_rev, _rand(rng, 8)),
+            # geam! called directly (is_primitive=true): the only case that reaches the
+            # restore of C and the consumption of its cotangent, since `+`/`-` always
+            # allocate a fresh C.  Bool alpha/beta, as MulAddMul supplies them to the gemm!
+            # rules, have no tangent and so take the no-derivative arm of the scalars.
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'N',
+                'N',
+                true,
+                _rand(rng, Float32, 3, 3),
+                true,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
+            ),
+            # Differentiable alpha/beta, real and complex.  The complex case is also the
+            # only one where the 'C' flag's unconjugated alpha differs from conj(alpha).
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'T',
+                'N',
+                2.0f0,
+                _rand(rng, Float32, 3, 3),
+                -1.5f0,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
+            ),
+            (
+                false,
+                :none,
+                true,
+                CUDA.cuBLAS.geam!,
+                'C',
+                'T',
+                2.0 + 3.0im,
+                _rand(rng, ComplexF64, 3, 3),
+                -1.0 + 0.5im,
+                _rand(rng, ComplexF64, 3, 3),
+                _rand(rng, ComplexF64, 3, 3),
+            ),
+            # cuBLAS.geam! via CuMatrix +/-, including a wrapper arm and complex.
+            (false, :none, false, _geam_add, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            (false, :none, false, _geam_sub_adj, _rand(rng, 3, 3), _rand(rng, 3, 3)),
+            (
+                false,
+                :none,
+                false,
+                _geam_add_cx,
+                _rand(rng, ComplexF64, 3, 3),
+                _rand(rng, ComplexF64, 3, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _geam_alias,
+                _rand(rng, Float32, 3, 3),
+                _rand(rng, Float32, 3, 3),
+            ),
+            # repeat: counts, counts that add a dimension, and the keyword spelling.
+            (false, :none, false, _repeat_counts, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_extends, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_inner_outer, _rand(rng, 2, 3)),
+            (false, :none, false, _repeat_nothing, _rand(rng, 2, 3)),
+            # A real argument concatenated with a complex one, and a real->complex cast leaf:
+            # both hand a real fdata buffer a complex cotangent.
+            (
+                false,
+                :none,
+                false,
+                _vcat_mixed,
+                _rand(rng, Float32, 3),
+                _rand(rng, ComplexF32, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _cat_mixed,
+                _rand(rng, Float32, 3),
+                _rand(rng, ComplexF32, 3),
+            ),
+            (
+                false,
+                :none,
+                false,
+                _hcat_mixed,
+                _rand(rng, Float32, 3, 2),
+                _rand(rng, ComplexF32, 3, 2),
+            ),
+            (false, :none, false, _cast_to_complex, _rand(rng, Float32, 3)),
             # Diagonal + lgetfield(:diag) + broadcast — exercises the full pipeline
             (false, :none, false, _diagonal_field_bcast, _rand_pos(rng, 16)),
+            (false, :none, false, _diagonal_mutate, CuArray([1.0, 2.0, 3.0])),
+            (false, :none, false, _diagonal_fill, CuArray([1.0, 2.0, 3.0]), 5.0),
+            (false, :none, false, _bcast_nodiff_ratio, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_nodiff_float, _rand(rng, Float64, 4)),
+            (false, :none, false, _bcast_nodiff_bool, _rand(rng, Float64, 4)),
+            (
+                false,
+                :none,
+                false,
+                _fill_real_into_cx,
+                CuArray(ComplexF32[0, 0, 0, 0]),
+                2.0f0,
+            ),
+            (
+                false,
+                :none,
+                false,
+                _fill_cx_into_cx,
+                CuArray(ComplexF32[0, 0, 0, 0]),
+                2.0f0 + 0.5f0im,
+            ),
             # sum(f, x) with non-smooth f (abs)
             (false, :none, false, _sum_f_abs, _rand(rng, 16)),
             # sum(f, Adjoint) — tests sum(f, x) dispatch when input is an Adjoint wrapper
@@ -857,6 +1479,39 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             )
         end
 
+        # Reverse mode only: materialising the range constructs `Base.TwicePrecision`
+        # intermediates, whose `dual_type` is the per-lane tuple fallback even though
+        # `tangent_type` is the type itself — so a `Float64` read out of one lands in a slot
+        # whose V no scalar frule matches. Nothing about it is GPU-specific:
+        # `Mooncake.zero_dual(Val(1), Base.TwicePrecision{Float32}(1.0f0))` throws with no
+        # CUDA loaded at all.
+        @testset "materialising a float range restores the gradient" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_materialised_range,
+                _rand(rng, Float32, 4);
+                perf_flag=:none,
+                is_primitive=false,
+                mode=Mooncake.ReverseMode,
+            )
+        end
+
+        # Reverse mode only: forward `view` copies the parent's per-lane partials into the
+        # result's own block rather than aliasing them, so a write through the view never
+        # reaches the parent's tangent and the JVP comes back wrong. The limitation is the
+        # forward representation of a view, not this rule — it predates the `derive` claim and
+        # reproduces for any write through a forward GPU view.
+        @testset "in-place broadcast into a view consumes the view's cotangent" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_kill_view,
+                CuArray([0.3, -0.7, 1.2, 2.5]);
+                perf_flag=:none,
+                is_primitive=false,
+                mode=Mooncake.ReverseMode,
+            )
+        end
+
         # Regression: the forward vcat/hcat/cat/permutedims frules canonicalise each argument
         # via `arrayify(::Lifted)`. The generic `arrayify` is bounded to `BlasFloat`, so Float16 and
         # ComplexF16 `CuArray`s (admitted by `CuMaybeWrappedArray`) `MethodError`ed until the CUDA ext
@@ -920,29 +1575,39 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test V.value.stride1 isa Mooncake.NoDual
         end
 
-        # `cu` on a wrapped CPU input (SubArray/Adjoint/…): its forward V is the generic struct
-        # lift, not `NDualArray`, so it takes the wrapper-fallback frule. `cu` preserves the
-        # wrapper, so the result's canonical V is the same struct lift over the device parent's
-        # `NDualArray`. Like the view branch above this can't go through `test_rule` (downstream
-        # `sum` over the GPU SubArray hits the strided-reduction limit) — exercise the V
-        # construction, parent aliasing, and per-lane JVP (`d(cu(x)) = cu(dx)`) directly.
-        @testset "cu wrapped-input frule branch (width $N)" for N in (1, 3)
-            base = rand(StableRNG(1), Float32, 8)
-            x = view(base, 1:4)
-            seed = Mooncake.randn_lifted(Val(N), StableRNG(2), x)
-            out = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), cu), seed)
-            y, V = Mooncake.primal(out), Mooncake.tangent(out)
-            @test y isa SubArray && parent(y) isa CuArray
-            @test Array(y) == Array(x)
-            @test V isa Mooncake.ImmutableDual
-            @test V.value.parent isa Mooncake.NDualArray
-            @test V.value.parent.primal === parent(y)  # parent V aliases the result's parent
-            @test V.value.indices isa Mooncake.NoDual
-            inV = Mooncake.tangent(seed)
-            for k in 1:N
-                @test Array(Mooncake.Nfwd.tangent_view(V.value.parent, k)) ==
-                    Array(cu(Mooncake.Nfwd.tangent_view(inV.value.parent, k)))
-            end
+        @testset "$name" for (seed, name, fargs) in [
+            (
+                71,
+                "mul! matrix, complex alpha, both operands adjoint",
+                (
+                    _mul_adj_alpha,
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                ),
+            ),
+            (
+                72,
+                "mul! vector, complex alpha, adjoint operand",
+                (
+                    _mulv_adj_alpha,
+                    _rand(rng, ComplexF64, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4),
+                ),
+            ),
+            (
+                73,
+                "mul! vector, complex alpha",
+                (
+                    _mulv_alpha,
+                    _rand(rng, ComplexF64, 4),
+                    _rand(rng, ComplexF64, 4, 4),
+                    _rand(rng, ComplexF64, 4),
+                ),
+            ),
+        ]
+            test_rule(StableRNG(seed), fargs...; is_primitive=false, perf_flag=:none)
         end
 
         # Direct unit tests for CuPtr{T} + Integer frule!! / rrule!!.
@@ -1088,6 +1753,74 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             @test all(x -> x isa Mooncake.NoRData, pb(Mooncake.NoRData()))
         end
 
+        @testset "Array(x) pullback keeps the eltype it was given" begin
+            # `cu` is an adaptor, not a transfer — it narrows Float64 to Float32 — so
+            # routing the cotangent home through it cost about seven digits while leaving
+            # the gradient's eltype Float64, so nothing errored.  test_rule cannot see this:
+            # its finite differences are themselves only good to about 1e-6, which is why
+            # `_gpu_to_cpu` passes either way.  Compare against the exact derivative.
+            x = CuArray([1.234567890123, 2.345678901234])
+            _, grads = value_and_gradient!!(
+                Mooncake.build_rrule(_gpu_to_cpu, x), _gpu_to_cpu, x
+            )
+            @test Array(grads[2]) ≈ 2 .* Array(x) rtol = 1e-14
+            z = CuArray(ComplexF64[1.234567890123 - 0.7im, 2.345678901234 + 0.3im])
+            _, cgrads = value_and_gradient!!(
+                Mooncake.build_rrule(_gpu_to_cpu_cx, z), _gpu_to_cpu_cx, z
+            )
+            @test Array(cgrads[2]) ≈ 2 .* conj.(Array(z)) rtol = 1e-14
+        end
+
+        @testset "count's keyword rdata slot, reverse only" begin
+            # Reverse mode cannot tell a constant `init` from one the caller wants a gradient
+            # for, so it fills the slot with a zero rather than refusing as forward does --
+            # which means the slot has to be filled at all: a float `init` makes the count a
+            # float, and the keyword rdata is then a NamedTuple, not NoRData.  Interfaces
+            # only, because that zero is what finite differences disagree with: GPUArrays
+            # folds `init` into a backend-defined number of partial reductions, so FD reads
+            # the fold count, around 49 here, off a value that is itself meaningless.
+            @testset "$name" for (seed, name, f) in [
+                (270, "predicate", _count_init), (271, "mask", _count_init_mask)
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    0.0,
+                    _rand(rng, Float32, 4);
+                    is_primitive=false,
+                    perf_flag=:none,
+                    mode=Mooncake.ReverseMode,
+                    interface_only=true,
+                )
+            end
+        end
+
+        @testset "norm frule!! rescales an overflowing dot" begin
+            # dot(px, dx) overflows once norm(px)*norm(dx) leaves the eltype's range,
+            # while the JVP it divides down to is still representable. Float16 saturates
+            # at 65504, so ones(65536) reaches it; the reverse rule already scales by
+            # 1/y first and was never affected.
+            for (x, dx) in (
+                (CUDA.fill(Float16(1), 65536), CUDA.fill(Float16(1), 65536)),
+                (CUDA.fill(1.0f19, 100), CUDA.fill(1.0f19, 100)),
+                (CUDA.fill(1e160, 100), CUDA.fill(1e160, 100)),
+            )
+                @test !isfinite(dot(x, dx))  # the input the guard exists for
+                d = _MooncakeCUDAExt.frule!!(
+                    Mooncake.lift(norm, Mooncake.NoTangent()), Mooncake.lift(x, dx)
+                )
+                # dx === x here, so the JVP is norm(x) itself.
+                @test Mooncake.tangent(d, 1) ≈ norm(x) rtol = 1.0f-3
+            end
+            # A well-scaled input must still take the single-dot path unchanged.
+            x = _rand(rng, Float32, 64)
+            dx = _rand(rng, Float32, 64)
+            d = _MooncakeCUDAExt.frule!!(
+                Mooncake.lift(norm, Mooncake.NoTangent()), Mooncake.lift(x, dx)
+            )
+            @test Mooncake.tangent(d, 1) == real(dot(x, dx)) / norm(x)
+        end
+
         @testset "unsafe_free! frule!! / rrule!!" begin
             # unsafe_free! releases GPU memory early; pure side-effect, no gradient.
             # frule!!: returns Dual(nothing, NoTangent()); both primal and tangent freed.
@@ -1101,6 +1834,16 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
             )
             @test Mooncake.primal(result) === nothing
             @test Mooncake.tangent(result, 1) isa Mooncake.NoTangent
+
+            # The claim covers index and mask arrays as well, whose forward V is `NoDual`:
+            # there is no per-lane storage to free, and the rule must free the primal alone.
+            idx = CuArray([1, 2, 3])
+            idx_result = _MooncakeCUDAExt.frule!!(
+                Mooncake.lift(unsafe_free!, Mooncake.NoTangent()),
+                Mooncake.lift(idx, Mooncake.NoTangent()),
+            )
+            @test Mooncake.primal(idx_result) === nothing
+            @test Mooncake.tangent(idx_result, 1) isa Mooncake.NoTangent
 
             arr2 = _rand(rng, Float32, 4)
             tarr2 = Mooncake.zero_tangent(arr2)
@@ -1249,54 +1992,389 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
         # explicit catch-all rule that blocks an unimplemented differentiation path.
         # If a case gains a proper rule in the future, move it back into test_cases above
         # and delete it from here.
+        # Every guard that refuses a call outright, one entry each. `kw` says what the
+        # refusal must carry: `msg` a pattern the message matches, `err` an exception type,
+        # `mode` a single direction where only one guard exists, and `primal` for calls the
+        # primal rejects before AD sees them. Cases that gain a real rule move up into
+        # test_cases; cases whose guard is not reached through AD stay below.
+        @testset "guards that refuse a call" begin
+            x64 = _rand(rng, Float64, 4)
+            x32 = _rand(rng, Float32, 4)
+            M32 = _rand(rng, Float32, 4, 3)
+            cx32 = CuArray(randn(rng, ComplexF32, 4))
+            counted = CuArray([1.0, -2.0, 3.0, 4.0])
+            host_cx = _host_rand(rng, ComplexF64, 3, 3)
+            gpu_cx = _rand(rng, ComplexF64, 3, 3)
+            cpu_vec = _host_rand(rng, Float32, 4)
+            cpu_mat = _host_rand(rng, Float32, 4, 2)
+            x16 = _rand(rng, Float16, 4, 3)
+            y16 = _rand(rng, Float16, 2, 3)
+            m_row = _rand(rng, Float32, 1, 3)
+            m_scalar = randn(StableRNG(28), Float32)
+            @testset "$name" for (seed, name, f, args, kw) in [
+                # Partials thread through GPU array elements and float scalars only, so
+                # anything the mapped function itself carries — a closure capture, a
+                # callable struct's field, a Ref argument — would come back an exact zero.
+                # This is the boundary the sum(f, x) guard was written for; it never fired,
+                # because rdata_type was applied to a primal type and threw in fields_type.
+                (
+                    200,
+                    "capture, broadcast",
+                    (a, z) -> sum((t -> a * t).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    201,
+                    "capture, nonlinear",
+                    (a, z) -> sum((t -> exp(a * t)).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    202,
+                    "capture, in-place",
+                    (a, z) -> (w=similar(z); w.=(t -> a * t).(z); sum(w)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    203,
+                    "capture, fused with z",
+                    (a, z) -> sum((t -> a * t).(z) .+ z),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    204,
+                    "capture, map",
+                    (a, z) -> sum(map(t -> a * t, z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    205,
+                    "capture, sum(f, x)",
+                    (a, z) -> sum(t -> a * t, z),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    206,
+                    "callable struct field",
+                    (a, z) -> sum(_CapScale(a).(z)),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                (
+                    207,
+                    "Ref argument",
+                    (a, z) -> sum(((t, r) -> r[] * t).(z, Ref(a))),
+                    (3.0, x64),
+                    (; msg=r"does not support"),
+                ),
+                # Mismatched GPU element types are caught before any kernel launch.
+                (
+                    208,
+                    "mixed-eltype broadcast",
+                    _bcast_cx_mixed,
+                    (x32, cx32),
+                    (; msg=r"GPU broadcast over arrays with mixed element types"),
+                ),
+                # Scalar indexing would silently run a one-element GPU op per index.
+                (209, "scalar getindex", z -> z[1], (x32,), (; msg=r"scalar indexing")),
+                (
+                    210,
+                    "scalar setindex!",
+                    z -> (z[1]=0.0f0; sum(z)),
+                    (x32,),
+                    (; msg=r"scalar indexing"),
+                ),
+                # `init` is folded into a backend-defined number of partial reductions, so
+                # for the non-idempotent ops it changes the value itself, not just its
+                # derivative: count gives 98.0 where the count is 3.
+                (
+                    211,
+                    "count init, predicate",
+                    (i, z) -> count(>(0.0), z; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    212,
+                    "count init, mask",
+                    (i, z) -> count(z .> 0; init=i),
+                    (1.0, counted),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    213,
+                    "sum init",
+                    z -> sum(z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    214,
+                    "sum init, dims",
+                    z -> sum(sum(z; dims=1, init=5.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    215,
+                    "prod init, dims",
+                    z -> sum(prod(z; dims=1, init=2.0)),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    216,
+                    "sum init over an index array",
+                    z -> Float32(sum(CuArray([1, 2, 3]); init=1.0)) * sum(z),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                (
+                    217,
+                    "reduce init",
+                    z -> reduce(+, z; init=1.0f0),
+                    (x32,),
+                    (; msg=r"not its identity"),
+                ),
+                # Before the keyword claims these escaped to GPUArrays' reduction kernel and
+                # failed inside cufunction; an unsupported op or a `dims` the mapped rule
+                # cannot do yet has to say so itself.
+                (
+                    218,
+                    "reduce, unsupported op",
+                    z -> reduce(max, z; init=0.0f0),
+                    (x32,),
+                    (; msg=r"only supports op"),
+                ),
+                (
+                    219,
+                    "mapreduce, dims",
+                    z -> sum(mapreduce(abs2, +, z; dims=1)),
+                    (M32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    220,
+                    "accumulate, non-+",
+                    z -> sum(accumulate(*, z)),
+                    (x32,),
+                    (; msg=r"supports only op=\+ over a float or complex array"),
+                ),
+                (
+                    221,
+                    "accumulate, non-+, dims",
+                    z -> sum(accumulate(*, z; dims=1)),
+                    (x32,),
+                    (; msg=r"supports only op=\+ over a float or complex array"),
+                ),
+                # One entry per @eval claim family; other functions in the same loop share
+                # the generated code verbatim.
+                (
+                    222,
+                    "kwcall sum(f, x; dims)",
+                    z -> sum(sum(abs2, z; dims=1)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    223,
+                    "mapped maximum",
+                    z -> maximum(abs, z),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    224,
+                    "mapped maximum, kwcall",
+                    z -> sum(maximum(abs, z; dims=1)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    225,
+                    "sort, kwcall",
+                    z -> sum(sort(z; rev=true)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                (
+                    226,
+                    "sort, positional",
+                    z -> sum(sort(z)),
+                    (x32,),
+                    (; msg=r"not yet differentiable"),
+                ),
+                # cu() downcasts ComplexF64 to ComplexF32, so the adjoint matvec sees two
+                # element types; the rule detects that before any cuBLAS call.
+                (
+                    227,
+                    "matvec eltype mismatch",
+                    _cu_cx_slice_adj_mul,
+                    (host_cx, gpu_cx),
+                    (; msg=r"GPU gemv with mismatched element types"),
+                ),
+                # One Vararg guard per function covers array/scalar mixing at any arity.
+                (
+                    228,
+                    "vcat GPU with host",
+                    _vcat_cu_sum,
+                    (x32, cpu_vec),
+                    (; msg=r"mix of GPU"),
+                ),
+                (
+                    229,
+                    "hcat GPU with host",
+                    _hcat_cu_sum,
+                    (M32, cpu_mat),
+                    (; msg=r"mix of GPU"),
+                ),
+                (
+                    230,
+                    "cat GPU with a scalar",
+                    _cat_cu_sum(1),
+                    (x32, 1.0f0),
+                    (; msg=r"mix of GPU"),
+                ),
+                # A strided Float16 view stays a genuine SubArray, which
+                # CuMaybeWrappedArray excludes, so the mixed-device guard catches it rather
+                # than the interpreter reaching cufunction's untraceable try/finally.
+                (
+                    231,
+                    "Float16 strided view",
+                    (a, b) -> sum(vcat(view(a, 1:2, :), b)),
+                    (x16, y16),
+                    (; msg=r"mix of GPU"),
+                ),
+                # Keywords the primal itself rejects must surface the primal's own error,
+                # not a field error from the frule reading a tangent slot that is absent.
+                (
+                    232,
+                    "varm, missing dims",
+                    _varm_arraymean_missing_dims,
+                    (M32, m_row),
+                    (; err=UndefKeywordError, primal=true),
+                ),
+                (
+                    233,
+                    "varm, stray dims",
+                    _varm_scalarmean_stray_dims,
+                    (M32, m_scalar),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    234,
+                    "sum, bad keyword",
+                    _sum_kw_badkw,
+                    (M32,),
+                    (; err=MethodError, primal=true),
+                ),
+                (
+                    235,
+                    "maximum, bad keyword",
+                    _max_badkw,
+                    (M32,),
+                    (; err=MethodError, primal=true),
+                ),
+                # Reverse mode only: a float range's `ref`/`step` are `Base.TwicePrecision`,
+                # whose `dual_type` is the per-lane tuple fallback while the enclosing
+                # `StepRangeLen`'s declares `NDual`, so building the argument's forward
+                # representation throws a convert error before any rule here runs. Nothing
+                # about it is GPU-specific — `sum(z .* (0.0f0:0.25f0:0.75f0))` over a host
+                # `Array` fails the same way.
+                (
+                    280,
+                    "float range leaf",
+                    z -> sum(z .* (0.0f0:0.25f0:0.75f0)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"Materialise the range first", mode=Mooncake.ReverseMode),
+                ),
+                (
+                    281,
+                    "range from a differentiated endpoint",
+                    (a, z) -> sum(z .* range(a, 1.0f0; length=4)),
+                    (0.0f0, _rand(rng, Float32, 4)),
+                    (; msg=r"would silently be zero", mode=Mooncake.ReverseMode),
+                ),
+                # A reinterpret that changes the underlying real field would hand back a
+                # tangent whose elements are bit-halves of the primal's.
+                (
+                    260,
+                    "reinterpret narrows the eltype",
+                    z -> sum(reinterpret(Float32, z)),
+                    (_rand(rng, Float64, 4),),
+                    (; msg=r"reinterpreting a CuArray of Float64 as Float32"),
+                ),
+                (
+                    261,
+                    "reinterpret to a non-float eltype",
+                    z -> Float32(sum(reinterpret(Int32, z))),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"is not differentiable"),
+                ),
+                # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
+                (
+                    262,
+                    "count, differentiated init",
+                    (c, z) -> count(>(0.0f0), z; init=c),
+                    (0.0, _rand(rng, Float32, 4)),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                # mapreduce delegates to the keyword-free rule, so a differentiated `init`
+                # would be dropped instead of folded, and an `init` of another type would
+                # change an output type the delegate cannot produce.
+                (
+                    250,
+                    "mapreduce, differentiated init",
+                    (c, z) -> mapreduce(abs2, +, z; init=c),
+                    (0.0f0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    251,
+                    "mapreduce, init widens the output",
+                    z -> mapreduce(abs2, +, z; init=0.0),
+                    (x32,),
+                    (; msg=r"init::Float64 where the reduction produces"),
+                ),
+                # Forward mode alone refuses a differentiated `init` the rule treats as a
+                # constant; reverse mode reports a zero derivative for it instead.
+                (
+                    236,
+                    "differentiated init, float",
+                    _sum_kw_init_active,
+                    (0.0f0, M32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    237,
+                    "differentiated init, index array",
+                    _nodiff_sum_init,
+                    (0.0, x32),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
+                ),
+            ]
+                test_rule_throws(StableRNG(seed), f, args...; kw...)
+            end
+        end
+
         @testset "unsupported operations throw ArgumentError" begin
-            # Mixed-precision GPU broadcast (Float32 array .+ ComplexF32 array) is not
-            # supported.  The materialize frule/rrule detects mismatched GPU element types
-            # and throws before any kernel launch.
-            @testset "mixed-eltype GPU broadcast" begin
-                f = _bcast_cx_mixed
-                x = _rand(rng, Float32, 4)
-                y = CuArray(randn(rng, ComplexF32, 4))
-                @test_throws r"GPU broadcast over arrays with mixed element types" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x, y), f, x, y
+            @testset "freeing the input itself still differentiates" begin
+                # Not a test_rule case: the function frees its own argument, so it cannot be
+                # called twice.  The fdata must outlive the free — reverse mode accumulates
+                # into it after the forward sweep has released the primal.
+                v, (_, dx) = Mooncake.value_and_gradient!!(
+                    Mooncake.build_rrule(_free_input, CuArray([1.0, 2.0, 3.0, 4.0])),
+                    _free_input,
+                    CuArray([1.0, 2.0, 3.0, 4.0]),
                 )
-            end
-
-            # Scalar getindex/setindex! on CuArray — throw to prevent silent scalar GPU ops.
-            @testset "scalar getindex CuArray not differentiable" begin
-                f = x -> x[1]
-                x = _rand(rng, Float32, 4)
-                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
-            end
-            @testset "scalar setindex! CuArray not differentiable" begin
-                f = x -> (x[1]=0.0f0; sum(x))
-                x = _rand(rng, Float32, 4)
-                @test_throws r"scalar indexing of CuArray is not differentiable" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
-            end
-
-            # accumulate with unsupported op — catch-all rule throws ArgumentError.
-            @testset "accumulate non-+ CuArray not differentiable" begin
-                f = x -> sum(accumulate(*, x))
-                x = _rand(rng, Float32, 4)
-                @test_throws r"accumulate on CuArray only supports op=\+" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x), f, x
-                )
-            end
-
-            # Complex slice-adjoint-matvec: cu(x[:, 1])' * cy — cu() downcasts ComplexF64
-            # to ComplexF32, producing a type mismatch with cy::CuMatrix{ComplexF64}.
-            # The generic_matvecmul! frule/rrule detects the mismatch before any cuBLAS call.
-            @testset "complex slice-adjoint-matvec type mismatch" begin
-                f = _cu_cx_slice_adj_mul
-                x = _host_rand(rng, ComplexF64, 3, 3)
-                cy = _rand(rng, ComplexF64, 3, 3)
-                @test_throws r"GPU gemv with mismatched element types" value_and_gradient!!(
-                    Mooncake.build_rrule(f, x, cy), f, x, cy
-                )
+                @test v == 20.0
+                @test Array(dx) == [2.0, 2.0, 2.0, 2.0]
             end
 
             @testset "mixed GPU/CPU cat guards" begin
@@ -1316,22 +2394,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 tgpu3 = Mooncake.zero_tangent(gpu3)
                 s = 1.0f0
                 wc = Base.get_world_counter()
-
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_vcat_cu_sum, gpu1, cpu_vec),
-                    _vcat_cu_sum,
-                    gpu1,
-                    cpu_vec,
-                )
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_hcat_cu_sum, gpu2, cpu_mat),
-                    _hcat_cu_sum,
-                    gpu2,
-                    cpu_mat,
-                )
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(_cat_cu_sum(1), gpu1, s), _cat_cu_sum(1), gpu1, s
-                )
 
                 @test Mooncake.is_primitive(
                     Mooncake.MinimalCtx,
@@ -1458,18 +2520,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 @test val ≈ sum(vcat(x16, y16))
                 @test all(==(one(Float16)), Array(dx))
                 @test all(==(one(Float16)), Array(dy))
-
-                # Float16 SubArrays are excluded from CuMaybeWrappedArray. A strided view
-                # stays a genuine SubArray (unlike the contiguous 1-D view above, which
-                # CUDA.jl collapses to a plain CuArray) and the N-arg mixed-device guard
-                # does not count it as GPU either, so it errors with "mix of GPU" rather
-                # than reaching the interpreter's untraceable `cufunction` try/finally.
-                x16_mat = _rand(rng, Float16, 4, 3)
-                y16_mat = _rand(rng, Float16, 2, 3)
-                f_view(x, y) = sum(vcat(view(x, 1:2, :), y))
-                @test_throws r"mix of GPU" value_and_gradient!!(
-                    Mooncake.build_rrule(f_view, x16_mat, y16_mat), f_view, x16_mat, y16_mat
-                )
             end
 
             @testset "_unwrap_cat_dim rejects unsupported dims types" begin
@@ -1674,19 +2724,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                     m;
                     is_primitive=false,
                     perf_flag=:none,
-                )
-            end
-            @testset "kwarg sets the primal rejects throw under AD" begin
-                x = _rand(rng, Float32, 4, 3)
-                m = _rand(rng, Float32, 1, 3)
-                rule = Mooncake.build_rrule(_varm_arraymean_missing_dims, x, m)
-                @test_throws UndefKeywordError Mooncake.value_and_gradient!!(
-                    rule, _varm_arraymean_missing_dims, x, m
-                )
-                m_scalar = randn(StableRNG(28), Float32)
-                rule2 = Mooncake.build_rrule(_varm_scalarmean_stray_dims, x, m_scalar)
-                @test_throws MethodError Mooncake.value_and_gradient!!(
-                    rule2, _varm_scalarmean_stray_dims, x, m_scalar
                 )
             end
             @testset "empty array, scalar mean, corrected=true (Float32)" begin
@@ -1972,6 +3009,162 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
                 test_rule(
                     StableRNG(13), _mean_cx_sum_d1, x; is_primitive=false, perf_flag=:none
                 )
+            end
+        end
+
+        @testset "keyword sum GPU rule (#1273)" begin
+            # One case per rule code path: array/Colon output branch, real/complex
+            # claim arm, and the output-typed tangent seed for a widening init.
+            @testset "$name" for (seed, name, f, x) in [
+                (40, "dims=1 (Float32)", _sum_kw_d1, _rand(rng, Float32, 4, 3)),
+                (47, "dims=: scalar output", _sum_kw_nodims, _rand(rng, Float32, 4, 3)),
+                (49, "dims=1 (ComplexF32)", _sum_kw_cx_d1, _rand(rng, ComplexF32, 4, 3)),
+                (52, "init=0.0 widens", _sum_kw_init_wide, _rand(rng, Float32, 4, 3)),
+            ]
+                test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
+            end
+            @testset "init is a non-differentiated constant" begin
+                # Not a test_rule case: finite differences see the backend's init
+                # folding (nonzero ∂/∂init) while the rule deliberately treats
+                # init as a constant. debug_mode verifies the kw rdata type.
+                a, x = 0.0f0, _rand(rng, Float32, 4, 3)
+                rule = Mooncake.build_rrule(_sum_kw_init_active, a, x; debug_mode=true)
+                _, (_, da, _) = Mooncake.value_and_gradient!!(
+                    rule, _sum_kw_init_active, a, x
+                )
+                @test da == 0.0f0
+            end
+            @testset "a constant init still differentiates in reverse" begin
+                # Reverse mode cannot tell this literal from an init the caller wants a
+                # gradient for, so it must not reject either: ∂/∂x is well defined here.
+                x = _rand(rng, Float32, 4)
+                rule = Mooncake.build_rrule(_nodiff_sum_init_const, x)
+                v, (_, dx) = Mooncake.value_and_gradient!!(rule, _nodiff_sum_init_const, x)
+                @test v ≈ _nodiff_sum_init_const(x)
+                @test all(Array(dx) .≈ 6.0f0)
+            end
+        end
+
+        @testset "maximum/minimum GPU rules" begin
+            # One case per rule path. The vector cases are not eltype padding:
+            # GPUArrays returns a linear Int index when ndims == 1 and a
+            # CartesianIndex otherwise, and comparing the two kinds is silently
+            # false, which would give an all-zero gradient.
+            @testset "$name" for (seed, name, f, x) in [
+                (60, "maximum(x) vector", _max_bare, _rand(rng, Float32, 6)),
+                (61, "maximum(x) 3d", _max_bare, _rand(rng, Float32, 3, 3, 2)),
+                (62, "maximum(x; dims=:)", _max_nodims, _rand(rng, Float32, 4, 3)),
+                (63, "maximum(x; dims=1)", _max_d1, _rand(rng, Float32, 4, 3)),
+                (64, "maximum(vec; dims=1)", _max_d1, _rand(rng, Float32, 6)),
+                (65, "minimum(x; dims=1)", _min_d1, _rand(rng, Float32, 4, 3)),
+            ]
+                test_rule(StableRNG(seed), f, x; is_primitive=false, perf_flag=:none)
+            end
+            # `init` reaches the value and both derivatives: 1 on each slice it wins, 0
+            # elsewhere.  test_rule's finite differences check the value and both arms; the
+            # margins keep the perturbation from crossing the kink.
+            @testset "$name" for (seed, name, f, a) in [
+                (66, "maximum, init wins", _max_init, 2.0f0),
+                (67, "maximum, init loses", _max_init, -2.0f0),
+                (68, "maximum, init wins, dims=1", _max_init_d1, 2.0f0),
+                (69, "minimum, init wins", _min_init, -2.0f0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    _rand(rng, Float32, 4, 3);
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            # An empty reduced extent has a well-defined primal — every slice takes
+            # `init` — but no argmax to report, and findmax/findmin used to read out of
+            # bounds there, throwing a device-side BoundsError in both modes.  `init`
+            # takes the whole derivative, one unit per output slice.
+            @testset "$name" for (seed, name, f, a) in [
+                (97, "empty slice, dims=1", _max_init_d1, -9.0f0),
+                (98, "empty slice, Colon", _max_init, -9.0f0),
+                (99, "empty slice, minimum, dims=1", _min_init_d1, 9.0f0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    CuArray(zeros(Float32, 0, 3));
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            # The same reduction without `init` returns the eltype's identity, so
+            # test_rule cannot cover it: its finite differences subtract two infinite
+            # outputs and compare the resulting NaN against the rule's correct zero.
+            # What regressed was that AD threw at all, so check the value and the shape.
+            @testset "empty slice, no init" begin
+                e = CuArray(zeros(Float32, 0, 3))
+                @testset "$f" for (f, expected) in
+                                  ((_max_bare, -Inf32), (_max_d1, -Inf32), (_min_d1, Inf32))
+                    val, grads = value_and_gradient!!(Mooncake.build_rrule(f, e), f, e)
+                    @test val == expected
+                    @test size(grads[2]) == (0, 3)
+                    d = Mooncake.value_and_derivative!!(
+                        Mooncake.build_frule(f, e),
+                        Mooncake.lift(f, Mooncake.NoTangent()),
+                        Mooncake.lift(e, CuArray(zeros(Float32, 0, 3))),
+                    )
+                    @test Mooncake.primal(d) == expected
+                    @test Mooncake.tangent(d, 1) == 0.0f0
+                end
+            end
+            # An index array contributes nothing, so `init` carries the whole gradient.
+            @testset "$name" for (seed, name, f, a) in [
+                (90, "index array, init wins", _max_idx_init, 10.0),
+                (91, "index array, init loses", _max_idx_init, -10.0),
+                (92, "index array, init wins, dims=1", _max_idx_init_d1, 10.0),
+                (93, "index array, minimum", _min_idx_init, -10.0),
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    a,
+                    _rand(rng, Float32, 4);
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
+            @testset "a narrowing init narrows the tangent too" begin
+                @testset "$name" for (seed, name, f) in [
+                    (96, "maximum", _max_init_widens),
+                    (97, "prod dims=1", _prod_init_widens),
+                ]
+                    test_rule(
+                        StableRNG(seed),
+                        f,
+                        _rand(rng, Float64, 4, 3);
+                        is_primitive=false,
+                        perf_flag=:none,
+                    )
+                end
+            end
+            @testset "a NaN slice keeps the keyword-free gradient" begin
+                # `won` is a negated comparison because NaN == NaN is false, which would
+                # zero the whole slice and disagree with the positional rule.  The `init`
+                # case is the one that computes `won` at all; the bare rule is the baseline.
+                x = CuArray(Float32[1, NaN, 3])
+                grads = map((_max_bare, _max_nan_init)) do f
+                    Array(value_and_gradient!!(Mooncake.build_rrule(f, x), f, x)[2][2])
+                end
+                @test grads[1] == grads[2] == Float32[0, 1, 0]
+            end
+            @testset "ties pick the lowest linear index" begin
+                # Not reachable from test_rule's random inputs. findmax names the
+                # first tied element, matching Base and ChainRules; the CPU
+                # decomposition of mapreduce(identity, max, x) lands on the last.
+                x = CuArray(Float32[5, 5, 3])
+                _, g = value_and_gradient!!(
+                    Mooncake.build_rrule(_max_bare, x), _max_bare, x
+                )
+                @test Array(g[2]) == Float32[1, 0, 0]
             end
         end
 
