@@ -764,9 +764,7 @@ function throwing_rule_test_cases(::Val{:foreigncall})
     # pointer_from_objref of a value whose forward V is immutable but differentiable
     # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
     # emit NULL lanes that silently drop the derivative downstream.
-    cases = Any[(
-        ArgumentError, pointer_from_objref, (randn_lifted(Val(1), Xoshiro(123456), [1.0]),)
-    )]
+    cases = Any[(ArgumentError, pointer_from_objref, ([1.0],), (; mode=ForwardMode))]
     memory = Any[]
     @static if VERSION >= v"1.11-rc4"
         # The raw pointer of an element-wise nested `MemoryRef` (from
@@ -781,10 +779,8 @@ function throwing_rule_test_cases(::Val{:foreigncall})
             (
                 ArgumentError,
                 lgetfield,
-                (
-                    zero_lifted(Val(2), getfield(nested, :ref)),
-                    zero_lifted(Val(2), Val(:ptr_or_offset)),
-                ),
+                (getfield(nested, :ref), Val(:ptr_or_offset)),
+                (; mode=ForwardMode, chunk_size=2),
             ),
         )
     end

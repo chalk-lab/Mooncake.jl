@@ -1642,6 +1642,7 @@ end
         msg::Union{Nothing,AbstractString,Regex}=nothing,
         mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
         primal::Bool=false,
+        chunk_size::Int=1,
     )
 
 Assert that differentiating `f(x...)` throws, in both modes unless `mode` names one. Use it
@@ -1655,12 +1656,24 @@ while failing `err`, so pin the type only where the rule throws it directly.
 `primal=true` also requires `f(x...)` itself to throw, separating a call that is already
 invalid before AD sees it from one whose primal is fine and which only AD refuses.
 
-Forward-mode tangents come from `rng`, not from `zero_tangent`: a guard that fires only when
+Forward-mode tangents come from `rng` (`randn_lifted`), not from `zero_tangent`: a guard that fires only when
 an argument carries a derivative -- a keyword the rule treats as constant, say -- sees
 nothing to refuse in a zero seed and would let the case pass while asserting nothing.
 Reverse mode seeds its inputs itself and has no such tangent to offer, so name
 `mode=ForwardMode` for a guard only a nonzero tangent reaches.
+
+`chunk_size` sets the forward chunk width the seeds and rule are built at, for a guard that only
+fires above width 1 -- a dual with no dense per-lane buffer, say. Reverse mode has no width, so
+pair a `chunk_size > 1` with `mode=ForwardMode`.
 """
+# An argument is either a primal value, seeded here, or a ready-made `Lifted` slot for a guard whose
+# trigger seeding cannot express: a raw `Ptr` (no seed exists) or a deliberately incoherent per-lane
+# V. `test_rule` takes explicit tangents the same way, via `CoDual`.
+_throws_slot(rng::AbstractRNG, ::Val{N}, x::Lifted) where {N} = x
+_throws_slot(rng::AbstractRNG, ::Val{N}, x) where {N} = randn_lifted(Val(N), rng, x)
+_throws_primal(x::Lifted) = primal(x)
+_throws_primal(x) = x
+
 function test_rule_throws(
     rng::AbstractRNG,
     f,
@@ -1669,6 +1682,7 @@ function test_rule_throws(
     msg::Union{Nothing,AbstractString,Regex}=nothing,
     mode::Union{Nothing,Type{ForwardMode},Type{ReverseMode}}=nothing,
     primal::Bool=false,
+    chunk_size::Int=1,
 )
     if isnothing(err) && isnothing(msg)
         throw(
@@ -1679,18 +1693,20 @@ function test_rule_throws(
         )
     end
     primal && _test_throws(err, msg) do
-        f(x...)
+        f(map(_throws_primal, x)...)
     end
     _filter = _test_mode_filter()  # `TEST_MODE` fwd/rvs split; unset ⇒ both.
     if mode in [nothing, ReverseMode] && _filter in [nothing, ReverseMode]
+        px = map(_throws_primal, x)
         _test_throws(err, msg) do
-            Mooncake.value_and_gradient!!(build_rrule(f, x...), f, x...)
+            Mooncake.value_and_gradient!!(build_rrule(f, px...), f, px...)
         end
     end
     if mode in [nothing, ForwardMode] && _filter in [nothing, ForwardMode]
-        duals = map(v -> randn_dual(Val(1), rng, v), (f, x...))
+        slots = map(v -> _throws_slot(rng, Val(chunk_size), v), (f, x...))
+        pf, px = _throws_primal(f), map(_throws_primal, x)
         _test_throws(err, msg) do
-            Mooncake.value_and_derivative!!(build_frule(f, x...), duals...)
+            Mooncake.value_and_derivative!!(build_frule(pf, px...; chunk_size), slots...)
         end
     end
     return nothing
@@ -1774,17 +1790,30 @@ end
 # Guard cases registered via `Mooncake.throwing_rule_test_cases`: each rule invocation must
 # throw the registered exception. The slot kind picks the rule family: `Lifted` args test
 # `frule!!` (the function slot is built at the args' width), `CoDual`s test `rrule!!`.
+#
+# Registered slots are hand-built because these guards fire only for a specific slot shape or
+# chunk width that seeding cannot produce — an incoherent per-lane `Ptr` V, or a width-2 dual with
+# no dense per-lane buffer. Where a guard *is* reachable from ordinary seeds, call
+# `test_rule_throws` directly instead. Both paths assert through `_test_throws`, so a registered
+# case can pin the exception type, the message, or both, exactly as `test_rule_throws` does.
+#
+# A case is `(expectation, f, args, opts::NamedTuple)` and runs through `test_rule_throws`. An
+# argument is a primal value, seeded by the helper, or a ready-made `Lifted` slot where seeding
+# cannot express the trigger; `opts` carries what seeding cannot infer (`mode`, `chunk_size`).
+# The expectation is a type (pin the exception), a string/regex (pin the `showerror` text), or
+# a `(type, message)` tuple (pin both — what a bare `@test_throws` cannot do).
+_throwing_case_expectation(E::Type) = (E, nothing)
+_throwing_case_expectation(msg::Union{AbstractString,Regex}) = (nothing, msg)
+_throwing_case_expectation(E::Tuple{Type,Union{AbstractString,Regex}}) = E
+
 function run_throwing_rule_test_cases(v::Val)
     cases, memory = test_hook(Mooncake.throwing_rule_test_cases, v) do
         Mooncake.throwing_rule_test_cases(v)
     end
-    GC.@preserve memory @testset "throws $E: $f" for (E, f, args) in cases
-        if first(args) isa Lifted
-            W = Mooncake._lifted_width(first(args))
-            @test_throws E frule!!(zero_lifted(Val(W), f), args...)
-        else
-            @test_throws E rrule!!(Mooncake.zero_fcodual(f), args...)
-        end
+    GC.@preserve memory @testset "throws $(case[1]): $(case[2])" for case in cases
+        E, f, args = case[1], case[2], case[3]
+        err, msg = _throwing_case_expectation(E)
+        test_rule_throws(Xoshiro(123456), f, args...; err, msg, case[4]...)
     end
     return nothing
 end

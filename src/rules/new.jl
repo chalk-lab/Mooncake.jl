@@ -362,11 +362,8 @@ derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
         cases = Any[(
             "memoryrefnew",
             _new_,
-            (
-                zero_lifted(Val(1), MemoryRef{Float64}),
-                zero_lifted(Val(1), ref.ptr_or_offset),
-                zero_lifted(Val(1), mem),
-            ),
+            (MemoryRef{Float64}, zero_lifted(Val(1), ref.ptr_or_offset), mem),
+            (; mode=ForwardMode),
         )]
         return cases, Any[mem, ref]
     end

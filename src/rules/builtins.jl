@@ -2288,11 +2288,12 @@ function throwing_rule_test_cases(::Val{:builtins})
         (
             ArgumentError,
             IntrinsicsWrappers.atomic_pointerset,
-            (pslot, zero_lifted(Val(1), 2.0), zero_lifted(Val(1), :monotonic)),
+            (pslot, 2.0, :monotonic),
+            (; mode=ForwardMode),
         ),
         # Forward `throw` rule must re-raise (the reverse rule is covered by the `throw` rrule cases).
-        (ArgumentError, throw, (zero_lifted(Val(1), ArgumentError("hello")),)),
-        (AssertionError, throw, (zero_lifted(Val(1), AssertionError("hello")),)),
+        (ArgumentError, throw, (ArgumentError("hello"),), (; mode=ForwardMode)),
+        (AssertionError, throw, (AssertionError("hello"),), (; mode=ForwardMode)),
     ]
     return cases, Any[xv]
 end
