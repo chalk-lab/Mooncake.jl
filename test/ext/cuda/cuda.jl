@@ -513,6 +513,16 @@ end
         _max_dtuple(x) = sum(maximum(x; dims=(1, 2)))
         _min_dtuple(x) = sum(minimum(x; dims=(1, 2)))
         _max_dtuple_init(a, x) = sum(maximum(x; dims=(1, 2), init=a))
+        # `count`'s keyword slot owes a NamedTuple rdata once a float `init` makes the count a
+        # float, so reverse mode has to fill it rather than return NoRData.
+        _count_init(a, x) = count(>(0.0f0), x; init=a) * sum(x)
+        _count_init_mask(a, x) = count(x .> 0.0f0; init=a) * sum(x)
+        # A reinterpret between a complex eltype and its own real part interleaves the parts,
+        # and the tangent interleaves identically, so it stays differentiable.
+        _reinterpret_cx_to_real(z) = sum(reinterpret(Float64, z))
+        _reinterpret_real_to_cx(x) = real(sum(reinterpret(ComplexF64, x)))
+        # A predicate carrying its threshold has a Bool result, so nothing of it is zeroed.
+        _map_predicate(x) = sum(map(>(0.5f0), x)) * sum(x)
         _max_badkw(x) = maximum(x; bad=1.0)
         _max_nan_init(x) = maximum(x; init=-1.0f0)
         # GPUArrays takes the output eltype from typeof(init), so a Float32 init over a
@@ -806,6 +816,9 @@ end
             (false, :none, false, _cumsum_empty_d2, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _cumprod_empty, CuArray{Float32}(undef, 0, 3)),
             (false, :none, false, _accumulate_empty, CuArray{Float32}(undef, 0)),
+            (false, :none, false, _reinterpret_cx_to_real, _rand(rng, ComplexF64, 3)),
+            (false, :none, false, _reinterpret_real_to_cx, _rand(rng, Float64, 4)),
+            (false, :none, false, _map_predicate, _rand(rng, Float32, 4)),
             (false, :none, false, _max_dtuple, _rand(rng, Float32, 2, 3)),
             (false, :none, false, _min_dtuple, _rand(rng, Float32, 2, 3)),
             # init above every element, then below: it takes the whole derivative or none.
@@ -1646,6 +1659,30 @@ end
             @test Array(cgrads[2]) ≈ 2 .* conj.(Array(z)) rtol = 1e-14
         end
 
+        @testset "count's keyword rdata slot, reverse only" begin
+            # Reverse mode cannot tell a constant `init` from one the caller wants a gradient
+            # for, so it fills the slot with a zero rather than refusing as forward does --
+            # which means the slot has to be filled at all: a float `init` makes the count a
+            # float, and the keyword rdata is then a NamedTuple, not NoRData.  Interfaces
+            # only, because that zero is what finite differences disagree with: GPUArrays
+            # folds `init` into a backend-defined number of partial reductions, so FD reads
+            # the fold count, around 49 here, off a value that is itself meaningless.
+            @testset "$name" for (seed, name, f) in [
+                (270, "predicate", _count_init), (271, "mask", _count_init_mask)
+            ]
+                test_rule(
+                    StableRNG(seed),
+                    f,
+                    0.0,
+                    _rand(rng, Float32, 4);
+                    is_primitive=false,
+                    perf_flag=:none,
+                    mode=Mooncake.ReverseMode,
+                    interface_only=true,
+                )
+            end
+        end
+
         @testset "norm frule!! rescales an overflowing dot" begin
             # dot(px, dx) overflows once norm(px)*norm(dx) leaves the eltype's range,
             # while the JVP it divides down to is still representable. Float16 saturates
@@ -2132,6 +2169,30 @@ end
                     _max_badkw,
                     (M32,),
                     (; err=MethodError, primal=true),
+                ),
+                # A reinterpret that changes the underlying real field would hand back a
+                # tangent whose elements are bit-halves of the primal's.
+                (
+                    260,
+                    "reinterpret narrows the eltype",
+                    z -> sum(reinterpret(Float32, z)),
+                    (_rand(rng, Float64, 4),),
+                    (; msg=r"reinterpreting a CuArray of Float64 as Float32"),
+                ),
+                (
+                    261,
+                    "reinterpret to a non-float eltype",
+                    z -> Float32(sum(reinterpret(Int32, z))),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"is not differentiable"),
+                ),
+                # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
+                (
+                    262,
+                    "count, differentiated init",
+                    (c, z) -> count(>(0.0f0), z; init=c),
+                    (0.0, _rand(rng, Float32, 4)),
+                    (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
                 ),
                 # mapreduce delegates to the keyword-free rule, so a differentiated `init`
                 # would be dropped instead of folded, and an `init` of another type would

@@ -612,6 +612,22 @@ end
 # stays inside the buffer, and writing into whatever the pool handed out next once it does
 # not. The derived tangent shares the source tangent's DataRef, so accumulation into a view
 # reaches the parent's tangent and the pullback has nothing to do.
+# `derive` also backs both `reinterpret` spellings, which may change the element type. The
+# tangent is derived the same way, which is right exactly when the underlying real field is
+# unchanged: same eltype for a view or reshape, and Complex{T} against T for a reinterpret
+# that interleaves the parts, whose tangent interleaves identically. Anything else -- Float64
+# read as Float32 pairs, a float read as an integer -- hands back a tangent whose elements are
+# bit-halves of the real one, which accumulates into the parent as silent corruption.
+function _check_derive_eltype(::Type{T}, pa) where {T}
+    real(T) === real(eltype(pa)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: reinterpreting a CuArray of $(eltype(pa)) as $T is not differentiable. " *
+        "The tangent would be reinterpreted the same way, so its elements would no longer " *
+        "line up with the primal's. Reinterpreting between a complex eltype and its own " *
+        "real part is supported. " *
+        _UNIMPL_MSG,
+    )
+end
 @is_primitive(MinimalCtx, Tuple{typeof(derive),Type,CuMaybeComplexArray,Dims,Int})
 function frule!!(
     ::Dual{typeof(derive)},
@@ -621,6 +637,7 @@ function frule!!(
     offset::Dual,
 ) where {T}
     pa, da = arrayify(a)
+    _check_derive_eltype(T, pa)
     d, o = primal(dims), primal(offset)
     return Dual(derive(T, pa, d, o), derive(T, da, d, o))
 end
@@ -632,6 +649,7 @@ function rrule!!(
     offset::CoDual,
 ) where {T}
     pa, da = arrayify(a)
+    _check_derive_eltype(T, pa)
     d, o = primal(dims), primal(offset)
     return CoDual(derive(T, pa, d, o), derive(T, da, d, o)), _nopb(Val(5))
 end
@@ -1577,6 +1595,7 @@ for _n_args in (0, 1)
     )
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
+        _check_reduction_init(tangent(kw))
         y = count($(_pred_v...), primal(x); pkw...)
         return Dual(y, zero_tangent(y))
     end
@@ -1589,8 +1608,13 @@ for _n_args in (0, 1)
     )
         pkw = primal(kw)
         _check_reduction_identity(count, pkw)
+        # The keyword slot owes `zero_rdata(pkw)`, not `NoRData()`: a float `init` makes the
+        # count a float, and its rdata is then a NamedTuple the caller increments into.
+        kw_rdata = zero_rdata(pkw)
         y = count($(_pred_v...), primal(x); pkw...)
-        count_kw_pb!!(::Any) = ntuple(_ -> NoRData(), $(_n_args + 4))
+        function count_kw_pb!!(::Any)
+            return NoRData(), kw_rdata, $(fill(:(NoRData()), _n_args + 2)...)
+        end
         return zero_fcodual(y), count_kw_pb!!
     end
 end
@@ -3633,6 +3657,11 @@ end
 @inline _gpu_bcast_has_nondiff_result(::typeof(isfinite)) = true
 @inline _gpu_bcast_has_nondiff_result(::typeof(isinf)) = true
 @inline _gpu_bcast_has_nondiff_result(::typeof(isnan)) = true
+# `map(>(0.5f0), x)` reaches the kernel as a `Fix2` carrying its threshold. The comparison
+# still decides the result, which is a Bool, so the capture's derivative is genuinely zero and
+# the state guard below has nothing to protect.
+@inline _gpu_bcast_has_nondiff_result(f::Base.Fix2) = _gpu_bcast_has_nondiff_result(f.f)
+@inline _gpu_bcast_has_nondiff_result(f::Base.Fix1) = _gpu_bcast_has_nondiff_result(f.f)
 @inline _gpu_bcast_has_nondiff_result(::Any) = false
 @inline _gpu_is_simple_cast_broadcast(::Any) = false
 @inline function _gpu_is_simple_cast_broadcast(bc::Broadcasted)
@@ -3897,7 +3926,9 @@ function _check_gpu_bcast_captures(args::Tuple)
     return _check_gpu_bcast_captures(Base.tail(args))
 end
 function _check_gpu_bcast_captures(bc::Broadcasted)
-    _check_gpu_captured_state(bc.f, "broadcasting")
+    # A function whose result carries no derivative cannot silently zero one, so its own
+    # state is not the hazard this guard exists for.
+    _gpu_bcast_has_nondiff_result(bc.f) || _check_gpu_captured_state(bc.f, "broadcasting")
     return _check_gpu_bcast_captures(bc.args)
 end
 
