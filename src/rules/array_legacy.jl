@@ -83,6 +83,16 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
+# `Base.dataids` is broadcasting's aliasing token, and on Julia 1.10 it is the array's raw address
+# (`(UInt(pointer(A)),)`) — which the `jl_array_ptr` frule cannot serve above chunk width 1, since a
+# lane of the element-major block is stride-`N`. The address is only compared, never dereferenced,
+# and a `Tuple{UInt}` carries no derivative, so intercept here rather than descending to the
+# pointer. Both modes: a `dx .+= ...` inside a reverse pullback only reaches the pointer under
+# chunked forward-over-reverse, but the descent happens while the REVERSE rule is built, so a
+# forward-only rule comes too late. Julia 1.11+ keys `dataids` on the backing `Memory`'s
+# `objectid` and never takes this path.
+@zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Array}
+
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 # Mutate the user's Vector and the partials block in sync. The block is element-major, so `d`
 # primal elements from the front are the leading `N * d` block entries. `T<:NDualEltype` with the
