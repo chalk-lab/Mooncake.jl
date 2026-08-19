@@ -287,6 +287,32 @@ using Mooncake.Nfwd
         ) isa Nfwd.NDualArray
     end
 
+    @testset "NDualBlock" begin
+        # `mul!`/`\` dispatch on `StridedArray` to reach BLAS, and `StridedArray` is a `Union`
+        # that includes `DenseArray` — an `AbstractArray` subtype would silently fall onto the
+        # generic scalar kernel instead of erroring.
+        @test Nfwd.NDualBlock{Float64,2} <: StridedArray
+        @test Nfwd.NDualBlock{ComplexF64,3} <: StridedArray
+
+        b = Nfwd.NDualBlock{Float64,2}(collect(1.0:12.0), (2, 6))
+        @test size(b) == (2, 6)
+        @test b[3] == 3.0 && b[1, 2] == 3.0
+        @test strides(b) == (1, 2)
+        @test BLAS.gemv!('N', 1.0, b, ones(6), 0.0, zeros(2)) ==
+            [sum(1.0:2:12), sum(2.0:2:12)]
+
+        # Reshaping is a new header over the same parent, so it neither copies nor marks the
+        # parent shared — the in-place resize primitives must still work afterwards.
+        r = reshape(b, (4, 3))
+        @test size(r) == (4, 3)
+        @test getfield(r, :parent) === getfield(b, :parent)
+        r[1] = -1.0
+        @test b[1] == -1.0
+        resize!(getfield(b, :parent), 16)
+        # The trailing dimension is derived from the parent's length, so it follows the resize.
+        @test size(b) == (2, 8)
+    end
+
     @testset "math functions" begin
         # Test each f(Dual(v,1)) matches f'(v) analytically
         for (v, fns) in [

@@ -13,11 +13,11 @@ using Mooncake:
     build_rrule,
     tangent_type
 
-# Forward gradients can't be zero-alloc on Julia 1.10: the zero-alloc `NDualArray` block layout
-# needs an in-place-resizable `(N, dims)` buffer, but 1.10's `reshape` marks the underlying buffer
-# shared, so shaped views over it allocate. 1.10 therefore falls back to the parallel-arrays layout
-# (see src/nfwd/Nfwd.jl), whose forward gradient is still correct and type-stable — just not
-# zero-alloc. So the zero-alloc assertions below are checked on 1.11+ only.
+# Forward gradients allocate two boxes per call on Julia 1.10, so the zero-allocation assertions
+# below are checked on 1.11+ only. The cause is `__call_rule`, which is `@noinline` with a boxed
+# dynamic call on 1.10 to dodge an OpaqueClosure world-age crash (see `src/utils.jl`) — not the
+# forward array representation: a scalar input, which has no partials block at all, allocates the
+# same two boxes.
 const _SKIP_FWD_ALLOC = VERSION < v"1.11-rc4"
 
 struct SimplePair
@@ -1419,6 +1419,23 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 counter[] = 0
                 Mooncake.value_and_gradient!!(cache, f, args...)
                 @test counter[] == 1
+            end
+        end
+
+        @testset "chunked forward through array growth" begin
+            # Growing a lifted array grows its partials block, and every lane must survive the
+            # growth — not just lane 1. On Julia 1.11+ growth is a derived rule, which the
+            # registered test cases run at width 1 only, so this is the width>1 cover.
+            grow(v) = (w=copy(v); push!(w, 2 * v[1]); pushfirst!(w, sum(v)); sum(abs2, w))
+            v = randn(StableRNG(123), 6)
+            oracle = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(grow, v), grow, v
+            )[2][2]
+            @testset "chunk_size $W" for W in (1, 2, 3, 5)
+                cache = Mooncake.prepare_derivative_cache(
+                    grow, v; config=Mooncake.Config(; chunk_size=W)
+                )
+                @test Mooncake.value_and_gradient!!(cache, grow, v)[2][2] ≈ oracle
             end
         end
 

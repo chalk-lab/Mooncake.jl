@@ -70,28 +70,23 @@ using Mooncake:
 # Shorthands for the table-driven type tests below (top level: parametric aliases are
 # not allowed in local scope).
 const ND = NDual
-# The forward array V is version-split: the 1.11+ SplitEM block carries a 6th block-type
-# parameter `B` (= `_block_type(A)`); the 1.10 SoA fallback has no block, so its type is 5-param.
-# `B` can't be derived inside a type alias (no function calls on a free typevar), so spell the
-# array V shapes the table below needs as named consts per version — the table stays
-# version-agnostic.
-@static if VERSION >= v"1.11-rc4"
-    const NDA_VecF64 = NDualArray{
-        Float64,2,1,Vector{Float64},NDual{Float64,2},Matrix{Float64}
-    }
-    const NDA_MatF32 = NDualArray{
-        Float32,1,2,Matrix{Float32},NDual{Float32,1},Array{Float32,3}
-    }
-    const NDAC_VecC64 = NDualArray{
-        ComplexF64,2,1,Vector{ComplexF64},Complex{NDual{Float64,2}},Matrix{ComplexF64}
-    }
-else
-    const NDA_VecF64 = NDualArray{Float64,2,1,Vector{Float64},NDual{Float64,2}}
-    const NDA_MatF32 = NDualArray{Float32,1,2,Matrix{Float32},NDual{Float32,1}}
-    const NDAC_VecC64 = NDualArray{
-        ComplexF64,2,1,Vector{ComplexF64},Complex{NDual{Float64,2}}
-    }
-end
+# The array V's 6th parameter `B` (= `_block_type(A)`) can't be derived inside a type alias (no
+# function calls on a free typevar), so spell the array V shapes the table below needs as named
+# consts.
+const NDA_VecF64 = NDualArray{
+    Float64,2,1,Vector{Float64},NDual{Float64,2},Mooncake.NDualBlock{Float64,2}
+}
+const NDA_MatF32 = NDualArray{
+    Float32,1,2,Matrix{Float32},NDual{Float32,1},Mooncake.NDualBlock{Float32,3}
+}
+const NDAC_VecC64 = NDualArray{
+    ComplexF64,
+    2,
+    1,
+    Vector{ComplexF64},
+    Complex{NDual{Float64,2}},
+    Mooncake.NDualBlock{ComplexF64,2},
+}
 
 @testset "lifted" begin
     # Slot/inner-dual shorthands. `sl` wraps once at the top level with the sharp
@@ -330,8 +325,9 @@ end
             @test lifted_type(Val(2), MemoryRef{Float64}) === Lifted{
                 MemoryRef{Float64},2,Mooncake.NDualMemoryRef{Float64,2,Memory{Float64}}
             }
-            @test dual_type(Val(2), Memory{Float64}) ===
-                NDualArray{Float64,2,1,Memory{Float64},NDual{Float64,2},Matrix{Float64}}
+            @test dual_type(Val(2), Memory{Float64}) === NDualArray{
+                Float64,2,1,Memory{Float64},NDual{Float64,2},Mooncake.NDualBlock{Float64,2}
+            }
 
             # Seed factory: a zero block covering the whole backing memory, slot-local;
             # the referenced element's column is the ref's offset.
