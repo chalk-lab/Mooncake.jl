@@ -32,8 +32,8 @@ Base.:(==)(x::ImmutableDual, y::ImmutableDual) = x.value == y.value
 """
     MutableDual{T<:NamedTuple}
 
-Mutable counterpart to `ImmutableDual`. Mutability is load-bearing for the
-`MutableDualTangentView` proxy that writes back to `value` via `setfield!`.
+Mutable counterpart to `ImmutableDual`. Must be mutable: the `MutableDualTangentView`
+proxy writes back to `value` via `setfield!`.
 """
 mutable struct MutableDual{T<:NamedTuple}
     value::T
@@ -1034,7 +1034,7 @@ end
     # `Union{Nothing,Int}`): the slot type is the small `Union{Lifted{A,…}, Lifted{B,…}}` of concrete
     # `NoDual`-V `Lifted`s, which union-splits box-free at the OpaqueClosure return, rather than the
     # widened `Lifted{T,…} where T<:Union{A,B}` that boxes (`Lifted` is invariant). Restricted to
-    # all-non-differentiable members: a member with a non-trivial V (e.g. `Vector{Any}`) in an
+    # all-non-differentiable members: a member whose V is not `NoDual` (e.g. `Vector{Any}`) in an
     # invariant-`Lifted` Union return tripped an OC return-assertion crash, so those keep the UnionAll.
     P isa Union &&
         _all_nodual_union_members(P) &&

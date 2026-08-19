@@ -1850,7 +1850,7 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
         end
         @test typeof(r) === typeof(z)
 
-        # Inner-value invariant at this width — the load-bearing forward-only check.
+        # Inner-value invariant at this width: an inner dual's `.value` must equal the primal.
         @test _chunked_v_invariant(p, tangent(z))
         @test _chunked_v_invariant(p, tangent(r))
 

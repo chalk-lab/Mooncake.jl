@@ -471,7 +471,7 @@ function Mooncake.rrule!!(
     return res, gather_pb!!
 end
 # `gather` is linear in `src` and lane-invariant (the index map is the same for every lane),
-# so its JVP is `gather` applied to each lane's partials. Working through the accessor seam
+# so its JVP is `gather` applied to each lane's partials. Going through the lane accessor
 # (`tangent_view`) keeps this correct on both the 1.11+ block and the 1.10 parallel-arrays
 # layouts, and avoids `gather`'s raw-pointer `MemoryRef` body, which the block layout cannot
 # address per lane at chunk width > 1. Forward covers plain `Array` src only (the canonical

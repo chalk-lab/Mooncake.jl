@@ -2063,7 +2063,7 @@ end
         Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
     }
 
-    # Seed-manipulation seam (the interface.jl chunked-forward gradient/Jacobian uses it): zero all
+    # Seed manipulation, used by the interface.jl chunked-forward gradient/Jacobian: zero all
     # partials, and read/write element `elem`'s lane `lane` (both 1-based). Element-major block: the
     # lane sits at linear offset `(elem-1)*N + lane`. Inlined, so `getfield` hoists out of caller
     # loops — same cost as hand-hoisting the block.
@@ -2189,7 +2189,7 @@ else
     # the flat-Vector block silently read the wrong element (silent-wrong-gradient class), and
     # interleaved lanes have no contiguous buffer for raw-pointer / chunked-forward ops. Separate
     # per-lane arrays are the proven pre-SplitEM representation: each lane is a genuine `A` with a
-    # contiguous pointable buffer. The accessor seam (`_lane_views`/`tangent_view`/`getindex`/
+    # contiguous pointable buffer. The accessors (`_lane_views`/`tangent_view`/`getindex`/
     # `setindex!`) matches the block branch so element-wise rules don't branch on version.
     #
     # Why not unify on the 1.11+ block here (for one representation across versions)? On 1.10 the
@@ -2240,7 +2240,7 @@ else
         Element,N,D,A,_wrapped_eltype(Element, Val(N))
     }
 
-    # Seed-manipulation seam (parallel to the block branch): zero all partials, and read/write
+    # Seed manipulation, mirroring the block branch: zero all partials, and read/write
     # element `elem`'s lane `lane`. Parallel arrays: lane `lane` is a whole per-lane array, element `elem` its
     # `elem`-th entry.
     @inline function _zero_seed!(a::NDualArray{Element}) where {Element}
@@ -2257,7 +2257,7 @@ else
         return a
     end
 
-    # Accessor seam (parallel to the block branch). Under the parallel-arrays layout a lane IS a contiguous per-lane
+    # Accessors mirroring the block branch. Under the parallel-arrays layout a lane IS a contiguous per-lane
     # array, so `_lane_views` is the partials tuple directly and `tangent_view` is one element of
     # it — no reshape, no strided view.
     @inline _lane_views(a::NDualArray) = getfield(a, :partials)
