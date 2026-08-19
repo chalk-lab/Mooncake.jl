@@ -164,6 +164,7 @@ include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd:
     NDual,
     NDualArray,
+    NDualBlock,
     NDualRef,
     NDualEltype,
     tangent_view,

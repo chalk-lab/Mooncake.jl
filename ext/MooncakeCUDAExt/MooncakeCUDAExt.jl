@@ -243,29 +243,15 @@ Mooncake._nfwd_backing_projectable(::Type{<:CuArray}) = false
 # invariant in it, so a `B`-free `dual_type` would fail the `::dual_type(...)` seed typeasserts.
 # `NDualArray` accepts any `AbstractArray{T,D}` storage by construction, including `CuArray`; the
 # block is LANE-MAJOR `(dims..., N)` for `CuArray` (see `_block_dims`/`tangent_view` below).
-@static if VERSION >= v"1.11-rc4"
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{P}
-    ) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
-        return NDualArray{T,N,D,P,NDual{T,N},Nfwd._block_type(P)}
-    end
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{P}
-    ) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
-        return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}},Nfwd._block_type(P)}
-    end
-else
-    # Julia 1.10: parallel-arrays fallback — per-lane CuArrays, no block param (5-param NDualArray).
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{P}
-    ) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
-        return NDualArray{T,N,D,P,NDual{T,N}}
-    end
-    @foldable @inline function dual_type(
-        ::Val{N}, ::Type{P}
-    ) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
-        return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}}}
-    end
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
+    return NDualArray{T,N,D,P,NDual{T,N},Nfwd._block_type(P)}
+end
+@foldable @inline function dual_type(
+    ::Val{N}, ::Type{P}
+) where {N,R<:IEEEFloat,D,P<:CuArray{Complex{R},D}}
+    return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}},Nfwd._block_type(P)}
 end
 
 # LANE-MAJOR block for a `CuArray`: `CuArray{T,D+1,M}` of size `(dims..., N)`. The host block is
@@ -276,47 +262,42 @@ end
 # — accepted by those primitives and by per-lane broadcasts with no gather (and it lines up with
 # the batched-cuBLAS follow-on). `_block_dims`/`_block_shape_ok`/`tangent_view` below carry this
 # orientation; `_block_type` is orientation-free (the type is the same either way).
-# The block helpers below are 1.11+ only; on Julia 1.10 the core parallel-arrays generics (`_lane_views` =
-# the partials tuple, `tangent_view` = partials[k], the 4-param tuple constructor) apply to the
-# per-lane CuArrays directly, so no CuArray-specific block machinery is needed.
-@static if VERSION >= v"1.11-rc4"
-    @inline Nfwd._block_type(::Type{CuArray{T,D,M}}) where {T,D,M} = CuArray{T,D + 1,M}
-    @inline Nfwd._block_dims(N::Int, p::CuArray) = (size(p)..., N)
-    @inline Nfwd._block_shape_ok(block::CuArray, N::Int, p) = size(block) == (size(p)..., N)
-    # Lane `k`'s partial: the contiguous last-dim slice. Overrides the host element-major
-    # `tangent_view` (which views the leading lane axis); `_lane_views` builds on this.
-    @inline function Nfwd.tangent_view(
-        a::NDualArray{E,N,D,A}, k::Integer
-    ) where {E,N,D,A<:CuArray}
-        return view(getfield(a, :partials_block), ntuple(_ -> Colon(), Val(D))..., k)
+@inline Nfwd._block_type(::Type{CuArray{T,D,M}}) where {T,D,M} = CuArray{T,D + 1,M}
+@inline Nfwd._block_dims(N::Int, p::CuArray) = (size(p)..., N)
+@inline Nfwd._block_shape_ok(block::CuArray, N::Int, p) = size(block) == (size(p)..., N)
+# Lane `k`'s partial: the contiguous last-dim slice. Overrides the host element-major
+# `tangent_view` (which views the leading lane axis); `_lane_views` builds on this.
+@inline function Nfwd.tangent_view(
+    a::NDualArray{E,N,D,A}, k::Integer
+) where {E,N,D,A<:CuArray}
+    return view(getfield(a, :partials_block), ntuple(_ -> Colon(), Val(D))..., k)
+end
+# Whole per-lane tuple. Overrides the host generic, which slices the block's LEADING axis
+# (element-major `(N, dims...)`); the CuArray block is lane-major `(dims..., N)`, so build
+# from the lane-major `tangent_view` above instead.
+@inline Nfwd._lane_views(a::NDualArray{E,N,D,A}) where {E,N,D,A<:CuArray} = ntuple(
+    k -> Nfwd.tangent_view(a, k), Val(N)
+)
+# GPU-friendly pack: the generic `_pack_block` fills element-by-element (scalar `setindex!`,
+# which a `CuArray` forbids). Copy each lane's partial into its block slice `[dims..., k]` — one
+# device copy per lane, no scalar indexing. `copyto!` accepts any-typed source, so lane views of
+# another block (`SubArray`, e.g. reconstructing a result from an input's lane views) work too.
+@inline function _cu_pack_lane_major(p::CuArray, ts, Nw::Int)
+    block = Nfwd._block_type(typeof(p))(undef, Nfwd._block_dims(Nw, p)...)
+    colons = ntuple(_ -> Colon(), Val(ndims(p)))
+    for k in 1:Nw
+        copyto!(view(block, colons..., k), ts[k])
     end
-    # Whole per-lane tuple. Overrides the host generic, which slices the block's LEADING axis
-    # (element-major `(N, dims...)`); the CuArray block is lane-major `(dims..., N)`, so build
-    # from the lane-major `tangent_view` above instead.
-    @inline Nfwd._lane_views(a::NDualArray{E,N,D,A}) where {E,N,D,A<:CuArray} = ntuple(
-        k -> Nfwd.tangent_view(a, k), Val(N)
-    )
-    # GPU-friendly pack: the generic `_pack_block` fills element-by-element (scalar `setindex!`,
-    # which a `CuArray` forbids). Copy each lane's partial into its block slice `[dims..., k]` — one
-    # device copy per lane, no scalar indexing. `copyto!` accepts any-typed source, so lane views of
-    # another block (`SubArray`, e.g. reconstructing a result from an input's lane views) work too.
-    @inline function _cu_pack_lane_major(p::CuArray, ts, Nw::Int)
-        block = Nfwd._block_type(typeof(p))(undef, Nfwd._block_dims(Nw, p)...)
-        colons = ntuple(_ -> Colon(), Val(ndims(p)))
-        for k in 1:Nw
-            copyto!(view(block, colons..., k), ts[k])
-        end
-        return block
-    end
-    # `CuArray` tangents: strictly out-specialises the generic `_pack_block(::A, ::NTuple{N,A})`.
-    function Nfwd._pack_block(p::A, ts::NTuple{Nw,A}) where {T,Nw,A<:CuArray{T}}
-        _cu_pack_lane_major(p, ts, Nw)
-    end
-    # View / other-array tangents (the generic, which binds the tuple eltype to `A`, does not apply).
-    function Nfwd._pack_block(p::CuArray, ts::NTuple{Nw,<:AbstractArray}) where {Nw}
-        _cu_pack_lane_major(p, ts, Nw)
-    end
-end  # @static if VERSION >= v"1.11-rc4" (CuArray block helpers)
+    return block
+end
+# `CuArray` tangents: strictly out-specialises the generic `_pack_block(::A, ::NTuple{N,A})`.
+function Nfwd._pack_block(p::A, ts::NTuple{Nw,A}) where {T,Nw,A<:CuArray{T}}
+    _cu_pack_lane_major(p, ts, Nw)
+end
+# View / other-array tangents (the generic, which binds the tuple eltype to `A`, does not apply).
+function Nfwd._pack_block(p::CuArray, ts::NTuple{Nw,<:AbstractArray}) where {Nw}
+    _cu_pack_lane_major(p, ts, Nw)
+end
 
 # Seed factories for CuArray (mirror the host `Array{T,D}` overloads in `src/lifted.jl`):
 # the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields
@@ -465,21 +446,11 @@ function Mooncake._basis_seed!!(
     n = length(v.primal)
     base = cursor[]
     onehot = [one(T)]
-    @static if VERSION >= v"1.11-rc4"
-        block = getfield(v, :partials_block)
-        fill!(block, zero(T))
-        for k in 1:N
-            hot = slots[k] - base
-            1 <= hot <= n && copyto!(block, (k - 1) * n + hot, onehot, 1, 1)
-        end
-    else
-        # Parallel arrays: each lane is its own CuArray; write the one-hot at element `hot` of lane `k`.
-        for k in 1:N
-            p = getfield(v, :partials)[k]
-            fill!(p, zero(T))
-            hot = slots[k] - base
-            1 <= hot <= n && copyto!(p, hot, onehot, 1, 1)
-        end
+    block = getfield(v, :partials_block)
+    fill!(block, zero(T))
+    for k in 1:N
+        hot = slots[k] - base
+        1 <= hot <= n && copyto!(block, (k - 1) * n + hot, onehot, 1, 1)
     end
     cursor[] += n
     return v
@@ -492,28 +463,14 @@ function Mooncake._basis_seed!!(
     dict[v] = v
     n = length(v.primal)
     base = cursor[]
-    @static if VERSION >= v"1.11-rc4"
-        block = getfield(v, :partials_block)
-        fill!(block, zero(Complex{R}))
-        for k in 1:N
-            off = slots[k] - base
-            if 1 <= off <= 2n
-                j = cld(off, 2)
-                val = isodd(off) ? Complex(one(R), zero(R)) : Complex(zero(R), one(R))
-                copyto!(block, (k - 1) * n + j, [val], 1, 1)
-            end
-        end
-    else
-        # Parallel arrays: each lane is its own CuArray; write the one-hot at element `j` of lane `k`.
-        for k in 1:N
-            p = getfield(v, :partials)[k]
-            fill!(p, zero(Complex{R}))
-            off = slots[k] - base
-            if 1 <= off <= 2n
-                j = cld(off, 2)
-                val = isodd(off) ? Complex(one(R), zero(R)) : Complex(zero(R), one(R))
-                copyto!(p, j, [val], 1, 1)
-            end
+    block = getfield(v, :partials_block)
+    fill!(block, zero(Complex{R}))
+    for k in 1:N
+        off = slots[k] - base
+        if 1 <= off <= 2n
+            j = cld(off, 2)
+            val = isodd(off) ? Complex(one(R), zero(R)) : Complex(zero(R), one(R))
+            copyto!(block, (k - 1) * n + j, [val], 1, 1)
         end
     end
     cursor[] += 2n
@@ -2453,15 +2410,8 @@ function frule!!(
     ::Lifted{typeof(unsafe_free!),Nw}, x::Lifted{<:CuArray,Nw,<:NDualArray}
 ) where {Nw}
     unsafe_free!(primal(x))
-    @static if VERSION >= v"1.11-rc4"
-        # The N lanes share one backing block; free it once (freeing a per-lane view is invalid).
-        unsafe_free!(getfield(tangent(x), :partials_block))
-    else
-        # Parallel arrays: each lane is an independent CuArray allocation; free each.
-        for p in getfield(tangent(x), :partials)
-            unsafe_free!(p)
-        end
-    end
+    # The N lanes share one backing block; free it once (freeing a per-lane view is invalid).
+    unsafe_free!(getfield(tangent(x), :partials_block))
     return Lifted{Nothing,Nw}(nothing, NoDual())
 end
 # The claim covers index and mask arrays too, whose forward V is `NoDual`: free the primal

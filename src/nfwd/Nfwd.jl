@@ -1859,8 +1859,8 @@ end
 # The `N` lane tangents live in ONE element-major block `partials_block::B` of shape
 # `(N, size(primal)...)`: element `i`'s `N` per-lane partials are the contiguous column
 # `partials_block[:, i]`, so scalar `getindex`/`setindex!` is a single contiguous column
-# read/write. `B` is `_block_type(A)` — `Array{Element, D+1}` (a `Memory` primal also blocks
-# to `Matrix{Element}`; `Memory` is 1-D only).
+# read/write. `B` is `_block_type(A)` — `NDualBlock{Element, D+1}` (a `Memory`
+# primal also blocks to a rank-2 `NDualBlock`; `Memory` is 1-D only).
 #
 # `Wrapped` is determined by `(Element, N)`
 # — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
@@ -1891,6 +1891,91 @@ const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
     return Complex{NDual{T,N}}
 end
 
+# ──────────────────────────────────────────────────────────────────────────
+# `NDualBlock{T, D}` — the element-major partials block, one type on every supported Julia.
+#
+# Storage is a flat `Vector{T}` plus the block's `dims`; the shaped array is a HEADER over that
+# vector, never a `Base.reshape` of it. That distinction is what lets one layout serve Julia 1.10:
+# `reshape` of an `Array` marks its buffer shared, after which the in-place resize primitives throw
+# "cannot resize array with shared data" — and the partials block of a `Vector` primal has to stay
+# resizable, because resizing the primal resizes it.
+#
+# The header is immutable, and the LAST dimension is derived from the parent's length rather than
+# read from `dims` (`_derived_dims`). That is what makes growth work without a mutable field: only
+# a `Vector` primal ever grows, so only the block's trailing dimension ever changes, and resizing
+# the flat parent updates the shape by itself. A mutable header would cost ~1.14× on element access
+# instead — its field loads cannot be hoisted out of a caller's loop, unlike an immutable's.
+#
+# `<: DenseArray` rather than `<: AbstractArray` is load-bearing: `StridedArray` is a `Union` that
+# includes `DenseArray`, and `mul!`, `\`, and friends dispatch on `StridedArray` to reach BLAS. An
+# `AbstractArray` subtype cannot join that union, so those calls would silently fall onto the
+# generic scalar kernel (~5× slower on a 64×64 `mul!`) while still computing the right answer. The
+# `DenseArray` contract holds here: contiguous column-major storage, unit first stride.
+# ──────────────────────────────────────────────────────────────────────────
+
+struct NDualBlock{T,D} <: DenseArray{T,D}
+    parent::Vector{T}
+    dims::NTuple{D,Int}
+end
+@inline function NDualBlock{T,D}(::UndefInitializer, dims::Vararg{Int,D}) where {T,D}
+    return NDualBlock{T,D}(Vector{T}(undef, prod(dims)), dims)
+end
+
+# `dims` with the trailing entry recomputed from the parent's current length. A zero leading
+# product means an empty block, which never grows, so the stored entry stands.
+@inline function _derived_dims(dims::NTuple{D,Int}, len::Int) where {D}
+    lead = 1
+    @inbounds for i in 1:(D - 1)
+        lead *= dims[i]
+    end
+    lead == 0 && return dims
+    return (Base.front(dims)..., len ÷ lead)
+end
+
+@inline function Base.size(b::NDualBlock)
+    return _derived_dims(getfield(b, :dims), length(getfield(b, :parent)))
+end
+Base.length(b::NDualBlock) = length(getfield(b, :parent))
+Base.IndexStyle(::Type{<:NDualBlock}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(b::NDualBlock, i::Int) = getfield(b, :parent)[i]
+Base.@propagate_inbounds function Base.setindex!(b::NDualBlock, v, i::Int)
+    getfield(b, :parent)[i] = v
+    return b
+end
+Base.strides(b::NDualBlock) = Base.size_to_strides(1, size(b)...)
+Base.elsize(::Type{<:NDualBlock{T}}) where {T} = sizeof(T)
+# `cconvert` hands a `ccall` the parent `Array` rather than the block, so the argument the GC roots
+# is a real heap object and the block header itself need never be boxed.
+Base.cconvert(::Type{Ptr{T}}, b::NDualBlock{T}) where {T} = getfield(b, :parent)
+function Base.unsafe_convert(::Type{Ptr{T}}, b::NDualBlock{T}) where {T}
+    return Base.unsafe_convert(Ptr{T}, getfield(b, :parent))
+end
+Base.dataids(b::NDualBlock) = Base.dataids(getfield(b, :parent))
+Base.copy(b::NDualBlock) = NDualBlock(copy(getfield(b, :parent)), getfield(b, :dims))
+Base.fill!(b::NDualBlock, x) = (fill!(getfield(b, :parent), x); b)
+function Base.convert(::Type{NDualBlock{S,D}}, b::NDualBlock{T,D}) where {S,T,D}
+    return NDualBlock{S,D}(convert(Vector{S}, getfield(b, :parent)), getfield(b, :dims))
+end
+# Reshaping a block is a new header over the same parent, so it neither copies nor marks the
+# parent shared (which would break the resize primitives on 1.10).
+function Base.reshape(b::NDualBlock{T}, dims::NTuple{D,Int}) where {T,D}
+    return NDualBlock{T,D}(getfield(b, :parent), dims)
+end
+
+# The block's flat linear storage, for scalar element access. Reading through the `NDualBlock`
+# wrapper is equivalent, but naming the parent keeps the hot `setindex!` loop on one array. The
+# fallback covers blocks that are not `NDualBlock` (the CUDA extension's `CuArray` block).
+@inline _block_storage(b::NDualBlock) = getfield(b, :parent)
+@inline _block_storage(b) = b
+
+# Apply an in-place `Vector` resize primitive to the block's flat parent. The block is
+# element-major, so `d` primal elements are `N * d` block entries, and the block's trailing
+# dimension follows the parent's length, so nothing else needs updating.
+@inline function _resize_block!(resize!!, b::NDualBlock, N::Int, d::Integer)
+    resize!!(getfield(b, :parent), N * d)
+    return b
+end
+
 # The concrete element-major block type for a primal container `A`. No generic fallback: an
 # unknown container (e.g. a GPU array) must define its own method, or fail loudly here rather
 # than silently landing a CPU block.
@@ -1898,423 +1983,242 @@ end
 # `_block_dims` gives the block's `undef` dimensions and `_block_reshape` presents it to
 # shape-consuming helpers (BLAS, `tangent_view`) as `(N, size(primal)...)`. Element access is
 # always linear (`_lane_offset`), so it is oblivious to the block's declared shape.
-@static if VERSION >= v"1.11-rc4"
-    # A `Memory{T}` primal blocks to `Matrix{T}` — `Memory` is 1-D only, so the block cannot
-    # itself be a `Memory`.
-    @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = Array{Element,D + 1}
-    @inline _block_type(::Type{Memory{Element}}) where {Element} = Matrix{Element}
-    @inline _block_dims(N::Int, p) = (N, size(p)...)
-    @inline _block_reshape(block, N::Int, p) = block
-    @inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
-else
-    # Julia 1.10: an `Array` grows its own buffer in place, but a shaped `(N, dims...)` block
-    # (a `Matrix`/`Array{D+1}`) cannot be resized in place. So the block is a flat, in-place-
-    # resizable `Vector` of length `N * length(primal)`, still element-major: element `i`'s `N`
-    # lanes are the contiguous slice `[(i-1)*N+1 : i*N]`, matching the linear `_lane_offset`.
-    #
-    # The shaped `(N, size(p)...)` view is an `unsafe_wrap` over the flat block's buffer, NOT
-    # `reshape` and NOT `Base.ReshapedArray`:
-    #   - `reshape` of an `Array` marks the buffer shared, which then makes the in-place resize
-    #     primitives throw "cannot resize array with shared data";
-    #   - `Base.ReshapedArray` avoids that flag but a multi-dim reshape of a `Vector` has a
-    #     non-optimizing (recursive) `getindex`/`setindex!` path that fails the JET stability tests.
-    # `unsafe_wrap` yields a genuine `Array` (builtin indexing, no recursion; unit-first-stride,
-    # BLAS-compatible; write-through) and does not set the shared flag, so resize, BLAS and type
-    # stability all coexist. The raw pointer is safe because the flat block is a live field of the
-    # enclosing `NDualArray` (`partials_block`), which is a live rule argument wherever a shaped
-    # view is taken — so the buffer cannot be freed while the view is in use. Views are transient
-    # (rebuilt per access), so a later resize never leaves a stale wrap behind.
-    #
-    # The wrap header (~48B) is paid only by shaped consumers (BLAS/LAPACK operands and
-    # `tangent_view` reductions), never by scalar `getindex`/`setindex!` (linear block access) or by
-    # the resize primitives (direct flat mutation) — and never on 1.11+, where `_block_reshape` is
-    # the identity.
-    @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = Vector{Element}
-    @inline _block_dims(N::Int, p) = (N * length(p),)
-    @inline _block_reshape(block, N::Int, p) = unsafe_wrap(
-        Array, pointer(block), (N, size(p)...)
-    )
-    @inline _block_shape_ok(block, N::Int, p) = length(block) == N * length(p)
+# A `Memory{T}` primal blocks to a rank-2 block — `Memory` is 1-D only, so the block cannot
+# itself be a `Memory`.
+@inline _block_type(::Type{Array{Element,D}}) where {Element,D} = NDualBlock{Element,D + 1}
+@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
+    @inline _block_type(::Type{Memory{Element}}) where {Element} = NDualBlock{Element,2}
 end
+@inline _block_dims(N::Int, p) = (N, size(p)...)
+@inline _block_reshape(block, N::Int, p) = block
+@inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
 
-# ──────────────────────────────────────────────────────────────────────────
-# The forward array representation is version-split. 1.11+ uses the SplitEM element-major
-# `partials_block` (this branch). 1.10 (LTS) uses the parallel-per-lane fallback (the
-# `else` branch after `setindex!`) — the block's flat-Vector form on 1.10 was a
-# silent-wrong-gradient footgun; per-lane arrays are the proven pre-SplitEM form.
-# ──────────────────────────────────────────────────────────────────────────
-@static if VERSION >= v"1.11-rc4"
-    struct NDualArray{
+struct NDualArray{
+    Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B<:AbstractArray{Element}
+} <: AbstractArray{Wrapped,D}
+    primal::A
+    partials_block::B
+    # Explicit inner constructor: enforce that `Wrapped` matches `(Element, N)` and `B`
+    # matches `_block_type(A)` — the auto-generated one admits any `Wrapped`/`B`, silently
+    # desynchronising `eltype` from what `getindex` returns (resp. the block layout from the
+    # primal container). (Cf. `NDualRef`'s explicit inner constructor.) The `===` checks on
+    # static parameters constant-fold after specialisation; the shape check is O(1).
+    function NDualArray{Element,N,D,A,Wrapped,B}(
+        primal::A, partials_block::B
+    ) where {
         Element<:NDualEltype,
         N,
         D,
         A<:AbstractArray{Element,D},
         Wrapped,
         B<:AbstractArray{Element},
-    } <: AbstractArray{Wrapped,D}
-        primal::A
-        partials_block::B
-        # Explicit inner constructor: enforce that `Wrapped` matches `(Element, N)` and `B`
-        # matches `_block_type(A)` — the auto-generated one admits any `Wrapped`/`B`, silently
-        # desynchronising `eltype` from what `getindex` returns (resp. the block layout from the
-        # primal container). (Cf. `NDualRef`'s explicit inner constructor.) The `===` checks on
-        # static parameters constant-fold after specialisation; the shape check is O(1).
-        function NDualArray{Element,N,D,A,Wrapped,B}(
-            primal::A, partials_block::B
-        ) where {
-            Element<:NDualEltype,
-            N,
-            D,
-            A<:AbstractArray{Element,D},
-            Wrapped,
-            B<:AbstractArray{Element},
-        }
-            Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
-                ArgumentError(
-                    "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
-                    "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
-                ),
-            )
-            B === _block_type(A) || throw(
-                ArgumentError(
-                    "NDualArray block parameter $B is incoherent: expected " *
-                    "$(_block_type(A)) for A=$A.",
-                ),
-            )
-            # `_block_shape_ok` encodes the block orientation per backend: element-major
-            # `(N, dims...)` on 1.11+, flat length `N * length` on 1.10, and lane-major
-            # `(dims..., N)` for `CuArray` (overridden in the CUDA extension, where lanes must be
-            # contiguous). The `B === _block_type(A)` check above already pins the block type.
-            _block_shape_ok(partials_block, N, primal) || throw(
-                DimensionMismatch(
-                    "NDualArray partials block has size $(size(partials_block)) (length " *
-                    "$(length(partials_block))); expected $N lanes over a primal of size " *
-                    "$(size(primal)).",
-                ),
-            )
-            return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
-        end
-    end
-
-    # Pack per-lane same-shape arrays into a fresh element-major block: lane `k` of element
-    # `j` lands at linear block index `(j - 1) * N + k` (the block's leading dim is the lane).
-    @inline function _pack_block(
-        p::A, ts::NTuple{N,<:AbstractArray{Element}}
-    ) where {Element,N,A<:AbstractArray{Element}}
-        block = _block_type(A)(undef, _block_dims(N, p)...)
-        @inbounds for k in 1:N
-            tk = ts[k]
-            for j in 1:length(p)
-                block[(j - 1) * N + k] = tk[j]
-            end
-        end
-        return block
-    end
-
-    # Tuple-accepting outer constructors pack the incoming per-lane arrays into the block, so
-    # pre-existing construction sites (including `typeof(v)(p, ts)`) keep working unchanged.
-    # The 4-parameter form fills in `Wrapped` via `_wrapped_eltype` (`NDual{Element,N}` for real
-    # `Element`, `Complex{NDual{T,N}}` for `Element === Complex{T}`) and `B` via `_block_type`;
-    # the 5-/6-parameter forms keep the caller's `Wrapped` (and `B`) so the inner constructor
-    # still rejects incoherent parameters.
-    @inline function NDualArray{Element,N,D,A}(
-        p::A, ts::NTuple{N,<:AbstractArray{Element}}
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-        return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
-            p, _pack_block(p, ts)
-        )
-    end
-    @inline function NDualArray{Element,N,D,A,Wrapped}(
-        p::A, ts::NTuple{N,<:AbstractArray{Element}}
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
-        return NDualArray{Element,N,D,A,Wrapped,_block_type(A)}(p, _pack_block(p, ts))
-    end
-    @inline function NDualArray{Element,N,D,A,Wrapped,B}(
-        p::A, ts::NTuple{N,<:AbstractArray{Element}}
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B}
-        return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
-    end
-
-    # Block-accepting outer constructor: adopt an existing element-major block AS the partials
-    # storage (no copy — the caller passes a block deliberately, usually to share storage with
-    # another V so mutations through either are visible through both).
-    @inline function NDualArray{Element,N,D,A}(
-        p::A, block::AbstractArray{Element}
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-        return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
-            p, block
-        )
-    end
-
-    # Zero-init seed: allocate a fresh slot-local zero block matching the primal.
-    @inline function NDualArray{Element,N,D,A}(
-        p::A
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-        block = fill!(_block_type(A)(undef, _block_dims(N, p)...), zero(Element))
-        return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
-            p, block
-        )
-    end
-
-    # The canonical NDualArray V-type for a primal array type `A` at width `N` — the single source
-    # of the type's parameter arity, so `dual_type`/`lifted_type` don't spell out the block param
-    # (which differs from the parallel-arrays branch's arity).
-    @inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:NDualEltype,D,A<:AbstractArray{Element,D},N} = NDualArray{
-        Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
     }
-
-    # Seed manipulation, used by the interface.jl chunked-forward gradient/Jacobian: zero all
-    # partials, and read/write element `elem`'s lane `lane` (both 1-based). Element-major block: the
-    # lane sits at linear offset `(elem-1)*N + lane`. Inlined, so `getfield` hoists out of caller
-    # loops — same cost as hand-hoisting the block.
-    @inline function _zero_seed!(a::NDualArray{Element}) where {Element}
-        fill!(getfield(a, :partials_block), zero(Element))
-        return a
+        Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
+            ArgumentError(
+                "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
+                "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
+            ),
+        )
+        B === _block_type(A) || throw(
+            ArgumentError(
+                "NDualArray block parameter $B is incoherent: expected " *
+                "$(_block_type(A)) for A=$A.",
+            ),
+        )
+        # `_block_shape_ok` encodes the block orientation per backend: element-major
+        # `(N, dims...)` on the host, and lane-major `(dims..., N)` for `CuArray` (overridden
+        # in the CUDA extension, where lanes must be contiguous). The `B === _block_type(A)`
+        # check above already pins the block type.
+        _block_shape_ok(partials_block, N, primal) || throw(
+            DimensionMismatch(
+                "NDualArray partials block has size $(size(partials_block)) (length " *
+                "$(length(partials_block))); expected $N lanes over a primal of size " *
+                "$(size(primal)).",
+            ),
+        )
+        return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
     end
-    @inline _get_partial(a::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} = @inbounds getfield(
-        a, :partials_block
-    )[(elem - 1) * N + lane]
-    @inline function _set_partial!(
-        a::NDualArray{Element,N}, elem::Int, lane::Int, v
-    ) where {Element,N}
-        @inbounds getfield(a, :partials_block)[(elem - 1) * N + lane] = v
-        return a
-    end
+end
 
-    # Compatibility shim: synthesize the old `partials::NTuple{N, A}` field as `N` per-lane
-    # strided views into the element-major block (lane `k` is `partials_block[k, :, …, :]`, same
-    # shape as `primal`). Reads and writes through a view land in the block. Callers use
-    # `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
-    @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
-        # Reshape the block once and take all `N` views from it, rather than reshaping per lane
-        # (each `tangent_view` reshapes independently). On 1.10 the reshape is an `unsafe_wrap`, so
-        # per-lane reshaping costs `N` wrap headers; sharing one wrap makes it `1`. On 1.11+ the
-        # reshape is the identity, so this is equivalent.
-        shaped = _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal))
-        colons = ntuple(_ -> Colon(), Val(D))
-        return ntuple(k -> view(shaped, k, colons...), Val(N))
+# Pack per-lane same-shape arrays into a fresh element-major block: lane `k` of element
+# `j` lands at linear block index `(j - 1) * N + k` (the block's leading dim is the lane).
+@inline function _pack_block(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element,N,A<:AbstractArray{Element}}
+    block = _block_type(A)(undef, _block_dims(N, p)...)
+    @inbounds for k in 1:N
+        tk = ts[k]
+        for j in 1:length(p)
+            block[(j - 1) * N + k] = tk[j]
+        end
     end
+    return block
+end
 
-    # Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
-    # in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Builds just
-    # the one lane — the preferred single-lane accessor; `_lane_views` builds the whole tuple.
-    @inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
-        _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal)),
-        k,
-        ntuple(_ -> Colon(), Val(D))...,
+# Tuple-accepting outer constructors pack the incoming per-lane arrays into the block, so
+# pre-existing construction sites (including `typeof(v)(p, ts)`) keep working unchanged.
+# The 4-parameter form fills in `Wrapped` via `_wrapped_eltype` (`NDual{Element,N}` for real
+# `Element`, `Complex{NDual{T,N}}` for `Element === Complex{T}`) and `B` via `_block_type`;
+# the 5-/6-parameter forms keep the caller's `Wrapped` (and `B`) so the inner constructor
+# still rejects incoherent parameters.
+@inline function NDualArray{Element,N,D,A}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, _pack_block(p, ts)
     )
+end
+@inline function NDualArray{Element,N,D,A,Wrapped}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
+    return NDualArray{Element,N,D,A,Wrapped,_block_type(A)}(p, _pack_block(p, ts))
+end
+@inline function NDualArray{Element,N,D,A,Wrapped,B}(
+    p::A, ts::NTuple{N,<:AbstractArray{Element}}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B}
+    return NDualArray{Element,N,D,A,Wrapped,B}(p, _pack_block(p, ts)::B)
+end
 
-    # AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
-    # is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_offset`). Resize
-    # mutates primal and block in place in lockstep (same `Vector` objects, grown), so the immutable
-    # wrapper's stable field references always observe the current state.
-    Base.size(a::NDualArray) = size(a.primal)
-    function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
-        return IndexStyle(A)
-    end
+# Block-accepting outer constructor: adopt an existing element-major block AS the partials
+# storage (no copy — the caller passes a block deliberately, usually to share storage with
+# another V so mutations through either are visible through both).
+@inline function NDualArray{Element,N,D,A}(
+    p::A, block::AbstractArray{Element}
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
 
-    # Element `i`'s per-lane partials are the contiguous block column at linear offset
-    # `(li - 1) * N`, where `li` is the primal's linear index for `i` (the block's leading
-    # dimension is the lane). `LinearIndices` accepts both the linear and the cartesian index
-    # forms and bounds-checks them, so the block access itself can be `@inbounds`.
-    @inline function _lane_offset(
-        a::NDualArray{Element,N}, i::Vararg{Int}
-    ) where {Element,N}
-        return (LinearIndices(getfield(a, :primal))[i...] - 1) * N
-    end
+# Zero-init seed: allocate a fresh slot-local zero block matching the primal.
+@inline function NDualArray{Element,N,D,A}(
+    p::A
+) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
+    block = fill!(_block_type(A)(undef, _block_dims(N, p)...), zero(Element))
+    return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)}(
+        p, block
+    )
+end
 
-    # One `getindex` for both real and complex eltypes: `_scalar_ndual` builds an `NDual{T,N}` from a
-    # real element and a `Complex{NDual{T,N}}` from a complex one. `setindex!` stays split — its `x`
-    # argument type differs by eltype.
-    @inline function Base.getindex(
-        a::NDualArray{Element,N}, i::Vararg{Int}
-    ) where {Element,N}
-        block = getfield(a, :partials_block)
-        off = _lane_offset(a, i...)
-        return _scalar_ndual(a.primal[i...], ntuple(k -> @inbounds(block[off + k]), Val(N)))
-    end
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
-    ) where {Element<:IEEEFloat,N}
-        a.primal[i...] = x.value
-        block = getfield(a, :partials_block)
-        off = _lane_offset(a, i...)
-        @inbounds for k in 1:N
-            block[off + k] = x.partials[k]
-        end
-        return a
-    end
-    # Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
-    # and the block hold `Complex{T}`, so split/recombine the real and imaginary parts.
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
-    ) where {T<:IEEEFloat,Element<:Complex{T},N}
-        a.primal[i...] = Complex(x.re.value, x.im.value)
-        block = getfield(a, :partials_block)
-        off = _lane_offset(a, i...)
-        @inbounds for k in 1:N
-            block[off + k] = Complex(x.re.partials[k], x.im.partials[k])
-        end
-        return a
-    end
-    # A real dual stored into a complex array (e.g. `copyto!(::complex, ::real)`) promotes: the
-    # imaginary part of the value and of every partial is zero.
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
-    ) where {T<:IEEEFloat,Element<:Complex{T},N}
-        a.primal[i...] = Complex(x.value)
-        block = getfield(a, :partials_block)
-        off = _lane_offset(a, i...)
-        @inbounds for k in 1:N
-            block[off + k] = Complex(x.partials[k])
-        end
-        return a
-    end
-    # Element-type conversion (e.g. storing a `Vector{Float32}` dual into a `Vector{Float64}`
-    # container): convert primal and block to the target element type.
-    function Base.convert(
-        ::Type{NDualArray{E2,N,D,A2,W2,B2}}, x::NDualArray{E1,N,D}
-    ) where {E1,E2,N,D,A2,W2,B2}
-        return NDualArray{E2,N,D,A2,W2,B2}(
-            convert(A2, getfield(x, :primal)), convert(B2, getfield(x, :partials_block))
-        )
-    end
+# The canonical NDualArray V-type for a primal array type `A` at width `N` — the single source
+# of the type's parameter arity, so `dual_type`/`lifted_type` don't spell out the block param.
+@inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:NDualEltype,D,A<:AbstractArray{Element,D},N} = NDualArray{
+    Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
+}
 
-else
+# Seed manipulation, used by the interface.jl chunked-forward gradient/Jacobian: zero all
+# partials, and read/write element `elem`'s lane `lane` (both 1-based). Element-major block: the
+# lane sits at linear offset `(elem-1)*N + lane`. Inlined, so `getfield` hoists out of caller
+# loops — same cost as hand-hoisting the block.
+@inline function _zero_seed!(a::NDualArray{Element}) where {Element}
+    fill!(getfield(a, :partials_block), zero(Element))
+    return a
+end
+@inline _get_partial(a::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} = @inbounds _block_storage(
+    getfield(a, :partials_block)
+)[(elem - 1) * N + lane]
+@inline function _set_partial!(
+    a::NDualArray{Element,N}, elem::Int, lane::Int, v
+) where {Element,N}
+    @inbounds _block_storage(getfield(a, :partials_block))[(elem - 1) * N + lane] = v
+    return a
+end
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Julia 1.10 (LTS): parallel-arrays fallback. Partials are `N` separate contiguous per-lane arrays
-    # (`partials::NTuple{N,A}`), not one interleaved block. 1.10's array ABI (raw `jl_array_ptr`;
-    # no in-place-resizable shaped block) made the element-major block a footgun — a 2-D index of
-    # the flat-Vector block silently read the wrong element (silent-wrong-gradient class), and
-    # interleaved lanes have no contiguous buffer for raw-pointer / chunked-forward ops. Separate
-    # per-lane arrays are the proven pre-SplitEM representation: each lane is a genuine `A` with a
-    # contiguous pointable buffer. The accessors (`_lane_views`/`tangent_view`/`getindex`/
-    # `setindex!`) matches the block branch so element-wise rules don't branch on version.
-    #
-    # Why not unify on the 1.11+ block here (for one representation across versions)? On 1.10 the
-    # block must be a flat `Vector` with `unsafe_wrap` shaped views (a real `(N, dims)` array can't
-    # resize in place — `reshape` marks the buffer shared), which reintroduces (1) allocations (the
-    # shaped views allocate, so forward is no longer zero-alloc) and (2) the flat-Vector
-    # footgun class (any 2-D block index silently reads the wrong element). The parallel-arrays form avoids both.
-    # ──────────────────────────────────────────────────────────────────────────
-    struct NDualArray{Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped} <:
-           AbstractArray{Wrapped,D}
-        primal::A
-        partials::NTuple{N,A}
-        # Explicit inner constructor: enforce that `Wrapped` matches `(Element, N)` — the
-        # auto-generated one admits any `Wrapped`, silently desynchronising `eltype` from what
-        # `getindex` returns. The `===` check on static parameters constant-folds after
-        # specialisation.
-        function NDualArray{Element,N,D,A,Wrapped}(
-            primal::A, partials::NTuple{N,A}
-        ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped}
-            Wrapped === _wrapped_eltype(Element, Val(N)) || throw(
-                ArgumentError(
-                    "NDualArray Wrapped parameter $Wrapped is incoherent: expected " *
-                    "$(_wrapped_eltype(Element, Val(N))) for Element=$Element, N=$N.",
-                ),
-            )
-            return new{Element,N,D,A,Wrapped}(primal, partials)
-        end
-    end
+# Compatibility shim: synthesize the old `partials::NTuple{N, A}` field as `N` per-lane
+# strided views into the element-major block (lane `k` is `partials_block[k, :, …, :]`, same
+# shape as `primal`). Reads and writes through a view land in the block. Callers use
+# `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
+@inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
+    shaped = _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal))
+    colons = ntuple(_ -> Colon(), Val(D))
+    return ntuple(k -> view(shaped, k, colons...), Val(N))
+end
 
-    # 4-parameter outer constructor fills in `Wrapped` from `Element` via `_wrapped_eltype`
-    # (the same helper the inner constructor validates against).
-    @inline function NDualArray{Element,N,D,A}(
-        p::A, ts::NTuple{N,A}
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-        return NDualArray{Element,N,D,A,_wrapped_eltype(Element, Val(N))}(p, ts)
-    end
+# Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
+# in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Builds just
+# the one lane — the preferred single-lane accessor; `_lane_views` builds the whole tuple.
+@inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
+    _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal)),
+    k,
+    ntuple(_ -> Colon(), Val(D))...,
+)
 
-    # Zero-init seed: allocate fresh slot-local partials matching the primal.
-    @inline function NDualArray{Element,N,D,A}(
-        p::A
-    ) where {Element<:NDualEltype,N,D,A<:AbstractArray{Element,D}}
-        return NDualArray{Element,N,D,A}(p, ntuple(_ -> zero(p), Val(N)))
-    end
+# AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
+# is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_offset`). Resize
+# mutates primal and block in place in lockstep (same `Vector` objects, grown), so the immutable
+# wrapper's stable field references always observe the current state.
+Base.size(a::NDualArray) = size(a.primal)
+function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
+    return IndexStyle(A)
+end
 
-    # The canonical NDualArray V-type for a primal array type `A` at width `N` (parallel arrays: 5-param, no
-    # block param). Single source of the type's parameter arity for `dual_type`/`lifted_type`.
-    @inline _ndual_array_V(::Type{A}, ::Val{N}) where {Element<:NDualEltype,D,A<:AbstractArray{Element,D},N} = NDualArray{
-        Element,N,D,A,_wrapped_eltype(Element, Val(N))
-    }
+# Element `i`'s per-lane partials are the contiguous block column at linear offset
+# `(li - 1) * N`, where `li` is the primal's linear index for `i` (the block's leading
+# dimension is the lane). `LinearIndices` accepts both the linear and the cartesian index
+# forms and bounds-checks them, so the block access itself can be `@inbounds`.
+@inline function _lane_offset(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
+    return (LinearIndices(getfield(a, :primal))[i...] - 1) * N
+end
 
-    # Seed manipulation, mirroring the block branch: zero all partials, and read/write
-    # element `elem`'s lane `lane`. Parallel arrays: lane `lane` is a whole per-lane array, element `elem` its
-    # `elem`-th entry.
-    @inline function _zero_seed!(a::NDualArray{Element}) where {Element}
-        for p in getfield(a, :partials)
-            fill!(p, zero(Element))
-        end
-        return a
+# One `getindex` for both real and complex eltypes: `_scalar_ndual` builds an `NDual{T,N}` from a
+# real element and a `Complex{NDual{T,N}}` from a complex one. `setindex!` stays split — its `x`
+# argument type differs by eltype.
+@inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
+    block = _block_storage(getfield(a, :partials_block))
+    off = _lane_offset(a, i...)
+    return _scalar_ndual(a.primal[i...], ntuple(k -> @inbounds(block[off + k]), Val(N)))
+end
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
+) where {Element<:IEEEFloat,N}
+    a.primal[i...] = x.value
+    block = _block_storage(getfield(a, :partials_block))
+    off = _lane_offset(a, i...)
+    @inbounds for k in 1:N
+        block[off + k] = x.partials[k]
     end
-    @inline _get_partial(a::NDualArray, elem::Int, lane::Int) = @inbounds getfield(
-        a, :partials
-    )[lane][elem]
-    @inline function _set_partial!(a::NDualArray, elem::Int, lane::Int, v)
-        @inbounds getfield(a, :partials)[lane][elem] = v
-        return a
+    return a
+end
+# Complex eltype: the V element is `Complex{NDual{T,N}}` (real/imag each an `NDual`). The primal
+# and the block hold `Complex{T}`, so split/recombine the real and imaginary parts.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.re.value, x.im.value)
+    block = _block_storage(getfield(a, :partials_block))
+    off = _lane_offset(a, i...)
+    @inbounds for k in 1:N
+        block[off + k] = Complex(x.re.partials[k], x.im.partials[k])
     end
-
-    # Accessors mirroring the block branch. Under the parallel-arrays layout a lane IS a contiguous per-lane
-    # array, so `_lane_views` is the partials tuple directly and `tangent_view` is one element of
-    # it — no reshape, no strided view.
-    @inline _lane_views(a::NDualArray) = getfield(a, :partials)
-    @inline tangent_view(a::NDualArray, k::Integer) = getfield(a, :partials)[k]
-
-    Base.size(a::NDualArray) = size(a.primal)
-    function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
-        return IndexStyle(A)
+    return a
+end
+# A real dual stored into a complex array (e.g. `copyto!(::complex, ::real)`) promotes: the
+# imaginary part of the value and of every partial is zero.
+@inline function Base.setindex!(
+    a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
+) where {T<:IEEEFloat,Element<:Complex{T},N}
+    a.primal[i...] = Complex(x.value)
+    block = _block_storage(getfield(a, :partials_block))
+    off = _lane_offset(a, i...)
+    @inbounds for k in 1:N
+        block[off + k] = Complex(x.partials[k])
     end
-
-    # One `getindex` for both real and complex eltypes; `setindex!` stays split — its `x`
-    # argument type differs by eltype.
-    @inline function Base.getindex(
-        a::NDualArray{Element,N}, i::Vararg{Int}
-    ) where {Element,N}
-        return _scalar_ndual(a.primal[i...], ntuple(k -> a.partials[k][i...], Val(N)))
-    end
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
-    ) where {Element<:IEEEFloat,N}
-        a.primal[i...] = x.value
-        ntuple(k -> (a.partials[k][i...]=x.partials[k]; nothing), Val(N))
-        return a
-    end
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::Complex{NDual{T,N}}, i::Vararg{Int}
-    ) where {T<:IEEEFloat,Element<:Complex{T},N}
-        a.primal[i...] = Complex(x.re.value, x.im.value)
-        ntuple(
-            k -> (a.partials[k][i...]=Complex(x.re.partials[k], x.im.partials[k]); nothing),
-            Val(N),
-        )
-        return a
-    end
-    # A real dual stored into a complex array promotes: imaginary part (value and partials) is zero.
-    @inline function Base.setindex!(
-        a::NDualArray{Element,N}, x::NDual{T,N}, i::Vararg{Int}
-    ) where {T<:IEEEFloat,Element<:Complex{T},N}
-        a.primal[i...] = Complex(x.value)
-        ntuple(k -> (a.partials[k][i...]=Complex(x.partials[k]); nothing), Val(N))
-        return a
-    end
-    # Element-type conversion: convert primal and each per-lane partial to the target eltype.
-    function Base.convert(
-        ::Type{NDualArray{E2,N,D,A2,W2}}, x::NDualArray{E1,N,D}
-    ) where {E1,E2,N,D,A2,W2}
-        return NDualArray{E2,N,D,A2,W2}(
-            convert(A2, getfield(x, :primal)),
-            ntuple(k -> convert(A2, getfield(x, :partials)[k]), Val(N)),
-        )
-    end
+    return a
+end
+# Element-type conversion (e.g. storing a `Vector{Float32}` dual into a `Vector{Float64}`
+# container): convert primal and block to the target element type.
+function Base.convert(
+    ::Type{NDualArray{E2,N,D,A2,W2,B2}}, x::NDualArray{E1,N,D}
+) where {E1,E2,N,D,A2,W2,B2}
+    return NDualArray{E2,N,D,A2,W2,B2}(
+        convert(A2, getfield(x, :primal)), convert(B2, getfield(x, :partials_block))
+    )
 end
 
 # `maximum`/`minimum` over an `NDualArray` select the arg-extreme element's dual. The generic path
 # folds `max`/`min` over `A[i]`, building one `NDual` per element; instead scan the (real) primal for
-# the arg-extreme and take a single `getindex` — ~10×, and layout-agnostic (`getindex` handles both
-# the 1.11+ block and the 1.10 parallel-arrays form). Real elements only (max/min need a total order).
+# the arg-extreme and take a single `getindex` — ~10×. Real elements only (max/min need a
+# total order).
 function Base.maximum(nda::NDualArray{E}) where {E<:IEEEFloat}
     @inbounds nda[argmax(getfield(nda, :primal))]
 end
@@ -2400,10 +2304,10 @@ end
         end
     end
 
-    # Convenience for the existing Matrix-based construction sites and the Memory-seed factory:
+    # Convenience for the block-shaped construction sites and the Memory-seed factory:
     # validate the block's lane rows, then adopt its backing ref and column count.
     @inline function NDualMemoryRef{Element,N,M}(
-        primal::MemoryRef{Element}, block::Matrix{Element}, col::Int
+        primal::MemoryRef{Element}, block::NDualBlock{Element,2}, col::Int
     ) where {Element<:NDualEltype,N,M<:Memory{Element}}
         size(block, 1) == N || throw(
             DimensionMismatch(
@@ -2412,7 +2316,7 @@ end
             ),
         )
         return NDualMemoryRef{Element,N,M}(
-            primal, getfield(block, :ref), size(block, 2), col
+            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
         )
     end
 
@@ -2422,7 +2326,7 @@ end
     @inline function NDualMemoryRef{Element,N,M}(
         p::MemoryRef{Element}
     ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-        block = fill!(Matrix{Element}(undef, N, length(p.mem)), zero(Element))
+        block = fill!(NDualBlock{Element,2}(undef, N, length(p.mem)), zero(Element))
         return NDualMemoryRef{Element,N,M}(p, block, Core.memoryrefoffset(p))
     end
 
@@ -2455,13 +2359,13 @@ end
         return nothing
     end
 
-    # Reconstruct the whole `(N, ncols)` block as a genuine `Matrix` sharing the ref's backing
-    # (bulk/interface ops only — off the hot path). `partials_ref` is col-1 lane-1, so wrapping
-    # `(N, ncols)` from it reproduces the original block exactly.
+    # Reconstruct the whole `(N, ncols)` block sharing the ref's backing (bulk/interface ops
+    # only — off the hot path). `partials_ref` is col-1 lane-1, so wrapping `N * ncols` entries
+    # from it reproduces the original block exactly.
     @inline function _reconstruct_block(v::NDualMemoryRef{E,N}) where {E,N}
-        return Base.wrap(
-            Array, getfield(v, :partials_ref), (N, getfield(v, :ncols))
-        )::Matrix{E}
+        ncols = getfield(v, :ncols)
+        flat = Base.wrap(Array, getfield(v, :partials_ref), (N * ncols,))::Vector{E}
+        return NDualBlock{E,2}(flat, (N, ncols))
     end
 end
 

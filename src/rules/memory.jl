@@ -833,9 +833,9 @@ end
         x = Core.memorynew(Memory{P}, _n)
         # Zero the block: `Core.memorynew` returns uninitialized memory, which whole-buffer
         # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
-        # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently lowered).
-        block = fill!(Matrix{P}(undef, Nw, _n), zero(P))
-        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
+        # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently
+        # lowered); the one-argument constructor allocates a zeroed block of the right layout.
+        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x))
     end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
@@ -852,8 +852,7 @@ function frule!!(
 ) where {Nw,P<:NDualEltype}
     x = Memory{P}(undef, primal(n))
     # Zero-initialized partials block covering the fresh memory (column j ↔ mem slot j).
-    block = fill!(Matrix{P}(undef, Nw, primal(n)), zero(P))
-    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x, block))
+    return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x))
 end
 function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
@@ -945,11 +944,12 @@ function frule!!(
     # column (array element 1) with one extra leading lane dimension — mutations through the
     # array V and through the ref V land in the same storage, mirroring the primal aliasing.
     v = tangent(ref)
-    block = _new_(
-        Array{P,D + 1},
+    flat = _new_(
+        Vector{P},
         Nfwd._block_column_ref(getfield(v, :partials_ref), getfield(v, :col), Nw),
-        (Nw, _sz...),
+        (Nw * prod(_sz),),
     )
+    block = NDualBlock{P,D + 1}(flat, (Nw, _sz...))
     return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, block))
 end
 # Element-wise `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
@@ -1113,12 +1113,13 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-# Write the primal field, then retarget the block IN PLACE (`setfield!` on the block Array's own
-# `ref`/`size` fields), preserving the block object's identity so every V sharing it keeps
-# aliasing. `:size` maps to the block shape `(Nw, size...)`; `:ref` (array growth installing new
-# storage) maps to the incoming ref V's block backing at its column — the array's elements start
-# there, one column each. As in the primal (`_growend!` writes `.size` and `.ref` separately),
-# the block may be transiently inconsistent between the two writes; nothing reads in between.
+# Write the primal field, then retarget the block IN PLACE, preserving the block object's identity
+# so every V sharing it keeps aliasing. `:size` maps to the block's flat parent length `Nw * n`
+# (the block's trailing dimension follows it); `:ref` (array growth installing new storage)
+# retargets the parent at the incoming ref V's block backing at its column — the array's
+# elements start there, one column each. As in the primal (`_growend!` writes `.size` and `.ref`
+# separately), the block may be transiently inconsistent between the two writes; nothing reads in
+# between.
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Array,Nw,<:NDualArray},
@@ -1127,12 +1128,13 @@ end
 ) where {Nw,name}
     setfield!(primal(value), name, primal(x))
     block = getfield(tangent(value), :partials_block)
+    parent = getfield(block, :parent)
     if name === :size || name === 2
-        setfield!(block, :size, (Nw, primal(x)...))
+        setfield!(parent, :size, (Nw * prod(primal(x)),))
     else
         xv = tangent(x)
         setfield!(
-            block,
+            parent,
             :ref,
             Nfwd._block_column_ref(getfield(xv, :partials_ref), getfield(xv, :col), Nw),
         )

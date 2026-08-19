@@ -369,18 +369,10 @@ end
 # block itself IS BLAS-compatible with the lane axis leading, so a lane-invariant linear
 # map applies to all `N` lanes in one wide call: right-multiplying the `(N, len)` lane
 # matrix by the map's transpose batches every lane (see the per-rule comments).
-# The in-place fast path (return the storage block directly, `copied == false`) is 1.11+ only.
-# On Julia 1.10 the block is a flat `Vector`; reshaping it to `(N, dims...)` for BLAS marks its
-# buffer shared (Julia's `reshape` of an `Array`), which then makes the in-place resize primitives
-# throw "cannot resize array with shared data" for a vector that is both BLAS'd and resized. So on
-# 1.10 the general gather method below handles `NDualArray` too (`copied == true`, written back by
-# the rule): it only ever reads the flat block through a non-marking `ReshapedArray` view.
-@static if VERSION >= v"1.11-rc4"
-    @inline function _partials_block(
-        x::Lifted{P,N,<:NDualArray}
-    ) where {T,D,P<:AbstractArray{T,D},N}
-        return getfield(tangent(x), :partials_block), false
-    end
+@inline function _partials_block(
+    x::Lifted{P,N,<:NDualArray}
+) where {T,D,P<:AbstractArray{T,D},N}
+    return getfield(tangent(x), :partials_block), false
 end
 @inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
     p = primal(x)
@@ -459,17 +451,15 @@ end
 
 # Dispatch the lane JVP on the slot kind — a function barrier that keeps the frule type-stable
 # despite its `Union{Ptr,AbstractArray}` signature (`getfield(tangent(X_dX), :partials_block)` on the
-# Union is a dynamic access JET flags). Array slot: block fast path on 1.11+ with `incx == 1` (the
+# Union is a dynamic access JET flags). Array slot: block fast path with `incx == 1` (the
 # block accessor `_partials_block` needs a dense, unit-stride layout); per-lane otherwise. Ptr slot:
 # always per-lane (raw pointers, no block).
 @inline function _nrm2_lanes(
     X_dX::Lifted{P,Nw}, _n, _inc, Xv, y, ::Type{R}
 ) where {T,P<:AbstractArray{T},Nw,R}
-    @static if VERSION >= v"1.11-rc4"
-        if _inc == 1
-            blk, _ = _partials_block(X_dX)
-            return _nrm2_lanes_block(blk, Xv, y, R, Val(Nw))
-        end
+    if _inc == 1
+        blk, _ = _partials_block(X_dX)
+        return _nrm2_lanes_block(blk, Xv, y, R, Val(Nw))
     end
     return _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
 end
@@ -539,22 +529,16 @@ function frule!!(
 ) where {Nw,P<:BlasRealFloat}
     x, y = primal(x_dx), primal(y_dy)
     result = dot(x, y)
-    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. On 1.11+ each term is one matvec of the contiguous
+    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. Each term is one matvec of the contiguous
     # (Nw, K) partials block against the primal — `out = Xblock·y + Yblock·x` in two `gemv!`s,
-    # replacing the Nw strided per-lane dots (~3.5×; the length-Nw output alloc is fine — no `:allocs`
-    # guard here). On 1.10 the parallel-arrays lanes are contiguous, so dot each directly.
-    dresult_lanes = @static if VERSION >= v"1.11-rc4"
-        Xb = getfield(tangent(x_dx), :partials_block)
-        Yb = getfield(tangent(y_dy), :partials_block)
-        out = Vector{P}(undef, Nw)
-        BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
-        BLAS.gemv!('N', one(P), Yb, x, one(P), out)
-        ntuple(k -> out[k], Val(Nw))
-    else
-        ntuple(Val(Nw)) do lane
-            dot(_blas_lane_partial(x_dx, lane), y) + dot(x, _blas_lane_partial(y_dy, lane))
-        end
-    end
+    # replacing the Nw strided per-lane dots (~3.5×; the length-Nw output alloc is fine — no
+    # `:allocs` guard here).
+    Xb = getfield(tangent(x_dx), :partials_block)
+    Yb = getfield(tangent(y_dy), :partials_block)
+    out = Vector{P}(undef, Nw)
+    BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
+    BLAS.gemv!('N', one(P), Yb, x, one(P), out)
+    dresult_lanes = ntuple(k -> out[k], Val(Nw))
     return Lifted{P,Nw}(result, _scalar_ndual(result, dresult_lanes))
 end
 function rrule!!(

@@ -282,7 +282,7 @@ end
     x, lane, IdDict{Any,Any}()
 )
 # `_tangent_lane` mirrors the `tangent(slot, lane)` dispatch hierarchy above, threading an aliasing
-# cache so an aliased / self-referential *element-wise* array terminates. The parallel-arrays
+# cache so an aliased / self-referential *element-wise* array terminates. The block-backed
 # `NDualArray` and the all-`NoDual` cases are terminal (they cannot reference back into the array),
 # so delegate to their specific `tangent(slot, lane)` methods rather than recursing element-wise.
 function _tangent_lane(x::Lifted{P,N,<:NDualArray}, lane::Integer, ::IdDict) where {P,N}
@@ -671,15 +671,11 @@ Shapes defined so far:
 - `P <: IEEEFloat`: `NDual{P, N}` — the packed scalar forward value.
 - `Complex{R}` with `R <: IEEEFloat`: `Complex{NDual{R, N}}` — element-wise
   recursion through the complex real/imag parts.
-- `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}, Array{T, D+1}}`
+- `Array{T, D}` with `T <: IEEEFloat`: `NDualArray{T, N, D, Array{T, D}, NDual{T, N}, NDualBlock{T, D+1}}`
   — the element-major canonical V wrapper (`primal` aliases user storage; the lane partials
   are a slot-local `(N, size...)` block).
-- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}`
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, NDualBlock{Complex{R}, D+1}}`
   — complex-eltype `NDualArray` variant.
-
-On Julia 1.10 the array V is the parallel-arrays form `NDualArray{T, N, D, Array{T, D}, NDual{T, N}}`
-(no 6th block-type parameter; `N` separate per-lane arrays rather than one element-major block) —
-the 1.10 array ABI supports per-lane arrays without the shared-buffer resize hazard the block hits.
 - `Tuple{T1, T2, …}` (concrete tuple): `Tuple{dual_type(Val(N), T1), …}` —
   element-wise recursion via head/tail type-cons.
 - `NamedTuple{names, T}` with `T <: Tuple`: `NamedTuple{names, dual_type(Val(N), T)}`
@@ -829,13 +825,13 @@ end
         return NDualMemoryRef{T,N,Memory{T}}
     end
     @foldable @inline function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T<:IEEEFloat}
-        return NDualArray{T,N,1,Memory{T},NDual{T,N},Matrix{T}}
+        return NDualArray{T,N,1,Memory{T},NDual{T,N},NDualBlock{T,2}}
     end
     @foldable @inline function dual_type(
         ::Val{N}, ::Type{Memory{Complex{R}}}
     ) where {N,R<:IEEEFloat}
         return NDualArray{
-            Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}},Matrix{Complex{R}}
+            Complex{R},N,1,Memory{Complex{R}},Complex{NDual{R,N}},NDualBlock{Complex{R},2}
         }
     end
     # Complex `MemoryRef`: the memory.jl frules build/consume `NDualMemoryRef` for any
@@ -923,9 +919,8 @@ Shapes defined so far:
 
 - `P <: IEEEFloat`: `Lifted{P, N, NDual{P, N}}`.
 - `Complex{R}` with `R <: IEEEFloat`: `Lifted{Complex{R}, N, Complex{NDual{R, N}}}`.
-- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}, Array{T, D+1}}}`.
-- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, Array{Complex{R}, D+1}}}`.
-  On Julia 1.10 the inner array V drops the block parameter (the parallel-arrays form; see `dual_type`).
+- `Array{T, D}` with `T <: IEEEFloat`: `Lifted{Array{T, D}, N, NDualArray{T, N, D, Array{T, D}, NDual{T, N}, NDualBlock{T, D+1}}}`.
+- `Array{Complex{R}, D}` with `R <: IEEEFloat`: `Lifted{Array{Complex{R}, D}, N, NDualArray{Complex{R}, N, D, Array{Complex{R}, D}, Complex{NDual{R, N}}, NDualBlock{Complex{R}, D+1}}}`.
 - `MemoryRef{T}` with `T <: IEEEFloat` (Julia 1.11+):
   `Lifted{MemoryRef{T}, N, NDualMemoryRef{T, N, Memory{T}}}`.
 - `P <: Tuple` (concrete): `Lifted{P, N, dual_type(Val(N), P)}`.
@@ -999,7 +994,7 @@ end
     @foldable @inline function lifted_type(
         ::Val{N}, ::Type{Memory{T}}
     ) where {N,T<:IEEEFloat}
-        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N},Matrix{T}}}
+        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N},NDualBlock{T,2}}}
     end
 end
 # True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so its
@@ -1117,8 +1112,8 @@ end
     # consistent even though `ẋ` itself is not aliased.
     @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
         len = length(ẋ.mem)
-        block = Matrix{T}(undef, 1, len)
-        copyto!(block, 1, ẋ.mem, 1, len)
+        block = NDualBlock{T,2}(undef, 1, len)
+        copyto!(getfield(block, :parent), 1, ẋ.mem, 1, len)
         return Lifted{MemoryRef{T},1}(
             x, NDualMemoryRef{T,1,Memory{T}}(x, block, Core.memoryrefoffset(x))
         )
@@ -1265,8 +1260,7 @@ end
 # Float / Complex-float element arrays are terminal (their V aliases `ẋ`); they match the
 # element-wise overload below by element type. Honor the aliasing cache so two aliased primals
 # share ONE V, matching the reverse invariant: the V's block is a fresh copy per lift, so without
-# the cache aliased arrays get distinct V objects. (Egal makes the 1.10 parallel-arrays V share
-# regardless — its partials alias `ẋ` directly — but the block copy defeats egal.)
+# the cache aliased arrays get distinct V objects.
 @inline function lift(
     x::A, ẋ::A, c::Union{Nothing,IdDict}
 ) where {E<:NDualEltype,D,A<:Array{E,D}}
@@ -1625,7 +1619,7 @@ for (factory, internal) in
         # abstract `Lifted{P,N}` (runtime dispatch + allocs at the slot ctor). Mirrors the
         # assert the mutable-struct branch above already does on `d[x]`.
         #
-        # Float/Complex arrays seed to a parallel-arrays `NDualArray` whose elements are scalars:
+        # Float/Complex arrays seed to an `NDualArray` whose elements are scalars:
         # no element can reference back into `x`, so the cache-free factory suffices; register after.
         function $internal(w::Val{N}, x::Array{<:NDualEltype}, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
@@ -2033,15 +2027,15 @@ end
     end
     @inline function uninit_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
         return NDualMemoryRef{E,N,Memory{E}}(
-            p, Matrix{E}(undef, N, length(p.mem)), Core.memoryrefoffset(p)
+            p, NDualBlock{E,2}(undef, N, length(p.mem)), Core.memoryrefoffset(p)
         )
     end
     @inline function randn_dual(
         ::Val{N}, rng::AbstractRNG, p::MemoryRef{E}
     ) where {N,E<:NDualEltype}
-        return NDualMemoryRef{E,N,Memory{E}}(
-            p, randn(rng, E, N, length(p.mem)), Core.memoryrefoffset(p)
-        )
+        len = length(p.mem)
+        block = NDualBlock{E,2}(randn(rng, E, N * len), (N, len))
+        return NDualMemoryRef{E,N,Memory{E}}(p, block, Core.memoryrefoffset(p))
     end
     @inline function zero_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
         return NDualArray{E,N,1,Memory{E}}(m)

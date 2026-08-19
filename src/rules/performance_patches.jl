@@ -31,21 +31,18 @@ function frule!!(
     ::Lifted{typeof(sum),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ). On 1.11+ fold the contiguous element-
-    # major block across lanes (vectorised); on 1.10 (parallel arrays, no block) sum each lane's
-    # already-contiguous view. Stack-only / 0-alloc, as the `:allocs` test requires.
+    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ): fold the contiguous element-major
+    # block across lanes (vectorised). Walk the flat block directly rather than through a
+    # `reinterpret` view, which costs one header allocation per call. Stack-only / 0-alloc, as
+    # the `:allocs` test requires.
     nda = tangent(x)
     pv = sum(getfield(nda, :primal))
-    lanes = @static if VERSION >= v"1.11-rc4"
-        cols = reinterpret(reshape, NTuple{N,P}, getfield(nda, :partials_block))
-        acc = ntuple(_ -> zero(P), Val(N))
-        @inbounds for j in eachindex(cols)
-            acc = _tadd(acc, cols[j])
-        end
-        acc
-    else
-        ntuple(k -> sum(tangent_view(nda, k)), Val(N))
+    blk = getfield(getfield(nda, :partials_block), :parent)
+    acc = ntuple(_ -> zero(P), Val(N))
+    @inbounds for off in 0:N:(length(blk) - 1)
+        acc = _tadd(acc, ntuple(k -> blk[off + k], Val(N)))
     end
+    lanes = acc
     return Lifted{P,N}(pv, _scalar_ndual(pv, lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -64,22 +61,19 @@ function frule!!(
     ::Lifted{typeof(abs2),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Chain rule: lane-`k` derivative of `Σᵢ pᵢ²` is `Σᵢ 2pᵢ·blockₖᵢ`. On 1.11+ fold the contiguous
-    # block, scaling each element's lane column by `2pᵢ` (vectorised); on 1.10 do `2·dot(p, lane-
-    # view)`. Stack-only / 0-alloc (the `:allocs` test).
+    # Chain rule: lane-`k` derivative of `Σᵢ pᵢ²` is `Σᵢ 2pᵢ·blockₖᵢ`: fold the contiguous block,
+    # scaling each element's lane column by `2pᵢ` (vectorised). Stack-only / 0-alloc (the
+    # `:allocs` test).
     nda = tangent(x)
     p = getfield(nda, :primal)
     v = sum(abs2, p)
-    lanes = @static if VERSION >= v"1.11-rc4"
-        cols = reinterpret(reshape, NTuple{N,P}, getfield(nda, :partials_block))
-        acc = ntuple(_ -> zero(P), Val(N))
-        @inbounds for j in eachindex(cols)
-            acc = _tadd(acc, _tscale(cols[j], 2 * p[j]))
-        end
-        acc
-    else
-        ntuple(k -> 2 * dot(p, tangent_view(nda, k)), Val(N))
+    blk = getfield(getfield(nda, :partials_block), :parent)
+    acc = ntuple(_ -> zero(P), Val(N))
+    @inbounds for j in eachindex(p)
+        off = (j - 1) * N
+        acc = _tadd(acc, _tscale(ntuple(k -> blk[off + k], Val(N)), 2 * p[j]))
     end
+    lanes = acc
     return Lifted{P,N}(v, _scalar_ndual(v, lanes))
 end
 function rrule!!(
@@ -128,14 +122,15 @@ function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
     return dout_l
 end
 
-# 1.11+ block form of the per-lane JVP: writes all `N` lanes of each output element in one pass over
+# Block form of the per-lane JVP: writes all `N` lanes of each output element in one pass over
 # the contiguous element-major partials blocks, so the length-`N` lane write vectorises (packed
-# `<N x double>`). Blocks are `(N, size...)`; reinterpret to `NTuple{N,T}` columns, linear-indexed
-# in the same column-major `(j,l,i,k)` order `_kron!` fills. ~6× the stride-`N` per-lane loop.
+# `<N x double>`). Blocks are `(N, size...)`; reinterpret their flat parents to `NTuple{N,T}`
+# columns, linear-indexed in the same column-major `(j,l,i,k)` order `_kron!` fills. ~6× the
+# stride-`N` per-lane loop.
 function _kron!_jvp_block!(outb, px1, x1b, px2, x2b, ::Val{N}) where {N}
-    outc = reinterpret(reshape, NTuple{N,eltype(outb)}, outb)
-    d1c = reinterpret(reshape, NTuple{N,eltype(x1b)}, x1b)
-    d2c = reinterpret(reshape, NTuple{N,eltype(x2b)}, x2b)
+    outc = reinterpret(NTuple{N,eltype(outb)}, getfield(outb, :parent))
+    d1c = reinterpret(NTuple{N,eltype(x1b)}, getfield(x1b, :parent))
+    d2c = reinterpret(NTuple{N,eltype(x2b)}, getfield(x2b, :parent))
     m = 1
     @inbounds for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
         x1ij = px1[i, j]
@@ -163,26 +158,14 @@ function Mooncake.frule!!(
     px1 = primal(x1)
     px2 = primal(x2)
     LinearAlgebra._kron!(pout, px1, px2)
-    @static if VERSION >= v"1.11-rc4"
-        _kron!_jvp_block!(
-            getfield(tangent(out), :partials_block),
-            px1,
-            getfield(tangent(x1), :partials_block),
-            px2,
-            getfield(tangent(x2), :partials_block),
-            Val(N),
-        )
-    else
-        for lane in 1:N
-            _kron!_jvp_lane!(
-                tangent_view(out, lane),
-                px1,
-                tangent_view(x1, lane),
-                px2,
-                tangent_view(x2, lane),
-            )
-        end
-    end
+    _kron!_jvp_block!(
+        getfield(tangent(out), :partials_block),
+        px1,
+        getfield(tangent(x1), :partials_block),
+        px2,
+        getfield(tangent(x2), :partials_block),
+        Val(N),
+    )
     return out
 end
 

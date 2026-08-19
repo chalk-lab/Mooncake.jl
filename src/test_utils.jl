@@ -351,10 +351,9 @@ function has_equal_data_internal(
            all(map(f, values(x), values(y)))
 end
 # `NDualArray` compares by LOGICAL content — primal plus each lane's tangent values — not by its
-# raw `partials_block` field. The block's physical size is an internal detail: it differs across
-# representations (1.10 parallel-arrays vs the 1.11+ element-major block) and can exceed the logical
-# length, so the generic struct-field recursion would spuriously mismatch or index out of bounds.
-# `tangent_view` reshapes to the primal's shape, so the per-lane comparison is representation-agnostic.
+# raw `partials_block` field. The block's physical size is an internal detail: a grown container's
+# block can exceed the logical length, so the generic struct-field recursion would spuriously
+# mismatch or index out of bounds. `tangent_view` presents each lane in the primal's shape.
 function has_equal_data_internal(
     x::Mooncake.Nfwd.NDualArray{E,N},
     y::Mooncake.Nfwd.NDualArray{E,N},
@@ -441,7 +440,7 @@ end
 
 __get_data_field(t::Union{Tangent,MutableTangent}, n) = getfield(t.fields, n)
 __get_data_field(t::Union{Mooncake.FData,Mooncake.RData}, n) = getfield(t.data, n)
-# parallel-arrays `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
+# Block-backed `NDualMemoryRef` forward V (1.11+): project field `n` like the forward
 # `_get_lifted_field` (`:mem` → the `NDualArray` over the partials' memories;
 # `.ptr_or_offset` is a non-diff `Ptr` → `NoDual`).
 @static if VERSION >= v"1.11-rc4"

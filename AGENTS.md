@@ -53,7 +53,7 @@ The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type
 - `Lifted{P,N,V}` is the slot wrapper (fields `primal::P, value::V`), parallel to `CoDual`. For concrete runtime values, `P` is concrete and `V === dual_type(Val(N), P)`; abstract slots use broad width-preserving annotations from `lifted_type`.
 - **Recursive coherence**: for every accessible field/element of `P`, the reverse representation is `tangent_type(component)` and the forward one is `dual_type(Val(N), component)`, mirroring each other shape-for-shape:
   - structs → `Tangent`/`MutableTangent` ↔ `ImmutableDual`/`MutableDual` (single-field wrappers holding the per-field `NamedTuple`; the slot primal lives in `Lifted`, not in them);
-  - arrays → `Array{tangent_type(T),D}` ↔ `NDualArray{T,N,D,A,W}`, the parallel-arrays wrapper: `primal::A` aliases user storage, `partials::NTuple{N,A}` is slot-local, `W` is the per-element dual eltype (`NDual{T,N}` / `Complex{NDual{T,N}}`);
+  - arrays → `Array{tangent_type(T),D}` ↔ `NDualArray{T,N,D,A,W,B}`, the split wrapper: `primal::A` aliases user storage, `partials_block::B` is slot-local, `W` is the per-element dual eltype (`NDual{T,N}` / `Complex{NDual{T,N}}`);
   - tuples/named-tuples → element-wise recursion; wrapper types (Diagonal, Adjoint, SubArray, …) recurse through the parent.
 
   Both rule families rely on this. A non-coherent `dual_type` breaks `lgetfield` chains and silently corrupts forward AD on mutable structs with array fields (`docs/src/known_limitations.md`).

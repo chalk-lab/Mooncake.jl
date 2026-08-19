@@ -117,6 +117,7 @@ import ..Mooncake:
     extract,
     nan_tangent_guard,
     NDualArray,
+    NDualBlock,
     NDualEltype,
     _scalar_ndual
 
@@ -233,39 +234,28 @@ function frule!!(
     primal_arr = unsafe_wrap(Array, primal(p), _dims)
     p_partials = tangent(p)
     D = ndims(primal_arr)
-    @static if VERSION >= v"1.11-rc4"
-        # Block-backed lane pointers address the `Nw` contiguous lanes of one element-major block
-        # column (lane k at `lane 1 + (k-1)*sizeof(T)`), so re-wrapping lane 1's pointer with a
-        # leading lane dimension reconstructs the ALIASING block — writes through the wrapped
-        # array's V land in the pointed-at tangent storage (the whole point of this rule). Packing
-        # per-lane wraps into a fresh block would silently sever that aliasing instead.
-        all(k -> p_partials[k] == p_partials[1] + (k - 1) * sizeof(T), 1:Nw) || throw(
-            ArgumentError(
-                "Forward-mode `unsafe_wrap` requires the lifted pointer's lane pointers to be " *
-                "the contiguous lanes of one element-major block column. Wrapping separated " *
-                "per-lane buffers cannot preserve tangent aliasing.",
-            ),
-        )
-        bd = (Nw, (_dims isa Integer ? (_dims,) : _dims)...)
-        block = unsafe_wrap(Array, p_partials[1], bd)
-        return Lifted{Array{T,D},Nw}(
-            primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, block)
-        )
-    else
-        # Julia 1.10 (parallel arrays): each lane pointer addresses its OWN contiguous per-lane array (the
-        # `jl_array_ptr` frule returns separate per-lane pointers there), so wrap each lane and
-        # store the `NTuple` — this preserves per-lane aliasing (writes through the wrapped V land
-        # in the pointed-at per-lane tangent storage), the per-lane analogue of the block reconstruction.
-        lane_arrays = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
-        return Lifted{Array{T,D},Nw}(
-            primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, lane_arrays)
-        )
-    end
+    # Block-backed lane pointers address the `Nw` contiguous lanes of one element-major block
+    # column (lane k at `lane 1 + (k-1)*sizeof(T)`), so re-wrapping lane 1's pointer as the block's
+    # flat parent reconstructs the ALIASING block — writes through the wrapped array's V land in
+    # the pointed-at tangent storage (the whole point of this rule). Packing per-lane wraps into a
+    # fresh block would silently sever that aliasing instead.
+    all(k -> p_partials[k] == p_partials[1] + (k - 1) * sizeof(T), 1:Nw) || throw(
+        ArgumentError(
+            "Forward-mode `unsafe_wrap` requires the lifted pointer's lane pointers to be " *
+            "the contiguous lanes of one element-major block column. Wrapping separated " *
+            "per-lane buffers cannot preserve tangent aliasing.",
+        ),
+    )
+    bd = (Nw, (_dims isa Integer ? (_dims,) : _dims)...)
+    block = NDualBlock(unsafe_wrap(Array, p_partials[1], prod(bd)), bd)
+    return Lifted{Array{T,D},Nw}(
+        primal_arr, NDualArray{T,Nw,D,Array{T,D}}(primal_arr, block)
+    )
 end
 # Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are
 # themselves differentiable pointers, so the canonical V is the element-wise
 # `Array{NTuple{Nw,Ptr{R}}, D}` (each element holds that pointer's Nw per-lane shadow Ptrs),
-# not the `NDualArray` parallel-arrays form above (which only applies to `NDualEltype` elements). Wrap each
+# not the `NDualArray` block form above (which only applies to `NDualEltype` elements). Wrap each
 # lane's shadow pointer into its own array, then interleave element-wise into the V.
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},

@@ -276,22 +276,16 @@ function frule!!(
 ) where {Nw,E<:NDualEltype,M,D}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
-    @static if VERSION >= v"1.11-rc4"
-        # Plain `reshape` (not the ccall — its type expressions cannot spell `Array{E,M+1}`)
-        # shares the element-major block's storage all the same.
-        new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
-        return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
-    else
-        # Parallel arrays: reshape each per-lane array to the new shape (each shares its lane's storage).
-        new_parts = ntuple(k -> reshape(tangent(a).partials[k], d), Val(Nw))
-        return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_parts))
-    end
+    # Reshaping the block is a new header over the same flat parent, so the reshaped array's V
+    # shares the original's partials storage exactly as the reshaped primal shares its data.
+    new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
+    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
 end
 # Element-wise `Array{VE,D}` forward V — every element carries its own element dual `VE`: `NoDual`
 # for non-differentiable elements (e.g. the `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside
 # `sortslices`), and `ImmutableDual`/tuple-of-`NDual` duals for differentiable non-numeric elements
 # (structs, tuples). Reshape primal and V in lockstep, element-type-generically, mirroring the
-# reverse rrule below. (Numeric-leaf arrays use the parallel-arrays `NDualArray` V — which is not an
+# reverse rrule below. (Numeric-leaf arrays use the block-backed `NDualArray` V — which is not an
 # `Array` — and take the frule above instead.)
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
@@ -782,6 +776,12 @@ function throwing_rule_test_cases(::Val{:foreigncall})
                 (getfield(nested, :ref), Val(:ptr_or_offset)),
                 (; mode=ForwardMode, chunk_size=2),
             ),
+        )
+    else
+        # Julia 1.10 has no `MemoryRef`; the same guard sits on the legacy-array raw pointer
+        # (`jl_array_ptr`), and must fail loudly at width > 1 for the same reason.
+        push!(
+            cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
         )
     end
     return cases, memory

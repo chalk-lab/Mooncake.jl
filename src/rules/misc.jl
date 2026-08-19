@@ -212,12 +212,12 @@ end
         if name === :ref
             # The array's `.ref` points at element 1, which is block column 1 (the block's
             # columns follow the array's elements). The ref V needs only the block's flat backing
-            # (`getfield(block, :ref)`, a `MemoryRef` for any block rank) plus the column count —
+            # (its flat parent's `.ref`, a `MemoryRef` for any block rank) plus the column count —
             # a pure getfield chain, no `reshape` header. `.ref` is projected once per element in
             # derived elementwise access, so a per-projection Array-header allocation would be
             # ~one allocation per element (the SplitEM forward-alloc regression). The backing is
             # SHARED, so mutations through the ref V land in this array's block and vice versa.
-            block_ref = getfield(getfield(V, :partials_block), :ref)
+            block_ref = getfield(getfield(getfield(V, :partials_block), :parent), :ref)
             return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
                 getfield(V.primal, :ref), block_ref, length(V.primal), 1
             )
@@ -256,13 +256,14 @@ end
                 )
             end
             full = if len == 0
-                Matrix{T}(undef, N, 0)
+                NDualBlock{T,2}(undef, N, 0)
             else
-                _new_(
-                    Matrix{T},
+                flat = _new_(
+                    Vector{T},
                     Core.memoryrefnew(Core.memoryrefnew(backing), start, true),
-                    (N, len),
+                    (N * len,),
                 )
+                NDualBlock{T,2}(flat, (N, len))
             end
             return Nfwd.NDualArray{T,N,1,M}(primal_mem, full)
         elseif name === :ptr_or_offset
@@ -501,12 +502,12 @@ end
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
     # Copy a Dict-field forward V to alias the copied primal array. A float-element field
-    # (e.g. `Vector{Float64}` vals → `NDualArray`) rebuilds over the new primal array with
-    # copied partials; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`, `Vector{Any}`
-    # keys/vals) is a shallow array copy whose elements alias the shallow-shared key/value
-    # objects, matching `Base.copy(::Dict)`.
+    # (e.g. `Vector{Float64}` vals → `NDualArray`) rebuilds over the new primal array with a
+    # copied partials block; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`,
+    # `Vector{Any}` keys/vals) is a shallow array copy whose elements alias the shallow-shared
+    # key/value objects, matching `Base.copy(::Dict)`.
     _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(
-        new_arr, map(copy, getfield(v, :partials))
+        new_arr, copy(getfield(v, :partials_block))
     )
     _copy_dict_field_v(::Any, v::AbstractArray) = copy(v)
     function frule!!(
