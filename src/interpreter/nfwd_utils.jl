@@ -300,6 +300,31 @@ const _NFWD_ARRAY_MUTATORS = Set{Any}(
 )
 const _NFWD_ARRAY_MUTATOR_TYPES = Set{Any}(Any[typeof(f) for f in _NFWD_ARRAY_MUTATORS])
 
+# Array-level products run element by element on dual arrays, so each scalar product becomes an
+# `NDual` multiply, where the hand-written BLAS frules do a lane's whole product in one `gemm!` /
+# `gemv!`. Measured at chunk width 8: matmul made `simple_mlp` 28x primal against 1.7x through the
+# transform, and `dot` over 1600 elements is 8.4x slower native. Reject so the transform picks
+# those rules up. Rejection additionally requires a dual *array* in the signature, which is what
+# keeps scalar `dot`/`*` on `NDual` native. `sum` and the other reductions are only ~1.2x and stay
+# native, so measure before extending this set.
+const _NFWD_ELEMENTWISE_LA_TYPES = Set{Any}(
+    Any[
+        typeof(LinearAlgebra._generic_matmatmul!),
+        typeof(LinearAlgebra.generic_matmatmul!),
+        typeof(LinearAlgebra._generic_matvecmul!),
+        typeof(LinearAlgebra.generic_matvecmul!),
+        typeof(LinearAlgebra.dot),
+    ],
+)
+
+# Does the invoke's own signature carry a dual array (as opposed to a bare `NDual` scalar)?
+function _nfwd_sig_has_dual_array(s::DataType)
+    for p in s.parameters
+        p isa Type && p <: AbstractArray && _nfwd_has_ndual(p) && return true
+    end
+    return false
+end
+
 function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
     ssatypes = ci.ssavaluetypes
     for st in ci.code
@@ -328,11 +353,14 @@ function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
             if s !== nothing
                 # A length-changing array op on a dual array cannot run natively (fixed-shape
                 # NDualArray); reject so nfwd falls back to the transform.
-                if s isa DataType &&
-                    !isempty(s.parameters) &&
-                    s.parameters[1] in _NFWD_ARRAY_MUTATOR_TYPES &&
-                    _nfwd_any_dual(ssatypes, sig, st.args)
-                    return true
+                if s isa DataType && !isempty(s.parameters)
+                    if s.parameters[1] in _NFWD_ARRAY_MUTATOR_TYPES &&
+                        _nfwd_any_dual(ssatypes, sig, st.args)
+                        return true
+                    elseif s.parameters[1] in _NFWD_ELEMENTWISE_LA_TYPES &&
+                        _nfwd_sig_has_dual_array(s)
+                        return true
+                    end
                 end
                 push!(work, s)
             end
