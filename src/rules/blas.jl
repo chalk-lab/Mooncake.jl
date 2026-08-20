@@ -1539,7 +1539,11 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        p_C .= a .* tmp .+ b .* p_C
+        # BLAS leaves `C` unreferenced at `b == 0` and `A`/`B` at `a == 0`, so either may
+        # legally hold garbage; recomputing as `a*tmp + b*C` turns a NaN there into a NaN
+        # RESULT, where BLAS returns the finite value. `tmp` is still needed for `da`.
+        _scale_or_zero!(p_C, b)
+        iszero(a) || (p_C .+= a .* tmp)
     end
 
     function gemm!_pb!!(::NoRData)
@@ -1727,7 +1731,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         else
             tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
             tmp_ref[] = tmp
-            C .= α .* tmp .+ β .* C
+            # Strong zeros, as in the `gemm!` pullback above.
+            _scale_or_zero!(C, β)
+            iszero(α) || (C .+= α .* tmp)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -2120,8 +2126,18 @@ function frule!!(
     A = primal(A_dA)
     B = primal(B_dB)
     dαs = ntuple(k -> tangent(α_dα, k), Val(Nw))
-    Ab, _ = _partials_block(A_dA)
     Bb, bcopied = _partials_block(B_dB)
+    # BLAS's `α == 0` quick return sets `B := 0` without ever referencing `A`, so `A` may
+    # legally hold garbage. The JVP is `dα·op(A)⁻¹⊛B`, needing the solve only when some
+    # lane seeds α; with none, result and derivative are both identically zero and the
+    # solve below would otherwise propagate a legal NaN in `A` into the result.
+    if iszero(α) && all(iszero, dαs)
+        fill!(B, zero(P))
+        fill!(Bb, zero(P))
+        bcopied && _write_back_partials!(B_dB, Bb)
+        return B_dB
+    end
+    Ab, _ = _partials_block(A_dA)
     m, n = size(B)
     # `X = op(A)⁻¹⊛B` (the primal RHS solve) is lane-invariant: hoist it.
     X = copy(B)

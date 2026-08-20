@@ -84,6 +84,71 @@
         @test all(k -> tangent(o, k) === 0.0, 1:Nw)
     end
 
+    # Regression: BLAS's strong zeros. `β == 0` leaves the destination unreferenced and `α == 0`
+    # leaves `A`/`B` unreferenced, so either may legally hold NaN. Recomputing the primal as
+    # `α*tmp + β*C` (reverse) or solving unconditionally then scaling by `α` (forward `trsm!`) made
+    # `0*NaN` a NaN RESULT, not merely a NaN derivative. A finite-difference comparison cannot
+    # express a NaN operand, so these are bespoke exact checks.
+    @testset "BLAS strong zeros with a NaN operand" begin
+        A = randn(StableRNG(3), 3, 3)
+        B = randn(StableRNG(4), 3, 3)
+        Asym = (A + A') / 2
+        nan3 = fill(NaN, 3, 3)
+
+        # `α != 1` skips the (α==1 && β==0) fast path, reaching the recomputation.
+        o = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(BLAS.gemm!),
+            Mooncake.zero_fcodual('N'),
+            Mooncake.zero_fcodual('N'),
+            Mooncake.zero_fcodual(2.0),
+            Mooncake.zero_fcodual(copy(A)),
+            Mooncake.zero_fcodual(copy(B)),
+            Mooncake.zero_fcodual(0.0),
+            Mooncake.zero_fcodual(copy(nan3)),
+        )[1]
+        @test primal(o) ≈ 2.0 * A * B
+
+        o = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(BLAS.symm!),
+            Mooncake.zero_fcodual('L'),
+            Mooncake.zero_fcodual('U'),
+            Mooncake.zero_fcodual(2.0),
+            Mooncake.zero_fcodual(copy(Asym)),
+            Mooncake.zero_fcodual(copy(B)),
+            Mooncake.zero_fcodual(0.0),
+            Mooncake.zero_fcodual(copy(nan3)),
+        )[1]
+        @test primal(o) ≈ 2.0 * Asym * B
+
+        # `α == 0`: A unreferenced, so a NaN there must not reach the result or the partials.
+        o = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(BLAS.symm!),
+            Mooncake.zero_fcodual('L'),
+            Mooncake.zero_fcodual('U'),
+            Mooncake.zero_fcodual(0.0),
+            Mooncake.zero_fcodual(copy(nan3)),
+            Mooncake.zero_fcodual(copy(B)),
+            Mooncake.zero_fcodual(1.0),
+            Mooncake.zero_fcodual(zeros(3, 3)),
+        )[1]
+        @test all(iszero, primal(o))
+
+        @testset "trsm! α=0 ignores a NaN A: width $Nw" for Nw in (1, 2, 3)
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
+                Mooncake.lift('L', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.lift('N', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.zero_lifted(Val(Nw), 0.0),
+                Mooncake.zero_lifted(Val(Nw), copy(nan3)),
+                Mooncake.zero_lifted(Val(Nw), copy(B)),
+            )
+            @test all(iszero, primal(r))
+            @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
+        end
+    end
+
     # Regression: the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
     # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
     # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.
