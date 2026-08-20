@@ -69,6 +69,21 @@
         end
     end
 
+    # Regression: an empty `dot` must give EXACTLY zero lane partials. `gemv` returns early on an
+    # empty operand without applying `beta`, so the frule's output buffer used to keep whatever the
+    # allocator handed back. The registered `n = 0` case cannot pin this: the garbage is typically
+    # denormal (~1e-310), so it passes a finite-difference comparison against zero. Only an exact
+    # check catches it, hence a bespoke assertion rather than a registry entry.
+    @testset "empty dot gives exactly-zero partials: width $Nw" for Nw in (1, 2, 3)
+        o = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(Nw), dot),
+            Mooncake.zero_lifted(Val(Nw), Float64[]),
+            Mooncake.zero_lifted(Val(Nw), Float64[]),
+        )
+        @test primal(o) === 0.0
+        @test all(k -> tangent(o, k) === 0.0, 1:Nw)
+    end
+
     # Regression: the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
     # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
     # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.
