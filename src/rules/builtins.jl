@@ -489,6 +489,23 @@ const _INT2PTR_ERR_MSG =
     "differentiable function, you should write a rule for this function, or modify " *
     "its implementation to avoid the bitcast."
 
+const _NULL_TANGENT_PTR_MSG =
+    "Cannot differentiate a load or store through a `Ptr` with no tangent storage behind it. " *
+    "The pointer derives from a buffer whose element type is non-differentiable (a " *
+    "`Vector{UInt8}`, say), so no derivative buffer exists to read or write and its tangent " *
+    "pointer is NULL. Reinterpreting such a buffer as a differentiable element type under AD " *
+    "is not supported; allocate it with the differentiable element type instead."
+
+# A NULL tangent pointer is only unsafe once it addresses real bytes. A zero-size tangent element
+# type (`Ptr{NoTangent}`, from a non-differentiable store) makes the access a no-op, so it stays
+# legal; a re-typed `Ptr{Float64}` reads or writes `sizeof(Float64)` bytes at address zero.
+@inline function _check_tangent_ptr(dx)
+    if dx isa Ptr && iszero(UInt(dx)) && sizeof(eltype(dx)) > 0
+        throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
+    end
+    return nothing
+end
+
 @intrinsic bitcast
 function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
     if T <: IEEEFloat
@@ -1003,6 +1020,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
+    _check_tangent_ptr(dx)
     a = CoDual(pointerref(_x, _y, _z), fdata(pointerref(dx, _y, _z)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
@@ -1077,6 +1095,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
     _z = primal(z)
+    _check_tangent_ptr(tangent(p))
     old_value = pointerref(_p, _idx, _z)
     old_tangent = pointerref(tangent(p), _idx, _z)
     dp = tangent(p)

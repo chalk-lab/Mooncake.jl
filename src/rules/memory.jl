@@ -1044,7 +1044,19 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    dy = wants_length ? NoFData() : bitcast(Ptr{NoTangent}, x.dx.ptr)
+    # `Ptr{NoTangent}` is a tag, not a pointer to real `NoTangent` elements. For a
+    # non-differentiable element type the tangent `Memory` has zero-size elements, so its pointer
+    # backs no bytes, and a later re-typed `pointerset`/`pointerref` would read or write
+    # `sizeof(T)` bytes of a zero-byte allocation. NULL is this chain's existing "no tangent
+    # address" value (cf. the `pointer_from_objref` frule). `NoFData` is not an option here:
+    # `fdata_type` fixes this field's fdata as `Ptr{NoTangent}`, so it fails a typeassert.
+    dy = if wants_length
+        NoFData()
+    elseif eltype(x.dx) === NoTangent
+        Ptr{NoTangent}(0)
+    else
+        bitcast(Ptr{NoTangent}, x.dx.ptr)
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1056,7 +1068,16 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    dy = wants_offset ? bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset) : x.dx.mem
+    # NULL rather than an unbacked address for a zero-size element type, as in the `Memory` rule.
+    dy = if wants_offset
+        if eltype(x.dx) === NoTangent
+            Ptr{NoTangent}(0)
+        else
+            bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset)
+        end
+    else
+        x.dx.mem
+    end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
