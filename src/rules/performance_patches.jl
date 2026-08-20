@@ -122,6 +122,25 @@ function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
     return dout_l
 end
 
+# As `_kron!_jvp_lane!`, but writing lane `lane` straight into the element-major block instead of
+# into its own dense array. Element `m`'s lane sits at flat index `(m-1)*N + lane`, and the loop
+# walks output elements in the same order `_kron!` fills them, so the cursor just steps by `N`.
+# This is what keeps the allocating `kron` frule from paying an output-sized temporary per lane.
+function _kron!_jvp_lane_into_block!(
+    blk, lane::Int, ::Val{N}, px1, dx1_l, px2, dx2_l
+) where {N}
+    off = lane
+    @inbounds for j in axes(px1, 2), l in axes(px2, 2), i in axes(px1, 1)
+        x1ij = px1[i, j]
+        dx1ij = dx1_l[i, j]
+        for k in axes(px2, 1)
+            blk[off] = (x1ij * dx2_l[k, l]) + (dx1ij * px2[k, l])
+            off += N
+        end
+    end
+    return blk
+end
+
 # Block form of the per-lane JVP: writes all `N` lanes of each output element in one pass over
 # the contiguous element-major partials blocks, so the length-`N` lane write vectorises (packed
 # `<N x double>`). Blocks are `(N, size...)`; reinterpret their flat parents to `NTuple{N,T}`
@@ -322,16 +341,19 @@ function Mooncake.frule!!(
     mx2 = convert(Matrix, px2)
     y = kron(mx1, mx2)
     A = typeof(y)
-    # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` directly into each
-    # partial: `kron(dx1ₖ,px2) + kron(px1,dx2ₖ)` allocates two output-sized `kron` temporaries per
-    # lane (O(N) waste), whereas `_kron!_jvp_lane!` writes both terms in one pass with none.
-    partials = ntuple(
-        k -> _kron!_jvp_lane!(
-            similar(y), mx1, convert(Matrix, dx1s[k]), mx2, convert(Matrix, dx2s[k])
-        ),
-        Val(N),
-    )
-    return Lifted{A,N}(y, NDualArray{T,N,2,A}(y, partials))
+    # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` into one pass per
+    # lane, written straight into the result's block. Going via a per-lane array and then packing
+    # cost TWO output-sized allocations per lane, which at chunk width 8 was 87 MB against the
+    # 51 MB the block itself needs, and took the per-lane time from 5x the primal to 35x.
+    blk = Nfwd._block_type(A)(undef, Nfwd._block_dims(N, y)...)
+    bp = Nfwd._block_storage(blk)
+    for k in 1:N
+        _kron!_jvp_lane_into_block!(
+            bp, k, Val(N), mx1, convert(Matrix, dx1s[k]), mx2, convert(Matrix, dx2s[k])
+        )
+    end
+    V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)
+    return Lifted{A,N}(y, V)
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
