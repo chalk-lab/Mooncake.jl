@@ -169,4 +169,25 @@
             max_fd_step=1e-3,
         )
     end
+
+    @testset "_deepcopy_all preserves cross-argument aliasing" begin
+        # The harness copies arguments defensively before running a rule. Copying them per element
+        # (`map(_deepcopy, ...)`) gives each its own cache and severs aliasing BETWEEN slots, so no
+        # registered case could present one object in two argument slots — which is why a
+        # repeated-argument gradient bug went unnoticed. One shared cache reproduces the caller's
+        # aliasing graph instead of imposing one.
+        x = [1.0, 2.0]
+        c = Mooncake.TestUtils._deepcopy_all((sum, x, x))
+        @test c[2] === c[3]                    # aliasing between slots survives
+        @test c[2] !== x                       # ...and it is still a copy, not the caller's array
+        c[2][1] = 99.0
+        @test c[3][1] == 99.0                  # a write through one slot is seen by the other
+        @test x[1] == 1.0                      # ...and never reaches the caller
+        # Distinct objects must stay distinct: a shared cache merges only what was already identical.
+        y = [1.0, 2.0]
+        d = Mooncake.TestUtils._deepcopy_all((sum, x, y))
+        @test d[2] !== d[3]
+        # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
+        @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
+    end
 end

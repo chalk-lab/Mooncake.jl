@@ -581,7 +581,7 @@ function test_frule_correctness(
 )
     @nospecialize rng x_ẋ
 
-    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
+    x_ẋ = _deepcopy_all(x_ẋ) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
@@ -752,12 +752,12 @@ function test_frule(
     (is_primitive && !interface_only && !isempty(chunked_widths)) || return nothing
     base = __get_primals(x)
     # Fresh copy for the reference primal — `f` may mutate an argument in place.
-    yp = map(_deepcopy, base)
+    yp = _deepcopy_all(base)
     y_true = yp[1](yp[2:end]...)
     interp = get_interpreter(ForwardMode)
     for N in chunked_widths
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
-        seeds = map(p -> randn_lifted(Val(N), rng, p), map(_deepcopy, base))
+        seeds = map(p -> randn_lifted(Val(N), rng, p), _deepcopy_all(base))
         # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
         # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
         # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
@@ -911,7 +911,7 @@ function test_rrule_correctness(
 )
     @nospecialize rng x_x̄
 
-    x_x̄ = map(_deepcopy, x_x̄) # defensive copy
+    x_x̄ = _deepcopy_all(x_x̄) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_x̄)
@@ -1013,13 +1013,21 @@ get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
 
 _deepcopy(x) = deepcopy(x)
 _deepcopy(x::Module) = x
+_deepcopy(x, d::IdDict) = Base.deepcopy_internal(x, d)
+_deepcopy(x::Module, ::IdDict) = x
+
+# Copy a whole argument tuple through ONE cache, so two slots holding the same object still hold the
+# same object afterwards; `map(_deepcopy, t)` gives each element its own cache and severs that. The
+# cache merges only what was already identical, so distinct arguments stay distinct. `deepcopy(t)`
+# would share a cache too, but loses the `Module` carve-out above.
+_deepcopy_all(t::Tuple) = (d=IdDict(); map(x -> _deepcopy(x, d), t))
 
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_reuse(x_ẋ...; frule)
     @nospecialize x_ẋ
-    x_ẋ_a = map(_deepcopy, x_ẋ)
-    x_ẋ_b = map(_deepcopy, x_ẋ)
+    x_ẋ_a = _deepcopy_all(x_ẋ)
+    x_ẋ_b = _deepcopy_all(x_ẋ)
 
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
@@ -1108,7 +1116,7 @@ function test_frule_interface(x_ẋ...; frule, is_primitive::Bool=true)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
-    x_ẋ = map(_deepcopy, x_ẋ)
+    x_ẋ = _deepcopy_all(x_ẋ)
     x = map(primal, x_ẋ)
 
     # Run the primal programme. Bail out early if this doesn't work.
@@ -1149,7 +1157,7 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
     f̄ = tangent(f_f̄)
-    x_x̄ = map(_deepcopy, x_x̄)
+    x_x̄ = _deepcopy_all(x_x̄)
     x = map(primal, x_x̄)
     x̄ = map(tangent, x_x̄)
 
