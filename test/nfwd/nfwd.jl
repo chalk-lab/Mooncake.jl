@@ -93,6 +93,28 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(ax) ≈ atan(2.0, 1.0)
         @test Nfwd.ndual_partial(ax, 1) ≈ -0.4
         @test iszero(Nfwd.ndual_partial(ax, 2))
+
+        # Regression: `/(NDual, Real)`, `^` in both directions and `log(Real, NDual)` NARROWED the
+        # plain operand to `T` instead of promoting, so a `Float64` operand on an `NDual{Float32}`
+        # gave the wrong value AND the wrong type — `2f0^1.5` returned `2.828427::Float32` where
+        # Base gives `2.8284271247461903::Float64`.
+        @test (a32^1.5) isa NDual{Float64,1}
+        @test Nfwd.ndual_value(a32^1.5) === 2.0f0^1.5
+        @test (1.5^a32) isa NDual{Float64,1}
+        @test Nfwd.ndual_value(1.5^a32) === 1.5^2.0f0
+        @test log(2.0, a32) isa NDual{Float64,1}
+        @test Nfwd.ndual_value(log(2.0, a32)) === log(2.0, 2.0f0)
+        # An `Integer`/`Rational` exponent must still NARROW, as Base does.
+        @test (a32^2) isa NDual{Float32,1}
+        @test (a32^(3//2)) isa NDual{Float32,1}
+        @test Nfwd.ndual_value(a32^(3//2)) === 2.0f0^(3//2)
+        # `/(NDual, Real)` promotes, and its value divides rather than reciprocal-multiplying:
+        # `2.0 * inv(3.0)` differs from `2.0 / 3.0` in the last ulp, and the inner value must
+        # equal the primal's.
+        d64 = NDual{Float64,2}(2.0, (1.0, 0.0))
+        @test Nfwd.ndual_value(d64 / 3.0) === 2.0 / 3.0
+        @test (NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) isa NDual{Float64,1}
+        @test Nfwd.ndual_value(NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) === 2.0f0 / 3.0
     end
 
     @testset "arithmetic" begin

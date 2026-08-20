@@ -494,10 +494,14 @@ end
     )
 end
 
-# NDual / Real: multiply by reciprocal — avoids promoting c to NDual.
-@inline function Base.:/(x::NDual{T,N}, c::Real) where {T,N}
-    s = inv(T(c))
-    return NDual{T,N}(x.value * s, _fwd_guarded_scale(x.partials, s))
+# NDual / Real: the partials multiply by the reciprocal, avoiding promoting c to NDual.
+@inline function Base.:/(x::NDual{T,N}, c::R) where {T,N,R<:Real}
+    S = promote_type(T, R)
+    cS = S(c)
+    # The value must equal the primal's, so it divides; `x.value * inv(cS)` differs in the
+    # last ulp. The `N` partials keep the reciprocal, one division instead of `N`.
+    sp = ntuple(i -> S(x.partials[i]), Val(N))
+    return NDual{S,N}(S(x.value) / cS, _fwd_guarded_scale(sp, inv(cS)))
 end
 
 # Real / NDual: d(c/b) = -(c/b²) db.  Without this, c::Real is promoted to
@@ -632,10 +636,12 @@ end
 
 @inline Base.:^(a::NDual{T,N}, b::Rational) where {T,N} = a ^ T(b)
 
-@inline function Base.:^(a::NDual{T,N}, b::Real) where {T,N}
-    bT = T(b)
-    v = a.value^bT
-    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_x(a.value, bT, v)))
+@inline function Base.:^(a::NDual{T,N}, b::R) where {T,N,R<:Real}
+    S = promote_type(T, R)
+    av, bS = S(a.value), S(b)
+    v = av^bS
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_x(av, bS, v)))
 end
 
 @inline function Base.:^(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
@@ -654,7 +660,8 @@ end
 )...)
 
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
-@inline function Base.:^(b::Real, a::NDual{T,N}) where {T,N}
+@inline function Base.:^(b::R, a::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
     # For b < 0 the primal can be finite (integer-valued exponent) but b^x is not
     # real-differentiable in the exponent (the derivative needs log(b)), so fail with a clear
     # local error rather than letting `log(b)` throw a bare DomainError from inside the scale.
@@ -666,13 +673,14 @@ end
             "complex base, or avoid differentiating the exponent.",
         ),
     )
-    v = T(b)^a.value
+    v = S(b)^S(a.value)
     # d(b^a)/da = b^a·log(b). At b>0 this is `v*log(b)`; at the removable singularity b==0 the naive
     # `v*log(b)` is `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent
     # (b^a→0 dominates log(b)→-Inf). `_nfwd_pow_grad_p` encodes exactly this: `v*log(b)` for b>0, and
     # for b==0 → 0 (positive exponent) / NaN (nonpositive, genuinely undefined). `_fwd_guarded_scale`
     # additionally keeps an inactive (zero-seed) lane 0 in that genuinely-NaN case.
-    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, _nfwd_pow_grad_p(T(b), a.value, v)))
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_p(S(b), S(a.value), v)))
 end
 @inline Base.:^(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = exp(a)
 
@@ -840,10 +848,11 @@ end
 
 # Two-argument log: log(b, x) = log(x)/log(b); d/dx = inv(x * log(b)),
 # d/db = -log(x) / (b * log(b)^2) = -log(b, x) / (b * log(b)).
-@inline function Base.log(b::Real, a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log(b, a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(b))))
-    )
+@inline function Base.log(b::R, a::NDual{T,N}) where {R<:Real,T,N}
+    S = promote_type(T, R)
+    av = S(a.value)
+    ap = ntuple(i -> S(a.partials[i]), Val(N))
+    return NDual{S,N}(log(S(b), av), _fwd_guarded_scale(ap, inv(av * S(log(b)))))
 end
 @inline function Base.log(b::NDual{T,N}, a::NDual{T,N}) where {T,N}
     log_b = log(b.value)
