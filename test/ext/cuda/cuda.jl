@@ -738,7 +738,6 @@ end
             (false, :none, false, _bcast_adj_cx_abs2, _rand(rng, ComplexF64, 16)),
             (false, :none, false, _bcast_tp_lit_add, _rand(rng, 16)),
             # Non-contiguous SubArray broadcast leaf (rows 1:2 of a 4x3 stay a SubArray)
-            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
             # Shape-broadcasting: vector vs matrix — exercises _unbroadcast in pullback
             (false, :none, false, _bcast_vec_mat_add, _rand(rng, 8), _rand(rng, 8, 4)),
             (false, :none, false, _bcast_vec_mat_mul, _rand(rng, 8), _rand(rng, 8, 4)),
@@ -889,12 +888,6 @@ end
             (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
             (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
-            (false, :none, false, _view_sum, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_weighted, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
-            (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
             (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
             (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
@@ -1178,12 +1171,8 @@ end
             (false, :none, false, _cpu_to_gpu_sum, _rand(rng, 16)),
             # CuPtr{T} + Integer — differentiable T (Float32): view(x, range) internally
             # calls unsafe_convert(CuPtr{Float32}, SubArray) = unsafe_convert(parent) + offset.
-            (false, :none, false, _view_sum, _rand(rng, 16)),
-            (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
             # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
             # Test both Float32 (original) and Float64 (regression for DataRef zero_tangent).
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
             # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
             # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
             # Also test float value to exercise gradient propagation through x.
@@ -1477,6 +1466,35 @@ end
             test_rule(
                 StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
             )
+        end
+
+        # Reverse mode only: forward mode refuses a partial view of a `CuArray` (see the
+        # `known_limitations` entry — a sub-range cannot share the lane-major partials block, and
+        # copying it makes the derivative a snapshot that decays when the parent is written). The
+        # reverse rules are unaffected, so their coverage is kept here.
+        @testset "read through a partial CuArray view (reverse only)" begin
+            @testset "$f" for (f, args) in Any[
+                (_bcast_noncontig_view, (_rand(rng, 4, 3),)),
+                (_view_sum, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_weighted, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_reshaped, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_cols, (view(_rand(rng, Float32, 3, 4), :, 2:3),)),
+                (_view_weighted_cx, (view(_rand(rng, ComplexF32, 8), 3:8),)),
+                (_view_sum, (_rand(rng, 16),)),
+                (_view_sum_cx, (_rand(rng, ComplexF64, 16),)),
+                (_view_bool_gate_sum, (_rand_pos(rng, 16),)),
+                (_view_bool_gate_sum, (_rand_pos(rng, Float64, 16),)),
+            ]
+                test_rule(
+                    StableRNG(123),
+                    f,
+                    args...;
+                    perf_flag=:none,
+                    is_primitive=false,
+                    mode=Mooncake.ReverseMode,
+                )
+            end
         end
 
         # Reverse mode only: materialising the range constructs `Base.TwicePrecision`
@@ -2363,18 +2381,19 @@ end
                     "broadcast write through a CuArray view",
                     z -> (y=z .* 2; v=view(y, 3:4); v.=0.0f0; sum(y)),
                     (_rand(rng, Float32, 4),),
-                    (; msg=r"cannot broadcast through a view", mode=Mooncake.ForwardMode),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
                 (
                     291,
                     "fill! through a CuArray view",
                     z -> (y=z .* 2; v=view(y, 3:4); fill!(v, 0.0f0); sum(y)),
                     (_rand(rng, Float32, 4),),
-                    (; msg=r"cannot fill through a view", mode=Mooncake.ForwardMode),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
-                # Every write site that targets a detached block is refused, not just the two
-                # elementwise ones: a `mul!` or a `copyto!` into a strict sub-range view lands in
-                # the view's copied block and would otherwise return a silently wrong JVP.
+                # These all now fail where the VIEW is taken rather than at the write: forward mode
+                # refuses a partial `CuArray` view outright, so no detached block can exist for a
+                # write to land in. Kept as separate cases because each spelling reaches the view
+                # through a different rule, and a future relaxation must not silently re-admit one.
                 (
                     292,
                     "mul! into a CuArray view",
@@ -2385,14 +2404,14 @@ end
                         sum(y)
                     ),
                     (_rand(rng, Float32, 4),),
-                    (; msg=r"cannot multiply through a view", mode=Mooncake.ForwardMode),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
                 (
                     293,
                     "copyto! into a CuArray view",
                     z -> (y=z .* 2; copyto!(view(y, 3:4), y[1:2]); sum(y)),
                     (_rand(rng, Float32, 4),),
-                    (; msg=r"cannot copy through a view", mode=Mooncake.ForwardMode),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
                 # `transpose!` lowers straight to `cuBLAS.geam!`, which is a write site of its own —
                 # it was the one the first pass of this guard missed, so a strict sub-region
@@ -2406,7 +2425,7 @@ end
                         sum(Y)
                     ),
                     (_rand(rng, Float32, 4, 4),),
-                    (; msg=r"cannot add through a view", mode=Mooncake.ForwardMode),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
                 # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
                 (

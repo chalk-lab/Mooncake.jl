@@ -893,10 +893,31 @@ function frule!!(
     _check_derive_eltype(T, pa)
     d, o = primal(dims), primal(offset)
     y = derive(T, pa, d, o)
-    a_partials = Nfwd._lane_views(tangent(a))
-    y_partials = ntuple(k -> derive(T, a_partials[k], d, o), Val(Nw))
     Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{T,Nw,ndims(y),Y}(y, y_partials))
+    # `derive` is the funnel for `view`, `reshape` and `reinterpret`, so the same rule applies here
+    # as in the `view` frule: a result covering the whole parent at the same element type shares the
+    # parent's block, reshaped. Packing a fresh block instead detaches the tangent, and a write
+    # through the result then never reaches the parent's — silently.
+    # Full byte coverage from offset 0 can share the block even when the element type changes: the
+    # lane-major block's slabs are per-lane and contiguous, so reinterpreting it to `T` splits or
+    # merges elements exactly as it does in the primal. That keeps real<->complex `reinterpret`
+    # aliased rather than snapshotted.
+    if o == 0 && length(y) * sizeof(T) == length(pa) * sizeof(eltype(pa))
+        pblk = getfield(tangent(a), :partials_block)
+        blk = reshape(reinterpret(T, pblk), (size(y)..., Nw))
+        V = NDualArray{T,Nw,ndims(y),Y,Nfwd._wrapped_eltype(T, Val(Nw)),typeof(blk)}(y, blk)
+        return Lifted{Y,Nw}(y, V)
+    end
+    # As in the `view` frule: anything short of full same-eltype coverage cannot share the block,
+    # and a copied block is a snapshot that decays the moment the parent is written.
+    throw(
+        ArgumentError(
+            "Forward mode cannot derive a partial or element-retyped `CuArray` (offset $o, " *
+            "eltype $T from $(eltype(pa))): the result's per-lane partials cannot share the " *
+            "parent's block, so its derivative would silently detach. Materialise the result " *
+            "instead of viewing/reinterpreting in place.",
+        ),
+    )
 end
 function rrule!!(
     ::CoDual{typeof(derive)},
@@ -975,6 +996,24 @@ function frule!!(
                 y, blk
             )
             return Lifted{Y,Nw}(y, V)
+        end
+        # An empty result has no element whose partial could be stranded, so the copy below is
+        # harmless and the refusal would only reject a no-op.
+        if !isempty(y)
+            # A strict sub-range cannot share the block: it is strided across lanes in the
+            # lane-major layout and no `CuArray` describes that region. Copying instead makes the
+            # result's block a SNAPSHOT, wrong in both directions — a write through the view never
+            # reaches the parent's tangent, and a write to the PARENT leaves the snapshot stale, so
+            # even reading through the view returns a pre-mutation derivative. The second is
+            # undetectable at the write, so the view itself is refused.
+            throw(
+                ArgumentError(
+                    "Forward mode cannot take a partial view of a `CuArray`: the view's per-lane " *
+                    "partials cannot share the parent's block (a sub-range is strided across " *
+                    "lanes), so its derivative would silently detach. Materialise the " *
+                    "slice instead (`y = x[inds]`), or take a view spanning the whole array.",
+                ),
+            )
         end
         y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
         return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))

@@ -167,6 +167,30 @@ Users who need to differentiate through these code paths may do so by providing 
 
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
+## Partial Views of a `CuArray` in Forward Mode
+
+Forward mode refuses to take a view that covers only part of a `CuArray`, and refuses a
+`reinterpret` that is not full-extent:
+
+```julia
+sum(view(x::CuArray, 1:3))   # ArgumentError in forward mode; fine in reverse
+```
+
+A view spanning the whole array is supported, as is a full-extent `reinterpret` between real and
+complex element types, because both share the parent's partials block outright.
+
+The reason is the GPU block layout. Per-lane partials are stored lane-major, so a lane occupies one
+contiguous slab; a sub-range of the primal is therefore strided across lanes, and no `CuArray`
+describes that region. The alternative to sharing is copying, which makes the view's derivative a
+snapshot: writing through the view never reaches the parent's tangent, and writing the *parent*
+leaves the snapshot stale, so even reading through the view afterwards returns a derivative from
+before the mutation. That second case cannot be detected where it goes wrong, so the view is
+refused where it is created instead of returning a wrong derivative later.
+
+Materialise the slice (`y = x[inds]`) to differentiate the same computation. Reverse mode is
+unaffected. Lifting this needs an element-major GPU block, which would cost the per-lane
+contiguity the batched cuBLAS paths depend on.
+
 ## Differentiating SIMD Code
 
 When the primal code admits SIMD (Single Instruction, Multiple Data) optimisations by the LLVM compiler, reverse-mode automatic differentiation in Mooncake can inhibit LLVM's ability to apply the same optimisations. This occurs because the transformations introduced during differentiation may obscure the structural patterns that LLVM relies on for vectorisation.
