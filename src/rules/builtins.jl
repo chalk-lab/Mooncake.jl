@@ -284,9 +284,21 @@ end
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
-    p::Lifted{<:Ptr,Nw,NoDual},
+    p::Lifted{Ptr{T},Nw,NoDual},
     dims::Lifted,
-) where {Nw}
+) where {Nw,T}
+    # The comment above asserts that a `NoDual`-V pointer implies a non-differentiable element.
+    # Check it rather than trust it: an Int/UInt -> `Ptr` bitcast used to manufacture a `NoDual`-V
+    # `Ptr{Float64}`, which wrapped into a `NoDual` V on a differentiable `Array` primal and read
+    # the derivative out of unrelated memory. That bitcast is refused at source now, so this is the
+    # backstop for any other route to the same incoherent slot.
+    tangent_type(T) === NoTangent || throw(
+        ArgumentError(
+            "unsafe_wrap of a `Ptr{$T}` whose forward V is `NoDual` even though `$T` is " *
+            "differentiable: the wrapped array would carry no tangent and its derivative " *
+            "would be read from unrelated memory.",
+        ),
+    )
     arr = unsafe_wrap(Array, primal(p), primal(dims))
     return Lifted{typeof(arr),Nw}(arr, NoDual())
 end
@@ -467,6 +479,16 @@ end
 
 # atomic_pointerswap
 
+# An Int/UInt -> `Ptr` bitcast cannot carry a derivative: there is no shadow pointer to recover, so
+# the result would be a pointer with no tangent behind it. Reverse mode has refused this since
+# before forward mode existed; the message is shared so the two cannot drift apart.
+const _INT2PTR_ERR_MSG =
+    "It is not permissible to bitcast from an Int/UInt type to a Ptr type during AD, as " *
+    "this risks giving the wrong answer, or causing Julia to segfault. " *
+    "If this call to bitcast appears as part of the implementation of a " *
+    "differentiable function, you should write a rule for this function, or modify " *
+    "its implementation to avoid the bitcast."
+
 @intrinsic bitcast
 function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) where {Nw,T}
     if T <: IEEEFloat
@@ -478,6 +500,10 @@ function frule!!(::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted) 
             "its implementation to avoid the bitcast."
         throw(ArgumentError(msg))
     end
+    # Mirror the reverse rule: an Int/UInt -> `Ptr` bitcast has no shadow pointer to carry, so
+    # returning `NoDual()` here would hand downstream rules a differentiable pointer with no
+    # tangent behind it and they would read the derivative out of unrelated memory.
+    T <: Ptr && primal(x) isa Union{Int,UInt} && throw(ArgumentError(_INT2PTR_ERR_MSG))
     v = bitcast(T, primal(x))
     # Non-Ptr or NoDual-V bitcast: no forward derivative to carry.
     return Lifted{typeof(v),Nw}(v, NoDual())
@@ -523,13 +549,7 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: Ptr && _x isa Ptr
         dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
     elseif T <: Ptr && _x isa Union{Int,UInt}
-        int2ptr_err_msg =
-            "It is not permissible to bitcast from an Int/UInt type to a Ptr type during AD, as " *
-            "this risks giving the wrong answer, or causing Julia to segfault. " *
-            "If this call to bitcast appears as part of the implementation of a " *
-            "differentiable function, you should write a rule for this function, or modify " *
-            "its implementation to avoid the bitcast."
-        throw(ArgumentError(int2ptr_err_msg))
+        throw(ArgumentError(_INT2PTR_ERR_MSG))
     else
         dv = NoFData()
     end
@@ -2275,6 +2295,11 @@ function throwing_rule_test_cases(::Val{:builtins})
     ptr = pointer(xv)
     pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
     cases = Any[
+        # An Int/UInt -> `Ptr` bitcast must be refused in BOTH modes. Forward used to return
+        # `NoDual()` here, so a differentiable pointer arrived with no tangent behind it and the
+        # derivative was read out of unrelated memory (correct value, garbage derivative, varying
+        # between calls on one cache) while reverse threw.
+        (ArgumentError, IntrinsicsWrappers.bitcast, (Ptr{Float64}, UInt(pointer(xv))), (;)),
         (
             ArgumentError,
             IntrinsicsWrappers.atomic_pointerset,
