@@ -442,7 +442,7 @@ is shown by the cache.
     # directional derivatives per pass through the generic chunked gradient path just like
     # float arrays. Only the zero-allocation fast path below is shape-restricted (see
     # `gradient_seed`).
-    total_dof = dof(tuple_map(zero_tangent, fx))
+    total_dof = dof(_zero_tangents(fx))
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dof, requested)
@@ -514,7 +514,7 @@ is shown by the cache.
         # aliasing, so the `_gather_arg_leaves` guard still detects aliased leaves and bails
         # to the generic path. Mirrors the flat path's `similar`.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
-        _grad_bufs = map(zero_tangent, _args)
+        _grad_bufs = _zero_tangents(_args)
         _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
         if _leaves !== nothing
             gradient_seed = StructuredGradSeed(
@@ -542,7 +542,7 @@ is shown by the cache.
         end
     end
     if config.friendly_tangents
-        input_tangents = tuple_map(zero_tangent, fx)
+        input_tangents = _zero_tangents(fx)
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
         return FCache(
             rule,
@@ -1149,6 +1149,17 @@ _friendly_cache(fx::Tuple) = isbitstype(typeof(fx)) ? NoCache() : IdDict{Any,Any
     return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, native)
 end
 
+# Build the argument tuple's tangents through ONE aliasing cache, so two arguments that alias each
+# other get ONE tangent. Reverse mode requires aliased primals to share fdata (accumulation must land
+# in one storage); `zero_tangent(x)` allocates a fresh cache per call, so a per-argument
+# `tuple_map(zero_tangent, fx)` severs that and yields the independent-slot chain rule instead of the
+# true gradient. It also makes `dof` count a repeated argument twice. Mirrors `_to_friendly` above,
+# which already shares a cache across the tuple when converting the other way.
+@inline function _zero_tangents(fx::Tuple)
+    c = _friendly_cache(fx)
+    return tuple_map(x -> zero_tangent_internal(x, c), fx)
+end
+
 # @inline forces specialisation on Vararg with function-valued arguments, avoiding severe
 # perf regressions. See https://github.com/chalk-lab/Mooncake.jl/issues/1020.
 @inline function value_and_pullback!!(
@@ -1198,9 +1209,15 @@ value_and_gradient!!(rule, f, x, y)
     return __value_and_gradient!!(rule, __create_coduals(fx)...)
 end
 
+# `zero_codual`'s own `Ptr` method is preserved: `zero_tangent(::Ptr)` throws, so the cached form
+# has to route pointers through `uninit_codual` exactly as the uncached one does.
+@inline _zero_codual_cached(x, c::MaybeCache) = CoDual(x, zero_tangent_internal(x, c))
+@inline _zero_codual_cached(x::Ptr, ::MaybeCache) = uninit_codual(x)
+
 function __create_coduals(args)
     try
-        return tuple_map(zero_codual, args)
+        c = _friendly_cache(args)
+        return tuple_map(x -> _zero_codual_cached(x, c), args)
     catch e
         if e isa StackOverflowError
             error(
@@ -1244,7 +1261,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(
         interp, Tuple{map(_typeof, fx)...}; config.debug_mode, config.silence_debug_messages
     )
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
     # Run reverse-pass in order to reset stacks + state.
@@ -1379,7 +1396,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
 @unstable function prepare_gradient_cache(fx...; config=Config())
     config.empty_cache && empty_mooncake_caches!()
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
-    tangents = map(zero_tangent, fx)
+    tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
@@ -1596,7 +1613,7 @@ end
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
-            workspace = tuple_map(zero_tangent, input_primals)
+            workspace = _zero_tangents(input_primals)
             cache.gradient_workspace[] = workspace
             workspace
         else
@@ -1998,7 +2015,7 @@ function _isbits_gradient!!(
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     total_dof = gs.total_dof
     templates = gs.templates
-    native_gradients = tuple_map(zero_tangent, input_primals)
+    native_gradients = _zero_tangents(input_primals)
     # Peel the first (always full-width) chunk to keep the scalar `y` concretely typed.
     first_out = _isbits_chunk(cache, input_primals, templates, Val(W), 1)
     y = primal(first_out)
@@ -2091,7 +2108,7 @@ true
     # width-1. `prepare_hessian_cache` passes `_chunk = N > 1` to build a width-N variant
     # for its chunked Hessian sweep; cap at `dof(x)` (cannot batch more Hessian columns than
     # input DOFs).
-    fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, dof(tuple_map(zero_tangent, x)))
+    fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, dof(_zero_tangents(x)))
     # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing
     # `config.chunk_size` through: at width 1 (standalone HVP) this builds no `chunk_rule`,
     # so the cache cannot bake an unusable width-K chunk rule over a width-1 for_rule (the

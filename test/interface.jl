@@ -1892,6 +1892,30 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H1 === H2
             end
 
+            @testset "repeated mutable argument shares one gradient" begin
+                # `f(x, x)` mutates through one slot and reads through the other, so the aliased
+                # gradient is [4,2,2]; treating the slots as independent gives [1,1,1] and [2,1,1],
+                # which sum to [3,2,2]. Seeds were built per argument, so the two slots got separate
+                # tangent storage and the reverse aliasing invariant (aliased primals share fdata)
+                # was broken at the interface boundary.
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                xp = [1.0, 2.0, 3.0]
+                cache = prepare_gradient_cache(f, xp, xp)
+                xg = [1.0, 2.0, 3.0]
+                v, g = Mooncake.value_and_gradient!!(cache, f, xg, xg)
+                @test v == 14.0                      # the aliased primal, not 13.0
+                @test g[2] === g[3]                  # one storage, per the aliasing invariant
+                @test g[2] == [4.0, 2.0, 2.0]
+                # Distinct arguments must keep independent gradients.
+                cache2 = prepare_gradient_cache(f, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+                _, g2 = Mooncake.value_and_gradient!!(
+                    cache2, f, [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]
+                )
+                @test g2[2] !== g2[3]
+                @test g2[2] == [1.0, 1.0, 1.0]
+                @test g2[3] == [2.0, 1.0, 1.0]
+            end
+
             @testset "empty-cache reused at non-empty input" begin
                 f(x) = sum(x .^ 2)
                 cache = prepare_hessian_cache(f, Float64[])
