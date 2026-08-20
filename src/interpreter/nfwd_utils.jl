@@ -91,6 +91,14 @@ end
 
 _copy(nf::NfwdFRule) = nf
 
+# On Julia 1.10 the generic `__call_rule` barrier infers `Any` and boxes its arguments (see
+# `src/utils.jl` for why it exists). `NfwdFRule` is an empty singleton whose call method holds no
+# OpaqueClosure, so the world-age crash the barrier guards against cannot arise here: call it
+# directly and keep the forward pass type-stable.
+@static if VERSION < v"1.11-"
+    @inline __call_rule(rule::NfwdFRule, args) = rule(args...)
+end
+
 const _TN_NDUAL = Base.unwrap_unionall(Nfwd.NDual).name
 const _TN_NDARRAY = Base.unwrap_unionall(Nfwd.NDualArray).name
 # Julia 1.10 has no `MemoryRef`, hence no `NDualMemoryRef`; alias the sentinel to the array

@@ -13,13 +13,6 @@ using Mooncake:
     build_rrule,
     tangent_type
 
-# Forward gradients allocate two boxes per call on Julia 1.10, so the zero-allocation assertions
-# below are checked on 1.11+ only. The cause is `__call_rule`, which is `@noinline` with a boxed
-# dynamic call on 1.10 to dodge an OpaqueClosure world-age crash (see `src/utils.jl`) — not the
-# forward array representation: a scalar input, which has no partials block at all, allocates the
-# same two boxes.
-const _SKIP_FWD_ALLOC = VERSION < v"1.11-rc4"
-
 struct SimplePair
     x1::Float64
     x2::Float64
@@ -1032,7 +1025,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 scalar_allocs = TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
                 )
-                @test scalar_allocs == 0 || _SKIP_FWD_ALLOC
+                @test scalar_allocs == 0
 
                 scalar_f = CountedChunkScalarCall()
                 scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
@@ -1074,7 +1067,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test CHUNK_ARRAY_EVAL_COUNT[] == 1
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
                     array_f,
@@ -1107,7 +1100,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     singleton_array_cache_grad_fwd,
                     array_f,
                     singleton_x_arr,
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
                     array_f,
@@ -1133,7 +1126,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, cache_5, f5, x5
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 # length-10 vector: DOF > max chunk width (8), so two chunks (8 + 2).
                 x10 = collect(1.0:10.0)
@@ -1147,7 +1140,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, cache_10, f10, x10
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 # Non-packable inputs (here a NamedTuple) also chunk through the generic
                 # chunked gradient path: multi-dof builds a native chunk rule and the
@@ -1177,8 +1170,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test yt == ft(tx)
                 @test gt[2][1] ≈ 2 .* tx[1]
                 @test gt[2][2] ≈ 2 .* tx[2]
-                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, ct, ft, tx) ==
-                      0 || _SKIP_FWD_ALLOC
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, ct, ft, tx) == 0
 
                 fA = A -> sum(abs2, A)
                 Ax = [1.0 2.0; 3.0 4.0]
@@ -1186,8 +1178,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     fA, Ax; config=Mooncake.Config(; friendly_tangents=false)
                 )
                 @test getfield(cA, :gradient_seed) isa Mooncake.StructuredGradSeed
-                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) ==
-                      0 || _SKIP_FWD_ALLOC
+                @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) == 0
                 _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
                 @test gA[2] ≈ 2 .* Ax
 
@@ -1273,7 +1264,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gnt[2].c ≈ sin(ntx.a)
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, cnt, fnt, ntx
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 # immutable struct of scalars: native gradient is a `Tangent` (scattered via the
                 # `Tangent` branch), and prepare-at-x0/evaluate-at-x1 (primal refresh) is correct.
@@ -1301,7 +1292,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test g10[2].x10 ≈ 20.0
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_gradient!!, c10, f10, nt10
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
 
                 # Complex scalar dofs have an isbits V but two dofs per element, which the isbits
                 # barrier's scatter cannot handle — they must take the generic path, not crash.
@@ -1471,7 +1462,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.value_and_jacobian!!(af_cache, identity, x_jac)  # warm up / size buffer
                 @test TestUtils.count_allocs(
                     Mooncake.value_and_jacobian!!, af_cache, identity, x_jac
-                ) == 0 || _SKIP_FWD_ALLOC
+                ) == 0
             end
 
             scalar_out_fwd_cache = Mooncake.prepare_derivative_cache(
