@@ -395,9 +395,17 @@ end
 
 # `β`-scale a tangent block with BLAS's β semantics: `β == 0` overwrites (strong zero)
 # rather than multiplying, so a NaN already in the tangent cannot leak through `0 * NaN`.
+# `contracted` is the dimension BLAS sums over. BLAS takes a quick return when it is zero and does
+# NOT apply `β` there, so a rule folding `β` in by hand must skip it too — otherwise the tangent is
+# scaled where the primal was left alone, which is a silently wrong derivative. Reproduced for
+# `gemv!` with a 0-column `A`: the primal `y` is untouched while the tangent came back `β * dy`.
 @inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
     iszero(β) ? fill!(B, zero(T)) : (B .*= β)
     return nothing
+end
+@inline function _scale_or_zero!(B::AbstractArray, β, contracted::Integer)
+    contracted == 0 && return nothing
+    return _scale_or_zero!(B, β)
 end
 
 # `X[i]*dX[i]` overflows once `norm(X)*norm(dX)` leaves `T`'s range, though the JVP it divides down
@@ -819,13 +827,13 @@ function frule!!(
             # Complex 'C': op(A)ᵀ = conj(A), which gemm cannot express on its right
             # operand; the vector-arg wrappers read strided lanes natively, so run the
             # adjoint per lane instead of materialising conj(A).
-            _scale_or_zero!(Ybm, β)
+            _scale_or_zero!(Ybm, β, K)
             for k in 1:Nw
                 BLAS.gemv!('C', α, A, view(Xbm, k, :), one(P), view(Ybm, k, :))
             end
         end
     else
-        _scale_or_zero!(Ybm, β)
+        _scale_or_zero!(Ybm, β, K)
     end
     # 2) α·op(dA)·x — skipped when `A` is constant data (all-zero block).
     if !iszero(Ab)
@@ -858,8 +866,10 @@ function frule!!(
         iszero(dαs[k]) || BLAS.gemv!(_tA, dαs[k], A, x, one(P), view(Ybm, k, :))
     end
     # 4) dβ·y over the original `y`. Strong zero on NaN `y` entries, as in reverse mode:
-    #    `y` may hold undefined values wherever `β == 0` discards them.
-    if !all(iszero, dβs)
+    #    `y` may hold undefined values wherever `β == 0` discards them. Skipped along with the
+    #    `β·dy` term above when the contracted dimension is zero: BLAS quick-returns there without
+    #    applying `β`, so the primal does not depend on `β` at all and neither may the tangent.
+    if K != 0 && !all(iszero, dβs)
         @inbounds for i in 1:M
             yi = y[i]
             isnan(yi) && continue
@@ -936,8 +946,15 @@ end
             BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
             conj!(dx)
         end
-        dbeta = dot(y_copy, dy)
-        dy .*= beta'
+        # BLAS takes its quick return when the contracted dimension is zero and leaves `y` alone,
+        # so the primal is the identity on `y` there: `β` scales nothing and contributes nothing.
+        # Scaling `dy` by `β` anyway, as the forward rule also used to, is a wrong derivative.
+        if isempty(x)
+            dbeta = zero(dot(y_copy, dy))
+        else
+            dbeta = dot(y_copy, dy)
+            dy .*= beta'
+        end
 
         # Restore primal.
         copyto!(y, y_copy)
@@ -2344,6 +2361,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             return map(As, xs, ys) do A, x, y
                 (flags..., BLAS.gemv!, tA, P(α), A, x, P(β), y)
             end
+        end...,
+
+        # gemv! with a zero-length `x`. BLAS takes its quick return there and never applies `β`, so
+        # a rule that folds `β` in by hand must skip it too: with `β` applied unconditionally the
+        # tangent came back scaled while the primal `y` was left untouched. The `M`/`N` product
+        # above never reaches a zero dimension.
+        map(βs) do β
+            P <: BlasRealFloat && imag(β) != 0 && return []
+            return [(
+                false,
+                :none,
+                nothing,
+                BLAS.gemv!,
+                'N',
+                P(1),
+                randn(rng, P, 3, 0),
+                P[],
+                P(β),
+                randn(rng, P, 3),
+            )]
         end...,
 
         # symv!, hemv!
