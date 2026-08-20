@@ -928,6 +928,15 @@ end
 
     function gemv!_pb!!(::NoRData)
 
+        # BLAS quick-returns when the contracted dimension is zero and leaves `y` untouched, so the
+        # primal is the identity on `y`: nothing depends on `α`, `β`, `A` or `x`. Returning here
+        # also avoids the 3-arg `dot` below, which reads `first(A)` on Julia 1.10 and throws for an
+        # empty `A`.
+        if isempty(x)
+            copyto!(y, y_copy)
+            return (NoRData(), NoRData(), zero(P), NoRData(), NoRData(), zero(P), NoRData())
+        end
+
         # Increment fdata.
         if trans == 'N'
             dalpha = dot(dy, A, x)'
@@ -946,15 +955,8 @@ end
             BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
             conj!(dx)
         end
-        # BLAS takes its quick return when the contracted dimension is zero and leaves `y` alone,
-        # so the primal is the identity on `y` there: `β` scales nothing and contributes nothing.
-        # Scaling `dy` by `β` anyway, as the forward rule also used to, is a wrong derivative.
-        if isempty(x)
-            dbeta = zero(dot(y_copy, dy))
-        else
-            dbeta = dot(y_copy, dy)
-            dy .*= beta'
-        end
+        dbeta = dot(y_copy, dy)
+        dy .*= beta'
 
         # Restore primal.
         copyto!(y, y_copy)
