@@ -1496,6 +1496,33 @@ end
             )
         end
 
+        # A write through a view whose block DOES alias the parent's is correct, not refused: a
+        # view spanning the whole parent shares the entire lane-major block, an empty view has
+        # nothing to strand, and a `resize!`d array is not a view at all. Each of these was
+        # mishandled when the guard tested geometry alone — the first silently wrong, the other
+        # two wrongly rejected.
+        @testset "writes that reach the parent tangent stay differentiable" begin
+            @testset "$nm" for (nm, f, x) in (
+                (
+                    "full-extent view",
+                    z -> (y=z .* 2; v=view(y, 1:4); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+                (
+                    "colon view",
+                    z -> (y=z .* 2; v=view(y, :); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+                (
+                    "empty view",
+                    z -> (y=z .* 2; fill!(view(y, 1:0), 0.0f0); sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+            )
+                test_rule(StableRNG(123), f, x; perf_flag=:none, is_primitive=false)
+            end
+        end
+
         # Reverse mode only: forward mode refuses a write through a contiguous `CuArray` view
         # (cases 290/291 pin the error) because the view's block is a copy of the parent's. The
         # lane-major block cannot express the view's strided region as a `CuArray`, so aliasing
@@ -2335,6 +2362,28 @@ end
                     z -> (y=z .* 2; v=view(y, 3:4); fill!(v, 0.0f0); sum(y)),
                     (_rand(rng, Float32, 4),),
                     (; msg=r"cannot fill through a view", mode=Mooncake.ForwardMode),
+                ),
+                # Every write site that targets a detached block is refused, not just the two
+                # elementwise ones: a `mul!` or a `copyto!` into a strict sub-range view lands in
+                # the view's copied block and would otherwise return a silently wrong JVP.
+                (
+                    292,
+                    "mul! into a CuArray view",
+                    z -> (
+                        y=z .* 2;
+                        A=fill!(similar(y, 2, 2), 1.0f0);
+                        mul!(view(y, 3:4), A, view(y, 1:2));
+                        sum(y)
+                    ),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot multiply through a view", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    293,
+                    "copyto! into a CuArray view",
+                    z -> (y=z .* 2; copyto!(view(y, 3:4), y[1:2]); sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot copy through a view", mode=Mooncake.ForwardMode),
                 ),
                 # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
                 (

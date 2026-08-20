@@ -917,7 +917,17 @@ end
 # `view` frule below therefore copies, which reads correctly and writes wrongly — the write lands
 # in the copy and never reaches the parent's tangent. Refuse such a write rather than return a
 # silently wrong JVP. `reshape`/`vec` keep every element and so alias their block outright.
-_cu_is_subregion(x::CuArray) = x.offset != 0 || x.maxsize != length(x) * sizeof(eltype(x))
+# Geometry alone cannot answer this. `view(x, :)` and `reshape(x, …)` are geometrically identical
+# (offset 0, `maxsize == length*sizeof`), and a `resize!`d array looks exactly like a shortened
+# view. So require BOTH a strict sub-region AND a `DataRef` shared with something else: a view
+# shares its parent's ref, while `resize!` reallocates and owns its buffer alone (refcount 1).
+_cu_refcount(x::CuArray) = getfield(getfield(x, :data), :rc).count[]
+function _cu_is_subregion(x::CuArray)
+    # An empty destination has no element to write, so no tangent can be stranded.
+    isempty(x) && return false
+    (x.offset != 0 || x.maxsize != length(x) * sizeof(eltype(x))) || return false
+    return _cu_refcount(x) > 1
+end
 _cu_is_subregion(x::AbstractArray) = parent(x) !== x && _cu_is_subregion(parent(x))
 _cu_is_subregion(@nospecialize(::Any)) = false
 function _check_cu_writable(@nospecialize(x), op::String)
@@ -950,8 +960,20 @@ function frule!!(
     y = view(primal(x), _inds...)
     x_partials = Nfwd._lane_views(tangent(x))
     if y isa CuMaybeComplexArray
-        y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
         Y = typeof(y)
+        # A view spanning the whole parent covers the entire lane-major block, so it can share
+        # that block outright — as `reshape` does. Copying it instead would detach the tangent and
+        # a write through the view would never reach the parent's, silently.
+        if size(y) == size(primal(x)) && y.offset == 0
+            blk = getfield(tangent(x), :partials_block)
+            V = NDualArray{
+                eltype(y),Nw,ndims(y),Y,Nfwd._wrapped_eltype(eltype(y), Val(Nw)),typeof(blk)
+            }(
+                y, blk
+            )
+            return Lifted{Y,Nw}(y, V)
+        end
+        y_partials = ntuple(k -> view(x_partials[k], _inds...), Val(Nw))
         return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
     end
     # Non-contiguous indices yield a SubArray, whose canonical V is the struct lift
@@ -2264,6 +2286,7 @@ function frule!!(
     soffs::Lifted{<:Integer},
     n::Lifted{<:Integer},
 ) where {Nw}
+    _check_cu_writable(primal(dest), "copy")
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
     unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
     dest_partials = Nfwd._lane_views(tangent(dest))
@@ -3536,6 +3559,7 @@ function frule!!(
     A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
     B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
 ) where {Nw}
+    _check_cu_writable(primal(C), "multiply")
     pC = primal(C)
     pA = primal(A)
     pB = primal(B)
@@ -3630,6 +3654,7 @@ function frule!!(
     alpha::Lifted{<:Number},
     beta::Lifted{<:Number},
 ) where {Nw}
+    _check_cu_writable(primal(C), "multiply")
     pC = primal(C)
     pA = primal(A)
     pB = primal(B)
@@ -3890,6 +3915,7 @@ function frule!!(
     alpha::Lifted{<:Number},
     beta::Lifted{<:Number},
 ) where {Nw}
+    _check_cu_writable(primal(Y), "multiply")
     pY = primal(Y)
     pA = primal(A)
     pB = primal(B)
