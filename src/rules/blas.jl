@@ -535,7 +535,10 @@ function frule!!(
     # `:allocs` guard here).
     Xb = getfield(tangent(x_dx), :partials_block)
     Yb = getfield(tangent(y_dy), :partials_block)
-    out = Vector{P}(undef, Nw)
+    # Zeroed, not `undef`: `gemv` returns early on an empty operand WITHOUT applying `beta`, so
+    # for `dot(P[], P[])` neither call below writes `out` and the lanes would be whatever the
+    # allocator handed back — a garbage derivative, and an intermittent one.
+    out = zeros(P, Nw)
     BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
     BLAS.gemv!('N', one(P), Yb, x, one(P), out)
     dresult_lanes = ntuple(k -> out[k], Val(Nw))
@@ -840,7 +843,9 @@ function frule!!(
         else
             # Complex 'C': Σⱼ conj(dA[k,j,i])·x[j] = conj(slab_i · conj(x)).
             xc = conj(x)
-            wN = Vector{P}(undef, Nw)
+            # Zeroed for the same reason as in the `dot` frule above: with an empty inner
+            # dimension `gemv` skips the write, and the stale buffer would be accumulated.
+            wN = zeros(P, Nw)
             for i in 1:M
                 BLAS.gemv!('N', one(P), view(Abm,:,:,i), xc, zero(P), wN)
                 view(Ybm, :, i) .+= α .* conj.(wN)
@@ -2302,10 +2307,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
 
-        # dot(x, y) — real only (complex inner products are dotc/dotu).
+        # dot(x, y) — real only (complex inner products are dotc/dotu). `n = 0` is the case
+        # `gemv` skips without applying `beta`, which left the forward lanes reading uninitialised
+        # memory; the derivative there is exactly zero, so garbage fails against finite differences.
         (
             if P <: BlasRealFloat
-                map([3, 5]) do n
+                map([0, 3, 5]) do n
                     return (
                         false, :stability, nothing, dot, randn(rng, P, n), randn(rng, P, n)
                     )
