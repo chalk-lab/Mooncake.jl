@@ -315,14 +315,20 @@ const _NFWD_ARRAY_MUTATOR_TYPES = Set{Any}(Any[typeof(f) for f in _NFWD_ARRAY_MU
 # those rules up. Rejection additionally requires a dual *array* in the signature, which is what
 # keeps scalar `dot`/`*` on `NDual` native. `sum` and the other reductions are only ~1.2x and stay
 # native, so measure before extending this set.
+# Built from whichever kernel names the running Julia defines: 1.12 renamed the inner kernels to
+# `__generic_mat*mul!`, and matching only the 1.10/1.11 spellings left matvec-shaped code on the
+# nfwd path there — `sum(A*x)` was still native at every width, keeping the whole dual-in-kernel
+# cost. Any name absent on this version is simply skipped.
 const _NFWD_ELEMENTWISE_LA_TYPES = Set{Any}(
-    Any[
-        typeof(LinearAlgebra._generic_matmatmul!),
-        typeof(LinearAlgebra.generic_matmatmul!),
-        typeof(LinearAlgebra._generic_matvecmul!),
-        typeof(LinearAlgebra.generic_matvecmul!),
-        typeof(LinearAlgebra.dot),
-    ],
+    Any[(typeof(getfield(LinearAlgebra, n)) for n in (
+        :_generic_matmatmul!,
+        :__generic_matmatmul!,
+        :generic_matmatmul!,
+        :_generic_matvecmul!,
+        :__generic_matvecmul!,
+        :generic_matvecmul!,
+        :dot,
+    ) if isdefined(LinearAlgebra, n))...,],
 )
 
 # Does the invoke's own signature carry a dual array (as opposed to a bare `NDual` scalar)?
@@ -331,6 +337,24 @@ function _nfwd_sig_has_dual_array(s::DataType)
         p isa Type && p <: AbstractArray && _nfwd_has_ndual(p) && return true
     end
     return false
+end
+
+# Rejecting an op is only safe when a hand-written rule can actually take it: `dot`'s array rule is
+# `Tuple{typeof(dot),Vector{P},Vector{P}} where {P<:BlasRealFloat}`, so a complex or
+# higher-dimensional `dot` has no array-level primitive to land on. The transform then descends to
+# the raw-pointer foreigncall, which cannot address a lane above chunk width 1, turning a working
+# nfwd case into a throw. Reject only what the rule covers; the matmul kernels are unconditional
+# because their frules span every operand shape that reaches them.
+function _nfwd_la_rule_covers(s::DataType)
+    s.parameters[1] === typeof(LinearAlgebra.dot) || return true
+    for p in s.parameters
+        p isa Type && p <: AbstractArray && _nfwd_has_ndual(p) || continue
+        pu = Base.unwrap_unionall(p)
+        pu isa DataType && length(pu.parameters) >= 3 || return false
+        el, nd = pu.parameters[1], pu.parameters[3]
+        (el isa Type && el <: Real && nd === 1) || return false
+    end
+    return true
 end
 
 function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
@@ -366,7 +390,8 @@ function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
                         _nfwd_any_dual(ssatypes, sig, st.args)
                         return true
                     elseif s.parameters[1] in _NFWD_ELEMENTWISE_LA_TYPES &&
-                        _nfwd_sig_has_dual_array(s)
+                        _nfwd_sig_has_dual_array(s) &&
+                        _nfwd_la_rule_covers(s)
                         return true
                     end
                 end
