@@ -1,3 +1,25 @@
+# True when `x` reaches itself. Only ancestors count, so a value merely shared between two
+# fields (a DAG) is not self-referential — hence the removal on the way out.
+function _self_referential(@nospecialize(x), seen=Base.IdSet{Any}())
+    (isbits(x) || x isa Type || x isa Symbol) && return false
+    x in seen && return true
+    push!(seen, x)
+    try
+        if x isa AbstractArray && !isbitstype(eltype(x))
+            for i in eachindex(x)
+                isassigned(x, i) && _self_referential(x[i], seen) && return true
+            end
+        else
+            for f in 1:nfields(x)
+                isdefined(x, f) && _self_referential(getfield(x, f), seen) && return true
+            end
+        end
+    finally
+        delete!(seen, x)
+    end
+    return false
+end
+
 struct LiftedTest_Point
     x::Float64
     y::Float64
@@ -623,7 +645,11 @@ const NDAC_VecC64 = NDualArray{
         # that `test_tangent` / `test_data` use for reverse mode, so the two stay in sync.
         @testset "$(typeof(p))" for (interface_only, p, t...) in
                                     Mooncake.tangent_test_cases()
-            test_lifted(Xoshiro(123456), p)
+            # The cache-free seed factories recurse with no visited set, so a self-referential
+            # primal overflows the stack there — only the cache-threading path can seed one.
+            # Detect the cycle rather than listing the cases, so a new cyclic table entry needs
+            # no bookkeeping here.
+            test_lifted(Xoshiro(123456), p; cache_free=(!_self_referential(p)))
         end
 
         # Type-level widening / sentinel cases the value-drive cannot reach (abstract and

@@ -83,14 +83,25 @@ end
 # `@generated` struct-lift factory would build `TWP((NDual, NDual))` and hit the TWP
 # constructor's `Float64(::NDual)` (NDual has no `Float64` conversion), so seed the per-lane
 # tuple directly.
+# Both the cache-threading factories (which `zero_lifted` enters through) and the cache-free ones
+# (which an `frule!!` returning a zero derivative calls directly) need the override: the generic
+# ones are `@generated` struct walkers keyed on `fieldcount`, and a TWP has two fields.
 for f in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval @inline function $f(::Val{N}, ::TWP{F}, ::MaybeCache) where {N,F}
+        return ntuple(_ -> TWP{F}(zero(F), zero(F)), Val(N))
+    end
+end
+for f in (:zero_dual, :uninit_dual)
+    @eval @inline function $f(::Val{N}, ::TWP{F}) where {N,F}
         return ntuple(_ -> TWP{F}(zero(F), zero(F)), Val(N))
     end
 end
 @inline function _randn_dual_internal(
     ::Val{N}, rng::AbstractRNG, ::TWP{F}, ::MaybeCache
 ) where {N,F}
+    return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
+end
+@inline function randn_dual(::Val{N}, rng::AbstractRNG, ::TWP{F}) where {N,F}
     return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
 end
 @inline lift(x::TWP{F}, ẋ::TWP{F}) where {F} = Lifted{TWP{F},1}(x, (ẋ,))

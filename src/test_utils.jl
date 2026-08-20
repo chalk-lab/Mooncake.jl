@@ -129,6 +129,9 @@ using Mooncake:
     randn_lifted,
     zero_lifted,
     uninit_lifted,
+    randn_dual,
+    zero_dual,
+    uninit_dual,
     lift,
     unlift,
     fcodual_type,
@@ -1914,7 +1917,7 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
 end
 
 """
-    test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+    test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free=true)
 
 Forward-mode analogue of [`test_tangent`](@ref): the de-facto definition of the forward
 representation interface. If this runs without a failing test for a value `p`, then `p`'s
@@ -1938,9 +1941,10 @@ assertions on the seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifte
 
 Self-referential primals are supported: both cyclic *mutable structs* and cycles through a plain
 `Array` (the array seed path is cycle-aware). `circular_vector` and the cyclic-struct entry in
-`tangent_test_cases()` exercise the two paths.
+`tangent_test_cases()` exercise the two paths. Pass `cache_free=false` for those: only the
+cache-threading factories can seed a cycle, so the cache-free assertions do not apply.
 """
-function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
+function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free::Bool=true)
     @nospecialize rng p
     P = typeof(p)
     for N in widths
@@ -1975,6 +1979,18 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3))
         for lane in 1:N
             @test (tangent(z, lane); true)
             @test (tangent(r, lane); true)
+        end
+
+        # The cache-free factories are a second entry point: `zero_lifted` and friends go
+        # through the cache-threading `_*_dual_internal`, while an `frule!!` returning a zero
+        # derivative calls `zero_dual` directly. A type that overrides one set and not the
+        # other leaves the two disagreeing, so check both land on the declared V. Skipped for
+        # self-referential primals, which only the cache-threading path can seed.
+        if cache_free
+            V = dual_type(Val(N), P)
+            @test typeof(zero_dual(Val(N), p)) === V
+            @test typeof(uninit_dual(Val(N), p)) === V
+            @test typeof(randn_dual(Val(N), rng, p)) === V
         end
     end
 
