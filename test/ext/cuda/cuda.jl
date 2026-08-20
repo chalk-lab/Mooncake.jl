@@ -888,6 +888,10 @@ end
             (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
             (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
+            # A NON-contiguous view stays a `SubArray`, whose V references the parent, so it
+            # aliases like the host and is unaffected by the partial-view refusal (which only hits
+            # the contiguous case CUDA turns into a fresh `CuArray`).
+            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
             (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
             (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
@@ -1474,7 +1478,6 @@ end
         # reverse rules are unaffected, so their coverage is kept here.
         @testset "read through a partial CuArray view (reverse only)" begin
             @testset "$f" for (f, args) in Any[
-                (_bcast_noncontig_view, (_rand(rng, 4, 3),)),
                 (_view_sum, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_weighted, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_reshaped, (view(_rand(rng, Float32, 8), 3:8),)),

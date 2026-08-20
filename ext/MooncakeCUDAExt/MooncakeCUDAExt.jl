@@ -938,30 +938,6 @@ end
 # `view` frule below therefore copies, which reads correctly and writes wrongly — the write lands
 # in the copy and never reaches the parent's tangent. Refuse such a write rather than return a
 # silently wrong JVP. `reshape`/`vec` keep every element and so alias their block outright.
-# Geometry alone cannot answer this. `view(x, :)` and `reshape(x, …)` are geometrically identical
-# (offset 0, `maxsize == length*sizeof`), and a `resize!`d array looks exactly like a shortened
-# view. So require BOTH a strict sub-region AND a `DataRef` shared with something else: a view
-# shares its parent's ref, while `resize!` reallocates and owns its buffer alone (refcount 1).
-_cu_refcount(x::CuArray) = getfield(getfield(x, :data), :rc).count[]
-function _cu_is_subregion(x::CuArray)
-    # An empty destination has no element to write, so no tangent can be stranded.
-    isempty(x) && return false
-    (x.offset != 0 || x.maxsize != length(x) * sizeof(eltype(x))) || return false
-    return _cu_refcount(x) > 1
-end
-_cu_is_subregion(x::AbstractArray) = parent(x) !== x && _cu_is_subregion(parent(x))
-_cu_is_subregion(@nospecialize(::Any)) = false
-function _check_cu_writable(@nospecialize(x), op::String)
-    _cu_is_subregion(x) && throw(
-        ArgumentError(
-            "Forward mode cannot $op through a view of a `CuArray`: the view's per-lane " *
-            "partials are a copy of the parent's, so the write would not reach the " *
-            "parent's tangent. Materialise the slice (`y = x[inds]`) and write to that.",
-        ),
-    )
-    return nothing
-end
-
 # `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
 # arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made a
 # FORWARD-mode primitive so the forward transform does not trace into that primal-only
@@ -2335,7 +2311,6 @@ function frule!!(
     soffs::Lifted{<:Integer},
     n::Lifted{<:Integer},
 ) where {Nw}
-    _check_cu_writable(primal(dest), "copy")
     doffs_v, soffs_v, n_v = primal(doffs), primal(soffs), primal(n)
     unsafe_copyto!(primal(dest), doffs_v, primal(src), soffs_v, n_v)
     dest_partials = Nfwd._lane_views(tangent(dest))
@@ -2566,7 +2541,6 @@ function frule!!(
     # the destination (filled through the wrapper) and each `a_partials[lane]` is the same wrapper
     # shape over lane `k`'s partials, so `fill!` writes the constant into exactly the region the
     # primal touches — matching the reverse rrule, which also goes through `arrayify`.
-    _check_cu_writable(primal(a), "fill")
     pa, a_partials = arrayify(a)
     fill!(pa, primal(x))
     Eout = eltype(a_partials[1])
@@ -3608,7 +3582,6 @@ function frule!!(
     A::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
     B::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
 ) where {Nw}
-    _check_cu_writable(primal(C), "multiply")
     pC = primal(C)
     pA = primal(A)
     pB = primal(B)
@@ -3703,7 +3676,6 @@ function frule!!(
     alpha::Lifted{<:Number},
     beta::Lifted{<:Number},
 ) where {Nw}
-    _check_cu_writable(primal(C), "multiply")
     pC = primal(C)
     pA = primal(A)
     pB = primal(B)
@@ -3864,7 +3836,6 @@ function frule!!(
     C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
 ) where {Nw}
     pA, pB, pC = primal(A), primal(B), primal(C)
-    _check_cu_writable(pC, "add")
     A_partials = Nfwd._lane_views(tangent(A))
     B_partials = Nfwd._lane_views(tangent(B))
     C_partials = Nfwd._lane_views(tangent(C))
@@ -3965,7 +3936,6 @@ function frule!!(
     alpha::Lifted{<:Number},
     beta::Lifted{<:Number},
 ) where {Nw}
-    _check_cu_writable(primal(Y), "multiply")
     pY = primal(Y)
     pA = primal(A)
     pB = primal(B)
@@ -5157,7 +5127,6 @@ function frule!!(
     bc::Lifted{<:Broadcasted{<:_GpuMaterializeStyle},Nw},
 ) where {P<:CuMaybeWrappedArray,Nw}
     bc_primal = primal(bc)
-    _check_cu_writable(primal(dest), "broadcast")
     _check_gpu_bcast_captures(bc_primal)
     bc_V = tangent(bc)
     # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
