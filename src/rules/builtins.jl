@@ -360,8 +360,9 @@ function frule!!(
 end
 # Non-differentiable pointer (V === NoDual): the loaded value carries no derivative.
 function frule!!(
-    ::Lifted{typeof(atomic_pointerref),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, order::Lifted
-) where {Nw}
+    ::Lifted{typeof(atomic_pointerref),Nw}, x::Lifted{Ptr{T},Nw,NoDual}, order::Lifted
+) where {Nw,T}
+    _check_nodual_diff_ptr(T)
     a = atomic_pointerref(primal(x), primal(order))
     return Lifted{typeof(a),Nw}(a, NoDual())
 end
@@ -430,10 +431,11 @@ end
 # Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
 function frule!!(
     ::Lifted{typeof(atomic_pointerset),Nw},
-    p::Lifted{<:Ptr,Nw,NoDual},
+    p::Lifted{Ptr{T},Nw,NoDual},
     x::Lifted,
     order::Lifted,
-) where {Nw}
+) where {Nw,T}
+    _check_nodual_diff_ptr(T)
     atomic_pointerset(primal(p), primal(x), primal(order))
     return p
 end
@@ -503,6 +505,25 @@ const _NULL_TANGENT_PTR_MSG =
     if dx isa Ptr && iszero(UInt(dx)) && sizeof(eltype(dx)) > 0
         throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
     end
+    return nothing
+end
+
+const _NODUAL_DIFF_PTR_MSG =
+    "Forward-mode AD cannot load from or store to a `Ptr` whose pointee is a differentiable " *
+    "scalar but whose forward representation is `NoDual`: there are no per-lane partial " *
+    "pointers behind it, so the derivative cannot be carried. This typically arises from " *
+    "reinterpreting a non-differentiable buffer (a `Vector{UInt8}`, say) as a differentiable " *
+    "element type; allocate the buffer with that element type instead."
+
+# `NoDual` is the canonical V only when the pointee is genuinely non-differentiable (`Ptr{UInt64}`,
+# `Ptr{Ptr{Float64}}` — note `tangent_type` of BOTH pointee types is non-`NoTangent`, so the
+# sibling `NTuple`-V guard's condition would wrongly reject them here). For a scalar differentiable
+# element the canonical V is `NTuple{Nw,Ptr{T}}`, so `NoDual` means the pointer reached AD with no
+# partial storage. Returning `NoDual` hands a differentiable primal a derivative-free V, which dies
+# downstream on an operand mix; returning a zero dual would be worse, silently reporting a zero
+# derivative where a real one exists.
+@inline function _check_nodual_diff_ptr(::Type{T}) where {T}
+    T <: NDualEltype && throw(ArgumentError(_NODUAL_DIFF_PTR_MSG))
     return nothing
 end
 
@@ -965,11 +986,13 @@ function frule!!(
     da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
     return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
 end
-# Non-differentiable pointer (V === NoDual): the element type is not an `NDualEltype`
-# (e.g. `Ptr{UInt64}`, `Ptr{Ptr{Float64}}`), so the loaded value carries no derivative.
+# Non-differentiable pointer (V === NoDual): the loaded value carries no derivative, which holds
+# for `Ptr{UInt64}` or `Ptr{Ptr{Float64}}`. A scalar differentiable element reaching here has lost
+# its partial pointers, so the guard rejects it rather than assuming the precondition.
 function frule!!(
-    ::Lifted{typeof(pointerref),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted, z::Lifted
-) where {Nw}
+    ::Lifted{typeof(pointerref),Nw}, x::Lifted{Ptr{T},Nw,NoDual}, y::Lifted, z::Lifted
+) where {Nw,T}
+    _check_nodual_diff_ptr(T)
     a = pointerref(primal(x), primal(y), primal(z))
     return Lifted{typeof(a),Nw}(a, NoDual())
 end
@@ -1061,11 +1084,12 @@ end
 # Non-differentiable pointer (V === NoDual): store the primal; no tangent to write.
 function frule!!(
     ::Lifted{typeof(pointerset),Nw},
-    p::Lifted{<:Ptr,Nw,NoDual},
+    p::Lifted{Ptr{T},Nw,NoDual},
     x::Lifted,
     idx::Lifted,
     z::Lifted,
-) where {Nw}
+) where {Nw,T}
+    _check_nodual_diff_ptr(T)
     pointerset(primal(p), primal(x), primal(idx), primal(z))
     return p
 end
@@ -2313,7 +2337,35 @@ function throwing_rule_test_cases(::Val{:builtins})
     xv = [1.0]
     ptr = pointer(xv)
     pslot = Lifted{Ptr{Float64},1}(ptr, (Ptr{Tuple{Float64}}(UInt(ptr)),))
+    # A `NoDual` V on a pointer to a differentiable scalar: canonical for `Ptr{UInt64}` or
+    # `Ptr{Ptr{Float64}}`, but for `Ptr{Float64}` it means no partial storage exists, so loads and
+    # stores must refuse rather than drop the derivative. Reached by reinterpreting a byte buffer.
+    ndslot = Lifted{Ptr{Float64},1,NoDual}(ptr, NoDual())
     cases = Any[
+        (
+            ArgumentError,
+            IntrinsicsWrappers.pointerref,
+            (ndslot, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            ArgumentError,
+            IntrinsicsWrappers.atomic_pointerref,
+            (ndslot, :monotonic),
+            (; mode=ForwardMode),
+        ),
+        (
+            ArgumentError,
+            IntrinsicsWrappers.pointerset,
+            (ndslot, 2.0, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            ArgumentError,
+            IntrinsicsWrappers.atomic_pointerset,
+            (ndslot, 2.0, :monotonic),
+            (; mode=ForwardMode),
+        ),
         # An Int/UInt -> `Ptr` bitcast must be refused in BOTH modes. Forward used to return
         # `NoDual()` here, so a differentiable pointer arrived with no tangent behind it and the
         # derivative was read out of unrelated memory (correct value, garbage derivative, varying
