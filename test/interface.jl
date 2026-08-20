@@ -1916,6 +1916,34 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test g2[3] == [2.0, 1.0, 1.0]
             end
 
+            @testset "aliasing mismatch between preparation and call" begin
+                # A prepared cache holds one cotangent buffer per argument, so the aliasing among
+                # arguments is part of the shape it was prepared for. Reusing it with different
+                # aliasing accumulates into the wrong buffers: prepared-distinct-called-aliased gave
+                # [1,1,1] and [2,1,1] where the aliased gradient is [4,2,2], and the converse gave
+                # [4,2,2] for BOTH slots where they should be independent. Neither is visible from
+                # types or sizes, so both directions are rejected.
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                x0 = [1.0, 2.0, 3.0]
+                distinct_cache = prepare_gradient_cache(f, copy(x0), copy(x0))
+                xg = copy(x0)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    distinct_cache, f, xg, xg
+                )
+                xp = copy(x0)
+                aliased_cache = prepare_gradient_cache(f, xp, xp)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    aliased_cache, f, copy(x0), copy(x0)
+                )
+                # Matching aliasing keeps working in both directions.
+                xg2 = copy(x0)
+                _, ga = Mooncake.value_and_gradient!!(aliased_cache, f, xg2, xg2)
+                @test ga[2] == [4.0, 2.0, 2.0]
+                _, gd = Mooncake.value_and_gradient!!(distinct_cache, f, copy(x0), copy(x0))
+                @test gd[2] == [1.0, 1.0, 1.0]
+                @test gd[3] == [2.0, 1.0, 1.0]
+            end
+
             @testset "empty-cache reused at non-empty input" begin
                 f(x) = sum(x .^ 2)
                 cache = prepare_hessian_cache(f, Float64[])

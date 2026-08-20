@@ -255,6 +255,57 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheError(msg))
 end
 
+function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
+    li = i == 1 ? "`f`" : "`x$(i - 1)`"
+    lj = j == 1 ? "`f`" : "`x$(j - 1)`"
+    what = if aliased_now
+        "are the same object now but were distinct"
+    else
+        "are distinct now but were the same object"
+    end
+    throw(
+        PreparedCacheError(
+            "Cached autodiff call has an aliasing mismatch: $li and $lj $what when the cache " *
+            "was prepared.\nA prepared cache holds one cotangent buffer per argument, so the " *
+            "aliasing among arguments is part of the shape it was prepared for: reusing it with " *
+            "different aliasing accumulates into the wrong buffers and silently returns the " *
+            "wrong gradient. Prepare a separate cache for this argument aliasing.",
+        ),
+    )
+end
+
+# Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
+# prepared. If two arguments are the same object, their buffers must be too (the aliasing
+# invariant); if they are distinct, their buffers must be distinct or two gradients are summed
+# into one. Neither is detectable from types or sizes, so it is checked separately here.
+@generated function _validate_prepared_aliasing(tangents::Tuple, fx::Tuple)
+    n = length(fx.parameters)
+    checks = Expr(:block)
+    for i in 1:n, j in (i + 1):n
+        # Only MUTABLE tangents are comparable this way. `===` on an immutable is value equality,
+        # so two zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever
+        # the primals are — checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at
+        # `(3.0, 4.0)`. An immutable tangent also holds no shared storage to accumulate into.
+        Base.ismutabletype(tangents.parameters[i]) &&
+        Base.ismutabletype(tangents.parameters[j]) || continue
+        push!(
+            checks.args,
+            quote
+                let same_primal = fx[$i] === fx[$j],
+                    same_tangent = tangents[$i] === tangents[$j]
+
+                    same_primal == same_tangent ||
+                        _throw_prepared_cache_aliasing_error($i, $j, same_primal)
+                end
+            end,
+        )
+    end
+    return quote
+        $checks
+        return nothing
+    end
+end
+
 # Input-mutation safety (used only by the GENERIC chunked gradient path and the forward
 # Jacobian sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see
 # `_refresh_all!` / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot)
@@ -1368,6 +1419,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache(getfield(cache, :input_specs), fx)
+    _validate_prepared_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -1486,6 +1538,7 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _validate_prepared_cache(getfield(cache, :input_specs), fx)
+    _validate_prepared_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
