@@ -1072,15 +1072,23 @@ end
     return ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
-# clamp — subgradient: zero tangent at the clamped endpoints.
-# Nested ifelse keeps all branches branchless (no warp divergence on GPU).
+# clamp — the value is Base's, so bound promotion, a signed-zero `x`, and crossed bounds all match
+# it; the tangent follows the `rrule!!`'s convention of a zero subgradient at and beyond either
+# endpoint, so the two modes agree. Selecting with ifelse keeps this branchless (no GPU warp
+# divergence). Reconstructing the value as `ifelse(x <= lo, lo, ...)` instead does NOT match Base:
+# it returns `+0.0` for `clamp(-0.0, 0.0, 1.0)` and picks `lo` when the bounds cross.
 @inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
-    return ifelse(a.value <= lo.value, lo, ifelse(a.value >= hi.value, hi, a))
+    below = a.value <= lo.value
+    above = (a.value >= hi.value) & !below
+    src = ifelse(below, lo, ifelse(above, hi, a))
+    return NDual{T,N}(clamp(a.value, lo.value, hi.value), src.partials)
 end
-@inline function Base.clamp(a::NDual{T,N}, lo::Real, hi::Real) where {T,N}
-    return ifelse(
-        a.value <= T(lo), NDual{T,N}(T(lo)), ifelse(a.value >= T(hi), NDual{T,N}(T(hi)), a)
-    )
+@inline function Base.clamp(a::NDual{T,N}, lo::L, hi::H) where {T,N,L<:Real,H<:Real}
+    S = promote_type(T, L, H)
+    av, loS, hiS = S(a.value), S(lo), S(hi)
+    interior = (av > loS) & (av < hiS)
+    p = ntuple(i -> ifelse(interior, S(a.partials[i]), zero(S)), Val(N))
+    return NDual{S,N}(clamp(av, loS, hiS), p)
 end
 
 # flipsign / copysign — sign of result determined by primal; tangent follows.

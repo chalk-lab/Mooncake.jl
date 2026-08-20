@@ -115,6 +115,29 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(d64 / 3.0) === 2.0 / 3.0
         @test (NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) isa NDual{Float64,1}
         @test Nfwd.ndual_value(NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) === 2.0f0 / 3.0
+
+        # Regression: `clamp` reconstructed its value from the comparisons rather than deferring to
+        # Base, so it narrowed a wider bound, returned `+0.0` for `clamp(-0.0, 0.0, 1.0)`, and chose
+        # `lo` when the bounds cross. Finite differences cannot catch the last two — `-0.0 == 0.0`
+        # numerically and a kink defeats the comparison — hence exact checks here rather than a
+        # registry entry. The tangent convention (zero subgradient at and beyond either endpoint) is
+        # the `rrule!!`'s, and must not drift from it.
+        c32 = NDual{Float32,1}(2.0f0, (1.0f0,))
+        @test clamp(c32, 0.0, 1.5) isa NDual{Float64,1}
+        @test Nfwd.ndual_value(clamp(c32, 0.0, 1.5)) === clamp(2.0f0, 0.0, 1.5)
+        @test Nfwd.ndual_value(clamp(NDual{Float64,1}(-0.0, (1.0,)), 0.0, 1.0)) === -0.0
+        @test Nfwd.ndual_value(clamp(NDual{Float64,1}(0.5, (1.0,)), 1.0, 0.0)) ===
+            clamp(0.5, 1.0, 0.0)
+        # Interior passes the partial through; at and beyond either endpoint it is zero.
+        @test Nfwd.ndual_partial(clamp(NDual{Float64,2}(0.5, (1.0, 2.0)), 0.0, 1.0), 2) ===
+            2.0
+        @test iszero(Nfwd.ndual_partial(clamp(NDual{Float64,1}(1.0, (1.0,)), 0.0, 1.0), 1))
+        @test iszero(Nfwd.ndual_partial(clamp(NDual{Float64,1}(2.0, (1.0,)), 0.0, 1.0), 1))
+        # All-NDual bounds: value from Base, tangent from whichever argument the pullback credits.
+        lo = NDual{Float64,1}(0.0, (5.0,))
+        hi = NDual{Float64,1}(1.0, (7.0,))
+        @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(2.0, (1.0,)), lo, hi), 1) === 7.0
+        @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(-1.0, (1.0,)), lo, hi), 1) === 5.0
     end
 
     @testset "arithmetic" begin
