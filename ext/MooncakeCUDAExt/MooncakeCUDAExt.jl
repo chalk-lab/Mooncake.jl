@@ -1000,12 +1000,19 @@ function frule!!(
         # An empty result has no element whose partial could be stranded, so the copy below is
         # harmless and the refusal would only reject a no-op.
         if !isempty(y)
-            # A strict sub-range cannot share the block: it is strided across lanes in the
-            # lane-major layout and no `CuArray` describes that region. Copying instead makes the
-            # result's block a SNAPSHOT, wrong in both directions — a write through the view never
-            # reaches the parent's tangent, and a write to the PARENT leaves the snapshot stale, so
-            # even reading through the view returns a pre-mutation derivative. The second is
-            # undetectable at the write, so the view itself is refused.
+            # A strict sub-range cannot share the block as ONE array: it is strided across lanes
+            # in the lane-major layout. Copying instead makes the block a snapshot, wrong in both
+            # directions — a write through the view never reaches the parent's tangent, and a write
+            # to the PARENT leaves the snapshot stale, so even reading through the view returns a
+            # pre-mutation derivative. Only the first is detectable at the write, so the view is
+            # refused where it is taken.
+            #
+            # Holding `N` borrowed per-lane arrays would work instead — each lane's sub-range IS a
+            # contiguous `CuArray` — and is declined deliberately: a borrowed block and an owned one
+            # would share a type and support the same operations, differing only in whether they
+            # alias, which no signature can express. A site written for one then returns a plausible
+            # wrong derivative for the other rather than failing. Refusing here keeps one kind of
+            # block, so no site can mishandle a second.
             throw(
                 ArgumentError(
                     "Forward mode cannot take a partial view of a `CuArray`: the view's per-lane " *
