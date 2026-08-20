@@ -1496,11 +1496,11 @@ end
             )
         end
 
-        # Reverse mode only: forward `view` copies the parent's per-lane partials into the
-        # result's own block rather than aliasing them, so a write through the view never
-        # reaches the parent's tangent and the JVP comes back wrong. The limitation is the
-        # forward representation of a view, not this rule — it predates the `derive` claim and
-        # reproduces for any write through a forward GPU view.
+        # Reverse mode only: forward mode refuses a write through a contiguous `CuArray` view
+        # (cases 290/291 pin the error) because the view's block is a copy of the parent's. The
+        # lane-major block cannot express the view's strided region as a `CuArray`, so aliasing
+        # it would take an element-major GPU block — which would cost the per-lane contiguity
+        # the batched cuBLAS paths rely on.
         @testset "in-place broadcast into a view consumes the view's cotangent" begin
             test_rule(
                 StableRNG(123),
@@ -2316,6 +2316,25 @@ end
                     z -> Float32(sum(reinterpret(Int32, z))),
                     (_rand(rng, Float32, 4),),
                     (; msg=r"is not differentiable"),
+                ),
+                # Writing through a contiguous `view(::CuArray, …)` in forward mode is refused.
+                # The view's block is a copy of the parent's — the lane-major block cannot
+                # express the view's strided region as a `CuArray` — so the write would land in
+                # the copy and the JVP would come back silently wrong. Reading through the view
+                # is unaffected, and `reshape`/`vec` alias their block outright.
+                (
+                    290,
+                    "broadcast write through a CuArray view",
+                    z -> (y=z .* 2; v=view(y, 3:4); v.=0.0f0; sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot broadcast through a view", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    291,
+                    "fill! through a CuArray view",
+                    z -> (y=z .* 2; v=view(y, 3:4); fill!(v, 0.0f0); sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot fill through a view", mode=Mooncake.ForwardMode),
                 ),
                 # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
                 (

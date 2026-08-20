@@ -834,11 +834,17 @@ function frule!!(
 ) where {Nw}
     _dims = primal(dims)
     y = reshape(primal(x), _dims)
-    x_partials = Nfwd._lane_views(tangent(x))
-    y_partials = ntuple(k -> reshape(x_partials[k], _dims), Val(Nw))
+    # The result shares the input's memory, so its block must share the input's block, not copy
+    # it — otherwise an in-place write through the reshape never reaches the input's tangent and
+    # the JVP is silently wrong. A reshape keeps every element, so the lane-major block simply
+    # reshapes to `(_dims..., Nw)` over the same device memory.
+    blk = reshape(getfield(tangent(x), :partials_block), (_dims..., Nw))
     Y = typeof(y)
     Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    V = NDualArray{Element,Nw,ndims(y),Y,Nfwd._wrapped_eltype(Element, Val(Nw)),typeof(blk)}(
+        y, blk
+    )
+    return Lifted{Y,Nw}(y, V)
 end
 function rrule!!(
     ::CoDual{typeof(reshape)}, x::CoDual{<:CuMaybeComplexArray}, dims::CoDual{<:NTuple}
@@ -903,6 +909,26 @@ function rrule!!(
     _check_derive_eltype(T, pa)
     d, o = primal(dims), primal(offset)
     return CoDual(derive(T, pa, d, o), derive(T, da, d, o)), _nopb(Val(5))
+end
+
+# A contiguous `view(::CuArray, range)` hands back a `CuArray` that is a strict sub-region of the
+# parent's allocation. Its forward block cannot alias the parent's: the block is lane-major, so the
+# parent bytes belonging to the view are strided across lanes and no `CuArray` describes them. The
+# `view` frule below therefore copies, which reads correctly and writes wrongly — the write lands
+# in the copy and never reaches the parent's tangent. Refuse such a write rather than return a
+# silently wrong JVP. `reshape`/`vec` keep every element and so alias their block outright.
+_cu_is_subregion(x::CuArray) = x.offset != 0 || x.maxsize != length(x) * sizeof(eltype(x))
+_cu_is_subregion(x::AbstractArray) = parent(x) !== x && _cu_is_subregion(parent(x))
+_cu_is_subregion(@nospecialize(::Any)) = false
+function _check_cu_writable(@nospecialize(x), op::String)
+    _cu_is_subregion(x) && throw(
+        ArgumentError(
+            "Forward mode cannot $op through a view of a `CuArray`: the view's per-lane " *
+            "partials are a copy of the parent's, so the write would not reach the " *
+            "parent's tangent. Materialise the slice (`y = x[inds]`) and write to that.",
+        ),
+    )
+    return nothing
 end
 
 # `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
@@ -2468,6 +2494,7 @@ function frule!!(
     # the destination (filled through the wrapper) and each `a_partials[lane]` is the same wrapper
     # shape over lane `k`'s partials, so `fill!` writes the constant into exactly the region the
     # primal touches — matching the reverse rrule, which also goes through `arrayify`.
+    _check_cu_writable(primal(a), "fill")
     pa, a_partials = arrayify(a)
     fill!(pa, primal(x))
     Eout = eltype(a_partials[1])
@@ -5054,6 +5081,7 @@ function frule!!(
     bc::Lifted{<:Broadcasted{<:_GpuMaterializeStyle},Nw},
 ) where {P<:CuMaybeWrappedArray,Nw}
     bc_primal = primal(bc)
+    _check_cu_writable(primal(dest), "broadcast")
     _check_gpu_bcast_captures(bc_primal)
     bc_V = tangent(bc)
     # Primal-only prep + single kernel, reused across lanes (see the `materialize` frule).
