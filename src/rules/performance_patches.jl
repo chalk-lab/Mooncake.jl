@@ -402,6 +402,27 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 10, 10),
             )
         end,
+
+        # The ALLOCATING `kron`, which the in-place cases above do not reach: it has its own frule
+        # that builds the result's block and writes each lane into it at stride `N`. Registered so
+        # `test_rule` drives it at widths 1-3 — the width > 1 path was previously untested, and an
+        # element the lane writer skipped would keep the `undef` the block is allocated with.
+        # `Float32`/`Float64` only: unlike the in-place `_kron!`, the allocating frule is bounded to
+        # those, so `Float16` has no forward primitive and builds a derived rule instead.
+        map([Float64, Float32]) do P
+            return (true, :none, nothing, kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
+        end,
+        # Wrapped operands take the `arrayify`/`convert` path into the same lane writer.
+        map([Float64, Float32]) do P
+            return (
+                true,
+                :none,
+                nothing,
+                kron,
+                view(randn(rng, P, 6, 6), 1:5, 1:4),
+                UpperTriangular(randn(rng, P, 3, 3)),
+            )
+        end,
     )
     memory = Any[]
     return test_cases, memory
