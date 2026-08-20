@@ -37,12 +37,35 @@ function frule!!(
     # 0-alloc, as the `:allocs` test requires.
     nda = tangent(x)
     pv = sum(getfield(nda, :primal))
-    cols = reinterpret(NTuple{N,P}, getfield(getfield(nda, :partials_block), :parent))
-    acc = ntuple(_ -> zero(P), Val(N))
-    @inbounds for j in eachindex(cols)
-        acc = _tadd(acc, cols[j])
+    blk = getfield(getfield(nda, :partials_block), :parent)
+    lanes = if N == 1
+        # One lane makes the tuple fold a single serial accumulator chain, which cannot vectorise:
+        # ~0.45ns per element against the primal's ~0.05ns. At width 1 the block's flat parent IS
+        # that lane, so `sum` applies directly and brings its own pairwise SIMD reduction. Wider
+        # chunks already get instruction-level parallelism from their `N` independent lane chains.
+        (sum(blk),)
+    else
+        # Four accumulators, not one: a single chain gives the CPU only `N` independent adds to
+        # overlap, which is latency-bound at small widths (width 2 sat at ~5.5x the primal per
+        # lane). Unrolling by four gives it `4N`.
+        cols = reinterpret(NTuple{N,P}, blk)
+        z = ntuple(_ -> zero(P), Val(N))
+        a1, a2, a3, a4 = z, z, z, z
+        n = length(cols)
+        j = 1
+        @inbounds while j + 3 <= n
+            a1 = _tadd(a1, cols[j])
+            a2 = _tadd(a2, cols[j + 1])
+            a3 = _tadd(a3, cols[j + 2])
+            a4 = _tadd(a4, cols[j + 3])
+            j += 4
+        end
+        @inbounds while j <= n
+            a1 = _tadd(a1, cols[j])
+            j += 1
+        end
+        _tadd(_tadd(a1, a2), _tadd(a3, a4))
     end
-    lanes = acc
     return Lifted{P,N}(pv, _scalar_ndual(pv, lanes))
 end
 function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFloat}
@@ -327,6 +350,31 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(kron),StridedMatrix{T},StridedMatrix{T}
 } where {T<:Union{Float32,Float64}}
+# Dense fast path. Both operands' partials blocks exist, so `_kron!_jvp_block!` can store all `N`
+# lanes of an output element in one contiguous write; the generic method below writes lane by lane
+# at stride `N`, which grows cache-unfriendly with width (12.3x the primal per lane at width 8
+# against 4.4x at width 1). A wrapped operand has no block of its own and keeps the generic path.
+function Mooncake.frule!!(
+    ::Lifted{typeof(kron),N},
+    x1::Lifted{Matrix{T},N,<:NDualArray{T,N,2,Matrix{T}}},
+    x2::Lifted{Matrix{T},N,<:NDualArray{T,N,2,Matrix{T}}},
+) where {N,T<:Union{Float32,Float64}}
+    px1, px2 = primal(x1), primal(x2)
+    y = kron(px1, px2)
+    A = typeof(y)
+    blk = Nfwd._block_type(A)(undef, Nfwd._block_dims(N, y)...)
+    _kron!_jvp_block!(
+        blk,
+        px1,
+        getfield(tangent(x1), :partials_block),
+        px2,
+        getfield(tangent(x2), :partials_block),
+        Val(N),
+    )
+    V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)
+    return Lifted{A,N}(y, V)
+end
+
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
     x1::Lifted{<:AbstractVecOrMat{T},N},
@@ -407,15 +455,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # that builds the result's block and writes each lane into it at stride `N`. Registered so
         # `test_rule` drives it at widths 1-3 — the width > 1 path was previously untested, and an
         # element the lane writer skipped would keep the `undef` the block is allocated with.
+        # `interface_only=false` unlike the `_kron!` cases above: the result here is freshly
+        # allocated, so finite differences are meaningful and the derivative itself is checked.
+        # With `true` these would assert only that the rule runs, which pins none of the above.
         # `Float32`/`Float64` only: unlike the in-place `_kron!`, the allocating frule is bounded to
         # those, so `Float16` has no forward primitive and builds a derived rule instead.
         map([Float64, Float32]) do P
-            return (true, :none, nothing, kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
+            return (false, :none, nothing, kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
         end,
         # Wrapped operands take the `arrayify`/`convert` path into the same lane writer.
         map([Float64, Float32]) do P
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 kron,
