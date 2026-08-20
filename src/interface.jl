@@ -751,6 +751,18 @@ function _validate_jacobian_output(y, Tx)
             "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
         ),
     )
+    # A `view`, a range, or any other wrapper vector has a struct lift over its parent as its
+    # derivative representation, not a flat array, and NEITHER mode can build a Jacobian from
+    # one: forward indexes a lane's tangent and died on a raw `MethodError` from `keys`, reverse
+    # died on an internal `fdata_type` assertion. The kind of representation does not depend on
+    # the chunk width, so width 1 answers this for every cache.
+    dual_type(Val(1), typeof(y)) <: NDualArray || throw(
+        ArgumentError(
+            "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
+            "representation is a struct lift over the parent rather than a flat array. " *
+            "Materialise the output first (e.g. `collect`).",
+        ),
+    )
     Ty = eltype(y)
     Ty <: IEEEFloat || throw(
         ArgumentError(
@@ -801,27 +813,16 @@ function _fcache_jacobian_packable!!(
                 fill!(cached, z)
             end
         end
-        # Read each lane's directional derivative straight out of the output's block when the
-        # output V is an `NDualArray` (`tangent(output, lane)` materializes a fresh per-lane
-        # copy under the element-major block — an allocation per lane); other output V shapes
-        # (wrapped vectors) keep the generic per-lane accessor.
-        ov = tangent(output)
-        if ov isa NDualArray
-            @inbounds for lane in 1:W
-                col = s + lane - 1
-                col <= total_dof || break
-                for r in 1:length(getfield(ov, :primal))
-                    J[r, col] = Nfwd._get_partial(ov, r, lane)
-                end
-            end
-        else
-            @inbounds for lane in 1:W
-                col = s + lane - 1
-                col <= total_dof || break
-                lt = tangent(output, lane)
-                for r in eachindex(lt)
-                    J[r, col] = lt[r]
-                end
+        # Read each lane's directional derivative straight out of the output's block, which
+        # `_validate_jacobian_output` has established is an `NDualArray`. Going through
+        # `tangent(output, lane)` instead would materialize a fresh per-lane copy out of the
+        # element-major block — an allocation per lane.
+        ov = tangent(output)::NDualArray
+        @inbounds for lane in 1:W
+            col = s + lane - 1
+            col <= total_dof || break
+            for r in 1:length(getfield(ov, :primal))
+                J[r, col] = Nfwd._get_partial(ov, r, lane)
             end
         end
         s += W

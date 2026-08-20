@@ -1483,6 +1483,16 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 scalar_out_rev_cache, sum, x_jac
             )
 
+            f_wrapper_out = x -> view(x .* x, 1:2)
+            wrapper_out_cache = Mooncake.prepare_derivative_cache(
+                f_wrapper_out,
+                x_jac;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test_throws "value_and_jacobian!! does not support a" Mooncake.value_and_jacobian!!(
+                wrapper_out_cache, f_wrapper_out, x_jac
+            )
+
             f_empty_jac = x -> Float64[]
             expected_empty = (Float64[], zeros(Float64, 0, length(x_jac)))
             fwd_empty_cache = Mooncake.prepare_derivative_cache(
