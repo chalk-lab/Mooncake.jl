@@ -962,10 +962,13 @@ function frule!!(
     if y isa CuMaybeComplexArray
         Y = typeof(y)
         # A view spanning the whole parent covers the entire lane-major block, so it can share
-        # that block outright — as `reshape` does. Copying it instead would detach the tangent and
-        # a write through the view would never reach the parent's, silently.
-        if size(y) == size(primal(x)) && y.offset == 0
-            blk = getfield(tangent(x), :partials_block)
+        # that block — as `reshape` does. Copying it instead would detach the tangent and a write
+        # through the view would never reach the parent's, silently. The test is COVERAGE, not
+        # shape: `view(M, :)` over a matrix spans the whole allocation while changing rank, so
+        # requiring equal shapes left exactly that case detached and silently wrong. Reshaping the
+        # parent's block to the view's shape covers both, and is a no-op when the shape is equal.
+        if length(y) == length(primal(x)) && y.offset == 0
+            blk = reshape(getfield(tangent(x), :partials_block), (size(y)..., Nw))
             V = NDualArray{
                 eltype(y),Nw,ndims(y),Y,Nfwd._wrapped_eltype(eltype(y), Val(Nw)),typeof(blk)
             }(
@@ -3815,6 +3818,7 @@ function frule!!(
     C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
 ) where {Nw}
     pA, pB, pC = primal(A), primal(B), primal(C)
+    _check_cu_writable(pC, "add")
     A_partials = Nfwd._lane_views(tangent(A))
     B_partials = Nfwd._lane_views(tangent(B))
     C_partials = Nfwd._lane_views(tangent(C))

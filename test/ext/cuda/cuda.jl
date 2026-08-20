@@ -1518,6 +1518,15 @@ end
                     z -> (y=z .* 2; fill!(view(y, 1:0), 0.0f0); sum(y)),
                     _rand(rng, Float32, 4),
                 ),
+                # A colon view of a MATRIX spans the whole allocation but comes back as a vector,
+                # so keying the alias on equal shapes rather than equal extent left exactly this
+                # case detached and silently wrong. The vector cases above cannot catch it, since
+                # there shape and extent coincide.
+                (
+                    "rank-changing full-extent view",
+                    z -> (y=z .* 2; v=view(y, :); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 2, 2),
+                ),
             )
                 test_rule(StableRNG(123), f, x; perf_flag=:none, is_primitive=false)
             end
@@ -2384,6 +2393,20 @@ end
                     z -> (y=z .* 2; copyto!(view(y, 3:4), y[1:2]); sum(y)),
                     (_rand(rng, Float32, 4),),
                     (; msg=r"cannot copy through a view", mode=Mooncake.ForwardMode),
+                ),
+                # `transpose!` lowers straight to `cuBLAS.geam!`, which is a write site of its own —
+                # it was the one the first pass of this guard missed, so a strict sub-region
+                # destination silently lost the JVP there.
+                (
+                    294,
+                    "transpose! into a CuArray view (geam!)",
+                    z -> (
+                        Y=z .* 2;
+                        LinearAlgebra.transpose!(view(Y, :, 1:2), CUDA.ones(Float32, 2, 4));
+                        sum(Y)
+                    ),
+                    (_rand(rng, Float32, 4, 4),),
+                    (; msg=r"cannot add through a view", mode=Mooncake.ForwardMode),
                 ),
                 # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
                 (
