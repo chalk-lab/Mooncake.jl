@@ -1546,3 +1546,27 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
     memory = Any[]
     return test_cases, memory
 end
+
+@static if VERSION >= v"1.11-"
+    # A `Vector` grown under `sizehint!` has `length(array) < length(backing Memory)`, so an
+    # offset validated against the Memory can land in capacity slack with no partials column.
+    # The primal read is legal there (uninitialised capacity); the block read would not be.
+    function memoryref_into_capacity_slack(v)
+        return Core.memoryrefget(Core.memoryrefnew(getfield(v, :ref), 5), :not_atomic, true)
+    end
+
+    function throwing_rule_test_cases(::Val{:memory})
+        v = Float64[]
+        sizehint!(v, 16)
+        for i in 1:3
+            push!(v, Float64(i))
+        end
+        return Any[(
+            (ArgumentError, "past the 3 partials columns"),
+            memoryref_into_capacity_slack,
+            (v,),
+            (; mode=ForwardMode),
+        )],
+        Any[v]
+    end
+end

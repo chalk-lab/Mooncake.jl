@@ -2352,8 +2352,17 @@ end
             ncols::Int,
             col::Int,
         ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-            col >= 1 ||
-                throw(ArgumentError("NDualMemoryRef column index must be >= 1; got $col."))
+            # `ncols` is the block's column count, NOT the backing `Memory`'s length: an
+            # `Array`-projected ref has `ncols == length(array)`, so an offset validated against
+            # the Memory can land in capacity slack with no column. `ncols + 1` is an end ref —
+            # formable, not dereferenceable — and an empty array's ref is exactly that.
+            1 <= col <= ncols + 1 || throw(
+                ArgumentError(
+                    "NDualMemoryRef column $col is past the $ncols partials columns. The " *
+                    "offset is inside the backing `Memory` but past the seeded array's " *
+                    "length, so there is no partials column for it.",
+                ),
+            )
             return new{Element,N,M}(primal, partials_ref, ncols, col)
         end
     end
@@ -2387,10 +2396,11 @@ end
     # `MemoryRef` into the block's backing at the start (lane 1) of column `col`. Columns are
     # adjacent in the column-major block, so a run of `n` columns from here is one contiguous
     # backing range of `n * N` elements — flat copies need no per-lane striding at any offset.
-    # `memoryrefnew` skips its bounds check here: `col` is the primal ref's own validated offset
-    # and the block spans every column (`ncols == length(mem)`), and `k ∈ 1:N` stays within a
-    # column's `N` rows — so every offset is provably in bounds. The per-lane check is otherwise
-    # a hot-path cost on scalar array access.
+    # `memoryrefnew` skips its bounds check here: the constructor confines `col` to
+    # `1:ncols + 1` — which the primal ref's own offset does not, being validated against the
+    # backing `Memory`, whose length can exceed `ncols` — and `k ∈ 1:N` stays within a column's
+    # `N` rows. Only the `ncols + 1` end ref is out of the block, and dereferencing it is primal
+    # UB. The per-lane check is otherwise a hot-path cost on scalar array access.
     @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
         col == 1 && return partials_ref
         return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, false)
