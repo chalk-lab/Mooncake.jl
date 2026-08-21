@@ -468,6 +468,12 @@ end
 # passed as its dual). An argument that dual-lifts to a struct wrapper (`ImmutableDual`/
 # `MutableDual`) is not dispatch-compatible with the primal function, so the call is rejected and
 # falls back to the frule transform.
+#
+# The verdict is a property of `(sig_types, width)`, NOT of the function: the same function can be
+# admitted at one chunk width and rejected at another. Rejection keys on callee identity, and
+# inference inlines differently per width, so a callee on the reject list may be a visible `:invoke`
+# at one width and inlined away — hence invisible — at the next. Never cache or reason about a
+# verdict as "this function is nfwd-safe".
 function _nfwd_safe(sig_types::Vector, width::Int)
     isempty(sig_types) && return false
     all(isconcretetype, sig_types) || return false
