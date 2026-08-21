@@ -306,6 +306,41 @@ end
     end
 end
 
+# A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dof
+# range per argument. A repeated mutable argument breaks that accounting: the seeds are built per
+# argument, so the seeded primal stops aliasing and the sweep differentiates a different function
+# (a mutating `f` then reports the value for distinct arguments), and making the slots share a
+# primal is not enough either — the direction has to reach every position the argument occupies,
+# and the dof ranges then no longer correspond one-to-one with arguments. Refuse instead of
+# returning a wrong gradient. `value_and_derivative!!` handles this correctly, because the caller
+# supplies the seeds and can share one tangent across the repeated positions.
+# `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
+# argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
+@generated function _check_gradient_arg_aliasing(x::Tuple)
+    checks = Expr(:block)
+    n = length(x.parameters)
+    for i in 1:n, j in (i + 1):n
+        Base.ismutabletype(x.parameters[i]) || continue
+        push!(checks.args, :(x[$i] === x[$j] && _throw_gradient_arg_alias_error($i, $j)))
+    end
+    return quote
+        $checks
+        return nothing
+    end
+end
+
+function _throw_gradient_arg_alias_error(i::Int, j::Int)
+    throw(
+        ArgumentError(
+            "Forward-mode `value_and_gradient!!` does not support passing the same mutable " *
+            "object as both argument $i and argument $j: the gradient is assembled from one " *
+            "standard-basis dof range per argument, which cannot represent a repeated " *
+            "argument. Use `value_and_derivative!!` with one tangent shared across the " *
+            "repeated positions, or use reverse mode.",
+        ),
+    )
+end
+
 # Input-mutation safety (used only by the GENERIC chunked gradient path and the forward
 # Jacobian sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see
 # `_refresh_all!` / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot)
@@ -1659,6 +1694,7 @@ end
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
+    _check_gradient_arg_aliasing(x)
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
@@ -1815,6 +1851,7 @@ function value_and_gradient!!(
     # the body below unchanged.
     xs = (x1, xs_rest...)
     N = Nm1 + 1
+    _check_gradient_arg_aliasing(xs)
     seed = cache.gradient_seed
     # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is
     # destructured below. Any other seed — `nothing` (differentiable `f` / non-packable), or

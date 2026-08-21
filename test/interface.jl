@@ -1944,6 +1944,38 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gd[3] == [2.0, 1.0, 1.0]
             end
 
+            @testset "forward gradient refuses a repeated mutable argument" begin
+                # The gradient is assembled from one standard-basis dof range per argument, which
+                # cannot represent a repeated argument: the seeds are per-argument, so the seeded
+                # primal stops aliasing and a mutating `f` reported the value for DISTINCT
+                # arguments (13.0 instead of 14.0). Sharing the seed slot instead double-counts.
+                # `value_and_derivative!!` handles it, since the caller shares one tangent.
+                f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
+                x0 = [1.0, 2.0, 3.0]
+                xp = copy(x0)
+                cache = Mooncake.prepare_derivative_cache(f, xp, xp)
+                xg = copy(x0)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(cache, f, xg, xg)
+                # The supported route gives the aliased truth: value 14.0, all-ones direction 8.0.
+                xs = copy(x0)
+                ss = [1.0, 1.0, 1.0]
+                v, d = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (xs, ss), (xs, ss)
+                )
+                @test v == 14.0
+                @test d == 8.0
+                # Distinct arguments are unaffected, and an immutable repeated argument is fine
+                # (a scalar cannot be mutated, so there is no aliasing to represent).
+                g(a, b) = sum(a .* b)
+                cg = Mooncake.prepare_derivative_cache(g, [1.0, 2.0], [3.0, 4.0])
+                _, gg = Mooncake.value_and_gradient!!(cg, g, [1.0, 2.0], [3.0, 4.0])
+                @test gg[2] == [3.0, 4.0]
+                @test gg[3] == [1.0, 2.0]
+                h(a, b) = a * b
+                ch = Mooncake.prepare_derivative_cache(h, 2.0, 3.0)
+                @test Mooncake.value_and_gradient!!(ch, h, 4.0, 4.0)[1] == 16.0
+            end
+
             @testset "empty-cache reused at non-empty input" begin
                 f(x) = sum(x .^ 2)
                 cache = prepare_hessian_cache(f, Float64[])
