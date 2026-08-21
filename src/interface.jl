@@ -162,6 +162,9 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # gradient buffer. `nothing` for every other input shape (differentiable `f`, structs,
     # tuples, complex, mixed eltypes, …), which uses the generic chunked gradient path.
     gradient_seed::GS
+    # Whether the prepared inputs share differentiable storage across positions (`f.v === x`,
+    # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_alias`.
+    inputs_alias::Bool
     # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a
     # single same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix,
     # sized and filled on the first call (the output shape is not known at construction).
@@ -322,9 +325,9 @@ end
 # supplies the seeds and can share one tangent across the repeated positions.
 #
 # Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
-# repeated scalar is not aliasing, and a mutable nested inside an immutable container is not detected.
-# See `_validate_prepared_aliasing` for why the recursive check that would catch it costs too much to
-# run per call.
+# repeated scalar is not aliasing. Sharing nested inside an immutable container is caught instead by
+# `_inputs_alias` at cache construction, where the traversal it needs is paid once; see
+# `_validate_prepared_aliasing` for why that traversal is too expensive to run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 @generated function _check_gradient_arg_aliasing(x::Tuple)
@@ -348,6 +351,43 @@ function _throw_gradient_arg_alias_error(i::Int, j::Int)
             "standard-basis dof range per argument, which cannot represent a repeated " *
             "argument. Use `value_and_derivative!!` with one tangent shared across the " *
             "repeated positions, or use reverse mode.",
+        ),
+    )
+end
+
+# Whether the inputs share differentiable storage ACROSS positions, exactly. `_zero_tangents`
+# builds the tuple through one aliasing cache, so a shared leaf gets one tangent and counts its
+# dof once; summing per-argument tangents counts it once per position it occupies. Sharing
+# WITHIN one argument leaves both counts equal (both share it), and `===` on an immutable is
+# value equality, so equal scalars (`f(2.0, 2.0)`) cannot make them differ either.
+#
+# `_check_gradient_arg_aliasing` catches only a repeated top-level MUTABLE argument. This
+# catches sharing at any depth, and sharing with `f` — which that check never sees, as it is
+# passed the arguments alone. Cost is a full extra tangent set, so it runs once at cache
+# construction rather than per call; aliasing that appears only at call time is therefore not
+# caught, matching what `_validate_prepared_aliasing` accepts for reverse mode, for the same
+# reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
+# held fixed, so one dof range covers every position and there is nothing to double-count.
+_inputs_alias(shared_dof::Int, fx::Tuple) = shared_dof != sum(x -> dof(zero_tangent(x)), fx)
+
+# Refused here rather than at construction because `value_and_derivative!!` shares this cache
+# and handles aliased inputs correctly: the caller supplies the seeds, so one tangent can cover
+# every position the shared leaf occupies.
+@inline function _check_gradient_input_aliasing(cache::FCache)
+    getfield(cache, :inputs_alias) && _throw_gradient_input_alias_error()
+    return nothing
+end
+
+function _throw_gradient_input_alias_error()
+    throw(
+        ArgumentError(
+            "Forward-mode `value_and_gradient!!` does not support inputs that share " *
+            "differentiable storage across positions — `f` holding the same array that is " *
+            "also passed as an argument, say. The gradient is assembled from one " *
+            "standard-basis dof range per input, so a shared leaf is differentiated once " *
+            "for every position it occupies and its gradient comes back scaled by that " *
+            "count. Use `value_and_derivative!!` with one tangent shared across those " *
+            "positions, or use reverse mode.",
         ),
     )
 end
@@ -540,6 +580,7 @@ is shown by the cache.
     # float arrays. Only the zero-allocation fast path below is shape-restricted (see
     # `gradient_seed`).
     total_dof = dof(_zero_tangents(fx))
+    inputs_alias = _inputs_alias(total_dof, fx)
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dof, requested)
@@ -652,6 +693,7 @@ is shown by the cache.
             input_specs,
             _copy_output(Base.tail(fx)),
             gradient_seed,
+            inputs_alias,
             jacobian_buffer,
         )
     end
@@ -669,6 +711,7 @@ is shown by the cache.
         input_specs,
         _copy_output(Base.tail(fx)),
         gradient_seed,
+        inputs_alias,
         jacobian_buffer,
     )
 end
@@ -1706,6 +1749,7 @@ end
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
     _check_gradient_arg_aliasing(x)
+    _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
@@ -1863,6 +1907,7 @@ function value_and_gradient!!(
     xs = (x1, xs_rest...)
     N = Nm1 + 1
     _check_gradient_arg_aliasing(xs)
+    _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
     # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is
     # destructured below. Any other seed — `nothing` (differentiable `f` / non-packable), or

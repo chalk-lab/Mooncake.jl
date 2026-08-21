@@ -37,6 +37,18 @@ mutable struct AliasedPair
     b::Vector{Float64}
 end
 
+# A callable holding an array, so the callable can share storage with an argument.
+struct FwdAliasHolder{V}
+    v::V
+end
+(h::FwdAliasHolder)(x) = sum(h.v .* x)
+
+# Two fields that may be the same array: aliasing inside ONE argument.
+struct FwdAliasPair{A}
+    p::A
+    q::A
+end
+
 mutable struct AnyCycleNode
     next::Any
     weight::Float64
@@ -1974,6 +1986,38 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 h(a, b) = a * b
                 ch = Mooncake.prepare_derivative_cache(h, 2.0, 3.0)
                 @test Mooncake.value_and_gradient!!(ch, h, 4.0, 4.0)[1] == 16.0
+            end
+
+            @testset "forward gradient refuses inputs sharing storage across positions" begin
+                # `_check_gradient_arg_aliasing` sees only a repeated top-level MUTABLE argument,
+                # and only the arguments — never `f`. A callable holding an array also passed as
+                # an argument shares storage at depth, so the shared leaf was differentiated once
+                # per position and came back scaled by that count: [4,8,12] for a gradient that is
+                # [2,4,6]. Refuse, as for the repeated argument.
+                w = [1.0, 2.0, 3.0]
+                aliased = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), w)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                    aliased, FwdAliasHolder(w), w
+                )
+                # `value_and_derivative!!` shares the cache and handles aliased inputs, so the
+                # refusal must not have moved into construction.
+                dh = Mooncake.zero_tangent(FwdAliasHolder(w))
+                dh.fields.v .= 1.0
+                v, d = Mooncake.value_and_derivative!!(
+                    aliased, (FwdAliasHolder(w), dh), (w, fill(1.0, 3))
+                )
+                @test v == sum(abs2, w)
+                @test d == 2 * sum(w)                    # both occurrences move
+                # No over-refusal: distinct storage still matches reverse mode.
+                distinct = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), copy(w))
+                _, gd = Mooncake.value_and_gradient!!(distinct, FwdAliasHolder(w), copy(w))
+                @test gd[2] == w
+                # Sharing WITHIN one argument is representable (one dof range covers both
+                # occurrences) and must keep working.
+                intra(t) = sum(t.p .* t.q)
+                ci = Mooncake.prepare_derivative_cache(intra, FwdAliasPair(w, w))
+                _, gi = Mooncake.value_and_gradient!!(ci, intra, FwdAliasPair(w, w))
+                @test gi[2].fields.p == 2 .* w
             end
 
             @testset "empty-cache reused at non-empty input" begin
