@@ -204,6 +204,23 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
     return d, NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
+# Rebuild `dv` over `stored` so the primal and its dual share storage. Converting an
+# `NDualArray`'s element type must allocate a new primal, which severs it from the stored object.
+@inline function _fwd_dual_over_stored(
+    ::Val{N}, stored::Array{E}, dv::NDualArray
+) where {N,E<:NDualEltype}
+    out = zero_dual(Val(N), stored)
+    copyto!(getfield(out, :partials_block), getfield(dv, :partials_block))
+    return out
+end
+@inline _fwd_dual_over_stored(::Val, stored, _) = throw(
+    ArgumentError(
+        "forward mode cannot store into an `IdDict` with value type $(typeof(stored)) when the " *
+        "conversion allocates: the dual cannot be rebuilt over the stored object, so a later " *
+        "mutation through the dict would be lost. Convert the value before storing it.",
+    ),
+)
+
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
 function frule!!(
     ::Lifted{typeof(setindex!),N},
@@ -213,14 +230,20 @@ function frule!!(
 ) where {N,K,V,Vdv}
     setindex!(primal(d), primal(val), primal(key))
     # `setindex!` above stored `convert(V, val)`, so the dual slot is `dual_type(Val(N), V)` (= `Vdv`),
-    # not the dual type of `val`'s own type: a `NoDual` slot for a non-diff dict value, a zero dual of
-    # the stored value when the stored value is itself non-diff, else `val`'s dual.
+    # not the dual type of `val`'s own type.
     dslot = if Vdv == NoDual
         NoDual()
     elseif dual_type(Val(N), typeof(primal(val))) == NoDual
         zero_dual(Val(N), primal(d)[primal(key)])
     else
-        tangent(val)
+        # A conversion that allocated a fresh mutable value leaves `val`'s dual over an object the
+        # dict does not hold, so a mutation through the dict would be invisible to it.
+        stored = primal(d)[primal(key)]
+        if stored === primal(val) || !ismutable(stored)
+            tangent(val)
+        else
+            _fwd_dual_over_stored(Val(N), stored, tangent(val))
+        end
     end
     setindex!(tangent(d), dslot, primal(key))
     return d
@@ -408,4 +431,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:iddict})
+    # A store whose `convert` allocates, then a mutation THROUGH the dict. Storing alone does not
+    # catch it: an unreachable primal reads the same as the right one until something mutates.
+    function converting_store_then_mutate(x::Vector{Float32})
+        d = IdDict{Int,Vector{Float64}}()
+        d[1] = x
+        d[1][1] += 1.0
+        return sum(d[1])
+    end
+    test_cases = Any[(
+        false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]
+    )]
+    return test_cases, Any[]
+end
