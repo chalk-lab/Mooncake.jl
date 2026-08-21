@@ -168,10 +168,17 @@ function frule!!(
 ) where {Nw}
     ref = unsafe_pointer_to_objref(primal(x))
     P = eltype(eltype(tangent(x)))
-    partials = ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw))
-    return Lifted{typeof(ref),Nw}(
-        ref, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(partials))
-    )
+    # Recover the ORIGINAL partials object rather than snapshotting its values into a fresh one:
+    # lane 1 IS that object's address (the `pointer_from_objref` rule sets lane `k` to
+    # `base + (k-1)*sizeof(P)`, so lane 1 is `base`). A fresh buffer holds the same values but is
+    # separate storage, so a write through the recovered `Ref` never reaches the original slot's
+    # partials and the derivative loses it. At `Nw == 0` there is no lane to recover from.
+    partials = if Nw == 0
+        Base.RefValue{NTuple{Nw,P}}(ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw)))
+    else
+        unsafe_pointer_to_objref(Ptr{Nothing}(UInt(tangent(x)[1])))::Base.RefValue{NTuple{Nw,P}}
+    end
+    return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
 end
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
@@ -707,6 +714,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             :none,
             (lb=0.1, ub=150),
             x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+            _x,
+        ),
+        # Writing THROUGH the recovered alias, which the read-only case above cannot catch: the
+        # round-trip used to rebuild the partials into a fresh buffer, so the write never reached
+        # the original slot's partials and the derivative came out 1.0 where it is 3.0.
+        (
+            false,
+            :none,
+            (lb=0.1, ub=150),
+            x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
             _x,
         ),
         (false, :none, nothing, isassigned, randn(5), 4),
