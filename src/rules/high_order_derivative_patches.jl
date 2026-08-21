@@ -459,6 +459,12 @@ end
 # but currently fixes differentiating through zero_tangent_internal for Arrays.
 @zero_derivative MinimalCtx Tuple{typeof(zero_tangent),Any}
 
+# The cached seed constructors call `zero_tangent_internal` directly, so the `zero_tangent` rule
+# above does not cover them: forward-over-reverse would otherwise differentiate through their
+# `IdDict` construction and hit `_new_(Vector{Float64}, ...)`, which forward mode refuses.
+@zero_derivative MinimalCtx Tuple{typeof(_zero_tangents),Any}
+@zero_derivative MinimalCtx Tuple{typeof(_zero_codual_cached),Any,Any}
+
 @static if VERSION < v"1.11-"
     function frule!!(
         ::Lifted{typeof(_foreigncall_),Nw},
