@@ -1083,6 +1083,18 @@ end
     src = ifelse(below, lo, ifelse(above, hi, a))
     return NDual{T,N}(clamp(a.value, lo.value, hi.value), src.partials)
 end
+# One bound dual, the other plain: promote the plain one and delegate, so the tangent of the dual
+# bound still contributes. `NDual <: Real`, so without these the plain-bounds method below catches a
+# dual bound and `promote_type(T, NDual, ...)` tries to build a nested `NDual{NDual}`. Promote rather
+# than narrow with `T(hi)` — narrowing is the defect the `^`/`log`/`/` methods above were fixed for.
+@inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::H) where {T,N,H<:Real}
+    S = promote_type(T, H)
+    return clamp(convert(NDual{S,N}, a), convert(NDual{S,N}, lo), NDual{S,N}(S(hi)))
+end
+@inline function Base.clamp(a::NDual{T,N}, lo::L, hi::NDual{T,N}) where {T,N,L<:Real}
+    S = promote_type(T, L)
+    return clamp(convert(NDual{S,N}, a), NDual{S,N}(S(lo)), convert(NDual{S,N}, hi))
+end
 @inline function Base.clamp(a::NDual{T,N}, lo::L, hi::H) where {T,N,L<:Real,H<:Real}
     S = promote_type(T, L, H)
     av, loS, hiS = S(a.value), S(lo), S(hi)

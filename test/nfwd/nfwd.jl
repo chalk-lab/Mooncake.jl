@@ -138,6 +138,21 @@ using Mooncake.Nfwd
         hi = NDual{Float64,1}(1.0, (7.0,))
         @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(2.0, (1.0,)), lo, hi), 1) === 7.0
         @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(-1.0, (1.0,)), lo, hi), 1) === 5.0
+        # One bound dual, the other plain. `NDual <: Real`, so without dedicated methods the
+        # plain-bounds method caught a dual bound and `promote_type` tried to build a nested
+        # `NDual{NDual}`, throwing a `TypeError`.
+        mid = NDual{Float64,1}(0.5, (1.0,))
+        @test Nfwd.ndual_value(clamp(mid, lo, 1.0)) === 0.5
+        @test Nfwd.ndual_partial(clamp(mid, lo, 1.0), 1) === 1.0
+        @test Nfwd.ndual_value(clamp(mid, 0.0, hi)) === 0.5
+        # Clamped AT a bound, the surviving partial is that bound's: 7.0 for the dual `hi`, and 0.0
+        # for a plain `hi`, which carries no derivative.
+        above = NDual{Float64,1}(2.0, (1.0,))
+        @test Nfwd.ndual_partial(clamp(above, lo, hi), 1) === 7.0
+        @test iszero(Nfwd.ndual_partial(clamp(above, lo, 1.0), 1))
+        # A wider plain bound promotes rather than narrowing, as `^`/`log`/`/` do above.
+        c32 = NDual{Float32,1}(2.0f0, (1.0f0,))
+        @test clamp(c32, NDual{Float32,1}(0.0f0, (0.0f0,)), 1.5) isa NDual{Float64,1}
     end
 
     @testset "arithmetic" begin
