@@ -702,6 +702,19 @@ function frule!!(
     incx = primal(_incx)
     a = primal(a_da)
     X = primal(X_dX)
+    # The block is element-major by LOGICAL index while BLAS scales raw memory from
+    # `pointer(X)` by `incx`; those agree only for a contiguous operand. `dotc`/`dotu` fall
+    # back to `_dense_lane_partial` here, but that rebuild is a copy and this rule mutates in
+    # place. Supporting strided operands means updating the PARENT block at its raw offset.
+    _blas_dot_raw_safe(X) || throw(
+        ArgumentError(
+            "Forward-mode `BLAS.scal!` does not support the non-contiguous operand " *
+            "`$(typeof(X))` (stride $(stride(X, 1))): BLAS scales raw memory from " *
+            "`pointer(X)` with the given `incx`, which does not follow the operand's own " *
+            "elements, so its partials block cannot be updated to match. Pass a contiguous " *
+            "operand, or the raw-pointer form.",
+        ),
+    )
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
     Xb, copied = _partials_block(X_dX)
     Xbm = reshape(Xb, Nw, :)
@@ -2810,6 +2823,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     return test_cases, Any[]
 end
 
+function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
+    # The registered `scal!` cases all pass a DENSE vector, where logical index and raw walk
+    # coincide for any `incx`, so none reach this guard. `incx == stride` is the well-formed
+    # call: its primal is correct, and it previously indexed the operand out of range.
+    x = view(P[i for i in 1:10], 1:2:10)
+    return Any[(
+        (ArgumentError, "non-contiguous operand"),
+        BLAS.scal!,
+        (5, P(2), x, 2),
+        (; mode=ForwardMode),
+    )],
+    Any[x]
+end
+
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
 # reclaim one precision's arrays before the next is allocated.
 for P in (Float64, Float32, ComplexF64, ComplexF32)
@@ -2819,5 +2846,8 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
     @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
         return derived_rule_test_cases(rng_ctor, Val(:blas), $P)
+    end
+    @eval function throwing_rule_test_cases(::Val{$(QuoteNode(sym))})
+        return throwing_rule_test_cases(Val(:blas), $P)
     end
 end
