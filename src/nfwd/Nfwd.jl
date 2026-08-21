@@ -1065,6 +1065,11 @@ end
 # min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the
 # corresponding tangent. When both operands are exactly the same scalar value, keep the
 # existing ordinary-tie convention (second arg for max, first arg for min).
+#
+# Selecting the WHOLE dual is safe here, unlike in the `max_float` frule, because
+# `_ndual_pick_*` asks which operand `isequal` to the already-computed `max`/`min`: the winner's
+# `.value` is the primal by construction. Deriving the winner from a bare comparison instead
+# would break the inner-value invariant, since `NaN > x` is false while the primitive returns NaN.
 @inline function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return ifelse(_ndual_pick_max(a.value, b.value), a, b)
 end
