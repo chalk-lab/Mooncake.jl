@@ -329,6 +329,11 @@ function rrule!!(
     p::CoDual{<:Ptr{T}},
     dims::CoDual,
 ) where {T}
+    # Refuse before wrapping: a wrapped NULL sentinel is a well-typed `Array` over address zero that
+    # nothing downstream can tell from a real tangent, so the first consumer to touch it segfaults
+    # (`lmemoryrefget`'s pullback did). Same guard as `pointerref`/`pointerset`, so the whole pointer
+    # family refuses the same input, and forward already refuses it via the `NoDual`-V check above.
+    _check_tangent_ptr(tangent(p))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
@@ -503,6 +508,13 @@ const _NULL_TANGENT_PTR_MSG =
 # A NULL tangent pointer is only unsafe once it addresses real bytes. A zero-size tangent element
 # type (`Ptr{NoTangent}`, from a non-differentiable store) makes the access a no-op, so it stays
 # legal; a re-typed `Ptr{Float64}` reads or writes `sizeof(Float64)` bytes at address zero.
+#
+# NULL is a poison value in a type that cannot carry poison, so every consumer must know to test for
+# it: the pointer rules do, and each new consumer is a fresh chance to forget. Any rule that turns a
+# tangent pointer into a CONTAINER must also not launder it — a wrapped NULL is a well-typed `Array`
+# nothing downstream can distinguish (see the `unsafe_wrap` rrule above). Making "no tangent storage"
+# its own type would let dispatch enforce this instead of convention, at the cost of touching every
+# rule that takes a `Ptr` tangent.
 @inline function _check_tangent_ptr(dx)
     if dx isa Ptr && iszero(UInt(dx)) && sizeof(eltype(dx)) > 0
         throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
@@ -2347,6 +2359,11 @@ function throwing_rule_test_cases(::Val{:builtins})
     # tangent pointer, and dereferencing it segfaulted before the atomic rules carried the guard
     # their non-atomic siblings already had. `Vector{UInt8}` rather than `Memory{UInt8}` so the case
     # runs on 1.10 too, where `Memory` does not exist.
+    function unsafe_wrap_retyped_bytes(b, x)
+        return GC.@preserve b begin
+            x * unsafe_wrap(Array{Float64,1}, Ptr{Float64}(pointer(b)), 1)[1]
+        end
+    end
     function atomic_load_retyped_bytes(b, x)
         return GC.@preserve b begin
             x * unsafe_load(Ptr{Float64}(pointer(b)), :monotonic)
@@ -2401,6 +2418,14 @@ function throwing_rule_test_cases(::Val{:builtins})
             (
                 (ArgumentError, "no tangent storage"),
                 atomic_load_retyped_bytes,
+                (zeros(UInt8, 8), 2.0),
+                (; mode=ReverseMode),
+            ),
+            # Same sentinel reached through `unsafe_wrap` rather than a load: wrapping it would hand a
+            # container over address zero to the next consumer, which segfaulted.
+            (
+                (ArgumentError, "no tangent storage"),
+                unsafe_wrap_retyped_bytes,
                 (zeros(UInt8, 8), 2.0),
                 (; mode=ReverseMode),
             ),
