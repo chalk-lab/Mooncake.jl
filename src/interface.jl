@@ -286,6 +286,12 @@ end
         # so two zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever
         # the primals are — checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at
         # `(3.0, 4.0)`. An immutable tangent also holds no shared storage to accumulate into.
+        #
+        # So a mutable nested inside an immutable container (a tuple-wrapped array, say) is NOT
+        # checked, and such a mismatch still returns a wrong gradient silently. Catching it needs the
+        # set of mutable objects reachable from each argument, which is O(size of the argument
+        # structure) per call — measured at 131ms and 12.6MB for a `Vector` of 100k arrays against
+        # 1.8us for a tuple of one. Not worth paying on every legitimate call to catch a misuse.
         Base.ismutabletype(tangents.parameters[i]) &&
         Base.ismutabletype(tangents.parameters[j]) || continue
         push!(
@@ -314,6 +320,11 @@ end
 # and the dof ranges then no longer correspond one-to-one with arguments. Refuse instead of
 # returning a wrong gradient. `value_and_derivative!!` handles this correctly, because the caller
 # supplies the seeds and can share one tangent across the repeated positions.
+#
+# Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
+# repeated scalar is not aliasing, and a mutable nested inside an immutable container is not detected.
+# See `_validate_prepared_aliasing` for why the recursive check that would catch it costs too much to
+# run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 @generated function _check_gradient_arg_aliasing(x::Tuple)
