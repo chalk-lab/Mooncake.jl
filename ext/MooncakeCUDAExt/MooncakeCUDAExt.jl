@@ -2754,7 +2754,12 @@ end
     out = _gpu_broadcast_dual(pf, flat_px)
     decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
     P_out = typeof(decoded.primal_out)
-    decoded.is_diff || return Lifted{P_out,Nw}(decoded.primal_out, NoDual())
+    # `is_diff` reports that the kernel's elements carried no partials, NOT that the result is
+    # non-differentiable — a mapped `f` that strips the dual lands here with a differentiable
+    # `P_out`. `zero_dual` gives the canonical V either way, `NoDual` included.
+    decoded.is_diff || return Lifted{P_out,Nw}(
+        decoded.primal_out, Mooncake.zero_dual(Val(Nw), decoded.primal_out)
+    )
     dy_lanes = ntuple(
         k -> _gpu_accumulate_reduced_jvp(
             out, (flat_px,), (x_partials[k],), decoded.primal_out

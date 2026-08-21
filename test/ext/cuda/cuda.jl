@@ -98,6 +98,10 @@ end
         # non-differentiable `Int` result. Forward mode must return a zero-derivative (NoDual) V, not
         # crash. Exercised on a dense CuArray and (via the caller passing `x'`) an Adjoint below.
         _sum_f_pred(x) = sum(y -> y > 0.5, x)
+        # Same predicate stripped to a CONCRETE float: the result is differentiable while the kernel
+        # carries no partials, so `NoDual` is canonical for the `Int` case above and wrong here.
+        # `oftype(y, ...)` converts to `y`'s dual type instead and never reaches that branch.
+        _sum_f_pred_f32(x) = sum(y -> Float32(y > 0), x)
         # complex sum(f, x) wrappers
         _sum_f_cx_abs2(x) = sum(abs2, x)
         _sum_f_cx_sin_re(x) = real(sum(sin, x))
@@ -753,6 +757,9 @@ end
             # sum(predicate, x): non-differentiable Int result (dense and adjoint)
             (false, :none, false, _sum_f_pred, _rand(rng, 16)),
             (false, :none, false, _sum_f_pred, _rand(rng, 4, 3)'),
+            # sum(predicate converted to a concrete float, x): differentiable result, zero derivative
+            (false, :none, false, _sum_f_pred_f32, _rand(rng, Float32, 16)),
+            (false, :none, false, _sum_f_pred_f32, _rand(rng, Float32, 4, 3)'),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
             (false, :none, false, _reduce_plus_d1, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _reduce_plus_init, _rand(rng, Float32, 6)),
