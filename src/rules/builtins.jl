@@ -389,6 +389,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
+    _check_tangent_ptr(dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
@@ -460,6 +461,7 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
+    _check_tangent_ptr(tangent(p))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
@@ -2341,6 +2343,15 @@ function throwing_rule_test_cases(::Val{:builtins})
     # `Ptr{Ptr{Float64}}`, but for `Ptr{Float64}` it means no partial storage exists, so loads and
     # stores must refuse rather than drop the derivative. Reached by reinterpreting a byte buffer.
     ndslot = Lifted{Ptr{Float64},1,NoDual}(ptr, NoDual())
+    # Reverse: an atomic load through a pointer re-typed off a non-differentiable buffer has a NULL
+    # tangent pointer, and dereferencing it segfaulted before the atomic rules carried the guard
+    # their non-atomic siblings already had. `Vector{UInt8}` rather than `Memory{UInt8}` so the case
+    # runs on 1.10 too, where `Memory` does not exist.
+    function atomic_load_retyped_bytes(b, x)
+        return GC.@preserve b begin
+            x * unsafe_load(Ptr{Float64}(pointer(b)), :monotonic)
+        end
+    end
     cases = Any[
         (
             ArgumentError,
@@ -2381,5 +2392,19 @@ function throwing_rule_test_cases(::Val{:builtins})
         (ArgumentError, throw, (ArgumentError("hello"),), (; mode=ForwardMode)),
         (AssertionError, throw, (AssertionError("hello"),), (; mode=ForwardMode)),
     ]
+    # The NULL tangent-pointer sentinel this case relies on comes from the `Memory`/`MemoryRef`
+    # rules, so it exists only on 1.11+. On 1.10 a non-differentiable buffer's tangent pointer is a
+    # real address and the guard cannot fire, which is a separate gap.
+    @static if VERSION >= v"1.11-"
+        push!(
+            cases,
+            (
+                (ArgumentError, "no tangent storage"),
+                atomic_load_retyped_bytes,
+                (zeros(UInt8, 8), 2.0),
+                (; mode=ReverseMode),
+            ),
+        )
+    end
     return cases, Any[xv]
 end
