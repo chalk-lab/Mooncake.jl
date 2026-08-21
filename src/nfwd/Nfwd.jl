@@ -2256,15 +2256,13 @@ end
     end
     return a
 end
-# Element-type conversion (e.g. storing a `Vector{Float32}` dual into a `Vector{Float64}`
-# container): convert primal and block to the target element type.
-function Base.convert(
-    ::Type{NDualArray{E2,N,D,A2,W2,B2}}, x::NDualArray{E1,N,D}
-) where {E1,E2,N,D,A2,W2,B2}
-    return NDualArray{E2,N,D,A2,W2,B2}(
-        convert(A2, getfield(x, :primal)), convert(B2, getfield(x, :partials_block))
-    )
-end
+# `NDualArray` has no element-type `convert`: changing the element type has to allocate a new
+# primal, leaving the dual attached to an array the caller does not hold, so a later mutation
+# through the caller's array is silently absent from the derivative. A converting store must
+# rebuild the dual over the destination object instead, as the `IdDict` `setindex!` frule does.
+# Without this method such a store raises a `MethodError`, which is the better failure. The scalar
+# `NDual` conversion above is sound for the opposite reason: an immutable scalar carries its
+# partials inline, so it has no aliased storage a copy could detach from.
 
 # `maximum`/`minimum` over an `NDualArray` select the arg-extreme element's dual. The generic path
 # folds `max`/`min` over `A[i]`, building one `NDual` per element; instead scan the (real) primal for
