@@ -234,6 +234,11 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
+    # Both pointers are dereferenced below, so both must address real tangent
+    # bytes. Same guard as the load/store rules and reverse `unsafe_wrap`; it lives
+    # in `IntrinsicsWrappers`, not the top-level module.
+    IntrinsicsWrappers._check_tangent_ptr(tangent(dest))
+    IntrinsicsWrappers._check_tangent_ptr(tangent(src))
     _n = primal(n)
 
     # Record values that will be overwritten.
@@ -771,6 +776,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
     return test_cases, memory
 end
 
+function unsafe_copyto_retyped_bytes(x, b)
+    y = similar(x)
+    GC.@preserve x y b unsafe_copyto!(pointer(y), Ptr{Float64}(pointer(b)), length(y))
+    return sum(x) + sum(y)
+end
+
 function throwing_rule_test_cases(::Val{:foreigncall})
     # pointer_from_objref of a value whose forward V is immutable but differentiable
     # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
@@ -799,6 +810,23 @@ function throwing_rule_test_cases(::Val{:foreigncall})
         # (`jl_array_ptr`), and must fail loudly at width > 1 for the same reason.
         push!(
             cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
+        )
+    end
+    @static if VERSION >= v"1.11-"
+        # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers. Copying out of
+        # a pointer re-typed off a non-differentiable buffer gives it the NULL
+        # sentinel, which memmoved through address zero. The sentinel comes from the
+        # `Memory`/`MemoryRef` rules, so this is 1.11+ only.
+        copy_bytes = zeros(UInt8, 24)
+        push!(memory, copy_bytes)
+        push!(
+            cases,
+            (
+                (ArgumentError, "no tangent storage"),
+                unsafe_copyto_retyped_bytes,
+                (randn(3), copy_bytes),
+                (; mode=ReverseMode),
+            ),
         )
     end
     return cases, memory
