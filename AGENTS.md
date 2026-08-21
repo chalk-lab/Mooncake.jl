@@ -44,6 +44,12 @@ Target: correct by construction where possible, aggressively testable where not,
 - Write clear error messages, especially for malformed rules, unsupported cases, and rule-construction failures; prefer clear, concise names for variables, types, and methods.
 - No internal work-stage refs (task numbers, `D1`-style labels, ad-hoc `#NNN` tags) in comments, docstrings, or docs. A bare `#NNN` reads as a GitHub issue/PR: use one only when it resolves to a real issue/PR whose content matches — verify relevance, not existence (low legacy numbers often collide with unrelated issues). Prefix external refs: `julia#61368`.
 - Investigate before editing: root-cause and verify the intended fix first; keep investigation notes in `temp/` (untracked scratch). Prefer targeted changes and minimal inline fixes over new helpers or broad refactors; run the `minimise` skill before committing.
+- A change can be correct at its site and wrong for the system. Before committing a fix, establish three things beyond the symptom:
+  1. **What else is in this family?** Enumerate by dispatch or structure (`methods(f)`, the type lattice, the call graph) — not by search. A negative from grep is not evidence of absence: it misses multi-line signatures, submodule definitions, and macro-generated methods. Where the family is BEHAVIOURAL rather than a dispatch family — "every rule that dereferences a tangent pointer", say — neither enumerates it: `pointerref`'s `rrule!!` takes its pointer argument untyped, so no signature search finds it. Enumerate those by the operation performed, and expect to miss members.
+  2. **What does the change make true, and for whom?** A guard added to one family member leaves the codebase less consistent than before — some members now refuse an input and the rest do not. Correct in isolation, net-negative in aggregate.
+  3. **Does this foreclose the better fix?** A local patch that stops the symptom often removes the pressure that would have produced the principled one. Prefer making the bad state unrepresentable over detecting it at each consumer: detection is unbounded work over an open set of consumers, representation is closed under new ones.
+
+  When the principled fix is out of scope, say so in the code and the commit. An unlabelled local patch becomes the permanent answer.
 - Run JuliaFormatter only from `test/integration_testing/format` (pins the CI version): `julia --project=test/integration_testing/format -e 'using JuliaFormatter; JuliaFormatter.format(".")'`.
 
 ## Forward-mode representation (Lifted / dual_type)
