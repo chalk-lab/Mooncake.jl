@@ -728,8 +728,13 @@ end
 ) where {E<:NDualEltype,D,A<:Array{E,D},Nw}
     return Lifted{A,Nw}(y, NDualArray{E,Nw,D,A}(y, dys))
 end
-@inline function _lift_from_lanes(y::P, ::NTuple{Nw,NoTangent}) where {P,Nw}
-    return Lifted{P,Nw}(y, NoDual())
+# Keyed on the LANE TANGENTS being `NoTangent`, which is not the same as `P` being
+# non-differentiable: ChainRules' `@non_differentiable` generates this shape for float-returning
+# functions too (`floor`, `round`, `sign`). `uninit_lifted` builds `dual_type(Val(Nw), P)`, so
+# `NoDual` still comes back when it is canonical, and this matches what width 1 already does via
+# `lift(x, ::NoTangent)` — the widths must agree, or a rule that passes at width 1 dies above it.
+@inline function _lift_from_lanes(y, ::NTuple{Nw,NoTangent}) where {Nw}
+    return uninit_lifted(Val(Nw), y)
 end
 # Tuple result (e.g. `logabsgamma` returning `(Float64, Int64)`): element-wise recursion, the V
 # being the tuple of element Vs (`Lifted` wraps once at the top level, per the dual protocol).

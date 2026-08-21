@@ -120,6 +120,23 @@ end
 
 @from_chainrules DefaultCtx Tuple{typeof(test_nothing)} false
 
+# Sibling of `test_nothing` with a DIFFERENTIABLE output. ChainRules' `@non_differentiable`
+# generates this same `NoTangent` shape for float-returning functions (`floor`, `round`, `sign`),
+# where `NoDual` is not the canonical V. Width 1 packs the result through `lift` and wider widths
+# through `_lift_from_lanes`, so a mismatch between them passes at width 1 and dies above it —
+# which `test_nothing` cannot catch, its `nothing` result making `NoDual` correct.
+
+test_nondiff_float(x::Float64) = floor(x)
+
+CRC.frule((_, _), ::typeof(test_nondiff_float), x::Float64) = (floor(x), CRC.NoTangent())
+
+function CRC.rrule(::typeof(test_nondiff_float), x::Float64)
+    test_nondiff_float_pb(::Float64) = (CRC.NoTangent(), CRC.NoTangent())
+    return floor(x), test_nondiff_float_pb
+end
+
+@from_chainrules DefaultCtx Tuple{typeof(test_nondiff_float),Float64} false
+
 # Test case in which ChainRulesCore returns a tangent which is of the "wrong" type from the
 # perspective of Mooncake.jl. In this instance, some kind of error should be thrown, rather
 # than it being possible for the error to propagate.
@@ -368,6 +385,7 @@ end
             (ToolsForRulesResources.test_sum, ones(5)),
             (ToolsForRulesResources.test_scale, 5.0, randn(3)),
             (ToolsForRulesResources.test_nothing,),
+            (ToolsForRulesResources.test_nondiff_float, 3.7),
             (Core.kwcall, (y=true,), ToolsForRulesResources.test_kwargs, 5.0),
             (Core.kwcall, (y=false,), ToolsForRulesResources.test_kwargs, 5.0),
             (ToolsForRulesResources.test_kwargs, 5.0),
