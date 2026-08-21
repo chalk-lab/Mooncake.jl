@@ -1581,6 +1581,9 @@ end
 # `randn_lifted` enter through these, so the public forward gradient/derivative
 # seeds (which may hold structs, aliasing, or cycles) are correct; the cache-free
 # factories remain the fast path for direct callers and packable chunk seeds.
+#
+# The two entry points must agree: a non-standard V needs BOTH the cache-free factory and the
+# cache-threading one, or whichever is left unoverridden silently yields a non-canonical V.
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval begin
@@ -1798,6 +1801,9 @@ end
 
 # Pure-functional isbits reseed: returns `(rebuilt V, advanced cursor)`, threading the global
 # scalar-dof cursor by value. Mirrors `_basis_seed!!` for the isbits (array-free) shapes only.
+#
+# Both must advance the cursor in exactly the order `dof` counts — one step per real element,
+# real-then-imag for a complex one. A mismatch misplaces gradient entries and never errors.
 @inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
     NoDual(), c
 )

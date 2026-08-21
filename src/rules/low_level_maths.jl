@@ -996,7 +996,9 @@ function rrule!!(::CoDual{typeof(^)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:IE
         p * y / x,
         ifelse(isone(p), one(y), ifelse(iszero(p) || p > one(P), zero(y), oftype(y, Inf))),
     )
-    # d/dp = y·log(x) for x≠0; else 0 (p>0) or NaN (p≤0, genuinely undefined).
+    # d/dp = y·log(x) for x≠0; else 0 (p>0) or NaN (p≤0, genuinely undefined). The log must go
+    # through `complex`: bare `log(x)` is a DomainError for negative `x`, where the real part is
+    # the correct coefficient.
     gp = ifelse(
         !iszero(x), y * real(log(complex(x))), ifelse(p > zero(P), zero(y), oftype(y, NaN))
     )
