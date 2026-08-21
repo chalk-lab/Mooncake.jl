@@ -1986,6 +1986,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 h(a, b) = a * b
                 ch = Mooncake.prepare_derivative_cache(h, 2.0, 3.0)
                 @test Mooncake.value_and_gradient!!(ch, h, 4.0, 4.0)[1] == 16.0
+                # A repeated MUTABLE argument with no differentiable dof is representable: it has
+                # no gradient to assemble, so the dof ranges still line up with the arguments.
+                # `ismutabletype` alone refuses it, and reverse mode accepts it.
+                k(a, b, v) = (a.a + b.a) * sum(v)
+                ck = IntScaler(3)
+                cache_k = Mooncake.prepare_derivative_cache(k, ck, ck, [1.0, 2.0])
+                _, gk = Mooncake.value_and_gradient!!(cache_k, k, ck, ck, [1.0, 2.0])
+                @test gk[4] == [6.0, 6.0]
             end
 
             @testset "forward gradient refuses inputs sharing storage across positions" begin

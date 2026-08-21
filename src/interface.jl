@@ -335,12 +335,21 @@ end
     n = length(x.parameters)
     for i in 1:n, j in (i + 1):n
         Base.ismutabletype(x.parameters[i]) || continue
-        push!(checks.args, :(x[$i] === x[$j] && _throw_gradient_arg_alias_error($i, $j)))
+        push!(checks.args, :(x[$i] === x[$j] && _check_repeated_arg_dof(x[$i], $i, $j)))
     end
     return quote
         $checks
         return nothing
     end
+end
+
+# `ismutabletype` says the argument COULD alias, not that it carries a derivative: a repeated
+# argument with no differentiable dof has no gradient to assemble, and reverse mode accepts it.
+# Called from inside the `===` short-circuit so only an aliasing pair pays, and checked here rather
+# than in the generator so no `tangent_type` verdict is baked into callers' compiled IR.
+@inline function _check_repeated_arg_dof(x, i::Int, j::Int)
+    dof(zero_tangent(x)) == 0 && return nothing
+    return _throw_gradient_arg_alias_error(i, j)
 end
 
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
