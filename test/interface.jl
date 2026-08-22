@@ -56,6 +56,15 @@ struct FwdAliasPair{A}
     q::A
 end
 
+# A differentiable array beside a non-differentiable `Int` that selects how much of it is read.
+# Passed as an ARGUMENT (a differentiable callable would leave the zero-allocation structured
+# path, which is where the prepare-time state was kept).
+struct FwdPrefixSum{V}
+    w::V
+    k::Int
+end
+fwd_prefix_sum(m::FwdPrefixSum) = sum(m.w[1:m.k])
+
 mutable struct AnyCycleNode
     next::Any
     weight::Float64
@@ -1375,6 +1384,33 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 c_nf, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
             )
             @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
+        end
+
+        @testset "reused cache reads call-time non-differentiable state" begin
+            # `_refresh_seed!` restores the differentiable leaves of the prepare-time `deepcopy`;
+            # everything non-differentiable used to keep its prepare-time value for the life of
+            # the cache. Prepared at `k = 2` and called at `k = 4`, this returned 3.0 with a
+            # gradient of [1, 1, 0, 0].
+            w491 = [1.0, 2.0, 3.0, 4.0]
+            plain = Mooncake.Config(; friendly_tangents=false)
+            c491 = Mooncake.prepare_derivative_cache(
+                fwd_prefix_sum, FwdPrefixSum(w491, 2); config=plain
+            )
+            @test getfield(c491, :gradient_seed) isa Mooncake.StructuredGradSeed
+            v491, g491 = Mooncake.value_and_gradient!!(
+                c491, fwd_prefix_sum, FwdPrefixSum(w491, 4)
+            )
+            @test v491 ≈ sum(w491)
+            @test g491[2].fields.w ≈ ones(4)
+
+            # A `SubArray`'s indices are non-differentiable too, and `_validate_prepared_cache`
+            # cannot catch a change in them: both views have the same type and the same size.
+            p491 = collect(1.0:6.0)
+            fv491 = v -> sum(v)
+            cv491 = Mooncake.prepare_derivative_cache(fv491, view(p491, 1:3); config=plain)
+            vv491, gv491 = Mooncake.value_and_gradient!!(cv491, fv491, view(p491, 4:6))
+            @test vv491 ≈ sum(view(p491, 4:6))
+            @test gv491[2].fields.parent ≈ [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
         end
 
         @testset "forward cache mismatch errors" begin

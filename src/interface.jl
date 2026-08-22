@@ -2096,6 +2096,140 @@ end
     return _refresh_all!(Base.tail(arg_seeds), Base.tail(xs))
 end
 
+# `_refresh_seed!` above restores only the differentiable leaves of the prepare-time `deepcopy`, so
+# every non-differentiable part of a structured argument — a struct's `Int` field, a `SubArray`'s
+# indices — kept its prepare-time value for the life of the cache, and a cache prepared for
+# `sum(m.w[1:2])` answered THAT question when called with `k = 4`. Types and top-level sizes match,
+# so `_validate_prepared_cache` cannot see it. Rebuild the primal around the call's
+# non-differentiable state instead, keeping the cache-owned differentiable buffers; every level
+# returns the object it was handed when nothing changed, so an unchanged call constructs nothing.
+# The V shapes mirror `_refresh_seed!`'s methods, and anything else `MethodError`s here rather than
+# being skipped.
+_refresh_nondiff(::Nfwd.NDualArray, p, _x) = p
+_refresh_nondiff(::NoDual, _p, x) = x
+
+# A non-differentiable ARRAY is copied into the cache's own buffer rather than taken from the call,
+# keeping the promise that a seed never aliases the caller's storage — an in-place `f` would
+# otherwise write through to the user's input.
+function _refresh_nondiff(::NoDual, p::A, x::A) where {A<:Array}
+    size(p) == size(x) || throw(
+        PreparedCacheError(
+            "Prepared cache mismatch: a non-differentiable array argument has size $(size(x)) " *
+            "but the cache was built for size $(size(p)). Rebuild the cache for the new shape.",
+        ),
+    )
+    copyto!(p, x)
+    return p
+end
+
+@generated function _refresh_nondiff(v::ImmutableDual{NT}, p::P, x) where {NT<:NamedTuple,P}
+    ns = fieldnames(NT)
+    isempty(ns) && return :p
+    syms = [Symbol(:f_, i) for i in eachindex(ns)]
+    body = [
+        :(
+            $(syms[i]) = _refresh_nondiff(
+                getfield(vv, $(QuoteNode(ns[i]))),
+                getfield(p, $(QuoteNode(ns[i]))),
+                getfield(x, $(QuoteNode(ns[i]))),
+            )
+        ) for i in eachindex(ns)
+    ]
+    unchanged = foldl(
+        (a, b) -> :($a && $b),
+        [:($(syms[i]) === getfield(p, $(QuoteNode(ns[i])))) for i in eachindex(ns)],
+    )
+    return quote
+        vv = getfield(v, :value)
+        $(body...)
+        $unchanged && return p
+        return _new_($P, $(syms...))
+    end
+end
+
+# A mutable primal is refreshed in place, so the seed keeps its identity. Writing only fields that
+# actually changed also keeps a `const` field silent unless the reuse genuinely conflicts with it.
+@generated function _refresh_nondiff(v::MutableDual{NT}, p, x) where {NT<:NamedTuple}
+    ns = fieldnames(NT)
+    body = [
+        quote
+            let f = _refresh_nondiff(
+                    getfield(vv, $(QuoteNode(n))),
+                    getfield(p, $(QuoteNode(n))),
+                    getfield(x, $(QuoteNode(n))),
+                )
+                f === getfield(p, $(QuoteNode(n))) || setfield!(p, $(QuoteNode(n)), f)
+            end
+        end for n in ns
+    ]
+    return quote
+        vv = getfield(v, :value)
+        $(body...)
+        return p
+    end
+end
+
+@generated function _refresh_nondiff(v::Tuple, p::Tuple, x::Tuple)
+    n = length(v.parameters)
+    n == 0 && return :p
+    syms = [Symbol(:f_, i) for i in 1:n]
+    body = [:($(syms[i]) = _refresh_nondiff(v[$i], p[$i], x[$i])) for i in 1:n]
+    unchanged = foldl((a, b) -> :($a && $b), [:($(syms[i]) === p[$i]) for i in 1:n])
+    return quote
+        $(body...)
+        $unchanged && return p
+        return tuple($(syms...))
+    end
+end
+
+@generated function _refresh_nondiff(v::NamedTuple{ns}, p, x) where {ns}
+    isempty(ns) && return :p
+    syms = [Symbol(:f_, i) for i in eachindex(ns)]
+    body = [
+        :(
+            $(syms[i]) = _refresh_nondiff(
+                getfield(v, $(QuoteNode(ns[i]))),
+                getfield(p, $(QuoteNode(ns[i]))),
+                getfield(x, $(QuoteNode(ns[i]))),
+            )
+        ) for i in eachindex(ns)
+    ]
+    unchanged = foldl(
+        (a, b) -> :($a && $b),
+        [:($(syms[i]) === getfield(p, $(QuoteNode(ns[i])))) for i in eachindex(ns)],
+    )
+    return quote
+        $(body...)
+        $unchanged && return p
+        return typeof(p)(tuple($(syms...)))
+    end
+end
+
+# Returns the STORED tuple, not a fresh one, when no argument needed rebuilding — the structured
+# gradient path is asserted allocation-free, and building a tuple of non-isbits `Lifted`s per call
+# would show up there.
+@generated function _refresh_nondiff_all(arg_seeds::Tuple, xs::Tuple)
+    n = length(arg_seeds.parameters)
+    n == 0 && return :arg_seeds
+    syms = [Symbol(:p_, i) for i in 1:n]
+    body = [
+        :(
+            $(syms[i]) = _refresh_nondiff(
+                tangent(arg_seeds[$i]), primal(arg_seeds[$i]), xs[$i]
+            )
+        ) for i in 1:n
+    ]
+    unchanged = foldl(
+        (a, b) -> :($a && $b), [:($(syms[i]) === primal(arg_seeds[$i])) for i in 1:n]
+    )
+    rebuilt = [:(typeof(arg_seeds[$i])($(syms[i]), tangent(arg_seeds[$i]))) for i in 1:n]
+    return quote
+        $(body...)
+        $unchanged && return arg_seeds
+        return tuple($(rebuilt...))
+    end
+end
+
 # Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)`
 # leaf tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an
 # in-place `f` dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W`
@@ -2153,7 +2287,9 @@ function _structured_gradient!!(
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
     # rewrap.
     f_seed = typeof(f_stored)(f, tangent(f_stored))
-    arg_seeds = seed.arg_seeds
+    # The stored seeds hold the prepare-time non-differentiable state; rebuild it from this call's
+    # arguments, as the `f` rewrap above does for the callable.
+    arg_seeds = _refresh_nondiff_all(seed.arg_seeds, xs)
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
     W = cache.gradient_chunk_size
