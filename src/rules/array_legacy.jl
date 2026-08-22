@@ -448,6 +448,23 @@ function frule!!(
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
     return Lifted{Ptr{P},1}(y, (dy,))
 end
+# An all-`NoDual` element-wise V carries no derivative, so neither does its pointer: `NoDual` IS the
+# canonical V here, since a non-differentiable element type makes `dual_type(Val(1), Ptr{P})` `NoDual`.
+# The method above would instead hand out `pointer(::Array{NoDual})` — a real address into a buffer of
+# zero-size elements — which contradicts the slot's own declared type and which a re-typing `bitcast`
+# then reads as `Float64` partials, giving a derivative that varies with unrelated heap contents.
+# Mirrors the 1.11+ `_get_lifted_field(::MemoryRef, :ptr_or_offset)` exclusion for a `NoDual` element.
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),1},
+    ::Lifted{Val{:jl_array_ptr},1},
+    ::Lifted{Val{Ptr{P}},1},
+    ::Lifted{Tuple{Val{Any}},1},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    a::Lifted{<:Array,1,<:Array{NoDual}},
+) where {P}
+    return Lifted{Ptr{P},1}(ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a)), NoDual())
+end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
     ::CoDual{Val{:jl_array_ptr}},

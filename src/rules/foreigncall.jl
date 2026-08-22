@@ -848,13 +848,14 @@ function throwing_rule_test_cases(::Val{:foreigncall})
             cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
         )
     end
+    copy_bytes = zeros(UInt8, 24)
+    push!(memory, copy_bytes)
     @static if VERSION >= v"1.11-"
         # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers. Copying out of
         # a pointer re-typed off a non-differentiable buffer gives it the NULL
         # sentinel, which memmoved through address zero. The sentinel comes from the
-        # `Memory`/`MemoryRef` rules, so this is 1.11+ only.
-        copy_bytes = zeros(UInt8, 24)
-        push!(memory, copy_bytes)
+        # `Memory`/`MemoryRef` rules, so this is 1.11+ only; 1.10 reverse differentiates the same
+        # program correctly, so there is nothing to refuse there.
         push!(
             cases,
             (
@@ -864,19 +865,19 @@ function throwing_rule_test_cases(::Val{:foreigncall})
                 (; mode=ReverseMode),
             ),
         )
-        # Forward reaches the same program with a MIXED V — real per-lane pointers for the
-        # destination, `NoDual` for the re-typed source — which the broad `@is_primitive` covers but
-        # no method did, so it was a raw `MethodError` rather than this diagnosis.
-        push!(
-            cases,
-            (
-                (ArgumentError, "forward representation is `NoDual`"),
-                unsafe_copyto_retyped_bytes,
-                (randn(3), copy_bytes),
-                (; mode=ForwardMode),
-            ),
-        )
     end
+    # Forward reaches the same program with a MIXED V — real per-lane pointers for the destination,
+    # `NoDual` for the re-typed source. Every version, which is the point: 1.10 used to hand the
+    # source a fabricated pointer and report a derivative that varied with unrelated heap contents.
+    push!(
+        cases,
+        (
+            (ArgumentError, "forward representation is `NoDual`"),
+            unsafe_copyto_retyped_bytes,
+            (randn(3), copy_bytes),
+            (; mode=ForwardMode),
+        ),
+    )
     # A raw `Ptr` slot carries the `uninit_*` placeholder, whose lane pointer IS the primal address,
     # so copying through it dereferences the primal as a derivative. Ready-made slots because
     # seeding a raw `Ptr` primal cannot express the shape. A coherent destination (its own tangent
