@@ -3313,6 +3313,35 @@ end
                 )
             end
         end
+
+        @testset "prepared forward gradient/Jacobian over a CuArray" begin
+            # The seeding fast paths write basis seeds one element at a time through
+            # `Nfwd._set_partial!`, which indexes the partials block by linear offset. The host
+            # block is element-major and the CuArray block lane-major, so an unadjusted offset
+            # walks the wrong axis and the assembled result is scrambled at every chunk width
+            # except `W == length(x)`, where the two orderings coincide. Sweep the widths either
+            # side of that: a single width can agree by accident. The scalar writes need
+            # `allowscalar`, which is also why nothing else here reaches this path.
+            xg = cu(Float32[1, 2, 3, 4, 5])
+            sq(z) = sum(z .* z)
+            CUDA.@allowscalar for W in 1:5
+                cache = Mooncake.prepare_derivative_cache(
+                    sq, xg; config=Mooncake.Config(; chunk_size=W)
+                )
+                _, g = Mooncake.value_and_gradient!!(cache, sq, xg)
+                @test Array(g[2]) == Float32[2, 4, 6, 8, 10]
+            end
+            Bj = cu(Float32[1 2 3; 4 5 6; 7 8 9])
+            lin(z) = Bj * z
+            xj = cu(Float32[1, 2, 3])
+            CUDA.@allowscalar for W in 1:3
+                cache = Mooncake.prepare_derivative_cache(
+                    lin, xj; config=Mooncake.Config(; chunk_size=W)
+                )
+                _, J = Mooncake.value_and_jacobian!!(cache, lin, xj)
+                @test Array(J) == Array(Bj)
+            end
+        end
     else
         println("Tests are skipped because no CUDA device was found.")
     end
