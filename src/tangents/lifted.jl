@@ -379,10 +379,16 @@ end
 # may be self-referential (`node.next === node`) or hold aliased mutables. `_unlift_seed`
 # threads an aliasing cache (keyed on the primal) and registers a `MutableTangent` shell
 # before recursing, so a cycle reaching the same primal returns the shell — mirroring
-# reverse `zero_tangent_internal`. Leaf slots (scalar / array / complex) have no cycle and
-# convert via the lane accessor (aliased arrays already share one `partials` array).
-@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple,NDualRef}}) where {P} = (
+# reverse `zero_tangent_internal`. Scalar and complex slots have no cycle and convert via the
+# lane accessor. An element-wise ARRAY needs the seed path too: its elements can be aggregates,
+# and it can alias or cycle through them.
+@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple,NDualRef,AbstractArray}}) where {P} = (
     primal(x), _unlift_seed(x, IdDict{Any,Any}())
+)
+# Block-backed and all-`NoDual` arrays ARE leaves, so they keep the accessor and skip the cache:
+# routing them through the seed path costs an `IdDict` (measured +320 B) on every boundary call.
+@inline unlift(x::Lifted{P,1,<:Union{NDualArray,AbstractArray{NoDual}}}) where {P} = (
+    primal(x), tangent(x, 1)
 )
 
 @inline _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P} = tangent(x, 1)
@@ -419,6 +425,25 @@ function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P<:Tuple}
     return ntuple(length(v)) do i
         return _unlift_seed(Lifted{fieldtype(P, i),1}(p[i], v[i]), cache)
     end
+end
+# Element-wise array, mirroring the `_tangent_lane` split above. A mutable-struct element's lane
+# accessor returns the `MutableDualTangentView` write proxy, which has no `convert` to the
+# `MutableTangent` that `tangent_type(eltype(P))` storage demands, so only the seed path can build
+# this shape.
+_unlift_seed(x::Lifted{P,1,<:NDualArray}, ::IdDict) where {P} = tangent(x, 1)
+_unlift_seed(x::Lifted{P,1,<:AbstractArray{NoDual}}, ::IdDict) where {P} = tangent(x, 1)
+function _unlift_seed(x::Lifted{P,1,V}, cache::IdDict) where {P,V<:AbstractArray}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    t = similar(p, tangent_type(eltype(P)))
+    cache[p] = t
+    _map_if_assigned!(  # concrete `typeof(pe)`, as the lane recursion does
+        (pe, ve) -> _unlift_seed(Lifted{typeof(pe),1}(pe, ve), cache),
+        t,
+        p,
+        tangent(x),
+    )
+    return t
 end
 # `Ref{P<:NDualEltype}` (V `NDualRef`): build the reverse `MutableTangent` it would have in reverse
 # mode (a `Ref` is a mutable struct, registered in the alias cache before returning). Its `:x` field

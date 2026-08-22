@@ -551,6 +551,14 @@ test_struct_partial_init(a::Float64) = StructFoo(a).a
 
 test_mutable_partial_init(a::Float64) = MutableFoo(a).a
 
+# Returns the array itself, so the forward boundary unlifts an element-wise array of mutable
+# structs — the shape whose per-element lane accessor is a write proxy, not a reverse tangent.
+function test_mutable_struct_array(a::Float64)
+    return [
+        TypeStableMutableStruct{Float64}(a, 2a), TypeStableMutableStruct{Float64}(3a, 4a)
+    ]
+end
+
 function test_naive_mat_mul!(C::Matrix{T}, A::Matrix{T}, B::Matrix{T}) where {T<:Real}
     for p in 1:size(C, 1)
         for q in 1:size(C, 2)
@@ -885,6 +893,7 @@ function generate_test_functions()
         (false, :none, (lb=1e-3, ub=500), test_mutable_struct, 5.0),
         (false, :none, nothing, test_struct_partial_init, 3.5),
         (false, :none, nothing, test_mutable_partial_init, 3.3),
+        (false, :none, nothing, test_mutable_struct_array, 3.1),
         (
             false,
             :allocs,
