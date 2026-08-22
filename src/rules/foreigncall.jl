@@ -151,7 +151,21 @@ function frule!!(
 ) where {Nw}
     y = unsafe_pointer_to_objref(primal(x))
     tx = tangent(x)
+    # NULL means the tangent was PROVEN non-differentiable when the address was taken, so mapping it
+    # back to `NoDual` is right. The `uninit_*` placeholder means the opposite — no tangent storage
+    # exists behind a pointer whose pointee may well be differentiable — and it is the primal's own
+    # address, so it survives the NULL test and would make the recovered tangent BE the primal:
+    # a derivative written into it would mutate the user's data. Refuse instead of returning
+    # `NoDual`, which would silently report no derivative where one should exist.
     (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
+    UInt(tx[1]) == UInt(primal(x)) && throw(
+        ArgumentError(
+            "Forward-mode AD cannot recover a tangent object from a `Ptr` with no tangent " *
+            "storage behind it: the lane pointer is the primal's own address, so the recovered " *
+            "tangent would be the primal object itself and a derivative written into it would " *
+            "mutate the primal. Take `pointer_from_objref` of a value that carries a tangent.",
+        ),
+    )
     return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
 end
 # Round-trip of a `Ref{<:NDualEltype}` pointer (V `NTuple{Nw,Ptr{<:NDualEltype}}`, from the `NDualRef`
@@ -826,6 +840,23 @@ function throwing_rule_test_cases(::Val{:foreigncall})
     # emit NULL lanes that silently drop the derivative downstream.
     cases = Any[(ArgumentError, pointer_from_objref, ([1.0],), (; mode=ForwardMode))]
     memory = Any[]
+    # Its inverse, through a pointer with no tangent storage: the lane is the `uninit_*` placeholder,
+    # equal to the primal's own address, so it passes the NULL test and would hand back the primal
+    # object as its own tangent. A ready-made slot because seeding a raw `Ptr` primal cannot express
+    # the shape.
+    objref_target = [1.0, 2.0]
+    push!(memory, objref_target)
+    let p = pointer_from_objref(objref_target)
+        push!(
+            cases,
+            (
+                (ArgumentError, "the lane pointer is the primal's own address"),
+                Base.unsafe_pointer_to_objref,
+                (Lifted{typeof(p),1}(p, (p,)),),
+                (; mode=ForwardMode),
+            ),
+        )
+    end
     @static if VERSION >= v"1.11-rc4"
         # The raw pointer of an element-wise nested `MemoryRef` (from
         # `pointer(::Vector{Vector})`) projects to a width-1 `Ptr` 1-tuple; at chunk width > 1 the
