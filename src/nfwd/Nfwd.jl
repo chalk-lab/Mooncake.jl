@@ -732,8 +732,11 @@ end
     r2 = a.value^2 + b.value^2
     return NDual{T,N}(
         atan(a.value, b.value),
-        _fwd_scale(
-            _fwd_sub(_fwd_scale(a.partials, b.value), _fwd_scale(b.partials, a.value)),
+        _fwd_guarded_scale(
+            _fwd_sub(
+                _fwd_guarded_scale(a.partials, b.value),
+                _fwd_guarded_scale(b.partials, a.value),
+            ),
             inv(r2),
         ),
     )
@@ -749,7 +752,7 @@ end
     S = promote_type(T, R)
     r2 = S(y.value)^2 + S(x)^2
     sp = ntuple(i -> S(y.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_scale(sp, S(x) / r2))
+    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_guarded_scale(sp, S(x) / r2))
 end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
@@ -759,7 +762,7 @@ end
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2
     sp = ntuple(i -> S(x.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_scale(sp, -S(y) / r2))
+    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_guarded_scale(sp, -S(y) / r2))
 end
 
 # Hyperbolic
@@ -784,7 +787,9 @@ end
     )
 end
 @inline function Base.atanh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(atanh(a.value), _fwd_scale(a.partials, inv(one(T) - a.value^2)))
+    return NDual{T,N}(
+        atanh(a.value), _fwd_guarded_scale(a.partials, inv(one(T) - a.value^2))
+    )
 end
 
 # Reciprocal hyperbolic: sech, csch, coth and their inverses.
@@ -794,11 +799,11 @@ end
 end
 @inline function Base.csch(a::NDual{T,N}) where {T,N}
     cv = csch(a.value)
-    return NDual{T,N}(cv, _fwd_scale(a.partials, -coth(a.value) * cv))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -coth(a.value) * cv))
 end
 @inline function Base.coth(a::NDual{T,N}) where {T,N}
     sv = csch(a.value)
-    return NDual{T,N}(coth(a.value), _fwd_scale(a.partials, -(sv^2)))
+    return NDual{T,N}(coth(a.value), _fwd_guarded_scale(a.partials, -(sv^2)))
 end
 @inline function Base.asech(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
@@ -809,11 +814,13 @@ end
 @inline function Base.acsch(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acsch(a.value),
-        _fwd_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2))),
+        _fwd_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2))),
     )
 end
 @inline function Base.acoth(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(acoth(a.value), _fwd_scale(a.partials, inv(one(T) - a.value^2)))
+    return NDual{T,N}(
+        acoth(a.value), _fwd_guarded_scale(a.partials, inv(one(T) - a.value^2))
+    )
 end
 
 # Exp / Log
@@ -930,11 +937,11 @@ end
 end
 @inline function Base.csc(a::NDual{T,N}) where {T,N}
     cv = csc(a.value)
-    return NDual{T,N}(cv, _fwd_scale(a.partials, -cv * cot(a.value)))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -cv * cot(a.value)))
 end
 @inline function Base.cot(a::NDual{T,N}) where {T,N}
     cv = cot(a.value)
-    return NDual{T,N}(cv, _fwd_scale(a.partials, -(one(T) + cv^2)))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -(one(T) + cv^2)))
 end
 @inline function Base.asec(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
@@ -1378,7 +1385,9 @@ end
     coeff_x, coeff_y = _nfwd_mod_grad_coeffs(x.value, y.value)
     return NDual{T,N}(
         mod(x.value, y.value),
-        _fwd_add(_fwd_scale(x.partials, coeff_x), _fwd_scale(y.partials, coeff_y)),
+        _fwd_add(
+            _fwd_guarded_scale(x.partials, coeff_x), _fwd_guarded_scale(y.partials, coeff_y)
+        ),
     )
 end
 @inline Base.mod(x::NDual{T1,N1}, y::NDual{T2,N2}) where {T1<:IEEEFloat,T2<:IEEEFloat,N1,N2} = mod(
@@ -1394,7 +1403,7 @@ end
 
 @inline function Base.mod2pi(x::NDual{T,N}) where {T<:IEEEFloat,N}
     coeff = _nfwd_mod2pi_grad(x.value)
-    return NDual{T,N}(mod2pi(x.value), _fwd_scale(x.partials, coeff))
+    return NDual{T,N}(mod2pi(x.value), _fwd_guarded_scale(x.partials, coeff))
 end
 
 # ── Future: tiled GPU kernels with NDual ──────────────────────────────────────────

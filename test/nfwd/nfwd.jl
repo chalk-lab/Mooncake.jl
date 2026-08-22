@@ -212,6 +212,35 @@ using Mooncake.Nfwd
         end
     end
 
+    @testset "singular coefficients leave inactive lanes alone" begin
+        # Same requirement as the `inv` block above, for every remaining site whose coefficient is
+        # singular by construction. An inactive (zero-partial) lane must stay 0 rather than become
+        # `0 * Inf = NaN`, while the active lane keeps the genuine singularity. Reverse uses the
+        # guarded scale for these functions, so an unguarded forward one made the modes disagree on
+        # coordinates the singular call never touches. `tan` and `sec` are deliberately absent: at
+        # `pi/2` their coefficient is huge but finite, so nothing is poisoned there.
+        for (f, v) in (
+            (csc, 0.0),
+            (cot, 0.0),
+            (csch, 0.0),
+            (coth, 0.0),
+            (acsch, 0.0),
+            (atanh, 1.0),
+            (acoth, 1.0),
+            (mod2pi, 2 * pi),
+        )
+            d = f(_d2(v, 1.0, 0.0))
+            @test Nfwd.ndual_partial(d, 2) === 0.0     # inactive lane: 0, not NaN
+            @test !isfinite(Nfwd.ndual_partial(d, 1))  # active lane: the real singularity
+        end
+        # Two-argument sites: `mod` at an integer ratio, and `atan` at the origin in all three
+        # argument shapes.
+        @test Nfwd.ndual_partial(mod(_d2(6.0, 1.0, 0.0), _d2(3.0, 0.0, 0.0)), 2) === 0.0
+        @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), _d2(0.0, 0.0, 0.0)), 2) === 0.0
+        @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), 0.0), 2) === 0.0
+        @test Nfwd.ndual_partial(atan(0.0, _d2(0.0, 1.0, 0.0)), 2) === 0.0
+    end
+
     @testset "power" begin
         x = _d(3.0, 1.0)
         # literal integer powers — dispatches through Base.literal_pow
