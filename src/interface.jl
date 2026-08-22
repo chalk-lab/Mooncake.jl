@@ -269,10 +269,10 @@ function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
     throw(
         PreparedCacheError(
             "Cached autodiff call has an aliasing mismatch: $li and $lj $what when the cache " *
-            "was prepared.\nA prepared cache holds one cotangent buffer per argument, so the " *
+            "was prepared.\nA prepared cache holds one tangent buffer per argument, so the " *
             "aliasing among arguments is part of the shape it was prepared for: reusing it with " *
-            "different aliasing accumulates into the wrong buffers and silently returns the " *
-            "wrong gradient. Prepare a separate cache for this argument aliasing.",
+            "different aliasing writes into the wrong buffers and silently returns the wrong " *
+            "answer. Prepare a separate cache for this argument aliasing.",
         ),
     )
 end
@@ -313,6 +313,28 @@ end
         $checks
         return nothing
     end
+end
+
+# Forward twin of `_validate_prepared_aliasing`, one-directional. A friendly forward cache holds one
+# tangent buffer per argument, built through one aliasing cache, so prepare-time arguments that
+# alias share ONE buffer and a call with distinct arguments writes each supplied tangent into it in
+# turn, leaving both holding the last. The opposite direction is CORRECT — distinct buffers each
+# hold the caller's seed and the aliased primal receives both — so the bidirectional check above
+# would refuse a valid forward call. Same mutable-tangent filter, for the reason given there.
+@generated function _validate_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
+    n = length(fx.parameters)
+    checks = Expr(:block)
+    for i in 1:n, j in (i + 1):n
+        Base.ismutabletype(tangents.parameters[i]) &&
+        Base.ismutabletype(tangents.parameters[j]) || continue
+        push!(checks.args, quote
+            if tangents[$i] === tangents[$j] && fx[$i] !== fx[$j]
+                _throw_prepared_cache_aliasing_error($i, $j, false)
+            end
+        end)
+    end
+    push!(checks.args, :(return nothing))
+    return checks
 end
 
 # A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dof
@@ -834,6 +856,8 @@ not snapshotted — a callable that mutates its own fields is not restored.
 ) where {R,IT<:Tuple,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    # Types and sizes match when only the aliasing differs, so the check above cannot see it.
+    _validate_prepared_forward_aliasing(cache.input_tangents, input_primals)
     input_friendly_tangents = tuple_map(last, fx)
     input_tangents = tuple_map(
         primal_to_tangent!!, cache.input_tangents, input_friendly_tangents

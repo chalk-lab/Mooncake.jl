@@ -1348,6 +1348,35 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
         end
 
+        @testset "friendly cache refuses only prepared-aliased/called-distinct" begin
+            # Prepare-time aliased arguments share one tangent buffer, so a call with distinct
+            # arguments leaves both positions holding the last tangent written: 6.0 for a truth
+            # of 5.0. Reverse already rejects this.
+            g_al = (a, b) -> sum(a .* b)
+            X_al = [1.0, 2.0]
+            A_al, dA_al = [1.0, 2.0], [1.0, 0.0]
+            B_al, dB_al = [3.0, 4.0], [0.0, 1.0]
+            friendly = Mooncake.Config(; friendly_tangents=true)
+            c_al = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=friendly)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                c_al, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
+            )
+            # The opposite direction is correct and must keep working: distinct buffers each hold
+            # the caller's seed, and the aliased primal receives both.
+            c_di = Mooncake.prepare_derivative_cache(g_al, A_al, B_al; config=friendly)
+            dX_al = [1.0, 1.0]
+            v_di, d_di = Mooncake.value_and_derivative!!(
+                c_di, (g_al, Mooncake.NoTangent()), (X_al, dX_al), (X_al, dX_al)
+            )
+            @test d_di ≈ 2 * sum(dX_al .* X_al)
+            # The non-friendly method needs no check: it lifts the caller's own tangents afresh.
+            c_nf = Mooncake.prepare_derivative_cache(g_al, X_al, X_al)
+            _, d_nf = Mooncake.value_and_derivative!!(
+                c_nf, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
+            )
+            @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
+        end
+
         @testset "forward cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
