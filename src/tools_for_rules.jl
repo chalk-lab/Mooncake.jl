@@ -296,9 +296,9 @@ end
 # infers a MethodError and bakes an `unreachable` that runtime — dispatching on a concrete
 # `Type{X} <: DataType` — reaches, crashing. Widening to `Type` (`Type{_A} <: Type` always
 # holds) covers it. A specific `Type{X}`, bare `Type`, and ordinary types stay as declared;
-# the reverse `CoDual` bounds are left untouched. Mirrors `lifted_type`'s kind set.
-@inline _fwd_zd_arg_bound(::Type{T}) where {T} =
-    (T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) ? Type : T
+# the reverse `CoDual` bounds are left untouched. Shares `lifted_type`'s kind set via
+# `_is_metatype_kind`, rather than restating it — the two enumerations had drifted apart.
+@inline _fwd_zd_arg_bound(::Type{T}) where {T} = _is_metatype_kind(T) ? Type : T
 
 # Collect every `Symbol` mentioned in an expression (recursing through `esc`/nested `Expr`s). Used to
 # decide whether a `@zero_derivative` argument references a `where`-clause static parameter — if it

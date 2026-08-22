@@ -208,6 +208,20 @@ const NDAC_VecC64 = NDualArray{
         @test lifted_type(Val(N), P) === Lifted{P,N,V}
     end
 
+    @testset "metatype kinds get an unbounded slot" begin
+        # A type-valued result inferred as its KIND is wrapped at runtime as `Lifted{Type{X}}`, and
+        # `Lifted` is invariant in `P`, so a bounded slot rejects it. All four kinds are
+        # `isconcretetype`, so each needs the carve-out — naming only `DataType` left the other
+        # three with bounded slots that no runtime value satisfies.
+        for T in (DataType, UnionAll, Union, Core.TypeofBottom), N in (1, 3)
+            @test lifted_type(Val(N), T) isa UnionAll
+        end
+        # The carve-out must not swallow ordinary concrete types, whose bounded slots are exact.
+        @test lifted_type(Val(1), Float64) === Lifted{Float64,1,ND{Float64,1}}
+        @test lifted_type(Val(1), Int) === Lifted{Int,1,NoDual}
+        @test lifted_type(Val(1), Type{Float64}) === Lifted{Type{Float64},1,NoDual}
+    end
+
     @testset "dual_type base-case coherence" begin
         # Bottom type mirrors tangent_type(Union{}) === Union{}; empty tuple is
         # non-differentiable so its V collapses to NoDual, not Tuple{}.

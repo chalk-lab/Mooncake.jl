@@ -928,6 +928,13 @@ Shapes defined so far:
 - Concrete struct `P`: `Lifted{P, N, dual_type(Val(N), P)}` where the inner
   V is `ImmutableDual` (immutable) or `MutableDual` (mutable).
 """
+# The four metatype kinds, whose VALUES are themselves types. Each is `isconcretetype`, so the
+# generic `lifted_type` would give it a bounded slot, which the runtime `Lifted{Type{X}}` cannot
+# satisfy — `Lifted` is invariant in `P`. `_fwd_zd_arg_bound` needs the same set for
+# `@zero_derivative` argument bounds, so both read it from here.
+@inline _is_metatype_kind(@nospecialize(T)) =
+    T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom
+
 # A non-concrete `P <: IEEEFloat` (e.g. a type-unstable closure inferred to
 # `Union{Float32,Float64}`) must widen to a UnionAll: `Lifted` is invariant in `P`, so the
 # invariant `Lifted{Union{…},N,NDual{Union{…},N}}` would reject the concrete runtime
@@ -1034,7 +1041,7 @@ end
     P isa Union &&
         _all_nodual_union_members(P) &&
         return Union{lifted_type(Val(N), P.a),lifted_type(Val(N), P.b)}
-    return if isconcretetype(P) && P !== DataType
+    return if isconcretetype(P) && !_is_metatype_kind(P)
         Lifted{P,N,dual_type(Val(N), P)}
     elseif P <: Type
         # Metatype kind (e.g. `DataType`): a type-unstable type-valued result is inferred as `P`,
