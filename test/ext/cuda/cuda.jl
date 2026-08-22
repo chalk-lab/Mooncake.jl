@@ -238,7 +238,7 @@ end
         # shifts every gradient by that many elements.  The weighted case pins which element
         # each cotangent reached, and the parent fixtures are longer than the views so the
         # offsets are nonzero.
-        _view_sum(a) = sum(view(a, 1:3))
+        _view_sum_range(a) = sum(view(a, 1:3))
         _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
         _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
         _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
@@ -1485,7 +1485,7 @@ end
         # reverse rules are unaffected, so their coverage is kept here.
         @testset "read through a partial CuArray view (reverse only)" begin
             @testset "$f" for (f, args) in Any[
-                (_view_sum, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_sum_range, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_weighted, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_reshaped, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
