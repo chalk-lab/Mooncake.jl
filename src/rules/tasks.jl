@@ -44,6 +44,9 @@ _scale_internal(::MaybeCache, ::Float64, t::TaskTangent) = t
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::Task, ::TaskTangent) = m
 
+# A `TaskTangent` has no fields, so no field of a `Task` has a tangent counterpart.
+TestUtils.supports_field_access_interactions(::Type{Task}) = false
+
 fdata_type(::Type{TaskTangent}) = TaskTangent
 
 rdata_type(::Type{TaskTangent}) = NoRData

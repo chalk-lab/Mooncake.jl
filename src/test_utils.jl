@@ -2517,6 +2517,10 @@ end
 # to `false`; its non-field interactions are still exercised.
 supports_field_access_interactions(::Type) = true
 
+# A `SimpleVector`'s tangent is a `Vector{Any}` of element tangents, so `_new_` cannot rebuild one
+# from a field NamedTuple. Declared here: `tangents.jl` precedes `TestUtils`.
+supports_field_access_interactions(::Type{Core.SimpleVector}) = false
+
 """
     test_rule_and_type_interactions(rng::AbstractRNG, p)
 

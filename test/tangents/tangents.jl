@@ -112,6 +112,10 @@ using DispatchDoctor: allow_unstable
         test_tangent(Xoshiro(123456), p, t...; interface_only)
     end
 
+    @testset "SimpleVector opts out of field-access interactions" begin
+        TestUtils.test_rule_and_type_interactions(Xoshiro(123456), svec(5.0))
+    end
+
     @testset "zero_tangent throws for Ptr" begin
         # Single-arg zero_tangent is not safe for Ptr types and must throw an
         # informative error directing the user to the two-argument form.

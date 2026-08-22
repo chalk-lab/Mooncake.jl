@@ -53,6 +53,10 @@ end
 
 tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 
+# `MistyClosureTangent` holds the captures tangent and the dual callable, not tangents for the
+# closure's own `oc`/`ir` fields.
+TestUtils.supports_field_access_interactions(::Type{<:MistyClosure}) = false
+
 # Forward-mode V for a MistyClosure is its `MistyClosureTangent` — NOT the
 # generic structural lift of the closure's IR. In the *forward* slot the
 # `captures_tangent` field holds the already-lifted forward captures slot
