@@ -983,6 +983,8 @@ end
         @test ni.type === Float64
         @test ni.info isa CC.NoCallInfo
         @test ni.flag == CC.IR_FLAG_REFINED
+        @test new_inst(nothing; noinline=true).flag ==
+            CC.IR_FLAG_REFINED | CC.IR_FLAG_NOINLINE
     end
     @testset "is_reachable_return_node" begin
         @test Mooncake.is_reachable_return_node(ReturnNode(5)) == true
