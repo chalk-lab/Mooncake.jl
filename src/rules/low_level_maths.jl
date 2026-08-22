@@ -978,6 +978,28 @@ function rrule!!(::CoDual{typeof(mod)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     return zero_fcodual(y), mod_pb
 end
 
+# `rem` needs its own pair: without one, both modes descend into `Base.rem_internal`'s integer bit
+# manipulation and hit the bitcast guard (`divrem` reaches it too, via its `RoundToZero` branch).
+# Unlike `mod` above there is no `isint` NaN: `rem` keeps the finite one-sided subgradient at
+# integer ratios, which is what `modf` relies on. `%` is `rem`, so it is covered here as well.
+@is_primitive MinimalCtx Tuple{typeof(rem),P,P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(rem),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    dy = rem(tangent(x1), tangent(x2))
+    return Lifted{P,N}(dy.value, dy)
+end
+function rrule!!(::CoDual{typeof(rem)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:IEEEFloat}
+    a = primal(x1)
+    b = primal(x2)
+    y = rem(a, b)
+    c = trunc(a / b)
+    # No guard on the first coefficient: it is exactly 1, so it cannot be the ±Inf/NaN the guard
+    # exists for. The second can be — `trunc(a/b)` is `Inf` once `b` is zero.
+    rem_pb(ȳ::P) = (NoRData(), ȳ, _rvs_guarded_scale(ȳ, -c))
+    return zero_fcodual(y), rem_pb
+end
+
 # ---- `^` : removable-singularity limits at x == 0 ----
 @is_primitive MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
 function frule!!(
@@ -1267,6 +1289,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (mod2pi, P(0.1)),
                 (mod, P(7.5), P(2.3)),
                 (mod, P(10.2), P(3.1)),
+                # Non-integer ratios only: `rem` jumps to zero at an integer ratio, where a central
+                # finite difference reads ~-1.5e6 against the true one-sided derivative of 1. The
+                # negative arguments are the points where `floor` would differ from `trunc`.
+                (rem, P(7.5), P(2.3)),
+                (rem, P(-7.5), P(2.3)),
+                (rem, P(7.5), P(-2.3)),
                 (^, P(4.0), P(5.0)),
                 (atan, P(4.3), P(0.23)),
                 (hypot, P(4.0), P(5.0)),
