@@ -422,10 +422,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             return (flags..., sum, abs2, randn(rng, P, sz...))
         end,
 
-        # _kron!(x, y)
+        # _kron!(x, y). `interface_only` for `Float16` alone, as the `sum` rows above: finite
+        # differences are hopeless at that precision and meaningful at the others.
         map(precisions) do (P)
             return (
-                true,
+                P == Float16,
                 :none,
                 nothing,
                 LinearAlgebra._kron!,
@@ -441,7 +442,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # the reverse rrule admit would MethodError. `BlasFloat` only (what `arrayify` supports).
         map([Float64, Float32]) do P
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra._kron!,
