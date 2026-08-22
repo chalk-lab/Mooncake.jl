@@ -979,6 +979,9 @@ function _fcache_jacobian_packable!!(
         end
         output = value_and_derivative!!(cache, f_seed, arg_seed)
         if s == 1
+            # Not copied: this path is zero-allocation by contract, so the returned value aliases
+            # cache-owned storage exactly as `J` does, and the next call on this cache overwrites
+            # both. The docstring says so. Copying here costs the guarantee the allocation test pins.
             y = primal(output)
             _validate_jacobian_output(y, T)
             cached = Jref[]
@@ -1029,11 +1032,11 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     AbstractVector outputs" error.
 
 !!! warning
-    With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian aliases a
-    buffer owned by `cache` *only on the zero-allocation path*, taken when `f` is
-    non-differentiable (carries no parameters of its own). On that path the buffer (reused
-    as the gradient and Hessian paths do) is overwritten on the next call with the same
-    cache, so `copy` it first if you need to retain it. A differentiable `f` (e.g. a closure
+    With a forward [`prepare_derivative_cache`](@ref) cache, the returned Jacobian *and value*
+    alias buffers owned by `cache` *only on the zero-allocation path*, taken when `f` is
+    non-differentiable (carries no parameters of its own). On that path those buffers (reused
+    as the gradient and Hessian paths do) are overwritten on the next call with the same
+    cache, so `copy` them first if you need to retain them. A differentiable `f` (e.g. a closure
     capturing parameters) instead returns a freshly allocated Jacobian each call, as does a
     reverse [`prepare_pullback_cache`](@ref) cache.
 """
@@ -1089,7 +1092,10 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # compound) and once at the end, leaving `x` unchanged.
     x_snapshot = _copy_to_output!!(cache.input_snapshot[1], x)
     output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
-    y = primal(output)
+    # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that returns
+    # its mutated argument `y === x`, and the final `_copy_to_output!!` would rewrite the value we
+    # return. Same reason the `value_and_derivative!!` methods copy their output.
+    y = _copy_output(primal(output))
     Ty = _validate_jacobian_output(y, eltype(x))
     J = zeros(Ty, length(y), total_dof)
     # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so

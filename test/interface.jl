@@ -43,6 +43,13 @@ struct FwdAliasHolder{V}
 end
 (h::FwdAliasHolder)(x) = sum(h.v .* x)
 
+# A callable holding an array that returns its mutated argument. Its own dofs put the Jacobian
+# sweep on the non-packable path, where the returned value aliases the caller's input.
+struct FwdInPlaceScaler{V}
+    v::V
+end
+(h::FwdInPlaceScaler)(x) = (x.=(h.v .* x); x)
+
 # Two fields that may be the same array: aliasing inside ONE argument.
 struct FwdAliasPair{A}
     p::A
@@ -1462,6 +1469,27 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 expected_jac2 = [2x_jac2[1] 1.0; x_jac2[2] x_jac2[1]; 0.0 cos(x_jac2[2])]
                 @test Mooncake.value_and_jacobian!!(cache_jac, f_jac, x_jac2) ==
                     (f_jac(x_jac2), expected_jac2)
+            end
+
+            @testset "returned value survives the input restore and a later call" begin
+                # Non-packable: the seed aliases the caller's `x`, so for an `f` returning its
+                # mutated argument the final restore rewrote the value already returned.
+                scale2!(v) = (v.=2 .* v; v)
+                sc = FwdInPlaceScaler([2.0, 2.0, 2.0])
+                cache_ip = Mooncake.prepare_derivative_cache(sc, [1.0, 2.0, 3.0])
+                v_ip, _ = Mooncake.value_and_jacobian!!(cache_ip, sc, [1.0, 2.0, 3.0])
+                @test v_ip == [2.0, 4.0, 6.0]
+                # The zero-allocation path returns a value aliasing a cache-owned buffer, as it
+                # does for `J`; the docstring says so and the allocation test pins the guarantee
+                # that forbids copying it. Assert the documented behaviour so a future copy has to
+                # change the contract deliberately rather than by accident.
+                cache_pk = Mooncake.prepare_derivative_cache(scale2!, [1.0, 2.0, 3.0])
+                v_first, _ = Mooncake.value_and_jacobian!!(
+                    cache_pk, scale2!, [1.0, 2.0, 3.0]
+                )
+                @test v_first == [2.0, 4.0, 6.0]
+                Mooncake.value_and_jacobian!!(cache_pk, scale2!, [10.0, 20.0, 30.0])
+                @test v_first == [20.0, 40.0, 60.0]
             end
 
             # Allocation regression: with an allocation-free primal the packable forward path
