@@ -551,6 +551,19 @@ test_struct_partial_init(a::Float64) = StructFoo(a).a
 
 test_mutable_partial_init(a::Float64) = MutableFoo(a).a
 
+# An element-wise dual element is wider than its primal (32 bytes over 16 here), so re-typing the
+# tangent pointer through `Ptr{Cvoid}` would send the copy through the dual buffer at the primal's
+# stride and move only part of it. The round trip is what `unsafe_convert(Ptr{Cvoid}, ::Array)` does
+# at a ccall boundary.
+function test_elementwise_dual_pointer_copy(
+    dst::Vector{Tuple{Float64,Float64}}, src::Vector{Tuple{Float64,Float64}}
+)
+    pd = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(dst)))
+    ps = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(src)))
+    GC.@preserve dst src unsafe_copyto!(pd, ps, length(dst))
+    return dst[1][1] + dst[2][2]
+end
+
 # Returns the array itself, so the forward boundary unlifts an element-wise array of mutable
 # structs — the shape whose per-element lane accessor is a write proxy, not a reverse tangent.
 function test_mutable_struct_array(a::Float64)
@@ -894,6 +907,14 @@ function generate_test_functions()
         (false, :none, nothing, test_struct_partial_init, 3.5),
         (false, :none, nothing, test_mutable_partial_init, 3.3),
         (false, :none, nothing, test_mutable_struct_array, 3.1),
+        (
+            false,
+            :none,
+            nothing,
+            test_elementwise_dual_pointer_copy,
+            [(0.0, 0.0), (0.0, 0.0)],
+            [(1.0, 2.0), (3.0, 4.0)],
+        ),
         (
             false,
             :allocs,

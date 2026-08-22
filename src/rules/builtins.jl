@@ -564,27 +564,33 @@ end
 # (`T` is already the full target `Ptr` type, e.g. `Ptr{ComplexF64}` — not wrapped
 # again.) Constrained to `T<:Ptr`: a bitcast to a differentiable type still falls to
 # the generic frule above, which throws (it must not be silently bypassed here).
-# Two lane element types keep their type instead of re-typing to the target:
-#  - an element-wise dual-element lane (`Ptr{NDualArray}`) addresses a tangent buffer whose element stride
-#    differs from the re-typed primal pointer's, so a downstream `unsafe_copyto!` must copy it;
-#  - an objref tangent-object address (`Ptr{tangent_type(Nothing)}`, from `pointer_from_objref`)
-#    must NOT be re-typed into a fake-coherent `Ptr{<:IEEEFloat}` per-lane-partial pointer — kept
-#    distinct, a subsequent `pointerref` correctly hits the loud incoherent-V throw rather than
-#    reading bytes off the interleaved `MutableDual`.
-# Other (raw/scalar) lanes (`Ptr{Nothing}`, `Ptr{<:IEEEFloat}`) re-type to the target.
+# A lane keeps its own element type when re-typing would change its stride, since it addresses a
+# tangent buffer the target's element size does not describe: an element-wise dual element is wider
+# than its primal (`Tuple{NDual,NDual}` is 32 bytes over 16), and the `pointer_from_objref` tangent
+# address has a zero-size element. Re-typed, a downstream `unsafe_copyto!` walks the dual buffer at
+# the primal's stride and copies part of it, and a `pointerref` reads bytes off an interleaved
+# `MutableDual` instead of hitting the incoherent-V throw. Testing the stride covers the whole class
+# where enumerating types did not: an element-wise dual element is any differentiable non-float
+# element, not just `NDualArray`.
 @inline function frule!!(
     ::Lifted{typeof(bitcast),Nw}, ::Lifted{Type{T},Nw}, x::Lifted{P,Nw,<:NTuple{Nw,<:Ptr}}
 ) where {Nw,T<:Ptr,P<:Ptr}
     tx = tangent(x)
     lanes = ntuple(Val(Nw)) do k
         p = tx[k]
-        if eltype(p) <: NDualArray || p isa Ptr{tangent_type(Nothing)}
-            p
-        else
-            bitcast(T, p)
-        end
+        _retyping_keeps_stride(typeof(p), T) ? bitcast(T, p) : p
     end
     return Lifted{T,Nw}(bitcast(T, primal(x)), lanes)
+end
+# A `Nothing` lane element is type erasure, not a zero-size buffer: the `pointer(::Array)` chain
+# passes a `Ptr{Nothing}` intermediate whose re-typing RECOVERS the element type a foreigncall needs,
+# so it re-types whatever the sizes say — on size alone it is refused and raw scalar loads break.
+# `Ptr{NoTangent}` is also size 0 and must NOT re-type: a tangent sentinel is a known element type,
+# not an absent one. An abstract side has no known size, so keep the lane (`sizeof` would throw).
+@inline function _retyping_keeps_stride(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
+    A === Nothing && return true
+    (isconcretetype(A) && isconcretetype(B)) || return false
+    return sizeof(A) == sizeof(B)
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
