@@ -105,14 +105,6 @@ end
     return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
 end
 @inline lift(x::TWP{F}, ẋ::TWP{F}) where {F} = Lifted{TWP{F},1}(x, (ẋ,))
-# A TWP is conceptually a single number, so its width-1 V `Tuple{TWP}` is a leaf, not a
-# structural tuple. Override `_unlift_seed` (which both the top-level `unlift` and nested
-# fields — e.g. a `StepRangeLen`'s `ref`/`step` — route through) to read the lane directly,
-# bypassing the per-field tuple path that would index the scalar primal.
-@inline _unlift_seed(x::Lifted{P,1,Tuple{S}}, ::IdDict) where {P<:TWP,S<:TWP} = tangent(
-    x, 1
-)
-
 # `NTuple{N,TWP}` is a single-number leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
 # tuple. Without these terminals the gradient/Jacobian driver mis-counts a TWP input's dofs (the
 # generic struct `dof` recurses `hi`/`lo` → 2, but a TWP is one number) and the standard-basis seed

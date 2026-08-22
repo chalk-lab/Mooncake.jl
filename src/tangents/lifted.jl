@@ -409,7 +409,11 @@ function _unlift_seed(x::Lifted{P,1,<:ImmutableDual}, cache::IdDict) where {P}
     end
     return Tangent(fieldtype(tangent_type(P), :fields)(field_tangents))
 end
-function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P}
+# `P<:Tuple` only: a Tuple V is element-wise for a tuple primal, but per-LANE for `Ptr` and
+# `TwicePrecision`, whose V is `NTuple{N,·}` of parallel copies of one leaf. Those take the
+# generic `tangent(x, 1)` terminal above; recursing element-wise here would index the leaf
+# primal by lane and ask for `fieldtype(Ptr{Float64}, 1)`.
+function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P<:Tuple}
     p = primal(x)
     v = tangent(x)
     return ntuple(length(v)) do i

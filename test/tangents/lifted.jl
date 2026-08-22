@@ -234,6 +234,16 @@ const NDAC_VecC64 = NDualArray{
         @test length(tangent(st, 3).fields.x) == 2
     end
 
+    @testset "a per-lane Tuple V unlifts to its lane, not element-wise" begin
+        # `value_and_derivative!!` unlifts its output slot, so this is every differentiated
+        # function returning a raw pointer. Both Vs are per-lane copies of one leaf.
+        x, t = [1.0, 2.0], [3.0, 4.0]
+        @test unlift(Lifted{Ptr{Float64},1}(pointer(x), (pointer(t),))) ===
+            (pointer(x), pointer(t))
+        w = Base.TwicePrecision{Float64}(1.0, 0.0)
+        @test unlift(Lifted{typeof(w),1}(w, (w,))) === (w, w)
+    end
+
     @testset "metatype kinds get an unbounded slot" begin
         # A type-valued result inferred as its KIND is wrapped at runtime as `Lifted{Type{X}}`, and
         # `Lifted` is invariant in `P`, so a bounded slot rejects it. All four kinds are
