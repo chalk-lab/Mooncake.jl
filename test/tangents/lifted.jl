@@ -388,7 +388,31 @@ const NDAC_VecC64 = NDualArray{
         @test getfield(tv, :fields).r isa Tt
     end
 
-    @static if VERSION >= v"1.11-rc4"
+    @static if VERSION >= v"1.11-"
+        @testset "aliased Memory shares one V, on both the seed and lift paths" begin
+            # The V packs a fresh block per call, so without the aliasing cache two fields holding
+            # one `Memory` get independent blocks: a mutation through one is invisible through the
+            # other and `dof` counts the shared storage twice. The float `Array` overloads honour the
+            # cache; these two did not.
+            mem = Memory{Float64}(undef, 1)
+            mem[1] = 3.0
+            d = IdDict{Any,Any}()
+            @test Mooncake._zero_dual_internal(Val(1), mem, d) ===
+                Mooncake._zero_dual_internal(Val(1), mem, d)
+            dmem = Mooncake.zero_tangent(mem)
+            c = IdDict{Any,Any}()
+            @test Mooncake.lift(mem, dmem, c) === Mooncake.lift(mem, dmem, c)
+            # A `MemoryRef` into it, same requirement.
+            r = Core.memoryref(mem, 1)
+            dr = Mooncake.zero_tangent(r)
+            cr = IdDict{Any,Any}()
+            @test Mooncake.lift(r, dr, cr) === Mooncake.lift(r, dr, cr)
+            # `randn_dual`'s twin shares the shape, so it shares the requirement.
+            dr2 = IdDict{Any,Any}()
+            @test Mooncake._randn_dual_internal(Val(1), Xoshiro(1), mem, dr2) ===
+                Mooncake._randn_dual_internal(Val(1), Xoshiro(1), mem, dr2)
+        end
+
         @testset "NDualMemoryRef (MemoryRef{T<:IEEEFloat})" begin
             mem = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]
             p = Core.memoryref(mem, 1)

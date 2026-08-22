@@ -1168,18 +1168,33 @@ end
     # passthroughs a lifted reverse rule's float `dx::MemoryRef`/`Memory` field falls
     # to the generic element-wise lift below, producing a `MemoryRef{NDual}` that cannot convert
     # to the declared `NDualArray` V. Mirrors the float `Array` passthroughs.
-    @inline lift(x::MemoryRef{T}, ẋ::MemoryRef{T}, ::Union{Nothing,IdDict}) where {T<:IEEEFloat} = lift(
-        x, ẋ
-    )
+    # Honour the aliasing cache, as the float `Array` overload does and for the same reason: the V
+    # packs a fresh block per lift, so without it two aliased primals get distinct V objects and a
+    # mutation through one is invisible through the other.
+    @inline function lift(
+        x::MemoryRef{T}, ẋ::MemoryRef{T}, c::Union{Nothing,IdDict}
+    ) where {T<:IEEEFloat}
+        c isa IdDict || return lift(x, ẋ)
+        haskey(c, x) && return c[x]::Lifted{MemoryRef{T},1}
+        lifted = lift(x, ẋ)
+        c[x] = lifted
+        return lifted
+    end
     # `Memory{T}` (T<:IEEEFloat / Complex{<:IEEEFloat}) lifts to the NDualArray,
     # mirroring the `Array` overloads above; reached when a reverse rule's `Memory`
     # field is lifted under forward-over-reverse, or a Memory primal is seeded.
     @inline function lift(x::A, ẋ::A) where {E<:NDualEltype,A<:Memory{E}}
         return Lifted{A,1}(x, NDualArray{E,1,1,A}(x, (ẋ,)))
     end
-    @inline lift(x::A, ẋ::A, ::Union{Nothing,IdDict}) where {E<:NDualEltype,A<:Memory{E}} = lift(
-        x, ẋ
-    )
+    @inline function lift(
+        x::A, ẋ::A, c::Union{Nothing,IdDict}
+    ) where {E<:NDualEltype,A<:Memory{E}}
+        c isa IdDict || return lift(x, ẋ)
+        haskey(c, x) && return c[x]::Lifted{A,1}
+        lifted = lift(x, ẋ)
+        c[x] = lifted
+        return lifted
+    end
     # Non-differentiable-element `Memory` (reverse tangent `Memory{NoTangent}`)
     # lifts element-wise to `Memory{NoDual}`, mirroring the `Array{<:NoTangent}`
     # overload and `dual_type(Memory{T}) = Memory{NoDual}`.
@@ -1714,9 +1729,17 @@ for (factory, internal) in
         $internal(w::Val{N}, z::Complex, ::MaybeCache) where {N} = $factory(w, z)
     end
     @static if VERSION >= v"1.11-rc4"
-        @eval $internal(w::Val{N}, x::Union{Memory,MemoryRef}, ::MaybeCache) where {N} = $factory(
-            w, x
-        )
+        # Register by identity, as the `Array` branches above do: two struct fields holding one
+        # `Memory` must share a block, or a mutation written through one is invisible through the
+        # other and `dof` counts the shared storage twice.
+        @eval function $internal(
+            w::Val{N}, x::Union{Memory,MemoryRef}, d::MaybeCache
+        ) where {N}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            v = $factory(w, x)
+            d[x] = v
+            return v
+        end
     end
 end
 
@@ -1798,9 +1821,14 @@ function _randn_dual_internal(
     randn_dual(w, rng, z)
 end
 @static if VERSION >= v"1.11-rc4"
-    _randn_dual_internal(w::Val{N}, rng::AbstractRNG, x::Union{Memory,MemoryRef}, ::MaybeCache) where {N} = randn_dual(
-        w, rng, x
-    )
+    function _randn_dual_internal(
+        w::Val{N}, rng::AbstractRNG, x::Union{Memory,MemoryRef}, d::MaybeCache
+    ) where {N}
+        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+        v = randn_dual(w, rng, x)
+        d[x] = v
+        return v
+    end
 end
 
 @inline function zero_lifted(w::Val{N}, x::P) where {N,P}
