@@ -636,10 +636,11 @@ end
 # `_replace_lane_tangent` below to add them.
 # ──────────────────────────────────────────────────────────────────────────
 
-# Internal fields are underscore-prefixed so the `getproperty` short-circuit below cannot collide
-# with a user struct field literally named `parent`/`primal`/`lane` (plausible for graph/tree
-# nodes) — without this, reading such a field returned the view's own field instead of the lane
-# tangent, while `setproperty!` wrote through correctly (a silent read/write asymmetry).
+# Internal fields are underscore-prefixed so they cannot collide with a user struct field literally
+# named `parent`/`primal`/`lane` (plausible for graph/tree nodes). `getproperty` never resolves to
+# them: every internal read goes through `getfield`, so `v.name` means the user's field for EVERY
+# name, matching `setproperty!` — a short-circuit on the underscored names would make a field
+# genuinely called `_parent` readable as the view's parent but writable as itself.
 struct MutableDualTangentView{SD<:MutableDual,P}
     _parent::SD
     _primal::P
@@ -657,7 +658,6 @@ end
 end
 
 function Base.getproperty(v::MutableDualTangentView, name::Symbol)
-    name in (:_parent, :_primal, :_lane) && return getfield(v, name)
     nt = getfield(v, :_parent).value
     return _lane_tangent(getfield(nt, name), getfield(v, :_lane))
 end

@@ -39,8 +39,11 @@ mutable struct LiftedTest_AliasedNested
     a::Vector{Vector{Float64}}
     b::Vector{Vector{Float64}}
 end
-mutable struct LiftedTest_ParentField  # field name collides with the view's internals
+mutable struct LiftedTest_ParentField  # field names collide with the view's internals
     parent::Float64
+    _parent::Float64
+    _primal::Float64
+    _lane::Float64
 end
 mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
     x::Real
@@ -481,12 +484,16 @@ const NDAC_VecC64 = NDualArray{
         @test slot.value.value.v.partials === (5.0, 0.0)
         @test tangent(slot, 2).v === 0.0  # other lane unchanged
 
-        # A user field literally named `parent` must resolve to its lane tangent, not the
-        # view's internal `_parent` (why the internals are underscore-prefixed).
-        pview = tangent(zero_lifted(Val(2), LiftedTest_ParentField(3.0)), 1)
-        @test pview.parent === 0.0
-        pview.parent = 7.0
-        @test pview.parent === 7.0
+        # A user field must resolve to its lane tangent whatever it is called — including the
+        # underscored names the view uses for its own fields, which `getproperty` used to
+        # short-circuit on, returning the view's parent on a read while a write went to the
+        # field.
+        pview = tangent(zero_lifted(Val(2), LiftedTest_ParentField(3.0, 4.0, 5.0, 6.0)), 1)
+        @testset "$name" for name in (:parent, :_parent, :_primal, :_lane)
+            @test getproperty(pview, name) === 0.0
+            setproperty!(pview, name, 7.0)
+            @test getproperty(pview, name) === 7.0
+        end
 
         # Regression: a mutable struct with an ABSTRACT field type lifts to a `MutableDual`
         # whose backing NamedTuple is abstract (`@NamedTuple{x}`, x::Any). Writing a lane tangent
