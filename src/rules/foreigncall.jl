@@ -210,13 +210,49 @@ function frule!!(
     n::Lifted,
 ) where {Nw,P<:Ptr}
     _n = primal(n)
-    unsafe_copyto!(primal(dest), primal(src), _n)
     dest_partials = tangent(dest)
     src_partials = tangent(src)
+    @inbounds for lane in 1:Nw
+        _check_fwd_tangent_ptr_addressable(primal(dest), dest_partials[lane])
+        _check_fwd_tangent_ptr_addressable(primal(src), src_partials[lane])
+    end
+    unsafe_copyto!(primal(dest), primal(src), _n)
     @inbounds for lane in 1:Nw
         unsafe_copyto!(dest_partials[lane], src_partials[lane], _n)
     end
     return dest
+end
+# The `uninit_*` convention reinterprets a value's own PRIMAL address as its tangent pointer when
+# there is no tangent storage behind it, so a placeholder is a NON-NULL pointer equal to its primal.
+# `_check_tangent_ptr` tests only NULL and cannot see one, and copying through a placeholder moves
+# unrelated memory into a derivative: on Julia 1.10 a copy out of a re-typed `Vector{UInt8}` reported
+# a nonzero derivative that changed from run to run. It is the same user error that 1.11+ reports
+# through the `NoDual` V, so it gets the same message.
+@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
+    if sizeof(eltype(dp)) > 0 && UInt(dp) == UInt(p)
+        throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
+    end
+    return nothing
+end
+# Mixed V: one pointer carries per-lane partials, the other reached AD with none. The broad
+# `@is_primitive` above covers this pair, so without these methods it surfaces as a raw `MethodError`
+# instead of the diagnosis. Copying constants IN would need the source's constancy to be provable,
+# which a `NoDual` V does not establish — it only says no partial storage was found.
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    ::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    ::Lifted{Ptr{T},Nw,NoDual},
+    ::Lifted,
+) where {Nw,T}
+    throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
+end
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    ::Lifted{Ptr{T},Nw,NoDual},
+    ::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    ::Lifted,
+) where {Nw,T}
+    throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
 end
 # Non-differentiable pointers (V === NoDual, e.g. `Ptr{UInt8}` / `Ptr{Int}` — the
 # element type is non-differentiable, `tangent_type(T) === NoTangent`): copy the primal
@@ -828,6 +864,37 @@ function throwing_rule_test_cases(::Val{:foreigncall})
                 (; mode=ReverseMode),
             ),
         )
+        # Forward reaches the same program with a MIXED V — real per-lane pointers for the
+        # destination, `NoDual` for the re-typed source — which the broad `@is_primitive` covers but
+        # no method did, so it was a raw `MethodError` rather than this diagnosis.
+        push!(
+            cases,
+            (
+                (ArgumentError, "forward representation is `NoDual`"),
+                unsafe_copyto_retyped_bytes,
+                (randn(3), copy_bytes),
+                (; mode=ForwardMode),
+            ),
+        )
     end
+    # A raw `Ptr` slot carries the `uninit_*` placeholder, whose lane pointer IS the primal address,
+    # so copying through it dereferences the primal as a derivative. Ready-made slots because
+    # seeding a raw `Ptr` primal cannot express the shape. A coherent destination (its own tangent
+    # buffer) with a placeholder source is the exact mix. Not version dependent.
+    cp_dest, cp_dest_t, cp_src = randn(3), randn(3), randn(3)
+    append!(memory, (cp_dest, cp_dest_t, cp_src))
+    push!(
+        cases,
+        (
+            (ArgumentError, "forward representation is `NoDual`"),
+            unsafe_copyto!,
+            (
+                Lifted{Ptr{Float64},1}(pointer(cp_dest), (pointer(cp_dest_t),)),
+                Lifted{Ptr{Float64},1}(pointer(cp_src), (pointer(cp_src),)),
+                3,
+            ),
+            (; mode=ForwardMode),
+        ),
+    )
     return cases, memory
 end
