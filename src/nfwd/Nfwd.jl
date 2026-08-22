@@ -2282,9 +2282,16 @@ end
 # folds `max`/`min` over `A[i]`, building one `NDual` per element; instead scan the (real) primal for
 # the arg-extreme and take a single `getindex` — ~10×. Real elements only (max/min need a
 # total order).
+# `argmax` would return the FIRST maximal index, but the `max`-fold that `maximum` performs on plain
+# floats credits the LAST, so a tie handed the derivative to the wrong element. `isequal` rather than
+# `==`: `maximum([0.0, -0.0])` is `0.0`, which `==` also matches against `-0.0`.
 function Base.maximum(nda::NDualArray{E}) where {E<:IEEEFloat}
-    @inbounds nda[argmax(getfield(nda, :primal))]
+    p = getfield(nda, :primal)
+    @inbounds nda[findlast(isequal(maximum(p)), p)]
 end
+# `argmin` is correct here and must stay: it returns the first minimal index, which is the tie `min`
+# and `_ndual_pick_min` already give. Making this symmetric with `maximum` above would reattribute
+# the derivative at a tie.
 function Base.minimum(nda::NDualArray{E}) where {E<:IEEEFloat}
     @inbounds nda[argmin(getfield(nda, :primal))]
 end

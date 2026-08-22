@@ -1215,6 +1215,28 @@ end
         @test total == 1 + 1 + 2  # scalar(1) + array-slot1(1) + array-slot2(2)
     end
 
+    @testset "maximum / minimum shortcuts agree with the fold at a tie" begin
+        # `maximum(::NDualArray)` indexes one element rather than folding, so its tie convention has
+        # to match the fold's or the derivative is credited to the wrong element — `argmax` returns
+        # the FIRST maximal index while the `max`-fold credits the LAST. Version-independent: the
+        # nfwd classifier only admits `maximum(::Vector)` on 1.10, but the shortcut is wrong
+        # everywhere, so this would go live on 1.11+ the day the classifier changes.
+        for v in ([1.0, 1.0], [2.0, 1.0, 2.0], [1.0, 2.0, 3.0], [3.0, 2.0, 1.0])
+            n = length(v)
+            duals = [
+                NDual{Float64,n}(v[i], ntuple(k -> k == i ? 1.0 : 0.0, n)) for i in 1:n
+            ]
+            nda = Mooncake.tangent(Mooncake.zero_lifted(Val(n), v))
+            for i in 1:n
+                Nfwd._set_partial!(nda, i, i, 1.0)
+            end
+            @test Nfwd.ndual_partials(maximum(nda)) ==
+                Nfwd.ndual_partials(foldl(max, duals))
+            @test Nfwd.ndual_partials(minimum(nda)) ==
+                Nfwd.ndual_partials(foldl(min, duals))
+        end
+    end
+
     @testset "Float32 support" begin
         @test _nfwd_input_dof(1.0f0) == 1
         @test _nfwd_input_dof(Float32[1, 2, 3]) == 3
