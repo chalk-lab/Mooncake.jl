@@ -379,6 +379,28 @@ end
 # held fixed, so one dof range covers every position and there is nothing to double-count.
 _inputs_alias(shared_dof::Int, fx::Tuple) = shared_dof != sum(x -> dof(zero_tangent(x)), fx)
 
+# A concrete primal whose `dual_type` is NOT concrete has no usable slot annotation: `Lifted` is
+# invariant in its V, so the slot the seed factories build is not a subtype of `lifted_type`'s
+# result and the OpaqueClosure boundary rejects it. In practice this is a NamedTuple with an
+# abstract field type, whose `dual_type` widens to `Any` exactly as reverse's `tangent_type` does,
+# so the shape is unsupported in both modes rather than a forward-mode gap. Refusing it here, where
+# the argument types are known, replaces a `TypeError` about internal slot types. Only the inputs
+# are checked: a value of this shape built and consumed INSIDE the function differentiates fine, and
+# a return value's type is not known until the rule is built.
+@inline function _check_liftable_input(@nospecialize(P::Type), i::Int)
+    (isconcretetype(P) && !isconcretetype(dual_type(Val(1), P))) || return nothing
+    return throw(
+        ArgumentError(
+            "Argument $i has type `$P`, whose forward representation cannot be annotated: " *
+            "`dual_type` widens it to a non-concrete type, and `Lifted` is invariant in that " *
+            "parameter. A `NamedTuple` with an abstract field type (`@NamedTuple{a}`) is the usual " *
+            "case; reverse mode widens it identically, so the shape is unsupported in both modes. " *
+            "Use a struct with the same field instead — its representation keeps the declared " *
+            "field type and differentiates in both modes.",
+        ),
+    )
+end
+
 # Refused here rather than at construction because `value_and_derivative!!` shares this cache
 # and handles aliased inputs correctly: the caller supplies the seeds, so one tangent can cover
 # every position the shared leaf occupies.
@@ -574,6 +596,10 @@ is shown by the cache.
 ) where {N}
     config.empty_cache && empty_mooncake_caches!()
     fx = (f, x...)
+    # `_stable_typeof`, not `_typeof`: the latter sharpens NamedTuple elements, narrowing
+    # `@NamedTuple{a}` to `@NamedTuple{a::Float64}`, whose `dual_type` IS concrete — the check would
+    # then miss exactly the shape it exists for.
+    ntuple(i -> _check_liftable_input(Base._stable_typeof(fx[i]), i - 1), Val(N + 1))
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)
         0
