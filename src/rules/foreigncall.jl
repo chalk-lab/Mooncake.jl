@@ -227,7 +227,9 @@ end
 # `_check_tangent_ptr` tests only NULL and cannot see one, and copying through a placeholder moves
 # unrelated memory into a derivative: on Julia 1.10 a copy out of a re-typed `Vector{UInt8}` reported
 # a nonzero derivative that changed from run to run. It is the same user error that 1.11+ reports
-# through the `NoDual` V, so it gets the same message.
+# through the `NoDual` V, so it gets the same message. Deliberately local: the tangent-pointer
+# convention has two poison values and the `_check_tangent_ptr` consumers test only NULL, so they
+# share this blind spot; closing it by dispatch would touch every rule taking a `Ptr` tangent.
 @inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
     if sizeof(eltype(dp)) > 0 && UInt(dp) == UInt(p)
         throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
