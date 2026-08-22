@@ -1084,6 +1084,58 @@ end
     return ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
+# FastMath min / max / minmax are DIFFERENT primitives from `min`/`max`, not faster spellings: their
+# tie behaviour differs, so without these methods a dual falls through FastMath's `Number` fallback
+# to `min`/`max` and carries a `.value` the primal never produced.
+#
+# Ordinary comparisons, not the `gt_fast` the primitives use, and NaN is out of contract. `gt_fast`
+# is undefined for NaN and its answer is not stable even within one program: the expression
+# `ifelse(gt_fast(1.0, NaN), 1.0, NaN)` gives `1.0` at top level and `NaN` inside a compiled
+# function, and `minmax_fast(NaN, 1.0)` was observed returning both `(NaN, 1.0)` and `(1.0, 1.0)` on
+# one Julia version. So no implementation can agree with these primitives on NaN, because the
+# primitives do not agree with themselves. `<` and `>` are defined, and reproduce all four
+# primitives exactly on every non-NaN pair drawn from {-0.0, 0.0, ±1, 2, ±Inf} — signed-zero ties
+# included, which is what the version split below is for. Under `@fastmath` a NaN operand is the
+# caller's own unspecified territory; what these methods fix is the well-defined half, where the
+# fallthrough to `min`/`max` gave a `.value` the primal never produced.
+#
+# Selecting the WHOLE dual keeps the inner-value invariant by construction. `_ndual_pick_*` is not
+# reused: it selects by `isequal` against the computed result, which cannot say which operand a tie
+# returned.
+@inline function Base.FastMath.min_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    return ifelse(a.value < b.value, a, b)
+end
+@static if VERSION >= v"1.12-"
+    # 1.12's intrinsic gives a tie to the SECOND operand, 1.11's `ifelse` form to the FIRST. Both
+    # verified against the primitive over every non-NaN pair; the wrong one misses by exactly the
+    # two signed-zero ties.
+    @inline function Base.FastMath.max_fast(
+        a::NDual{T,N}, b::NDual{T,N}
+    ) where {T<:IEEEFloat,N}
+        return ifelse(a.value > b.value, a, b)
+    end
+else
+    @inline function Base.FastMath.max_fast(
+        a::NDual{T,N}, b::NDual{T,N}
+    ) where {T<:IEEEFloat,N}
+        return ifelse(b.value > a.value, b, a)
+    end
+end
+@inline function Base.FastMath.minmax_fast(
+    a::NDual{T,N}, b::NDual{T,N}
+) where {T<:IEEEFloat,N}
+    return (Base.FastMath.min_fast(a, b), Base.FastMath.max_fast(a, b))
+end
+# `rem_fast` routes through `rem_internal` on absolute values, which cannot be mirrored on a dual,
+# so take the value from the primitive itself and scale the partials by the same coefficients the
+# `rem` rule uses. The second is guarded: `trunc(a/b)` is `Inf` once `b` is zero. A zero divisor
+# makes the primitive itself throw `DivideError`, which this inherits.
+@inline function Base.FastMath.rem_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = Base.FastMath.rem_fast(a.value, b.value)
+    c = trunc(a.value / b.value)
+    return NDual{T,N}(v, _fwd_add(a.partials, _fwd_guarded_scale(b.partials, -c)))
+end
+
 # clamp — the value is Base's, so bound promotion, a signed-zero `x`, and crossed bounds all match
 # it; the tangent follows the `rrule!!`'s convention of a zero subgradient at and beyond either
 # endpoint, so the two modes agree. Selecting with ifelse keeps this branchless (no GPU warp

@@ -773,6 +773,36 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(r, 3) ≈ sin(2.0) * exp(3.0)
     end
 
+    @testset "FastMath min/max/minmax/rem carry the primitive's value" begin
+        # Without `NDual` methods these fall through FastMath's `Number` fallback to `min`/`max`/
+        # `rem`, which are DIFFERENT primitives, so the dual carried a `.value` the primal never
+        # produced. Compared against each primitive over every pair of well-defined operands,
+        # signed-zero ties included — those ties are what the `max_fast` version split is for.
+        # NaN is deliberately absent: FastMath comparisons are undefined for it and the primitives
+        # are not self-consistent there, so there is nothing stable to assert.
+        vals = (-0.0, 0.0, 1.0, -1.0, 2.0, Inf, -Inf)
+        for x in vals, y in vals
+            dx, dy = _d(x, 1.0), _d(y, 1.0)
+            @test isequal(
+                Nfwd.ndual_value(Base.FastMath.min_fast(dx, dy)),
+                Base.FastMath.min_fast(x, y),
+            )
+            @test isequal(
+                Nfwd.ndual_value(Base.FastMath.max_fast(dx, dy)),
+                Base.FastMath.max_fast(x, y),
+            )
+            iszero(y) || @test isequal(
+                Nfwd.ndual_value(Base.FastMath.rem_fast(dx, dy)),
+                Base.FastMath.rem_fast(x, y),
+            )
+        end
+        # `rem_fast` also differentiates: d/dx = 1 and d/dy = -trunc(x/y), as for `rem`.
+        r = Base.FastMath.rem_fast(_d(7.5, 1.0), _d(2.3, 0.0))
+        @test Nfwd.ndual_partial(r, 1) == 1.0
+        r2 = Base.FastMath.rem_fast(_d(7.5, 0.0), _d(2.3, 1.0))
+        @test Nfwd.ndual_partial(r2, 1) == -trunc(7.5 / 2.3)
+    end
+
     @testset "reciprocal trig" begin
         x = _d(0.8, 1.0)
         @test Nfwd.ndual_value(sec(x)) ≈ sec(0.8)
