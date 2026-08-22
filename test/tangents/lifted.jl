@@ -45,6 +45,9 @@ mutable struct LiftedTest_ParentField  # field names collide with the view's int
     _primal::Float64
     _lane::Float64
 end
+mutable struct LiftedTest_ComplexField
+    z::ComplexF64
+end
 mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
     x::Real
 end
@@ -503,6 +506,37 @@ const NDAC_VecC64 = NDualArray{
         @test aview.x === 0.0
         aview.x = 4.0
         @test aview.x === 4.0
+    end
+
+    @testset "MutableDualTangentView (array, complex and nested fields)" begin
+        # An ARRAY field reads as the write-through lane view, so `view.field[i] = x` from a rule
+        # body lands in the block. `tangent(::Lifted, lane)` would hand back a dense copy instead,
+        # making that assignment a silent no-op.
+        av = zero_lifted(Val(2), LiftedTest_Aliased([1.0, 2.0], [3.0, 4.0]))
+        aview = tangent(av, 1)
+        @test collect(aview.a) == [0.0, 0.0]
+        aview.a[2] = 9.0
+        @test collect(tangent(av, 1).a) == [0.0, 9.0]   # the write reached the block
+        @test collect(tangent(av, 2).a) == [0.0, 0.0]   # and only lane 1
+        aview.a = [7.0, 8.0]
+        @test collect(aview.a) == [7.0, 8.0]
+        @test collect(tangent(av, 2).a) == [0.0, 0.0]
+
+        cv = zero_lifted(Val(2), LiftedTest_ComplexField(ComplexF64(1, 2)))
+        cview = tangent(cv, 1)
+        @test cview.z === ComplexF64(0, 0)
+        cview.z = ComplexF64(4, 5)
+        @test cview.z === ComplexF64(4, 5)
+        @test tangent(cv, 2).z === ComplexF64(0, 0)
+
+        # A nested mutable struct's lane tangent would have to be another view, which needs a
+        # primal the field's V alone does not carry. Name the shape instead of erroring inside
+        # `ntuple`/`copyto!`.
+        nv = tangent(
+            zero_lifted(Val(2), LiftedTest_Cycle(LiftedTest_Cycle(nothing, 2.0), 1.0)), 1
+        )
+        @test_throws ArgumentError nv.next
+        @test_throws ArgumentError (nv.next = 1.0)
     end
 
     @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin

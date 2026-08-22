@@ -631,9 +631,9 @@ end
 # enables `view.field = x` to mutate the slot's V from within a forward-mode
 # rule body.
 #
-# Only scalar `NDual{T, N}` field Vs are supported; other shapes (NDualArray, Complex{NDual},
-# nested MutableDual, PossiblyUninitTangent) are not yet handled — extend `_lane_tangent` /
-# `_replace_lane_tangent` below to add them.
+# Scalar, complex and array field Vs are supported. A nested `MutableDual` or a
+# `PossiblyUninitTangent` field has no lane tangent — its would-be tangent is another view, which
+# needs a primal `_lane_tangent` does not receive — and raises a clear error naming the shape.
 # ──────────────────────────────────────────────────────────────────────────
 
 # Internal fields are underscore-prefixed so they cannot collide with a user struct field literally
@@ -648,13 +648,52 @@ struct MutableDualTangentView{SD<:MutableDual,P}
 end
 
 # Lane-extraction (read) and lane-replacement (write) for individual V_i shapes.
-# Add new V_i methods as additional shapes (NDualArray, Complex{NDual}, …) come
-# online for mutable-struct field tangents.
 @inline _lane_tangent(v::NDual, lane::Int) = v.partials[lane]
 
 @inline function _replace_lane_tangent(v::NDual{T,N}, lane::Int, x::T) where {T,N}
     new_partials = ntuple(k -> k == lane ? x : v.partials[k], Val(N))
     return NDual{T,N}(v.value, new_partials)
+end
+
+# An array field reads as `Nfwd.tangent_view`, the WRITE-THROUGH lane view, not as
+# `tangent(::Lifted, lane)`: that returns a dense reverse-shaped copy, so `view.field[i] = x` in a
+# rule body would silently update nothing. The view already addresses the block, so a write is a
+# `copyto!` and the V_i object is returned unchanged.
+@inline _lane_tangent(v::Nfwd.NDualArray, lane::Int) = Nfwd.tangent_view(v, lane)
+
+@inline function _replace_lane_tangent(v::Nfwd.NDualArray, lane::Int, x)
+    copyto!(Nfwd.tangent_view(v, lane), x)
+    return v
+end
+
+@inline _lane_tangent(v::Complex{<:NDual}, lane::Int) = complex(
+    _lane_tangent(v.re, lane), _lane_tangent(v.im, lane)
+)
+
+@inline function _replace_lane_tangent(
+    v::Complex{NDual{T,N}}, lane::Int, x::Complex
+) where {T,N}
+    return complex(
+        _replace_lane_tangent(v.re, lane, T(real(x))),
+        _replace_lane_tangent(v.im, lane, T(imag(x))),
+    )
+end
+
+# A nested mutable struct's lane tangent would have to be another `MutableDualTangentView`, which
+# needs the nested PRIMAL — not reachable from the field's V alone. Name the shape rather than
+# leaving a bare `MethodError` from the `ntuple`/`copyto!` internals.
+@inline function _lane_tangent(v, lane::Int)
+    msg =
+        "Reading lane $lane of a mutable struct field whose forward V is $(typeof(v)) is not " *
+        "supported: only scalar, complex and array field Vs have a lane tangent."
+    throw(ArgumentError(msg))
+end
+
+@inline function _replace_lane_tangent(v, lane::Int, @nospecialize(_x))
+    msg =
+        "Writing lane $lane of a mutable struct field whose forward V is $(typeof(v)) is not " *
+        "supported: only scalar, complex and array field Vs have a lane tangent."
+    throw(ArgumentError(msg))
 end
 
 function Base.getproperty(v::MutableDualTangentView, name::Symbol)
