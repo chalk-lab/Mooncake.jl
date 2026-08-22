@@ -1527,7 +1527,9 @@ function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {
         # `uninit_fcodual` used by the corresponding `rrule!!`).
         return uninit_lifted(Val(Nw), y)
     else
-        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
+        V_i = _get_lifted_field(tangent(x), _name)
+        _check_lifted_field_ptr_lanes(V_i, Val(Nw))
+        return Lifted{_typeof(y),Nw}(y, V_i)
     end
 end
 function frule!!(
@@ -1542,7 +1544,9 @@ function frule!!(
         # whose V is `Vector{Any}`, not `NoDual`).
         return uninit_lifted(Val(Nw), y)
     else
-        return Lifted{_typeof(y),Nw}(y, _get_lifted_field(tangent(x), _name))
+        V_i = _get_lifted_field(tangent(x), _name)
+        _check_lifted_field_ptr_lanes(V_i, Val(Nw))
+        return Lifted{_typeof(y),Nw}(y, V_i)
     end
 end
 # `Ref{P<:NDualEltype}` (`NDualRef` V): the generic `_get_lifted_field` path above has no

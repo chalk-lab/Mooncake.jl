@@ -841,6 +841,21 @@ function throwing_rule_test_cases(::Val{:foreigncall})
                 (; mode=ForwardMode, chunk_size=2),
             ),
         )
+        # The runtime-name `getfield` frules project the same V and must refuse it identically. The
+        # name arrives as an ordinary `Symbol` argument, which is what keeps it dynamic — a literal
+        # would be rewritten to `lgetfield` above. Both arities, since both were unguarded and both
+        # returned zero partials rather than throwing.
+        for extra in ((), (false,))
+            push!(
+                cases,
+                (
+                    ArgumentError,
+                    getfield,
+                    (getfield(nested, :ref), :ptr_or_offset, extra...),
+                    (; mode=ForwardMode, chunk_size=2),
+                ),
+            )
+        end
     else
         # Julia 1.10 has no `MemoryRef`; the same guard sits on the legacy-array raw pointer
         # (`jl_array_ptr`), and must fail loudly at width > 1 for the same reason.

@@ -149,22 +149,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     # `uninit_lifted` builds that canonical slot (mirrors the reverse non-diff `getfield` path).
     tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
-    # Element-wise raw-pointer V (`pointer(::Vector{<differentiable non-float>})`, whose element
-    # dual is an `NDualArray`) projects to a single width-1 `Ptr` 1-tuple. At chunk width > 1 the
-    # per-element dual has no dense per-lane buffer a single raw pointer could reconstruct, so a
-    # raw-pointer round-trip would SILENTLY drop the derivative (return a zero tangent). Fail loudly.
-    # Shape-based (a `Ptr` tuple whose length ≠ `Nw`), so it constant-folds and never fires on the
-    # coherent per-lane `NTuple{Nw,Ptr}` scalar path; width 1 is correct and passes through.
-    if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
-        throw(
-            ArgumentError(
-                "Forward-mode raw pointer of a lifted nested array is unsupported at chunk " *
-                "width $Nw > 1: the per-element dual has no dense per-lane buffer a single raw " *
-                "pointer could address, so the derivative would be silently dropped. " *
-                "Differentiate at chunk width 1.",
-            ),
-        )
-    end
+    _check_lifted_field_ptr_lanes(V_i, Val(Nw))
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
 
@@ -319,6 +304,28 @@ end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
 
+# Element-wise raw-pointer V (`pointer(::Vector{<differentiable non-float>})`, whose element dual is
+# an `NDualArray`) projects to a single width-1 `Ptr` 1-tuple. At chunk width > 1 the per-element dual
+# has no dense per-lane buffer a single raw pointer could reconstruct, so a raw-pointer round-trip
+# would SILENTLY drop the derivative. Shape-based (a `Ptr` tuple whose length ≠ `Nw`), so it
+# constant-folds and never fires on the coherent per-lane `NTuple{Nw,Ptr}` scalar path; width 1 is
+# correct and passes through. Every rule that builds a slot V from `_get_lifted_field` must call this:
+# `Nw` is a parameter of the frule and invisible to the projection, which is why the check cannot live
+# inside `_get_lifted_field` and why a new caller is a fresh chance to omit it.
+@inline function _check_lifted_field_ptr_lanes(V_i, ::Val{Nw}) where {Nw}
+    if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
+        throw(
+            ArgumentError(
+                "Forward-mode raw pointer of a lifted nested array is unsupported at chunk " *
+                "width $Nw > 1: the per-element dual has no dense per-lane buffer a single raw " *
+                "pointer could address, so the derivative would be silently dropped. " *
+                "Differentiate at chunk width 1.",
+            ),
+        )
+    end
+    return nothing
+end
+
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}
 ) where {P,F<:StandardFDataType,f}
@@ -367,18 +374,7 @@ end
     # See the 2-arg `lgetfield` frule: canonical zero V for a non-differentiable parent.
     tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
-    # Same element-wise raw-pointer guard as the 2-arg frule: fail loud at width>1 rather than
-    # silently drop the derivative.
-    if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
-        throw(
-            ArgumentError(
-                "Forward-mode raw pointer of a lifted nested array is unsupported at chunk " *
-                "width $Nw > 1: the per-element dual has no dense per-lane buffer a single raw " *
-                "pointer could address, so the derivative would be silently dropped. " *
-                "Differentiate at chunk width 1.",
-            ),
-        )
-    end
+    _check_lifted_field_ptr_lanes(V_i, Val(Nw))
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
 # `Ref{P<:NDualEltype}` field read with an order argument: the `NDualRef` V needs the same
