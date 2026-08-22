@@ -1851,7 +1851,11 @@ end
     v::NamedTuple{names}, slots::NTuple{N,Int}, c::Int
 ) where {names,N}
     t, c = _basis_seed_isbits(values(v), slots, c)
-    return (NamedTuple{names}(t), c)
+    # `typeof(v)`, not `NamedTuple{names}`: the latter re-derives each field type from the REBUILT
+    # value, narrowing an `Any`-declared backing field to the concrete seed's type. `zero_lifted`
+    # coerces into the declared backing NamedTuple, so re-deriving here breaks
+    # `V === dual_type(Val(N), P)` and the OpaqueClosure argument typeassert rejects the slot.
+    return (typeof(v)(t), c)
 end
 @inline function _basis_seed_isbits(
     v::ImmutableDual, slots::NTuple{N,Int}, c::Int
@@ -1933,7 +1937,8 @@ end
 function _basis_seed!!(
     v::NamedTuple{names}, slots::NTuple{N,Int}, cursor, dict
 ) where {names,N}
-    return NamedTuple{names}(map(e -> _basis_seed!!(e, slots, cursor, dict), values(v)))
+    # `typeof(v)`, as in `_basis_seed_isbits` above and for the same reason.
+    return typeof(v)(map(e -> _basis_seed!!(e, slots, cursor, dict), values(v)))
 end
 function _basis_seed!!(
     v::PossiblyUninitTangent, slots::NTuple{N,Int}, cursor, dict

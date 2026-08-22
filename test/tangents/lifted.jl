@@ -558,6 +558,16 @@ const NDAC_VecC64 = NDualArray{
             @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is dof 3
         end
 
+        # The rebuilt V must keep the DECLARED backing NamedTuple. Re-deriving each field type from
+        # the rebuilt VALUE narrows an `Any`-declared field to the seed's concrete type, so
+        # `V !== dual_type(Val(N), P)` and the OpaqueClosure argument typeassert rejects the slot.
+        # The value assertions here cannot see it — the partials are correct, only the type is wrong.
+        # A `Float64` in the field takes the isbits path, a struct the general one.
+        @test Mooncake.verify_lifted_type(bl(LiftedTest_AbstractHeld(1.0), (1,)))
+        @test Mooncake.verify_lifted_type(
+            bl(LiftedTest_AbstractHeld(LiftedTest_Point(1.0, 2.0)), (1,))
+        )
+
         # width-2: two basis directions in one seed.
         let b = bl([5.0, 6.0, 7.0], (1, 3))
             @test tangent(b, 1) == [1.0, 0.0, 0.0]
