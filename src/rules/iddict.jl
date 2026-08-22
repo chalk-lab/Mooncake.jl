@@ -186,7 +186,10 @@ end
     v = tangent(x)
     out = IdDict{K,tangent_type(V)}()
     for (k, pe) in p
-        out[k] = tangent(Lifted{V,N}(pe, v[k]), lane)
+        # Concrete `typeof(pe)`, not the declared `V`: an `IdDict{K,Any}` would otherwise build
+        # `Lifted{Any,N,...}` children, which the lane methods dispatch on and mishandle. The
+        # output dict keeps `tangent_type(V)` as its declared value type.
+        out[k] = tangent(Lifted{typeof(pe),N}(pe, v[k]), lane)
     end
     return out
 end

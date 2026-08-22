@@ -45,6 +45,14 @@ end
 mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
     x::Real
 end
+# As above, but the abstract field HOLDS a structured value rather than a leaf. `x::Real` above
+# only ever holds a `Float64`, whose child slot never has to answer a structural question, so a
+# declared-type annotation is harmless there and hides the recursion bug. Immutable, so the lane
+# tangent is a `Tangent` built through `_field_lane_tangent`; a mutable one would route `.x`
+# through `_lane_tangent`, which handles only scalar `NDual` V — a separate documented gap.
+struct LiftedTest_AbstractHeld
+    x::Any
+end
 struct LiftedTest_RefContainer  # immutable struct holding a Ref (reverse tangent field = MutableTangent)
     r::Base.RefValue{Float64}
 end
@@ -206,6 +214,24 @@ const NDAC_VecC64 = NDualArray{
     ]
         @test dual_type(Val(N), P) === V
         @test lifted_type(Val(N), P) === Lifted{P,N,V}
+    end
+
+    @testset "abstract field holding a structured value" begin
+        # The child slot must be annotated with the field's CONCRETE type, as the element-wise array
+        # recursion does. With the declared `Any` the child is `Lifted{Any,N,...}`, and the lane and
+        # unlift methods dispatch on `P`: they evaluate `fieldtype(Any, name)` and throw for a struct,
+        # find no method for a NamedTuple V, and — since `Any` is not `<:Tuple` — fall to the
+        # per-lane-`Ptr` method for a Tuple V, which indexes the tuple by LANE instead of returning
+        # that lane's partials.
+        # Assert the recursion, not the wrapper: a mutable struct's lane tangent is a
+        # `MutableDualTangentView`, so the field's own tangent is what carries the evidence.
+        s = zero_lifted(Val(1), LiftedTest_AbstractHeld(LiftedTest_Point(1.0, 2.0)))
+        @test tangent(s, 1).fields.x isa Mooncake.Tangent
+        @test unlift(s) isa Tuple
+        # A lane index beyond the held tuple's length: the per-lane-`Ptr` misdispatch returned that
+        # element's whole V and raised `BoundsError` past the arity, so this pins the Tuple branch.
+        st = zero_lifted(Val(3), LiftedTest_AbstractHeld((1.0, 2.0)))
+        @test length(tangent(st, 3).fields.x) == 2
     end
 
     @testset "metatype kinds get an unbounded slot" begin

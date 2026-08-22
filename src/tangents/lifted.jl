@@ -319,17 +319,24 @@ _tangent_lane(x::Lifted, lane::Integer, ::IdDict) = tangent(x, lane)
 end
 # A `PossiblyUninitTangent` backing field reproduces the reverse `Tangent`'s
 # PUT shape: an undefined primal field maps to an uninit reverse PUT.
-@inline _field_lane_tangent(::Val{N}, ::Type{P}, p, name, vfield, lane) where {N,P} = tangent(
-    Lifted{fieldtype(P, name),N}(getfield(p, name), vfield), lane
-)
+# The child slot is annotated with the field's CONCRETE type, as the element-wise array recursion
+# does (`Lifted{typeof(pe),N}`), not the declared `fieldtype(P, name)`. An abstract declared type
+# would otherwise give `Lifted{Any,N,...}`, and the lane/unlift methods dispatch on `P`: they then
+# evaluate `fieldtype(Any, name)` and throw, find no method at all for a NamedTuple V, or — for a
+# Tuple V, since `Any` is not `<:Tuple` — fall to the per-lane-`Ptr` method and silently return one
+# element's whole V. `Rt` keeps the DECLARED type: it is the reverse `PossiblyUninitTangent`'s
+# backing type, and the concrete result still fits inside it.
+@inline _field_lane_tangent(::Val{N}, ::Type{P}, p, name, vfield, lane) where {N,P} =
+    let pf = getfield(p, name)
+        tangent(Lifted{typeof(pf),N}(pf, vfield), lane)
+    end
 @inline function _field_lane_tangent(
     ::Val{N}, ::Type{P}, p, name, vfield::PossiblyUninitTangent, lane
 ) where {N,P}
     Rt = tangent_type(fieldtype(P, name))
     (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
-    return PossiblyUninitTangent{Rt}(
-        tangent(Lifted{fieldtype(P, name),N}(getfield(p, name), val(vfield)), lane)
-    )
+    pf = getfield(p, name)
+    return PossiblyUninitTangent{Rt}(tangent(Lifted{typeof(pf),N}(pf, val(vfield)), lane))
 end
 @inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
     nt = tangent(x).value
@@ -437,16 +444,19 @@ function _unlift_seed(x::Lifted{P,1,<:NamedTuple}, cache::IdDict) where {P}
         end,
     )
 end
-@inline _field_unlift_seed(::Type{P}, p, name, vfield, cache::IdDict) where {P} = _unlift_seed(
-    Lifted{fieldtype(P, name),1}(getfield(p, name), vfield), cache
-)
+# Concrete child annotation, as in `_field_lane_tangent` above and for the same reason.
+@inline _field_unlift_seed(::Type{P}, p, name, vfield, cache::IdDict) where {P} =
+    let pf = getfield(p, name)
+        _unlift_seed(Lifted{typeof(pf),1}(pf, vfield), cache)
+    end
 @inline function _field_unlift_seed(
     ::Type{P}, p, name, vfield::PossiblyUninitTangent, cache::IdDict
 ) where {P}
     Rt = tangent_type(fieldtype(P, name))
     (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
+    pf = getfield(p, name)
     return PossiblyUninitTangent{Rt}(
-        _unlift_seed(Lifted{fieldtype(P, name),1}(getfield(p, name), val(vfield)), cache)
+        _unlift_seed(Lifted{typeof(pf),1}(pf, val(vfield)), cache)
     )
 end
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
