@@ -146,8 +146,10 @@ function _compile_for_rule(
 ) where {C}
     @nospecialize sig_or_mi sig
 
-    # Derive unoptimized forwards- and reverse-pass IR.
-    dri = generate_ir(interp, sig_or_mi; debug_mode, do_optimize=false)
+    # Keep primitive rules as static call boundaries until after the forward transform.
+    dri = generate_ir(
+        interp, sig_or_mi; debug_mode, do_optimize=false, noinline_primitive_rules=true
+    )
 
     # Optimize and build the primal DerivedRule.
     raw_rule = let
