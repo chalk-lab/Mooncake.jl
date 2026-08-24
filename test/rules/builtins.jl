@@ -61,13 +61,25 @@ foo_throws(e) = throw(e)
     end
 
     @testset "bitcast for Ptr->Ptr" begin
+        # Narrowing to a non-differentiable element: it asks nothing of the tangent buffer (an
+        # `Int64` read out of `Float64` bytes has no derivative), so the pair is re-typed together.
         res, pb = rrule!!(
+            zero_fcodual(bitcast),
+            zero_fcodual(Ptr{Int64}),
+            CoDual(Ptr{Float64}(5), Ptr{Float64}(5)),
+        )
+        @test pb isa Mooncake.NoPullback
+        @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
+
+        # A DIFFERENT element width is refused. This used to re-type the tangent pointer too, so
+        # `x * unsafe_load(Ptr{Float64}(pointer(v))) + sum(v)` over a `Vector{Float32}` wrote an
+        # eight-byte cotangent across the four-byte tangent slots of `v[1]` and `v[2]` and returned
+        # `Float32[5.8e-39, 2.0009766, 1.0, 1.0]` where `sum(v)` alone gives ones.
+        @test_throws ArgumentError rrule!!(
             zero_fcodual(bitcast),
             zero_fcodual(Ptr{Float64}),
             CoDual(Ptr{Float32}(5), Ptr{Float32}(5)),
         )
-        @test pb isa Mooncake.NoPullback
-        @test res == CoDual(Ptr{Float64}(5), Ptr{Float64}(5))
     end
 
     @testset "throw" begin

@@ -593,27 +593,35 @@ end
     return sizeof(A) == sizeof(B)
 end
 
-# Reverse counterpart, for the one state that has no storage AT ALL behind it: a source whose
-# elements are non-differentiable has a `NoTangent`-element tangent, i.e. a zero-byte allocation, and
-# re-typing that address to a differentiable element hands `pointerref`'s pullback eight bytes to
-# read and write where the buffer owns none. A `Ptr{Nothing}` source is type ERASURE instead (the
+# Reverse counterpart: a load or store through the re-typed pointer addresses `sizeof(tangent_type(B))`
+# bytes per element, so that must match the layout of the tangent buffer actually behind the address.
+# Two ways it does not: a non-differentiable source element has a `NoTangent` tangent, i.e. a
+# zero-byte allocation (reinterpreting a `Vector{UInt8}` as `Float64`); and a differentiable source of
+# a different width has real storage in the wrong stride, where an eight-byte cotangent lands across
+# two four-byte slots and corrupts both. Narrowing to a non-differentiable element is fine, because
+# the destination asks nothing of the buffer. A `Ptr{Nothing}` source is type ERASURE (the
 # `pointer(::Array)` chain), where the re-typing recovers the element type and the buffer really is
-# the tangent array, so it is exempt. Re-typing between two differentiable elements of DIFFERENT
-# widths is left alone: it is a separate question from this one, and refusing it here would reject
-# `Ptr{Float32}` -> `Ptr{Float64}`, which the rrule is tested to perform.
+# the tangent array.
 @inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
     A === Nothing && return nothing
-    if tangent_type(A) === NoTangent && tangent_type(B) !== NoTangent
-        msg =
-            "Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: `$A` is " *
-            "non-differentiable, so there is no tangent storage behind this address, and a load " *
-            "or store through the re-typed pointer would read and write memory the tangent buffer " *
-            "does not own. This arises from reinterpreting a non-differentiable buffer (a " *
-            "`Vector{UInt8}`, say) as a differentiable element type; allocate the buffer with that " *
-            "element type instead."
-        throw(ArgumentError(msg))
+    TA, TB = tangent_type(A), tangent_type(B)
+    TA === TB && return nothing
+    isbitstype(TB) && sizeof(TB) == 0 && return nothing
+    isbitstype(TA) && isbitstype(TB) && sizeof(TA) == sizeof(TB) && return nothing
+    why = if isbitstype(TA) && sizeof(TA) == 0
+        "`$A` is non-differentiable, so there is no tangent storage behind this address at all, " *
+        "and a `$TB` load or store through the re-typed pointer would touch memory no tangent " *
+        "buffer owns"
+    else
+        "the tangent storage behind this address is laid out in `$TA` elements, so a `$TB` load " *
+        "or store through the re-typed pointer would straddle two of them and corrupt both"
     end
-    return nothing
+    throw(
+        ArgumentError(
+            "Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: $why. " *
+            "Allocate the buffer with the element type you differentiate through.",
+        ),
+    )
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat

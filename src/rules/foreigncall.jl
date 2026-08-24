@@ -898,22 +898,17 @@ function throwing_rule_test_cases(::Val{:foreigncall})
     end
     copy_bytes = zeros(UInt8, 24)
     push!(memory, copy_bytes)
-    @static if VERSION >= v"1.11-"
-        # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers. Copying out of
-        # a pointer re-typed off a non-differentiable buffer gives it the NULL
-        # sentinel, which memmoved through address zero. The sentinel comes from the
-        # `Memory`/`MemoryRef` rules, so this is 1.11+ only; 1.10 reverse differentiates the same
-        # program correctly, so there is nothing to refuse there.
-        push!(
-            cases,
-            (
-                (ArgumentError, "no tangent storage"),
-                unsafe_copyto_retyped_bytes,
-                (randn(3), copy_bytes),
-                (; mode=ReverseMode),
-            ),
-        )
-    end
+    # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers, and the source has none: it is
+    # re-typed off a non-differentiable buffer, which the `bitcast` rrule refuses on every version.
+    push!(
+        cases,
+        (
+            (ArgumentError, "no tangent storage"),
+            unsafe_copyto_retyped_bytes,
+            (randn(3), copy_bytes),
+            (; mode=ReverseMode),
+        ),
+    )
     # Forward reaches the same program with a MIXED V — real per-lane pointers for the destination,
     # `NoDual` for the re-typed source. Every version, which is the point: 1.10 used to hand the
     # source a fabricated pointer and report a derivative that varied with unrelated heap contents.
