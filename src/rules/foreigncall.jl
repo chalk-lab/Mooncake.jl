@@ -315,7 +315,7 @@ end
 # convention has two poison values and the `_check_tangent_ptr` consumers test only NULL, so they
 # share this blind spot; closing it by dispatch would touch every rule taking a `Ptr` tangent.
 @inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
-    if sizeof(eltype(dp)) > 0 && UInt(dp) == UInt(p)
+    if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) && UInt(dp) == UInt(p)
         throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
     end
     return nothing
@@ -833,6 +833,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_copyto_tester,
             [randn(3) for _ in 1:5],
             [randn(4) for _ in 1:6],
+            4,
+        ),
+        (
+            # The same shape with an ABSTRACT element type. `tangent_type(Any)` is `Any`, and the
+            # forward guard asked `sizeof(eltype(dp)) > 0`, which THROWS for an abstract type
+            # rather than answering — so this crashed with a raw "does not have a definite size"
+            # before reaching any derivative. A reference element occupies a pointer-sized slot, so
+            # it does have storage, and the guard now says so without consulting `sizeof`.
+            false,
+            :none,
+            (skip_chunked=true,),
+            unsafe_copyto_tester,
+            Any[randn(3) for _ in 1:5],
+            Any[randn(4) for _ in 1:6],
             4,
         ),
         (

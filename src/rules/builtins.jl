@@ -517,11 +517,18 @@ const _NULL_TANGENT_PTR_MSG =
 # its own type would let dispatch enforce this instead of convention, at the cost of touching every
 # rule that takes a `Ptr` tangent.
 @inline function _check_tangent_ptr(dx)
-    if dx isa Ptr && iszero(UInt(dx)) && sizeof(eltype(dx)) > 0
+    if dx isa Ptr && iszero(UInt(dx)) && _elements_occupy_storage(eltype(dx))
         throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
     end
     return nothing
 end
+
+# Does one element of a tangent buffer occupy storage? `sizeof` alone cannot answer: it throws for
+# an abstract element type, and `tangent_type(Any)` IS `Any`, so `Ptr{Any}` tangent pointers reach
+# these guards. A reference element occupies a pointer-sized slot, which is storage, so the answer
+# there is yes without asking `sizeof` at all. Note `isconcretetype` would not license `sizeof`
+# either -- `String` is concrete and unsized -- though no tangent type is currently both.
+@inline _elements_occupy_storage(::Type{E}) where {E} = !isbitstype(E) || sizeof(E) > 0
 
 const _NODUAL_DIFF_PTR_MSG =
     "Forward-mode AD cannot load from or store to a `Ptr` whose pointee is a differentiable " *
