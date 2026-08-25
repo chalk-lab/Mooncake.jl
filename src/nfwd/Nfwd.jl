@@ -2061,28 +2061,6 @@ end
     return b
 end
 
-@static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
-    # A window into `memblock` covering the `prod(dims) ÷ N` columns starting at the backing
-    # `Memory`'s slot `off`. The block is element-major, so slot j owns flat entries
-    # `(j-1)*N+1 : j*N`; sharing that storage is what makes a lane written through an `Array`'s V
-    # visible through its backing `Memory`'s V, mirroring the primal aliasing.
-    #
-    # Growth needs nothing extra. The block's `Memory` is the primal's scaled by `N`, so the slack
-    # on each side of the window is `N` times the primal's, and `d ≤ slack` holds for the primal
-    # exactly when `N*d ≤ N*slack` holds for the block: `_growend!`/`_growbeg!` reallocate on
-    # precisely the same calls, and a reallocated primal has no lifted `Memory` left to share with.
-    # `memoryrefnew` is unchecked because an empty array sitting at the end of its `Memory` gives
-    # the one-past-end ref, which `wrap` never dereferences at length 0.
-    @inline function _window_block(
-        memblock::NDualBlock{E,2}, ::Val{N}, off::Int, dims::NTuple{D,Int}
-    ) where {E,N,D}
-        ref = Core.memoryrefnew(
-            getfield(getfield(memblock, :parent), :ref), (off - 1) * N + 1, false
-        )
-        return NDualBlock{E,D}(Base.wrap(Array, ref, (prod(dims),))::Vector{E}, dims)
-    end
-end
-
 # The concrete element-major block type for a primal container `A`. No generic fallback: an
 # unknown container (e.g. a GPU array) must define its own method, or fail loudly here rather
 # than silently landing a CPU block.

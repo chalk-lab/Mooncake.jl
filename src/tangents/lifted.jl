@@ -1366,23 +1366,7 @@ end
 ) where {E<:NDualEltype,D,A<:Array{E,D}}
     c isa IdDict || return lift(x, ẋ)
     haskey(c, x) && return c[x]::Lifted{A,1}
-    # Window the backing `Memory`'s V, as the seed path does (`_derived_array_dual`), so an
-    # aggregate holding both a `Vector` and its `Memory` gets one partials store. Only when `ẋ`
-    # mirrors the primal's `Memory` geometry: that is what an aliasing-preserving reverse tangent
-    # gives (`zero_tangent` over the aliased pair does), and it is also what makes `ẋ.ref.mem` the
-    # tangent for `x.ref.mem` rather than a shorter buffer of its own.
-    lifted = @static if VERSION >= v"1.11-rc4"
-        if length(getfield(ẋ, :ref).mem) == length(getfield(x, :ref).mem) &&
-            Core.memoryrefoffset(getfield(ẋ, :ref)) ==
-           Core.memoryrefoffset(getfield(x, :ref))
-            memv = tangent(lift(getfield(x, :ref).mem, getfield(ẋ, :ref).mem, c))
-            Lifted{A,1}(x, _derived_array_dual(Val(1), x, memv))
-        else
-            lift(x, ẋ)
-        end
-    else
-        lift(x, ẋ)
-    end
+    lifted = lift(x, ẋ)
     c[x] = lifted
     return lifted
 end
@@ -1700,29 +1684,6 @@ end
 #
 # The two entry points must agree: a non-standard V needs BOTH the cache-free factory and the
 # cache-threading one, or whichever is left unoverridden silently yields a non-canonical V.
-@static if VERSION >= v"1.11-rc4"
-    # An `Array`'s partials block is a WINDOW into its backing `Memory`'s block, so the two Vs
-    # share partial storage exactly as the primals share elements. Without this, an aggregate
-    # holding both a `Vector` and its own `Memory` seeds two independent derivative stores and a
-    # write through one is invisible through the other — the primal aliasing is preserved and the
-    # partials aliasing is not, which is a silently wrong derivative.
-    #
-    # `memv` is the `Memory`'s V, obtained through the same cache, so two arrays over one `Memory`
-    # window the one block.
-    @inline function _derived_array_dual(
-        ::Val{N}, x::Array{E,D}, memv
-    ) where {N,E<:NDualEltype,D}
-        dims = (N, size(x)...)
-        block = Nfwd._window_block(
-            getfield(memv, :partials_block),
-            Val(N),
-            Core.memoryrefoffset(getfield(x, :ref)),
-            dims,
-        )
-        return NDualArray{E,N,D,typeof(x)}(x, block)
-    end
-end
-
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval begin
@@ -1761,23 +1722,11 @@ for (factory, internal) in
         # abstract `Lifted{P,N}` (runtime dispatch + allocs at the slot ctor). Mirrors the
         # assert the mutable-struct branch above already does on `d[x]`.
         #
-        # Float/Complex arrays seed to an `NDualArray` whose elements are scalars, so no element
-        # can reference back into `x` and the recursion cannot cycle. The cache is still needed for
-        # the block, which windows the backing `Memory`'s.
+        # Float/Complex arrays seed to an `NDualArray` whose elements are scalars:
+        # no element can reference back into `x`, so the cache-free factory suffices; register after.
         function $internal(w::Val{N}, x::Array{<:NDualEltype}, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            # Derive the block from the backing `Memory`'s (see `_derived_array_dual`). Only with a
-            # cache: without one there is no other V to share with, so an owned block is both
-            # correct and cheaper.
-            @static if VERSION >= v"1.11-rc4"
-                v = if d isa NoCache
-                    $factory(w, x)
-                else
-                    _derived_array_dual(w, x, $internal(w, getfield(x, :ref).mem, d))
-                end
-            else
-                v = $factory(w, x)
-            end
+            v = $factory(w, x)
             d[x] = v
             return v
         end
@@ -1868,16 +1817,7 @@ function _randn_dual_internal(
     # Assert the cache lookup to the concrete `dual_type`; see the `_zero_dual_internal`
     # Array overload for why an un-asserted `IdDict{Any,Any}` lookup poisons inference.
     haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-    # Window the backing `Memory`'s block, as the zero/uninit branches do.
-    @static if VERSION >= v"1.11-rc4"
-        v = if d isa NoCache
-            randn_dual(w, rng, x)
-        else
-            _derived_array_dual(w, x, _randn_dual_internal(w, rng, getfield(x, :ref).mem, d))
-        end
-    else
-        v = randn_dual(w, rng, x)
-    end
+    v = randn_dual(w, rng, x)
     d[x] = v
     return v
 end
