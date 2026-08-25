@@ -1400,6 +1400,23 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 c_nf, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
             )
             @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
+
+            # A REPEATED mutable argument given two DIFFERENT tangents is ill-posed: the two
+            # positions are one array, so they are one tangent, and only one direction exists to
+            # carry. Both tuple methods used to answer it, differently and silently — the
+            # unfriendly path kept the first tangent (2.0) and the friendly path the last (4.0),
+            # which are the JVPs along `dA_al` and `dB_al` respectively.
+            for cfg in (friendly, Mooncake.Config(; friendly_tangents=false, kwargs...))
+                c_rep = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=cfg)
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dB_al)
+                )
+                # The same tangent at both positions is well-posed and still answered.
+                _, d_rep = Mooncake.value_and_derivative!!(
+                    c_rep, (g_al, Mooncake.NoTangent()), (X_al, dA_al), (X_al, dA_al)
+                )
+                @test d_rep ≈ 2 * sum(dA_al .* X_al)
+            end
         end
 
         @testset "reused cache reads call-time non-differentiable state" begin

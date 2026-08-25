@@ -337,6 +337,46 @@ end
     return checks
 end
 
+# A repeated top-level MUTABLE primal has one storage, so its tangent has one too — the seeds for
+# the two positions are the same object. Two DIFFERENT supplied tangents therefore cannot both be
+# carried, and the two tuple methods resolved that differently and silently: the unfriendly path
+# lifts through one aliasing cache and keeps the first, the friendly path writes both into the one
+# prepared buffer and keeps the last. For `h(x, y) = sum(x .* y)` at `a = [1.0, 2.0]` with
+# `dx1 = [1, 0]` and `dx2 = [0, 1]` those are 2.0 and 4.0.
+#
+# Neither is a defect in the arithmetic: 2.0 and 4.0 are the JVPs along `dx1` and `dx2`, and since
+# `x` and `y` are ONE array those are the only directions there are. The request itself is the
+# ill-posed part, so it is refused rather than answered arbitrarily. Supplying the SAME tangent at
+# both positions is well-posed and still works — that is how a mutating `f` over a repeated
+# argument is differentiated.
+@generated function _check_repeated_arg_tangents(fx::Tuple)
+    n = length(fx.parameters)
+    checks = Expr(:block)
+    for i in 1:n, j in (i + 1):n
+        Base.ismutabletype(fx.parameters[i].parameters[1]) || continue
+        push!(checks.args, quote
+            if fx[$i][1] === fx[$j][1] && !(fx[$i][2] === fx[$j][2])
+                _throw_repeated_arg_tangent_error($i, $j)
+            end
+        end)
+    end
+    push!(checks.args, :(return nothing))
+    return checks
+end
+
+# `fx` carries the callable at position 1, so report the positions as the caller passed them.
+@noinline function _throw_repeated_arg_tangent_error(i::Int, j::Int)
+    name(k) = k == 1 ? "the callable" : "argument $(k - 1)"
+    throw(
+        ArgumentError(
+            "$(name(i)) and $(name(j)) are the same mutable object but were given different " *
+            "tangents. They share one storage, so they share one tangent, and only one direction " *
+            "can be carried through it. Pass the same tangent at both positions to differentiate " *
+            "along that direction.",
+        ),
+    )
+end
+
 # A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dof
 # range per argument. A repeated mutable argument breaks that accounting: the seeds are built per
 # argument, so the seeded primal stops aliasing and the sweep differentiates a different function
@@ -865,6 +905,7 @@ not snapshotted — a callable that mutates its own fields is not restored.
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     # Types and sizes match when only the aliasing differs, so the check above cannot see it.
     _validate_prepared_forward_aliasing(cache.input_tangents, input_primals)
+    _check_repeated_arg_tangents(fx)
     input_friendly_tangents = tuple_map(last, fx)
     input_tangents = tuple_map(
         primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
@@ -896,6 +937,7 @@ end
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
 
     # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
