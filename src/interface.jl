@@ -2365,9 +2365,7 @@ function _structured_gradient!!(
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
     # rewrap.
     f_seed = typeof(f_stored)(f, tangent(f_stored))
-    # The stored seeds hold the prepare-time non-differentiable state; rebuild it from this call's
-    # arguments, as the `f` rewrap above does for the callable.
-    arg_seeds = _refresh_nondiff_all(seed.arg_seeds, xs)
+    arg_seeds = seed.arg_seeds
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
     W = cache.gradient_chunk_size
@@ -2375,6 +2373,12 @@ function _structured_gradient!!(
     local y
     s = 1
     while s <= total_dof
+        # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
+        # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
+        # callable) — and an `f` that mutates a non-differentiable argument would otherwise carry
+        # chunk 1's mutation into chunk 2, so the reported value came from the last chunk. Copies
+        # into the cache's own objects, so an unchanged call rebuilds nothing.
+        arg_seeds = _refresh_nondiff_all(arg_seeds, xs)
         _refresh_all!(arg_seeds, xs)
         _zero_partials!(leaves, W)
         _seed_chunk!(leaves, s, W, 0)

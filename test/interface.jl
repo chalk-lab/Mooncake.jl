@@ -1469,9 +1469,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             cache500 = Mooncake.prepare_derivative_cache(
                 fwd_counting, w500, c500; config=plain498
             )
-            _, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
+            v500, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
             @test c500.n == 0                 # the caller's object is untouched
             @test g500[2] ≈ ones(16)
+            # 16 dof at chunk 8 is TWO chunks, and the refresh runs per chunk: without that,
+            # chunk 1's mutation carried into chunk 2 and the value came from the last chunk
+            # (138.0 for a truth of 137.0). One chunk was already right, so `n` must exceed the
+            # chunk width for this to bite.
+            @test v500 ≈ fwd_counting(collect(1.0:16.0), FwdCounter(0))
 
             # A `Ptr` argument: the aliasing check must use the same tangent entry point as the
             # shared-dof count it is compared against, which returns the documented placeholder
