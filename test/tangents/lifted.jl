@@ -419,6 +419,54 @@ const NDAC_VecC64 = NDualArray{
                 Mooncake._randn_dual_internal(Val(1), Xoshiro(1), mem, dr2)
         end
 
+        @testset "an Array's block windows its backing Memory's" begin
+            # The primal aliasing was already preserved (`a.ref.mem === mem`) while the partials
+            # were not: two independent derivative stores over one buffer, so a lane written
+            # through the array was invisible through the `Memory`. Value right, derivative
+            # wrong. `test_rule` cannot catch this — its finite-difference oracle perturbs the
+            # primal through the same aliasing-blind seed it hands the rule, so both agree.
+            a = [1.0, 2.0, 3.0]
+            v = tangent(zero_lifted(Val(2), (a, a.ref.mem)))
+            Mooncake.Nfwd.tangent_view(v[1], 1)[2] = 5.0
+            @test Mooncake.Nfwd.tangent_view(v[2], 1)[2] == 5.0
+            Mooncake.Nfwd.tangent_view(v[2], 2)[3] = 9.0
+            @test Mooncake.Nfwd.tangent_view(v[1], 2)[3] == 9.0
+
+            # An array that does not start at slot 1 of its `Memory` must window at its offset.
+            b = Float64[]
+            foreach(i -> push!(b, i), 1:5)
+            Base._growbeg!(b, 3)
+            Base._deletebeg!(b, 3)
+            off = Core.memoryrefoffset(b.ref)
+            @test off > 1
+            vb = tangent(zero_lifted(Val(2), (b, b.ref.mem)))
+            Mooncake.Nfwd.tangent_view(vb[1], 1)[1] = 4.0
+            @test Mooncake.Nfwd.tangent_view(vb[2], 1)[off] == 4.0
+            @test Mooncake.Nfwd.tangent_view(vb[2], 1)[1] == 0.0   # the slot before the array is untouched
+
+            # The lift path shares the requirement, and its input satisfies it: `zero_tangent`
+            # over the aliased pair returns a tangent with the same `Memory` geometry.
+            t = (a, a.ref.mem)
+            vl = tangent(Mooncake.lift(t, Mooncake.zero_tangent(t), IdDict{Any,Any}()))
+            Mooncake.Nfwd.tangent_view(vl[1], 1)[2] = 6.0
+            @test Mooncake.Nfwd.tangent_view(vl[2], 1)[2] == 6.0
+
+            # Growth needs no bookkeeping: the block's `Memory` is the primal's scaled by the
+            # chunk width, so the slack on each side is `N` times the primal's and the two
+            # reallocate on exactly the same calls. Checked both ways round.
+            for (N, d) in ((1, 2), (2, 2), (2, 10_000))
+                g = Float64[]
+                foreach(i -> push!(g, i), 1:20)
+                blk = getfield(
+                    tangent(zero_lifted(Val(N), (g, g.ref.mem)))[1], :partials_block
+                )
+                pm, bm = g.ref.mem, getfield(blk, :parent).ref.mem
+                Base._growend!(g, d)
+                Mooncake.Nfwd._resize_block!(Base._growend!, blk, N, d)
+                @test (g.ref.mem === pm) == (getfield(blk, :parent).ref.mem === bm)
+            end
+        end
+
         @testset "NDualMemoryRef (MemoryRef{T<:IEEEFloat})" begin
             mem = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]
             p = Core.memoryref(mem, 1)
