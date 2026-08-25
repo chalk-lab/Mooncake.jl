@@ -2206,6 +2206,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                             c_st, g_st, t_st
                         )
                     end
+                    # The same sharing one level down, which the traversal used to walk past:
+                    # inside an array ELEMENT, and behind a `Ref`, whose tangent field is a
+                    # `PossiblyUninitTangent`. Both returned 4.0 for a per-position derivative of
+                    # 1.0, with no refusal.
+                    g_el = t -> sum(sum, t[1]) + 2 * sum(sum, t[2])
+                    t_el = ([a_st], [reshape(a_st, 2, 3)])
+                    c_el = Mooncake.prepare_derivative_cache(g_el, t_el)
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        c_el, g_el, t_el
+                    )
+                    g_ref = t -> sum(t[1][]) + 2 * sum(t[2])
+                    t_ref = (Base.RefValue(a_st), reshape(a_st, 2, 3))
+                    c_ref = Mooncake.prepare_derivative_cache(g_ref, t_ref)
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        c_ref, g_ref, t_ref
+                    )
                     # Distinct storage is unaffected. So are two NON-overlapping views, whose
                     # tangents get their own parents; two EMPTY arrays, which all share Julia's one
                     # global empty `Memory` and so would look aliased on identity alone; and the

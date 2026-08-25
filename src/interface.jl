@@ -478,11 +478,28 @@ end
     # one global empty `Memory`, so two unrelated ones look aliased. Nothing to alias either.
     function _repeats_storage!(s::_StorageSeen, x::Array)
         isempty(x) && return false
-        return _claim_storage!(s, x, getfield(x, :ref).mem)
+        haskey(s.objs, x) && return false
+        _claim_storage!(s, x, getfield(x, :ref).mem) && return true
+        return _repeats_elements!(s, x)
     end
     function _repeats_storage!(s::_StorageSeen, x::Memory)
         isempty(x) && return false
-        return _claim_storage!(s, x, x)
+        haskey(s.objs, x) && return false
+        _claim_storage!(s, x, x) && return true
+        return _repeats_elements!(s, x)
+    end
+    # The elements are tangents too, and two of them can share storage while their containers do
+    # not. Guarded on the visited check above, so an array holding itself terminates. A bits element
+    # holds no storage of its own, which is also what keeps a large float array off this path.
+    function _repeats_elements!(s::_StorageSeen, x)
+        isbitstype(eltype(x)) && return false
+        for i in eachindex(x)
+            isassigned(x, i) && _repeats_storage!(s, x[i]) && return true
+        end
+        return false
+    end
+    function _repeats_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
+        return is_init(x) && _repeats_storage!(s, val(x))
     end
     function _repeats_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
         return any(v -> _repeats_storage!(s, v), x)
