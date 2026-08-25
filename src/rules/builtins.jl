@@ -586,8 +586,12 @@ end
 # passes a `Ptr{Nothing}` intermediate whose re-typing RECOVERS the element type a foreigncall needs,
 # so it re-types whatever the sizes say — on size alone it is refused and raw scalar loads break.
 # `Ptr{NoTangent}` is also size 0 and must NOT re-type: a tangent sentinel is a known element type,
-# not an absent one. An abstract side has no known size, so keep the lane (`sizeof` would throw).
+# not an absent one. That needs its own clause rather than falling to the size test, which would pass
+# it to `Ptr{Nothing}` (both zero-size) and thence to anything, since erasure re-types freely — two
+# hops through `Ptr{Cvoid}` reaching the re-typing the one-hop form refuses. An abstract side has no
+# known size, so keep the lane (`sizeof` would throw).
 @inline function _retyping_keeps_stride(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
+    A === NoTangent && return false
     A === Nothing && return true
     (isconcretetype(A) && isconcretetype(B)) || return false
     return sizeof(A) == sizeof(B)

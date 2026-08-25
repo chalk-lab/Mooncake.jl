@@ -130,7 +130,45 @@ function frule!!(
     base = UInt(pointer_from_objref(tangent(x).partials))
     return Lifted{typeof(y),Nw}(y, ntuple(k -> Ptr{P}(base + (k - 1) * sizeof(P)), Val(Nw)))
 end
+# The address handed out points at the TANGENT object, while every later `pointerref`/`pointerset`
+# through it indexes at the PRIMAL's field offsets. That arithmetic is only meaningful when the two
+# layouts agree. A non-differentiable field has a zero-size tangent counterpart, so it shifts every
+# later field: for `mutable struct M; a::Int; b::Float64; end` the primal is 16 bytes with `b` at
+# offset 8, while the tangent payload is 8 bytes with `b`'s cotangent at offset 0, and a store for
+# `b` lands one word past the end of the tangent object — silently, since the reported gradient for
+# `b` is then 0.0. Layout-identical primals (all-`IEEEFloat` structs, `Ref{Float64}`) are what this
+# admits, alongside primals with no differentiable content at all.
+@inline function _objref_tangent_layout_matches(::Type{P}) where {P}
+    T = tangent_type(P)
+    T <: MutableTangent || return false
+    NT = fieldtype(T, :fields)
+    # Nothing differentiable at all (a `Ref{UInt64}` passed to a foreigncall): no load through the
+    # address can report a derivative, and `_check_tangent_retyping_fits` already refuses to re-type
+    # a pointer with no tangent storage. Offsets are irrelevant when there is nothing to offset.
+    sizeof(NT) === 0 && return true
+    fieldcount(NT) === fieldcount(P) || return false
+    for i in 1:fieldcount(P)
+        fieldoffset(NT, i) === fieldoffset(P, i) || return false
+        sizeof(fieldtype(NT, i)) === sizeof(fieldtype(P, i)) || return false
+    end
+    return sizeof(NT) === sizeof(P)
+end
+
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
+    P = _typeof(primal(x))
+    if !_objref_tangent_layout_matches(P)
+        throw(
+            ArgumentError(
+                "Cannot take `pointer_from_objref` of a `$P` during reverse-mode AD: the address " *
+                "would point at the tangent object, but a load or store through it indexes at " *
+                "`$P`'s own field offsets, and `$(tangent_type(P))` does not share that layout. " *
+                "A non-differentiable field has a zero-size tangent counterpart, so every later " *
+                "field shifts and the access lands outside the tangent object. Use a struct whose " *
+                "fields are all differentiable and of the same size, or reach the field directly " *
+                "instead of through a raw pointer.",
+            ),
+        )
+    end
     y = CoDual(
         pointer_from_objref(primal(x)),
         bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x))),
@@ -834,12 +872,31 @@ function unsafe_copyto_retyped_bytes(x, b)
     return sum(x) + sum(y)
 end
 
+# A primal whose tangent layout differs from its own: `a`'s tangent is `NoTangent` (zero-size), so
+# `b`'s cotangent sits at offset 0 while `b` itself sits at offset 8.
+mutable struct MismatchedLayout
+    a::Int
+    b::Float64
+end
+
 function throwing_rule_test_cases(::Val{:foreigncall})
     # pointer_from_objref of a value whose forward V is immutable but differentiable
     # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
     # emit NULL lanes that silently drop the derivative downstream.
     cases = Any[(ArgumentError, pointer_from_objref, ([1.0],), (; mode=ForwardMode))]
     memory = Any[]
+    # Reverse hands out the TANGENT object's address, and a load through it indexes at the PRIMAL's
+    # field offsets. A non-differentiable field shifts every later one, so the access lands outside
+    # the tangent object; before the layout check it reported 0.0 for `b` against a truth of 2.0.
+    push!(
+        cases,
+        (
+            (ArgumentError, "does not share that layout"),
+            pointer_from_objref,
+            (MismatchedLayout(7, 3.0),),
+            (; mode=ReverseMode),
+        ),
+    )
     # Its inverse, through a pointer with no tangent storage: the lane is the `uninit_*` placeholder,
     # equal to the primal's own address, so it passes the NULL test and would hand back the primal
     # object as its own tangent. A ready-made slot because seeding a raw `Ptr` primal cannot express
