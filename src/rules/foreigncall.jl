@@ -363,6 +363,15 @@ function rrule!!(
     IntrinsicsWrappers._check_tangent_ptr(tangent(src))
     _n = primal(n)
 
+    # A self-copy is the identity, and the snapshot-and-restore below is actively wrong for it: the
+    # pullback increments `dsrc` through `ddest` — one buffer, so it doubles — and then restores
+    # that same buffer to its pre-call value, erasing both the increment and whatever cotangent the
+    # buffer accumulates downstream. At the start of the reverse sweep the snapshot is zero, so the
+    # copied slots came back zero. Exact pointer equality, which leaves partial overlap alone.
+    if primal(dest) === primal(src)
+        return dest, NoPullback(ntuple(_ -> NoRData(), 4))
+    end
+
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
     ddest_copy = Vector{T}(undef, _n)
@@ -783,6 +792,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         return x
     end
 
+    # A SELF-copy is the identity, but the rule snapshotted the destination and restored it in the
+    # pullback, which for one buffer erased the increment it had just made: the copied slots came
+    # back with zero gradient. One argument rather than the same array at two positions, so the
+    # repeated-argument refusal does not intercept it first.
+    function unsafe_self_copy_tester(x::Vector{T}, n::Int) where {T}
+        GC.@preserve x unsafe_copyto!(pointer(x), pointer(x), n)
+        return x
+    end
+
     _a, _da = randn(5), randn(5)
     _b, _db = randn(4), randn(4)
     ptr_a, ptr_da = pointer(_a), pointer(_da)
@@ -820,6 +838,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             1.0,
         ),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
+        (false, :none, nothing, unsafe_self_copy_tester, randn(5), 3),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot carry the
