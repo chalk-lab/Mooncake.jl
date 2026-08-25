@@ -242,6 +242,10 @@ end
         _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
         _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
         _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
+        # A view covering ALL of its parent, where that parent is itself an offset view. The
+        # forward rule tested `y.offset == 0` rather than `y.offset == parent.offset`, so every
+        # such view inherited a non-zero offset and was refused as "partial" despite full coverage.
+        _full_view_of_view(a) = sum(view(view(a, 2:5), 1:4))
         _view_cols(m) = sum(view(m, :, 1) .* CuArray(Float32[1, 2, 3]))
         _view_weighted_cx(a) = real(sum(view(a, 1:3) .* CuArray(ComplexF32[1, 2im, 3])))
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -1489,6 +1493,7 @@ end
                 (_view_weighted, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_reshaped, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_full_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
                 (_view_cols, (view(_rand(rng, Float32, 3, 4), :, 2:3),)),
                 (_view_weighted_cx, (view(_rand(rng, ComplexF32, 8), 3:8),)),
                 (_view_sum, (_rand(rng, 16),)),

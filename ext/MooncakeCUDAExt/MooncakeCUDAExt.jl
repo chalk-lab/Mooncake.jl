@@ -984,7 +984,11 @@ function frule!!(
         # shape: `view(M, :)` over a matrix spans the whole allocation while changing rank, so
         # requiring equal shapes left exactly that case detached and silently wrong. Reshaping the
         # parent's block to the view's shape covers both, and is a no-op when the shape is equal.
-        if length(y) == length(primal(x)) && y.offset == 0
+        # `y.offset == primal(x).offset`, not `== 0`: the test is whether the view STARTS where
+        # the parent does, and a parent that is itself an offset view carries a non-zero offset that
+        # every full-coverage view of it inherits. Requiring zero refused exactly those — a
+        # `view(v, 1:length(v))` over `v = view(a, 3:6)` covers all of `v` and was rejected.
+        if length(y) == length(primal(x)) && y.offset == primal(x).offset
             blk = reshape(getfield(tangent(x), :partials_block), (size(y)..., Nw))
             V = NDualArray{
                 eltype(y),Nw,ndims(y),Y,Nfwd._wrapped_eltype(eltype(y), Val(Nw)),typeof(blk)
