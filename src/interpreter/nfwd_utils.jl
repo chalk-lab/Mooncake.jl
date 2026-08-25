@@ -409,6 +409,139 @@ _nfwd_code_typed(@nospecialize(sig)) =
         nothing
     end
 
+function _nfwd_code_typed_unopt(@nospecialize(sig))
+    try
+        Base.code_typed_by_type(sig; optimize=false)
+    catch
+        nothing
+    end
+end
+
+# Inverse of the dual map `_nfwd_safe` applies when it builds the dual signature. Only projectable
+# duals are admitted there, so this is total over what can reach it; a non-differentiable argument
+# is passed as its primal in BOTH signatures and maps to itself.
+_nfwd_undual(@nospecialize(T)) = T
+_nfwd_undual(::Type{Nfwd.NDual{T,N}}) where {T,N} = T
+_nfwd_undual(::Type{Complex{Nfwd.NDual{T,N}}}) where {T,N} = Complex{T}
+_nfwd_undual(::Type{<:Nfwd.NDualArray{T,N,D,A}}) where {T,N,D,A} = A
+@static if VERSION >= v"1.11-rc4"  # `NDualMemoryRef` wraps `MemoryRef`, absent on Julia 1.10
+    _nfwd_undual(::Type{<:Nfwd.NDualMemoryRef{T,N,M}}) where {T,N,M} = M
+end
+
+@inline function _nfwd_cond_type(ci, @nospecialize(cond))
+    cond isa Core.SSAValue && return ci.ssavaluetypes[cond.id]
+    cond isa Core.Argument && return ci.slottypes[cond.n]
+    return cond
+end
+
+# Resolve a statement operand to a concrete TYPE in UNOPTIMISED IR, where operands are
+# `SlotNumber`s and even the callee is an SSAValue holding a `Core.Const` of the function.
+@inline function _nfwd_unopt_type(ci, @nospecialize(a))
+    t = if a isa Core.SSAValue
+        ci.ssavaluetypes[a.id]
+    elseif a isa Core.SlotNumber
+        ci.slottypes[a.id]
+    elseif a isa Core.Argument
+        ci.slottypes[a.n]
+    elseif a isa GlobalRef
+        isdefined(a.mod, a.name) ? Core.Typeof(getglobal(a.mod, a.name)) : nothing
+    elseif a isa QuoteNode
+        Core.Typeof(a.value)
+    elseif a isa Expr
+        nothing
+    else
+        Core.Typeof(a)
+    end
+    t === nothing && return nothing
+    t isa Core.Const && return Core.Typeof(t.val)
+    return Base.unwrapva(t)
+end
+
+# Callee signatures as they stand BEFORE inlining. The optimised work list cannot serve here: a
+# small callee is inlined into its caller, so the branch it diverges on has already been folded
+# away and the callee never appears as an `:invoke`. That is exactly the shape of the defect this
+# check exists for -- `sz` inlines into `h1`, leaving `h1` with no branch of its own.
+function _nfwd_unopt_callees!(out::Vector{Any}, ci)
+    for st in ci.code
+        (st isa Expr && st.head === :call && !isempty(st.args)) || continue
+        ts = Any[]
+        ok = true
+        for a in st.args
+            t = _nfwd_unopt_type(ci, a)
+            if t === nothing || !isconcretetype(t)
+                ok = false
+                break
+            end
+            push!(ts, t)
+        end
+        ok || continue
+        (ts[1] <: Core.Builtin || ts[1] <: Core.IntrinsicFunction) && continue
+        push!(out, Tuple{ts...})
+    end
+    return out
+end
+
+# Returns false ONLY for a demonstrated divergence. Everything it cannot analyse is SKIPPED, not
+# rejected: this check exists to add one specific rejection, and the whitelist scan it sits beside
+# is unchanged, so refusing what it merely fails to understand would reject most of Base — measured,
+# `sum(exp, x)`, broadcasts and `map` all fell out when unresolvable cases returned false.
+# `sizeof`, `isa`, `typeof` and `nfields` answer questions about a value's TYPE, so a body that
+# branches on one of them applied to a differentiated value takes the branch chosen for the `NDual`
+# rather than for the primal, and returns a DIFFERENT FUNCTION's value with a matching derivative.
+# Nothing downstream can detect that, so the classifier must: infer the same method at both
+# specialisations and require every branch to agree.
+#
+# Compared UNOPTIMISED for two reasons. Optimisation destroys the statement correspondence the
+# comparison needs, and dual arithmetic inlines differently everywhere, so optimised bodies always
+# differ and comparing them would reject everything.
+#
+# Skipped when the two signatures resolve to DIFFERENT methods. A method written for duals
+# (`sin(::NDual)`, and all of `low_level_maths.jl`) is the intended design rather than a divergence,
+# and its statements have no correspondence with the primal method's.
+function _nfwd_branches_agree_one(@nospecialize(dsig), work::Vector{Any})
+    dsig isa DataType || return true
+    psig = Tuple{map(_nfwd_undual, dsig.parameters)...}
+    psig === dsig && return true                       # nothing differentiable to diverge on
+    dm = _nfwd_which(dsig)
+    pm = _nfwd_which(psig)
+    (dm === nothing || pm === nothing) && return true
+    dm === pm || return true
+    dts, pts = _nfwd_code_typed_unopt(dsig), _nfwd_code_typed_unopt(psig)
+    (dts === nothing || length(dts) != 1) && return true
+    (pts === nothing || length(pts) != 1) && return true
+    dci, pci = dts[1][1], pts[1][1]
+    length(dci.code) == length(pci.code) || return true
+    for (i, st) in enumerate(dci.code)
+        st isa Core.GotoIfNot || continue
+        pst = pci.code[i]
+        pst isa Core.GotoIfNot || return true
+        _nfwd_cond_type(dci, st.cond) === _nfwd_cond_type(pci, pst.cond) || return false
+    end
+    _nfwd_unopt_callees!(work, dci)
+    return true
+end
+
+_nfwd_which(@nospecialize(sig)) =
+    try
+        Base.which(sig)
+    catch
+        nothing
+    end
+
+function _nfwd_branches_agree(@nospecialize(dsig); maxnodes::Int=600)
+    work = Any[dsig]
+    visited = Set{Any}()
+    nodes = 0
+    while !isempty(work)
+        s = pop!(work)
+        s in visited && continue
+        push!(visited, s)
+        (nodes += 1) > maxnodes && return true
+        _nfwd_branches_agree_one(s, work) || return false
+    end
+    return true
+end
+
 # Memoise the nfwd-safety verdict per dual signature. The verdict is a pure function of the
 # signature and the inferred IR — fixed within a world — but computing it runs `code_typed` on the
 # call and recursively on every reachable `:invoke`, so re-deriving it for every forward build of
@@ -440,6 +573,7 @@ function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::
     (cts === nothing || length(cts) != 1) && return false
     ci, rt = cts[1]
     (isconcretetype(rt) && _nfwd_projectable(rt) && rt === expected) || return false
+    _nfwd_branches_agree(sig) || return false
     work = Any[]
     _nfwd_scan_body!(work, ci, sig) && return false
     visited = Set{Any}()
@@ -451,6 +585,7 @@ function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::
         (nodes += 1) > maxnodes && return false
         cs = _nfwd_code_typed(s)
         (cs === nothing || length(cs) != 1) && return false
+        _nfwd_branches_agree(s) || return false
         _nfwd_scan_body!(work, cs[1][1], s) && return false
     end
     return true

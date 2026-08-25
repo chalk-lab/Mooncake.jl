@@ -146,3 +146,21 @@ end
     @test Mooncake._nfwd_safe(Any[typeof(reduce_fn), Vector{Float64}], 1) ==
         (VERSION >= v"1.12-")
 end
+
+@testset "nfwd rejects type-observing branches" begin
+    # `sizeof`/`typeof`/`nfields` answer for the DUAL, not the primal — `sizeof(NDual{Float64,1})`
+    # is 16 against `Float64`'s 8 — so a branch on one takes the wrong side and returns a wrong
+    # VALUE, not merely a wrong derivative. Tightening the whitelist cannot catch it: inference
+    # folds the query and bakes the wrong branch in before the classifier sees the body, so the
+    # classifier infers the body at primal and at dual types and rejects when they diverge.
+    sz(x) = sizeof(x) == 8 ? x * x : x * x * x
+    ty(x) = typeof(x) === Float64 ? x * x : x * x * x
+    nf(x) = nfields(x) == 0 ? x * x : x * x * x
+    for f in (sz, ty, nf)
+        @test !Mooncake._nfwd_safe(Any[typeof(f), Float64], 1)
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_derivative_cache(f, 2.0), f, 2.0
+        )
+        @test (v, g[2]) == (4.0, 4.0)
+    end
+end
