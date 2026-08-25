@@ -487,6 +487,19 @@ function frule!!(
     _n = primal(n)
     _inc = primal(incx)
     Xp = primal(X_dX)
+    # Both lane paths index the partials by LOGICAL linear position, as `_viewify_one` does on the
+    # primal side, so neither can follow BLAS's raw walk over a non-dense operand: the derivative
+    # would then be taken of different elements from the ones `nrm2` summed. Unlike `dotc`/`dotu`
+    # there is no per-lane BLAS fallback to fall to, so refuse.
+    _blas_raw_walk_matches(Xp, _inc) || throw(
+        ArgumentError(
+            "Forward-mode `BLAS.nrm2` does not support operand `$(typeof(Xp))` with strides " *
+            "$(strides(Xp)) and `incx = $_inc`: `nrm2` reads raw memory from `pointer(X)`, which " *
+            "follows the operand's own elements only when it is dense and the increment is " *
+            "positive, so otherwise the partials walked would not be those of the elements " *
+            "summed. Pass a dense operand with a positive increment, or the raw-pointer form.",
+        ),
+    )
     y = BLAS.nrm2(_n, Xp, _inc)
     Xv = _viewify_one(_n, Xp, _inc)  # `viewify`-equivalent on the primal side.
     R = typeof(y)  # nrm2 returns the real-valued norm.
@@ -584,7 +597,17 @@ end
 # are rebuilt in the operand's own structure but over CONTIGUOUS memory (`_dense_lane_partial`),
 # so `BLAS.$fname` reads the partial exactly as it reads the primal operand. Correct at all widths,
 # but O(Nw) BLAS calls plus a materialisation per lane — hence only for the non-contiguous case.
-@inline _blas_dot_raw_safe(x) = x isa Ptr || stride(x, 1) == 1
+#
+# Two things must hold for the logical walk to match the raw one. The operand must be genuinely
+# DENSE — unit first-dim stride is not enough above one dimension, since `view(A, 1:3, 1:2)` over a
+# 5x5 has strides `(1, 5)` where a dense `(3, 2)` has `(1, 3)`, so its logical index 4 is raw offset
+# 6. And the increment must be POSITIVE: BLAS starts a negative walk at `(-n+1)*inc + 1` and runs
+# backwards over the same elements, where `1 + (t-1)*inc` would run off the front of the block.
+@inline function _blas_raw_walk_matches(x, inc::Integer)
+    inc > 0 || return false
+    x isa Ptr && return true
+    return strides(x) === Base.size_to_strides(1, size(x)...)
+end
 # `_dense_lane_partial` (defined with `_arrayify_lane` above) rebuilds a lane over CONTIGUOUS
 # memory, so BLAS reads it identically to the primal operand.
 
@@ -631,7 +654,7 @@ for (jlfname, elty) in
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
-        acc = if _blas_dot_raw_safe(DX) && _blas_dot_raw_safe(DY)
+        acc = if _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
             # Contiguous operands: logical indexing == BLAS's raw walk, so accumulate all lanes
             # in one pass over the element-major block columns.
             Xb, _ = _partials_block(_DX)
@@ -714,13 +737,13 @@ function frule!!(
     # `pointer(X)` by `incx`; those agree only for a contiguous operand. `dotc`/`dotu` fall
     # back to `_dense_lane_partial` here, but that rebuild is a copy and this rule mutates in
     # place. Supporting strided operands means updating the PARENT block at its raw offset.
-    _blas_dot_raw_safe(X) || throw(
+    _blas_raw_walk_matches(X, incx) || throw(
         ArgumentError(
-            "Forward-mode `BLAS.scal!` does not support the non-contiguous operand " *
-            "`$(typeof(X))` (stride $(stride(X, 1))): BLAS scales raw memory from " *
-            "`pointer(X)` with the given `incx`, which does not follow the operand's own " *
-            "elements, so its partials block cannot be updated to match. Pass a contiguous " *
-            "operand, or the raw-pointer form.",
+            "Forward-mode `BLAS.scal!` does not support operand `$(typeof(X))` with strides " *
+            "$(strides(X)) and `incx = $incx`: BLAS scales raw memory from `pointer(X)`, which " *
+            "follows the operand's own elements only when it is dense and the increment is " *
+            "positive, so otherwise its partials block cannot be updated to match. Pass a dense " *
+            "operand with a positive increment, or the raw-pointer form.",
         ),
     )
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
@@ -2395,6 +2418,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                     flags = (false, :stability, (; skip_reverse=true))
                     return [
                         (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
+                        # Negative increments: BLAS walks the same elements backwards from
+                        # `(-n+1)*inc + 1`, so the value matches `inc = +1`, but the block loop's
+                        # `1 + (t-1)*inc` would run off the front. Takes the per-lane fallback.
+                        (flags..., f, 3, randn(rng, P, 3), -1, randn(rng, P, 3), -1),
                         (
                             flags...,
                             f,
@@ -2859,17 +2886,35 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
 end
 
 function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
-    # The registered `scal!` cases all pass a DENSE vector, where logical index and raw walk
-    # coincide for any `incx`, so none reach this guard. `incx == stride` is the well-formed
-    # call: its primal is correct, and it previously indexed the operand out of range.
+    # The registered `scal!`/`nrm2` cases all pass a DENSE vector with a positive increment, where
+    # logical index and raw walk coincide, so none reach these guards. `incx == stride` is the
+    # well-formed call: its primal is correct, and it previously indexed the operand out of range.
     x = view(P[i for i in 1:10], 1:2:10)
-    return Any[(
-        (ArgumentError, "non-contiguous operand"),
-        BLAS.scal!,
-        (5, P(2), x, 2),
-        (; mode=ForwardMode),
-    )],
-    Any[x]
+    # A >=2-D operand with unit FIRST-dim stride but a non-dense layout: `strides` is `(1, 5)` where
+    # a dense `(3, 2)` has `(1, 3)`, so logical index 4 is raw offset 6. The old first-dim-stride
+    # test admitted it and the rule then scaled the partials of the wrong elements, silently.
+    m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
+    cases = Any[
+        (
+            (ArgumentError, "does not support operand"),
+            BLAS.scal!,
+            (5, P(2), x, 2),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "does not support operand"),
+            BLAS.scal!,
+            (6, P(2), m, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "does not support operand"),
+            BLAS.nrm2,
+            (6, m, 1),
+            (; mode=ForwardMode),
+        ),
+    ]
+    return cases, Any[x, m]
 end
 
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
