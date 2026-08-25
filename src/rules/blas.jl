@@ -341,6 +341,33 @@ end
         typeof(BLAS.nrm2),Integer,X,Integer
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
+# `LinearAlgebra.norm2` calls the ONE-argument `BLAS.nrm2(x)` for length >= 32, and Julia inlines
+# both it and the `ccall` it wraps, so the three-argument boundary declared above no longer exists
+# by the time a rule could fire and the raw pointer reaches the transform. Declaring the
+# one-argument form keeps a boundary that survives inlining; the rules below just supply the length
+# and stride the wrapper would have computed.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}}
+)
+
+function frule!!(
+    f::Lifted{typeof(BLAS.nrm2),Nw}, X_dX::Lifted{<:AbstractArray{T}}
+) where {Nw,T<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    return frule!!(f, n, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
+end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.nrm2)}, X_dX::CoDual{<:AbstractArray{T}}
+) where {T<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(f, zero_fcodual(length(x)), X_dX, zero_fcodual(stride(x, 1)))
+    # The three-argument pullback accumulates into `X_dX`'s fdata and returns rdata for its four
+    # arguments; this form has two, so drop the length and stride slots.
+    nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
+    return y, nrm2_len_pb!!
+end
 # BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
 # routine on the per-lane partial array (or Ptr) directly. Supports both
 # `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
@@ -493,11 +520,18 @@ function frule!!(
     # there is no per-lane BLAS fallback to fall to, so refuse.
     _blas_raw_walk_matches(Xp, _inc) || throw(
         ArgumentError(
-            "Forward-mode `BLAS.nrm2` does not support operand `$(typeof(Xp))` with strides " *
-            "$(strides(Xp)) and `incx = $_inc`: `nrm2` reads raw memory from `pointer(X)`, which " *
-            "follows the operand's own elements only when it is dense and the increment is " *
-            "positive, so otherwise the partials walked would not be those of the elements " *
-            "summed. Pass a dense operand with a positive increment, or the raw-pointer form.",
+            LazyString(
+                "Forward-mode `BLAS.nrm2` does not support operand `",
+                typeof(Xp),
+                "` with strides ",
+                strides(Xp),
+                " and `incx = ",
+                _inc,
+                "`: `nrm2` reads raw memory from `pointer(X)`, which follows the operand's own ",
+                "elements only when it is dense and the increment is positive, so otherwise the ",
+                "partials walked would not be those of the elements summed. Pass a dense operand ",
+                "with a positive increment, or the raw-pointer form.",
+            ),
         ),
     )
     y = BLAS.nrm2(_n, Xp, _inc)
@@ -739,11 +773,18 @@ function frule!!(
     # place. Supporting strided operands means updating the PARENT block at its raw offset.
     _blas_raw_walk_matches(X, incx) || throw(
         ArgumentError(
-            "Forward-mode `BLAS.scal!` does not support operand `$(typeof(X))` with strides " *
-            "$(strides(X)) and `incx = $incx`: BLAS scales raw memory from `pointer(X)`, which " *
-            "follows the operand's own elements only when it is dense and the increment is " *
-            "positive, so otherwise its partials block cannot be updated to match. Pass a dense " *
-            "operand with a positive increment, or the raw-pointer form.",
+            LazyString(
+                "Forward-mode `BLAS.scal!` does not support operand `",
+                typeof(X),
+                "` with strides ",
+                strides(X),
+                " and `incx = ",
+                incx,
+                "`: BLAS scales raw memory from `pointer(X)`, which follows the operand's own ",
+                "elements only when it is dense and the increment is positive, so otherwise its ",
+                "partials block cannot be updated to match. Pass a dense operand with a positive ",
+                "increment, or the raw-pointer form.",
+            ),
         ),
     )
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
@@ -2384,6 +2425,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             return map([randn(rng, P, 105)]) do x
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
+        end...,
+
+        # nrm2(x) — the one-argument form `LinearAlgebra.norm2` calls at length >= 32. Julia inlines
+        # it and its `ccall`, so the three-argument primitive above never sees a boundary and the
+        # raw pointer reached the transform: `norm` of any array that size threw at chunk width > 1,
+        # which is the DEFAULT width for it. Length 40 to stay above LinearAlgebra's threshold.
+        map([randn(rng, P, 40)]) do x
+            (false, :stability, nothing, BLAS.nrm2, x)
         end...,
 
         # dot(x, y) — real only (complex inner products are dotc/dotu). `n = 0` is the case
