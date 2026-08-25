@@ -928,9 +928,9 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    # `ptr_or_offset.dx` is an `ErasedPtrTangent`: the address plus what it is laid out in. The
+    # `ptr_or_offset.dx` is an `VoidPtrTangent`: the address plus what it is laid out in. The
     # tangent `MemoryRef` wants the address alone.
-    dy = _new_(MemoryRef{tangent_type(P)}, _erased_addr(ptr_or_offset.dx), mem.dx)
+    dy = _new_(MemoryRef{tangent_type(P)}, _void_ptr_addr(ptr_or_offset.dx), mem.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1046,16 +1046,16 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    # The field's fdata is an `ErasedPtrTangent`, which says what the address is laid out in. For a
+    # The field's fdata is an `VoidPtrTangent`, which says what the address is laid out in. For a
     # non-differentiable element type the tangent `Memory` has zero-size elements, so its pointer
     # backs no bytes and the stride records that; a later re-typed `pointerset`/`pointerref` is then
     # refused rather than reading or writing `sizeof(T)` bytes of a zero-byte allocation.
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
-        ErasedPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
+        VoidPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
     else
-        ErasedPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), tangent_elem_stride(eltype(x.dx)))
+        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), tangent_elem_stride(eltype(x.dx)))
     end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
@@ -1071,9 +1071,9 @@ function rrule!!(
     # Stride-tagged rather than an unbacked address for a zero-size element type, as in `Memory`.
     dy = if wants_offset
         if eltype(x.dx) === NoTangent
-            ErasedPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
+            VoidPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
         else
-            ErasedPtrTangent(
+            VoidPtrTangent(
                 bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
                 tangent_elem_stride(eltype(x.dx)),
             )

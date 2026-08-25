@@ -90,7 +90,7 @@ import ..Mooncake:
     rrule!!,
     frule!!,
     CoDual,
-    ErasedPtrTangent,
+    VoidPtrTangent,
     tangent_elem_stride,
     NO_TANGENT_STORAGE,
     UNCONSTRAINED_TANGENT_STRIDE,
@@ -622,11 +622,11 @@ end
 # which is 39 of the 70 re-typings the rule groups exercise. At the erasure the two are structurally
 # identical. Closing this needs a distinct no-tangent-storage type; see `known_limitations.md`.
 # Carry the erased element width across a `Ptr{Cvoid}` hop, which is the whole point of
-# `ErasedPtrTangent`: erasing records what the buffer is laid out in, and widening back checks it.
+# `VoidPtrTangent`: erasing records what the buffer is laid out in, and widening back checks it.
 # `_check_tangent_retyping_fits` above cannot do this, because it sees only the primal types and
 # `Ptr{Nothing}` is reached from every source.
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
-    return ErasedPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_elem_stride(tangent_type(A)))
+    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_elem_stride(tangent_type(A)))
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{Nothing}}, dx)
     return dx
@@ -2471,7 +2471,7 @@ function throwing_rule_test_cases(::Val{:builtins})
     end
     # The same widening reached in TWO hops. `Ptr{Float32}` -> `Ptr{Float64}` is refused directly,
     # and a `Ptr{Cvoid}` in between used to launder it: the element type was gone by the second hop,
-    # so the pullback wrote eight-byte cotangents across four-byte slots. `ErasedPtrTangent` carries
+    # so the pullback wrote eight-byte cotangents across four-byte slots. `VoidPtrTangent` carries
     # the width across the erasure, so the widening is checked against what the buffer holds.
     function laundered_retyped_load(b, x)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))

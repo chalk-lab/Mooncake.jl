@@ -73,7 +73,7 @@ end
         @testset "no tangent pointer for a zero-size element type" begin
             # A `Memory{UInt8}`'s tangent is a `Memory{NoTangent}`, whose buffer holds no bytes, so
             # handing out its address let a re-typed `pointerset` write `sizeof(Float64)` bytes into
-            # a zero-byte allocation — a segfault. The field's fdata is an `ErasedPtrTangent`, which
+            # a zero-byte allocation — a segfault. The field's fdata is an `VoidPtrTangent`, which
             # says so in the `stride_bytes` tag rather than by a NULL address. The registry cannot
             # express this: seeding a `Ptr` primal yields the `uninit_*` placeholder.
             m8 = Memory{UInt8}(undef, 8)

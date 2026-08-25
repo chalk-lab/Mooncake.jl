@@ -174,7 +174,7 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
     # later load through it sound, and it runs where the address is created.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        ErasedPtrTangent(pointer_from_objref(tangent(x)), UNCONSTRAINED_TANGENT_STRIDE),
+        VoidPtrTangent(pointer_from_objref(tangent(x)), UNCONSTRAINED_TANGENT_STRIDE),
     )
     return y, NoPullback(f, x)
 end
@@ -237,13 +237,13 @@ function frule!!(
 end
 # The tangent of a `Ptr{Nothing}` carries its address alongside the erased element width; every other
 # pointer tangent IS the address.
-@inline _erased_addr(p::ErasedPtrTangent) = p.p
-@inline _erased_addr(p::Ptr) = p
+@inline _void_ptr_addr(p::VoidPtrTangent) = p.p
+@inline _void_ptr_addr(p::Ptr) = p
 
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
     y = CoDual(
         unsafe_pointer_to_objref(primal(x)),
-        unsafe_pointer_to_objref(_erased_addr(tangent(x))),
+        unsafe_pointer_to_objref(_void_ptr_addr(tangent(x))),
     )
     return y, NoPullback(f, x)
 end
@@ -716,7 +716,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
-                ErasedPtrTangent(pointer_from_objref(_dx), UNCONSTRAINED_TANGENT_STRIDE),
+                VoidPtrTangent(pointer_from_objref(_dx), UNCONSTRAINED_TANGENT_STRIDE),
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
