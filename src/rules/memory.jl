@@ -873,7 +873,11 @@ end
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
         x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
+        # `Core.memorynew` returns UNINITIALISED memory, so allocating the tangent the same way
+        # hands back whatever the block last held — measured non-zero in 20 of 20 runs once the
+        # heap is dirtied. A fresh tangent must be zero; the `Memory{P}(undef, n)` sibling (the
+        # same allocation, differently lowered) and this rule's own `frule!!` both already zero.
+        dx = zero_tangent_internal(x, NoCache())
         return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
     end
 end

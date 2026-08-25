@@ -125,5 +125,28 @@ end
                 7.0,
             )
         end
+
+        @static if VERSION >= v"1.12-"
+            @testset "Core.memorynew hands back a ZERO tangent" begin
+                # `Core.memorynew` returns uninitialised memory, so allocating the tangent the same
+                # way returned whatever the block last held — non-zero in 20 of 20 runs once the
+                # heap is dirtied. Reachable: `copy`, `similar` and `Vector{T}(undef, n)` all lower
+                # through `memorynew` on 1.12. Asserted at the rule, not through a gradient, because
+                # the property is "the fresh tangent is zero": a freed page usually reads as zero,
+                # so an end-to-end check passes even when the rule is wrong.
+                junk = [fill(-77.0, 64) for _ in 1:400]
+                GC.@preserve junk nothing
+                junk = nothing
+                GC.gc(false)
+                for _ in 1:8
+                    out, _ = Mooncake.rrule!!(
+                        Mooncake.zero_fcodual(Core.memorynew),
+                        Mooncake.zero_fcodual(Memory{Float64}),
+                        Mooncake.zero_fcodual(64),
+                    )
+                    @test all(iszero, tangent(out))
+                end
+            end
+        end
     end
 end
