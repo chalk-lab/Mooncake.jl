@@ -3139,6 +3139,11 @@ end
 # Cycle handling (including a self-referential reference-element array) lives in the
 # three-argument array method below, which threads the cache.
 function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
+    _check_copy_extent(dst, src)
+    # A reference element can be the array itself, and the cycle handling lives in the
+    # three-argument family, so route there rather than recursing two-argument forever. A bits
+    # element cannot cycle, so it keeps the cache-free path.
+    isbitstype(eltype(P)) || return _copy_to_output!!(dst, src, IdDict{Any,Any}())
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
             dst[i] = if isassigned(dst, i)
@@ -3149,6 +3154,21 @@ function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
         end
     end
     return dst
+end
+
+# `dst` is cache-owned storage sized at preparation time and `src` is what the call produced, so a
+# mismatch means the cache cannot hold this value. The loops below index `dst` under `@inbounds`
+# while iterating `src`, and `isassigned(dst, i)` reports FALSE out of range rather than throwing,
+# so without this an overrun writes past the end: a segfault where `src` is longer, and a silently
+# truncated result handed back to the caller.
+@inline function _check_copy_extent(dst, src)
+    size(dst) == size(src) && return nothing
+    throw(
+        PreparedCacheError(
+            "Prepared cache mismatch: cached storage has size $(size(dst)), but the value to " *
+            "copy into it has size $(size(src)). Rebuild the cache for the new shape.",
+        ),
+    )
 end
 
 # Tuple, NamedTuple
@@ -3212,6 +3232,7 @@ function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict)
     return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c), dst, src)...)
 end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
+    _check_copy_extent(dst, src)
     if !isbitstype(eltype(P))
         haskey(c, src) && return c[src]::P
         c[src] = dst

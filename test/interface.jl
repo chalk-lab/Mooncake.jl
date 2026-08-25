@@ -1525,6 +1525,33 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             ) isa Any
         end
 
+        @testset "cache copy refuses a size it cannot hold" begin
+            # The cached buffer is sized at preparation time and the copy indexes it under
+            # `@inbounds` while iterating the SOURCE, and `isassigned(dst, i)` reports false out of
+            # range rather than throwing. A longer source therefore wrote past the end: a segfault
+            # here, and below a silently truncated value handed back before the corruption showed
+            # up at an unrelated GC.
+            f_nest = x -> sum(sum, x)
+            c_nest = Mooncake.prepare_derivative_cache(f_nest, [collect(1.0:2.0)])
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                c_nest, f_nest, [collect(1.0:400.0)]
+            )
+            # The OUTPUT side: the input shape is unchanged, so input validation passes, and only
+            # the non-differentiable `n` moves the output length.
+            f_out = (v, n) -> fill(sum(v), n)
+            c_out = Mooncake.prepare_pullback_cache(f_out, ones(2), 2)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_pullback!!(
+                c_out, ones(400), f_out, ones(2), 400
+            )
+            # A self-referential reference-element array: the two-argument copy recursed into
+            # elements two-argument and never reached the cycle-aware family, so it overflowed the
+            # stack. Reverse mode always handled this shape.
+            f_cyc = v::Vector{Any} -> v[1]::Float64 * 2.0
+            mk_cyc = () -> (a=Any[1.0]; push!(a, a); a)
+            c_cyc = Mooncake.prepare_derivative_cache(f_cyc, mk_cyc())
+            @test Mooncake.value_and_gradient!!(c_cyc, f_cyc, mk_cyc())[1] == 2.0
+        end
+
         @testset "forward cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [x, y]
