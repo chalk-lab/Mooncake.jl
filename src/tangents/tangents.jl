@@ -1149,6 +1149,24 @@ aliasing correctly. If `c` is a `NoCache`, assume there is no circular reference
 aliasing in either `x` or `t`.
 """
 _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
+
+# A `Ptr` tangent is the `uninit_*` placeholder: type-correct, addressing tangent storage, but
+# carrying no derivative of its own and never to be dereferenced as one. So every tangent-arithmetic
+# operation treats it as INERT — a scaled placeholder is the placeholder, its inner product is zero,
+# and adding it to a primal leaves the primal alone. Without these the operations are partial, and
+# any `Ptr` reaching a gradient (a bare argument, or a struct with a `Ptr` field, ordinary in code
+# wrapping a C library) failed with a raw `MethodError` naming an internal instead of
+# differentiating the fields that do carry derivatives.
+#
+# Safe only because the FORWARD rules refuse to read a derivative through such a pointer. Adding
+# these while `unsafe_wrap` still wrapped through the placeholder turned that crash into a silently
+# wrong forward derivative, which is why the guard had to land first.
+randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = x
+set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
+_scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
+_dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
+increment_internal!!(::IncCache, x::Ptr, ::Ptr) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool

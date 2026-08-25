@@ -1,4 +1,10 @@
 using DispatchDoctor: allow_unstable
+mutable struct PtrMixed
+    p::Ptr{Float64}
+    w::Float64
+end
+_ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
+
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -199,6 +205,34 @@ using DispatchDoctor: allow_unstable
                 @test @inferred(increment_field!!(x, val, f)) === x
             end
         end
+    end
+    @testset "a `Ptr` tangent is inert in tangent arithmetic" begin
+        # A `Ptr` tangent is the `uninit_*` placeholder: it carries no derivative, so every
+        # arithmetic operation leaves it alone. Six of them had no `Ptr` method at all, so any `Ptr`
+        # reaching a gradient — a bare argument, or a struct with a `Ptr` field — died with a raw
+        # `MethodError` naming an internal instead of differentiating the fields that do carry
+        # derivatives.
+        #
+        # NOT a registry case: `test_rule` exercises the friendly-tangent round trip, and
+        # `primal_to_tangent!!` deliberately refuses pointers ("not available for pointers"), so a
+        # `Ptr`-carrying value cannot go through the registry battery at all.
+        pbuf = [3.0]
+        pt = Mooncake.uninit_tangent(pointer(pbuf))
+        @test Mooncake._scale(2.0, pt) === pt
+        @test Mooncake._dot(pt, pt) == 0.0
+        @test Mooncake.increment!!(pt, pt) === pt
+        @test Mooncake.set_to_zero!!(pt) === pt
+        @test Mooncake._add_to_primal(pointer(pbuf), pt, true) === pointer(pbuf)
+        # The point of inertness: the OTHER fields still differentiate.
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(_ptr_mixed, PtrMixed(pointer(pbuf), 5.0), 3.0),
+            _ptr_mixed,
+            PtrMixed(pointer(pbuf), 5.0),
+            3.0,
+        )
+        @test v == 15.0
+        @test g[2].fields.w == 3.0
+        @test g[3] == 5.0
     end
     @testset "restricted inner constructor" begin
         p = TestResources.NoDefaultCtor(5.0)
