@@ -531,7 +531,25 @@ else
     _repeats_storage(x) = _repeats_storage!(
         _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
     )
-    _repeats_storage!(::_StorageSeen, ::Any) = false
+    # Struct fields are reached BY TANGENT TYPE, not by walking every object's fields: this walk
+    # covers the primals, which include `f`, and a closure capturing a module would otherwise drag
+    # the whole module graph in. A differentiable struct is exactly one whose tangent is a
+    # `Tangent`/`MutableTangent`, which is also how the 1.11+ walk finds them — it sees the tangent
+    # directly and dispatches on it.
+    _repeats_storage!(s::_StorageSeen, x) = _repeats_struct!(s, x, tangent_type(_typeof(x)))
+    _repeats_struct!(::_StorageSeen, @nospecialize(x), ::Type) = false
+    function _repeats_struct!(s::_StorageSeen, x, ::Type{<:Union{Tangent,MutableTangent}})
+        # Only a mutable can be cyclic, and registering an immutable would key an `IdDict` on its
+        # CONTENTS, so two distinct-but-equal structs would look visited and the second go unwalked.
+        if ismutable(x)
+            haskey(s.objs, x) && return false
+            s.objs[x] = nothing
+        end
+        return any(
+            i -> isdefined(x, i) && _repeats_storage!(s, getfield(x, i)),
+            1:fieldcount(_typeof(x)),
+        )
+    end
 
     function _repeats_storage!(s::_StorageSeen, x::Array)
         # Two `Vector{Int}`s over one buffer contribute no dofs, so sharing among them is not a

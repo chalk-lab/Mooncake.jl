@@ -92,6 +92,11 @@ mutable struct FwdNestedCounter
 end
 fwd_nested_counting(w, o::FwdNestedCounter) = (o.inner.n += 1; sum(w) + o.inner.n)
 
+struct StructuredPair{A,B}
+    u::A
+    v::B
+end
+
 fwd_load_ptr(p::Ptr{Float64}) = unsafe_load(p)
 
 mutable struct AnyCycleNode
@@ -2235,6 +2240,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test v_n == sum(1.0:6.0) * 12
                 @test g_n[2] ≈ fill(12.0, 6)
+                # The same sharing NESTED IN A STRUCT. 1.10 reads the sharing off the primals, and
+                # walked only arrays and tuples, so a struct holding two positions over one buffer
+                # stayed silent there and returned d/u = 1.0, d/v = 2.0 where the shared buffer's
+                # derivative is 3.0 per element.
+                a_s = collect(1.0:6.0)
+                g_s = p -> sum(p.u) + 2 * sum(p.v)
+                p_s = StructuredPair(a_s, reshape(a_s, 2, 3))
+                c_s = Mooncake.prepare_derivative_cache(g_s, p_s)
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(c_s, g_s, p_s)
             end
 
             @static if VERSION >= v"1.11-"
