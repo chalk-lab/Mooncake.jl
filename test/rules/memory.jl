@@ -73,8 +73,9 @@ end
         @testset "no tangent pointer for a zero-size element type" begin
             # A `Memory{UInt8}`'s tangent is a `Memory{NoTangent}`, whose buffer holds no bytes, so
             # handing out its address let a re-typed `pointerset` write `sizeof(Float64)` bytes into
-            # a zero-byte allocation — a segfault. The registry cannot express this: seeding a `Ptr`
-            # primal yields the `uninit_*` placeholder, never NULL.
+            # a zero-byte allocation — a segfault. The field's fdata is an `ErasedPtrTangent`, which
+            # says so in the `stride_bytes` tag rather than by a NULL address. The registry cannot
+            # express this: seeding a `Ptr` primal yields the `uninit_*` placeholder.
             m8 = Memory{UInt8}(undef, 8)
             o = Mooncake.rrule!!(
                 Mooncake.zero_fcodual(Mooncake.lgetfield),
@@ -82,8 +83,9 @@ end
                 Mooncake.zero_fcodual(Val(:ptr)),
                 Mooncake.zero_fcodual(Val(:not_atomic)),
             )[1]
-            @test iszero(UInt(tangent(o)))
-            # A differentiable element type still gets its real tangent buffer's address.
+            @test tangent(o).stride_bytes == Mooncake.NO_TANGENT_STORAGE
+            # A differentiable element type still gets its real tangent buffer's address, tagged with
+            # what that buffer is laid out in so a re-typing can be checked against it.
             mf = Memory{Float64}(undef, 2)
             tf = Mooncake.zero_tangent(mf)
             o = Mooncake.rrule!!(
@@ -92,7 +94,8 @@ end
                 Mooncake.zero_fcodual(Val(:ptr)),
                 Mooncake.zero_fcodual(Val(:not_atomic)),
             )[1]
-            @test UInt(tangent(o)) == UInt(tf.ptr)
+            @test UInt(tangent(o).p) == UInt(tf.ptr)
+            @test tangent(o).stride_bytes == sizeof(Float64)
             # Dereferencing a NULL tangent pointer is refused instead of faulting.
             @test_throws ArgumentError Mooncake.rrule!!(
                 Mooncake.zero_fcodual(Mooncake.IntrinsicsWrappers.pointerref),

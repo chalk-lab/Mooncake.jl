@@ -1188,6 +1188,9 @@ end
 # shape (cf. `pointer_from_objref`), the primal address (a raw address has no derivative).
 # More specific than the `Ptr{T}` method above (same `Ptr{NoTangent}` tangent) so it wins.
 @inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
+# A `Ptr{Nothing}`'s reverse tangent is an `ErasedPtrTangent`; the forward lane keeps the `uninit_*`
+# placeholder convention, as the `Ptr{NoTangent}` method above does.
+@inline lift(x::Ptr{Nothing}, ::ErasedPtrTangent) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
     # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
     # derivative storage); its forward V is the block-backed `NDualMemoryRef`. Reached in

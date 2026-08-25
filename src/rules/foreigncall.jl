@@ -169,9 +169,12 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
             ),
         )
     end
+    # `UNCONSTRAINED_TANGENT_STRIDE`: this address is a tangent OBJECT, not a buffer of uniform
+    # elements, so element size is not the property to check. The layout check above is what makes a
+    # later load through it sound, and it runs where the address is created.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x))),
+        ErasedPtrTangent(pointer_from_objref(tangent(x)), UNCONSTRAINED_TANGENT_STRIDE),
     )
     return y, NoPullback(f, x)
 end
@@ -232,8 +235,16 @@ function frule!!(
     end
     return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
 end
+# The tangent of a `Ptr{Nothing}` carries its address alongside the erased element width; every other
+# pointer tangent IS the address.
+@inline _erased_addr(p::ErasedPtrTangent) = p.p
+@inline _erased_addr(p::Ptr) = p
+
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    y = CoDual(
+        unsafe_pointer_to_objref(primal(x)),
+        unsafe_pointer_to_objref(_erased_addr(tangent(x))),
+    )
     return y, NoPullback(f, x)
 end
 
@@ -705,7 +716,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             unsafe_pointer_to_objref,
             CoDual(
                 pointer_from_objref(_x),
-                bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(_dx)),
+                ErasedPtrTangent(pointer_from_objref(_dx), UNCONSTRAINED_TANGENT_STRIDE),
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),

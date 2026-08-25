@@ -90,6 +90,10 @@ import ..Mooncake:
     rrule!!,
     frule!!,
     CoDual,
+    ErasedPtrTangent,
+    tangent_elem_stride,
+    NO_TANGENT_STORAGE,
+    UNCONSTRAINED_TANGENT_STRIDE,
     Lifted,
     NDual,
     NoDual,
@@ -617,6 +621,45 @@ end
 # erases and restores the same type; refusing the WIDENING breaks the `pointer(::Array)` chain,
 # which is 39 of the 70 re-typings the rule groups exercise. At the erasure the two are structurally
 # identical. Closing this needs a distinct no-tangent-storage type; see `known_limitations.md`.
+# Carry the erased element width across a `Ptr{Cvoid}` hop, which is the whole point of
+# `ErasedPtrTangent`: erasing records what the buffer is laid out in, and widening back checks it.
+# `_check_tangent_retyping_fits` above cannot do this, because it sees only the primal types and
+# `Ptr{Nothing}` is reached from every source.
+@inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
+    return ErasedPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_elem_stride(tangent_type(A)))
+end
+@inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{Nothing}}, dx)
+    return dx
+end
+@inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{Nothing}}, dx) where {B}
+    TB = tangent_type(B)
+    want = tangent_elem_stride(TB)
+    got = dx.stride_bytes
+    if got != UNCONSTRAINED_TANGENT_STRIDE && got != want
+        throw(
+            ArgumentError(
+                "Cannot re-type a tangent pointer to `Ptr{$B}` during AD: the element type was " *
+                "erased through a `Ptr{Cvoid}`, and the tangent storage behind this address is " *
+                (
+                    if got == NO_TANGENT_STORAGE
+                        "not there at all, so a `$TB` load or store " *
+                        "through it would touch memory no tangent buffer owns"
+                    else
+                        "laid out in $got-byte elements, so a $want-byte `$TB` load or store " *
+                        "through it would straddle two of them and corrupt both"
+                    end
+                ) *
+                ". Re-type directly between the element types you differentiate through, without " *
+                "a `Ptr{Cvoid}`/`Ptr{Nothing}` round trip.",
+            ),
+        )
+    end
+    return bitcast(Ptr{TB}, dx.p)
+end
+@inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx) where {A,B}
+    return bitcast(Ptr{tangent_type(B)}, dx)
+end
+
 @inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
     A === Nothing && return nothing
     TA, TB = tangent_type(A), tangent_type(B)
@@ -652,7 +695,7 @@ function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     v = bitcast(T, _x)
     if T <: Ptr && _x isa Ptr
         _check_tangent_retyping_fits(typeof(_x), T)
-        dv = bitcast(Ptr{tangent_type(eltype(T))}, tangent(x))
+        dv = _retype_tangent_ptr(T, typeof(_x), tangent(x))
     elseif T <: Ptr && _x isa Union{Int,UInt}
         throw(ArgumentError(_INT2PTR_ERR_MSG))
     else
@@ -2426,6 +2469,13 @@ function throwing_rule_test_cases(::Val{:builtins})
             x * unsafe_load(Ptr{Float64}(pointer(b)), :monotonic)
         end
     end
+    # The same widening reached in TWO hops. `Ptr{Float32}` -> `Ptr{Float64}` is refused directly,
+    # and a `Ptr{Cvoid}` in between used to launder it: the element type was gone by the second hop,
+    # so the pullback wrote eight-byte cotangents across four-byte slots. `ErasedPtrTangent` carries
+    # the width across the erasure, so the widening is checked against what the buffer holds.
+    function laundered_retyped_load(b, x)
+        return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
+    end
     cases = Any[
         (
             ArgumentError,
@@ -2476,6 +2526,12 @@ function throwing_rule_test_cases(::Val{:builtins})
             (ArgumentError, "no tangent storage"),
             atomic_load_retyped_bytes,
             (zeros(UInt8, 8), 2.0),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "the element type was erased"),
+            laundered_retyped_load,
+            (Float32[1, 2, 3, 4], 2.0),
             (; mode=ReverseMode),
         ),
         # The same re-typing reached through `unsafe_wrap` rather than a load: wrapping it handed a

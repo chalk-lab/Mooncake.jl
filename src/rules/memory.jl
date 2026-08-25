@@ -928,7 +928,9 @@ function rrule!!(
     mem::CoDual{Memory{P}},
 ) where {P}
     y = _new_(MemoryRef{P}, ptr_or_offset.x, mem.x)
-    dy = _new_(MemoryRef{tangent_type(P)}, bitcast(Ptr{Nothing}, ptr_or_offset.dx), mem.dx)
+    # `ptr_or_offset.dx` is an `ErasedPtrTangent`: the address plus what it is laid out in. The
+    # tangent `MemoryRef` wants the address alone.
+    dy = _new_(MemoryRef{tangent_type(P)}, _erased_addr(ptr_or_offset.dx), mem.dx)
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
 
@@ -1044,18 +1046,16 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    # `Ptr{NoTangent}` is a tag, not a pointer to real `NoTangent` elements. For a
+    # The field's fdata is an `ErasedPtrTangent`, which says what the address is laid out in. For a
     # non-differentiable element type the tangent `Memory` has zero-size elements, so its pointer
-    # backs no bytes, and a later re-typed `pointerset`/`pointerref` would read or write
-    # `sizeof(T)` bytes of a zero-byte allocation. NULL is this chain's existing "no tangent
-    # address" value (cf. the `pointer_from_objref` frule). `NoFData` is not an option here:
-    # `fdata_type` fixes this field's fdata as `Ptr{NoTangent}`, so it fails a typeassert.
+    # backs no bytes and the stride records that; a later re-typed `pointerset`/`pointerref` is then
+    # refused rather than reading or writing `sizeof(T)` bytes of a zero-byte allocation.
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
-        Ptr{NoTangent}(0)
+        ErasedPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
     else
-        bitcast(Ptr{NoTangent}, x.dx.ptr)
+        ErasedPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), tangent_elem_stride(eltype(x.dx)))
     end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
@@ -1068,12 +1068,15 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_offset = name === 1 || name === :ptr_or_offset
-    # NULL rather than an unbacked address for a zero-size element type, as in the `Memory` rule.
+    # Stride-tagged rather than an unbacked address for a zero-size element type, as in `Memory`.
     dy = if wants_offset
         if eltype(x.dx) === NoTangent
-            Ptr{NoTangent}(0)
+            ErasedPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
         else
-            bitcast(Ptr{NoTangent}, x.dx.ptr_or_offset)
+            ErasedPtrTangent(
+                bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
+                tangent_elem_stride(eltype(x.dx)),
+            )
         end
     else
         x.dx.mem

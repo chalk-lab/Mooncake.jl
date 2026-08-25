@@ -204,6 +204,7 @@ end
 end
 
 fdata_type(::Type{T}) where {T<:Ptr} = T
+fdata_type(::Type{ErasedPtrTangent}) = ErasedPtrTangent
 
 @generated function fdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{fdata_type($(P.a)),fdata_type($(P.b))})
@@ -331,6 +332,7 @@ end
 __verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr{Nothing}, ::ErasedPtrTangent) = nothing
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     if size(p) != size(f)
@@ -491,6 +493,7 @@ end
 end
 
 rdata_type(::Type{<:Ptr}) = NoRData
+rdata_type(::Type{ErasedPtrTangent}) = NoRData
 
 @generated function rdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{rdata_type($(P.a)),rdata_type($(P.b))})
@@ -1018,6 +1021,7 @@ tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
 tangent(f::Ptr, ::NoRData) = f
+tangent(f::ErasedPtrTangent, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)

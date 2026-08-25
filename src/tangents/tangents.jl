@@ -319,6 +319,56 @@ tangent_type(::Type{<:TypeVar}) = NoTangent
 
 @unstable @foldable tangent_type(::Type{Ptr{P}}) where {P} = Ptr{tangent_type(P)}
 
+"""
+    ErasedPtrTangent
+
+The tangent of a `Ptr{Nothing}`, whose element type has been erased.
+
+`Ptr{Nothing}` is the one pointer type whose tangent cannot be described by its primal alone. It is
+reached both by erasing a live tangent pointer (`unsafe_convert(Ptr{Cvoid}, p)`, which `unsafe_copyto!`
+and `pointer(::Array)` both do) and by taking the address of something with no tangent storage at all.
+Giving both `Ptr{NoTangent}` conflates them, and a re-typing back to a differentiable element then
+cannot be checked: `Ptr{Float32}` -> `Ptr{Cvoid}` -> `Ptr{Float64}` writes eight-byte cotangents across
+four-byte slots, while the one-hop form is refused.
+
+`stride_bytes` records what the address may be re-typed to:
+
+- a positive value is `sizeof` of the tangent element the buffer is laid out in, so a widening back to
+  an element of that size is sound and any other size is refused;
+- [`NO_TANGENT_STORAGE`](@ref) says nothing is behind the address, so any differentiable widening is
+  refused;
+- [`UNCONSTRAINED_TANGENT_STRIDE`](@ref) says the address is a tangent OBJECT rather than a buffer of
+  uniform elements, as `pointer_from_objref` returns. Element size is not the property there, and the
+  `pointer_from_objref` rule establishes at the point of creation that the tangent shares the primal's
+  layout, so the widening is left unchecked.
+"""
+struct ErasedPtrTangent
+    p::Ptr{Nothing}
+    stride_bytes::Int
+end
+
+"No tangent storage lies behind the address; see [`ErasedPtrTangent`](@ref)."
+const NO_TANGENT_STORAGE = 0
+
+"""
+    tangent_elem_stride(::Type{E})
+
+What one element of a tangent buffer with element type `E` occupies, for [`ErasedPtrTangent`](@ref).
+
+Bits elements sit inline and occupy their own size; boxed ones are pointer-sized references, which is
+what a re-typed pointer into such a buffer actually addresses. A zero-size element type
+(`NoTangent`, for a non-differentiable primal) gives [`NO_TANGENT_STORAGE`](@ref), so a widening to a
+differentiable element is refused rather than reading bytes the buffer does not own.
+"""
+@inline function tangent_elem_stride(::Type{E}) where {E}
+    return isbitstype(E) ? sizeof(E) : sizeof(Ptr{Nothing})
+end
+
+"The address is a tangent object, not a buffer; see [`ErasedPtrTangent`](@ref)."
+const UNCONSTRAINED_TANGENT_STRIDE = -1
+
+tangent_type(::Type{Ptr{Nothing}}) = ErasedPtrTangent
+
 tangent_type(::Type{<:Ptr}) = NoTangent
 
 tangent_type(::Type{Bool}) = NoTangent
@@ -568,6 +618,11 @@ end
 function zero_tangent_internal(x::Ptr{P}, ::MaybeCache) where {P}
     return bitcast(Ptr{tangent_type(P)}, x)
 end
+# An erased pointer reached as a FIELD has no tangent buffer of its own to point at, so it takes the
+# placeholder with no storage recorded, and a later widening to a differentiable element is refused.
+function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
+    return ErasedPtrTangent(x, NO_TANGENT_STORAGE)
+end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     return map!(
         n -> zero_tangent_internal(x[n], dict), Vector{Any}(undef, length(x)), eachindex(x)
@@ -652,6 +707,7 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
+@inline uninit_tangent(x::Ptr{Nothing}) = ErasedPtrTangent(x, NO_TANGENT_STORAGE)
 
 """
     randn_tangent(rng::AbstractRNG, x::P) where {P}
@@ -914,6 +970,10 @@ counting". If `c` is a `NoCache`, assume no aliasing or circular referencing.
 increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
 function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
+    return x === y ? x : throw(error("Incrementing pointers is not supported!"))
+end
+# Same rule for an erased tangent pointer: two tangents for one primal must be one address.
+function increment_internal!!(::IncCache, x::ErasedPtrTangent, y::ErasedPtrTangent)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 @generated function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Tuple}
