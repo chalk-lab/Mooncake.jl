@@ -206,6 +206,30 @@ using DispatchDoctor: allow_unstable
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
     end
+    @static if VERSION >= v"1.11-"
+        @testset "_dot counts one buffer once across two positions" begin
+            # `a` and `reshape(a)` are DISTINCT `Array`s over ONE `Memory`, so their tangents are
+            # distinct objects over one buffer. Keying the de-duplication on the object pair counted
+            # that buffer twice, which made `test_rule`'s finite-difference comparison wrong for any
+            # argument holding two positions over one storage. No registry expresses this: they take
+            # one value, and this is a relationship between two.
+            a = collect(1.0:4.0)
+            dt = Mooncake._zero_tangents((identity, (a, reshape(a, 2, 2))))[2]
+            dt[1] .= 1.0
+            @test Mooncake._dot(dt, dt) == 4.0
+            # Distinct storage must still count twice, or the fix trades a double-count for an
+            # under-count that nothing downstream refuses.
+            d2 = Mooncake._zero_tangents((identity, (collect(1.0:4.0), collect(1.0:4.0))))[2]
+            d2[1] .= 1.0
+            d2[2] .= 1.0
+            @test Mooncake._dot(d2, d2) == 8.0
+            # An `Array` beside its own backing `Memory`: the same buffer reached another way.
+            v = collect(1.0:3.0)
+            d3 = Mooncake._zero_tangents((identity, (v, getfield(v, :ref).mem)))[2]
+            d3[1] .= 1.0
+            @test Mooncake._dot(d3, d3) == 3.0
+        end
+    end
     @testset "require_tangent_cache($P)" for (P, expected_result) in [
         (Float64, false),
         (Int32, false),
