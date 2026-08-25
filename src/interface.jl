@@ -2230,12 +2230,13 @@ function _refresh_nondiff(::NoDual, p, x)
 end
 
 @inline _adopt_nondiff(_p, x) = x
+# `_copy_to_output!!` is the copy: it recurses through fields, arrays and `Memory` rather than
+# stopping at the top level, threads an `IdDict` so cycles and shared sub-objects survive, and
+# writes `const` fields through `jl_set_nth_field`, which `setfield!` refuses. A bits type owns no
+# mutable storage for `f` to write through, so it passes out untouched.
 @inline function _adopt_nondiff(p::P, x::P) where {P}
-    ismutabletype(P) || return x
-    @inbounds for i in 1:fieldcount(P)
-        isdefined(x, i) && setfield!(p, i, getfield(x, i))
-    end
-    return p
+    isbitstype(P) && return x
+    return _copy_to_output!!(p, x)
 end
 
 # An ARRAY has no fields to copy, so it needs its own method for the same rule: the call's contents

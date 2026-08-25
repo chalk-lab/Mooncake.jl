@@ -79,6 +79,19 @@ mutable struct FwdCounter
 end
 fwd_counting(w, c::FwdCounter) = (c.n += 1; sum(w) + c.n)
 
+# A `const` field cannot be written with `setfield!`, and a mutable NESTED in the argument stays
+# shared with the caller unless the copy into the cache's object recurses.
+mutable struct FwdConstTag
+    const tag::Int
+    n::Int
+end
+fwd_const_tag(w, c::FwdConstTag) = (c.n += 1; sum(w) + c.n + c.tag)
+
+mutable struct FwdNestedCounter
+    inner::FwdCounter
+end
+fwd_nested_counting(w, o::FwdNestedCounter) = (o.inner.n += 1; sum(w) + o.inner.n)
+
 fwd_load_ptr(p::Ptr{Float64}) = unsafe_load(p)
 
 mutable struct AnyCycleNode
@@ -1477,6 +1490,31 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # (138.0 for a truth of 137.0). One chunk was already right, so `n` must exceed the
             # chunk width for this to bite.
             @test v500 ≈ fwd_counting(collect(1.0:16.0), FwdCounter(0))
+
+            # A `const` field: the copy into the cache's object must write it, which `setfield!`
+            # cannot do at all: it threw for every call, whether or not the field had changed.
+            cache501 = Mooncake.prepare_derivative_cache(
+                fwd_const_tag, w500, FwdConstTag(1, 0); config=plain498
+            )
+            c501 = FwdConstTag(7, 0)
+            v501, g501 = Mooncake.value_and_gradient!!(cache501, fwd_const_tag, w500, c501)
+            @test v501 ≈ fwd_const_tag(collect(1.0:16.0), FwdConstTag(7, 0))
+            @test (c501.tag, c501.n) == (7, 0)
+            @test g501[2] ≈ ones(16)
+
+            # A mutable NESTED in the argument: copying one level deep left it shared with the
+            # caller, so `f`'s in-place update wrote through and compounded across chunks.
+            o502 = FwdNestedCounter(FwdCounter(0))
+            cache502 = Mooncake.prepare_derivative_cache(
+                fwd_nested_counting, w500, FwdNestedCounter(FwdCounter(0)); config=plain498
+            )
+            v502, g502 = Mooncake.value_and_gradient!!(
+                cache502, fwd_nested_counting, w500, o502
+            )
+            @test o502.inner.n == 0
+            @test v502 ≈
+                fwd_nested_counting(collect(1.0:16.0), FwdNestedCounter(FwdCounter(0)))
+            @test g502[2] ≈ ones(16)
 
             # A `Ptr` argument: the aliasing check must use the same tangent entry point as the
             # shared-dof count it is compared against, which returns the documented placeholder
