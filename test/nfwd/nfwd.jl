@@ -267,10 +267,14 @@ using Mooncake.Nfwd
         bp = 2.0^_d(3.0, 1.0)
         @test Nfwd.ndual_value(bp) ≈ 8.0
         @test Nfwd.ndual_partial(bp, 1) ≈ 8.0 * log(2.0)
-        # Negative real base: primal (-2.0)^3.0 is finite, but b^x is not real-differentiable
-        # in the exponent — must throw the clear local error, at any width.
-        @test_throws DomainError (-2.0)^_d(3.0, 1.0)
-        @test_throws DomainError (-2.0)^_d2(3.0, 1.0, 0.0)
+        # Negative real base. `d/dx (-2)^x` does not exist as a real derivative, so the answer is
+        # a convention: `_nfwd_pow_grad_p` takes `real(log(complex(b)))`, giving `v·log|b|`. This
+        # must agree with the `NDual^NDual` sibling below and with the reverse `power` rrule, both
+        # of which use the same coefficient; pinned at two widths since the seed shape differs.
+        @test Nfwd.ndual_partial((-2.0)^_d(3.0, 1.0), 1) ≈ -8.0 * log(2.0)
+        @test Nfwd.ndual_value((-2.0)^_d(3.0, 1.0)) ≈ -8.0
+        @test Nfwd.ndual_partial((-2.0)^_d2(3.0, 1.0, 0.0), 1) ≈ -8.0 * log(2.0)
+        @test Nfwd.ndual_partial((-2.0)^_d2(3.0, 1.0, 0.0), 2) === 0.0
         # Zero real base with an NDual exponent, POSITIVE exponent (b=0, a=2): primal is 0, and
         # d(b^a)/da = b^a·log(b) has the removable-singularity limit 0 (b^a→0 dominates log(b)→-Inf).
         # BOTH lanes must be 0 — the naive `v*log(b) = 0·(-Inf)` gave NaN in active lanes; the

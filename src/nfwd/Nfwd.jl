@@ -662,23 +662,13 @@ end
 # d(b^a)/da = b^a * log(b)  (b a plain Real, a the NDual)
 @inline function Base.:^(b::R, a::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
-    # For b < 0 the primal can be finite (integer-valued exponent) but b^x is not
-    # real-differentiable in the exponent (the derivative needs log(b)), so fail with a clear
-    # local error rather than letting `log(b)` throw a bare DomainError from inside the scale.
-    b < 0 && throw(
-        DomainError(
-            b,
-            "cannot differentiate b^x with a negative real base with respect to the " *
-            "exponent: the derivative requires log(b), which is not real. Rewrite with a " *
-            "complex base, or avoid differentiating the exponent.",
-        ),
-    )
     v = S(b)^S(a.value)
-    # d(b^a)/da = b^a·log(b). At b>0 this is `v*log(b)`; at the removable singularity b==0 the naive
-    # `v*log(b)` is `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent
-    # (b^a→0 dominates log(b)→-Inf). `_nfwd_pow_grad_p` encodes exactly this: `v*log(b)` for b>0, and
-    # for b==0 → 0 (positive exponent) / NaN (nonpositive, genuinely undefined). `_fwd_guarded_scale`
-    # additionally keeps an inactive (zero-seed) lane 0 in that genuinely-NaN case.
+    # d(b^a)/da = b^a·log(b). `_nfwd_pow_grad_p` takes `real(log(complex(b)))`, so b<0 gives
+    # `v·log|b|` — a convention, since `d/dx b^x` has no real derivative there, and the one the
+    # reverse `power` rrule already uses. At the removable singularity b==0 the naive `v*log(b)` is
+    # `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent (b^a→0
+    # dominates log(b)→-Inf); it yields 0 there, and NaN for a nonpositive exponent, which is
+    # genuinely undefined. `_fwd_guarded_scale` keeps an inactive (zero-seed) lane 0 in that case.
     ap = ntuple(i -> S(a.partials[i]), Val(N))
     return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_p(S(b), S(a.value), v)))
 end
