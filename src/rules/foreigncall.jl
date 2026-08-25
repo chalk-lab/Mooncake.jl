@@ -297,28 +297,18 @@ function frule!!(
     dest_partials = tangent(dest)
     src_partials = tangent(src)
     @inbounds for lane in 1:Nw
-        _check_fwd_tangent_ptr_addressable(primal(dest), dest_partials[lane])
-        _check_fwd_tangent_ptr_addressable(primal(src), src_partials[lane])
+        IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
+            primal(dest), dest_partials[lane]
+        )
+        IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
+            primal(src), src_partials[lane]
+        )
     end
     unsafe_copyto!(primal(dest), primal(src), _n)
     @inbounds for lane in 1:Nw
         unsafe_copyto!(dest_partials[lane], src_partials[lane], _n)
     end
     return dest
-end
-# The `uninit_*` convention reinterprets a value's own PRIMAL address as its tangent pointer when
-# there is no tangent storage behind it, so a placeholder is a NON-NULL pointer equal to its primal.
-# `_check_tangent_ptr` tests only NULL and cannot see one, and copying through a placeholder moves
-# unrelated memory into a derivative: on Julia 1.10 a copy out of a re-typed `Vector{UInt8}` reported
-# a nonzero derivative that changed from run to run. It is the same user error that 1.11+ reports
-# through the `NoDual` V, so it gets the same message. Deliberately local: the tangent-pointer
-# convention has two poison values and the `_check_tangent_ptr` consumers test only NULL, so they
-# share this blind spot; closing it by dispatch would touch every rule taking a `Ptr` tangent.
-@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
-    if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) && UInt(dp) == UInt(p)
-        throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
-    end
-    return nothing
 end
 # Mixed V: one pointer carries per-lane partials, the other reached AD with none. The broad
 # `@is_primitive` above covers this pair, so without these methods it surfaces as a raw `MethodError`

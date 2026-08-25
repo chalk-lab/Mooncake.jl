@@ -240,6 +240,14 @@ function frule!!(
     # flat parent reconstructs the ALIASING block — writes through the wrapped array's V land in
     # the pointed-at tangent storage (the whole point of this rule). Packing per-lane wraps into a
     # fresh block would silently sever that aliasing instead.
+    # Refuse the `uninit_*` placeholder before wrapping through it. It is a NON-NULL tangent
+    # pointer EQUAL to its primal, so the NULL test cannot see one, and wrapping through it aliases
+    # the derivative onto the PRIMAL's own bytes: the wrapped array's partial reads back as the
+    # primal's value, and `x * unsafe_wrap(...)` returned `dx*w + x*w` where the truth is `dx*w`.
+    # The sibling `unsafe_copyto!` frule has always made this check; this one did not.
+    for k in 1:Nw
+        _check_fwd_tangent_ptr_addressable(primal(p), p_partials[k])
+    end
     all(k -> p_partials[k] == p_partials[1] + (k - 1) * sizeof(T), 1:Nw) || throw(
         ArgumentError(
             "Forward-mode `unsafe_wrap` requires the lifted pointer's lane pointers to be " *
@@ -529,6 +537,21 @@ end
 # there is yes without asking `sizeof` at all. Note `isconcretetype` would not license `sizeof`
 # either -- `String` is concrete and unsized -- though no tangent type is currently both.
 @inline _elements_occupy_storage(::Type{E}) where {E} = !isbitstype(E) || sizeof(E) > 0
+
+# The `uninit_*` convention reinterprets a value's own PRIMAL address as its tangent pointer when
+# there is no tangent storage behind it, so a placeholder is a NON-NULL pointer equal to its primal.
+# `_check_tangent_ptr` tests only NULL and cannot see one, and copying through a placeholder moves
+# unrelated memory into a derivative: on Julia 1.10 a copy out of a re-typed `Vector{UInt8}` reported
+# a nonzero derivative that changed from run to run. It is the same user error that 1.11+ reports
+# through the `NoDual` V, so it gets the same message. Deliberately local: the tangent-pointer
+# convention has two poison values and the `_check_tangent_ptr` consumers test only NULL, so they
+# share this blind spot; closing it by dispatch would touch every rule taking a `Ptr` tangent.
+@inline function _check_fwd_tangent_ptr_addressable(p::Ptr, dp::Ptr)
+    if IntrinsicsWrappers._elements_occupy_storage(eltype(dp)) && UInt(dp) == UInt(p)
+        throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
+    end
+    return nothing
+end
 
 const _NODUAL_DIFF_PTR_MSG =
     "Forward-mode AD cannot load from or store to a `Ptr` whose pointee is a differentiable " *
@@ -2461,6 +2484,11 @@ function throwing_rule_test_cases(::Val{:builtins})
     # `Ptr{Ptr{Float64}}`, but for `Ptr{Float64}` it means no partial storage exists, so loads and
     # stores must refuse rather than drop the derivative. Reached by reinterpreting a byte buffer.
     ndslot = Lifted{Ptr{Float64},1,NoDual}(ptr, NoDual())
+    # The `uninit_*` placeholder: a NON-NULL lane pointer EQUAL to its primal, which the NULL test
+    # cannot see. Wrapping through one aliased the derivative onto the PRIMAL's own bytes, so the
+    # wrapped array's partial read back as the primal's value and `x * unsafe_wrap(...)` returned
+    # `dx*w + x*w`. A ready-made slot because seeding a `Ptr` cannot produce a placeholder.
+    phslot = Lifted{Ptr{Float64},1}(ptr, (ptr,))
     # Reverse: an atomic load through a pointer re-typed off a non-differentiable buffer has a NULL
     # tangent pointer, and dereferencing it segfaulted before the atomic rules carried the guard
     # their non-atomic siblings already had. `Vector{UInt8}` rather than `Memory{UInt8}` so the case
@@ -2491,6 +2519,12 @@ function throwing_rule_test_cases(::Val{:builtins})
             ArgumentError,
             IntrinsicsWrappers.pointerref,
             (ndslot, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "cannot load from or store to"),
+            unsafe_wrap,
+            (Array{Float64,1}, phslot, 1),
             (; mode=ForwardMode),
         ),
         (
