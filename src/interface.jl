@@ -443,9 +443,59 @@ end
 # count this is compared against. The single-argument `zero_tangent` is a different contract — it
 # throws for a `Ptr` rather than returning the documented placeholder — so using it here refused an
 # input the rest of the pipeline supports.
-function _inputs_alias(shared_dof::Int, fx::Tuple)
-    return shared_dof !=
-           sum(x -> dof(zero_tangent_internal(x, _friendly_cache((x,)))), fx; init=0)
+function _inputs_alias(shared_dof::Int, ts::Tuple, fx::Tuple)
+    shared_dof !=
+    sum(x -> dof(zero_tangent_internal(x, _friendly_cache((x,)))), fx; init=0) &&
+        return true
+    return _repeats_storage(ts)
+end
+
+@static if VERSION >= v"1.11-rc4"
+    # Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so
+    # the same tangent at two positions is recognised as the case the aliasing cache already handles
+    # correctly. `backing` is the STORAGE that has been claimed, so a different container over it is
+    # the case `dof`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own
+    # tangent at one position and the backing of an `Array` tangent at another.
+    struct _StorageSeen
+        objs::IdDict{Any,Nothing}
+        backing::IdDict{Any,Nothing}
+    end
+    _repeats_storage(x) = _repeats_storage!(
+        _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
+    )
+    _repeats_storage!(::_StorageSeen, ::Any) = false
+
+    # Claim `store` for `x`. `true` if some other container already holds it.
+    @inline function _claim_storage!(s::_StorageSeen, x, store)
+        haskey(s.objs, x) && return false
+        s.objs[x] = nothing
+        haskey(s.backing, store) && return true
+        s.backing[store] = nothing
+        return false
+    end
+
+    # An EMPTY array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's
+    # one global empty `Memory`, so two unrelated ones look aliased. Nothing to alias either.
+    function _repeats_storage!(s::_StorageSeen, x::Array)
+        isempty(x) && return false
+        return _claim_storage!(s, x, getfield(x, :ref).mem)
+    end
+    function _repeats_storage!(s::_StorageSeen, x::Memory)
+        isempty(x) && return false
+        return _claim_storage!(s, x, x)
+    end
+    function _repeats_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
+        return any(v -> _repeats_storage!(s, v), x)
+    end
+    function _repeats_storage!(s::_StorageSeen, x::Union{Tangent,MutableTangent})
+        # Register before descending: a self-referential struct (`node.next === node`) otherwise
+        # recurses forever, as the other tangent traversals guard against for the same reason.
+        haskey(s.objs, x) && return false
+        s.objs[x] = nothing
+        return _repeats_storage!(s, x.fields)
+    end
+else
+    _repeats_storage(::Any) = false
 end
 
 # A concrete primal whose `dual_type` is NOT concrete has no usable slot annotation: `Lifted` is
@@ -683,8 +733,9 @@ is shown by the cache.
     # directional derivatives per pass through the generic chunked gradient path just like
     # float arrays. Only the zero-allocation fast path below is shape-restricted (see
     # `gradient_seed`).
-    total_dof = dof(_zero_tangents(fx))
-    inputs_alias = _inputs_alias(total_dof, fx)
+    input_ts = _zero_tangents(fx)
+    total_dof = dof(input_ts)
+    inputs_alias = _inputs_alias(total_dof, input_ts, fx)
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dof, requested)

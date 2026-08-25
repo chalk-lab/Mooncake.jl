@@ -2146,6 +2146,52 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test v == 2.0
             end
 
+            @static if VERSION >= v"1.11-"
+                @testset "forward gradient refuses inputs sharing backing storage" begin
+                    # `a` and `reshape(a)` are DISTINCT objects over ONE `Memory`, which `dof`'s
+                    # identity-keyed de-duplication cannot see, so the dof comparison agrees with
+                    # the per-position sum. The gradient buffers alias all the same and the sweep
+                    # writes each dof exactly once, so one position's contribution overwrote the
+                    # other's: 2.0 where reverse gives 3.0 for `sum(t[1]) + 2*sum(t[2])`.
+                    a_st = collect(1.0:6.0)
+                    g_st = t -> sum(t[1]) + 2 * sum(t[2])
+                    # An `Array` beside its own backing `Memory` is the same sharing reached a
+                    # different way: the array tangent's `Memory` IS the `Memory`'s tangent.
+                    v_st = collect(1.0:3.0)
+                    for t_st in (
+                        (a_st, reshape(a_st, 2, 3)),
+                        (reshape(a_st, 2, 3), a_st),
+                        (v_st, v_st.ref.mem),
+                    )
+                        c_st = Mooncake.prepare_derivative_cache(g_st, t_st)
+                        @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                            c_st, g_st, t_st
+                        )
+                    end
+                    # Distinct storage is unaffected. So are two NON-overlapping views, whose
+                    # tangents get their own parents; two EMPTY arrays, which all share Julia's one
+                    # global empty `Memory` and so would look aliased on identity alone; and the
+                    # SAME `Memory` at both positions, which the aliasing cache already handles by
+                    # giving them one tangent object.
+                    c_ok = Mooncake.prepare_derivative_cache(
+                        g_st, (collect(1.0:6.0), collect(1.0:6.0))
+                    )
+                    _, g_ok = Mooncake.value_and_gradient!!(
+                        c_ok, g_st, (collect(1.0:6.0), collect(1.0:6.0))
+                    )
+                    @test g_ok[2][1] ≈ ones(6)
+                    @test g_ok[2][2] ≈ 2 .* ones(6)
+                    m_ok = collect(1.0:3.0).ref.mem
+                    for t_ok in (
+                        (view(a_st, 1:3), view(a_st, 4:6)),
+                        (Float64[], Float64[]),
+                        (m_ok, m_ok),
+                    )
+                        @test Mooncake.prepare_derivative_cache(g_st, t_ok) isa Any
+                    end
+                end
+            end
+
             @testset "forward gradient refuses a repeated mutable argument" begin
                 # The gradient is assembled from one standard-basis dof range per argument, which
                 # cannot represent a repeated argument: the seeds are per-argument, so the seeded
