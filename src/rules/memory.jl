@@ -1053,9 +1053,9 @@ function rrule!!(
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
-        VoidPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
+        VoidPtrTangent(Ptr{Nothing}(0), NoTangent)
     else
-        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), tangent_elem_stride(eltype(x.dx)))
+        VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr), eltype(x.dx))
     end
     return CoDual(y, dy), NoPullback(ntuple(_ -> NoRData(), 4))
 end
@@ -1071,12 +1071,9 @@ function rrule!!(
     # Stride-tagged rather than an unbacked address for a zero-size element type, as in `Memory`.
     dy = if wants_offset
         if eltype(x.dx) === NoTangent
-            VoidPtrTangent(Ptr{Nothing}(0), NO_TANGENT_STORAGE)
+            VoidPtrTangent(Ptr{Nothing}(0), NoTangent)
         else
-            VoidPtrTangent(
-                bitcast(Ptr{Nothing}, x.dx.ptr_or_offset),
-                tangent_elem_stride(eltype(x.dx)),
-            )
+            VoidPtrTangent(bitcast(Ptr{Nothing}, x.dx.ptr_or_offset), eltype(x.dx))
         end
     else
         x.dx.mem

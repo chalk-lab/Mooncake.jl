@@ -22,8 +22,14 @@ function frule!!(
     p = primal(x) + primal(y)
     return Lifted{typeof(p),Nw}(p, NoDual())
 end
+# `@is_primitive` above claims EVERY `Ptr`, so this must shift whatever a pointer's fdata is. For a
+# `Ptr{Cvoid}` that is a `VoidPtrTangent`, which shifts its address and keeps what it erased.
+@inline _shift_ptr_fdata(dx::Ptr, n::Integer) = dx + n
+@inline _shift_ptr_fdata(dx::VoidPtrTangent, n::Integer) = VoidPtrTangent(dx.p + n, dx.elt)
+
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    return CoDual(primal(x) + primal(y), _shift_ptr_fdata(tangent(x), primal(y))),
+    NoPullback(f, x, y)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}

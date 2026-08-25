@@ -91,9 +91,6 @@ import ..Mooncake:
     frule!!,
     CoDual,
     VoidPtrTangent,
-    tangent_elem_stride,
-    NO_TANGENT_STORAGE,
-    UNCONSTRAINED_TANGENT_STRIDE,
     Lifted,
     NDual,
     NoDual,
@@ -601,85 +598,65 @@ end
     return sizeof(A) == sizeof(B)
 end
 
-# Reverse counterpart: a load or store through the re-typed pointer addresses `sizeof(tangent_type(B))`
-# bytes per element, so that must match the layout of the tangent buffer actually behind the address.
-# Two ways it does not: a non-differentiable source element has a `NoTangent` tangent, i.e. a
-# zero-byte allocation (reinterpreting a `Vector{UInt8}` as `Float64`); and a differentiable source of
-# a different width has real storage in the wrong stride, where an eight-byte cotangent lands across
-# two four-byte slots and corrupts both. Narrowing to a non-differentiable element is fine, because
-# the destination asks nothing of the buffer. A `Ptr{Nothing}` source is type ERASURE (the
-# `pointer(::Array)` chain), where the re-typing recovers the element type and the buffer really is
-# the tangent array.
-#
-# KNOWN LIMIT, and it is a REPRESENTATION one rather than a missing case here. `Ptr{Nothing}` means
-# both "erased, with a real tangent buffer behind it" and "no tangent storage at all", and
-# `fdata_type(Ptr{Nothing})` is `Ptr{Nothing}`, so the erased element width cannot be carried. A
-# `Ptr{Cvoid}` round trip therefore evades the width check above: `Ptr{Float32}` -> `Ptr{Cvoid}` ->
-# `Ptr{Float64}` writes eight-byte cotangents across four-byte slots, which the one-hop form
-# refuses. Neither hop can be refused instead, and both were measured rather than argued: refusing
-# the ERASURE breaks `unsafe_copyto!` between `Vector{Tuple{Float64,Float64}}`s, whose lowering
-# erases and restores the same type; refusing the WIDENING breaks the `pointer(::Array)` chain,
-# which is 39 of the 70 re-typings the rule groups exercise. At the erasure the two are structurally
-# identical. Closing this needs a distinct no-tangent-storage type; see `known_limitations.md`.
-# Carry the erased element width across a `Ptr{Cvoid}` hop, which is the whole point of
-# `VoidPtrTangent`: erasing records what the buffer is laid out in, and widening back checks it.
-# `_check_tangent_retyping_fits` above cannot do this, because it sees only the primal types and
-# `Ptr{Nothing}` is reached from every source.
+# Reverse counterpart of the lane re-typing above, dispatched on the erasure direction. Erasing
+# records what the buffer holds in a `VoidPtrTangent` and widening back out of one checks it, so a
+# `Ptr{Cvoid}` hop reaches the same verdict as a direct re-typing. `_check_tangent_retyping_fits`
+# cannot do this itself: it sees only the primal types, and `Ptr{Nothing}` is reached from every
+# source.
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{A}}, dx) where {A}
-    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_elem_stride(tangent_type(A)))
+    return VoidPtrTangent(bitcast(Ptr{Nothing}, dx), tangent_type(A))
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{Nothing}}, ::Type{Ptr{Nothing}}, dx)
     return dx
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{Nothing}}, dx) where {B}
     TB = tangent_type(B)
-    want = tangent_elem_stride(TB)
-    got = dx.stride_bytes
-    if got != UNCONSTRAINED_TANGENT_STRIDE && got != want
-        throw(
-            ArgumentError(
-                "Cannot re-type a tangent pointer to `Ptr{$B}` during AD: the element type was " *
-                "erased through a `Ptr{Cvoid}`, and the tangent storage behind this address is " *
-                (
-                    if got == NO_TANGENT_STORAGE
-                        "not there at all, so a `$TB` load or store " *
-                        "through it would touch memory no tangent buffer owns"
-                    else
-                        "laid out in $got-byte elements, so a $want-byte `$TB` load or store " *
-                        "through it would straddle two of them and corrupt both"
-                    end
-                ) *
-                ". Re-type directly between the element types you differentiate through, without " *
-                "a `Ptr{Cvoid}`/`Ptr{Nothing}` round trip.",
-            ),
-        )
-    end
+    _tangent_retyping_verdict(
+        dx.elt, TB, " (the element type was erased through a `Ptr{Cvoid}`)"
+    )
     return bitcast(Ptr{TB}, dx.p)
 end
 @inline function _retype_tangent_ptr(::Type{Ptr{B}}, ::Type{Ptr{A}}, dx) where {A,B}
     return bitcast(Ptr{tangent_type(B)}, dx)
 end
 
-@inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
-    A === Nothing && return nothing
-    TA, TB = tangent_type(A), tangent_type(B)
+# ONE rule for whether a tangent pointer may be re-typed, used by both the direct re-typing and the
+# widening back out of a `Ptr{Cvoid}`. They were two parallel implementations and disagreed in BOTH
+# directions: the two-hop path admitted a boxed buffer as `Ptr{Float64}` (a store then wrote a float
+# over a GC reference) and refused a narrowing the one-hop path allows.
+#
+# `TA` is the tangent element type behind the address, `TB` the one being re-typed to. Identity is
+# what makes a `Vector{Float64}` buffer distinguishable from a `Float64` one: both are 8 bytes per
+# element, but only the latter holds inline values a `pointerset` may write.
+@inline function _tangent_retyping_verdict(
+    @nospecialize(TA), @nospecialize(TB), whence::String
+)
+    TA === Nothing && return nothing            # a tangent OBJECT, checked where it was created
     TA === TB && return nothing
-    isbitstype(TB) && sizeof(TB) == 0 && return nothing
+    isbitstype(TB) && sizeof(TB) == 0 && return nothing   # asks nothing of the buffer
     isbitstype(TA) && isbitstype(TB) && sizeof(TA) == sizeof(TB) && return nothing
-    why = if isbitstype(TA) && sizeof(TA) == 0
-        "`$A` is non-differentiable, so there is no tangent storage behind this address at all, " *
-        "and a `$TB` load or store through the re-typed pointer would touch memory no tangent " *
-        "buffer owns"
+    why = if TA === NoTangent
+        "there is no tangent storage behind this address at all, so a `$TB` load or store through " *
+        "the re-typed pointer would touch memory no tangent buffer owns"
+    elseif !isbitstype(TA)
+        "the tangent storage behind this address holds `$TA` REFERENCES, not inline values, so a " *
+        "`$TB` load or store through the re-typed pointer would read or overwrite a pointer the " *
+        "garbage collector owns"
     else
         "the tangent storage behind this address is laid out in `$TA` elements, so a `$TB` load " *
         "or store through the re-typed pointer would straddle two of them and corrupt both"
     end
     throw(
         ArgumentError(
-            "Cannot re-type a tangent pointer from `Ptr{$A}` to `Ptr{$B}` during AD: $why. " *
-            "Allocate the buffer with the element type you differentiate through.",
+            "Cannot re-type a tangent pointer to `Ptr{$TB}` during AD$whence: $why. Re-type " *
+            "directly between the element types you differentiate through.",
         ),
     )
+end
+
+@inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
+    A === Nothing && return nothing
+    return _tangent_retyping_verdict(tangent_type(A), tangent_type(B), "")
 end
 function rrule!!(f::CoDual{typeof(bitcast)}, t::CoDual{Type{T}}, x) where {T}
     if T <: IEEEFloat
@@ -2354,7 +2331,29 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         end
     end
 
+    # A `Ptr{Cvoid}` hop must not change what a re-typing is allowed to do. Reading a
+    # zero-tangent element out of a float buffer asks nothing of the tangent storage, so it is
+    # permitted one-hop and must stay permitted through the erasure. `interface_only` because the
+    # result steps with the buffer's bit pattern: there is no derivative for FD to check.
+    function narrow_through_cvoid(b::Vector{Float64}, x::Float64)
+        return GC.@preserve b x * Float64(unsafe_load(Ptr{UInt8}(Ptr{Cvoid}(pointer(b)))))
+    end
+    # Shifting an erased pointer: the rule claims every `Ptr`, so it must shift a `Ptr{Cvoid}`'s
+    # tangent too, keeping the element type it erased.
+    function shift_through_cvoid(b::Vector{Float64}, x::Float64)
+        return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b)) + 8))
+    end
+    # A boxed field lines up with a boxed field, so the address is usable; `sizeof` on the field
+    # TYPE threw a `MethodError` before the layout check compared slots instead. The address itself
+    # cannot be the result — it differs between two runs over equal inputs — so it is only tested.
+    function objref_boxed_field(r::Base.RefValue{Any}, x::Float64)
+        return GC.@preserve r (pointer_from_objref(r) === C_NULL ? 0.0 : x)
+    end
+
     test_cases = Any[
+        (true, :none, nothing, narrow_through_cvoid, [1.0, 2.0], 2.0),
+        (false, :none, nothing, shift_through_cvoid, [1.0, 2.0], 2.0),
+        (false, :none, nothing, objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, [5.0, 4.0]),
@@ -2472,10 +2471,14 @@ function throwing_rule_test_cases(::Val{:builtins})
     # The same widening reached in TWO hops. `Ptr{Float32}` -> `Ptr{Float64}` is refused directly,
     # and a `Ptr{Cvoid}` in between used to launder it: the element type was gone by the second hop,
     # so the pullback wrote eight-byte cotangents across four-byte slots. `VoidPtrTangent` carries
-    # the width across the erasure, so the widening is checked against what the buffer holds.
+    # the erased element type, so the widening is checked against what the buffer holds.
     function laundered_retyped_load(b, x)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))
     end
+    # The same laundering over a buffer of REFERENCES. Sizes agree (a pointer is eight bytes), so a
+    # width comparison admitted it and the pullback wrote a `Float64` over a GC reference, which
+    # crashed at the next collection. What matters is not the width but whether the storage holds
+    # inline values at all.
     cases = Any[
         (
             ArgumentError,
@@ -2532,6 +2535,12 @@ function throwing_rule_test_cases(::Val{:builtins})
             (ArgumentError, "the element type was erased"),
             laundered_retyped_load,
             (Float32[1, 2, 3, 4], 2.0),
+            (; mode=ReverseMode),
+        ),
+        (
+            (ArgumentError, "REFERENCES, not inline values"),
+            laundered_retyped_load,
+            ([[1.0], [2.0]], 2.0),
             (; mode=ReverseMode),
         ),
         # The same re-typing reached through `unsafe_wrap` rather than a load: wrapping it handed a

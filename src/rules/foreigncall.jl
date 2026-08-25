@@ -142,16 +142,35 @@ end
     T = tangent_type(P)
     T <: MutableTangent || return false
     NT = fieldtype(T, :fields)
-    # Nothing differentiable at all (a `Ref{UInt64}` passed to a foreigncall): no load through the
-    # address can report a derivative, and `_check_tangent_retyping_fits` already refuses to re-type
-    # a pointer with no tangent storage. Offsets are irrelevant when there is nothing to offset.
+    # Nothing differentiable at all (a `Ref{UInt64}` passed to a foreigncall): taking the address is
+    # fine, so this is admitted, but the address is tagged `NoTangent` by `_objref_tangent_elt` below
+    # so a later differentiable load is refused. Admitting it as UNCHECKED is what let 64 pullback
+    # stores walk past a 0-byte tangent object whose primal was 512 bytes.
     sizeof(NT) === 0 && return true
     fieldcount(NT) === fieldcount(P) || return false
     for i in 1:fieldcount(P)
         fieldoffset(NT, i) === fieldoffset(P, i) || return false
-        sizeof(fieldtype(NT, i)) === sizeof(fieldtype(P, i)) || return false
+        _field_slot(fieldtype(NT, i)) === _field_slot(fieldtype(P, i)) || return false
     end
     return sizeof(NT) === sizeof(P)
+end
+
+# What a field of type `T` occupies in an object: bits types sit inline and take their own size,
+# everything else is a pointer-sized reference. Comparing `sizeof` of the field TYPE instead throws
+# for an abstract one, and would report the size of a boxed value rather than of its slot. The
+# inline flag is carried because size alone would let an inline `Float64` match a boxed slot, where
+# a load reads the pointer as a float.
+@inline function _field_slot(::Type{T}) where {T}
+    return isbitstype(T) ? (true, sizeof(T)) : (false, sizeof(Ptr{Nothing}))
+end
+
+# What lies behind a `pointer_from_objref` tangent address: `Nothing` when the tangent is an object
+# whose layout matches the primal's (checked above, so a later load is sound), `NoTangent` when the
+# tangent has no payload at all.
+@inline function _objref_tangent_elt(::Type{P}) where {P}
+    T = tangent_type(P)
+    T <: MutableTangent || return NoTangent
+    return sizeof(fieldtype(T, :fields)) === 0 ? NoTangent : Nothing
 end
 
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
@@ -169,12 +188,14 @@ function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
             ),
         )
     end
-    # `UNCONSTRAINED_TANGENT_STRIDE`: this address is a tangent OBJECT, not a buffer of uniform
-    # elements, so element size is not the property to check. The layout check above is what makes a
-    # later load through it sound, and it runs where the address is created.
+    # `Nothing` marks a tangent OBJECT rather than a buffer of uniform elements, so element type is
+    # not the property to check; the layout check above is what makes a later load sound, and it runs
+    # where the address is created. A tangent with NO payload gets `NoTangent` instead: there is
+    # nothing behind the address, so any later differentiable load must be refused rather than waved
+    # through — the primal may be 512 bytes while its tangent object is 0.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        VoidPtrTangent(pointer_from_objref(tangent(x)), UNCONSTRAINED_TANGENT_STRIDE),
+        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P)),
     )
     return y, NoPullback(f, x)
 end
@@ -715,8 +736,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             (lb=1e-3, ub=250, skip_forward=true),
             unsafe_pointer_to_objref,
             CoDual(
-                pointer_from_objref(_x),
-                VoidPtrTangent(pointer_from_objref(_dx), UNCONSTRAINED_TANGENT_STRIDE),
+                pointer_from_objref(_x), VoidPtrTangent(pointer_from_objref(_dx), Nothing)
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
@@ -925,6 +945,21 @@ function throwing_rule_test_cases(::Val{:foreigncall})
             ),
         )
     end
+    # A tangent object with no payload at all: its address is admitted (a foreigncall may want it),
+    # but nothing differentiable lies behind it, so a later load must refuse. Admitting it as
+    # UNCHECKED let 64 pullback stores walk past a 0-byte tangent object whose primal was 512 bytes.
+    function zero_payload_objref_load(r::Base.RefValue{NTuple{8,Int}}, x::Float64)
+        return GC.@preserve r x * unsafe_load(Ptr{Float64}(pointer_from_objref(r)))
+    end
+    push!(
+        cases,
+        (
+            (ArgumentError, "no tangent storage"),
+            zero_payload_objref_load,
+            (Base.RefValue(ntuple(_ -> 0, Val(8))), 2.0),
+            (; mode=ReverseMode),
+        ),
+    )
     @static if VERSION >= v"1.11-rc4"
         # The raw pointer of an element-wise nested `MemoryRef` (from
         # `pointer(::Vector{Vector})`) projects to a width-1 `Ptr` 1-tuple; at chunk width > 1 the

@@ -329,47 +329,29 @@ type has been thrown away. What this type holds is the tangent of such a pointer
 itself is not erased, the element type it points at is.
 
 `Ptr{Nothing}` is the one pointer type whose tangent cannot be described by its primal alone. It is
-reached both by erasing a live tangent pointer (`unsafe_convert(Ptr{Cvoid}, p)`, which `unsafe_copyto!`
-and `pointer(::Array)` both do) and by taking the address of something with no tangent storage at all.
-Giving both `Ptr{NoTangent}` conflates them, and a re-typing back to a differentiable element then
-cannot be checked: `Ptr{Float32}` -> `Ptr{Cvoid}` -> `Ptr{Float64}` writes eight-byte cotangents across
-four-byte slots, while the one-hop form is refused.
+reached both by erasing a live tangent pointer (`unsafe_convert(Ptr{Cvoid}, p)`, which
+`unsafe_copyto!` and `pointer(::Array)` both do) and by taking the address of something with no
+tangent storage at all. Giving both `Ptr{NoTangent}` conflates them, and a re-typing back to a
+differentiable element then cannot be checked.
 
-`stride_bytes` records what the address may be re-typed to:
+`elt` is the tangent ELEMENT TYPE behind the address, so a widening can be checked by exactly the
+rule that governs the one-hop case — see [`_tangent_retyping_verdict`](@ref), which both callers
+use. Recording the type rather than its size is what lets `Vector{Float64}` be distinguished from
+`Float64`: both occupy 8 bytes in a buffer, but one is a heap reference and storing a float over it
+corrupts the GC's view of the heap.
 
-- a positive value is `sizeof` of the tangent element the buffer is laid out in, so a widening back to
-  an element of that size is sound and any other size is refused;
-- [`NO_TANGENT_STORAGE`](@ref) says nothing is behind the address, so any differentiable widening is
-  refused;
-- [`UNCONSTRAINED_TANGENT_STRIDE`](@ref) says the address is a tangent OBJECT rather than a buffer of
-  uniform elements, as `pointer_from_objref` returns. Element size is not the property there, and the
-  `pointer_from_objref` rule establishes at the point of creation that the tangent shares the primal's
-  layout, so the widening is left unchecked.
+Two element types are markers rather than real elements:
+
+- `NoTangent` says no tangent storage lies behind the address, so any differentiable widening is
+  refused. This is also the honest element type of a non-differentiable buffer's tangent.
+- `Nothing` says the address is a tangent OBJECT rather than a buffer of uniform elements, as
+  `pointer_from_objref` returns. Element type is not the property there, and that rule establishes
+  at the point of creation that the tangent shares the primal's layout.
 """
 struct VoidPtrTangent
     p::Ptr{Nothing}
-    stride_bytes::Int
+    elt::Any
 end
-
-"No tangent storage lies behind the address; see [`VoidPtrTangent`](@ref)."
-const NO_TANGENT_STORAGE = 0
-
-"""
-    tangent_elem_stride(::Type{E})
-
-What one element of a tangent buffer with element type `E` occupies, for [`VoidPtrTangent`](@ref).
-
-Bits elements sit inline and occupy their own size; boxed ones are pointer-sized references, which is
-what a re-typed pointer into such a buffer actually addresses. A zero-size element type
-(`NoTangent`, for a non-differentiable primal) gives [`NO_TANGENT_STORAGE`](@ref), so a widening to a
-differentiable element is refused rather than reading bytes the buffer does not own.
-"""
-@inline function tangent_elem_stride(::Type{E}) where {E}
-    return isbitstype(E) ? sizeof(E) : sizeof(Ptr{Nothing})
-end
-
-"The address is a tangent object, not a buffer; see [`VoidPtrTangent`](@ref)."
-const UNCONSTRAINED_TANGENT_STRIDE = -1
 
 tangent_type(::Type{Ptr{Nothing}}) = VoidPtrTangent
 
@@ -625,7 +607,7 @@ end
 # An erased pointer reached as a FIELD has no tangent buffer of its own to point at, so it takes the
 # placeholder with no storage recorded, and a later widening to a differentiable element is refused.
 function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
-    return VoidPtrTangent(x, NO_TANGENT_STORAGE)
+    return VoidPtrTangent(x, NoTangent)
 end
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     return map!(
@@ -711,7 +693,7 @@ details -- this docstring is intentionally non-specific in order to avoid becomi
 # type-correct placeholder only. single-arg zero_tangent(x::Ptr) throws because allocating
 # fresh storage would have unclear ownership; use zero_tangent(primal, fdata) instead.
 @inline uninit_tangent(x::Ptr{P}) where {P} = bitcast(Ptr{tangent_type(P)}, x)
-@inline uninit_tangent(x::Ptr{Nothing}) = VoidPtrTangent(x, NO_TANGENT_STORAGE)
+@inline uninit_tangent(x::Ptr{Nothing}) = VoidPtrTangent(x, NoTangent)
 
 """
     randn_tangent(rng::AbstractRNG, x::P) where {P}
