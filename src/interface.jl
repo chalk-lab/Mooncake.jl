@@ -447,7 +447,9 @@ function _inputs_alias(shared_dof::Int, ts::Tuple, fx::Tuple)
     shared_dof !=
     sum(x -> dof(zero_tangent_internal(x, _friendly_cache((x,)))), fx; init=0) &&
         return true
-    return _repeats_storage(ts)
+    # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
+    # they do not, so that version reads it off the primals instead; see `_repeats_storage!`.
+    return @static VERSION >= v"1.11-rc4" ? _repeats_storage(ts) : _repeats_storage(fx)
 end
 
 @static if VERSION >= v"1.11-rc4"
@@ -474,16 +476,22 @@ end
         return false
     end
 
-    # An EMPTY array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's
-    # one global empty `Memory`, so two unrelated ones look aliased. Nothing to alias either.
+    # Nothing to double-count where there are no dofs: a `Vector{Int}` and its own reshape share a
+    # `Memory{NoTangent}`, and refusing that rejected a gradient the sweep computes correctly. The
+    # refusal's own message is the test — a shared leaf "comes back scaled by that count", and a
+    # `NoTangent` leaf has no count.
+    @inline _claims_dofs(::Type{T}) where {T} = tangent_type(eltype(T)) !== NoTangent
+
+    # An EMPTY array or `Memory` is not evidence of sharing either: every empty `Array` points at
+    # Julia's one global empty `Memory`, so two unrelated ones look aliased.
     function _repeats_storage!(s::_StorageSeen, x::Array)
-        isempty(x) && return false
+        (isempty(x) || !_claims_dofs(typeof(x))) && return false
         haskey(s.objs, x) && return false
         _claim_storage!(s, x, getfield(x, :ref).mem) && return true
         return _repeats_elements!(s, x)
     end
     function _repeats_storage!(s::_StorageSeen, x::Memory)
-        isempty(x) && return false
+        (isempty(x) || !_claims_dofs(typeof(x))) && return false
         haskey(s.objs, x) && return false
         _claim_storage!(s, x, x) && return true
         return _repeats_elements!(s, x)
@@ -512,7 +520,38 @@ end
         return _repeats_storage!(s, x.fields)
     end
 else
-    _repeats_storage(::Any) = false
+    # Julia 1.10 has no `Memory`, and — the reason this is a separate implementation rather than a
+    # different `_backing` for the one above — a reshaped array's TANGENT there does not alias its
+    # parent's. Tangent-keyed detection would find nothing, so the sharing has to be read off the
+    # PRIMALS, with the data address standing in for the `Memory` the version lacks.
+    struct _StorageSeen
+        objs::IdDict{Any,Nothing}
+        backing::IdDict{Any,Nothing}
+    end
+    _repeats_storage(x) = _repeats_storage!(
+        _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
+    )
+    _repeats_storage!(::_StorageSeen, ::Any) = false
+
+    function _repeats_storage!(s::_StorageSeen, x::Array)
+        # Two `Vector{Int}`s over one buffer contribute no dofs, so sharing among them is not a
+        # reason to refuse anything.
+        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
+        haskey(s.objs, x) && return false
+        s.objs[x] = nothing
+        # Stable while the array is live, which it is for the whole traversal, and equal for two
+        # arrays over one buffer.
+        store = UInt(pointer(x))
+        haskey(s.backing, store) && return true
+        s.backing[store] = nothing
+        return any(
+            i -> isassigned(x, i) && _repeats_storage!(s, x[i]),
+            isbitstype(eltype(x)) ? (1:0) : eachindex(x),
+        )
+    end
+    function _repeats_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
+        return any(v -> _repeats_storage!(s, v), x)
+    end
 end
 
 # A concrete primal whose `dual_type` is NOT concrete has no usable slot annotation: `Lifted` is

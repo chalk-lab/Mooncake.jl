@@ -2184,6 +2184,32 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test v == 2.0
             end
 
+            @testset "gradient and shared storage agree across versions" begin
+                # Two containers over one buffer. 1.10 used to RETURN d/t[1]=1.0, d/t[2]=2.0 where
+                # the shared buffer's derivative is 3.0 per element -- an answer no perturbation can
+                # produce -- because its tangents, unlike 1.11+'s, do not alias, so a tangent-keyed
+                # check saw nothing to refuse.
+                a_v = collect(1.0:6.0)
+                g_v = t -> sum(t[1]) + 2 * sum(t[2])
+                c_v = Mooncake.prepare_derivative_cache(g_v, (a_v, reshape(a_v, 2, 3)))
+                @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                    c_v, g_v, (a_v, reshape(a_v, 2, 3))
+                )
+                # The mirror image: positions sharing a NON-differentiable buffer contribute no
+                # dofs, so there is nothing to scale by a count and nothing to refuse. 1.11+ threw
+                # here, rejecting a gradient it computes correctly.
+                n_v = collect(1:6)
+                h_v = (x, m, r) -> sum(x) * (length(m) + length(r))
+                c_n = Mooncake.prepare_derivative_cache(
+                    h_v, collect(1.0:6.0), n_v, reshape(n_v, 2, 3)
+                )
+                v_n, g_n = Mooncake.value_and_gradient!!(
+                    c_n, h_v, collect(1.0:6.0), n_v, reshape(n_v, 2, 3)
+                )
+                @test v_n == sum(1.0:6.0) * 12
+                @test g_n[2] ≈ fill(12.0, 6)
+            end
+
             @static if VERSION >= v"1.11-"
                 @testset "forward gradient refuses inputs sharing backing storage" begin
                     # `a` and `reshape(a)` are DISTINCT objects over ONE `Memory`, which `dof`'s

@@ -226,9 +226,30 @@ function _add_to_primal_internal(
 ) where {P,N}
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::Array{P,N}
+    # Build over the perturbed backing `Memory` rather than a fresh buffer, so two arrays over one
+    # `Memory` (`a` and `reshape(a)`) come back over one `Memory` too. The `Memory` method caches on
+    # its own arguments, so the second array here reuses the first's result. Allocating separately
+    # severed that sharing, and finite differences over the result then measured a function that
+    # perturbs the two positions independently -- a different function from the one under test.
+    #
+    # Only when both arrays span their whole backing `Memory` does perturbing the memory correspond
+    # elementwise to perturbing the array. A `Vector` grown by `push!` keeps spare capacity, so its
+    # `Memory` is longer than it is and need not match its tangent's; the array-wise path below
+    # stays correct there, at the cost of not preserving sharing for such an array.
+    xr, tr = getfield(x, :ref), getfield(t, :ref)
+    if _spans_memory(x, xr) && _spans_memory(t, tr)
+        mem = _add_to_primal_internal(c, xr.mem, tr.mem, unsafe)
+        x′ = Base.wrap(Array, construct_ref(xr, mem), size(x))::Array{P,N}
+        c[key] = x′
+        return x′
+    end
     x′ = Array{P,N}(undef, size(x)...)
     c[key] = x′
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
+end
+
+@inline function _spans_memory(x::Array, r::MemoryRef)
+    return Core.memoryrefoffset(r) == 1 && length(r.mem) == length(x)
 end
 
 function tangent_to_primal_internal!!(

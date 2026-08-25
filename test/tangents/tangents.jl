@@ -230,6 +230,40 @@ using DispatchDoctor: allow_unstable
             @test Mooncake._dot(d3, d3) == 3.0
         end
     end
+    @static if VERSION >= v"1.11-"
+        @testset "_add_to_primal keeps two positions over one buffer" begin
+            # Perturbing a result whose sharing was severed measures a function that moves the two
+            # positions independently, which is not the function under test. That is how a
+            # finite-difference "truth" earlier in this branch came out unachievable by any
+            # direction.
+            a = collect(1.0:4.0)
+            t = (a, reshape(a, 2, 2))
+            dt = Mooncake._zero_tangents((identity, t))[2]
+            dt[1] .= 1.0
+            p = Mooncake._add_to_primal(t, dt, true)
+            @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+            @test p[1] == a .+ 1.0
+            @test vec(p[2]) == a .+ 1.0
+            # Distinct storage must stay distinct, or the perturbations of two independent
+            # arguments would land on top of each other.
+            b, d = collect(1.0:3.0), collect(1.0:3.0)
+            q = Mooncake._add_to_primal(
+                (b, d), Mooncake._zero_tangents((identity, (b, d)))[2], true
+            )
+            @test getfield(q[1], :ref).mem !== getfield(q[2], :ref).mem
+            # A `Vector` with spare capacity has a backing `Memory` longer than itself, which need
+            # not match its tangent's. Perturbing whole memories asserted on a correspondence that
+            # does not hold there. `sizehint!` rather than plain growth because 1.12 allocates
+            # `append!` exactly, so the vector had no spare capacity there and the case went
+            # untested — which the precondition below is here to keep catching.
+            w = Float64[]
+            sizehint!(w, 16)
+            append!(w, [1.0, 2.0, 3.0])
+            @test length(getfield(w, :ref).mem) > length(w)
+            @test Mooncake._add_to_primal(w, Mooncake.zero_tangent(w) .+ 0.5, true) ==
+                [1.5, 2.5, 3.5]
+        end
+    end
     @testset "require_tangent_cache($P)" for (P, expected_result) in [
         (Float64, false),
         (Int32, false),
