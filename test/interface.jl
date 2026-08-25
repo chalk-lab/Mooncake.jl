@@ -1047,314 +1047,314 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.value_and_gradient!!(nested_cache, nested_f, (nested_A2,))
             ) == nested_f((nested_A2,))
 
-            if get(kwargs, :debug_mode, false)
-                @test true
-            else
-                scalar_allocs = TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
-                )
-                @test scalar_allocs == 0
+            # Debug-mode rules wrap every rule and allocate, so the zero-allocation assertions
+            # below are checked outside debug mode only. Everything else here runs under it.
+            check_allocs = !get(kwargs, :debug_mode, false)
+            scalar_allocs = TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, scalar_cache_grad_fwd, f_scalar, x
+            )
+            check_allocs && @test scalar_allocs == 0
 
-                scalar_f = CountedChunkScalarCall()
-                scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    scalar_cache_grad_fwd, scalar_f, x, y
-                ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 1
+            scalar_f = CountedChunkScalarCall()
+            scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                scalar_f,
+                x,
+                y;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            CHUNK_SCALAR_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, scalar_f, x, y) ==
+                (z, (Mooncake.NoTangent(), y - sin(x), x))
+            @test CHUNK_SCALAR_EVAL_COUNT[] == 1
 
-                scalar_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                    scalar_f,
-                    x,
-                    y;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, chunk_size=1
-                    ),
-                )
-                CHUNK_SCALAR_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    scalar_cache_grad_fwd_chunked, scalar_f, x, y
-                ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
-                @test CHUNK_SCALAR_EVAL_COUNT[] == 2
+            scalar_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
+                scalar_f,
+                x,
+                y;
+                config=Mooncake.Config(;
+                    debug_mode=false, friendly_tangents=false, chunk_size=1
+                ),
+            )
+            CHUNK_SCALAR_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(
+                scalar_cache_grad_fwd_chunked, scalar_f, x, y
+            ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
+            @test CHUNK_SCALAR_EVAL_COUNT[] == 2
 
-                array_f = CountedChunkArrayCall()
-                x_arr = [x, y]
-                array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(array_cache_grad_fwd, array_f, x_arr) ==
-                    (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
-                ) == 0
+            array_f = CountedChunkArrayCall()
+            x_arr = [x, y]
+            array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                array_f,
+                x_arr;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            CHUNK_ARRAY_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(array_cache_grad_fwd, array_f, x_arr) ==
+                (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
+            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
+            ) == 0
 
-                array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    x_arr;
-                    config=Mooncake.Config(;
-                        debug_mode=false, friendly_tangents=false, chunk_size=1
-                    ),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    array_cache_grad_fwd_chunked, array_f, x_arr
-                ) == (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 2
+            array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
+                array_f,
+                x_arr;
+                config=Mooncake.Config(;
+                    debug_mode=false, friendly_tangents=false, chunk_size=1
+                ),
+            )
+            CHUNK_ARRAY_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(
+                array_cache_grad_fwd_chunked, array_f, x_arr
+            ) == (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
+            @test CHUNK_ARRAY_EVAL_COUNT[] == 2
 
-                singleton_x_arr = [x]
-                singleton_array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    singleton_x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    singleton_array_cache_grad_fwd, array_f, singleton_x_arr
-                ) == (
-                    sum(abs2, singleton_x_arr), (Mooncake.NoTangent(), 2 .* singleton_x_arr)
-                )
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!,
-                    singleton_array_cache_grad_fwd,
-                    array_f,
-                    singleton_x_arr,
-                ) == 0
+            singleton_x_arr = [x]
+            singleton_array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
+                array_f,
+                singleton_x_arr;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            CHUNK_ARRAY_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(
+                singleton_array_cache_grad_fwd, array_f, singleton_x_arr
+            ) == (sum(abs2, singleton_x_arr), (Mooncake.NoTangent(), 2 .* singleton_x_arr))
+            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!,
+                singleton_array_cache_grad_fwd,
+                array_f,
+                singleton_x_arr,
+            ) == 0
 
-                singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
-                    array_f,
-                    singleton_x_arr;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=true),
-                )
-                CHUNK_ARRAY_EVAL_COUNT[] = 0
-                @test Mooncake.value_and_gradient!!(
-                    singleton_array_cache_grad_fwd_friendly, array_f, singleton_x_arr
-                ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
-                @test CHUNK_ARRAY_EVAL_COUNT[] == 1
+            singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
+                array_f,
+                singleton_x_arr;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=true),
+            )
+            CHUNK_ARRAY_EVAL_COUNT[] = 0
+            @test Mooncake.value_and_gradient!!(
+                singleton_array_cache_grad_fwd_friendly, array_f, singleton_x_arr
+            ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
+            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
 
-                # Regression: _validate_prepared_cache must not allocate.
-                # length-5 vector: a single full-width (chunk_size=5) native chunk pass.
-                x5 = collect(1.0:5.0)
-                f5 = x -> sum(abs2, x)
-                cache_5 = Mooncake.prepare_derivative_cache(
-                    f5,
-                    x5;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                @test Mooncake.value_and_gradient!!(cache_5, f5, x5) ==
-                    (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, cache_5, f5, x5
-                ) == 0
+            # Regression: _validate_prepared_cache must not allocate.
+            # length-5 vector: a single full-width (chunk_size=5) native chunk pass.
+            x5 = collect(1.0:5.0)
+            f5 = x -> sum(abs2, x)
+            cache_5 = Mooncake.prepare_derivative_cache(
+                f5, x5; config=Mooncake.Config(; debug_mode=false, friendly_tangents=false)
+            )
+            @test Mooncake.value_and_gradient!!(cache_5, f5, x5) ==
+                (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, cache_5, f5, x5
+            ) == 0
 
-                # length-10 vector: DOF > max chunk width (8), so two chunks (8 + 2).
-                x10 = collect(1.0:10.0)
-                f10 = x -> sum(abs2, x)
-                cache_10 = Mooncake.prepare_derivative_cache(
-                    f10,
-                    x10;
-                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-                )
-                @test Mooncake.value_and_gradient!!(cache_10, f10, x10) ==
-                    (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, cache_10, f10, x10
-                ) == 0
+            # length-10 vector: DOF > max chunk width (8), so two chunks (8 + 2).
+            x10 = collect(1.0:10.0)
+            f10 = x -> sum(abs2, x)
+            cache_10 = Mooncake.prepare_derivative_cache(
+                f10,
+                x10;
+                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            )
+            @test Mooncake.value_and_gradient!!(cache_10, f10, x10) ==
+                (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, cache_10, f10, x10
+            ) == 0
 
-                # Non-packable inputs (here a NamedTuple) also chunk through the generic
-                # chunked gradient path: multi-dof builds a native chunk rule and the
-                # gradient is correct. (Such inputs were previously pinned to width 1.)
-                nt_x = (; a=1.3, b=2.1, c=0.7)
-                f_nt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
-                cache_nt = Mooncake.prepare_derivative_cache(
-                    f_nt, nt_x; config=Mooncake.Config(; friendly_tangents=true)
-                )
-                @test getfield(cache_nt, :gradient_chunk_size) > 1
-                @test getfield(cache_nt, :chunk_rule) !== nothing
-                y_nt, g_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, nt_x)
-                @test y_nt == f_nt(nt_x)
-                @test g_nt[2].a ≈ 2 * nt_x.a * nt_x.b + cos(nt_x.a) * nt_x.c
-                @test g_nt[2].b ≈ nt_x.a^2
-                @test g_nt[2].c ≈ sin(nt_x.a)
+            # Non-packable inputs (here a NamedTuple) also chunk through the generic
+            # chunked gradient path: multi-dof builds a native chunk rule and the
+            # gradient is correct. (Such inputs were previously pinned to width 1.)
+            nt_x = (; a=1.3, b=2.1, c=0.7)
+            f_nt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+            cache_nt = Mooncake.prepare_derivative_cache(
+                f_nt, nt_x; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
+            )
+            @test getfield(cache_nt, :gradient_chunk_size) > 1
+            @test getfield(cache_nt, :chunk_rule) !== nothing
+            y_nt, g_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, nt_x)
+            @test y_nt == f_nt(nt_x)
+            @test g_nt[2].a ≈ 2 * nt_x.a * nt_x.b + cos(nt_x.a) * nt_x.c
+            @test g_nt[2].b ≈ nt_x.a^2
+            @test g_nt[2].c ≈ sin(nt_x.a)
 
-                # Array-backed structured inputs take the zero-allocation leaf-table path
-                # (StructuredGradSeed): tuple/Matrix of float arrays — correct + zero-alloc.
-                ft = t -> sum(abs2, t[1]) + sum(abs2, t[2])
-                tx = ([1.0, 2.0, 3.0], [4.0, 5.0])
-                ct = Mooncake.prepare_derivative_cache(
-                    ft, tx; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test getfield(ct, :gradient_seed) isa Mooncake.StructuredGradSeed
-                yt, gt = Mooncake.value_and_gradient!!(ct, ft, tx)
-                @test yt == ft(tx)
-                @test gt[2][1] ≈ 2 .* tx[1]
-                @test gt[2][2] ≈ 2 .* tx[2]
+            # Array-backed structured inputs take the zero-allocation leaf-table path
+            # (StructuredGradSeed): tuple/Matrix of float arrays — correct + zero-alloc.
+            ft = t -> sum(abs2, t[1]) + sum(abs2, t[2])
+            tx = ([1.0, 2.0, 3.0], [4.0, 5.0])
+            ct = Mooncake.prepare_derivative_cache(
+                ft, tx; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(ct, :gradient_seed) isa Mooncake.StructuredGradSeed
+            yt, gt = Mooncake.value_and_gradient!!(ct, ft, tx)
+            @test yt == ft(tx)
+            @test gt[2][1] ≈ 2 .* tx[1]
+            @test gt[2][2] ≈ 2 .* tx[2]
+            check_allocs &&
                 @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, ct, ft, tx) == 0
 
-                fA = A -> sum(abs2, A)
-                Ax = [1.0 2.0; 3.0 4.0]
-                cA = Mooncake.prepare_derivative_cache(
-                    fA, Ax; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test getfield(cA, :gradient_seed) isa Mooncake.StructuredGradSeed
+            fA = A -> sum(abs2, A)
+            Ax = [1.0 2.0; 3.0 4.0]
+            cA = Mooncake.prepare_derivative_cache(
+                fA, Ax; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(cA, :gradient_seed) isa Mooncake.StructuredGradSeed
+            check_allocs &&
                 @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) == 0
-                _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
-                @test gA[2] ≈ 2 .* Ax
+            _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
+            @test gA[2] ≈ 2 .* Ax
 
-                # Primal refresh: prepare at one point, evaluate at another.
-                cr = Mooncake.prepare_derivative_cache(
-                    ft,
-                    ([1.0, 1.0, 1.0], [1.0, 1.0]);
-                    config=Mooncake.Config(; friendly_tangents=false),
-                )
-                tx2 = ([2.0, 3.0, 4.0], [5.0, 6.0])
-                yr, gr = Mooncake.value_and_gradient!!(cr, ft, tx2)
-                @test yr == ft(tx2)
-                @test gr[2][1] ≈ 2 .* tx2[1]
-                @test gr[2][2] ≈ 2 .* tx2[2]
+            # Primal refresh: prepare at one point, evaluate at another.
+            cr = Mooncake.prepare_derivative_cache(
+                ft,
+                ([1.0, 1.0, 1.0], [1.0, 1.0]);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            tx2 = ([2.0, 3.0, 4.0], [5.0, 6.0])
+            yr, gr = Mooncake.value_and_gradient!!(cr, ft, tx2)
+            @test yr == ft(tx2)
+            @test gr[2][1] ≈ 2 .* tx2[1]
+            @test gr[2][2] ≈ 2 .* tx2[2]
 
-                # In-place-mutating `f` whose array spans >1 chunk: the seed primal must be
-                # restored (and partials re-zeroed) every chunk, else a later chunk runs on an
-                # earlier chunk's mutated primal. dof 10 > max chunk width forces two chunks.
-                fip = t -> begin
-                    t[1] .= t[1] .* 2.0
-                    sum(abs2, t[1])
-                end
-                tip0 = (collect(1.0:10.0),)
-                cip = Mooncake.prepare_derivative_cache(
-                    fip, tip0; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                tip = (collect(1.0:10.0),)
-                _, gip = Mooncake.value_and_gradient!!(cip, fip, tip)
-                @test gip[2][1] ≈ 8 .* collect(1.0:10.0)   # d/dt Σ(2t)² = 8t, across both chunks
-                @test tip == (collect(1.0:10.0),)          # user input not mutated
-
-                # The seed must not alias the user's prepare-time arrays: prepare AND evaluate at
-                # the SAME object with an in-place `f` — the input must be left unchanged.
-                fsame = t -> begin
-                    t[1] .= t[1] .* 2.0
-                    sum(abs2, t[1]) + sum(abs2, t[2])
-                end
-                tsame = ([1.0, 2.0, 3.0], [4.0, 5.0])
-                csame = Mooncake.prepare_derivative_cache(
-                    fsame, tsame; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                _, gsame = Mooncake.value_and_gradient!!(csame, fsame, tsame)  # same object
-                @test tsame == ([1.0, 2.0, 3.0], [4.0, 5.0])   # user input not clobbered
-                @test gsame[2][1] ≈ 8 .* [1.0, 2.0, 3.0]
-                @test gsame[2][2] ≈ 2 .* [4.0, 5.0]
-
-                # Zero-dof input (no float dofs) with an in-place `f`: the total_dof==0 generic
-                # branch must also snapshot/restore the user's input.
-                fz0 = x -> (x[1] += 1; 2.5)
-                xz0 = [10, 20, 30]
-                cz0 = Mooncake.prepare_derivative_cache(
-                    fz0, xz0; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                yz0, _ = Mooncake.value_and_gradient!!(cz0, fz0, xz0)
-                @test yz0 == 2.5
-                @test xz0 == [10, 20, 30]                      # user input not mutated
-
-                # Mixed array + scalar input has a non-array dof, so the gather bails and the
-                # generic chunked path runs — still correct.
-                fmix = nt -> sum(nt.v) + nt.s^2
-                mx = (; v=[1.0, 2.0], s=3.0)
-                cmix = Mooncake.prepare_derivative_cache(
-                    fmix, mx; config=Mooncake.Config(; friendly_tangents=true)
-                )
-                @test !(getfield(cmix, :gradient_seed) isa Mooncake.StructuredGradSeed)
-                _, gmix = Mooncake.value_and_gradient!!(cmix, fmix, mx)
-                @test gmix[2].v ≈ ones(2)
-                @test gmix[2].s ≈ 2 * mx.s
-
-                # Scalar-only structured inputs (isbits V) take the concrete-barrier path
-                # (IsbitsGradSeed): tuple/NamedTuple/immutable-struct of scalars — correct +
-                # zero-alloc. (Previously the generic chunked path, ~52 allocations.)
-                fnt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
-                ntx = (; a=1.3, b=2.1, c=0.7)
-                cnt = Mooncake.prepare_derivative_cache(
-                    fnt, ntx; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test getfield(cnt, :gradient_seed) isa Mooncake.IsbitsGradSeed
-                ynt, gnt = Mooncake.value_and_gradient!!(cnt, fnt, ntx)
-                @test ynt == fnt(ntx)
-                @test gnt[2].a ≈ 2 * ntx.a * ntx.b + cos(ntx.a) * ntx.c
-                @test gnt[2].b ≈ ntx.a^2
-                @test gnt[2].c ≈ sin(ntx.a)
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, cnt, fnt, ntx
-                ) == 0
-
-                # immutable struct of scalars: native gradient is a `Tangent` (scattered via the
-                # `Tangent` branch), and prepare-at-x0/evaluate-at-x1 (primal refresh) is correct.
-                fsp = p -> p.x1^2 * p.x2
-                csp = Mooncake.prepare_derivative_cache(
-                    fsp,
-                    SimplePair(1.0, 1.0);
-                    config=Mooncake.Config(; friendly_tangents=false),
-                )
-                @test getfield(csp, :gradient_seed) isa Mooncake.IsbitsGradSeed
-                ysp, gsp = Mooncake.value_and_gradient!!(csp, fsp, SimplePair(3.0, 4.0))
-                @test ysp == fsp(SimplePair(3.0, 4.0))
-                @test gsp[2].fields.x1 ≈ 2 * 3.0 * 4.0
-                @test gsp[2].fields.x2 ≈ 3.0^2
-
-                # Multi-chunk scalar input (dof 10 > max chunk width): correct + zero-alloc.
-                nt10 = NamedTuple{Tuple(Symbol.("x", 1:10))}(ntuple(Float64, 10))
-                f10 = nt -> sum(abs2, values(nt))
-                c10 = Mooncake.prepare_derivative_cache(
-                    f10, nt10; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test getfield(c10, :gradient_chunk_size) < 10
-                _, g10 = Mooncake.value_and_gradient!!(c10, f10, nt10)
-                @test g10[2].x1 ≈ 2.0
-                @test g10[2].x10 ≈ 20.0
-                @test TestUtils.count_allocs(
-                    Mooncake.value_and_gradient!!, c10, f10, nt10
-                ) == 0
-
-                # Complex scalar dofs have an isbits V but two dofs per element, which the isbits
-                # barrier's scatter cannot handle — they must take the generic path, not crash.
-                fz = z -> abs2(z)
-                cz = Mooncake.prepare_derivative_cache(
-                    fz, 1.0 + 2.0im; config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test !(getfield(cz, :gradient_seed) isa Mooncake.IsbitsGradSeed)
-                yz, gz = Mooncake.value_and_gradient!!(cz, fz, 1.0 + 2.0im)
-                @test yz == abs2(1.0 + 2.0im)
-                @test gz[2] ≈ 2.0 + 4.0im
-                fzt = t -> abs2(t[1]) + t[2]^2
-                czt = Mooncake.prepare_derivative_cache(
-                    fzt,
-                    (1.0 + 2.0im, 3.0);
-                    config=Mooncake.Config(; friendly_tangents=false),
-                )
-                @test !(getfield(czt, :gradient_seed) isa Mooncake.IsbitsGradSeed)
-                _, gzt = Mooncake.value_and_gradient!!(czt, fzt, (1.0 + 2.0im, 3.0))
-                @test gzt[2] == (2.0 + 4.0im, 6.0)
-
-                # A non-isbits `f` (closure capturing a Vector) over scalar args must NOT take the
-                # isbits barrier (its per-chunk seed rebuild would allocate) — generic path instead.
-                clo = let k = [10.0]
-                    x -> k[1] * x.a + x.b^2
-                end
-                cclo = Mooncake.prepare_derivative_cache(
-                    clo, (; a=1.0, b=2.0); config=Mooncake.Config(; friendly_tangents=false)
-                )
-                @test !(getfield(cclo, :gradient_seed) isa Mooncake.IsbitsGradSeed)
-                _, gclo = Mooncake.value_and_gradient!!(cclo, clo, (; a=1.0, b=2.0))
-                @test gclo[2].a ≈ 10.0
-                @test gclo[2].b ≈ 4.0
+            # In-place-mutating `f` whose array spans >1 chunk: the seed primal must be
+            # restored (and partials re-zeroed) every chunk, else a later chunk runs on an
+            # earlier chunk's mutated primal. dof 10 > max chunk width forces two chunks.
+            fip = t -> begin
+                t[1] .= t[1] .* 2.0
+                sum(abs2, t[1])
             end
+            tip0 = (collect(1.0:10.0),)
+            cip = Mooncake.prepare_derivative_cache(
+                fip, tip0; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            tip = (collect(1.0:10.0),)
+            _, gip = Mooncake.value_and_gradient!!(cip, fip, tip)
+            @test gip[2][1] ≈ 8 .* collect(1.0:10.0)   # d/dt Σ(2t)² = 8t, across both chunks
+            @test tip == (collect(1.0:10.0),)          # user input not mutated
+
+            # The seed must not alias the user's prepare-time arrays: prepare AND evaluate at
+            # the SAME object with an in-place `f` — the input must be left unchanged.
+            fsame = t -> begin
+                t[1] .= t[1] .* 2.0
+                sum(abs2, t[1]) + sum(abs2, t[2])
+            end
+            tsame = ([1.0, 2.0, 3.0], [4.0, 5.0])
+            csame = Mooncake.prepare_derivative_cache(
+                fsame, tsame; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            _, gsame = Mooncake.value_and_gradient!!(csame, fsame, tsame)  # same object
+            @test tsame == ([1.0, 2.0, 3.0], [4.0, 5.0])   # user input not clobbered
+            @test gsame[2][1] ≈ 8 .* [1.0, 2.0, 3.0]
+            @test gsame[2][2] ≈ 2 .* [4.0, 5.0]
+
+            # Zero-dof input (no float dofs) with an in-place `f`: the total_dof==0 generic
+            # branch must also snapshot/restore the user's input.
+            fz0 = x -> (x[1] += 1; 2.5)
+            xz0 = [10, 20, 30]
+            cz0 = Mooncake.prepare_derivative_cache(
+                fz0, xz0; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            yz0, _ = Mooncake.value_and_gradient!!(cz0, fz0, xz0)
+            @test yz0 == 2.5
+            @test xz0 == [10, 20, 30]                      # user input not mutated
+
+            # Mixed array + scalar input has a non-array dof, so the gather bails and the
+            # generic chunked path runs — still correct.
+            fmix = nt -> sum(nt.v) + nt.s^2
+            mx = (; v=[1.0, 2.0], s=3.0)
+            cmix = Mooncake.prepare_derivative_cache(
+                fmix, mx; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
+            )
+            @test !(getfield(cmix, :gradient_seed) isa Mooncake.StructuredGradSeed)
+            _, gmix = Mooncake.value_and_gradient!!(cmix, fmix, mx)
+            @test gmix[2].v ≈ ones(2)
+            @test gmix[2].s ≈ 2 * mx.s
+
+            # Scalar-only structured inputs (isbits V) take the concrete-barrier path
+            # (IsbitsGradSeed): tuple/NamedTuple/immutable-struct of scalars — correct +
+            # zero-alloc. (Previously the generic chunked path, ~52 allocations.)
+            fnt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
+            ntx = (; a=1.3, b=2.1, c=0.7)
+            cnt = Mooncake.prepare_derivative_cache(
+                fnt, ntx; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(cnt, :gradient_seed) isa Mooncake.IsbitsGradSeed
+            ynt, gnt = Mooncake.value_and_gradient!!(cnt, fnt, ntx)
+            @test ynt == fnt(ntx)
+            @test gnt[2].a ≈ 2 * ntx.a * ntx.b + cos(ntx.a) * ntx.c
+            @test gnt[2].b ≈ ntx.a^2
+            @test gnt[2].c ≈ sin(ntx.a)
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, cnt, fnt, ntx
+            ) == 0
+
+            # immutable struct of scalars: native gradient is a `Tangent` (scattered via the
+            # `Tangent` branch), and prepare-at-x0/evaluate-at-x1 (primal refresh) is correct.
+            fsp = p -> p.x1^2 * p.x2
+            csp = Mooncake.prepare_derivative_cache(
+                fsp,
+                SimplePair(1.0, 1.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test getfield(csp, :gradient_seed) isa Mooncake.IsbitsGradSeed
+            ysp, gsp = Mooncake.value_and_gradient!!(csp, fsp, SimplePair(3.0, 4.0))
+            @test ysp == fsp(SimplePair(3.0, 4.0))
+            @test gsp[2].fields.x1 ≈ 2 * 3.0 * 4.0
+            @test gsp[2].fields.x2 ≈ 3.0^2
+
+            # Multi-chunk scalar input (dof 10 > max chunk width): correct + zero-alloc.
+            nt10 = NamedTuple{Tuple(Symbol.("x", 1:10))}(ntuple(Float64, 10))
+            f10 = nt -> sum(abs2, values(nt))
+            c10 = Mooncake.prepare_derivative_cache(
+                f10, nt10; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test getfield(c10, :gradient_chunk_size) < 10
+            _, g10 = Mooncake.value_and_gradient!!(c10, f10, nt10)
+            @test g10[2].x1 ≈ 2.0
+            @test g10[2].x10 ≈ 20.0
+            check_allocs && @test TestUtils.count_allocs(
+                Mooncake.value_and_gradient!!, c10, f10, nt10
+            ) == 0
+
+            # Complex scalar dofs have an isbits V but two dofs per element, which the isbits
+            # barrier's scatter cannot handle — they must take the generic path, not crash.
+            fz = z -> abs2(z)
+            cz = Mooncake.prepare_derivative_cache(
+                fz,
+                1.0 + 2.0im;
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(cz, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            yz, gz = Mooncake.value_and_gradient!!(cz, fz, 1.0 + 2.0im)
+            @test yz == abs2(1.0 + 2.0im)
+            @test gz[2] ≈ 2.0 + 4.0im
+            fzt = t -> abs2(t[1]) + t[2]^2
+            czt = Mooncake.prepare_derivative_cache(
+                fzt,
+                (1.0 + 2.0im, 3.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(czt, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            _, gzt = Mooncake.value_and_gradient!!(czt, fzt, (1.0 + 2.0im, 3.0))
+            @test gzt[2] == (2.0 + 4.0im, 6.0)
+
+            # A non-isbits `f` (closure capturing a Vector) over scalar args must NOT take the
+            # isbits barrier (its per-chunk seed rebuild would allocate) — generic path instead.
+            clo = let k = [10.0]
+                x -> k[1] * x.a + x.b^2
+            end
+            cclo = Mooncake.prepare_derivative_cache(
+                clo,
+                (; a=1.0, b=2.0);
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            @test !(getfield(cclo, :gradient_seed) isa Mooncake.IsbitsGradSeed)
+            _, gclo = Mooncake.value_and_gradient!!(cclo, clo, (; a=1.0, b=2.0))
+            @test gclo[2].a ≈ 10.0
+            @test gclo[2].b ≈ 4.0
         end
 
         @testset "friendly cache refuses only prepared-aliased/called-distinct" begin
@@ -1365,7 +1365,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             X_al = [1.0, 2.0]
             A_al, dA_al = [1.0, 2.0], [1.0, 0.0]
             B_al, dB_al = [3.0, 4.0], [0.0, 1.0]
-            friendly = Mooncake.Config(; friendly_tangents=true)
+            friendly = Mooncake.Config(; friendly_tangents=true, kwargs...)
             c_al = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=friendly)
             @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
                 c_al, (g_al, Mooncake.NoTangent()), (A_al, dA_al), (B_al, dB_al)
@@ -1392,7 +1392,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # the cache. Prepared at `k = 2` and called at `k = 4`, this returned 3.0 with a
             # gradient of [1, 1, 0, 0].
             w491 = [1.0, 2.0, 3.0, 4.0]
-            plain = Mooncake.Config(; friendly_tangents=false)
+            plain = Mooncake.Config(; friendly_tangents=false, kwargs...)
             c491 = Mooncake.prepare_derivative_cache(
                 fwd_prefix_sum, FwdPrefixSum(w491, 2); config=plain
             )
