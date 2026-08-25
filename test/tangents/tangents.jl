@@ -297,6 +297,28 @@ _ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
             @test Mooncake._add_to_primal(w, Mooncake.zero_tangent(w) .+ 0.5, true) ==
                 [1.5, 2.5, 3.5]
         end
+        @static if VERSION >= v"1.11-"
+            @testset "_scale and increment!! respect one shared buffer" begin
+                a = collect(1.0:4.0)
+                ts = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                t1, t2 = ts[2], ts[3]
+                t1 .= 1.0
+                # `_scale` allocated per container, so the sharing was gone before
+                # `_add_to_primal` — which preserves it — was reached, and the finite-difference
+                # harness runs exactly that chain.
+                s = Mooncake.TestUtils._scale(0.5, (t1, t2))
+                @test getfield(s[1], :ref).mem === getfield(s[2], :ref).mem
+                p = Mooncake.TestUtils._add_to_primal((a, reshape(a, 2, 2)), s, true)
+                @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+                # `a` and `reshape(a)` are distinct `Array` objects over one buffer, so the
+                # container key incremented it twice and gave 3.0 where one buffer incremented
+                # once by one is 2.0.
+                u1, u2 = ts[2], ts[3]
+                y = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                y[2] .= 1.0
+                @test Mooncake.increment!!((u1, u2), (y[2], y[3]))[1] == fill(2.0, 4)
+            end
+        end
     end
     @testset "require_tangent_cache($P)" for (P, expected_result) in [
         (Float64, false),

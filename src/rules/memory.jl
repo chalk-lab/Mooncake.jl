@@ -176,8 +176,15 @@ function randn_tangent_internal(rng::AbstractRNG, x::Array, dict::MaybeCache)
 end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
+    x === y && return x
+    # Keyed on the target's BACKING STORAGE rather than the container, so that two positions over
+    # one buffer are incremented once however they are spelt: `a` and `reshape(a)` are distinct
+    # `Array` objects the container key missed. Keying on the source as well would be wrong — the
+    # forward gradient path increments a shared target from a source whose fields do NOT share, and
+    # counting those separately doubles the gradient.
+    k = _dot_storage(x)
+    haskey(c, k) && return x
+    c[k] = true
     _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
     return x
 end
@@ -189,6 +196,15 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
+    # Same shared-`Memory` path as `_add_to_primal_internal`, for the same reason: allocating per
+    # container severs the sharing, and the finite-difference harness runs
+    # `_add_to_primal(x, _scale(eps, dx))`, so it was severed before that call could preserve it.
+    tr = getfield(t, :ref)
+    if _spans_memory(t, tr)
+        t′ = Base.wrap(Array, construct_ref(tr, _scale_internal(c, a, tr.mem)), size(t))::T
+        c[t] = t′
+        return t′
+    end
     t′ = T(undef, size(t)...)
     c[t] = t′
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
@@ -248,7 +264,11 @@ function _add_to_primal_internal(
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
+# The bits-eltype condition is correctness, not speed: both callers build the new array only AFTER
+# recursing into the `Memory`, so a self-referential array would re-enter and lose its cycle. Only
+# reference eltypes can self-reference.
 @inline function _spans_memory(x::Array, r::MemoryRef)
+    isbitstype(eltype(x)) || return false
     return Core.memoryrefoffset(r) == 1 && length(r.mem) == length(x)
 end
 
