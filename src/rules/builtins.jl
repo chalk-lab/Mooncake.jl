@@ -606,6 +606,17 @@ end
 # the destination asks nothing of the buffer. A `Ptr{Nothing}` source is type ERASURE (the
 # `pointer(::Array)` chain), where the re-typing recovers the element type and the buffer really is
 # the tangent array.
+#
+# KNOWN LIMIT, and it is a REPRESENTATION one rather than a missing case here. `Ptr{Nothing}` means
+# both "erased, with a real tangent buffer behind it" and "no tangent storage at all", and
+# `fdata_type(Ptr{Nothing})` is `Ptr{Nothing}`, so the erased element width cannot be carried. A
+# `Ptr{Cvoid}` round trip therefore evades the width check above: `Ptr{Float32}` -> `Ptr{Cvoid}` ->
+# `Ptr{Float64}` writes eight-byte cotangents across four-byte slots, which the one-hop form
+# refuses. Neither hop can be refused instead, and both were measured rather than argued: refusing
+# the ERASURE breaks `unsafe_copyto!` between `Vector{Tuple{Float64,Float64}}`s, whose lowering
+# erases and restores the same type; refusing the WIDENING breaks the `pointer(::Array)` chain,
+# which is 39 of the 70 re-typings the rule groups exercise. At the erasure the two are structurally
+# identical. Closing this needs a distinct no-tangent-storage type; see `known_limitations.md`.
 @inline function _check_tangent_retyping_fits(::Type{Ptr{A}}, ::Type{Ptr{B}}) where {A,B}
     A === Nothing && return nothing
     TA, TB = tangent_type(A), tangent_type(B)
