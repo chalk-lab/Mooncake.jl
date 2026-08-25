@@ -399,7 +399,14 @@ end
 # caught, matching what `_validate_prepared_aliasing` accepts for reverse mode, for the same
 # reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
 # held fixed, so one dof range covers every position and there is nothing to double-count.
-_inputs_alias(shared_dof::Int, fx::Tuple) = shared_dof != sum(x -> dof(zero_tangent(x)), fx)
+# Per-position tangents come from `zero_tangent_internal`, as `_zero_tangents` uses for the shared
+# count this is compared against. The single-argument `zero_tangent` is a different contract — it
+# throws for a `Ptr` rather than returning the documented placeholder — so using it here refused an
+# input the rest of the pipeline supports.
+function _inputs_alias(shared_dof::Int, fx::Tuple)
+    return shared_dof !=
+           sum(x -> dof(zero_tangent_internal(x, _friendly_cache((x,)))), fx; init=0)
+end
 
 # A concrete primal whose `dual_type` is NOT concrete has no usable slot annotation: `Lifted` is
 # invariant in its V, so the slot the seed factories build is not a subtype of `lifted_type`'s
@@ -2106,11 +2113,40 @@ end
 # The V shapes mirror `_refresh_seed!`'s methods, and anything else `MethodError`s here rather than
 # being skipped.
 _refresh_nondiff(::Nfwd.NDualArray, p, _x) = p
-_refresh_nondiff(::NoDual, _p, x) = x
 
-# A non-differentiable ARRAY is copied into the cache's own buffer rather than taken from the call,
-# keeping the promise that a seed never aliases the caller's storage — an in-place `f` would
-# otherwise write through to the user's input.
+# A `NoDual` slot asserts this position has no derivative, which is a statement about the CALL's
+# value, not only the prepare-time one. An abstractly-typed field prepared at an `Int` and called
+# with a `Float64` would keep the `NoDual` while the primal's canonical dual is an `NDual`, and the
+# dual IR's typeassert fires downstream with a raw `TypeError`. Refuse here, where the argument that
+# caused it is still in hand.
+function _refresh_nondiff(::NoDual, p, x)
+    if tangent_type(_typeof(x)) !== NoTangent
+        throw(
+            PreparedCacheError(
+                "Prepared cache mismatch: an argument position holding a non-differentiable " *
+                "$(_typeof(p)) at preparation time now holds a differentiable $(_typeof(x)). The " *
+                "cache has no derivative storage for it. Rebuild the cache for the new types.",
+            ),
+        )
+    end
+    # Immutable values cannot be written through, so the call's value passes straight out. A MUTABLE
+    # one would let an in-place `f` write to the user's argument, so the call's state is copied into
+    # the cache's own object instead; `_refresh_all!` restores only differentiable leaves, so the
+    # mutation would otherwise compound across the chunk sweep.
+    return _adopt_nondiff(p, x)
+end
+
+@inline _adopt_nondiff(_p, x) = x
+@inline function _adopt_nondiff(p::P, x::P) where {P}
+    ismutabletype(P) || return x
+    @inbounds for i in 1:fieldcount(P)
+        isdefined(x, i) && setfield!(p, i, getfield(x, i))
+    end
+    return p
+end
+
+# An ARRAY has no fields to copy, so it needs its own method for the same rule: the call's contents
+# go into the cache's own buffer, which additionally lets the size mismatch be reported here.
 function _refresh_nondiff(::NoDual, p::A, x::A) where {A<:Array}
     size(p) == size(x) || throw(
         PreparedCacheError(

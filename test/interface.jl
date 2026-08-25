@@ -65,6 +65,22 @@ struct FwdPrefixSum{V}
 end
 fwd_prefix_sum(m::FwdPrefixSum) = sum(m.w[1:m.k])
 
+# An abstractly-typed non-differentiable field: prepared at an `Int`, a call passing a `Float64`
+# needs derivative storage the cache does not have.
+struct FwdAbstractField
+    a::Real
+    w::Vector{Float64}
+end
+fwd_abstract_field(s::FwdAbstractField) = s.a * sum(s.w)
+
+# A MUTABLE non-differentiable argument that `f` mutates.
+mutable struct FwdCounter
+    n::Int
+end
+fwd_counting(w, c::FwdCounter) = (c.n += 1; sum(w) + c.n)
+
+fwd_load_ptr(p::Ptr{Float64}) = unsafe_load(p)
+
 mutable struct AnyCycleNode
     next::Any
     weight::Float64
@@ -1411,6 +1427,42 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             vv491, gv491 = Mooncake.value_and_gradient!!(cv491, fv491, view(p491, 4:6))
             @test vv491 ≈ sum(view(p491, 4:6))
             @test gv491[2].fields.parent ≈ [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+        end
+
+        @testset "refreshing non-differentiable state keeps the slot coherent and the caller's" begin
+            plain498 = Mooncake.Config(; friendly_tangents=false, kwargs...)
+            # The refresh reads the CALL's non-differentiable state. A `NoDual` slot asserts the
+            # position has no derivative, so a call-time value whose canonical dual DOES have one
+            # must be refused here rather than reaching the dual IR's typeassert as a raw
+            # `TypeError`. `_validate_prepared_cache` cannot see it: both calls pass an `S`.
+            s498 = Mooncake.prepare_derivative_cache(
+                fwd_abstract_field, FwdAbstractField(2, [1.0, 2.0, 3.0]); config=plain498
+            )
+            @test Mooncake.value_and_gradient!!(
+                s498, fwd_abstract_field, FwdAbstractField(5, [1.0, 2.0, 3.0])
+            )[1] ≈ 30.0
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                s498, fwd_abstract_field, FwdAbstractField(3.0, [1.0, 2.0, 3.0])
+            )
+
+            # A MUTABLE non-differentiable argument must be copied into the cache's own object, not
+            # taken from the call: `f` mutates it, and taking it wrote through to the user's value.
+            c500 = FwdCounter(0)
+            w500 = collect(1.0:16.0)
+            cache500 = Mooncake.prepare_derivative_cache(
+                fwd_counting, w500, c500; config=plain498
+            )
+            _, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
+            @test c500.n == 0                 # the caller's object is untouched
+            @test g500[2] ≈ ones(16)
+
+            # A `Ptr` argument: the aliasing check must use the same tangent entry point as the
+            # shared-dof count it is compared against, which returns the documented placeholder
+            # rather than throwing.
+            p499 = [3.0]
+            @test Mooncake.prepare_derivative_cache(
+                fwd_load_ptr, pointer(p499); config=plain498
+            ) isa Any
         end
 
         @testset "forward cache mismatch errors" begin
