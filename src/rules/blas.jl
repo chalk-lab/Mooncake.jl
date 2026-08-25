@@ -588,6 +588,18 @@ end
 # `_dense_lane_partial` (defined with `_arrayify_lane` above) rebuilds a lane over CONTIGUOUS
 # memory, so BLAS reads it identically to the primal operand.
 
+# Lane accumulate as a helper taking `acc` BY VALUE, for the reason given at `_nrm2_accum` above: an
+# inline `a = ntuple(k -> a[k] + …, Val(Nw))` captures the reassigned `a` and boxes it to `Any`,
+# which cost ~195 B per element here (49776 B at n = 256, Nw = 1, against 64 B for this form). One
+# helper per conjugation rather than per `(name, eltype)` pair — the body does not depend on the
+# element type. Bind only `Nw`, as there (Aqua).
+@inline _dotc_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
+    k -> acc[k] + conj(xc[k]) * y + conj(x) * yc[k], Val(Nw)
+)
+@inline _dotu_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
+    k -> acc[k] + xc[k] * y + x * yc[k], Val(Nw)
+)
+
 for (jlfname, elty) in
     ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
     # Two independent type vars (X, Y): the two array arguments need not share a concrete type
@@ -606,10 +618,8 @@ for (jlfname, elty) in
         }
     )
     # `dotc` conjugates its first argument, `dotu` neither; the JVP is linear either way:
-    # d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. One pass over the elements, accumulating all `Nw` lanes at
-    # once from the contiguous per-element block columns (`Nw` is small, so the tuple
-    # accumulator stays in registers).
-    conjx = jlfname == :dotc ? :conj : :identity
+    # d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩.
+    accum = jlfname == :dotc ? :_dotc_accum : :_dotu_accum
     @eval @inline function frule!!(
         ::Lifted{typeof(BLAS.$jlfname),Nw},
         _n::Lifted{<:Integer},
@@ -626,14 +636,12 @@ for (jlfname, elty) in
             # in one pass over the element-major block columns.
             Xb, _ = _partials_block(_DX)
             Yb, _ = _partials_block(_DY)
-            Xbm, Ybm = reshape(Xb, Nw, :), reshape(Yb, Nw, :)
+            Xc = reinterpret(reshape, NTuple{Nw,$elty}, Xb)
+            Yc = reinterpret(reshape, NTuple{Nw,$elty}, Yb)
             a = ntuple(_ -> zero($elty), Val(Nw))
             @inbounds for t in 1:n
                 ix, iy = 1 + (t - 1) * incx, 1 + (t - 1) * incy
-                x, y = DX[ix], DY[iy]
-                a = ntuple(
-                    k -> a[k] + $conjx(Xbm[k, ix]) * y + $conjx(x) * Ybm[k, iy], Val(Nw)
-                )
+                a = $accum(a, Xc[ix], Yc[iy], DX[ix], DY[iy])
             end
             a
         else
@@ -2373,6 +2381,33 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
+
+        # dotc, dotu — complex only, and forward primitives only, so `skip_reverse`. The derived
+        # rows below cover reverse. These exist for what a derived row cannot check: widths 2-3 (a
+        # derived case never runs them) and `:stability`, which is what catches a boxed lane
+        # accumulator in the block fast path. The strided second operand takes the per-lane BLAS
+        # fallback rather than the block loop.
+        (
+            if P <: BlasRealFloat
+                []
+            else
+                map([BLAS.dotc, BLAS.dotu]) do f
+                    flags = (false, :stability, (; skip_reverse=true))
+                    return [
+                        (flags..., f, 3, randn(rng, P, 6), 2, randn(rng, P, 6), 2),
+                        (
+                            flags...,
+                            f,
+                            3,
+                            randn(rng, P, 3),
+                            1,
+                            view(randn(rng, P, 12), 1:2:12),
+                            2,
+                        ),
+                    ]
+                end
+            end
+        )...,
 
         #
         # BLAS LEVEL 2

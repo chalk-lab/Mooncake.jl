@@ -1634,11 +1634,14 @@ end
 
 # A test case's third tuple field is otherwise ignored by the runners; when it is a
 # `NamedTuple` it may carry per-case `test_rule` options: `skip_chunked` (skip the width-N>1 forward
-# check) and `skip_forward` (skip forward mode entirely — for a case forward mode cannot represent
+# check), `skip_forward` (skip forward mode entirely — for a case forward mode cannot represent
 # coherently while reverse is correct, e.g. a differentiable pointer-to-pointer raw store, or a
-# pointer round-trip whose tangent buffer is a reverse tangent). Applies to both case kinds.
+# pointer round-trip whose tangent buffer is a reverse tangent) and its mirror `skip_reverse`, which
+# a hand-written case needs when the function is a primitive in forward mode only: `is_primitive`
+# asserts `rrule == rrule!!`, which a forward-only primitive cannot satisfy. Both kinds.
 _case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
 _case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
+_case_skip_reverse(opts) = opts isa NamedTuple ? get(opts, :skip_reverse, false) : false
 # `fwd_allocs_broken`: the width-1 forward zero-allocation check is `@test_broken` on Julia 1.11
 # (alloc-free again on 1.12) for the few cases whose type-stable forward OC 1.11's optimizer boxes.
 function _case_fwd_allocs_broken(opts)
@@ -1752,7 +1755,8 @@ end
 
 # One driver for both case kinds: hand-written cases test the registered `frule!!`/`rrule!!`
 # directly (`is_primitive=true`); derived cases run the full AD transform over a plain Julia
-# function (`is_primitive=false`). Either kind may opt out of forward mode via `skip_forward`.
+# function (`is_primitive=false`). Either kind may opt out of a mode via `skip_forward` or
+# `skip_reverse`.
 function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool)
     test_cases, memory = if derived
         test_hook(Mooncake.derived_rule_test_cases, rng_ctor, v, mode) do
@@ -1770,6 +1774,7 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
     ) in test_cases
 
         mode === ForwardMode && _case_skip_forward(opts) && continue
+        mode === ReverseMode && _case_skip_reverse(opts) && continue
         skip_chunked = _case_skip_chunked(opts)
         fwd_allocs_broken = _case_fwd_allocs_broken(opts)
         test_rule(
