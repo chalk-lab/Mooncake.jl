@@ -2,9 +2,9 @@ module MooncakeDistributionsExt
 
 using Distributions, Mooncake, LinearAlgebra
 using Base: IEEEFloat
-using Distributions: sqmahal
+using Distributions: loglikelihood, sqmahal
 using Distributions.FillArrays: Fill
-using Distributions.PDMats: PDiagMat, ScalMat
+using Distributions.PDMats: PDiagMat, PDMat, ScalMat
 using PrecompileTools: @setup_workload, @compile_workload
 
 import Mooncake:
@@ -288,6 +288,52 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), counting_product_logpdf_pb!!
+end
+
+# Repeated observations from one dense multivariate Normal are represented by
+# `loglikelihood(d, X)`, with observations in the columns of `X`. Keeping the shared
+# Cholesky factor at this public boundary avoids tracing one triangular solve per column.
+const CholeskyMvNormal{P} = MvNormal{
+    P,<:PDMat{P,<:Matrix{P},<:Cholesky{P,<:Matrix{P}}},<:Vector{P}
+}
+
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(loglikelihood),CholeskyMvNormal{P},Matrix{P}
+} where {P<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(loglikelihood)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    size(px, 1) == length(dp) ||
+        throw(DimensionMismatch(lazy"x has $(size(px, 1)) rows, expected $(length(dp))"))
+    L = dp.Σ.chol.L
+    upper = dp.Σ.chol.uplo === 'U'
+    standardized = L \ (px .- dp.μ)
+    n = size(px, 2)
+    y =
+        -P(0.5) *
+        (length(px) * log(P(2π)) + n * logdet(dp.Σ.chol) + sum(abs2, standardized))
+    fields = _fields(tangent(d))
+    dfactors = _fields(_fields(fields.Σ).chol).factors
+    function mvnormal_loglikelihood_pb!!(dy::P)
+        x_gradient = -(L' \ standardized)
+        dx .+= dy .* x_gradient
+        fields.μ .-= dy .* vec(sum(x_gradient; dims=2))
+        factor_gradient = L' \ (standardized * standardized')
+        @inbounds for j in axes(dfactors, 2), i in j:size(dfactors, 1)
+            contribution = factor_gradient[i, j]
+            if i == j
+                contribution -= n / L[i, i]
+            end
+            # `factors` holds `L'` when `uplo == 'U'`; the cotangent of `L[i, j]` then
+            # belongs at `factors[j, i]`, the entry the primal reads.
+            row, column = upper ? (j, i) : (i, j)
+            dfactors[row, column] += dy * contribution
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), mvnormal_loglikelihood_pb!!
 end
 
 #! format: off
