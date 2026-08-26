@@ -1138,9 +1138,14 @@ end
 # divergence). Reconstructing the value as `ifelse(x <= lo, lo, ...)` instead does NOT match Base:
 # it returns `+0.0` for `clamp(-0.0, 0.0, 1.0)` and picks `lo` when the bounds cross.
 @inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
-    below = a.value <= lo.value
-    above = (a.value >= hi.value) & !below
-    src = ifelse(below, lo, ifelse(above, hi, a))
+    # UPPER bound first, as Base's `ifelse(x > hi, hi, ifelse(x < lo, lo, x))` tests it: with the
+    # bounds crossed (`hi < a <= lo`) Base returns `hi`, so the tangent has to come from `hi` too.
+    # Testing `below` first credited `lo` while the value came from `hi`. Only the crossed case
+    # changes; the non-strict comparisons keep the zero-subgradient-at-the-endpoint convention the
+    # `rrule!!` shares.
+    above = a.value >= hi.value
+    below = (a.value <= lo.value) & !above
+    src = ifelse(above, hi, ifelse(below, lo, a))
     return NDual{T,N}(clamp(a.value, lo.value, hi.value), src.partials)
 end
 # One bound dual, the other plain: promote the plain one and delegate, so the tangent of the dual

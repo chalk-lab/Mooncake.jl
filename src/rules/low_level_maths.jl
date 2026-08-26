@@ -1112,8 +1112,9 @@ function rrule!!(
     lo = primal(x2)
     hi = primal(x3)
     y = clamp(a, lo, hi)
-    below = a <= lo
-    above = (a >= hi) & !below
+    # Upper bound first, matching Base and the `NDual` method: crossed bounds return `hi`.
+    above = a >= hi
+    below = (a <= lo) & !above
     ga = ifelse(below | above, zero(P), one(P))
     glo = ifelse(below, one(P), zero(P))
     ghi = ifelse(above, one(P), zero(P))
@@ -1314,6 +1315,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
             (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
+            # Bounds CROSSED. Base tests the upper bound first, so `clamp` returns `hi` over
+            # the whole region `hi < a < lo` and the derivative belongs to `hi`. Both rules tested
+            # `a <= lo` first and credited `lo`, and because both modes agreed no mode comparison
+            # could see it — the finite-difference check is what catches it. The point is strictly
+            # inside the crossed region, where the function is locally smooth in all three
+            # arguments, so FD is well behaved here.
+            (false, :none, nothing, clamp, 0.5, 1.0, 0.0),
             (false, :stability_and_allocs, nothing, sincos, 1.0),
             (false, :stability_and_allocs, nothing, sincosd, 30.0),
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
