@@ -313,7 +313,11 @@ function frule!!(
     # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
     # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
     haskey(primal(d), _key) || return default
-    return Lifted{V,N}(primal(d)[_key], tangent(d)[_key])
+    # Typed from the STORED VALUE, not from the dict's declared `V`: for `V === Any` the latter
+    # gives a `Lifted{Any,…}` slot that downstream frule dispatch has no method for. Mirrors the
+    # reverse rrule, which derives the `CoDual`'s primal type from the value.
+    y = primal(d)[_key]
+    return Lifted{typeof(y),N}(y, tangent(d)[_key])
 end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
@@ -342,7 +346,8 @@ end
 function frule!!(
     ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N}, key::Lifted
 ) where {N,K,V}
-    return Lifted{V,N}(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+    y = getindex(primal(d), primal(key))
+    return Lifted{typeof(y),N}(y, getindex(tangent(d), primal(key)))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
@@ -428,6 +433,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         # interface_only: the non-differentiable default carries no derivative.
         (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
+        # `V === Any`: the slot must be typed from the STORED VALUE. Typing it from the
+        # declared `V` gives a `Lifted{Any,…}` that downstream frule dispatch has no method for,
+        # while every concrete-`V` case above passes because there the two agree.
+        (false, :none, nothing, getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
+        (false, :none, nothing, get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
         (false, :none, nothing, IdDict{Any,Any}),
     ]
     memory = Any[]
