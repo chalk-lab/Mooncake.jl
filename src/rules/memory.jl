@@ -225,17 +225,75 @@ end
 end
 @inline _dot_storage(x::Memory) = (x, 1, length(x))
 
+# Which positions of a buffer pair have already been counted. An exact-extent key deduplicates
+# `a` against `a`, but an `Array` that does not SPAN its `Memory` overlaps it without matching it —
+# `(mem,1,2)` and `(mem,1,4)` are different keys over the same first two slots, and both were
+# summed. Dict keys express equality; this needs overlap, so the covered positions are recorded
+# per buffer pair and a later operand sums only what is left.
+#
+# Positions are the buffers' own indices, which pairs `t` with `s` coherently only when the two sit
+# at the SAME offset -- the structural case, where they share a shape. Differing offsets pair
+# different elements, so those keep the exact-key behaviour rather than a coverage claim that would
+# not mean what it says.
+# The part of `r` no range in `covered` already holds, as at most a handful of pieces.
+function _uncovered(covered::Vector{UnitRange{Int}}, r::UnitRange{Int})
+    pieces = [r]
+    for cr in covered
+        isempty(pieces) && break
+        next = UnitRange{Int}[]
+        for p in pieces
+            lo, hi = max(first(p), first(cr)), min(last(p), last(cr))
+            if lo > hi
+                push!(next, p)                       # disjoint
+            else
+                first(p) < lo && push!(next, first(p):(lo - 1))
+                hi < last(p) && push!(next, (hi + 1):last(p))
+            end
+        end
+        pieces = next
+    end
+    return pieces
+end
+
 for A in (Array, Memory)
     @eval function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:$A}
-        key = (_dot_storage(t), _dot_storage(s))
-        haskey(c, key) && return c[key]::Float64
-        c[key] = 0.0
         bitstype = Val(isbitstype(eltype(T)))
-        return sum(eachindex(t, s); init=0.0) do i
-            if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
-                _dot_internal(c, t[i], s[i])::Float64
-            else
-                0.0
+        tb, to, tl = _dot_storage(t)
+        sb, so, _ = _dot_storage(s)
+        full() =
+            sum(eachindex(t, s); init=0.0) do i
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
+            end
+        # No cache, or operands at different offsets, so there is no shared index space to record
+        # coverage in; sum it all, as before.
+        (c isa NoCache || to != so) && return full()
+        k = (:dot_positions, tb, sb)
+        prev = get(c, k, nothing)
+        want = to:(to + tl - 1)
+        # First sight of this buffer pair is the overwhelmingly common case, and it stores a bare
+        # range rather than a vector of them: one boxed value, as the old exact-extent key cost,
+        # with no interval arithmetic. The vector appears only if a second, differing extent over
+        # the same pair ever shows up.
+        if prev === nothing
+            c[k] = want
+            return full()
+        end
+        covered = prev isa UnitRange{Int} ? [prev] : prev::Vector{UnitRange{Int}}
+        pieces = _uncovered(covered, want)
+        push!(covered, want)
+        c[k] = covered
+        return sum(pieces; init=0.0) do piece
+            sum(piece; init=0.0) do pos
+                i = eachindex(t, s)[pos - to + 1]
+                if bitstype isa Val{true} || (isassigned(t, i) && isassigned(s, i))
+                    _dot_internal(c, t[i], s[i])::Float64
+                else
+                    0.0
+                end
             end
         end
     end
