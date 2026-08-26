@@ -63,9 +63,9 @@ end
 # `sqmahal` is the only part of `logpdf(::MvNormal, ::AbstractVector)` whose cost grows with
 # the dimension. A `Fill` mean is what `product_distribution(Fill(Normal(μ, σ), n))`
 # produces, which is how DynamicPPL.jl represents an i.i.d. normal prior; a `Vector` mean is
-# what `MvNormal(μ, σ^2 * I)` produces. A matrix sample does not reach `sqmahal` at all: it
-# routes through `sqmahal!`, so the matrix rules further down intercept `logpdf` and
-# `loglikelihood` instead.
+# what `MvNormal(μ, σ^2 * I)` produces. A matrix sample never reaches `sqmahal`: it routes
+# through `sqmahal!`, and the matrix rules further down intercept `logpdf` and
+# `loglikelihood` for a `Vector` mean only, leaving a `Fill` mean to the derived rules.
 const ScalMvNormal{P} = MvNormal{P,<:ScalMat{P},<:Union{Vector{P},Fill{P,1}}}
 
 # `AbstractVector` here would also capture array types that `arrayify` rejects, GPU arrays
@@ -110,8 +110,7 @@ function _excess(residual::P, variance::P) where {P<:IEEEFloat}
 end
 
 # One coordinate's contribution to the gradients of the sample and of the variance, given the
-# cotangent of its log-density; the mean's is the sample's negated. The isotropic rules pass
-# the same variance for every coordinate. Dividing rather than
+# cotangent of its log-density; the mean's is the sample's negated. Dividing rather than
 # scaling by a reciprocal matters: `inv(variance)` overflows for variances that are small but
 # perfectly ordinary (σ = 0.0039 in `Float16`), where the derivative is representable.
 function _coordinate_gradients(residual::P, variance::P, weight::P) where {P<:IEEEFloat}
@@ -120,7 +119,8 @@ function _coordinate_gradients(residual::P, variance::P, weight::P) where {P<:IE
 end
 
 # One coordinate's directional derivative, before the `-1/2` its callers apply, given the
-# perturbation of the sample minus that of the mean.
+# perturbation of the sample minus that of the mean. The isotropic rules call this with the
+# same variance for every coordinate.
 function _coordinate_derivative(
     residual::P, variance::P, perturbation::P, v̇::P
 ) where {P<:IEEEFloat}
