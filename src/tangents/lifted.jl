@@ -1315,11 +1315,19 @@ end
     x, ẋ, nothing
 )
 @inline function lift(
-    x::Base.RefValue{P}, ẋ::MutableTangent, ::Union{Nothing,IdDict}
+    x::Base.RefValue{P}, ẋ::MutableTangent, c::Union{Nothing,IdDict}
 ) where {P<:NDualEltype}
-    return Lifted{Base.RefValue{P},1}(
+    # Registered in the cache like every other leaf that owns partial storage: one `Ref` reached
+    # twice through an aggregate must yield ONE V, or a write through one occurrence updates the
+    # shared primal but only its own partials and the JVP is silently wrong. Built inline rather
+    # than delegating to the two-argument form as the `Array` leaf does, because that form calls
+    # this one with `nothing`.
+    c isa IdDict && haskey(c, x) && return c[x]::Lifted{Base.RefValue{P},1}
+    lifted = Lifted{Base.RefValue{P},1}(
         x, NDualRef{P,1}(Base.RefValue{NTuple{1,P}}((val(ẋ.fields.x),)))
     )
+    c isa IdDict && (c[x] = lifted)
+    return lifted
 end
 @inline lift(x::P, ẋ::Tangent) where {P} = lift(x, ẋ, nothing)
 @inline function lift(x::P, ẋ::Tangent, c::Union{Nothing,IdDict}) where {P}

@@ -160,6 +160,31 @@ const NDAC_VecC64 = NDualArray{
         @test p[1] === p                              # add_to_primal preserves the cycle
     end
 
+    @testset "one `Ref` reached twice lifts to one V" begin
+        # Every `lift` leaf that owns partial storage registers in the threaded cache, so two
+        # occurrences of one primal share a V. `Ref`'s leaf took the cache and discarded it, giving
+        # two independent partials buffers over one primal: a write through one occurrence updated
+        # the shared value but only its own partials, and the read through the other returned the
+        # new value with a stale partial. Not expressible through `test_lifted`, which drives the
+        # factories over ONE value and so cannot state a property about two slots.
+        mk() = (r=Ref(1.0); (r, r))
+        p = mk()
+        v = Mooncake.tangent(Mooncake.lift(p, Mooncake.zero_tangent(p)))
+        @test v[1] === v[2]
+        @test getfield(v[1], :partials) === getfield(v[2], :partials)
+        # The seed factory always agreed; the two entry points must not disagree.
+        z = Mooncake.tangent(Mooncake.zero_lifted(Val(1), mk()))
+        @test z[1] === z[2]
+        # End to end: `g` is `3r`, so the derivative is 3.0, and reverse mode agrees.
+        g(q) = (q[1][]=q[1][] * 3.0; q[2][])
+        dp = Mooncake.zero_tangent(p)
+        Ft = typeof(dp[1].fields)
+        dp[1].fields = Ft((Mooncake.PossiblyUninitTangent{Float64}(1.0),))
+        cache = Mooncake.prepare_derivative_cache(g, p)
+        @test Mooncake.value_and_derivative!!(cache, (g, Mooncake.NoTangent()), (p, dp)) ==
+            (3.0, 3.0)
+    end
+
     @testset "scalar NDual _add_to_primal adds only the partials" begin
         # Regression: an inner `NDual`'s `.value` is the primal it shadows (inner-value
         # invariant), so `_add_to_primal` must add only the partials — adding `.value` too would
