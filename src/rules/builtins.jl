@@ -516,7 +516,7 @@ const _INT2PTR_ERR_MSG =
 const _PLACEHOLDER_TANGENT_PTR_MSG =
     "Cannot differentiate a load or store through a `Ptr` whose tangent is the placeholder that " *
     "the `uninit_*` convention builds from the pointer's own address. There is no derivative " *
-    "buffer behind it, so accumulating a cotangent would write derivative data into the primal. " *
+    "buffer behind it, so writing a derivative through it would land in the primal buffer. " *
     "This arises when a bare `Ptr` reaches AD as a differentiable input; differentiate the " *
     "underlying array instead, so a real tangent buffer exists."
 

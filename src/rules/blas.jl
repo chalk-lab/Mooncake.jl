@@ -133,7 +133,14 @@ end
 @inline _arrayify_lane(
     ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
 ) where {dense} = dense ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
-@inline _arrayify_lane(::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N} = V[lane]
+@inline function _arrayify_lane(x::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N}
+    # A zero-seeded `Ptr` slot carries the `uninit_*` placeholder -- its own primal address -- in
+    # every lane, so the BLAS calls downstream would scale and accumulate over the user's buffer.
+    # Same condition the reverse chokepoint checks, hence the same message.
+    dx = V[lane]
+    IntrinsicsWrappers._check_tangent_ptr(x, dx)
+    return dx
+end
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer, d::Val
 ) where {P,B,C,D,E}
@@ -189,6 +196,10 @@ function viewify(
     n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
+    # `unsafe_wrap` would launder the `uninit_*` placeholder into a `Vector` nothing downstream can
+    # tell from real tangent storage, and the pullback's `.+=` would land in the primal. Checked
+    # here because every reverse BLAS pointer rule wraps its tangent through this one method.
+    IntrinsicsWrappers._check_tangent_ptr(x, dx)
     xinds = 1:incx:(incx * n)
     return (
         view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
@@ -2971,7 +2982,27 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
             (; mode=ForwardMode),
         ),
     ]
-    return cases, Any[x, m]
+    # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
+    # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
+    # Real `BLAS.dot` has a reverse pointer rule but no forward one; `dotc`/`dotu` have both.
+    xs = P[i for i in 1:3]
+    ys = P[i for i in 4:6]
+    placeholder = (ArgumentError, "tangent is the placeholder")
+    two_operand = if P <: Real
+        ((BLAS.dot, (; mode=ReverseMode)),)
+    else
+        ((BLAS.dotc, (;)), (BLAS.dotu, (;)))
+    end
+    append!(
+        cases,
+        Any[
+            (placeholder, BLAS.nrm2, (3, pointer(xs), 1), (;)),
+            (placeholder, BLAS.scal!, (3, P(2), pointer(xs), 1), (;)),
+            ((placeholder, f, (3, pointer(xs), 1, pointer(ys), 1), opts) for
+             (f, opts) in two_operand)...,
+        ],
+    )
+    return cases, Any[x, m, xs, ys]
 end
 
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
