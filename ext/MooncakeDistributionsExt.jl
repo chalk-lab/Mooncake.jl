@@ -63,30 +63,69 @@ end
 # `sqmahal` is the only part of `logpdf(::MvNormal, ::AbstractVector)` whose cost grows with
 # the dimension. A `Fill` mean is what `product_distribution(Fill(Normal(μ, σ), n))`
 # produces, which is how DynamicPPL.jl represents an i.i.d. normal prior; a `Vector` mean is
-# what `MvNormal(μ, σ^2 * I)` produces. `logpdf(::MvNormal, ::AbstractMatrix)` is not
-# covered: it routes through `sqmahal!` rather than `sqmahal`.
+# what `MvNormal(μ, σ^2 * I)` produces. A matrix sample does not reach `sqmahal` at all: it
+# routes through `sqmahal!`, so the matrix rules further down intercept `logpdf` and
+# `loglikelihood` instead.
 const ScalMvNormal{P} = MvNormal{P,<:ScalMat{P},<:Union{Vector{P},Fill{P,1}}}
 
 # `AbstractVector` here would also capture array types that `arrayify` rejects, GPU arrays
 # among them.
 const DenseVec{P} = Union{Vector{P},ContiguousSubVector{P}}
 
-# `residual^2 - variance`, the numerator of the variance derivative, with the product kept
-# exact by `fma`. The two vanish together when the residual is one standard deviation, and
-# in `Float64` a residual near `1e-80` squares to the variance itself, so a plain `r * r`
-# leaves nothing to subtract. Callers divide by the variance twice rather than forming
-# `variance^2`, which underflows well inside the useful range. Accuracy is limited only
-# where `residual^2` is itself subnormal.
-# The tangent of the Cholesky factor `L`. `factors` holds `L'` when `uplo == 'U'`, and only
-# its stored triangle is read; copying keeps the two branches one type so the matrix products
-# at the call sites stay inferable.
-function _factor_tangent(chol::Cholesky, factors::Matrix)
-    return LowerTriangular(chol.uplo === 'U' ? permutedims(factors) : copy(factors))
+# Accumulate the Cholesky factor's cotangent. `factors` holds `L'` when `uplo == 'U'`, so
+# the cotangent of `L[i, j]` belongs at `factors[j, i]`, the entry the primal reads; the
+# other triangle would leave the gradient where nothing looks for it. `total_weight` is the
+# summed cotangent of the columns, which the log-determinant's diagonal term carries;
+# `weight` scales the quadratic term and is `1` where the caller has already folded its
+# per-column weights into `factor_gradient`.
+function _accum_factor!(
+    dfactors::Matrix, factor_gradient::Matrix, L, weight::P, total_weight::P, upper::Bool
+) where {P}
+    @inbounds for j in axes(dfactors, 2), i in j:size(dfactors, 1)
+        contribution = weight * factor_gradient[i, j]
+        if i == j
+            contribution -= total_weight / L[i, i]
+        end
+        row, column = upper ? (j, i) : (i, j)
+        dfactors[row, column] += contribution
+    end
+    return nothing
 end
 
+# The tangent of `L`. `permutedims` returns a `Matrix` like its argument, so both branches
+# have one type and the matrix products at the call sites stay inferable.
+function _factor_tangent(chol::Cholesky, factors::Matrix)
+    return LowerTriangular(chol.uplo === 'U' ? permutedims(factors) : factors)
+end
+
+# `residual^2 - variance`, the numerator of the variance derivative, with the product kept
+# exact by `fma`: the two vanish together when the residual is one standard deviation, and a
+# `Float64` residual near `1e-80` squares to the variance itself, leaving a plain `r * r`
+# nothing to subtract. Callers divide by the variance twice rather than forming `variance^2`,
+# which underflows well inside the useful range. Accuracy is limited only where `residual^2`
+# is itself subnormal.
 function _excess(residual::P, variance::P) where {P<:IEEEFloat}
     squared = residual * residual
     return (squared - variance) + fma(residual, residual, -squared)
+end
+
+# One coordinate's contribution to the gradients of the sample and of the variance, given the
+# cotangent of its log-density; the mean's is the sample's negated. The isotropic rules pass
+# the same variance for every coordinate. Dividing rather than
+# scaling by a reciprocal matters: `inv(variance)` overflows for variances that are small but
+# perfectly ordinary (σ = 0.0039 in `Float16`), where the derivative is representable.
+function _coordinate_gradients(residual::P, variance::P, weight::P) where {P<:IEEEFloat}
+    return -weight * residual / variance,
+    weight * _excess(residual, variance) / variance / (2 * variance)
+end
+
+# One coordinate's directional derivative, before the `-1/2` its callers apply, given the
+# perturbation of the sample minus that of the mean.
+function _coordinate_derivative(
+    residual::P, variance::P, perturbation::P, v̇::P
+) where {P<:IEEEFloat}
+    return 2 * residual * perturbation / variance -
+           v̇ * _excess(residual, variance) / variance / variance
 end
 
 # The primal reaches these checks via broadcasting `x .- d.μ`, which the rules replace.
@@ -207,16 +246,11 @@ function frule!!(
     variance = dp.Σ.diag
     y = zero(P)
     ẏ = zero(P)
-    # Divide rather than scaling by a reciprocal: `inv(variance)` overflows for variances
-    # that are small but perfectly ordinary (σ = 0.0039 in `Float16`), where the derivative
-    # itself is representable.
     @inbounds @simd for i in eachindex(px, dp.μ, variance, μ̇, v̇)
         residual = px[i] - dp.μ[i]
         scaled_residual = residual / variance[i]
         y += log(variance[i]) + residual * scaled_residual
-        ẏ +=
-            2 * scaled_residual * (ẋ[i] - μ̇[i]) -
-            v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
+        ẏ += _coordinate_derivative(residual, variance[i], ẋ[i] - μ̇[i], v̇[i])
     end
     return Dual(-P(0.5) * (length(px) * log(P(2π)) + y), -P(0.5) * ẏ)
 end
@@ -239,13 +273,10 @@ function rrule!!(
     dvariance = _fields(fields.Σ).diag
     function diag_normal_logpdf_pb!!(dy::P)
         @inbounds @simd for i in eachindex(px, dp.μ, variance, dμ, dvariance)
-            residual = px[i] - dp.μ[i]
-            scaled_residual = residual / variance[i]
-            dx_i = -dy * scaled_residual
-            dx[i] += dx_i
-            dμ[i] -= dx_i
-            dvariance[i] +=
-                dy * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
+            contribution, dv = _coordinate_gradients(px[i] - dp.μ[i], variance[i], dy)
+            dx[i] += contribution
+            dμ[i] -= contribution
+            dvariance[i] += dv
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -411,11 +442,7 @@ function frule!!(
     μ̇ = ḋ.μ
     v̇ = _fields(ḋ.Σ).diag
     variance = dp.Σ.diag
-    logdetΣ = zero(P)
-    @inbounds @simd for i in eachindex(variance)
-        logdetΣ += log(variance[i])
-    end
-    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdetΣ)
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + sum(log, variance))
     y = Vector{P}(undef, size(px, 2))
     ẏ = Vector{P}(undef, size(px, 2))
     @inbounds for j in axes(px, 2)
@@ -425,9 +452,9 @@ function frule!!(
             residual = px[i, j] - dp.μ[i]
             scaled_residual = residual / variance[i]
             mahalanobis += residual * scaled_residual
-            derivative +=
-                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
-                v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
+            derivative += _coordinate_derivative(
+                residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i]
+            )
         end
         y[j] = constant - P(0.5) * mahalanobis
         ẏ[j] = -P(0.5) * derivative
@@ -441,11 +468,7 @@ function rrule!!(
     px, dx = arrayify(x)
     _check_dims(dp, px)
     variance = dp.Σ.diag
-    logdetΣ = zero(P)
-    @inbounds @simd for i in eachindex(variance)
-        logdetΣ += log(variance[i])
-    end
-    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdetΣ)
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + sum(log, variance))
     y = Vector{P}(undef, size(px, 2))
     @inbounds for j in axes(px, 2)
         mahalanobis = zero(P)
@@ -463,12 +486,12 @@ function rrule!!(
         @inbounds for j in eachindex(dy)
             dy_j = dy[j]
             @simd for i in eachindex(dp.μ, variance, dμ, dvariance)
-                residual = px[i, j] - dp.μ[i]
-                dx_ij = -dy_j * residual / variance[i]
-                dx[i, j] += dx_ij
-                dμ[i] -= dx_ij
-                dvariance[i] +=
-                    dy_j * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
+                contribution, dv = _coordinate_gradients(
+                    px[i, j] - dp.μ[i], variance[i], dy_j
+                )
+                dx[i, j] += contribution
+                dμ[i] -= contribution
+                dvariance[i] += dv
             end
         end
         return NoRData(), NoRData(), NoRData()
@@ -500,16 +523,10 @@ function frule!!(
             residual = px[i, j] - dp.μ[i]
             scaled_residual = residual / variance[i]
             mahalanobis += residual * scaled_residual
-            ẏ +=
-                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
-                v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
+            ẏ += _coordinate_derivative(residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i])
         end
     end
-    logdetΣ = zero(P)
-    @inbounds @simd for i in eachindex(variance)
-        logdetΣ += log(variance[i])
-    end
-    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * logdetΣ + mahalanobis)
+    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * sum(log, variance) + mahalanobis)
     return Dual(y, -P(0.5) * ẏ)
 end
 function rrule!!(
@@ -519,30 +536,25 @@ function rrule!!(
     px, dx = arrayify(x)
     _check_dims(dp, px)
     variance = dp.Σ.diag
-    logdetΣ = zero(P)
     mahalanobis = zero(P)
-    @inbounds @simd for i in eachindex(variance)
-        logdetΣ += log(variance[i])
-    end
     @inbounds for j in axes(px, 2)
         @simd for i in eachindex(dp.μ, variance)
             mahalanobis += abs2(px[i, j] - dp.μ[i]) / variance[i]
         end
     end
-    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * logdetΣ + mahalanobis)
+    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * sum(log, variance) + mahalanobis)
     fields = _fields(tangent(d))
     dμ = fields.μ
     dvariance = _fields(fields.Σ).diag
     function diag_loglikelihood_pb!!(dy::P)
         @inbounds for j in axes(px, 2)
             @simd for i in eachindex(dp.μ, variance, dμ, dvariance)
-                residual = px[i, j] - dp.μ[i]
-                scaled_residual = residual / variance[i]
-                dx_ij = -dy * scaled_residual
-                dx[i, j] += dx_ij
-                dμ[i] -= dx_ij
-                dvariance[i] +=
-                    dy * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
+                contribution, dv = _coordinate_gradients(
+                    px[i, j] - dp.μ[i], variance[i], dy
+                )
+                dx[i, j] += contribution
+                dμ[i] -= contribution
+                dvariance[i] += dv
             end
         end
         return NoRData(), NoRData(), NoRData()
@@ -577,9 +589,7 @@ function frule!!(
             residual = px[i, j] - μ[i]
             scaled_residual = residual / variance
             mahalanobis += residual * scaled_residual
-            derivative +=
-                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
-                v̇ * _excess(residual, variance) / variance / variance
+            derivative += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
         end
         y[j] = constant - P(0.5) * mahalanobis
         ẏ[j] = -P(0.5) * derivative
@@ -607,14 +617,16 @@ function rrule!!(
     dy = tangent(out)
     dμ = _fields(tangent(d)).μ
     function iso_logpdf_matrix_pb!!(::NoRData)
+        # The variance is shared, so it is divided once here rather than once per
+        # observation, which `_coordinate_gradients` would do.
         excess_total = zero(P)
         @inbounds for j in eachindex(dy)
             dy_j = dy[j]
             @simd for i in eachindex(μ, dμ)
                 residual = px[i, j] - μ[i]
-                dx_ij = -dy_j * residual / variance
-                dx[i, j] += dx_ij
-                dμ[i] -= dx_ij
+                contribution = -dy_j * residual / variance
+                dx[i, j] += contribution
+                dμ[i] -= contribution
                 excess_total += dy_j * _excess(residual, variance)
             end
         end
@@ -648,9 +660,7 @@ function frule!!(
             residual = px[i, j] - μ[i]
             scaled_residual = residual / variance
             mahalanobis += residual * scaled_residual
-            ẏ +=
-                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
-                v̇ * _excess(residual, variance) / variance / variance
+            ẏ += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
         end
     end
     y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
@@ -675,19 +685,21 @@ function rrule!!(
     function iso_loglikelihood_pb!!(dy::P)
         # The shared variance takes a single cotangent, so it is accumulated here and
         # returned as rdata rather than written into fdata.
+        # The variance is shared, so it is divided once here rather than once per
+        # observation, which `_coordinate_gradients` would do.
         excess_total = zero(P)
         @inbounds for j in axes(px, 2)
             @simd for i in eachindex(μ, dμ)
                 residual = px[i, j] - μ[i]
-                dx_ij = -dy * residual / variance
-                dx[i, j] += dx_ij
-                dμ[i] -= dx_ij
-                excess_total += _excess(residual, variance)
+                contribution = -dy * residual / variance
+                dx[i, j] += contribution
+                dμ[i] -= contribution
+                excess_total += dy * _excess(residual, variance)
             end
         end
         dd = RData((
             μ=NoRData(),
-            Σ=RData((dim=NoRData(), value=dy * excess_total / variance / (2 * variance))),
+            Σ=RData((dim=NoRData(), value=excess_total / variance / (2 * variance))),
         ))
         return NoRData(), dd, NoRData()
     end
@@ -752,15 +764,7 @@ function rrule!!(
         dx .+= x_gradient
         fields.μ .-= vec(sum(x_gradient; dims=2))
         factor_gradient = L' \ (weighted * standardized')
-        total_weight = sum(dy)
-        @inbounds for j in axes(dfactors, 2), i in j:size(dfactors, 1)
-            contribution = factor_gradient[i, j]
-            if i == j
-                contribution -= total_weight / L[i, i]
-            end
-            row, column = upper ? (j, i) : (i, j)
-            dfactors[row, column] += contribution
-        end
+        _accum_factor!(dfactors, factor_gradient, L, one(P), sum(dy), upper)
         return NoRData(), NoRData(), NoRData()
     end
     return out, chol_logpdf_matrix_pb!!
@@ -809,16 +813,7 @@ function rrule!!(
         dx .+= dy .* x_gradient
         fields.μ .-= dy .* vec(sum(x_gradient; dims=2))
         factor_gradient = L' \ (standardized * standardized')
-        @inbounds for j in axes(dfactors, 2), i in j:size(dfactors, 1)
-            contribution = factor_gradient[i, j]
-            if i == j
-                contribution -= n / L[i, i]
-            end
-            # `factors` holds `L'` when `uplo == 'U'`; the cotangent of `L[i, j]` then
-            # belongs at `factors[j, i]`, the entry the primal reads.
-            row, column = upper ? (j, i) : (i, j)
-            dfactors[row, column] += dy * contribution
-        end
+        _accum_factor!(dfactors, factor_gradient, L, dy, dy * n, upper)
         return NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), mvnormal_loglikelihood_pb!!

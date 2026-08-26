@@ -301,9 +301,10 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
-    # `logpdf(d, X)` scores each column separately and returns a vector; its rules cover
-    # the same three covariance shapes as `loglikelihood`.
-    @testset "$name matrix logpdf ::$P" for P in [Float64, Float32, Float16],
+    # Both entry points take a matrix and cover the same three covariance shapes;
+    # `logpdf` returns one density per column where `loglikelihood` sums them.
+    @testset "$name $f ::$P" for P in [Float64, Float32, Float16],
+        f in (logpdf, loglikelihood),
         (name, covariance) in
         (("diagonal", PDiagMat(rand(sr(25), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
 
@@ -311,7 +312,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         interface_only = P === Float16
         test_rule(
             sr(27),
-            logpdf,
+            f,
             d,
             randn(sr(26), P, 3, 4);
             perf_flag=(interface_only ? :none : :stability),
@@ -319,47 +320,17 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
-    @testset "dense matrix logpdf uplo=$uplo ::$P" for P in [Float64, Float32],
+    # `PDMat(Σ::Matrix)` factorises to `uplo == 'U'`, which stores `L'`, so the two
+    # conventions put the covariance's gradient in opposite triangles of `chol.factors`.
+    @testset "dense $f uplo=$uplo ::$P" for P in [Float64, Float32],
+        f in (logpdf, loglikelihood),
         uplo in ('L', 'U')
 
         factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
         d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
         test_rule(
-            sr(29),
-            logpdf,
-            d,
-            randn(sr(30), P, 2, 4);
-            perf_flag=:stability,
-            unsafe_perturb=true,
+            sr(29), f, d, randn(sr(30), P, 2, 4); perf_flag=:stability, unsafe_perturb=true
         )
-    end
-
-    @testset "$name loglikelihood ::$P" for P in [Float64, Float32, Float16],
-        (name, covariance) in
-        (("diagonal", PDiagMat(rand(sr(18), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
-
-        d = MvNormal(randn(sr(17), P, 3), covariance)
-        x = randn(sr(19), P, 3, 5)
-        interface_only = P === Float16
-        test_rule(
-            sr(20),
-            loglikelihood,
-            d,
-            x;
-            perf_flag=(interface_only ? :none : :stability),
-            interface_only,
-        )
-    end
-
-    # `PDMat(Σ::Matrix)` factorises to `uplo == 'U'`, which stores `L'`, so the two
-    # conventions put the covariance's gradient in opposite triangles of `chol.factors`.
-    @testset "shared-Cholesky loglikelihood uplo=$uplo ::$P" for P in [Float64, Float32],
-        uplo in ('L', 'U')
-
-        factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
-        d = MvNormal(randn(sr(12), P, 2), PDMat(Cholesky(factors, uplo, 0)))
-        x = randn(sr(13), P, 2, 9)
-        test_rule(sr(14), loglikelihood, d, x; perf_flag=:stability, unsafe_perturb=true)
     end
 
     # A `Fill` of distributions, and a `PDiagMat` with a `Fill` diagonal, hold their
@@ -387,6 +358,22 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             MvNormal([0.1, -0.3], PDiagMat(Fill(0.9, 2))),
             [0.1, -0.1];
             is_primitive=false,
+        )
+        # The matrix rules exclude the same containers, for the same reason.
+        test_rule(
+            sr(15),
+            loglikelihood,
+            MvNormal([0.1, -0.3], PDiagMat(Fill(0.9, 2))),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            MvNormal(Fill(0.1, 2), 0.8),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+            unsafe_perturb=true,
         )
     end
 
