@@ -292,7 +292,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x;
             perf_flag=(interface_only ? :none : :stability_and_allocs),
             interface_only,
-            mode=Mooncake.ReverseMode,
             # `ProductDistribution` has no constructor `_add_to_primal` can call.
             unsafe_perturb=true,
         )
@@ -306,15 +305,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
         d = MvNormal(randn(sr(12), P, 2), PDMat(Cholesky(factors, uplo, 0)))
         x = randn(sr(13), P, 2, 9)
-        test_rule(
-            sr(14),
-            loglikelihood,
-            d,
-            x;
-            perf_flag=:stability,
-            unsafe_perturb=true,
-            mode=Mooncake.ReverseMode,
-        )
+        test_rule(sr(14), loglikelihood, d, x; perf_flag=:stability, unsafe_perturb=true)
     end
 
     # A `Fill` of distributions, and a `PDiagMat` with a `Fill` diagonal, hold their

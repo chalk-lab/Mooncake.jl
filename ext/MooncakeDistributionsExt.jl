@@ -71,8 +71,20 @@ const ScalMvNormal{P} = MvNormal{P,<:ScalMat{P},<:Union{Vector{P},Fill{P,1}}}
 # among them.
 const DenseVec{P} = Union{Vector{P},ContiguousSubVector{P}}
 
-# The primal reaches this check via broadcasting `x .- d.μ`, which these rules replace.
+# The primal reaches these checks via broadcasting `x .- d.μ`, which the rules replace.
 function _check_dims(d::MvNormal, x::AbstractVector)
+    length(x) == length(d) && return nothing
+    throw(DimensionMismatch(lazy"x has length $(length(x)), expected $(length(d))"))
+end
+function _check_dims(d::MvNormal, x::AbstractMatrix)
+    size(x, 1) == length(d) && return nothing
+    throw(DimensionMismatch(lazy"x has $(size(x, 1)) rows, expected $(length(d))"))
+end
+function _check_dims(d::Distributions.ProductDistribution, x::AbstractArray)
+    size(x) == size(d) && return nothing
+    throw(DimensionMismatch(lazy"x has size $(size(x)), expected $(size(d))"))
+end
+function _check_dims(d::Distributions.Product, x::AbstractVector)
     length(x) == length(d) && return nothing
     throw(DimensionMismatch(lazy"x has length $(length(x)), expected $(length(d))"))
 end
@@ -225,11 +237,6 @@ end
 # isotropic `MvNormal`, which the `sqmahal` rules above cover.
 const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P},N},<:Any,P}
 
-function _check_size(d::NormalProduct, x::AbstractArray)
-    size(x) == size(d) && return nothing
-    throw(DimensionMismatch(lazy"x has size $(size(x)), expected $(size(d))"))
-end
-
 _dists(d::Distributions.ProductDistribution) = d.dists
 _dists(::Distributions.ProductDistribution, dd) = _fields(dd).dists
 
@@ -241,7 +248,7 @@ function frule!!(
 ) where {P<:IEEEFloat,N}
     dp = primal(d)
     px, ẋ = arrayify(x)
-    _check_size(dp, px)
+    _check_dims(dp, px)
     dists = _dists(dp)
     ḋists = _dists(dp, tangent(d))
     y = zero(P)
@@ -261,7 +268,7 @@ function rrule!!(
 ) where {P<:IEEEFloat,N}
     dp = primal(d)
     px, dx = arrayify(x)
-    _check_size(dp, px)
+    _check_dims(dp, px)
     dists = _dists(dp)
     y = zero(P)
     @inbounds @simd for i in eachindex(px, dists)
@@ -303,21 +310,44 @@ _dists(::Distributions.Product, dd) = _fields(dd).v
 
 # One observation's contribution to its distribution's cotangent. Add a method here to
 # cover another counting distribution.
-function _param_cotangent(d::BernoulliLogit, k, dy::P) where {P}
-    return Tangent((logitp=dy * (k - Distributions.logistic(d.logitp)),))
-end
-function _param_cotangent(d::Poisson, k, dy::P) where {P}
+_param_derivative(d::BernoulliLogit, k) = k - Distributions.logistic(d.logitp)
+function _param_derivative(d::Poisson{P}, k) where {P}
     # `k / λ` is `NaN` at the degenerate `λ = 0`, where the primal's `xlogy(k, λ)` term is
     # flat in `λ` and so contributes nothing.
-    return Tangent((λ=dy * (iszero(k) ? -one(P) : k / d.λ - one(P)),))
+    return iszero(k) ? -one(P) : k / d.λ - one(P)
 end
+
+_param_cotangent(d::BernoulliLogit, k, dy) = Tangent((logitp=dy * _param_derivative(d, k),))
+_param_cotangent(d::Poisson, k, dy) = Tangent((λ=dy * _param_derivative(d, k),))
+
+# Both distributions carry one differentiable parameter, so its tangent is the only field
+# of the element's tangent. A distribution with more would fail here rather than silently
+# differentiate one parameter.
+_param_tangent(ṫ) = only(values(_fields(ṫ)))
 
 # The sample stays an `AbstractVector`, unlike the float samples above: it is
 # non-differentiable, so it is only ever indexed, never passed to `arrayify`. That admits
 # the `BitVector` binary observations arrive as.
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),CountingProduct{P},AbstractVector{<:Integer}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logpdf)},
+    d::Dual{<:CountingProduct{P}},
+    x::Dual{<:AbstractVector{<:Integer}},
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px = primal(x)
+    _check_dims(dp, px)
+    dists = _dists(dp)
+    ḋists = _dists(dp, tangent(d))
+    ẏ = zero(P)
+    @inbounds for i in eachindex(px, dists, ḋists)
+        insupport(dists[i], px[i]) || continue
+        ẏ += _param_derivative(dists[i], px[i]) * _param_tangent(ḋists[i])
+    end
+    return Dual(logpdf(dp, px), ẏ)
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)},
     d::CoDual{<:CountingProduct{P}},
@@ -325,8 +355,7 @@ function rrule!!(
 ) where {P<:IEEEFloat}
     dp = primal(d)
     px = primal(x)
-    length(dp) == length(px) ||
-        throw(DimensionMismatch(lazy"x has length $(length(px)), expected $(length(dp))"))
+    _check_dims(dp, px)
     y = logpdf(dp, px)
     dists = _dists(dp)
     ddists = _dists(dp, tangent(d))
@@ -348,16 +377,38 @@ const CholeskyMvNormal{P} = MvNormal{
     P,<:PDMat{P,<:Matrix{P},<:Cholesky{P,<:Matrix{P}}},<:Vector{P}
 }
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(loglikelihood)}, d::Dual{<:CholeskyMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    L = dp.Σ.chol.L
+    ḋ = _fields(tangent(d))
+    factors = _fields(_fields(ḋ.Σ).chol).factors
+    # `factors` holds `L'` when `uplo == 'U'`, and only its stored triangle is read.
+    # Copying keeps the two branches one type, so the matrix product below stays inferable.
+    L̇ = LowerTriangular(dp.Σ.chol.uplo === 'U' ? permutedims(factors) : copy(factors))
+    standardized = L \ (px .- dp.μ)
+    n = size(px, 2)
+    y =
+        -P(0.5) *
+        (length(px) * log(P(2π)) + n * logdet(dp.Σ.chol) + sum(abs2, standardized))
+    ẏ = -(
+        n * sum(i -> L̇[i, i] / L[i, i], axes(L, 1)) +
+        dot(standardized, L \ ((ẋ .- ḋ.μ) - L̇ * standardized))
+    )
+    return Dual(y, ẏ)
+end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
     dp = primal(d)
     px, dx = arrayify(x)
-    size(px, 1) == length(dp) ||
-        throw(DimensionMismatch(lazy"x has $(size(px, 1)) rows, expected $(length(dp))"))
+    _check_dims(dp, px)
     L = dp.Σ.chol.L
     upper = dp.Σ.chol.uplo === 'U'
     standardized = L \ (px .- dp.μ)
