@@ -1392,7 +1392,27 @@ end
             lift(x, ẋ)
         end
     else
-        lift(x, ẋ)
+        # 1.10 has no backing `Memory` to window, so share through a STORAGE key and a block over
+        # the cached block's parent — the same device the 1.10 seed path uses. Keyed separately
+        # from the object key below, which cannot see that `a` and `reshape(a)` are one buffer.
+        sk = (Base.dataids(x), length(x))
+        if haskey(c, sk)
+            cached = tangent(c[sk]::Lifted)
+            Lifted{A,1}(
+                x,
+                NDualArray{E,1,D,A}(
+                    x,
+                    Nfwd.NDualBlock{E,D + 1}(
+                        getfield(getfield(cached, :partials_block), :parent),
+                        (1, size(x)...),
+                    ),
+                ),
+            )
+        else
+            owned = lift(x, ẋ)
+            c[sk] = owned
+            owned
+        end
     end
     c[x] = lifted
     return lifted
@@ -1787,7 +1807,31 @@ for (factory, internal) in
                     _derived_array_dual(w, x, $internal(w, getfield(x, :ref).mem, d))
                 end
             else
-                v = $factory(w, x)
+                # 1.10 has no backing `Memory` to window, so key on the STORAGE itself
+                # (`Base.dataids`, what Base's own aliasing machinery uses, paired with the length
+                # to separate different extents) and rebuild over this primal with a block sharing
+                # the cached block's parent. Sharing the parent `Vector` is what makes a partial
+                # written through one view visible through the other; without it `a` and
+                # `reshape(a)` get independent partials while the primal still aliases.
+                v = if d isa NoCache
+                    $factory(w, x)
+                else
+                    sk = (Base.dataids(x), length(x))
+                    if haskey(d, sk)
+                        cached = d[sk]
+                        NDualArray{eltype(x),N,ndims(x),typeof(x)}(
+                            x,
+                            Nfwd.NDualBlock{eltype(x),ndims(x) + 1}(
+                                getfield(getfield(cached, :partials_block), :parent),
+                                (N, size(x)...),
+                            ),
+                        )
+                    else
+                        owned = $factory(w, x)
+                        d[sk] = owned
+                        owned
+                    end
+                end
             end
             d[x] = v
             return v

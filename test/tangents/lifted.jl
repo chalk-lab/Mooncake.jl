@@ -185,6 +185,37 @@ const NDAC_VecC64 = NDualArray{
             (3.0, 3.0)
     end
 
+    @static if VERSION < v"1.11-"
+        @testset "1.10 forward seed and lift alias two arrays over one buffer" begin
+            # 1.11+ windows the backing `Memory`'s block, which 1.10 has no equivalent of, so both
+            # the seed and the lift keyed by ARRAY OBJECT and gave `a` and `reshape(a)` independent
+            # partials while the primal still aliased. The reverse side got storage keying earlier;
+            # this is the forward half of the same problem.
+            fm(x, y) = (x[1] *= 3.0; y[1])
+            mkv() = collect(1.0:4.0)
+            a = mkv()
+            b = reshape(a, 2, 2)
+            cache = Mooncake.prepare_derivative_cache(fm, a, b)
+            aa = mkv()
+            bb = reshape(aa, 2, 2)
+            da = [1.0, 0.0, 0.0, 0.0]
+            db = reshape(copy(da), 2, 2)
+            # `fm` over one buffer is `3*a[1]`, so the directional derivative along e1 is 3.0.
+            @test Mooncake.value_and_derivative!!(
+                cache, (fm, Mooncake.NoTangent()), (aa, da), (bb, db)
+            ) == (3.0, 3.0)
+            # Distinct arrays must not be merged by the storage key.
+            a2, b2 = mkv(), collect(5.0:8.0)
+            c2 = Mooncake.prepare_derivative_cache(fm, a2, b2)
+            @test Mooncake.value_and_derivative!!(
+                c2,
+                (fm, Mooncake.NoTangent()),
+                (mkv(), [1.0, 0.0, 0.0, 0.0]),
+                (collect(5.0:8.0), zeros(4)),
+            ) == (5.0, 0.0)
+        end
+    end
+
     @testset "one array reached twice through a `SimpleVector` lifts to one V" begin
         # Same defect as the `Ref` leaf above, one leaf over. `SimpleVector` had only a two-argument
         # `lift`, so the three-argument call fell to the generic passthrough, which DISCARDS the
@@ -882,5 +913,6 @@ const NDAC_VecC64 = NDualArray{
 
             test_lifted_type(P, Val(N))
         end
+
     end
 end
