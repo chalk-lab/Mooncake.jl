@@ -163,4 +163,18 @@ end
         )
         @test (v, g[2]) == (4.0, 4.0)
     end
+    # The same branch reached through a TUPLE argument. `_nfwd_undual` must invert every shape
+    # `_nfwd_projectable` admits into a dual signature; while it lacked the aggregate cases the
+    # primal and dual signatures compared equal, so the check returned early and never ran.
+    @test Mooncake._nfwd_undual(Tuple{Mooncake.Nfwd.NDual{Float64,1},Int}) ===
+        Tuple{Float64,Int}
+    @test Mooncake._nfwd_undual(
+        NamedTuple{(:p, :q),Tuple{Mooncake.Nfwd.NDual{Float64,1},Int}}
+    ) === NamedTuple{(:p, :q),Tuple{Float64,Int}}
+    szt(t) = sizeof(t[1]) == 8 ? t[1] * t[1] : t[1] * t[1] * t[1]
+    @test !Mooncake._nfwd_safe(Any[typeof(szt), Tuple{Float64,Float64}], 1)
+    v, g = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_derivative_cache(szt, (2.0, 5.0)), szt, (2.0, 5.0)
+    )
+    @test (v, g[2]) == (4.0, (4.0, 0.0))
 end

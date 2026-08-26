@@ -427,6 +427,13 @@ _nfwd_undual(::Type{<:Nfwd.NDualArray{T,N,D,A}}) where {T,N,D,A} = A
 @static if VERSION >= v"1.11-rc4"  # `NDualMemoryRef` wraps `MemoryRef`, absent on Julia 1.10
     _nfwd_undual(::Type{<:Nfwd.NDualMemoryRef{T,N,M}}) where {T,N,M} = M
 end
+# Must invert every shape `_nfwd_projectable` admits, or the aggregates fall to the identity
+# fallback above, `psig === dsig` holds, and the divergence check is skipped for exactly the
+# arguments it should cover.
+_nfwd_undual(::Type{T}) where {T<:Tuple} = Tuple{map(_nfwd_undual, T.parameters)...}
+function _nfwd_undual(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
+    return NamedTuple{names,_nfwd_undual(T)}
+end
 
 @inline function _nfwd_cond_type(ci, @nospecialize(cond))
     cond isa Core.SSAValue && return ci.ssavaluetypes[cond.id]
