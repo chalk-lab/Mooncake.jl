@@ -254,6 +254,12 @@ _void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
         @test Mooncake.set_to_zero!!(vt) === vt
         @test Mooncake._add_to_primal(vp, vt, true) === vp
         @test Mooncake.randn_tangent(Xoshiro(1), vp) isa Mooncake.tangent_type(typeof(vp))
+        # And for every other pointee: `randn_tangent` returned the primal pointer, which is
+        # only the declared tangent type when `tangent_type(P) === P`.
+        @testset "randn_tangent type for Ptr{$P}" for P in (Int, Float64, UInt8, Bool)
+            q = Ptr{P}(0)
+            @test Mooncake.randn_tangent(Xoshiro(1), q) isa Mooncake.tangent_type(typeof(q))
+        end
         v, g = Mooncake.value_and_gradient!!(
             Mooncake.prepare_gradient_cache(_void_ptr_mixed, VoidPtrMixed(vp, 5.0), 3.0),
             _void_ptr_mixed,
