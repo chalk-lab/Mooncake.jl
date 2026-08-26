@@ -275,6 +275,29 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
+    # `product_distribution` returns the deprecated `Product`; `ProductDistribution` is
+    # what it will return once Distributions removes it.
+    @testset "$D $container ::$P" for P in [Float64, Float32, Float16],
+        D in (BernoulliLogit, Poisson),
+        container in (product_distribution, Distributions.ProductDistribution)
+
+        parameters = D === BernoulliLogit ? randn(sr(9), P, 7) : rand(sr(9), P, 7) .+ P(0.5)
+        d = container(map(D, parameters))
+        x = D === BernoulliLogit ? rand(sr(10), 0:1, 7) : rand(sr(10), 0:5, 7)
+        interface_only = P === Float16
+        test_rule(
+            sr(11),
+            logpdf,
+            d,
+            x;
+            perf_flag=(interface_only ? :none : :stability_and_allocs),
+            interface_only,
+            mode=Mooncake.ReverseMode,
+            # `ProductDistribution` has no constructor `_add_to_primal` can call.
+            unsafe_perturb=true,
+        )
+    end
+
     # A `Fill` of distributions, and a `PDiagMat` with a `Fill` diagonal, hold their
     # parameters in rdata alone, which the rules above cannot accumulate into.
     @testset "Fill containers keep using the derived rules" begin
@@ -283,6 +306,14 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             logpdf,
             product_distribution(Fill(Normal(0.4, 1.3), 2, 3)),
             randn(sr(16), 2, 3);
+            is_primitive=false,
+            unsafe_perturb=true,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            product_distribution(Fill(Poisson(1.5), 3)),
+            [1, 2, 0];
             is_primitive=false,
             unsafe_perturb=true,
         )
@@ -306,6 +337,19 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         _, dd, dx = pb(1.0f0)
         @test dx ≈ -1.0f20
         @test dd.data.σ == 0.0f0
+
+        # An out-of-support sample makes the primal `-Inf`, and contributes nothing to the
+        # gradient; the remaining elements still do, `λ = 0` among them, where `k / λ`
+        # would be `NaN`.
+        d_poisson = Mooncake.zero_fcodual(
+            product_distribution([Poisson(1.5), Poisson(2.5), Poisson(0.0)])
+        )
+        y, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(logpdf), d_poisson, Mooncake.zero_fcodual([1, -1, 0])
+        )
+        @test Mooncake.primal(y) == -Inf
+        pb(1.0)
+        @test [t.fields.λ for t in Mooncake.tangent(d_poisson).data.v] ≈ [1 / 1.5 - 1, 0.0, -1.0]
 
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))

@@ -21,6 +21,7 @@ import Mooncake:
     _fields,
     arrayify,
     frule!!,
+    increment!!,
     primal,
     rrule!!,
     tangent,
@@ -236,6 +237,57 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), normal_product_logpdf_pb!!
+end
+
+# `product_distribution(::AbstractVector{<:UnivariateDistribution})` returns the deprecated
+# `Product` today and a `ProductDistribution` once Distributions removes it. Matching only
+# `Product` would silently stop firing at that point, so both are covered here.
+const UnivariateProduct{D} = Union{
+    Distributions.Product{<:Distributions.ValueSupport,D,Vector{D}},
+    Distributions.ProductDistribution{1,0,Vector{D}},
+}
+const CountingProduct{P} = Union{
+    UnivariateProduct{BernoulliLogit{P}},UnivariateProduct{Poisson{P}}
+}
+
+_dists(d::Distributions.Product) = d.v
+_dists_fdata(::Distributions.Product, dd) = _fields(dd).v
+
+# One observation's contribution to its distribution's cotangent. Add a method here to
+# cover another counting distribution.
+function _param_cotangent(d::BernoulliLogit, k, dy::P) where {P}
+    return Tangent((logitp=dy * (k - Distributions.logistic(d.logitp)),))
+end
+function _param_cotangent(d::Poisson, k, dy::P) where {P}
+    # `k / λ` is `NaN` at the degenerate `λ = 0`, where the primal's `xlogy(k, λ)` term is
+    # flat in `λ` and so contributes nothing.
+    return Tangent((λ=dy * (iszero(k) ? -one(P) : k / d.λ - one(P)),))
+end
+
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(logpdf),CountingProduct{P},AbstractVector{<:Integer}
+} where {P<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(logpdf)},
+    d::CoDual{<:CountingProduct{P}},
+    x::CoDual{<:AbstractVector{<:Integer}},
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px = primal(x)
+    length(dp) == length(px) ||
+        throw(DimensionMismatch(lazy"x has length $(length(px)), expected $(length(dp))"))
+    y = logpdf(dp, px)
+    dists = _dists(dp)
+    ddists = _dists_fdata(dp, tangent(d))
+    function counting_product_logpdf_pb!!(dy::P)
+        @inbounds for i in eachindex(px, dists, ddists)
+            # An out-of-support observation makes the primal `-Inf`, whose gradient is zero.
+            insupport(dists[i], px[i]) || continue
+            ddists[i] = increment!!(ddists[i], _param_cotangent(dists[i], px[i], dy))
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), counting_product_logpdf_pb!!
 end
 
 #! format: off
