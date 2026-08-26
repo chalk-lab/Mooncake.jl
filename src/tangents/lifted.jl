@@ -2098,6 +2098,18 @@ function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     end
     return v
 end
+# A bare `Memory` reaches here as the backing of a lifted `Dict`/`Set`, whose `slots` and `keys`
+# fields carry no derivative while `vals` does. Same element-wise walk as the `Array` above.
+@static if VERSION >= v"1.11-rc4"
+    function _basis_seed!!(v::Memory, slots::NTuple{N,Int}, cursor, dict) where {N}
+        haskey(dict, v) && return dict[v]
+        dict[v] = v
+        @inbounds for i in eachindex(v)
+            isassigned(v, i) && (v[i] = _basis_seed!!(v[i], slots, cursor, dict))
+        end
+        return v
+    end
+end
 function _basis_seed!!(v::Tuple, slots::NTuple{N,Int}, cursor, dict) where {N}
     return map(e -> _basis_seed!!(e, slots, cursor, dict), v)
 end

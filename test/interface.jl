@@ -806,6 +806,37 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test last(z_and_dz_named) == dx * sin(y) + x * cos(y) * dy
         end
 
+        @testset "forward gradient accepts a `Dict` / `Set` argument" begin
+            # `_basis_seed!!` walks the forward V writing standard-basis lanes. A lifted `Dict`
+            # (and a `Set`, which wraps one) has bare `Memory` backing its `slots`/`keys`, which
+            # carry no derivative at all, and the walk had no method for it: forward threw a raw
+            # `MethodError` naming an internal for an input reverse mode accepts, `_check_liftable_input`
+            # admits, and Julia 1.10 forward already handled (1.10 `Dict`s use `Vector`s).
+            #
+            # Distinct coefficients, so a gradient entry landing in the wrong slot cannot pass by
+            # symmetry: the seed walk must advance the dof cursor in the order `dof` counts, and a
+            # mismatch there misplaces entries silently rather than erroring.
+            fdict(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
+            mkd() = Dict(:a => 2.0, :b => 3.0)
+            v0 = [5.0, 7.0]
+            vr, gr = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(fdict, mkd(), v0), fdict, mkd(), copy(v0)
+            )
+            @testset "chunk_size=$w" for w in (1, 2, 3)
+                vf, gf = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        fdict, mkd(), v0; config=Mooncake.Config(; chunk_size=w)
+                    ),
+                    fdict,
+                    mkd(),
+                    copy(v0),
+                )
+                @test vf == vr
+                @test gf[3] == gr[3]
+                @test collect(gf[2].fields.vals) == collect(gr[2].fields.vals)
+            end
+        end
+
         @testset "value_and_gradient!! via FCache" begin
             cache_grad_fwd = Mooncake.prepare_derivative_cache(
                 f, x, y; config=Mooncake.Config(; kwargs...)
