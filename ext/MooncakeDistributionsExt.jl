@@ -353,6 +353,8 @@ end
 #   • a simple univariate distribution  (Normal)
 #   • a simple multivariate distribution (MvNormal with diagonal covariance)
 #   • an i.i.d. normal prior             (`sqmahal`, both mean types)
+#   • independent normals with distinct parameters, and a counting likelihood
+#   • repeated observations from one dense multivariate normal (`loglikelihood`)
 
 @setup_workload begin
     @compile_workload begin
@@ -372,6 +374,23 @@ end
             cache_iid = Mooncake.prepare_gradient_cache(logpdf, d_iid, x_mv)
             Mooncake.value_and_gradient!!(cache_iid, logpdf, d_iid, x_mv)
         end
+
+        # Reverse-mode: independent normals with distinct parameters
+        d_prod = product_distribution([Normal(0.0, 1.0), Normal(0.1, 1.2)])
+        cache_prod = Mooncake.prepare_gradient_cache(logpdf, d_prod, x_mv)
+        Mooncake.value_and_gradient!!(cache_prod, logpdf, d_prod, x_mv)
+
+        # Reverse-mode: a counting likelihood
+        d_count = product_distribution([Poisson(1.0), Poisson(1.5)])
+        y_count = [1, 2]
+        cache_count = Mooncake.prepare_gradient_cache(logpdf, d_count, y_count)
+        Mooncake.value_and_gradient!!(cache_count, logpdf, d_count, y_count)
+
+        # Reverse-mode: repeated observations from one dense multivariate normal
+        d_dense = MvNormal([0.0, 0.0], PDMat([1.0 0.1; 0.1 1.0]))
+        X_dense = [0.1 -0.2; -0.1 0.3]
+        cache_dense = Mooncake.prepare_gradient_cache(loglikelihood, d_dense, X_dense)
+        Mooncake.value_and_gradient!!(cache_dense, loglikelihood, d_dense, X_dense)
     end
 end
 
