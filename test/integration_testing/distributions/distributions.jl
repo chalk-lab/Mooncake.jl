@@ -283,7 +283,8 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
 
         parameters = D === BernoulliLogit ? randn(sr(9), P, 7) : rand(sr(9), P, 7) .+ P(0.5)
         d = container(map(D, parameters))
-        x = D === BernoulliLogit ? rand(sr(10), 0:1, 7) : rand(sr(10), 0:5, 7)
+        # `BitVector` is how binary observations arrive, and is not an `Array`.
+        x = D === BernoulliLogit ? BitVector(rand(sr(10), Bool, 7)) : rand(sr(10), 0:5, 7)
         interface_only = P === Float16
         test_rule(
             sr(11),

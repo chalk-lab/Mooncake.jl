@@ -264,6 +264,9 @@ function _param_cotangent(d::Poisson, k, dy::P) where {P}
     return Tangent((λ=dy * (iszero(k) ? -one(P) : k / d.λ - one(P)),))
 end
 
+# The sample stays an `AbstractVector`, unlike the float samples above: it is
+# non-differentiable, so it is only ever indexed, never passed to `arrayify`. That admits
+# the `BitVector` binary observations arrive as.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(logpdf),CountingProduct{P},AbstractVector{<:Integer}
 } where {P<:IEEEFloat}
