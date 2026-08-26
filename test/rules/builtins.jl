@@ -269,3 +269,20 @@ end
         end
     end
 end
+
+@testset "div_float pullback keeps `d/db` in range" begin
+    # Forming `d/db` as `-a/b^2` overflows the square to `Inf` (derivative 0.0 where it is
+    # -1e-200) or underflows it to 0 (giving `-Inf`), once `a` and `b` are both large or both
+    # tiny. Dividing twice by `b` keeps every intermediate in range. Not a `test_rule` case: its
+    # finite differences cannot resolve a derivative of -1e-200 against a value of 1.0.
+    for (a, b) in ((1e200, 1e200), (1e-200, 1e-200), (2.0, 4.0))
+        for f in (/, Base.FastMath.div_fast)
+            g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2][2] == 1 / b
+            @test g[2][3] ≈ -(a / b) / b
+            @test isfinite(g[2][3])
+        end
+    end
+end

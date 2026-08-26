@@ -203,3 +203,40 @@ end
 @testset "blas (Float64)" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_Float64))
 end
+
+@testset "gemm! reproduces its own primal at the alpha/beta zeros" begin
+    # OpenBLAS multiplies even at `alpha == 0`, though the reference spec permits skipping `A`,
+    # so a rule emulating the skip returns a different value than the routine it differentiates.
+    # Compared against `BLAS.gemm!` on the RUNNING build rather than a hardcoded NaN, since a
+    # build that does skip is equally valid. Not a `test_rule` case: the harness is not NaN-safe
+    # -- four of its checks fail on NaN operands whatever the rule does.
+    Anan = [NaN 0.0; 0.0 0.0]
+    I2 = [1.0 0.0; 0.0 1.0]
+    C0 = [1.0 2.0; 3.0 4.0]
+    alpha_zero(C, A, B) = (BLAS.gemm!('N', 'N', 0.0, A, B, 1.0, C); sum(C))
+    got = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(alpha_zero, copy(C0), Anan, I2),
+        alpha_zero,
+        copy(C0),
+        Anan,
+        I2,
+    )[1]
+    @test isequal(got, alpha_zero(copy(C0), Anan, I2))
+    # `beta == 0` keeps BLAS's strong zero the other way: a NaN in a `C` BLAS never reads must
+    # not leak in through `0 * NaN`.
+    # DISTINCT `A` and `B`: one object at both positions is a repeated mutable argument, which a
+    # prepared cache refuses, so the assertion would measure that refusal instead of the `beta`
+    # semantics it is here for.
+    Cnan = [NaN 0.0; 0.0 0.0]
+    Aone = [1.0 0.0; 0.0 1.0]
+    Bone = [1.0 0.0; 0.0 1.0]
+    beta_zero(C, A, B) = (BLAS.gemm!('N', 'N', 1.0, A, B, 0.0, C); sum(C))
+    got_b = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_gradient_cache(beta_zero, copy(Cnan), Aone, Bone),
+        beta_zero,
+        copy(Cnan),
+        Aone,
+        Bone,
+    )[1]
+    @test isequal(got_b, beta_zero(copy(Cnan), Aone, Bone))
+end

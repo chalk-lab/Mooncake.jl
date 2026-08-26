@@ -1624,11 +1624,12 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        # BLAS leaves `C` unreferenced at `b == 0` and `A`/`B` at `a == 0`, so either may
-        # legally hold garbage; recomputing as `a*tmp + b*C` turns a NaN there into a NaN
-        # RESULT, where BLAS returns the finite value. `tmp` is still needed for `da`.
+        # `_scale_or_zero!` gives `b` BLAS's strong-zero semantics: at `b == 0` it OVERWRITES,
+        # so a NaN sitting in a `C` that BLAS never reads cannot leak in through `0 * NaN`. The
+        # `a` term gets no such exemption -- OpenBLAS's `gemm!` multiplies even at `a == 0`, so
+        # skipping it returned a different primal than the routine being differentiated.
         _scale_or_zero!(p_C, b)
-        iszero(a) || (p_C .+= a .* tmp)
+        p_C .+= a .* tmp
     end
 
     function gemm!_pb!!(::NoRData)

@@ -813,7 +813,10 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
     _y = div_float(_a, _b)
-    div_float_pullback!!(dy) = NoRData(), div_float(dy, _b), -dy * _a / _b^2
+    # `-dy * _y / _b`, not `-dy * _a / _b^2`: squaring the denominator overflows to `Inf` (giving
+    # a derivative of 0 where it is -1e-200) or underflows to 0 (giving `-Inf`), once `a` and `b`
+    # are both large or both tiny. Dividing twice reuses the quotient computed for the primal.
+    div_float_pullback!!(dy) = NoRData(), div_float(dy, _b), -dy * _y / _b
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
 
@@ -828,7 +831,7 @@ function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _b = primal(b)
     _y = div_float_fast(_a, _b)
     function div_float_pullback!!(dy)
-        return NoRData(), div_float_fast(dy, _b), -dy * div_float_fast(_a, _b^2)
+        return NoRData(), div_float_fast(dy, _b), -dy * div_float_fast(_y, _b)
     end
     return CoDual(_y, NoFData()), div_float_pullback!!
 end
