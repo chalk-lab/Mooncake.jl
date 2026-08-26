@@ -818,6 +818,37 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # mismatch there misplaces entries silently rather than erroring. `kwargs` comes from
             # the enclosing loop, so the four iterations cover the seed path with debug mode on and
             # off rather than repeating one configuration.
+            # A `Dict` whose two VALUES are one array: the seed walks the backing `Memory`,
+            # which registered the container but delegated to the cache-free factory, so the two
+            # elements got independent partials and each position saw only its own contribution.
+            galias(dd) = sum(dd[1]) + sum(dd[2])
+            # A multi-line function, not `mkalias() = (v = …; …)`: inside a `@testset`, a
+            # one-line function whose body is a `;`-block assigns to the ENCLOSING scope, so a
+            # local named `z` there silently overwrites the testset's own `z`.
+            function mkalias()
+                shared = [1.0, 2.0, 3.0]
+                return Dict{Int,Vector{Float64}}(1 => shared, 2 => shared)
+            end
+            vals_of(g) = [
+                g.fields.vals[i] for
+                i in eachindex(g.fields.vals) if isassigned(g.fields.vals, i)
+            ]
+            _, g_rev = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(galias, mkalias()), galias, mkalias()
+            )
+            @testset "aliased Dict values, chunk_size=$w" for w in (1, 2)
+                _, g_fwd = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        galias, mkalias(); config=Mooncake.Config(; chunk_size=w, kwargs...)
+                    ),
+                    galias,
+                    mkalias(),
+                )
+                # Analytic: the primal is 2*sum(z), so every entry is 2.0.
+                @test all(v -> v == fill(2.0, 3), vals_of(g_fwd[2]))
+                @test vals_of(g_fwd[2]) == vals_of(g_rev[2])
+            end
+
             fdict(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
             mkd() = Dict(:a => 2.0, :b => 3.0)
             v0 = [5.0, 7.0]

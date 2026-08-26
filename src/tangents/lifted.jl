@@ -1833,13 +1833,29 @@ for (factory, internal) in
         # Register by identity, as the `Array` branches above do: two struct fields holding one
         # `Memory` must share a block, or a mutation written through one is invisible through the
         # other and `dof` counts the shared storage twice.
-        @eval function $internal(
-            w::Val{N}, x::Union{Memory,MemoryRef}, d::MaybeCache
-        ) where {N}
+        @eval function $internal(w::Val{N}, x::MemoryRef, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = $factory(w, x)
             d[x] = v
             return v
+        end
+        # A `Memory` of LEAVES delegates to the block factory — nothing below it can alias. A
+        # `Memory` of aggregates (a `Dict`'s `vals`, say) must thread `d` through its elements the
+        # way the element-wise `Array` branch does, or two elements holding one array get
+        # independent partials: registering `x` alone shares the container, not what is inside it.
+        @eval function $internal(w::Val{N}, x::Memory, d::MaybeCache) where {N}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            if eltype(x) <: NDualEltype
+                v = $factory(w, x)
+                d[x] = v
+                return v
+            end
+            shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
+            d[x] = shell
+            @inbounds for i in eachindex(x)
+                isassigned(x, i) && (shell[i] = $internal(w, x[i], d))
+            end
+            return shell
         end
     end
 end
@@ -1932,12 +1948,30 @@ function _randn_dual_internal(
 end
 @static if VERSION >= v"1.11-rc4"
     function _randn_dual_internal(
-        w::Val{N}, rng::AbstractRNG, x::Union{Memory,MemoryRef}, d::MaybeCache
+        w::Val{N}, rng::AbstractRNG, x::MemoryRef, d::MaybeCache
     ) where {N}
         haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
         v = randn_dual(w, rng, x)
         d[x] = v
         return v
+    end
+    # Same split as the zero/uninit factories: a `Memory` of leaves delegates, a `Memory` of
+    # aggregates threads `d` through its elements.
+    function _randn_dual_internal(
+        w::Val{N}, rng::AbstractRNG, x::Memory, d::MaybeCache
+    ) where {N}
+        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+        if eltype(x) <: NDualEltype
+            v = randn_dual(w, rng, x)
+            d[x] = v
+            return v
+        end
+        shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
+        d[x] = shell
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (shell[i] = _randn_dual_internal(w, rng, x[i], d))
+        end
+        return shell
     end
 end
 
