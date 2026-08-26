@@ -4,7 +4,7 @@ using Distributions, Mooncake, LinearAlgebra
 using Base: IEEEFloat
 using Distributions: loglikelihood, sqmahal
 using Distributions.FillArrays: Fill
-using Distributions.PDMats: PDiagMat, PDMat, ScalMat
+using PDMats: PDiagMat, PDMat, ScalMat
 using PrecompileTools: @setup_workload, @compile_workload
 
 import Mooncake:

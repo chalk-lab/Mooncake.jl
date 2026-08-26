@@ -15,6 +15,10 @@ const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
 const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
 
 @testset "distributions" begin
+    # A rule whose signature names a type parameter the loaded dependency does not have
+    # unloads the whole extension with only a warning, taking every rule in it with it.
+    @test Base.get_extension(Mooncake, :MooncakeDistributionsExt) !== nothing
+
     logpdf_test_cases = Any[
 
         #
