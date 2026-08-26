@@ -177,6 +177,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         (:none, MvLogNormal(MvNormal([0.2, -0.1], _pdmat([1.0 0.9; 0.7 1.1]))), [0.5, 0.1]),
         (:none, product_distribution([Normal()]), [0.3]),
         (:none, product_distribution([Normal(), Uniform()]), [-0.4, 0.3]),
+        (:none, product_distribution(Fill(Normal(0.4, 1.3), 2)), [0.1, -0.2]),
 
         #
         # Matrix-variate
@@ -221,6 +222,57 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     @testset "$(typeof(d))" for (perf_flag, d, x) in logpdf_test_cases
         @info "$(map(typeof, (d, x)))"
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
+    end
+
+    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these run
+    # with `is_primitive=true`, so they also assert that AD dispatches to the rules.
+    @testset "logpdf(::Normal{$P}, ::$P)" for P in [Float64, Float32, Float16]
+        # Float16 finite differences are too coarse to check the gradient against.
+        interface_only = P === Float16
+        test_rule(
+            sr(1),
+            logpdf,
+            Normal(P(0.5), P(1.2)),
+            P(0.3);
+            perf_flag=(interface_only ? :none : :stability_and_allocs),
+            interface_only,
+        )
+    end
+
+    # Both mean representations, which differ in whether the mean's gradient is fdata
+    # (`Vector`) or rdata (`Fill`).
+    @testset "sqmahal($(typeof(d.μ)), ::$P)" for P in [Float64, Float32, Float16],
+        d in [
+            product_distribution(Fill(Normal(P(0.4), P(1.3)), 7)),
+            MvNormal(randn(sr(4), P, 7), P(1.3)),
+        ]
+
+        x = randn(sr(2), P, 9)
+        interface_only = P === Float16
+        perf_flag = interface_only ? :none : :stability
+        test_rule(sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only)
+        test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
+    end
+
+    @testset "hand-written rule edge cases" begin
+        # Computing these via σ^2 overflows both to Inf well before σ stops being
+        # representable. Checks σ as well as x: the derived rule happens to get x right.
+        _, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(logpdf),
+            Mooncake.zero_fcodual(Normal(0.0f0, 1.0f-20)),
+            Mooncake.zero_fcodual(1.0f-20),
+        )
+        _, dd, dx = pb(1.0f0)
+        @test dx ≈ -1.0f20
+        @test dd.data.σ == 0.0f0
+
+        # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
+        d = product_distribution(Fill(Normal(0.4, 1.3), 3))
+        @test_throws DimensionMismatch Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Distributions.sqmahal),
+            Mooncake.zero_fcodual(d),
+            Mooncake.zero_fcodual(randn(sr(4), 5)),
+        )
     end
 
     # ── param_logpdf_cases: unified ForwardMode / ReverseMode / NfwdMooncake tests ──────────────────

@@ -16,6 +16,9 @@ end
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 
+# `view(x, a:b)`, whatever the dimensionality of `x`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
+
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
 
@@ -55,7 +58,9 @@ function arrayify(
     _, _dx = arrayify(x.diag, _fields(dx).diag)
     return x, Diagonal(_dx)
 end
-function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
+function arrayify(
+    x::SubArray{P,B,C,D,E}, dx::TangentOrFData
+) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
