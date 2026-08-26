@@ -150,28 +150,3 @@ end
         end
     end
 end
-
-# A `Vector` and the `Memory` backing it, as two differentiable positions. Must be a top-level
-# struct: `@testset` bodies are function bodies, where a `struct` cannot be declared.
-struct ArrayAndItsMemory
-    v::Vector{Float64}
-    m::Memory{Float64}
-end
-
-@testset "dot counts a shared buffer once when one view does not span it" begin
-    # An `Array` that does not SPAN its `Memory` overlaps it without matching its extent, so the
-    # exact-extent key deduplicated neither and the shared prefix was summed twice. Needs an
-    # internal (`.ref.mem`) to build, which is why no registry case reaches it; a
-    # `tangent_test_cases` entry would be the right home once the increment half lands too, since
-    # `test_tangent` asserts both oracles.
-    x = Float64[1.0, 2.0, 3.0, 4.0]
-    resize!(x, 2)                                   # length 2 over a 4-element Memory
-    t = ArrayAndItsMemory(x, getfield(x, :ref).mem)
-    tt = Mooncake.randn_tangent(Xoshiro(1), t)
-    mem = collect(getfield(tt, :fields).m)
-    @test Mooncake._dot_internal(IdDict{Any,Any}(), tt, tt) ≈ sum(abs2, mem)
-    # Ordinary shapes must be untouched.
-    v, w = randn(Xoshiro(2), 5), randn(Xoshiro(3), 5)
-    @test Mooncake._dot_internal(IdDict{Any,Any}(), v, w) ≈ dot(v, w)
-    @test Mooncake._dot_internal(IdDict{Any,Any}(), v, v) ≈ dot(v, v)
-end

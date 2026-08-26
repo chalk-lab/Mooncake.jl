@@ -917,7 +917,7 @@ same tangent twice and producing incorrect results.
 require_tangent_cache(::Type{P}) where {P} = Val{!isbitstype(P)}()
 require_tangent_cache(::Type{<:Array{P}}) where {P} = Val{!isbitstype(P)}()
 
-const IncCache = Union{NoCache,IdDict{Any,Bool}}
+const IncCache = Union{NoCache,IdDict{Any,Any}}
 const SetToZeroCache = Union{NoCache,Vector{UInt}}
 
 """
@@ -944,7 +944,7 @@ That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
 function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Bool}(), x, y)
+    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Any}(), x, y)
 end
 
 """
@@ -2195,6 +2195,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.build_big_isbits_struct(),
     ]
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
+    VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
     return vcat(
         map(x -> (false, x...), abs_test_cases),
         map(x -> (false, x), rel_test_cases),

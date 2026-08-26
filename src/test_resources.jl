@@ -250,6 +250,36 @@ function make_circular_reference_array()
     return a
 end
 
+@static if VERSION >= v"1.11"
+    struct ArrayAndItsBuffer
+        short::Vector{Float64}
+        long::Vector{Float64}
+        m::Memory{Float64}
+    end
+
+    """
+        make_array_and_its_buffer()
+
+    Two `Array`s of different lengths and the `Memory` backing both, as three differentiable
+    positions over one buffer. Operations that accumulate into shared storage
+    (`increment_internal!!`, `_dot_internal`) key on an extent, so the views overlap without
+    matching and the shared prefix used to be counted once per view.
+
+    THREE views rather than two on purpose. With only an array and its buffer the array is always
+    reached first, so the partial walk always falls to the `Memory` method; a second array of a
+    different length is what makes an ARRAY take it, and that path had a separate bug of its own.
+    """
+    function make_array_and_its_buffer()
+        base = Float64[1.0, 2.0, 3.0, 4.0, 5.0]
+        mem = getfield(base, :ref).mem
+        return ArrayAndItsBuffer(
+            Base.wrap(Array, memoryref(mem), (2,)),
+            Base.wrap(Array, memoryref(mem), (4,)),
+            mem,
+        )
+    end
+end
+
 function make_indirect_circular_reference_array()
     a = Any[1.0, 2.0, 3.0]
     b = Any[a, 4.0]

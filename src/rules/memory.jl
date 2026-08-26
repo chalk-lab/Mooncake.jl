@@ -65,14 +65,44 @@ function TestUtils.has_equal_data_internal(
     return all(equality)
 end
 
+# Positions of `buf` still to add into, given what earlier operands already covered. Only reached
+# once a buffer has been seen before at a DIFFERENT extent, so the vector it returns is off the
+# common path entirely -- each caller handles the first sight and the fully-covered case inline,
+# where no allocation happens at all.
+function _increment_todo!(
+    c::IdDict{Any,Any},
+    buf,
+    want::UnitRange{Int},
+    prev::Union{UnitRange{Int},Vector{UnitRange{Int}}},
+)
+    covered = prev isa UnitRange{Int} ? [prev] : prev
+    todo = _uncovered(covered, want)
+    push!(covered, want)
+    c[buf] = covered
+    return todo
+end
+
 function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
     x === y && return x
-    # Same storage key as the `Array` method, so an `Array` and the `Memory` backing it agree on
-    # one key and are incremented once between them; two container keys deduped neither.
-    k = _dot_storage(x)
-    haskey(c, k) && return x
-    c[k] = true
-    return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    # Keyed on the BUFFER, so an `Array` and the `Memory` backing it agree however they are spelt.
+    # A `Memory` always spans itself, so it claims the whole buffer.
+    full() = _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    c isa NoCache && return full()
+    prev = get(c, x, nothing)
+    prev === true && return x
+    if prev === nothing
+        c[x] = true
+        return full()
+    end
+    todo = _increment_todo!(
+        c, x, 1:length(x), prev::Union{UnitRange{Int},Vector{UnitRange{Int}}}
+    )
+    for piece in todo, i in piece
+        if isbitstype(P) || (isassigned(x, i) && isassigned(y, i))
+            x[i] = increment_internal!!(c, x[i], y[i])
+        end
+    end
+    return x
 end
 
 function set_to_zero_internal!!(c::SetToZeroCache, x::Memory)
@@ -186,10 +216,31 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     # `Array` objects the container key missed. Keying on the source as well would be wrong — the
     # forward gradient path increments a shared target from a source whose fields do NOT share, and
     # counting those separately doubles the gradient.
-    k = _dot_storage(x)
-    haskey(c, k) && return x
-    c[k] = true
-    _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
+    full() = (_map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y); x)
+    c isa NoCache && return full()
+    xr = getfield(x, :ref)
+    buf = xr.mem
+    prev = get(c, buf, nothing)
+    prev === true && return x
+    off = Core.memoryrefoffset(xr)
+    want = off:(off + length(x) - 1)
+    if prev === nothing
+        # `true` for an array that spans its buffer, so the common case stores an interned value
+        # and a later `Memory` over it dedups exactly as before. Only a non-spanning array records
+        # a range, and only it can leave a complement for someone else to finish.
+        c[buf] = _spans_memory(x, xr) ? true : want
+        return full()
+    end
+    todo = _increment_todo!(
+        c, buf, want, prev::Union{UnitRange{Int},Vector{UnitRange{Int}}}
+    )
+    # Buffer position `p` is array index `p - off + 1`.
+    for piece in todo, p in piece
+        i = p - off + 1
+        if isbitstype(eltype(T)) || (isassigned(x, i) && isassigned(y, i))
+            x[i] = increment_internal!!(c, x[i], y[i])
+        end
+    end
     return x
 end
 
