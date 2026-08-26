@@ -2098,6 +2098,23 @@ function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     end
     return v
 end
+# An `IdDict` V is an `IdDict` of inner duals. Walk its BACKING FIELD rather than its keys: `dof`
+# reaches an `IdDict` tangent through its generic struct fallback, which walks `fieldcount` fields
+# and so traverses `ht` in slot order, and the two walks must advance the cursor in the same order
+# or gradient entries are misplaced silently. Iterating `keys(v)` would follow hash order instead.
+# Deliberately a method for `IdDict` and not a generic struct fallback: a fallback would silently
+# seed any V shape nobody has vetted, where a `MethodError` at least says so.
+function _basis_seed!!(v::IdDict, slots::NTuple{N,Int}, cursor, dict) where {N}
+    haskey(dict, v) && return dict[v]
+    dict[v] = v
+    # Values only: the keys share the backing `ht` with them but carry no derivative, and `dof`
+    # scores them 0. `IdDict` iteration walks `ht` in slot order, which is the order `dof` counts,
+    # so the cursor advances in step. Keys collected first — the loop assigns into `v`.
+    for k in collect(keys(v))
+        v[k] = _basis_seed!!(v[k], slots, cursor, dict)
+    end
+    return v
+end
 # A bare `Memory` reaches here as the backing of a lifted `Dict`/`Set`, whose `slots` and `keys`
 # fields carry no derivative while `vals` does. Same element-wise walk as the `Array` above.
 @static if VERSION >= v"1.11-rc4"

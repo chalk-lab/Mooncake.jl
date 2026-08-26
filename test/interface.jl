@@ -837,6 +837,29 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gf[3] == gr[3]
                 @test collect(gf[2].fields.vals) == collect(gr[2].fields.vals)
             end
+            # An `IdDict` interleaves keys and values in one backing `ht`, so its V has no separate
+            # non-differentiable field and it needed its own seed method. The per-key gradients are
+            # checked, not just `d/dv`: the seed walk has to advance the dof cursor in the order
+            # `dof` counts, and a mismatch misplaces entries silently rather than erroring.
+            fid(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
+            mkid() = IdDict{Symbol,Float64}(:a => 2.0, :b => 3.0)
+            vir, gir = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(fid, mkid(), v0), fid, mkid(), copy(v0)
+            )
+            @testset "IdDict, chunk_size=$w" for w in (1, 2, 3)
+                vif, gif = Mooncake.value_and_gradient!!(
+                    Mooncake.prepare_derivative_cache(
+                        fid, mkid(), v0; config=Mooncake.Config(; chunk_size=w, kwargs...)
+                    ),
+                    fid,
+                    mkid(),
+                    copy(v0),
+                )
+                @test vif == vir
+                @test gif[3] == gir[3]
+                @test gif[2][:a] == gir[2][:a]
+                @test gif[2][:b] == gir[2][:b]
+            end
         end
 
         @testset "value_and_gradient!! via FCache" begin
