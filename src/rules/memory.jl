@@ -66,8 +66,12 @@ function TestUtils.has_equal_data_internal(
 end
 
 function increment_internal!!(c::IncCache, x::Memory{P}, y::Memory{P}) where {P}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
+    x === y && return x
+    # Same storage key as the `Array` method, so an `Array` and the `Memory` backing it agree on
+    # one key and are incremented once between them; two container keys deduped neither.
+    k = _dot_storage(x)
+    haskey(c, k) && return x
+    c[k] = true
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 

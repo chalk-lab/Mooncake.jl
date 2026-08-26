@@ -347,6 +347,14 @@ _void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
                 y = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
                 y[2] .= 1.0
                 @test Mooncake.increment!!((u1, u2), (y[2], y[3]))[1] == fill(2.0, 4)
+                # An `Array` and the `Memory` backing it are one buffer too, and while the two
+                # methods keyed on their own containers they agreed on no key at all.
+                m1 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m1[2] .= 1.0
+                m2 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m2[2] .= 1.0
+                @test Mooncake.increment!!((m1[2], m1[3]), (m2[2], m2[3]))[1] ==
+                    fill(2.0, 4)
             end
         end
     end
