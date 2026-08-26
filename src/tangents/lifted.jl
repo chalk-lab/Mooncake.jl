@@ -390,6 +390,14 @@ end
 @inline unlift(x::Lifted{P,1,<:Union{NDualArray,AbstractArray{NoDual}}}) where {P} = (
     primal(x), tangent(x, 1)
 )
+# A `Ptr` lane is a raw address, which equals the reverse tangent only where
+# `tangent_type(Ptr{T})` is itself a `Ptr{T}`. `Ptr{Nothing}`'s is a `VoidPtrTangent`, and a
+# non-differentiable-element `Ptr` has V `NoDual` but tangent `Ptr{NoTangent}`, so both rebuild
+# the reverse placeholder instead of handing back the lane.
+@inline unlift(x::Lifted{Ptr{Nothing},1,<:Tuple}) = (primal(x), uninit_tangent(primal(x)))
+@inline unlift(x::Lifted{P,1,NoDual}) where {P<:Ptr} = (
+    primal(x), uninit_tangent(primal(x))
+)
 
 @inline _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P} = tangent(x, 1)
 function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
@@ -1188,6 +1196,9 @@ end
 # shape (cf. `pointer_from_objref`), the primal address (a raw address has no derivative).
 # More specific than the `Ptr{T}` method above (same `Ptr{NoTangent}` tangent) so it wins.
 @inline lift(x::Ptr{Nothing}, ::Ptr{NoTangent}) = Lifted{Ptr{Nothing},1}(x, (x,))
+# `Ptr{NoTangent}` carries a real forward lane (`dual_type` gives `NTuple{1,Ptr{NoTangent}}`, not
+# `NoDual`), so it must not fall to the non-differentiable method above.
+@inline lift(x::Ptr{NoTangent}, ẋ::Ptr{NoTangent}) = Lifted{Ptr{NoTangent},1}(x, (ẋ,))
 # A `Ptr{Nothing}`'s reverse tangent is an `VoidPtrTangent`; the forward lane keeps the `uninit_*`
 # placeholder convention, as the `Ptr{NoTangent}` method above does.
 @inline lift(x::Ptr{Nothing}, ::VoidPtrTangent) = Lifted{Ptr{Nothing},1}(x, (x,))
@@ -1507,11 +1518,20 @@ end
     w, r
 )
 
-# A `Ptr` has no numeric partials to zero (its V is `NTuple{N,Ptr}` of pointers, never a float
-# tangent that could be read as garbage), so its zero forward seed is the uninitialised one — and
+# A `Ptr` has no numeric partials to zero or randomise (its V is `NTuple{N,Ptr}` of pointers, never
+# a float tangent that could be read as garbage), so both seeds are the uninitialised one — and
 # critically the generic struct fallback would route a `Ptr` field through the 1-arg
 # `zero_tangent(::Ptr)`, which throws. (Constants seed via `zero_lifted`, so this path is live.)
 @inline zero_dual(w::Val{N}, x::Ptr) where {N} = uninit_dual(w, x)
+@inline randn_dual(w::Val{N}, ::AbstractRNG, x::Ptr) where {N} = uninit_dual(w, x)
+# Take the lane type from `dual_type`, not from the reverse `uninit_tangent`: they agree for
+# `Ptr{Float64}` but not for `Ptr{Nothing}`, whose reverse tangent is a `VoidPtrTangent`. Each lane
+# keeps the `uninit_*` convention — the primal address as the declared pointer type, never read.
+@inline function uninit_dual(w::Val{N}, x::Ptr) where {N}
+    V = dual_type(w, typeof(x))
+    V === NoDual && return NoDual()
+    return ntuple(_ -> bitcast(fieldtype(V, 1), x), w)
+end
 
 @inline function randn_dual(
     ::Val{N}, rng::AbstractRNG, x::A
