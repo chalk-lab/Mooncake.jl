@@ -377,6 +377,50 @@ end
     )
 end
 
+# The same ill-posed request one level down, where the top-level `===` scan cannot see it: `f`
+# capturing an array that is also passed as an argument. The two are different objects, so that
+# scan passes, yet they are one storage and so one tangent, and the lift keeps whichever position
+# it reaches first. `zero_tangent(f)` is the natural way to hit it, and it silently zeroes the
+# direction the caller asked about.
+#
+# Detected by dof count rather than by walking storage: `_repeats_storage` does not see through a
+# closure field (it reports no sharing even for the primals here), whereas seeding the tangents
+# through ONE cache counts a shared leaf once and summing them counts it per position. Runs only
+# when `inputs_alias` — computed once at cache construction — says the primals really do share, so
+# an ordinary call pays nothing.
+@inline function _check_shared_input_tangents(
+    cache, input_primals::Tuple, input_tangents::Tuple
+)
+    # `inputs_alias` describes the PREPARED inputs, so it is a pre-filter and not the verdict: a
+    # cache prepared with aliased arguments may be called with distinct ones, which this method
+    # supports (it lifts the caller's own tangents afresh). Confirm the CALL-TIME primals share
+    # before refusing. Both traversals sit behind the flag, so an ordinary call pays nothing.
+    getfield(cache, :inputs_alias) || return nothing
+    ts = _zero_tangents(input_primals)
+    _inputs_alias(dof(ts), ts, input_primals) || return nothing
+    # Two ways for the supplied tangents to mirror that sharing, and NEITHER test sees both.
+    # `_repeats_storage` finds one buffer under two array containers (`da` and `reshape(da)`) but
+    # cannot see through a struct field; the dof comparison finds a leaf reached twice through
+    # fields (a closure's capture) but does not dedupe a reshape on 1.10. Accept either.
+    _repeats_storage(input_tangents) && return nothing
+    shared = dof(input_tangents, IdDict{Any,Any}())
+    summed = sum(t -> dof(t, IdDict{Any,Any}()), input_tangents; init=0)
+    shared == summed && _throw_shared_input_tangent_error()
+    return nothing
+end
+
+@noinline function _throw_shared_input_tangent_error()
+    throw(
+        ArgumentError(
+            "These inputs share differentiable storage across positions (`f` holding the same " *
+            "array that is also passed as an argument, say), but the supplied tangents do not " *
+            "share it. One storage carries one tangent, so the lift would keep one of them and " *
+            "silently drop the other. Pass the same tangent object for the shared storage at " *
+            "every position it occupies, or use reverse mode, which accumulates into it instead.",
+        ),
+    )
+end
+
 # A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dof
 # range per argument. A repeated mutable argument breaks that accounting: the seeds are built per
 # argument, so the seeded primal stops aliasing and the sweep differentiates a different function
@@ -1074,6 +1118,9 @@ end
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
+    # Only this method needs it: the friendly method converts INTO the prepared tangent buffers,
+    # which are built through one aliasing cache and so already share for aliased primals.
+    _check_shared_input_tangents(cache, input_primals, input_tangents)
 
     # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
     # primal-shaped tangents, so each supplied tangent must already be the internal tangent

@@ -198,8 +198,13 @@ const NDAC_VecC64 = NDualArray{
             cache = Mooncake.prepare_derivative_cache(fm, a, b)
             aa = mkv()
             bb = reshape(aa, 2, 2)
+            # The tangents must ALIAS exactly as the primals do. One buffer carries one
+            # direction, so two independent tangent arrays over aliased primals is ill-posed and
+            # refused; `reshape` shares `da`'s storage, where `copy` would not. They cannot be the
+            # same OBJECT here -- one is a vector, the other a matrix -- which is why the rule is
+            # shared storage rather than identity.
             da = [1.0, 0.0, 0.0, 0.0]
-            db = reshape(copy(da), 2, 2)
+            db = reshape(da, 2, 2)
             # `fm` over one buffer is `3*a[1]`, so the directional derivative along e1 is 3.0.
             @test Mooncake.value_and_derivative!!(
                 cache, (fm, Mooncake.NoTangent()), (aa, da), (bb, db)

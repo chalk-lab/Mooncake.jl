@@ -1561,6 +1561,29 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test d_rep ≈ 2 * sum(dA_al .* X_al)
             end
+
+            # The same ill-posedness ONE LEVEL DOWN, where the top-level `===` scan cannot see
+            # it: a closure capturing the array that is also passed as the argument. The two
+            # positions are different objects, so that scan passes, but they are one storage and
+            # so one tangent. `zero_tangent` for the callable is the natural way to write "do not
+            # perturb the function", and it silently returned 0.0 where the directional
+            # derivative is 2 * sum(d) * sum(cap) = 6.0. Only the non-friendly method needs the
+            # check; the friendly one converts into prepared buffers that already share.
+            mk_capturing(a) = y -> sum(y) * sum(a)
+            cap_arr = [1.0, 2.0]
+            d_cap = [1.0, 0.0]
+            f_cap = mk_capturing(cap_arr)
+            c_cap = Mooncake.prepare_derivative_cache(
+                f_cap, cap_arr; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                c_cap, (f_cap, Mooncake.zero_tangent(f_cap)), (cap_arr, d_cap)
+            )
+            # One tangent shared across both positions is well-posed and still answered.
+            _, d_shared = Mooncake.value_and_derivative!!(
+                c_cap, (f_cap, Mooncake.Tangent((a=d_cap,))), (cap_arr, d_cap)
+            )
+            @test d_shared ≈ 2 * sum(d_cap) * sum(cap_arr)
         end
 
         @testset "reused cache reads call-time non-differentiable state" begin
@@ -2492,10 +2515,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 # `value_and_derivative!!` shares the cache and handles aliased inputs, so the
                 # refusal must not have moved into construction.
-                dh = Mooncake.zero_tangent(FwdAliasHolder(w))
-                dh.fields.v .= 1.0
+                # ONE tangent object for the one shared storage: the holder's field and the
+                # argument tangent are the same array. Two equal but distinct arrays are refused,
+                # the same identity rule the repeated-argument check applies at the top level —
+                # a storage carries one direction, and two objects cannot be shown to agree
+                # without a value walk.
+                dw = fill(1.0, 3)
+                dh = Mooncake.Tangent((; v=dw))
                 v, d = Mooncake.value_and_derivative!!(
-                    aliased, (FwdAliasHolder(w), dh), (w, fill(1.0, 3))
+                    aliased, (FwdAliasHolder(w), dh), (w, dw)
                 )
                 @test v == sum(abs2, w)
                 @test d == 2 * sum(w)                    # both occurrences move
