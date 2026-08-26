@@ -1964,6 +1964,66 @@ Self-referential primals are supported: both cyclic *mutable structs* and cycles
 `tangent_test_cases()` exercise the two paths. Pass `cache_free=false` for those: only the
 cache-threading factories can seed a cycle, so the cache-free assertions do not apply.
 """
+# Dual wrappers that carry a primal beside their partials. Matched by TYPE rather than by name:
+# a name test would also catch an unrelated user type spelled the same way.
+const _DUAL_WRAPPERS = @static if VERSION >= v"1.11-rc4"
+    Union{Mooncake.Nfwd.NDualArray,Mooncake.Nfwd.NDualRef,Mooncake.Nfwd.NDualMemoryRef}
+else
+    Union{Mooncake.Nfwd.NDualArray,Mooncake.Nfwd.NDualRef}
+end
+
+# Distinct backing storages reachable from a value, counted by identity. `Array`s, `Memory`s and
+# the forward `NDualBlock`s are the things that can be shared between positions; everything else is
+# walked through. Cycles terminate on the visited set.
+function _count_storages(x)
+    seen = Base.IdSet{Any}()
+    _walk_storages!(seen, x, Base.IdSet{Any}())
+    return length(seen)
+end
+
+function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
+    (isbits(x) || x in visited) && return nothing
+    push!(visited, x)
+    if x isa Array
+        push!(seen, @static VERSION >= v"1.11-rc4" ? getfield(x, :ref).mem : x)
+        isbitstype(eltype(x)) && return nothing
+        for i in eachindex(x)
+            isassigned(x, i) && _walk_storages!(seen, x[i], visited)
+        end
+        return nothing
+    end
+    if x isa Mooncake.Nfwd.NDualBlock
+        # Recurse rather than pushing the parent itself: a windowed block holds a DISTINCT
+        # `Vector` over the same backing buffer, so identity would count one storage per window
+        # where the `Array` branch above resolves them all to the one `Memory` they share.
+        _walk_storages!(seen, getfield(x, :parent), visited)
+        return nothing
+    end
+    # A dual array/ref holds the PRIMAL alongside its partials. Only the partials are the lift's
+    # own storage; counting the primal too would compare a V against the tangent it was built
+    # from plus the primal it aliases.
+    if x isa _DUAL_WRAPPERS
+        for f in fieldnames(typeof(x))
+            f === :primal || _walk_storages!(seen, getfield(x, f), visited)
+        end
+        return nothing
+    end
+    @static if VERSION >= v"1.11-rc4"
+        if x isa Memory
+            push!(seen, x)
+            isbitstype(eltype(x)) && return nothing
+            for i in eachindex(x)
+                isassigned(x, i) && _walk_storages!(seen, x[i], visited)
+            end
+            return nothing
+        end
+    end
+    for i in 1:fieldcount(typeof(x))
+        isdefined(x, i) && _walk_storages!(seen, getfield(x, i), visited)
+    end
+    return nothing
+end
+
 function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free::Bool=true)
     @nospecialize rng p
     P = typeof(p)
@@ -2018,6 +2078,13 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free::Bool=tru
     ẋ = randn_tangent(rng, p)
     s = lift(p, ẋ)
     @test s isa Lifted
+    # Sharing in the TANGENT must survive the lift. Two positions over one tangent array have to
+    # come back over one partials block; a `lift` that fails to thread its cache gives each
+    # position a block of its own, so the block count exceeds the number of distinct tangent
+    # storages. Counted rather than matched structurally, because the two sides hold different
+    # objects — the block's `parent` is not the tangent array it was built from. This is what
+    # #530, #545, #552, #554 and #555 each got wrong, one method at a time.
+    @test _count_storages(tangent(s)) <= _count_storages(ẋ)
     p2, ẋ2 = unlift(s)
     @test has_equal_data(p2, p)
     @test has_equal_data(ẋ2, ẋ)
