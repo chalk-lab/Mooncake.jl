@@ -1000,6 +1000,65 @@ function rrule!!(::CoDual{typeof(rem)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     return zero_fcodual(y), rem_pb
 end
 
+# `flipsign`, `ldexp` and `rem_fast` need their own pairs for the same reason `rem` does: reverse
+# descends into integer bit manipulation and hits the bitcast guard, while forward already runs the
+# `NDual` overloads natively. Each `frule!!` reads the primal back off the dual result rather than
+# recomputing it.
+@is_primitive MinimalCtx Tuple{typeof(flipsign),P,P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(flipsign),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    dy = flipsign(tangent(x1), tangent(x2))
+    return Lifted{P,N}(dy.value, dy)
+end
+function rrule!!(
+    ::CoDual{typeof(flipsign)}, x1::CoDual{P}, x2::CoDual{P}
+) where {P<:IEEEFloat}
+    # `signbit`, not a comparison: `flipsign(x, -0.0)` negates while `-0.0 < 0` is false. Piecewise
+    # constant in the second argument, so its cotangent is zero away from the jump at zero.
+    s = flipsign(one(P), primal(x2))
+    flipsign_pb(ȳ::P) = (NoRData(), ȳ * s, zero(P))
+    return zero_fcodual(flipsign(primal(x1), primal(x2))), flipsign_pb
+end
+
+@is_primitive MinimalCtx Tuple{typeof(ldexp),P,Integer} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(ldexp),N}, x::Lifted{P,N,NDual{P,N}}, n::Lifted{<:Integer}
+) where {N,P<:IEEEFloat}
+    dy = ldexp(tangent(x), primal(n))
+    return Lifted{P,N}(dy.value, dy)
+end
+function rrule!!(
+    ::CoDual{typeof(ldexp)}, x::CoDual{P}, n::CoDual{<:Integer}
+) where {P<:IEEEFloat}
+    _n = primal(n)
+    # Guarded: `2^n` overflows while the result stays finite whenever `x` is small enough --
+    # `ldexp(1e-300, 2000)` is finite with a coefficient of `Inf`.
+    s = ldexp(one(P), _n)
+    ldexp_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, s), NoRData())
+    return zero_fcodual(ldexp(primal(x), _n)), ldexp_pb
+end
+
+@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.rem_fast),P,P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(Base.FastMath.rem_fast),N},
+    x1::Lifted{P,N,NDual{P,N}},
+    x2::Lifted{P,N,NDual{P,N}},
+) where {N,P<:IEEEFloat}
+    dy = Base.FastMath.rem_fast(tangent(x1), tangent(x2))
+    return Lifted{P,N}(dy.value, dy)
+end
+function rrule!!(
+    ::CoDual{typeof(Base.FastMath.rem_fast)}, x1::CoDual{P}, x2::CoDual{P}
+) where {P<:IEEEFloat}
+    a = primal(x1)
+    b = primal(x2)
+    # Same coefficients as `rem`: exactly 1, and `-trunc(a/b)`, which is `Inf` once `b` is zero.
+    c = trunc(a / b)
+    rem_fast_pb(ȳ::P) = (NoRData(), ȳ, _rvs_guarded_scale(ȳ, -c))
+    return zero_fcodual(Base.FastMath.rem_fast(a, b)), rem_fast_pb
+end
+
 # ---- `^` : removable-singularity limits at x == 0 ----
 @is_primitive MinimalCtx Tuple{typeof(^),P,P} where {P<:IEEEFloat}
 function frule!!(
@@ -1296,6 +1355,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (rem, P(7.5), P(2.3)),
                 (rem, P(-7.5), P(2.3)),
                 (rem, P(7.5), P(-2.3)),
+                # `flipsign`'s second argument is not finite-differenced at zero, where it jumps;
+                # the `-0.0` convention is asserted by the rule, not here.
+                (flipsign, P(3.0), P(-2.0)),
+                (flipsign, P(3.0), P(2.0)),
+                (ldexp, P(1.5), 3),
+                (ldexp, P(1.5), -3),
+                (Base.FastMath.rem_fast, P(7.5), P(2.3)),
+                (Base.FastMath.rem_fast, P(-7.5), P(2.3)),
                 (^, P(4.0), P(5.0)),
                 (atan, P(4.3), P(0.23)),
                 (hypot, P(4.0), P(5.0)),
