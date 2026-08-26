@@ -301,6 +301,23 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
+    @testset "$name loglikelihood ::$P" for P in [Float64, Float32, Float16],
+        (name, covariance) in
+        (("diagonal", PDiagMat(rand(sr(18), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
+
+        d = MvNormal(randn(sr(17), P, 3), covariance)
+        x = randn(sr(19), P, 3, 5)
+        interface_only = P === Float16
+        test_rule(
+            sr(20),
+            loglikelihood,
+            d,
+            x;
+            perf_flag=(interface_only ? :none : :stability),
+            interface_only,
+        )
+    end
+
     # `PDMat(Σ::Matrix)` factorises to `uplo == 'U'`, which stores `L'`, so the two
     # conventions put the covariance's gradient in opposite triangles of `chol.factors`.
     @testset "shared-Cholesky loglikelihood uplo=$uplo ::$P" for P in [Float64, Float32],

@@ -388,6 +388,152 @@ function rrule!!(
     return zero_fcodual(y), counting_product_logpdf_pb!!
 end
 
+# Repeated observations from a diagonal normal. `loglikelihood(d, X)` sums over the columns
+# of `X`, and the derived rule pays one pullback per column; one pass over the matrix
+# replaces all of them. The `-n / variance` half of the log-determinant's derivative is the
+# `- variance` inside `_excess`, summed over the columns.
+@is_primitive DefaultCtx Tuple{
+    typeof(loglikelihood),DiagMvNormal{P},Matrix{P}
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(loglikelihood)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = _fields(tangent(d))
+    μ̇ = ḋ.μ
+    v̇ = _fields(ḋ.Σ).diag
+    variance = dp.Σ.diag
+    mahalanobis = zero(P)
+    ẏ = zero(P)
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(dp.μ, variance, μ̇, v̇)
+            residual = px[i, j] - dp.μ[i]
+            scaled_residual = residual / variance[i]
+            mahalanobis += residual * scaled_residual
+            ẏ +=
+                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
+                v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
+        end
+    end
+    logdetΣ = zero(P)
+    @inbounds @simd for i in eachindex(variance)
+        logdetΣ += log(variance[i])
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * logdetΣ + mahalanobis)
+    return Dual(y, -P(0.5) * ẏ)
+end
+function rrule!!(
+    ::CoDual{typeof(loglikelihood)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    variance = dp.Σ.diag
+    logdetΣ = zero(P)
+    mahalanobis = zero(P)
+    @inbounds @simd for i in eachindex(variance)
+        logdetΣ += log(variance[i])
+    end
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(dp.μ, variance)
+            mahalanobis += abs2(px[i, j] - dp.μ[i]) / variance[i]
+        end
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * logdetΣ + mahalanobis)
+    fields = _fields(tangent(d))
+    dμ = fields.μ
+    dvariance = _fields(fields.Σ).diag
+    function diag_loglikelihood_pb!!(dy::P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(dp.μ, variance, dμ, dvariance)
+                residual = px[i, j] - dp.μ[i]
+                scaled_residual = residual / variance[i]
+                dx_ij = -dy * scaled_residual
+                dx[i, j] += dx_ij
+                dμ[i] -= dx_ij
+                dvariance[i] +=
+                    dy * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
+            end
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), diag_loglikelihood_pb!!
+end
+
+# `MvNormal(μ, σ)` and `MvNormal(μ, σ^2 * I)` produce this shape, with one variance shared
+# across the dimensions. A `Fill` mean keeps its gradient in rdata, which these passes cannot
+# accumulate into, so it stays with the derived rules.
+const IsoMvNormal{P} = MvNormal{P,<:ScalMat{P},Vector{P}}
+
+@is_primitive DefaultCtx Tuple{
+    typeof(loglikelihood),IsoMvNormal{P},Matrix{P}
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(loglikelihood)}, d::Dual{<:IsoMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = _fields(tangent(d))
+    μ̇ = ḋ.μ
+    v̇ = _fields(ḋ.Σ).value
+    μ = dp.μ
+    variance = dp.Σ.value
+    mahalanobis = zero(P)
+    ẏ = zero(P)
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(μ, μ̇)
+            residual = px[i, j] - μ[i]
+            scaled_residual = residual / variance
+            mahalanobis += residual * scaled_residual
+            ẏ +=
+                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
+                v̇ * _excess(residual, variance) / variance / variance
+        end
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
+    return Dual(y, -P(0.5) * ẏ)
+end
+function rrule!!(
+    ::CoDual{typeof(loglikelihood)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    μ = dp.μ
+    variance = dp.Σ.value
+    mahalanobis = zero(P)
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(μ)
+            mahalanobis += abs2(px[i, j] - μ[i]) / variance
+        end
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
+    dμ = _fields(tangent(d)).μ
+    function iso_loglikelihood_pb!!(dy::P)
+        # The shared variance takes a single cotangent, so it is accumulated here and
+        # returned as rdata rather than written into fdata.
+        excess_total = zero(P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(μ, dμ)
+                residual = px[i, j] - μ[i]
+                dx_ij = -dy * residual / variance
+                dx[i, j] += dx_ij
+                dμ[i] -= dx_ij
+                excess_total += _excess(residual, variance)
+            end
+        end
+        dd = RData((
+            μ=NoRData(),
+            Σ=RData((dim=NoRData(), value=dy * excess_total / variance / (2 * variance))),
+        ))
+        return NoRData(), dd, NoRData()
+    end
+    return zero_fcodual(y), iso_loglikelihood_pb!!
+end
+
 # Repeated observations from one dense multivariate Normal are represented by
 # `loglikelihood(d, X)`, with observations in the columns of `X`. Keeping the shared
 # Cholesky factor at this public boundary avoids tracing one triangular solve per column.
