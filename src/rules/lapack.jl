@@ -4,7 +4,8 @@
 # already overwritten by the in-place `getrf!`.
 function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) where {Nw}
     T = eltype(A)
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    # `ipiv` permutes ROWS: the column count reads `p` out of range for a tall `A` below.
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     n = size(A, 1)
     # F = L \ (P·dA) / U, then dA = L*tril(F,-1) + triu(F)*U. Two scratches reused across lanes;
     # the solves/products run in place via direct BLAS (LinearAlgebra's triangular `\`/`*` and
@@ -105,8 +106,8 @@ function _getrf_pb!(A, dA, ipiv, A_copy)
     dL = tril(dA, -1)
     dU = UpperTriangular(dA)
 
-    # Figure out the pivot matrix used.
-    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 2))
+    # Figure out the pivot matrix used; `ipiv` permutes rows.
+    p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
 
     # Compute pullback using Seth's method.
     _dF = tril(L'dL, -1) + UpperTriangular(dU * U')
@@ -984,6 +985,24 @@ function rrule!!(
         return NoRData(), NoRData()
     end
     return CoDual((ld, s), NoFData()), logabsdet_sym_pb!!
+end
+
+# `getrf!`'s derivative is derived for a square factor, so every rectangular shape must refuse. A
+# tall `A` gathered the row permutation out of range under `@inbounds` and segfaulted instead.
+function throwing_rule_test_cases(::Val{:lapack})
+    tall = Float64[1 1 1; 1 2 1; 1 1 3; 1 1 1; 9 1 1]
+    wide = collect(transpose(tall))
+    # Forward only: the reverse leg drives the primal through `value_and_gradient!!`, which refuses
+    # `getrf!`'s tuple return before any rule runs. Reverse refuses at `UnitLowerTriangular`.
+    cases = Any[
+        (
+            (DimensionMismatch, "matrix is not square"),
+            LAPACK.getrf!,
+            (A,),
+            (; mode=ForwardMode),
+        ) for A in (tall, wide)
+    ]
+    return cases, Any[tall, wide]
 end
 
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
