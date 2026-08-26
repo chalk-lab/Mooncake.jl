@@ -4,7 +4,7 @@ using Distributions, Mooncake, LinearAlgebra
 using Base: IEEEFloat
 using Distributions: sqmahal
 using Distributions.FillArrays: Fill
-using Distributions.PDMats: ScalMat
+using Distributions.PDMats: PDiagMat, ScalMat
 using PrecompileTools: @setup_workload, @compile_workload
 
 import Mooncake:
@@ -16,6 +16,7 @@ import Mooncake:
     NoFData,
     NoRData,
     RData,
+    ReverseMode,
     Tangent,
     _fields,
     arrayify,
@@ -152,6 +153,89 @@ function rrule!!(
         return NoRData(), dd, NoRData()
     end
     return zero_fcodual(y), sqmahal_pb!!
+end
+
+# `product_distribution(::AbstractVector{<:Normal})` specializes to this representation.
+# The rules from here on accumulate into fdata, so every container they accept has to keep
+# its parameters there. A `Fill` diagonal, or a `Fill` of distributions, keeps them in rdata
+# instead and must go on using the derived rules.
+const DiagMvNormal{P} = MvNormal{P,<:PDiagMat{P,Vector{P}},<:Vector{P}}
+
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(logpdf),DiagMvNormal{P},DenseVec{P}
+} where {P<:IEEEFloat}
+function rrule!!(
+    ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{<:DenseVec{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    variance = dp.Σ.diag
+    logdetΣ = zero(P)
+    mahalanobis = zero(P)
+    @inbounds @simd for i in eachindex(px, dp.μ, variance)
+        logdetΣ += log(variance[i])
+        mahalanobis += abs2(px[i] - dp.μ[i]) / variance[i]
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + logdetΣ + mahalanobis)
+    fields = _fields(tangent(d))
+    dμ = fields.μ
+    dvariance = _fields(fields.Σ).diag
+    function diag_normal_logpdf_pb!!(dy::P)
+        @inbounds @simd for i in eachindex(px, dp.μ, variance, dμ, dvariance)
+            residual = px[i] - dp.μ[i]
+            inverse_variance = inv(variance[i])
+            dx_i = -dy * residual * inverse_variance
+            dx[i] += dx_i
+            dμ[i] -= dx_i
+            dvariance[i] +=
+                dy * P(0.5) * (abs2(residual) * abs2(inverse_variance) - inverse_variance)
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), diag_normal_logpdf_pb!!
+end
+
+# The heterogeneous case: Distributions represents a `Fill` vector of `Normal`s as an
+# isotropic `MvNormal`, which the `sqmahal` rules above cover.
+const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P},N},<:Any,P}
+
+_dists(d::Distributions.ProductDistribution) = d.dists
+_dists_fdata(::Distributions.ProductDistribution, dd) = _fields(dd).dists
+
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(logpdf),NormalProduct{P,N},Array{P,N}
+} where {P<:IEEEFloat,N}
+function rrule!!(
+    ::CoDual{typeof(logpdf)}, d::CoDual{<:NormalProduct{P,N}}, x::CoDual{Array{P,N}}
+) where {P<:IEEEFloat,N}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    size(dp) == size(px) ||
+        throw(DimensionMismatch(lazy"x has size $(size(px)), expected $(size(dp))"))
+    dists = _dists(dp)
+    y = zero(P)
+    @inbounds @simd for i in eachindex(px, dists)
+        dist = dists[i]
+        z = (px[i] - dist.μ) / dist.σ
+        y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
+    end
+    ddists = _dists_fdata(dp, tangent(d))
+    function normal_product_logpdf_pb!!(dy::P)
+        @inbounds for i in eachindex(px, dists, ddists)
+            dist = dists[i]
+            inv_σ = inv(dist.σ)
+            z = (px[i] - dist.μ) * inv_σ
+            dx_i = -dy * z * inv_σ
+            dx[i] += dx_i
+            fields = _fields(ddists[i])
+            ddists[i] = Tangent((
+                μ=(fields.μ - dx_i), σ=(fields.σ + dy * (abs2(z) - one(P)) * inv_σ)
+            ))
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(y), normal_product_logpdf_pb!!
 end
 
 #! format: off

@@ -254,6 +254,47 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
     end
 
+    @testset "heterogeneous Normal product $N-D ::$P" for P in [Float64, Float32, Float16],
+        N in (1, 2)
+
+        dims = N == 1 ? (7,) : (2, 3)
+        μ = randn(sr(5), P, dims...)
+        σ = rand(sr(6), P, dims...) .+ P(0.5)
+        x = randn(sr(7), P, dims...)
+        d = product_distribution(map(Normal, μ, σ))
+        interface_only = P === Float16
+        test_rule(
+            sr(8),
+            logpdf,
+            d,
+            x;
+            perf_flag=(interface_only ? :none : :stability),
+            interface_only,
+            mode=Mooncake.ReverseMode,
+            unsafe_perturb=true,
+        )
+    end
+
+    # A `Fill` of distributions, and a `PDiagMat` with a `Fill` diagonal, hold their
+    # parameters in rdata alone, which the rules above cannot accumulate into.
+    @testset "Fill containers keep using the derived rules" begin
+        test_rule(
+            sr(15),
+            logpdf,
+            product_distribution(Fill(Normal(0.4, 1.3), 2, 3)),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+            unsafe_perturb=true,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            MvNormal([0.1, -0.3], PDiagMat(Fill(0.9, 2))),
+            [0.1, -0.1];
+            is_primitive=false,
+        )
+    end
+
     @testset "hand-written rule edge cases" begin
         # Computing these via σ^2 overflows both to Inf well before σ stops being
         # representable. Checks σ as well as x: the derived rule happens to get x right.
