@@ -1256,13 +1256,12 @@ Base.signbit(a::NDual) = signbit(a.value)
 # ── Utility ───────────────────────────────────────────────────────────────────────
 Base.eps(d::NDual) = eps(d.value)
 Base.eps(::Type{NDual{T,N}}) where {T,N} = eps(T)
-# Checks both the primal value and all partial slots.  In GPU kernels this evaluates
-# N partial values before short-circuiting; prefer `iszero(d.value)` inside hot kernel
-# loops where the partial check is unnecessary and could cause warp divergence.
-# This method is intended for host-side utility and correctness checks (e.g. hash, tests).
-@inline function Base.iszero(d::NDual{T,N}) where {T,N}
-    return iszero(d.value) && all(iszero, d.partials)
-end
+# Value-only, like every other predicate on an `NDual` and like `Base.iszero` on every other
+# `Number`, where it means `x == zero(x)`. Consulting the partials made it disagree both with this
+# type's own `==`/`isequal`/`hash` (all value-only) and with the primal, so a body branching on it
+# took a different branch under nfwd than the primal did: `h(t) = iszero(t) ? one(t) : sin(t)/t`
+# returned NaN at `t == 0`, where the primal is 1.0.
+@inline Base.iszero(d::NDual) = iszero(d.value)
 Base.hash(d::NDual, hsh::UInt) = hash(d.value, hsh)
 
 # ── ifelse ────────────────────────────────────────────────────────────────────────

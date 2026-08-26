@@ -926,10 +926,12 @@ using Mooncake.Nfwd
         @test eps(x) === eps(1.0)
         @test eps(NDual{Float64,1}) === eps(Float64)
         @test iszero(NDual{Float64,1}(0.0, (0.0,)))
-        @test !iszero(NDual{Float64,1}(0.0, (1.0,)))
+        # Value-only, so a nonzero partial does not make a zero value nonzero. It used to, which
+        # disagreed with this type's own `==`/`isequal`/`hash` and sent a body branching on
+        # `iszero` down a different branch than the primal takes. That also makes the old
+        # `-0.0`-partial case moot: no partial is consulted.
+        @test iszero(NDual{Float64,1}(0.0, (1.0,)))
         @test !iszero(NDual{Float64,1}(1.0, (0.0,)))
-        # -0.0 partials must also be treated as zero (==-based, not ===-based)
-        @test iszero(NDual{Float64,1}(0.0, (-0.0,)))
         @test hash(_d(3.0, 1.0), UInt(0)) == hash(3.0, UInt(0))
     end
 
