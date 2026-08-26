@@ -185,6 +185,24 @@ const NDAC_VecC64 = NDualArray{
             (3.0, 3.0)
     end
 
+    @testset "one array reached twice through a `SimpleVector` lifts to one V" begin
+        # Same defect as the `Ref` leaf above, one leaf over. `SimpleVector` had only a two-argument
+        # `lift`, so the three-argument call fell to the generic passthrough, which DISCARDS the
+        # cache — and its elements were lifted through the two-argument form too, so no cache
+        # existed anywhere below it. A type with no three-argument method at all does not show up in
+        # a search for methods that ignore their cache argument.
+        v = [[1.0, 2.0]]
+        sv = Core.svec(v, v)
+        dv = [[1.0, 0.0]]
+        f(s) = (Core._svec_ref(s, 1)[1][1] *= 3.0; Core._svec_ref(s, 2)[1][1])
+        cache = Mooncake.prepare_derivative_cache(
+            f, sv; config=Mooncake.Config(; friendly_tangents=false)
+        )
+        @test Mooncake.value_and_derivative!!(
+            cache, (f, Mooncake.NoTangent()), (sv, Any[dv, dv])
+        ) == (3.0, 3.0)
+    end
+
     @testset "scalar NDual _add_to_primal adds only the partials" begin
         # Regression: an inner `NDual`'s `.value` is the primal it shadows (inner-value
         # invariant), so `_add_to_primal` must add only the partials — adding `.value` too would

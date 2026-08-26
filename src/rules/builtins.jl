@@ -1509,9 +1509,15 @@ function tangent(x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer) wher
     v = tangent(x)
     return Any[tangent(Lifted{typeof(p[i]),N}(p[i], v[i]), lane) for i in 1:length(p)]
 end
-function lift(v::Core.SimpleVector, ẋ::Vector{Any})
+lift(v::Core.SimpleVector, ẋ::Vector{Any}) = lift(v, ẋ, nothing)
+function lift(v::Core.SimpleVector, ẋ::Vector{Any}, c::Union{Nothing,IdDict})
+    # Thread a shared cache through the elements, as the `Tuple` aggregate does, so two elements
+    # holding one array dedup to a single V. Without a three-argument method this fell to the
+    # generic passthrough, which discards the cache, and the elements were then lifted through the
+    # two-argument form as well — so no cache existed anywhere below a `SimpleVector`.
+    d = c === nothing ? IdDict() : c
     return Lifted{Core.SimpleVector,1}(
-        v, Any[tangent(lift(v[i], ẋ[i])) for i in 1:length(v)]
+        v, Any[tangent(lift(v[i], ẋ[i], d)) for i in 1:length(v)]
     )
 end
 function _unlift_seed(x::Lifted{Core.SimpleVector,1,Vector{Any}}, cache::IdDict)
