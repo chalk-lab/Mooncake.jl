@@ -261,6 +261,10 @@ function frule!!(
         y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
         ẏ += ((abs2(z) - one(P)) * ḋ.σ - z * (ẋ[i] - ḋ.μ)) / dist.σ
     end
+    # A `σ == 0` component makes the fused sum `Inf - Inf`, where the primal's `iszero(σ)`
+    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop
+    # above vectorisable; the derivative agrees with the derived rule either way.
+    isnan(y) && (y = logpdf(dp, px))
     return Dual(y, ẏ)
 end
 function rrule!!(
@@ -276,6 +280,10 @@ function rrule!!(
         z = (px[i] - dist.μ) / dist.σ
         y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
     end
+    # A `σ == 0` component makes the fused sum `Inf - Inf`, where the primal's `iszero(σ)`
+    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop
+    # above vectorisable; the derivative agrees with the derived rule either way.
+    isnan(y) && (y = logpdf(dp, px))
     ddists = _dists(dp, tangent(d))
     function normal_product_logpdf_pb!!(dy::P)
         @inbounds for i in eachindex(px, dists, ddists)

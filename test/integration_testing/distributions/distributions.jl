@@ -395,6 +395,27 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             @test Mooncake._fields(fields.Σ).diag[1] ≈ P(0.5 * (r^2 / v^2 - 1 / v))
         end
 
+        # `σ = exp(-800)` underflows to zero during sampling, and the fused log-density
+        # then sums `-Inf` and `+Inf`. The primal's `iszero(σ)` branch gives ±Inf, which a
+        # sampler reads as a rejection; `NaN` would poison the chain.
+        @testset "σ == 0 component matches the primal: $(x[1])" for x in
+                                                                    ([0.5 0.1], [0.3 0.1])
+            μ = [0.3 0.0]
+            d = product_distribution(map(Normal, μ, [0.0 1.0]))
+            rule, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf),
+                Mooncake.zero_fcodual(d),
+                Mooncake.zero_fcodual(copy(x)),
+            )
+            dual = Mooncake.frule!!(
+                Mooncake.zero_dual(logpdf),
+                Mooncake.zero_dual(d),
+                Mooncake.zero_dual(copy(x)),
+            )
+            @test Mooncake.primal(rule) == logpdf(d, x)
+            @test Mooncake.primal(dual) == logpdf(d, x)
+        end
+
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))
         @test_throws DimensionMismatch Mooncake.rrule!!(
