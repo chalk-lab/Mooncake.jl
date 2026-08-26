@@ -333,8 +333,10 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
-    # A `Fill` of distributions, and a `PDiagMat` with a `Fill` diagonal, hold their
-    # parameters in rdata alone, which the rules above cannot accumulate into.
+    # A `Fill` of distributions, a `PDiagMat` with a `Fill` diagonal and a `Fill` mean all
+    # hold their parameters in rdata alone, which the rules above cannot accumulate into.
+    # Widen any of the aliases to admit them and these fail, which is how the exclusions
+    # stay honest.
     @testset "Fill containers keep using the derived rules" begin
         test_rule(
             sr(15),
@@ -359,7 +361,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             [0.1, -0.1];
             is_primitive=false,
         )
-        # The matrix rules exclude the same containers, for the same reason.
+        # The matrix rules exclude the same containers, and a `Fill` mean besides.
         test_rule(
             sr(15),
             loglikelihood,
