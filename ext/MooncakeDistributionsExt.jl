@@ -4,7 +4,7 @@ using Distributions, Mooncake, LinearAlgebra
 using Base: IEEEFloat
 using Distributions: loglikelihood, sqmahal
 using Distributions.FillArrays: Fill
-using PDMats: PDiagMat, PDMat, ScalMat
+using Distributions.PDMats: PDiagMat, PDMat, ScalMat
 using PrecompileTools: @setup_workload, @compile_workload
 
 import Mooncake:
@@ -709,9 +709,13 @@ end
 # Repeated observations from one dense multivariate Normal are represented by
 # `loglikelihood(d, X)`, with observations in the columns of `X`. Keeping the shared
 # Cholesky factor at this public boundary avoids tracing one triangular solve per column.
-const CholeskyMvNormal{P} = MvNormal{
-    P,<:PDMat{P,<:Matrix{P},<:Cholesky{P,<:Matrix{P}}},<:Vector{P}
-}
+#
+# `PDMat`'s third type parameter, the factorisation, exists only from PDMats 0.11.40, and
+# Distributions permits 0.11.35 upwards; naming it here fails to parse against the older
+# layout and unloads the whole extension. The rules need `chol.factors` to be a `Matrix`,
+# which `_factor_tangent` and `_accum_factor!` require by signature, so an exotic
+# factorisation raises a `MethodError` rather than being silently mishandled.
+const CholeskyMvNormal{P} = MvNormal{P,<:PDMat{P,<:Matrix{P}},<:Vector{P}}
 
 @is_primitive DefaultCtx Tuple{
     typeof(logpdf),CholeskyMvNormal{P},Matrix{P}
