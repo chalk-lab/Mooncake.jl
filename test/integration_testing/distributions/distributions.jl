@@ -395,6 +395,23 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             @test Mooncake._fields(fields.Σ).diag[1] ≈ P(0.5 * (r^2 / v^2 - 1 / v))
         end
 
+        # `residual^2` rounds to the variance itself here, so the difference the variance
+        # derivative depends on survives only if the product is kept exact. The reference
+        # evaluates the same formula at 256 bits, independent of the rule's grouping.
+        @testset "variance derivative when residual^2 == variance" begin
+            variance = 1.0e-160
+            x = 1.0e-80
+            d = Mooncake.zero_fcodual(MvNormal([0.0], PDiagMat([variance])))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual([x])
+            )
+            pb(1.0)
+            reference = Float64(
+                (BigFloat(x)^2 - BigFloat(variance)) / (2 * BigFloat(variance)^2)
+            )
+            @test Mooncake._fields(Mooncake.tangent(d).data.Σ).diag[1] ≈ reference
+        end
+
         # `σ = exp(-800)` underflows to zero during sampling, and the fused log-density
         # then sums `-Inf` and `+Inf`. The primal's `iszero(σ)` branch gives ±Inf, which a
         # sampler reads as a rejection; `NaN` would poison the chain.

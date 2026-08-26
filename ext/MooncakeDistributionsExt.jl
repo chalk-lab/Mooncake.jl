@@ -71,6 +71,17 @@ const ScalMvNormal{P} = MvNormal{P,<:ScalMat{P},<:Union{Vector{P},Fill{P,1}}}
 # among them.
 const DenseVec{P} = Union{Vector{P},ContiguousSubVector{P}}
 
+# `residual^2 - variance`, the numerator of the variance derivative, with the product kept
+# exact by `fma`. The two vanish together when the residual is one standard deviation, and
+# in `Float64` a residual near `1e-80` squares to the variance itself, so a plain `r * r`
+# leaves nothing to subtract. Callers divide by the variance twice rather than forming
+# `variance^2`, which underflows well inside the useful range. Accuracy is limited only
+# where `residual^2` is itself subnormal.
+function _excess(residual::P, variance::P) where {P<:IEEEFloat}
+    squared = residual * residual
+    return (squared - variance) + fma(residual, residual, -squared)
+end
+
 # The primal reaches these checks via broadcasting `x .- d.μ`, which the rules replace.
 function _check_dims(d::MvNormal, x::AbstractVector)
     length(x) == length(d) && return nothing
@@ -197,8 +208,8 @@ function frule!!(
         scaled_residual = residual / variance[i]
         y += log(variance[i]) + residual * scaled_residual
         ẏ +=
-            v̇[i] * (one(P) - residual * scaled_residual) / variance[i] +
-            2 * scaled_residual * (ẋ[i] - μ̇[i])
+            2 * scaled_residual * (ẋ[i] - μ̇[i]) -
+            v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
     end
     return Dual(-P(0.5) * (length(px) * log(P(2π)) + y), -P(0.5) * ẏ)
 end
@@ -221,13 +232,13 @@ function rrule!!(
     dvariance = _fields(fields.Σ).diag
     function diag_normal_logpdf_pb!!(dy::P)
         @inbounds @simd for i in eachindex(px, dp.μ, variance, dμ, dvariance)
-            scaled_residual = (px[i] - dp.μ[i]) / variance[i]
+            residual = px[i] - dp.μ[i]
+            scaled_residual = residual / variance[i]
             dx_i = -dy * scaled_residual
             dx[i] += dx_i
             dμ[i] -= dx_i
-            # Halve each term separately: their difference is representable at variances
-            # where `1 / variance` on its own is not.
-            dvariance[i] += dy * (P(0.5) * abs2(scaled_residual) - P(0.5) / variance[i])
+            dvariance[i] +=
+                dy * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
         end
         return NoRData(), NoRData(), NoRData()
     end
