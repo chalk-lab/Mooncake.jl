@@ -270,7 +270,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x;
             perf_flag=(interface_only ? :none : :stability),
             interface_only,
-            mode=Mooncake.ReverseMode,
             unsafe_perturb=true,
         )
     end

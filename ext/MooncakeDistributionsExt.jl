@@ -162,9 +162,33 @@ end
 # instead and must go on using the derived rules.
 const DiagMvNormal{P} = MvNormal{P,<:PDiagMat{P,Vector{P}},<:Vector{P}}
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),DiagMvNormal{P},DenseVec{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logpdf)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{<:DenseVec{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = _fields(tangent(d))
+    μ̇ = ḋ.μ
+    v̇ = _fields(ḋ.Σ).diag
+    variance = dp.Σ.diag
+    y = zero(P)
+    ẏ = zero(P)
+    @inbounds @simd for i in eachindex(px, dp.μ, variance, μ̇, v̇)
+        inverse_variance = inv(variance[i])
+        residual = px[i] - dp.μ[i]
+        y += log(variance[i]) + abs2(residual) * inverse_variance
+        ẏ +=
+            inverse_variance * (
+                v̇[i] * (one(P) - abs2(residual) * inverse_variance) +
+                2 * residual * (ẋ[i] - μ̇[i])
+            )
+    end
+    return Dual(-P(0.5) * (length(px) * log(P(2π)) + y), -P(0.5) * ẏ)
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{<:DenseVec{P}}
 ) where {P<:IEEEFloat}
@@ -201,19 +225,43 @@ end
 # isotropic `MvNormal`, which the `sqmahal` rules above cover.
 const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P},N},<:Any,P}
 
-_dists(d::Distributions.ProductDistribution) = d.dists
-_dists_fdata(::Distributions.ProductDistribution, dd) = _fields(dd).dists
+function _check_size(d::NormalProduct, x::AbstractArray)
+    size(x) == size(d) && return nothing
+    throw(DimensionMismatch(lazy"x has size $(size(x)), expected $(size(d))"))
+end
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+_dists(d::Distributions.ProductDistribution) = d.dists
+_dists(::Distributions.ProductDistribution, dd) = _fields(dd).dists
+
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),NormalProduct{P,N},Array{P,N}
 } where {P<:IEEEFloat,N}
+function frule!!(
+    ::Dual{typeof(logpdf)}, d::Dual{<:NormalProduct{P,N}}, x::Dual{Array{P,N}}
+) where {P<:IEEEFloat,N}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_size(dp, px)
+    dists = _dists(dp)
+    ḋists = _dists(dp, tangent(d))
+    y = zero(P)
+    ẏ = zero(P)
+    @inbounds for i in eachindex(px, dists, ḋists)
+        dist = dists[i]
+        ḋ = _fields(ḋists[i])
+        inv_σ = inv(dist.σ)
+        z = (px[i] - dist.μ) * inv_σ
+        y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
+        ẏ += inv_σ * ((abs2(z) - one(P)) * ḋ.σ - z * (ẋ[i] - ḋ.μ))
+    end
+    return Dual(y, ẏ)
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:NormalProduct{P,N}}, x::CoDual{Array{P,N}}
 ) where {P<:IEEEFloat,N}
     dp = primal(d)
     px, dx = arrayify(x)
-    size(dp) == size(px) ||
-        throw(DimensionMismatch(lazy"x has size $(size(px)), expected $(size(dp))"))
+    _check_size(dp, px)
     dists = _dists(dp)
     y = zero(P)
     @inbounds @simd for i in eachindex(px, dists)
@@ -221,7 +269,7 @@ function rrule!!(
         z = (px[i] - dist.μ) / dist.σ
         y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
     end
-    ddists = _dists_fdata(dp, tangent(d))
+    ddists = _dists(dp, tangent(d))
     function normal_product_logpdf_pb!!(dy::P)
         @inbounds for i in eachindex(px, dists, ddists)
             dist = dists[i]
@@ -251,7 +299,7 @@ const CountingProduct{P} = Union{
 }
 
 _dists(d::Distributions.Product) = d.v
-_dists_fdata(::Distributions.Product, dd) = _fields(dd).v
+_dists(::Distributions.Product, dd) = _fields(dd).v
 
 # One observation's contribution to its distribution's cotangent. Add a method here to
 # cover another counting distribution.
@@ -281,7 +329,7 @@ function rrule!!(
         throw(DimensionMismatch(lazy"x has length $(length(px)), expected $(length(dp))"))
     y = logpdf(dp, px)
     dists = _dists(dp)
-    ddists = _dists_fdata(dp, tangent(d))
+    ddists = _dists(dp, tangent(d))
     function counting_product_logpdf_pb!!(dy::P)
         @inbounds for i in eachindex(px, dists, ddists)
             # An out-of-support observation makes the primal `-Inf`, whose gradient is zero.
