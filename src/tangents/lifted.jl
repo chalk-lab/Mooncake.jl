@@ -1838,12 +1838,19 @@ for (factory, internal) in
                 else
                     sk = (Base.dataids(x), length(x))
                     if haskey(d, sk)
+                        # The cached entry is whatever array claimed the buffer first, so its
+                        # own type is not `x`'s -- a vector's seed serves a reshape. Only the
+                        # block's flat `parent` is shared, and it is a `Vector{eltype(x)}`
+                        # whatever the shape, so assert THAT: without it the constructor takes
+                        # its argument as `Any` and dispatches at runtime.
                         cached = d[sk]
+                        shared = getfield(
+                            getfield(cached, :partials_block), :parent
+                        )::Vector{eltype(x)}
                         NDualArray{eltype(x),N,ndims(x),typeof(x)}(
                             x,
                             Nfwd.NDualBlock{eltype(x),ndims(x) + 1}(
-                                getfield(getfield(cached, :partials_block), :parent),
-                                (N, size(x)...),
+                                shared, (N, size(x)...)
                             ),
                         )
                     else
