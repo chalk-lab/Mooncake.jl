@@ -416,6 +416,37 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             @test Mooncake.primal(dual) == logpdf(d, x)
         end
 
+        # The `frule!!` carries its own `insupport` skip; the assertions above only reach
+        # the `rrule!!` copy. Without the skip the out-of-support element would contribute
+        # `-1 / 2.5 - 1` to the derivative.
+        d_counting = product_distribution([Poisson(1.5), Poisson(2.5)])
+        rates = Mooncake.zero_tangent(d_counting)
+        for i in eachindex(rates.fields.v)
+            rates.fields.v[i] = Mooncake.Tangent((λ=1.0,))
+        end
+        dual = Mooncake.frule!!(
+            Mooncake.zero_dual(logpdf),
+            Mooncake.Dual(d_counting, rates),
+            Mooncake.zero_dual([1, -1]),
+        )
+        @test Mooncake.primal(dual) == -Inf
+        @test Mooncake.tangent(dual) ≈ 1 / 1.5 - 1
+
+        # Both modes count rows before touching the data. The broadcast would throw a
+        # `DimensionMismatch` regardless, so the message is what these assert.
+        d_dense = MvNormal(randn(sr(5), 2), PDMat([1.0 0.1; 0.1 1.0]))
+        X_wrong = randn(sr(6), 3, 4)
+        @test_throws "x has 3 rows, expected 2" Mooncake.rrule!!(
+            Mooncake.zero_fcodual(loglikelihood),
+            Mooncake.zero_fcodual(d_dense),
+            Mooncake.zero_fcodual(X_wrong),
+        )
+        @test_throws "x has 3 rows, expected 2" Mooncake.frule!!(
+            Mooncake.zero_dual(loglikelihood),
+            Mooncake.zero_dual(d_dense),
+            Mooncake.zero_dual(X_wrong),
+        )
+
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))
         @test_throws DimensionMismatch Mooncake.rrule!!(
