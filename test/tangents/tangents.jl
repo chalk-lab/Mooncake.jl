@@ -300,6 +300,31 @@ _void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
             @test Mooncake._dot(d3, d3) == 3.0
         end
     end
+    @static if VERSION < v"1.11-"
+        @testset "1.10 keys array tangents on their storage" begin
+            # The 1.11+ path keys on the backing `Memory`; 1.10 has none, so two `Array`s over
+            # one buffer had nothing in common to key on and got independent tangents. A
+            # function of ONE buffer was then differentiated as a function of two.
+            a = collect(1.0:4.0)
+            b = reshape(a, 2, 2)
+            t = Mooncake._zero_tangents((identity, a, b))
+            @test pointer(t[2]) == pointer(t[3])
+            f(x, y) = sum(x) + sum(y)
+            _, g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2] == fill(2.0, 4)
+            @test g[3] == fill(2.0, 2, 2)
+            # Distinct arrays must still not deduplicate.
+            c = collect(1.0:4.0)
+            td = Mooncake._zero_tangents((identity, a, c))
+            @test pointer(td[2]) != pointer(td[3])
+            # A cache entry is stored as a `vec`, so the shapes callers get back must still be
+            # their own.
+            @test size(Mooncake.zero_tangent(zeros(2, 3, 4))) == (2, 3, 4)
+            @test ndims(Mooncake.zero_tangent(fill(1.0))) == 0
+        end
+    end
     @static if VERSION >= v"1.11-"
         @testset "_add_to_primal keeps two positions over one buffer" begin
             # Perturbing a result whose sharing was severed measures a function that moves the two

@@ -1,8 +1,28 @@
+# Julia 1.10 has no `Memory`, so two `Array`s over one buffer (`a` and `reshape(a)`) are distinct
+# objects with nothing in common to key a cache on — the 1.11+ path keys on the backing `Memory`
+# object. `Base.dataids` is what Base's own aliasing machinery uses for exactly this question, and
+# the pair with `length` distinguishes different extents over one start. Valid as a cache key only
+# WITHIN one call, which is all these caches live for: every array walked is rooted by the caller
+# and so cannot be freed and its address reused mid-walk.
+@inline _legacy_storage(x::Array) = (Base.dataids(x), length(x))
+# A cache hit may have been stored under a different shape over the same buffer, so it is reshaped
+# back — sharing data, not copying. The ELTYPE is asserted at retrieval and the dimensionality comes
+# from the caller's own `N`, which keeps the result concrete: asserting only the reshaped result
+# leaves the cached value `Any` and every use of it dispatches at runtime.
+@inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}
+    return reshape(cached::Vector{T}, sz)::Array{T,N}
+end
+# Cached as a `vec`, which shares data, so a hit knows both the eltype and the dimensionality of
+# what it is reshaping. Storing the caller's own shape instead leaves the source `ndims` unknown and
+# `reshape` dispatches on `size` at runtime.
+@inline _legacy_cached(x::Array) = vec(x)
+
 @inline function zero_tangent_internal(x::Array{P,N}, dict::MaybeCache) where {P,N}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    k = _legacy_storage(x)
+    haskey(dict, k) && return _legacy_reshape(dict[k], tangent_type(P), size(x))
 
     zt = Array{tangent_type(P),N}(undef, size(x)...)
-    dict[x] = zt
+    dict[k] = _legacy_cached(zt)
     return _map_if_assigned!(
         Base.Fix2(zero_tangent_internal, dict), zt, x
     )::Array{tangent_type(P),N}
@@ -11,16 +31,18 @@ end
 function randn_tangent_internal(
     rng::AbstractRNG, x::Array{T,N}, dict::MaybeCache
 ) where {T,N}
-    haskey(dict, x) && return dict[x]::tangent_type(typeof(x))
+    k = _legacy_storage(x)
+    haskey(dict, k) && return _legacy_reshape(dict[k], tangent_type(T), size(x))
 
     dx = Array{tangent_type(T),N}(undef, size(x)...)
-    dict[x] = dx
+    dict[k] = _legacy_cached(dx)
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), dx, x)
 end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {P,N,T<:Array{P,N}}
-    (haskey(c, x) || x === y) && return x
-    c[x] = true
+    k = _legacy_storage(x)
+    (haskey(c, k) || x === y) && return x
+    c[k] = true
     return _map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y)
 end
 
@@ -30,14 +52,15 @@ function set_to_zero_internal!!(c::SetToZeroCache, x::Array)
 end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::Array{T,N}) where {T,N}
-    haskey(c, t) && return c[t]::Array{T,N}
+    k = _legacy_storage(t)
+    haskey(c, k) && return _legacy_reshape(c[k], T, size(t))
     t′ = Array{T,N}(undef, size(t)...)
-    c[t] = t′
+    c[k] = _legacy_cached(t′)
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Array}
-    key = (t, s)
+    key = (_legacy_storage(t), _legacy_storage(s))
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
     bitstype = Val(isbitstype(eltype(T)))
@@ -53,10 +76,10 @@ end
 function _add_to_primal_internal(
     c::MaybeCache, x::Array{P,N}, t::Array{<:Any,N}, unsafe::Bool
 ) where {P,N}
-    key = (x, t, unsafe)
-    haskey(c, key) && return c[key]::Array{P,N}
+    key = (_legacy_storage(x), _legacy_storage(t), unsafe)
+    haskey(c, key) && return _legacy_reshape(c[key], P, size(x))
     x′ = Array{P,N}(undef, size(x)...)
-    c[key] = x′
+    c[key] = _legacy_cached(x′)
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
