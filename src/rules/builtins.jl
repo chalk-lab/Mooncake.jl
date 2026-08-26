@@ -1632,7 +1632,7 @@ function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {
     else
         V_i = _get_lifted_field(tangent(x), _name)
         _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-        return Lifted{_typeof(y),Nw}(y, V_i)
+        return Lifted{typeof(y),Nw}(y, V_i)
     end
 end
 function frule!!(
@@ -1649,7 +1649,7 @@ function frule!!(
     else
         V_i = _get_lifted_field(tangent(x), _name)
         _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-        return Lifted{_typeof(y),Nw}(y, V_i)
+        return Lifted{typeof(y),Nw}(y, V_i)
     end
 end
 # `Ref{P<:NDualEltype}` (`NDualRef` V): the generic `_get_lifted_field` path above has no
@@ -2243,6 +2243,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (true, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0), :a),
         (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :a),
         (false, :none, (lb=1e-3, ub=350), getfield, StructFoo(5.0, randn(5)), :b),
+        # A differentiable struct whose field holds a tuple of TYPES. The slot must be typed
+        # with `typeof`: `_typeof` sharpens the elements to `Type{X}`, giving a slot type no
+        # runtime value inhabits, so the rule died with a `MethodError` (regression).
+        (false, :none, nothing, getfield, Pair(1.0, (Float64, Int)), :second),
+        (false, :none, nothing, getfield, Pair(1.0, (Float64, Int)), :second, true),
         # Integer field lookup still merits a slightly wider bound than symbol lookup.
         (true, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0), 1),
         (false, :none, (lb=1e-3, ub=500), getfield, StructFoo(5.0, randn(5)), 1),
