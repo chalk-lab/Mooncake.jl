@@ -34,27 +34,27 @@ import Mooncake:
 
 # Both rules below work in `z = (x - μ) / σ` rather than `σ^2`: squaring flushes the
 # derivative to `Inf` for `σ` well inside the range where it is representable
-# (`σ < 1e-20` in `Float32`).
+# (`σ < 1e-20` in `Float32`). Dividing by `σ` rather than scaling by `inv(σ)` matters for
+# the same reason: `inv(σ)` overflows once `σ < 1 / floatmax(P)`, where `(x - μ) / σ` and
+# the derivative are both still finite.
 @is_primitive DefaultCtx Tuple{typeof(logpdf),Normal{P},P} where {P<:IEEEFloat}
 function frule!!(
     ::Dual{typeof(logpdf)}, d::Dual{Normal{P}}, x::Dual{P}
 ) where {P<:IEEEFloat}
     dp = primal(d)
     ḋ = _fields(tangent(d))
-    inv_σ = inv(dp.σ)
-    z = (primal(x) - dp.μ) * inv_σ
-    ẏ = inv_σ * ((abs2(z) - one(P)) * ḋ.σ - z * (tangent(x) - ḋ.μ))
+    z = (primal(x) - dp.μ) / dp.σ
+    ẏ = ((abs2(z) - one(P)) * ḋ.σ - z * (tangent(x) - ḋ.μ)) / dp.σ
     return Dual(logpdf(dp, primal(x)), ẏ)
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{Normal{P}}, x::CoDual{P}
 ) where {P<:IEEEFloat}
     dp = primal(d)
-    inv_σ = inv(dp.σ)
-    z = (primal(x) - dp.μ) * inv_σ
+    z = (primal(x) - dp.μ) / dp.σ
     function normal_logpdf_pb!!(dy::P)
-        dx = -dy * z * inv_σ
-        dd = RData((μ=(-dx), σ=dy * (abs2(z) - one(P)) * inv_σ))
+        dx = -dy * z / dp.σ
+        dd = RData((μ=(-dx), σ=dy * (abs2(z) - one(P)) / dp.σ))
         return NoRData(), dd, dx
     end
     return zero_fcodual(logpdf(dp, primal(x))), normal_logpdf_pb!!
@@ -189,15 +189,16 @@ function frule!!(
     variance = dp.Σ.diag
     y = zero(P)
     ẏ = zero(P)
+    # Divide rather than scaling by a reciprocal: `inv(variance)` overflows for variances
+    # that are small but perfectly ordinary (σ = 0.0039 in `Float16`), where the derivative
+    # itself is representable.
     @inbounds @simd for i in eachindex(px, dp.μ, variance, μ̇, v̇)
-        inverse_variance = inv(variance[i])
         residual = px[i] - dp.μ[i]
-        y += log(variance[i]) + abs2(residual) * inverse_variance
+        scaled_residual = residual / variance[i]
+        y += log(variance[i]) + residual * scaled_residual
         ẏ +=
-            inverse_variance * (
-                v̇[i] * (one(P) - abs2(residual) * inverse_variance) +
-                2 * residual * (ẋ[i] - μ̇[i])
-            )
+            v̇[i] * (one(P) - residual * scaled_residual) / variance[i] +
+            2 * scaled_residual * (ẋ[i] - μ̇[i])
     end
     return Dual(-P(0.5) * (length(px) * log(P(2π)) + y), -P(0.5) * ẏ)
 end
@@ -220,13 +221,13 @@ function rrule!!(
     dvariance = _fields(fields.Σ).diag
     function diag_normal_logpdf_pb!!(dy::P)
         @inbounds @simd for i in eachindex(px, dp.μ, variance, dμ, dvariance)
-            residual = px[i] - dp.μ[i]
-            inverse_variance = inv(variance[i])
-            dx_i = -dy * residual * inverse_variance
+            scaled_residual = (px[i] - dp.μ[i]) / variance[i]
+            dx_i = -dy * scaled_residual
             dx[i] += dx_i
             dμ[i] -= dx_i
-            dvariance[i] +=
-                dy * P(0.5) * (abs2(residual) * abs2(inverse_variance) - inverse_variance)
+            # Halve each term separately: their difference is representable at variances
+            # where `1 / variance` on its own is not.
+            dvariance[i] += dy * (P(0.5) * abs2(scaled_residual) - P(0.5) / variance[i])
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -256,10 +257,9 @@ function frule!!(
     @inbounds for i in eachindex(px, dists, ḋists)
         dist = dists[i]
         ḋ = _fields(ḋists[i])
-        inv_σ = inv(dist.σ)
-        z = (px[i] - dist.μ) * inv_σ
+        z = (px[i] - dist.μ) / dist.σ
         y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
-        ẏ += inv_σ * ((abs2(z) - one(P)) * ḋ.σ - z * (ẋ[i] - ḋ.μ))
+        ẏ += ((abs2(z) - one(P)) * ḋ.σ - z * (ẋ[i] - ḋ.μ)) / dist.σ
     end
     return Dual(y, ẏ)
 end
@@ -280,13 +280,12 @@ function rrule!!(
     function normal_product_logpdf_pb!!(dy::P)
         @inbounds for i in eachindex(px, dists, ddists)
             dist = dists[i]
-            inv_σ = inv(dist.σ)
-            z = (px[i] - dist.μ) * inv_σ
-            dx_i = -dy * z * inv_σ
+            z = (px[i] - dist.μ) / dist.σ
+            dx_i = -dy * z / dist.σ
             dx[i] += dx_i
             fields = _fields(ddists[i])
             ddists[i] = Tangent((
-                μ=(fields.μ - dx_i), σ=(fields.σ + dy * (abs2(z) - one(P)) * inv_σ)
+                μ=(fields.μ - dx_i), σ=(fields.σ + dy * (abs2(z) - one(P)) / dist.σ)
             ))
         end
         return NoRData(), NoRData(), NoRData()

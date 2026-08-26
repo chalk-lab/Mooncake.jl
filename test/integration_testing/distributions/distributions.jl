@@ -365,6 +365,36 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         pb(1.0)
         @test [t.fields.λ for t in Mooncake.tangent(d_poisson).data.v] ≈ [1 / 1.5 - 1, 0.0, -1.0]
 
+        # `inv(σ)` and `inv(variance)` overflow once the parameter drops below
+        # `1 / floatmax(P)`, at parameters where the primal and the derivative are both
+        # still finite, so the rules divide instead. Expected values come from the analytic
+        # derivative in `Float64`, not from the rules' own grouping.
+        @testset "reciprocals do not overflow: $P" for (P, σ, x) in (
+            (Float16, 1.0f-5, 1.0f-7), (Float32, 1.0f-40, 1.0f-44)
+        )
+            d = Mooncake.zero_fcodual(Normal(zero(P), P(σ)))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual(P(x))
+            )
+            _, _, dx = pb(one(P))
+            @test dx ≈ P(-Float64(P(x)) / Float64(P(σ))^2)
+        end
+
+        @testset "variance reciprocals do not overflow: $P" for (P, variance, x) in (
+            (Float16, 1.52f-5, 1.0f-3), (Float32, 1.0f-20, 1.0f-5)
+        )
+            d = Mooncake.zero_fcodual(MvNormal(P[0], PDiagMat(P[variance])))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual(P[x])
+            )
+            pb(one(P))
+            fields = Mooncake.tangent(d).data
+            r = Float64(P(x))
+            v = Float64(P(variance))
+            @test fields.μ[1] ≈ P(r / v)
+            @test Mooncake._fields(fields.Σ).diag[1] ≈ P(0.5 * (r^2 / v^2 - 1 / v))
+        end
+
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))
         @test_throws DimensionMismatch Mooncake.rrule!!(
