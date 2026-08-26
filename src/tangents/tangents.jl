@@ -1161,12 +1161,22 @@ _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
 # Safe only because the FORWARD rules refuse to read a derivative through such a pointer. Adding
 # these while `unsafe_wrap` still wrapped through the placeholder turned that crash into a silently
 # wrong forward derivative, which is why the guard had to land first.
+#
+# `Ptr{Nothing}` carries its placeholder as a `VoidPtrTangent` rather than as a bare pointer, so it
+# needs the same methods; without them the operations are partial for it alone. `randn_tangent` is
+# in this set because returning the pointer would return a `Ptr{Nothing}` where `tangent_type`
+# declares `VoidPtrTangent` — no error, just a tangent of the wrong type.
 randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = x
 set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
 _scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
 _dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
 _add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
 increment_internal!!(::IncCache, x::Ptr, ::Ptr) = x
+randn_tangent_internal(::AbstractRNG, x::Ptr{Nothing}, ::MaybeCache) = uninit_tangent(x)
+set_to_zero_internal!!(::SetToZeroCache, t::VoidPtrTangent) = t
+_scale_internal(::MaybeCache, ::Float64, t::VoidPtrTangent) = t
+_dot_internal(::MaybeCache, ::VoidPtrTangent, ::VoidPtrTangent) = 0.0
+_add_to_primal_internal(::MaybeCache, x::Ptr{Nothing}, ::VoidPtrTangent, ::Bool) = x
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:IEEEFloat} = x + t
 function _add_to_primal_internal(
     c::MaybeCache, x::SimpleVector, t::Vector{Any}, unsafe::Bool

@@ -5,6 +5,12 @@ mutable struct PtrMixed
 end
 _ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
 
+mutable struct VoidPtrMixed
+    p::Ptr{Cvoid}
+    w::Float64
+end
+_void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
+
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -228,6 +234,30 @@ _ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
             Mooncake.prepare_gradient_cache(_ptr_mixed, PtrMixed(pointer(pbuf), 5.0), 3.0),
             _ptr_mixed,
             PtrMixed(pointer(pbuf), 5.0),
+            3.0,
+        )
+        @test v == 15.0
+        @test g[2].fields.w == 3.0
+        @test g[3] == 5.0
+    end
+
+    @testset "a `VoidPtrTangent` is inert in the same way" begin
+        # `Ptr{Nothing}` carries its placeholder as a `VoidPtrTangent`, not as a bare pointer, so
+        # the `Ptr` methods above do not cover it and the same operations were partial for it
+        # alone. `randn_tangent` is included because it returned the pointer itself — a
+        # `Ptr{Nothing}` where `tangent_type` declares `VoidPtrTangent`, wrong type, no error.
+        vbuf = [3.0]
+        vp = Ptr{Cvoid}(pointer(vbuf))
+        vt = Mooncake.uninit_tangent(vp)
+        @test Mooncake._scale(2.0, vt) === vt
+        @test Mooncake._dot(vt, vt) == 0.0
+        @test Mooncake.set_to_zero!!(vt) === vt
+        @test Mooncake._add_to_primal(vp, vt, true) === vp
+        @test Mooncake.randn_tangent(Xoshiro(1), vp) isa Mooncake.tangent_type(typeof(vp))
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(_void_ptr_mixed, VoidPtrMixed(vp, 5.0), 3.0),
+            _void_ptr_mixed,
+            VoidPtrMixed(vp, 5.0),
             3.0,
         )
         @test v == 15.0
