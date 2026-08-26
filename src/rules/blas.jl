@@ -206,10 +206,37 @@ function viewify(
         view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
     )
 end
+# The forward rules refuse an operand whose logical order differs from BLAS's raw walk; reverse
+# indexed it logically anyway, so the cotangent landed on elements the routine never read, or ran
+# off the end. One refusal here covers `nrm2`, `scal!` and `dot`: each reaches its tangent through
+# this method.
+#
+# Supporting a strided operand is left undone: BLAS's t-th element is the operand's logical index
+# `1 + (t-1) * incx ÷ stride(x, 1)`, so the divisible case (`norm` of a matrix row) could be indexed
+# directly and the indivisible one differentiated through the parent. Both modes need it together.
+@noinline function _throw_rvs_raw_walk(x, incx)
+    throw(
+        ArgumentError(
+            LazyString(
+                "Reverse-mode BLAS does not support operand `",
+                typeof(x),
+                "` with strides ",
+                strides(x),
+                " and `incx = ",
+                incx,
+                "`: the routine reads raw memory from `pointer(X)`, which follows the operand's ",
+                "own elements only when it is dense and the increment is positive, so otherwise ",
+                "the cotangent would land on different elements from the ones it read. Pass a ",
+                "dense operand with a positive increment, or the raw-pointer form.",
+            ),
+        ),
+    )
+end
 function viewify(
     n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
+    _blas_raw_walk_matches(x, incx) || _throw_rvs_raw_walk(x, incx)
     xinds = 1:incx:(incx * n)
     return view(x, xinds), view(dx, xinds)
 end
@@ -2962,25 +2989,13 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
     # a dense `(3, 2)` has `(1, 3)`, so logical index 4 is raw offset 6. The old first-dim-stride
     # test admitted it and the rule then scaled the partials of the wrong elements, silently.
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
+    # Both modes; the two messages share this substring. The one-argument `nrm2` synthesises
+    # `incx = stride(x, 1)`, which is how an ordinary `norm(view(A, 1, :))` reaches the mismatch.
     cases = Any[
-        (
-            (ArgumentError, "does not support operand"),
-            BLAS.scal!,
-            (5, P(2), x, 2),
-            (; mode=ForwardMode),
-        ),
-        (
-            (ArgumentError, "does not support operand"),
-            BLAS.scal!,
-            (6, P(2), m, 1),
-            (; mode=ForwardMode),
-        ),
-        (
-            (ArgumentError, "does not support operand"),
-            BLAS.nrm2,
-            (6, m, 1),
-            (; mode=ForwardMode),
-        ),
+        ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 2), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.nrm2, (6, m, 1), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.nrm2, (x,), (;)),
     ]
     # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
     # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
