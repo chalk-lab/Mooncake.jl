@@ -239,6 +239,28 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), _d2(0.0, 0.0, 0.0)), 2) === 0.0
         @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), 0.0), 2) === 0.0
         @test Nfwd.ndual_partial(atan(0.0, _d2(0.0, 1.0, 0.0)), 2) === 0.0
+        # The ACTIVE lane must keep the singularity in all three shapes. Scaling the intermediate
+        # `x*dy - y*dx` by `inv(r2)` made the two-`NDual` shape return 0 at the origin: the
+        # intermediate is all-zero there, so the guard read every lane as inactive and suppressed
+        # the `Inf`. The two mixed shapes always scaled the original partials and were right.
+        @test isnan(Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), _d2(0.0, 0.0, 0.0)), 1))
+        @test isnan(Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), 0.0), 1))
+        @test isnan(Nfwd.ndual_partial(atan(0.0, _d2(0.0, 1.0, 0.0)), 1))
+        # `rem`'s divisor coefficient is `trunc(x/y)`, which is Inf once `x/y` overflows, so an
+        # unguarded `Inf * 0.0` made an INACTIVE lane NaN while the primal stayed finite.
+        rsub = rem(_d2(1.0, 1.0, 0.0), _d2(1e-310, 0.0, 0.0))
+        @test isfinite(Nfwd.ndual_value(rsub))
+        @test Nfwd.ndual_partial(rsub, 1) === 1.0
+        @test Nfwd.ndual_partial(rsub, 2) === 0.0
+    end
+
+    @testset "Real / NDual takes the value from the division" begin
+        # `c * inv(x)` overflows for a subnormal divisor where `c / x` is finite, so the value has
+        # to come from the division itself. The `inv` form stays in the partial scale, which is
+        # what it was written for.
+        d = 1e-300 / _d2(1e-310, 1.0, 0.0)
+        @test Nfwd.ndual_value(d) == 1e-300 / 1e-310
+        @test isfinite(Nfwd.ndual_value(d))
     end
 
     @testset "power" begin

@@ -517,7 +517,10 @@ end
     # Promote the partials to `S` too (the value is already `S`), so the guarded scale sees
     # matching types — mirrors the `+`/`-`/`*` Real/NDual methods.
     sp = ntuple(i -> S(x.partials[i]), Val(N))
-    return NDual{S,N}(S(c) * vi, _fwd_guarded_scale(sp, -(S(c) * vi * vi)))
+    # The value is the DIVISION, not `c * inv(x)`: `inv` overflows for a subnormal divisor where
+    # `c / x` is finite. The `inv` form stays in the scale, which is what it was written for.
+    v = S(c) / S(x.value)
+    return NDual{S,N}(v, _fwd_guarded_scale(sp, -(v * vi)))
 end
 
 # Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
@@ -720,14 +723,17 @@ end
 end
 @inline function Base.atan(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     r2 = a.value^2 + b.value^2
+    # Each operand's partials are scaled by their OWN coefficient, as the `NDual`/`Real` method
+    # below does. Scaling the intermediate `x*dy - y*dx` by `inv(r2)` instead masks the singularity
+    # at (0, 0): the intermediate is all-zero there, so the outer guard reads every lane as
+    # INACTIVE and suppresses the `Inf`, returning 0 where the derivative is undefined and reverse
+    # mode returns NaN. Here the coefficient is `0/0`, so an ACTIVE lane gets NaN and only a
+    # genuinely unseeded lane is guarded to zero.
     return NDual{T,N}(
         atan(a.value, b.value),
-        _fwd_guarded_scale(
-            _fwd_sub(
-                _fwd_guarded_scale(a.partials, b.value),
-                _fwd_guarded_scale(b.partials, a.value),
-            ),
-            inv(r2),
+        _fwd_add(
+            _fwd_guarded_scale(a.partials, b.value / r2),
+            _fwd_guarded_scale(b.partials, -a.value / r2),
         ),
     )
 end
@@ -1418,9 +1424,10 @@ end
 @inline function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     pv, yv = ndual_value(x), ndual_value(y)
     c = trunc(pv / yv)
-    return NDual{T,N}(
-        rem(pv, yv), ntuple(k -> ndual_partial(x, k) - c * ndual_partial(y, k), Val(N))
-    )
+    # `c` is ±Inf once `pv / yv` overflows (a subnormal divisor), and an unguarded `Inf * 0.0`
+    # turns an INACTIVE lane into NaN while the primal stays finite. `mod` below guards for the
+    # same reason.
+    return NDual{T,N}(rem(pv, yv), _fwd_add(x.partials, _fwd_guarded_scale(y.partials, -c)))
 end
 
 @inline function Base.mod(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
