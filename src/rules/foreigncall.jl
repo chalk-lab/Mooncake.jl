@@ -349,8 +349,8 @@ function rrule!!(
     # Both pointers are dereferenced below, so both must address real tangent
     # bytes. Same guard as the load/store rules and reverse `unsafe_wrap`; it lives
     # in `IntrinsicsWrappers`, not the top-level module.
-    IntrinsicsWrappers._check_tangent_ptr(tangent(dest))
-    IntrinsicsWrappers._check_tangent_ptr(tangent(src))
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
     _n = primal(n)
 
     # A self-copy is the identity, and the snapshot-and-restore below is actively wrong for it: the

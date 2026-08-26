@@ -342,7 +342,7 @@ function rrule!!(
     # nothing downstream can tell from a real tangent, so the first consumer to touch it segfaults
     # (`lmemoryrefget`'s pullback did). Same guard as `pointerref`/`pointerset`, so the whole pointer
     # family refuses the same input, and forward already refuses it via the `NoDual`-V check above.
-    _check_tangent_ptr(tangent(p))
+    _check_tangent_ptr(primal(p), tangent(p))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
     function unsafe_wrap_pullback!!(::NoRData)
@@ -406,7 +406,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
-    _check_tangent_ptr(dx)
+    _check_tangent_ptr(_x, dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = CoDual(atomic_pointerref(_x, _order), fdata(atomic_pointerref(dx, :monotonic)))
@@ -481,7 +481,7 @@ end
 function rrule!!(::CoDual{typeof(atomic_pointerset)}, p::CoDual{<:Ptr}, x::CoDual, order)
     _p = primal(p)
     _order = primal(order)
-    _check_tangent_ptr(tangent(p))
+    _check_tangent_ptr(primal(p), tangent(p))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
@@ -513,6 +513,13 @@ const _INT2PTR_ERR_MSG =
     "differentiable function, you should write a rule for this function, or modify " *
     "its implementation to avoid the bitcast."
 
+const _PLACEHOLDER_TANGENT_PTR_MSG =
+    "Cannot differentiate a load or store through a `Ptr` whose tangent is the placeholder that " *
+    "the `uninit_*` convention builds from the pointer's own address. There is no derivative " *
+    "buffer behind it, so accumulating a cotangent would write derivative data into the primal. " *
+    "This arises when a bare `Ptr` reaches AD as a differentiable input; differentiate the " *
+    "underlying array instead, so a real tangent buffer exists."
+
 const _NULL_TANGENT_PTR_MSG =
     "Cannot differentiate a load or store through a `Ptr` with no tangent storage behind it. " *
     "The pointer derives from a buffer whose element type is non-differentiable (a " *
@@ -530,9 +537,17 @@ const _NULL_TANGENT_PTR_MSG =
 # nothing downstream can distinguish (see the `unsafe_wrap` rrule above). Making "no tangent storage"
 # its own type would let dispatch enforce this instead of convention, at the cost of touching every
 # rule that takes a `Ptr` tangent.
-@inline function _check_tangent_ptr(dx)
-    if dx isa Ptr && iszero(UInt(dx)) && _elements_occupy_storage(eltype(dx))
-        throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
+@inline function _check_tangent_ptr(x, dx)
+    if dx isa Ptr && _elements_occupy_storage(eltype(dx))
+        iszero(UInt(dx)) && throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
+        # The convention's OTHER poison value: `uninit_*` reinterprets the pointer's own primal
+        # address as its tangent, so the placeholder is non-NULL and the test above cannot see it.
+        # Accumulating through it stores the cotangent into the primal buffer -- `unsafe_load(p)`
+        # over `xs = [3.0]` left `xs` holding 5.0. Takes the primal so the two poison values are
+        # rejected in one place rather than at each consumer.
+        x isa Ptr &&
+            UInt(dx) == UInt(x) &&
+            throw(ArgumentError(_PLACEHOLDER_TANGENT_PTR_MSG))
     end
     return nothing
 end
@@ -1173,7 +1188,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
-    _check_tangent_ptr(dx)
+    _check_tangent_ptr(_x, dx)
     a = CoDual(pointerref(_x, _y, _z), fdata(pointerref(dx, _y, _z)))
     if Mooncake.rdata_type(tangent_type(Mooncake._typeof(primal(a)))) == NoRData
         return a, NoPullback((NoRData(), NoRData(), NoRData(), NoRData()))
@@ -1252,7 +1267,7 @@ function rrule!!(::CoDual{typeof(pointerset)}, p, x, idx, z)
     _p = primal(p)
     _idx = primal(idx)
     _z = primal(z)
-    _check_tangent_ptr(tangent(p))
+    _check_tangent_ptr(primal(p), tangent(p))
     old_value = pointerref(_p, _idx, _z)
     old_tangent = pointerref(tangent(p), _idx, _z)
     dp = tangent(p)
@@ -2525,6 +2540,11 @@ function throwing_rule_test_cases(::Val{:builtins})
             x * unsafe_wrap(Array{Float64,1}, Ptr{Float64}(pointer(b)), 1)[1]
         end
     end
+    # Reverse counterpart of the `phslot` cases: a bare `Ptr` reaching AD as a differentiable
+    # input is SEEDED with the `uninit_*` placeholder, so no hand-built slot is needed to trigger
+    # it. The pullback accumulated through the primal's own address -- `xs = [3.0]` came back
+    # holding 5.0, with the returned value still correct, so nothing signalled the corruption.
+    load_through_bare_ptr(q) = unsafe_load(q) * 2.0
     function atomic_load_retyped_bytes(b, x)
         return GC.@preserve b begin
             x * unsafe_load(Ptr{Float64}(pointer(b)), :monotonic)
@@ -2599,6 +2619,12 @@ function throwing_rule_test_cases(::Val{:builtins})
             IntrinsicsWrappers.atomic_pointerset,
             (phslot, 2.0, :monotonic),
             (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "placeholder"),
+            load_through_bare_ptr,
+            (ptr,),
+            (; mode=ReverseMode),
         ),
         # An Int/UInt -> `Ptr` bitcast must be refused in BOTH modes. Forward used to return
         # `NoDual()` here, so a differentiable pointer arrived with no tangent behind it and the
