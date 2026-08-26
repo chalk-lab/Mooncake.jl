@@ -369,6 +369,9 @@ function frule!!(
     _order = primal(order)
     a = atomic_pointerref(primal(x), _order)
     x_partials = tangent(x)
+    @inbounds for lane in 1:Nw
+        _check_fwd_tangent_ptr_addressable(primal(x), x_partials[lane])
+    end
     da_lanes = ntuple(lane -> atomic_pointerref(x_partials[lane], _order), Val(Nw))
     return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
 end
@@ -437,6 +440,9 @@ function frule!!(
     atomic_pointerset(primal(p), primal(x), _order)
     if tangent_type(T) !== NoTangent
         p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            _check_fwd_tangent_ptr_addressable(primal(p), p_partials[lane])
+        end
         @inbounds for lane in 1:Nw
             atomic_pointerset(p_partials[lane], tangent(x, lane), _order)
         end
@@ -1100,6 +1106,13 @@ function frule!!(
     _z = primal(z)
     a = pointerref(primal(x), _y, _z)
     x_partials = tangent(x)
+    # Refuse the `uninit_*` placeholder, whose lane pointer is non-NULL and EQUAL to its primal, as
+    # `unsafe_wrap` does. Dereferencing it loads the primal's own bytes as a derivative, or stores
+    # the derivative over the primal. All lanes are checked BEFORE any store, so a throw cannot
+    # leave the buffer half-written.
+    @inbounds for lane in 1:Nw
+        _check_fwd_tangent_ptr_addressable(primal(x), x_partials[lane])
+    end
     da_lanes = ntuple(lane -> pointerref(x_partials[lane], _y, _z), Val(Nw))
     return Lifted{T,Nw}(a, _scalar_ndual(a, da_lanes))
 end
@@ -1192,6 +1205,9 @@ function frule!!(
     pointerset(primal(p), primal(x), _idx, _z)
     if tangent_type(T) !== NoTangent
         p_partials = tangent(p)
+        @inbounds for lane in 1:Nw
+            _check_fwd_tangent_ptr_addressable(primal(p), p_partials[lane])
+        end
         @inbounds for lane in 1:Nw
             pointerset(p_partials[lane], tangent(x, lane), _idx, _z)
         end
@@ -2548,6 +2564,34 @@ function throwing_rule_test_cases(::Val{:builtins})
             ArgumentError,
             IntrinsicsWrappers.atomic_pointerset,
             (ndslot, 2.0, :monotonic),
+            (; mode=ForwardMode),
+        ),
+        # The same four through the `uninit_*` PLACEHOLDER rather than a `NoDual` V. The lane
+        # pointer is non-NULL and equal to its primal, so the NULL test cannot see it: loads read
+        # the primal's own bytes as a derivative and stores write the derivative over the primal.
+        # `unsafe_wrap` above already refuses it; these did not.
+        (
+            (ArgumentError, "cannot load from or store to"),
+            IntrinsicsWrappers.pointerref,
+            (phslot, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "cannot load from or store to"),
+            IntrinsicsWrappers.atomic_pointerref,
+            (phslot, :monotonic),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "cannot load from or store to"),
+            IntrinsicsWrappers.pointerset,
+            (phslot, 2.0, 1, 1),
+            (; mode=ForwardMode),
+        ),
+        (
+            (ArgumentError, "cannot load from or store to"),
+            IntrinsicsWrappers.atomic_pointerset,
+            (phslot, 2.0, :monotonic),
             (; mode=ForwardMode),
         ),
         # An Int/UInt -> `Ptr` bitcast must be refused in BOTH modes. Forward used to return
