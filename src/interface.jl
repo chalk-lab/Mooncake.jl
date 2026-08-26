@@ -746,7 +746,13 @@ end
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
-    input_lifteds = tuple_map(lift, input_primals, input_tangents)
+    # One aliasing cache across the argument tuple, as the `FCache{R,Nothing,…}` method below
+    # does: the float-array `lift` packs its seed into a FRESH partials block per call, so two
+    # arguments over one storage would otherwise get independent partials. The primal still
+    # aliases, so a mutation through one argument is visible through the other while its partial
+    # is not, and the returned value and derivative describe different functions.
+    c = IdDict()
+    input_lifteds = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     output = __call_rule(rule, input_lifteds)
     return primal(output), last(unlift(output))
 end
@@ -1039,7 +1045,11 @@ not snapshotted — a callable that mutates its own fields is not restored.
     # Snapshot the inputs into the cache buffer and restore from it after the rule runs, so
     # an in-place-mutating `f` does not mutate the user's inputs.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    output = __call_rule(cache.single_rule, tuple_map(lift, input_primals, input_tangents))
+    # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}` method.
+    c = IdDict()
+    output = __call_rule(
+        cache.single_rule, tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
+    )
     output_primal = primal(output)
     _, output_internal_tangent = unlift(output)
     output_friendly_tangent = tangent_to_friendly!!(

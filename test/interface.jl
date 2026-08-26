@@ -1447,6 +1447,45 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gclo[2].b ≈ 4.0
         end
 
+        @testset "a mutating `f` over one repeated argument shares partials" begin
+            # Every argument-tuple lift needs ONE shared aliasing cache: the float-array `lift`
+            # packs its seed into a fresh partials block per call, so two arguments over one
+            # storage otherwise get independent partials while the PRIMAL still aliases. The
+            # returned pair is then self-contradictory — the value says the mutation was seen, the
+            # derivative says it was not.
+            #
+            # The `sum(a .* b)` case below cannot expose this: with no mutation, independent blocks
+            # give the right answer anyway by the product rule. The trigger is mutation THROUGH the
+            # aliased storage.
+            fmut(x, y) = (x .*= 2.0; sum(y))
+            mk() = collect(1.0:4.0)
+            # Analytic: g(a) = 2*sum(a), so the value is 20.0 and the JVP along ones(4) is 8.0.
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                a = mk()
+                cache = Mooncake.prepare_derivative_cache(
+                    fmut, a, a; config=Mooncake.Config(; friendly_tangents=fr, kwargs...)
+                )
+                # ONE array passed at both positions — `mk()` twice would be two distinct
+                # arrays, and the prepared-aliased cache rightly refuses that.
+                aa, dd = mk(), ones(4)
+                v, d = Mooncake.value_and_derivative!!(
+                    cache, (fmut, Mooncake.NoTangent()), (aa, dd), (aa, dd)
+                )
+                @test (v, d) == (20.0, 8.0)
+            end
+            # The rule-level tuple method takes no `Config` at all and had the same gap.
+            let a = mk()
+                aa, dd = mk(), ones(4)
+                v, d = Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, dd),
+                    (aa, dd),
+                )
+                @test (v, d) == (20.0, 8.0)
+            end
+        end
+
         @testset "friendly cache refuses only prepared-aliased/called-distinct" begin
             # Prepare-time aliased arguments share one tangent buffer, so a call with distinct
             # arguments leaves both positions holding the last tangent written: 6.0 for a truth
