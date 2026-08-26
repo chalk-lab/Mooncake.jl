@@ -77,6 +77,13 @@ const DenseVec{P} = Union{Vector{P},ContiguousSubVector{P}}
 # leaves nothing to subtract. Callers divide by the variance twice rather than forming
 # `variance^2`, which underflows well inside the useful range. Accuracy is limited only
 # where `residual^2` is itself subnormal.
+# The tangent of the Cholesky factor `L`. `factors` holds `L'` when `uplo == 'U'`, and only
+# its stored triangle is read; copying keeps the two branches one type so the matrix products
+# at the call sites stay inferable.
+function _factor_tangent(chol::Cholesky, factors::Matrix)
+    return LowerTriangular(chol.uplo === 'U' ? permutedims(factors) : copy(factors))
+end
+
 function _excess(residual::P, variance::P) where {P<:IEEEFloat}
     squared = residual * residual
     return (squared - variance) + fma(residual, residual, -squared)
@@ -388,6 +395,87 @@ function rrule!!(
     return zero_fcodual(y), counting_product_logpdf_pb!!
 end
 
+# `logpdf(d, X)` scores each column of `X` separately and returns a vector, so unlike
+# `loglikelihood` it cannot fold the columns together; the saving is the same per-column
+# triangular solve the derived rule traces.
+@is_primitive DefaultCtx Tuple{
+    typeof(logpdf),DiagMvNormal{P},Matrix{P}
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logpdf)}, d::Dual{<:DiagMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = _fields(tangent(d))
+    μ̇ = ḋ.μ
+    v̇ = _fields(ḋ.Σ).diag
+    variance = dp.Σ.diag
+    logdetΣ = zero(P)
+    @inbounds @simd for i in eachindex(variance)
+        logdetΣ += log(variance[i])
+    end
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdetΣ)
+    y = Vector{P}(undef, size(px, 2))
+    ẏ = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        derivative = zero(P)
+        @simd for i in eachindex(dp.μ, variance, μ̇, v̇)
+            residual = px[i, j] - dp.μ[i]
+            scaled_residual = residual / variance[i]
+            mahalanobis += residual * scaled_residual
+            derivative +=
+                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
+                v̇[i] * _excess(residual, variance[i]) / variance[i] / variance[i]
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+        ẏ[j] = -P(0.5) * derivative
+    end
+    return Dual(y, ẏ)
+end
+function rrule!!(
+    ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    variance = dp.Σ.diag
+    logdetΣ = zero(P)
+    @inbounds @simd for i in eachindex(variance)
+        logdetΣ += log(variance[i])
+    end
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdetΣ)
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        @simd for i in eachindex(dp.μ, variance)
+            mahalanobis += abs2(px[i, j] - dp.μ[i]) / variance[i]
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+    end
+    out = zero_fcodual(y)
+    dy = tangent(out)
+    fields = _fields(tangent(d))
+    dμ = fields.μ
+    dvariance = _fields(fields.Σ).diag
+    function diag_logpdf_matrix_pb!!(::NoRData)
+        @inbounds for j in eachindex(dy)
+            dy_j = dy[j]
+            @simd for i in eachindex(dp.μ, variance, dμ, dvariance)
+                residual = px[i, j] - dp.μ[i]
+                dx_ij = -dy_j * residual / variance[i]
+                dx[i, j] += dx_ij
+                dμ[i] -= dx_ij
+                dvariance[i] +=
+                    dy_j * _excess(residual, variance[i]) / variance[i] / (2 * variance[i])
+            end
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return out, diag_logpdf_matrix_pb!!
+end
+
 # Repeated observations from a diagonal normal. `loglikelihood(d, X)` sums over the columns
 # of `X`, and the derived rule pays one pullback per column; one pass over the matrix
 # replaces all of them. The `-n / variance` half of the log-determinant's derivative is the
@@ -467,6 +555,78 @@ end
 # accumulate into, so it stays with the derived rules.
 const IsoMvNormal{P} = MvNormal{P,<:ScalMat{P},Vector{P}}
 
+@is_primitive DefaultCtx Tuple{typeof(logpdf),IsoMvNormal{P},Matrix{P}} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logpdf)}, d::Dual{<:IsoMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = _fields(tangent(d))
+    μ̇ = ḋ.μ
+    v̇ = _fields(ḋ.Σ).value
+    μ = dp.μ
+    variance = dp.Σ.value
+    constant = -P(0.5) * length(μ) * (log(P(2π)) + log(variance))
+    y = Vector{P}(undef, size(px, 2))
+    ẏ = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        derivative = zero(P)
+        @simd for i in eachindex(μ, μ̇)
+            residual = px[i, j] - μ[i]
+            scaled_residual = residual / variance
+            mahalanobis += residual * scaled_residual
+            derivative +=
+                2 * scaled_residual * (ẋ[i, j] - μ̇[i]) -
+                v̇ * _excess(residual, variance) / variance / variance
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+        ẏ[j] = -P(0.5) * derivative
+    end
+    return Dual(y, ẏ)
+end
+function rrule!!(
+    ::CoDual{typeof(logpdf)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    μ = dp.μ
+    variance = dp.Σ.value
+    constant = -P(0.5) * length(μ) * (log(P(2π)) + log(variance))
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        @simd for i in eachindex(μ)
+            mahalanobis += abs2(px[i, j] - μ[i]) / variance
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+    end
+    out = zero_fcodual(y)
+    dy = tangent(out)
+    dμ = _fields(tangent(d)).μ
+    function iso_logpdf_matrix_pb!!(::NoRData)
+        excess_total = zero(P)
+        @inbounds for j in eachindex(dy)
+            dy_j = dy[j]
+            @simd for i in eachindex(μ, dμ)
+                residual = px[i, j] - μ[i]
+                dx_ij = -dy_j * residual / variance
+                dx[i, j] += dx_ij
+                dμ[i] -= dx_ij
+                excess_total += dy_j * _excess(residual, variance)
+            end
+        end
+        dd = RData((
+            μ=NoRData(),
+            Σ=RData((dim=NoRData(), value=excess_total / variance / (2 * variance))),
+        ))
+        return NoRData(), dd, NoRData()
+    end
+    return out, iso_logpdf_matrix_pb!!
+end
+
 @is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),IsoMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
@@ -542,6 +702,71 @@ const CholeskyMvNormal{P} = MvNormal{
 }
 
 @is_primitive DefaultCtx Tuple{
+    typeof(logpdf),CholeskyMvNormal{P},Matrix{P}
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Dual{typeof(logpdf)}, d::Dual{<:CholeskyMvNormal{P}}, x::Dual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋ = arrayify(x)
+    _check_dims(dp, px)
+    L = dp.Σ.chol.L
+    ḋ = _fields(tangent(d))
+    L̇ = _factor_tangent(dp.Σ.chol, _fields(_fields(ḋ.Σ).chol).factors)
+    standardized = L \ (px .- dp.μ)
+    perturbed = L \ ((ẋ .- ḋ.μ) - L̇ * standardized)
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdet(dp.Σ.chol))
+    logdet_derivative = sum(i -> L̇[i, i] / L[i, i], axes(L, 1))
+    y = Vector{P}(undef, size(px, 2))
+    ẏ = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        column = view(standardized, :, j)
+        y[j] = constant - P(0.5) * sum(abs2, column)
+        ẏ[j] = -logdet_derivative - dot(column, view(perturbed, :, j))
+    end
+    return Dual(y, ẏ)
+end
+function rrule!!(
+    ::CoDual{typeof(logpdf)}, d::CoDual{<:CholeskyMvNormal{P}}, x::CoDual{Matrix{P}}
+) where {P<:IEEEFloat}
+    dp = primal(d)
+    px, dx = arrayify(x)
+    _check_dims(dp, px)
+    L = dp.Σ.chol.L
+    upper = dp.Σ.chol.uplo === 'U'
+    standardized = L \ (px .- dp.μ)
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + logdet(dp.Σ.chol))
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        y[j] = constant - P(0.5) * sum(abs2, view(standardized, :, j))
+    end
+    out = zero_fcodual(y)
+    dy = tangent(out)
+    fields = _fields(tangent(d))
+    dfactors = _fields(_fields(fields.Σ).chol).factors
+    function chol_logpdf_matrix_pb!!(::NoRData)
+        # Each column carries its own cotangent, so the columns are weighted before the
+        # solve rather than after; `loglikelihood` is this with one weight throughout.
+        weighted = standardized .* transpose(dy)
+        x_gradient = -(L' \ weighted)
+        dx .+= x_gradient
+        fields.μ .-= vec(sum(x_gradient; dims=2))
+        factor_gradient = L' \ (weighted * standardized')
+        total_weight = sum(dy)
+        @inbounds for j in axes(dfactors, 2), i in j:size(dfactors, 1)
+            contribution = factor_gradient[i, j]
+            if i == j
+                contribution -= total_weight / L[i, i]
+            end
+            row, column = upper ? (j, i) : (i, j)
+            dfactors[row, column] += contribution
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return out, chol_logpdf_matrix_pb!!
+end
+
+@is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),CholeskyMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
 function frule!!(
@@ -552,10 +777,7 @@ function frule!!(
     _check_dims(dp, px)
     L = dp.Σ.chol.L
     ḋ = _fields(tangent(d))
-    factors = _fields(_fields(ḋ.Σ).chol).factors
-    # `factors` holds `L'` when `uplo == 'U'`, and only its stored triangle is read.
-    # Copying keeps the two branches one type, so the matrix product below stays inferable.
-    L̇ = LowerTriangular(dp.Σ.chol.uplo === 'U' ? permutedims(factors) : copy(factors))
+    L̇ = _factor_tangent(dp.Σ.chol, _fields(_fields(ḋ.Σ).chol).factors)
     standardized = L \ (px .- dp.μ)
     n = size(px, 2)
     y =

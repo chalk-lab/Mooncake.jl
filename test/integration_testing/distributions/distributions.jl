@@ -301,6 +301,39 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
+    # `logpdf(d, X)` scores each column separately and returns a vector; its rules cover
+    # the same three covariance shapes as `loglikelihood`.
+    @testset "$name matrix logpdf ::$P" for P in [Float64, Float32, Float16],
+        (name, covariance) in
+        (("diagonal", PDiagMat(rand(sr(25), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
+
+        d = MvNormal(randn(sr(24), P, 3), covariance)
+        interface_only = P === Float16
+        test_rule(
+            sr(27),
+            logpdf,
+            d,
+            randn(sr(26), P, 3, 4);
+            perf_flag=(interface_only ? :none : :stability),
+            interface_only,
+        )
+    end
+
+    @testset "dense matrix logpdf uplo=$uplo ::$P" for P in [Float64, Float32],
+        uplo in ('L', 'U')
+
+        factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
+        d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
+        test_rule(
+            sr(29),
+            logpdf,
+            d,
+            randn(sr(30), P, 2, 4);
+            perf_flag=:stability,
+            unsafe_perturb=true,
+        )
+    end
+
     @testset "$name loglikelihood ::$P" for P in [Float64, Float32, Float16],
         (name, covariance) in
         (("diagonal", PDiagMat(rand(sr(18), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
