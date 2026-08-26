@@ -109,6 +109,26 @@ function _excess(residual::P, variance::P) where {P<:IEEEFloat}
     return (squared - variance) + fma(residual, residual, -squared)
 end
 
+# `sum(f, collection)` reaches `Base.mapreduce_empty` by a runtime dispatch on Julia 1.10,
+# so a rule that reduces that way is not inferable there — including through
+# `logpdf(::Product, x)`, which reduces the same way internally. These two accumulate
+# explicitly instead.
+function _sum_logpdf(dists, x, ::Type{P}) where {P}
+    y = zero(P)
+    @inbounds for i in eachindex(x, dists)
+        y += logpdf(dists[i], x[i])
+    end
+    return y
+end
+
+function _logdet_derivative(L, L̇)
+    total = zero(eltype(L))
+    @inbounds for i in axes(L, 1)
+        total += L̇[i, i] / L[i, i]
+    end
+    return total
+end
+
 # One coordinate's contribution to the gradients of the sample and of the variance, given the
 # cotangent of its log-density; the mean's is the sample's negated. Dividing rather than
 # scaling by a reciprocal matters: `inv(variance)` overflows for variances that are small but
@@ -402,7 +422,7 @@ function frule!!(
         insupport(dists[i], px[i]) || continue
         ẏ += _param_derivative(dists[i], px[i]) * _param_tangent(ḋists[i])
     end
-    return Dual(logpdf(dp, px), ẏ)
+    return Dual(_sum_logpdf(dists, px, P), ẏ)
 end
 function rrule!!(
     ::CoDual{typeof(logpdf)},
@@ -412,9 +432,9 @@ function rrule!!(
     dp = primal(d)
     px = primal(x)
     _check_dims(dp, px)
-    y = logpdf(dp, px)
     dists = _dists(dp)
     ddists = _dists(dp, tangent(d))
+    y = _sum_logpdf(dists, px, P)
     function counting_product_logpdf_pb!!(dy::P)
         @inbounds for i in eachindex(px, dists, ddists)
             # An out-of-support observation makes the primal `-Inf`, whose gradient is zero.
@@ -732,7 +752,7 @@ function frule!!(
     standardized = L \ (px .- dp.μ)
     perturbed = L \ ((ẋ .- ḋ.μ) - L̇ * standardized)
     constant = -P(0.5) * (length(dp) * log(P(2π)) + logdet(dp.Σ.chol))
-    logdet_derivative = sum(i -> L̇[i, i] / L[i, i], axes(L, 1))
+    logdet_derivative = _logdet_derivative(L, L̇)
     y = Vector{P}(undef, size(px, 2))
     ẏ = Vector{P}(undef, size(px, 2))
     @inbounds for j in axes(px, 2)
@@ -792,7 +812,7 @@ function frule!!(
         -P(0.5) *
         (length(px) * log(P(2π)) + n * logdet(dp.Σ.chol) + sum(abs2, standardized))
     ẏ = -(
-        n * sum(i -> L̇[i, i] / L[i, i], axes(L, 1)) +
+        n * _logdet_derivative(L, L̇) +
         dot(standardized, L \ ((ẋ .- ḋ.μ) - L̇ * standardized))
     )
     return Dual(y, ẏ)

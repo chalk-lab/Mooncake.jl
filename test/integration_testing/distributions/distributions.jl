@@ -278,6 +278,11 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         )
     end
 
+    # `test_rule` checks the primal's type stability alongside the rules'. Julia 1.10 reaches
+    # `Base.mapreduce_empty` by a runtime dispatch inside `sum(f, collection)`, which
+    # `logpdf(::Product, x)` and `loglikelihood(d, X)` both reduce with, so the primal is not
+    # inferable there and only the allocation half can be asserted. The rules themselves are
+    # inferable on 1.10; see `_sum_logpdf` in the extension.
     # `product_distribution` returns the deprecated `Product`; `ProductDistribution` is
     # what it will return once Distributions removes it.
     @testset "$D $container ::$P" for P in [Float64, Float32, Float16],
@@ -294,7 +299,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             logpdf,
             d,
             x;
-            perf_flag=(interface_only ? :none : :stability_and_allocs),
+            perf_flag=if interface_only
+                :none
+            elseif VERSION < v"1.11-"
+                :allocs
+            else
+                :stability_and_allocs
+            end,
             interface_only,
             # `ProductDistribution` has no constructor `_add_to_primal` can call.
             unsafe_perturb=true,
@@ -310,12 +321,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
 
         d = MvNormal(randn(sr(24), P, 3), covariance)
         interface_only = P === Float16
+        primal_inferable = f === logpdf || VERSION >= v"1.11-"
         test_rule(
             sr(27),
             f,
             d,
             randn(sr(26), P, 3, 4);
-            perf_flag=(interface_only ? :none : :stability),
+            perf_flag=(interface_only || !primal_inferable ? :none : :stability),
             interface_only,
         )
     end
@@ -328,8 +340,14 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
 
         factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
         d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
+        primal_inferable = f === logpdf || VERSION >= v"1.11-"
         test_rule(
-            sr(29), f, d, randn(sr(30), P, 2, 4); perf_flag=:stability, unsafe_perturb=true
+            sr(29),
+            f,
+            d,
+            randn(sr(30), P, 2, 4);
+            perf_flag=(primal_inferable ? :stability : :none),
+            unsafe_perturb=true,
         )
     end
 
