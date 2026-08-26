@@ -1913,7 +1913,14 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
     @test V isa Type
     L = lifted_type(Val(N), primal_type)
     @test L isa Type
-    @test (tangent_type(primal_type) === NoTangent) == (V === NoDual)
+    # A `Ptr` to a NON-differentiable pointee is the one exemption: reverse keeps a typed
+    # `Ptr{NoTangent}` placeholder, which is not `NoTangent`, while forward's V is `NoDual`, so
+    # the biconditional is false in one direction for `Ptr{Int}` and friends. `DebugFRule`'s
+    # `verify_canonical_dual_type` carries the same carve-out. Every OTHER pointer still gets
+    # the check and passes it, including the `Ptr{Nothing}` and `Ptr{NoTangent}` placeholders
+    # that carry per-lane pointers through the bitcast chain.
+    (primal_type <: Ptr && V === NoDual) ||
+        @test (tangent_type(primal_type) === NoTangent) == (V === NoDual)
     # Concrete, non-metatype primals are the hot path: assert coherence and that the type
     # functions fold + infer away — the foldability check is what surfaces a `@generated`
     # world-age trap (a sub-call baked into a `dual_type`/`lifted_type` generator body). A

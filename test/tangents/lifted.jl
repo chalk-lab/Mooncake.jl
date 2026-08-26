@@ -924,15 +924,15 @@ const NDAC_VecC64 = NDualArray{
         # so the forward contract still covers them. Both the seed factories and the
         # `lift`/`unlift` bridge translate between a lane pointer and a reverse placeholder
         # tangent, and those two coincide only for `Ptr{Float64}` — the other eltypes are
-        # exactly where a translation gets skipped. `Ptr{Int}` is absent because
-        # `test_lifted_type` asserts `tangent_type(P) === NoTangent` iff `V === NoDual`, which a
-        # non-differentiable-element pointer breaks: reverse keeps a typed `Ptr{NoTangent}`
-        # placeholder while the forward V is `NoDual`.
+        # exactly where a translation gets skipped. `Ptr{Int}` covers the fourth shape, a
+        # non-differentiable pointee, whose forward V is `NoDual` while reverse still keeps a
+        # typed `Ptr{NoTangent}` placeholder.
         ptr_backing = [1.0, 2.0]
         @testset "test_lifted $(typeof(p))" for p in (
             Ptr{Nothing}(pointer(ptr_backing)),
             pointer(ptr_backing),
             Ptr{Mooncake.NoTangent}(pointer(ptr_backing)),
+            Ptr{Int}(pointer(ptr_backing)),
         )
             test_lifted(Xoshiro(123456), p)
         end
