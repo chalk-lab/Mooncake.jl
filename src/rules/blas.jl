@@ -2269,8 +2269,15 @@ function frule!!(
     end
     bcopied && _write_back_partials!(B_dB, Bb)
     # Primal result α·op(A)⁻¹⊛B = α·X, and X already holds the unscaled solve: scale,
-    # don't re-solve.
-    B .= α .* X
+    # don't re-solve. At `α == 0` BLAS returns `B := 0` by a quick return that never
+    # references `A`, so `A` may legally hold garbage and `0 * X` would turn it into a NaN
+    # primal. The early return above cannot cover this: a seeded `dα` still needs the solve,
+    # because the derivative genuinely depends on `A`.
+    if iszero(α)
+        fill!(B, zero(P))
+    else
+        B .= α .* X
+    end
     return B_dB
 end
 

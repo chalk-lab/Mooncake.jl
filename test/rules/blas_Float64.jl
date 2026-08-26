@@ -147,6 +147,24 @@
             @test all(iszero, primal(r))
             @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
         end
+
+        # The early return above requires EVERY dα lane to be zero. A seeded dα takes the solve
+        # path, which legitimately reads `A` for the derivative — but the primal at `α == 0` is
+        # still BLAS's zero fill, and rebuilding it as `α*X` turned the NaN in `A` into a NaN
+        # PRIMAL. Same reason as above for it being a bespoke check.
+        @testset "trsm! α=0 with a seeded dα: width $Nw" for Nw in (1, 2, 3)
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
+                Mooncake.lift('L', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.lift('N', Mooncake.NoTangent()),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.randn_lifted(Val(Nw), StableRNG(9), 0.0),
+                Mooncake.zero_lifted(Val(Nw), copy(nan3)),
+                Mooncake.zero_lifted(Val(Nw), copy(B)),
+            )
+            @test all(iszero, primal(r))
+        end
     end
 
     # Regression: the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
