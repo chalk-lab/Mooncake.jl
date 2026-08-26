@@ -2082,15 +2082,20 @@ end
     # on each side of the window is `N` times the primal's, and `d ≤ slack` holds for the primal
     # exactly when `N*d ≤ N*slack` holds for the block: `_growend!`/`_growbeg!` reallocate on
     # precisely the same calls, and a reallocated primal has no lifted `Memory` left to share with.
-    # `memoryrefnew` is unchecked because an empty array sitting at the end of its `Memory` gives
-    # the one-past-end ref, which `wrap` never dereferences at length 0.
+    # An empty window has no slot to address: offsetting to `(off-1)*N+1` would build a
+    # one-past-end ref, which `--check-bounds=yes` rejects however the call is annotated. `wrap`
+    # never dereferences it at length 0, so the parent's own ref serves.
     @inline function _window_block(
         memblock::NDualBlock{E,2}, ::Val{N}, off::Int, dims::NTuple{D,Int}
     ) where {E,N,D}
-        ref = Core.memoryrefnew(
-            getfield(getfield(memblock, :parent), :ref), (off - 1) * N + 1, false
-        )
-        return NDualBlock{E,D}(Base.wrap(Array, ref, (prod(dims),))::Vector{E}, dims)
+        parent_ref = getfield(getfield(memblock, :parent), :ref)
+        len = prod(dims)
+        ref = if iszero(len)
+            parent_ref
+        else
+            Core.memoryrefnew(parent_ref, (off - 1) * N + 1, false)
+        end
+        return NDualBlock{E,D}(Base.wrap(Array, ref, (len,))::Vector{E}, dims)
     end
 end
 
