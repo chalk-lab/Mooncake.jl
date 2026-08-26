@@ -514,7 +514,10 @@ function rrule!!(
     # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
-    A_copy = copy(A)
+    # Keep `copy` in the IR so forward-over-reverse AD can dispatch to its `frule!!`, as `trtrs!`
+    # does: inlined, its internal `jl_genericmemory_copy_slice` ccall has no forward rule and an
+    # HVP through `cholesky` dies. `A_copy` is live — the pullback restores the primal with it.
+    A_copy = Base.@noinline copy(A)
 
     # Run primal.
     _, info = potrf!(uplo, A)

@@ -219,6 +219,21 @@ end
         @test H ≈ [5 / 9 -1 / 9; -1 / 9 2 / 9]
     end
 
+    @testset "cholesky" begin
+        # Sibling of the triangular solve above. `potrf!`'s `rrule!!` copies `A` so the pullback can
+        # restore the primal, and forward-over-reverse inlined that `copy`, exposing its
+        # `jl_genericmemory_copy_slice` ccall, which has no `frule!!`: the HVP died with a
+        # `MissingForeigncallRuleError`. `diagm(x)` is a DENSE matrix on purpose — a `Diagonal`
+        # would take its own factorisation and never reach `potrf!`.
+        f(x) = logdet(cholesky(diagm(x)))          # == sum(log, x)
+        x = [2.0, 3.0, 5.0]
+        v = [1.0, 0.0, 0.0]
+        value, grad, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, copy(x))
+        @test value ≈ sum(log, x)
+        @test grad ≈ 1 ./ x
+        @test hvp ≈ (-1 ./ x .^ 2) .* v
+    end
+
     @testset "cache reuse across multiple HVP calls" begin
         # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying.
         f(x) = sum(x .* x)  # H = 2I

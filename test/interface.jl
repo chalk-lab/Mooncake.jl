@@ -815,7 +815,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             #
             # Distinct coefficients, so a gradient entry landing in the wrong slot cannot pass by
             # symmetry: the seed walk must advance the dof cursor in the order `dof` counts, and a
-            # mismatch there misplaces entries silently rather than erroring.
+            # mismatch there misplaces entries silently rather than erroring. `kwargs` comes from
+            # the enclosing loop, so the four iterations cover the seed path with debug mode on and
+            # off rather than repeating one configuration.
             fdict(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
             mkd() = Dict(:a => 2.0, :b => 3.0)
             v0 = [5.0, 7.0]
@@ -825,7 +827,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @testset "chunk_size=$w" for w in (1, 2, 3)
                 vf, gf = Mooncake.value_and_gradient!!(
                     Mooncake.prepare_derivative_cache(
-                        fdict, mkd(), v0; config=Mooncake.Config(; chunk_size=w)
+                        fdict, mkd(), v0; config=Mooncake.Config(; chunk_size=w, kwargs...)
                     ),
                     fdict,
                     mkd(),
