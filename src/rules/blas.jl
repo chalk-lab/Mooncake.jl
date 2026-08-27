@@ -735,6 +735,37 @@ end
     return 1 + (n - 1) * step <= length(x) ? step : nothing
 end
 
+# Raised where the walk runs off the end of the operand, as distinct from following it in a
+# different order -- the two need different messages because the fixes differ.
+@noinline function _throw_walk_past_operand(label, x, inc, n)
+    throw(
+        ArgumentError(
+            LazyString(
+                label,
+                " reads ",
+                n,
+                " elements from `pointer(X)` with `incx = ",
+                inc,
+                "`, which runs past the ",
+                length(x),
+                " elements of `",
+                typeof(x),
+                "`. The primal may still be defined, since the walk can stay inside a larger " *
+                "parent array, but those elements belong to no argument and have no derivative. " *
+                "Pass an operand at least `1 + (n-1)*incx` long.",
+            ),
+        ),
+    )
+end
+
+# Does BLAS's `n`-element walk stay inside `x`'s own elements? Both `dot` branches index by
+# LOGICAL position with `inc` as the step -- the block path directly, the fallback through a dense
+# rebuild of the same length -- so both need the last position to exist. Magnitude, not sign: a
+# NEGATIVE increment starts at the far end and walks back over the same span, and it is the
+# per-lane fallback that serves it, so rejecting it here would refuse a case that works.
+@inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
+    1 + (n - 1) * abs(inc) <= length(x)
+
 @inline function _blas_raw_walk_matches(x, inc::Integer)
     inc > 0 || return false
     x isa Ptr && return true
@@ -785,6 +816,23 @@ for (jlfname, elty) in
     ) where {Nw}
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
+        # BLAS walks `n` elements from `pointer(X)`, which may leave the operand while staying
+        # inside a larger parent. NEITHER branch below survives that: the block path indexes the
+        # partials block past its end -- returning uninitialised heap, or a `BoundsError` under
+        # `--check-bounds=yes` -- and the fallback hands BLAS a rebuilt buffer of `length(X)`
+        # elements to walk `n` times. `nrm2`/`scal!` already refuse it through `_blas_walk_step`.
+        #
+        # Refusing is not the whole answer, and the gap is deliberate rather than unnoticed. Where
+        # the operand is a view of a DIFFERENTIABLE parent the walk's extra elements do belong to an
+        # argument, and reverse mode differentiates it correctly today; forward would have to widen
+        # the operand to the parent so those partials exist. Until it does, this refuses a case
+        # reverse accepts. Reading uninitialised memory is the worse of the two.
+        _blas_walk_inbounds(DX, incx, n) || _throw_walk_past_operand(
+            "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`", DX, incx, n
+        )
+        _blas_walk_inbounds(DY, incy, n) || _throw_walk_past_operand(
+            "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`", DY, incy, n
+        )
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
         acc = if _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
             # Contiguous operands: logical indexing == BLAS's raw walk, so accumulate all lanes
@@ -3064,6 +3112,7 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
     # that walk, and the old first-dim-stride test admitted it and scaled the wrong elements.
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
     # Both modes; the two messages share this substring.
+    short = view(P[i for i in 1:40], 1:4)
     cases = Any[
         ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
         ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
@@ -3090,7 +3139,23 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
              (f, opts) in two_operand)...,
         ],
     )
-    return cases, Any[x, m, xs, ys]
+    # BLAS walking past the operand's own length: the `dotc`/`dotu` block path read the partials
+    # block out of bounds there, returning uninitialised heap. COMPLEX only -- real `dot` takes a
+    # different forward path that indexes nothing out of range, measured. FORWARD only -- reverse
+    # differentiates this correctly when the operand views a differentiable parent.
+    P <: Complex && append!(
+        cases,
+        Any[
+            (
+                (ArgumentError, "runs past the"),
+                f,
+                (30, short, 1, short, 1),
+                (; mode=ForwardMode),
+            ) for f in (BLAS.dotc, BLAS.dotu)
+        ],
+    )
+
+    return cases, Any[x, m, xs, ys, short]
 end
 
 # One Val per BlasFloat precision; each runs all BLAS tests for that type so GC can
