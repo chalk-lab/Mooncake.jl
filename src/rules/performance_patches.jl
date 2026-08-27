@@ -75,8 +75,8 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
-# Distances discharges `pairwise(...; dims=1)` through `permutedims`, and differentiating
-# the generic implementation element by element costs more than the rule beneath it.
+# Differentiating the generic implementation element by element costs more than the rules
+# either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
 @is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
 function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:Matrix{P}}) where {P<:IEEEFloat}
     px, dx = arrayify(x)
