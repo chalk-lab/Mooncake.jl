@@ -101,21 +101,8 @@ const KronFactor{T} = Union{
     LowerTriangular{T,<:StridedMatrix{T}},
 }
 
-# `kron` reads its factors through whatever structure they carry, so `arrayify` hands back
-# tangents wrapped the same way. Entries outside that structure are not parameters -- the
-# primal reads zeros there whatever the storage holds -- so `_kron_pb!`'s dense contraction
-# is accumulated in a scratch and the off-structure half discarded, as the `lacpy!` pullback
-# discards it. A strided tangent is its own scratch, so it costs nothing there.
-kron_scratch(dx::StridedMatrix) = dx
-kron_scratch(dx::Union{UpperTriangular,LowerTriangular}) = zero(parent(dx))
-
-kron_project!(::StridedMatrix, scratch) = nothing
-function kron_project!(dx::T, scratch) where {T<:Union{UpperTriangular,LowerTriangular}}
-    parent(dx) .+= T(scratch)
-    return nothing
-end
-
-# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. Read
+# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
+# contraction is dense, so it goes through `densify` / `accumulate_densified!`. Read
 # as `P x M x Q x N`, both contractions read the same element of `dy`, so a single pass in
 # memory order serves both. A `gemv` per `(q, n)` block is slower at every shape measured:
 # the blocks are small enough that BLAS call overhead dominates.
@@ -124,8 +111,8 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
     M, N = size(px1)
     P, Q = size(px2)
     W = reshape(dy, P, M, Q, N)
-    t1 = kron_scratch(dx1)
-    t2 = kron_scratch(dx2)
+    t1 = densify(dx1)
+    t2 = densify(dx2)
     @inbounds for n in 1:N, q in 1:Q, i in 1:M
         acc = zero(T)
         x1 = px1[i, n]
@@ -136,8 +123,8 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
         end
         t1[i, n] += acc
     end
-    kron_project!(dx1, t1)
-    kron_project!(dx2, t2)
+    accumulate_densified!(dx1, t1)
+    accumulate_densified!(dx2, t2)
     return nothing
 end
 
