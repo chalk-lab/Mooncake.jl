@@ -79,6 +79,16 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
+# Real eltype only, as the `AbstractTriangular` overload above: for a real `T` a `Hermitian` IS a
+# `Symmetric`, so the convention is settled. A complex one conjugates the mirrored triangle and
+# reads the diagonal as real, a different tangent map, so it is left to the derived path rather
+# than given this one's convention.
+function arrayify(
+    x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:IEEEFloat}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Hermitian(_dx, Symbol(x.uplo))
+end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
@@ -163,6 +173,9 @@ end
     _arrayify_lane(x.diag, V.value.diag, lane, d)
 )
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
+    _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
+)
+@inline _arrayify_lane(x::Hermitian{<:IEEEFloat}, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
     _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
 )
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a

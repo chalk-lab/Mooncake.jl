@@ -253,9 +253,9 @@ end
 # `Symmetric` stores one triangle, and the stored `A[i,j]` is the variable behind BOTH `S[i,j]` and
 # `S[j,i]`, so both contributions fold onto it -- the factor of 2 that `_accum_sym_logdet!` writes
 # out explicitly. The unread triangle is not a variable, so it stays zero. Without this the generic
-# `AbstractMatrix` method above throws on any off-diagonal entry. No `Hermitian` method: `arrayify`
-# has no `Hermitian` overload, so it is refused before reaching here.
-@inline function _kron_accum!(dx::Symmetric, i, j, v)
+# `AbstractMatrix` method above throws on any off-diagonal entry. `Hermitian` shares it: `arrayify`
+# admits a real one, where it is the same wrapper.
+@inline function _kron_accum!(dx::Union{Symmetric,Hermitian}, i, j, v)
     lo, hi = minmax(i, j)
     @inbounds if dx.uplo == 'U'
         parent(dx)[lo, hi] += v
@@ -393,10 +393,13 @@ end
 # stride-1 columns. A lane of the element-major block is a stride-`N` view, so that path threw for
 # every chunk width above 1 -- including the default 8, leaving only an explicit `chunk_size=1`
 # working. Densifying the parent first sidesteps LAPACK; measured over the wrappers `arrayify`
-# admits, `Symmetric` is the only one that cannot convert from a strided view.
+# admits, `Symmetric` and `Hermitian` are the only two that cannot convert from a strided view.
 @inline _kron_densify(z::AbstractMatrix) = convert(Matrix, z)
 @inline _kron_densify(z::Symmetric) = convert(
     Matrix, Symmetric(Matrix(parent(z)), Symbol(z.uplo))
+)
+@inline _kron_densify(z::Hermitian) = convert(
+    Matrix, Hermitian(Matrix(parent(z)), Symbol(z.uplo))
 )
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
@@ -521,6 +524,27 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 kron,
                 randn(rng, P, 3, 4),
                 Symmetric(randn(rng, P, 3, 3), :L),
+            )
+        end,
+        # A real `Hermitian` reaches the same two paths through its own `arrayify` overload.
+        map([Float64, Float32]) do P
+            return (
+                false,
+                :none,
+                nothing,
+                kron,
+                Hermitian(randn(rng, P, 3, 3)),
+                randn(rng, P, 4, 2),
+            )
+        end,
+        map([Float64, Float32]) do P
+            return (
+                false,
+                :none,
+                nothing,
+                kron,
+                randn(rng, P, 3, 4),
+                Hermitian(randn(rng, P, 3, 3), :L),
             )
         end,
     )
