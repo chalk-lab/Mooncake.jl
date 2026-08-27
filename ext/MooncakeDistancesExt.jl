@@ -41,13 +41,15 @@ function sqdist_accumulate!(dA, pA, pB, W, scales)
 end
 
 # `Euclidean` is `sqrt` of the squared distance, so its derivative carries a `1 / 2R`
-# factor that is singular where two observations coincide. Distances' own convention there
-# is to use 1 in place of `1 / 0`; on the diagonal, and wherever else `R == 0`, the
-# resulting contribution cancels between the scaling and the matrix-multiply terms.
+# factor that is singular where two observations coincide. Distances' own convention is to
+# use 1 in place of `1 / 0`, whose contribution then cancels between the scaling and the
+# matrix-multiply terms. The one-argument diagonal is zeroed outright rather than left to
+# cancel, so only coincident off-diagonal pairs rely on that.
 normalise(x::Real, nrm::Real) = iszero(nrm) && !isnan(x) ? one(x / nrm) : x / nrm
 
 # Convert a squared-distance pushforward into a Euclidean one. `dV == 0` wherever `R == 0`,
-# so a zero derivative is the right reading of the cusp for the forward direction.
+# so zero is the natural reading of the cusp here, rather than the 1 that `normalise` takes:
+# the two directions disagree at coincident observations, where no derivative exists.
 euclidean_pushforward!(::SqEuclidean, dV, R) = dV
 function euclidean_pushforward!(::Euclidean, dV, R)
     dV .= ifelse.(iszero.(R), zero(eltype(dV)), dV ./ (2 .* R))
