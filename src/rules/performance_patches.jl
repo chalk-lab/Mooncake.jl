@@ -98,8 +98,10 @@ end
 # primal reads zeros there whatever the storage holds -- so the dense contraction below is
 # accumulated in a scratch and projected before it reaches the tangent, as the `symv!` and
 # `hemv!` rules do. A strided tangent is its own scratch, so it costs nothing there.
+# Matrices only: `kron(::Vector, ::Vector)` returns a `Vector`, which these rules would
+# widen to a `Matrix` by matrixifying their factors.
 const KronFactor{T} = Union{
-    StridedVecOrMat{T},
+    StridedMatrix{T},
     UpperTriangular{T,<:StridedMatrix{T}},
     LowerTriangular{T,<:StridedMatrix{T}},
 }
