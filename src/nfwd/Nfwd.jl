@@ -826,8 +826,13 @@ end
 @inline function Base.exp2(a::NDual{T,N}) where {T,N}
     return (ev=exp2(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(2)))))
 end
+# Guarded, unlike `exp`/`exp2`: the coefficient is `value * log(10)`, so it overflows while the
+# value is still finite -- `exp10(308.0)` is `1.0e308` with an `Inf` coefficient. `exp`'s
+# coefficient IS the value and `exp2`'s is smaller than it, so neither has that window.
 @inline function Base.exp10(a::NDual{T,N}) where {T,N}
-    return (ev=exp10(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(10)))))
+    return (
+        ev=exp10(a.value); NDual{T,N}(ev, _fwd_guarded_scale(a.partials, ev * T(log(10))))
+    )
 end
 @inline function Base.log(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(log(a.value), _fwd_guarded_scale(a.partials, inv(a.value)))
@@ -873,9 +878,10 @@ end
 )
 @inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
-# ldexp(a, n) = a * 2^n — linear; derivative = 2^n.
+# ldexp(a, n) = a * 2^n — linear; derivative = 2^n. Guarded: with a small enough `a` the value
+# stays finite while `2^n` overflows, as `ldexp(1e-300, 2000)` does.
 @inline function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
-    return NDual{T,N}(ldexp(a.value, n), _fwd_scale(a.partials, T(exp2(n))))
+    return NDual{T,N}(ldexp(a.value, n), _fwd_guarded_scale(a.partials, T(exp2(n))))
 end
 
 # Roots
@@ -970,13 +976,17 @@ end
     sv = secd(a.value)
     return NDual{T,N}(sv, _fwd_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
 end
+# `cscd`/`cotd` are guarded where `secd`/`tand` need not be: their coefficients grow like the
+# SQUARE of the value, which overflows near zero while the value itself is merely large --
+# `cscd(1e-200)` is `5.7e201` with a `-Inf` coefficient. `secd`/`tand` peak near 90 degrees, where
+# argument resolution caps the value around `1e16` and its square is comfortably finite.
 @inline function Base.cscd(a::NDual{T,N}) where {T,N}
     cv = cscd(a.value)
-    return NDual{T,N}(cv, _fwd_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))
 end
 @inline function Base.cotd(a::NDual{T,N}) where {T,N}
     cv = cotd(a.value)
-    return NDual{T,N}(cv, _fwd_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
+    return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
 end
 @inline function Base.asind(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(

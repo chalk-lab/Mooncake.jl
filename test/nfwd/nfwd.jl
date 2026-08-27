@@ -233,6 +233,26 @@ using Mooncake.Nfwd
             @test Nfwd.ndual_partial(d, 2) === 0.0     # inactive lane: 0, not NaN
             @test !isfinite(Nfwd.ndual_partial(d, 1))  # active lane: the real singularity
         end
+        # The same requirement for coefficients that OVERFLOW rather than being singular by
+        # construction: the value is still finite here, which is exactly the condition the guard
+        # exists for. Which functions belong was settled by scanning every unguarded `_fwd_scale`
+        # site, not by inspection. `exp`, `exp2`, `expm1`, `sinh` and `cosh` are absent because
+        # their value overflows alongside the coefficient (`exp`'s coefficient IS its value,
+        # `exp2`'s is smaller); `tan`, `sec`, `tand` and `secd` because argument resolution caps
+        # their value near `1e16`, whose square is comfortably finite; `abs2` and `sinc` because
+        # neither can produce a non-finite coefficient at all.
+        for (f, v) in ((exp10, 308.0), (cscd, 1e-200), (cotd, 1e-200))
+            d = f(_d2(v, 1.0, 0.0))
+            @test isfinite(Nfwd.ndual_value(d))        # the value has NOT overflowed
+            @test Nfwd.ndual_partial(d, 2) === 0.0     # inactive lane: 0, not NaN
+            @test !isfinite(Nfwd.ndual_partial(d, 1))  # active lane: the genuine overflow
+        end
+        let d = ldexp(_d2(1e-300, 1.0, 0.0), 2000)
+            @test isfinite(Nfwd.ndual_value(d))
+            @test Nfwd.ndual_partial(d, 2) === 0.0
+            @test !isfinite(Nfwd.ndual_partial(d, 1))
+        end
+
         # Two-argument sites: `mod` at an integer ratio, and `atan` at the origin in all three
         # argument shapes.
         @test Nfwd.ndual_partial(mod(_d2(6.0, 1.0, 0.0), _d2(3.0, 0.0, 0.0)), 2) === 0.0
