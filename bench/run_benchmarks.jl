@@ -197,6 +197,8 @@ function benchmark_rules!!(
                 () -> primals,
                 primals -> (primals[1], _deepcopy(primals[2:end])),
                 (a -> a[1]((a[2]...))),
+                # Every framework below gets the same `GC.gc(false)` teardown: an
+                # asymmetric one would compare each against a differently-conditioned heap.
                 # With evals=1 and seconds=1, Chairmarks collects thousands of samples.
                 # Some benchmarks (e.g. gp_lml) allocate hundreds of KiB per call, so
                 # without GC intervention, garbage accumulates across samples until the GC
@@ -247,7 +249,7 @@ function benchmark_rules!!(
                         _,
                         _,
                         zygote_to_benchmark($(Zygote.Context()), $primals...),
-                        _,
+                        _ -> GC.gc(false),
                         evals = 1,
                     )
                 end
@@ -262,7 +264,7 @@ function benchmark_rules!!(
                         _,
                         _,
                         rd_to_benchmark!($result, $compiled_tape, $primals[2:end]),
-                        _,
+                        _ -> GC.gc(false),
                         evals = 1,
                     )
                 end
@@ -281,7 +283,11 @@ function benchmark_rules!!(
                             primals[1], ReverseWithPrimal
                         end
                     suite["enzyme"] = @be(
-                        _, _, autodiff($mode, $prim, Active, $dup_args...), _, evals = 1,
+                        _,
+                        _,
+                        autodiff($mode, $prim, Active, $dup_args...),
+                        _ -> GC.gc(false),
+                        evals = 1,
                     )
                 end
             end
