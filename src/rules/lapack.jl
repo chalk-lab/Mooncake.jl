@@ -844,14 +844,22 @@ function _accum_sym_logdet!(
     end
     return nothing
 end
-function _accum_sym_logdet!(ddata::Symmetric{P}, Sinv::StridedMatrix{P}, ȳ::P) where {P}
+# A real `Hermitian` IS the `Symmetric` matrix with the same stored triangle, takes the same
+# `bunchkaufman`/`sytrf!` path, and gives bit-identical `logdet`, `inv` and `dot` weighting, so the
+# determinant rules below serve both. `BlasRealFloat` keeps complex out, where the two differ.
+const _SymHerm{P} = Union{Symmetric{P,<:StridedMatrix{P}},Hermitian{P,<:StridedMatrix{P}}}
+
+function _accum_sym_logdet!(
+    ddata::Union{Symmetric{P},Hermitian{P}}, Sinv::StridedMatrix{P}, ȳ::P
+) where {P}
     _accum_sym_logdet!(ddata.data, Sinv, ȳ, ddata.uplo)
 end
 
 """
-    logdet(S::Symmetric{<:BlasRealFloat})
+    logdet(S::Union{Symmetric,Hermitian}{<:BlasRealFloat})
 
-Primitive rule for `logdet` of a real symmetric matrix.
+Primitive rule for `logdet` of a real symmetric matrix. A real `Hermitian` is the same matrix
+and takes the same path, so it is served here too.
 
 Given `S = Symmetric(A, uplo)`, the Fréchet derivative is:
 
@@ -860,13 +868,9 @@ Given `S = Symmetric(A, uplo)`, the Fréchet derivative is:
 which equals `tr(S⁻¹ · sym(dA))`. See [`_accum_sym_logdet!`](@ref) for the gradient
 w.r.t. the underlying data array `A`.
 """
-@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(logdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
-)
+@is_primitive(MinimalCtx, Tuple{typeof(logdet),_SymHerm{P}} where {P<:BlasRealFloat})
 function frule!!(
-    ::Lifted{typeof(logdet),Nw},
-    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+    ::Lifted{typeof(logdet),Nw}, _S::Lifted{<:_SymHerm{P},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
     S, d_lanes = arrayify(_S)
     F = bunchkaufman(S)
@@ -879,7 +883,7 @@ function frule!!(
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
 function rrule!!(
-    ::CoDual{typeof(logdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+    ::CoDual{typeof(logdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     F = bunchkaufman(S)
@@ -893,9 +897,9 @@ function rrule!!(
 end
 
 """
-    det(S::Symmetric{<:BlasRealFloat})
+    det(S::Union{Symmetric,Hermitian}{<:BlasRealFloat})
 
-Primitive rule for `det` of a real symmetric matrix.
+Primitive rule for `det` of a real symmetric matrix, `Hermitian` included.
 
 Given `S = Symmetric(A, uplo)`, the Fréchet derivative follows from `det = exp ∘ logdet`:
 
@@ -904,12 +908,9 @@ Given `S = Symmetric(A, uplo)`, the Fréchet derivative follows from `det = exp 
 The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with scalar
 `ȳ · det(S)`.
 """
-@is_primitive(
-    MinimalCtx, Tuple{typeof(det),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
-)
+@is_primitive(MinimalCtx, Tuple{typeof(det),_SymHerm{P}} where {P<:BlasRealFloat},)
 function frule!!(
-    ::Lifted{typeof(det),Nw},
-    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+    ::Lifted{typeof(det),Nw}, _S::Lifted{<:_SymHerm{P},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
     S = primal(_S)
     F = bunchkaufman(S; check=false)
@@ -923,9 +924,7 @@ function frule!!(
     dy_lanes = ntuple(k -> d * dot(Sinv, d_lanes[k]), Val(Nw))
     return Lifted{P,Nw}(d, _scalar_ndual(d, dy_lanes))
 end
-function rrule!!(
-    ::CoDual{typeof(det)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
-) where {P<:BlasRealFloat}
+function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:_SymHerm{P}}) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
@@ -940,9 +939,10 @@ function rrule!!(
 end
 
 """
-    logabsdet(S::Symmetric{<:BlasRealFloat})
+    logabsdet(S::Union{Symmetric,Hermitian}{<:BlasRealFloat})
 
-Primitive rule for `logabsdet` of a real symmetric matrix. Returns `(log|det(S)|, sign(det(S)))`.
+Primitive rule for `logabsdet` of a real symmetric matrix, `Hermitian` included. Returns
+`(log|det(S)|, sign(det(S)))`.
 
 Given `S = Symmetric(A, uplo)`, the Fréchet derivative of the first output is identical
 to that of `logdet`:
@@ -952,13 +952,9 @@ to that of `logdet`:
 The sign component has zero derivative w.r.t. `A`. In reverse mode only `ȳ[1]` (the
 cotangent of the log-magnitude) contributes; `ȳ[2]` is ignored.
 """
-@is_primitive(
-    MinimalCtx,
-    Tuple{typeof(logabsdet),Symmetric{P,<:StridedMatrix{P}}} where {P<:BlasRealFloat},
-)
+@is_primitive(MinimalCtx, Tuple{typeof(logabsdet),_SymHerm{P}} where {P<:BlasRealFloat},)
 function frule!!(
-    ::Lifted{typeof(logabsdet),Nw},
-    _S::Lifted{<:Symmetric{P,<:StridedMatrix{P}},Nw,<:ImmutableDual},
+    ::Lifted{typeof(logabsdet),Nw}, _S::Lifted{<:_SymHerm{P},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasRealFloat}
     S = primal(_S)
     F = bunchkaufman(S; check=false)
@@ -973,7 +969,7 @@ function frule!!(
     return Lifted{typeof(y),Nw}(y, (_scalar_ndual(ld, ld_lanes), zero_dual(Val(Nw), s)))
 end
 function rrule!!(
-    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:Symmetric{P,<:StridedMatrix{P}}}
+    ::CoDual{typeof(logabsdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     F = bunchkaufman(S; check=false)
@@ -1114,6 +1110,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 map(S -> (false, :none, nothing, logdet, S), Ss),
                 map(S -> (det_interface_only, :none, nothing, det, S), Ss),
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
+            )
+        end...,
+
+        # The same three on a real `Hermitian`, which reaches the identical `bunchkaufman`/`sytrf!`
+        # path and gave `MissingForeigncallRuleError` before the rules admitted it. One size only:
+        # the numerics are the `Symmetric` ones above (measured bit-identical), so what these pin is
+        # that dispatch reaches the rule at all, at both uplos and both precisions.
+        map_prod(['U', 'L'], Ps) do (uplo, P)
+            Hs = map(
+                A -> Hermitian(A, Symbol(uplo)), positive_definite_blas_matrices(rng, P, 3)
+            )
+            return vcat(
+                map(H -> (false, :none, nothing, logdet, H), Hs),
+                map(H -> (P == Float32, :none, nothing, det, H), Hs),
+                map(H -> (false, :none, nothing, logabsdet, H), Hs),
             )
         end...,
 
