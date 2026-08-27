@@ -105,11 +105,17 @@ const KronFactor{T} = Union{
 }
 
 kron_scratch(dx::StridedVecOrMat) = dx
-kron_scratch(dx::LinearAlgebra.AbstractTriangular) = zero(parent(dx))
+kron_scratch(dx::Union{UpperTriangular,LowerTriangular}) = zero(parent(dx))
 
 kron_project!(::StridedVecOrMat, scratch) = nothing
-kron_project!(dx::UpperTriangular, scratch) = (parent(dx) .+= UpperTriangular(scratch);)
-kron_project!(dx::LowerTriangular, scratch) = (parent(dx) .+= LowerTriangular(scratch);)
+function kron_project!(dx::UpperTriangular, scratch)
+    parent(dx) .+= UpperTriangular(scratch)
+    return nothing
+end
+function kron_project!(dx::LowerTriangular, scratch)
+    parent(dx) .+= LowerTriangular(scratch)
+    return nothing
+end
 
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other.
 # Read as `P x M x Q x N`, each `(q, n)` block of `dy` is a contiguous `P x M` matrix that

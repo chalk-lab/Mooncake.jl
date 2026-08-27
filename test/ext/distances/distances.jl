@@ -15,78 +15,33 @@ using Mooncake.TestUtils: test_rule
         X = randn(rng, P, 5, 7)
         Y = randn(rng, P, 5, 3)
         test_rule(
-            rng,
-            Distances._pairwise!,
-            metric,
-            zeros(P, 7, 7),
-            X;
-            perf_flag=:stability,
-            interface_only=false,
+            rng, Distances._pairwise!, metric, zeros(P, 7, 7), X; perf_flag=:stability
         )
         test_rule(
-            rng,
-            Distances._pairwise!,
-            metric,
-            zeros(P, 7, 3),
-            X,
-            Y;
-            perf_flag=:stability,
-            interface_only=false,
+            rng, Distances._pairwise!, metric, zeros(P, 7, 3), X, Y; perf_flag=:stability
         )
     end
 
-    # `pairwise` and `pairwise!` reach those rules through their own `dims` handling.
-    @testset "$f, $metric, $P, dims=$dims" for f in (pairwise, pairwise!),
-        metric in (SqEuclidean(), Euclidean()), P in (Float64, Float32),
+    # `pairwise` and `pairwise!` reach those rules through their own `dims` handling, which
+    # is all these add: element types are covered above.
+    @testset "$f, $metric, dims=$dims" for f in (pairwise, pairwise!),
+        metric in (SqEuclidean(), Euclidean()),
         dims in (1, 2)
 
-        X = randn(rng, P, 5, 7)
-        Y = randn(rng, P, dims == 1 ? (3, 7) : (5, 3))
-        nX = size(X, dims)
-        nY = size(Y, dims)
-        if f === pairwise
+        X = randn(rng, 5, 7)
+        Y = randn(rng, dims == 1 ? (3, 7) : (5, 3))
+        nX, nY = size(X, dims), size(Y, dims)
+        for args in (
+            f === pairwise ? (X,) : (zeros(nX, nX), X),
+            f === pairwise ? (X, Y) : (zeros(nX, nY), X, Y),
+        )
             test_rule(
                 rng,
                 Core.kwcall,
                 (; dims),
-                pairwise,
+                f,
                 metric,
-                X;
-                perf_flag=:none,
-                is_primitive=false,
-            )
-            test_rule(
-                rng,
-                Core.kwcall,
-                (; dims),
-                pairwise,
-                metric,
-                X,
-                Y;
-                perf_flag=:none,
-                is_primitive=false,
-            )
-        else
-            test_rule(
-                rng,
-                Core.kwcall,
-                (; dims),
-                pairwise!,
-                metric,
-                zeros(P, nX, nX),
-                X;
-                perf_flag=:none,
-                is_primitive=false,
-            )
-            test_rule(
-                rng,
-                Core.kwcall,
-                (; dims),
-                pairwise!,
-                metric,
-                zeros(P, nX, nY),
-                X,
-                Y;
+                args...;
                 perf_flag=:none,
                 is_primitive=false,
             )

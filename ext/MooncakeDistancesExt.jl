@@ -28,14 +28,6 @@ const PairwiseMetric = Union{SqEuclidean,Euclidean}
 # the squared column norms. `Euclidean` is that composed with `sqrt`.
 column_dots(A, dA) = vec(sum(A .* dA; dims=1))
 
-function sqdist_pushforward!(dV, pA, dA, Adots, pB, dB, Bdots)
-    P = eltype(dA)
-    mul!(dV, transpose(dA), pB)
-    mul!(dV, transpose(pA), dB, one(P), one(P))
-    dV .= 2 .* (Adots .+ transpose(Bdots) .- dV)
-    return dV
-end
-
 # Accumulate into `dA` the cotangent reaching the columns of `pA` through the weights `W`,
 # which pair them against the columns of `pB`. Passing `transpose(W)` swaps the roles.
 # `scales` is the corresponding row sum of `W`; the caller reduces the untransposed matrix
@@ -112,7 +104,9 @@ function frule!!(
     pA, dA = arrayify(A)
     pB, dB = arrayify(B)
     Distances._pairwise!(pdist, pr, pA, pB)
-    sqdist_pushforward!(dr, pA, dA, column_dots(pA, dA), pB, dB, column_dots(pB, dB))
+    mul!(dr, transpose(dA), pB)
+    mul!(dr, transpose(pA), dB, one(P), one(P))
+    dr .= 2 .* (column_dots(pA, dA) .+ transpose(column_dots(pB, dB)) .- dr)
     euclidean_pushforward!(pdist, dr, pr)
     return r
 end
