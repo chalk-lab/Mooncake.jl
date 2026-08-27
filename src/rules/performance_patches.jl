@@ -30,6 +30,23 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+@is_primitive(DefaultCtx, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
+function frule!!(::Dual{typeof(sum)}, x::Dual{ContiguousSubVector{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    return Dual(sum(px), sum(dx))
+end
+function rrule!!(
+    ::CoDual{typeof(sum)}, x::CoDual{ContiguousSubVector{P}}
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    function sum_view_pb!!(dz::P)
+        dx .+= dz
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(sum(px)), sum_view_pb!!
+end
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
     ::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:Array{P}}
@@ -205,6 +222,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., sum, randn(rng, P, sz...))
+        end,
+
+        # sum(view(x, a:b))
+        map(precisions) do P
+            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            return (flags..., sum, view(randn(rng, P, 11), 2:9))
         end,
 
         # sum(abs2, x)
