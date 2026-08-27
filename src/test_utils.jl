@@ -865,6 +865,11 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     @test Mooncake._verify_fdata_value(IdDict{Any,Nothing}(), y_ȳ.x, y_ȳ.dx) === nothing
 
     # Run the reverse-pass. Throw a meaningful exception if it doesn't run at all.
+    # The seed below is zero, and for an array-returning rule the whole cotangent is the
+    # rule's own freshly-zeroed fdata, so the pullback never sees a non-zero one. Writing
+    # zero outside a structured tangent (`UpperTriangular` and friends) is permitted, so
+    # this cannot catch a rule that fails to project its adjoint onto the tangent's
+    # structure. Only a correctness test can: it seeds a random cotangent instead.
     ȳ = Mooncake.rdata(zero_tangent(primal(y_ȳ), tangent(y_ȳ)))
     f̄_new, x̄_new... = try
         pb!!(ȳ)
