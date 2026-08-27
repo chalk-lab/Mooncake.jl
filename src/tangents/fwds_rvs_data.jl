@@ -671,7 +671,15 @@ obtained from `P` alone.
     end
 end
 
-@foldable can_produce_zero_rdata_from_type(::Type{<:IEEEFloat}) = true
+# Concrete floats only, NOT `<:IEEEFloat`. `IEEEFloat` is itself `Union{Float16,Float32,Float64}`,
+# so `<:IEEEFloat` also matches every proper sub-union, and `zero_rdata_from_type` would then
+# evaluate `P(0)` and throw for, say, `Union{Float32,Float64}` -- which inference produces from an
+# ordinary branch over precisions. Dispatching on the concrete types lets a sub-union fall through
+# to the generic pair, which answers `false` and hands back `CannotProduceZeroRDataFromType`, the
+# `ZeroRData` route that exists for exactly this case.
+for P in (Float16, Float32, Float64)
+    @eval @foldable can_produce_zero_rdata_from_type(::Type{$P}) = true
+end
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:Type}) = true
 
@@ -754,7 +762,9 @@ function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
     return NamedTuple{fieldnames(P)}(tuple_map(zero_rdata_from_type, fieldtypes(P)))
 end
 
-zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)
+for P in (Float16, Float32, Float64)
+    @eval zero_rdata_from_type(::Type{$P}) = zero($P)
+end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()
 
