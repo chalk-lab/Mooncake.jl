@@ -250,6 +250,20 @@ end
 end
 @inline _kron_accum!(dx::Diagonal, i, j, v) =
     (i == j && (@inbounds dx.diag[i] += v); nothing)
+# `Symmetric` stores one triangle, and the stored `A[i,j]` is the variable behind BOTH `S[i,j]` and
+# `S[j,i]`, so both contributions fold onto it -- the factor of 2 that `_accum_sym_logdet!` writes
+# out explicitly. The unread triangle is not a variable, so it stays zero. Without this the generic
+# `AbstractMatrix` method above throws on any off-diagonal entry. No `Hermitian` method: `arrayify`
+# has no `Hermitian` overload, so it is refused before reaching here.
+@inline function _kron_accum!(dx::Symmetric, i, j, v)
+    lo, hi = minmax(i, j)
+    @inbounds if dx.uplo == 'U'
+        parent(dx)[lo, hi] += v
+    else
+        parent(dx)[hi, lo] += v
+    end
+    return nothing
+end
 
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
@@ -375,6 +389,15 @@ function Mooncake.frule!!(
     return Lifted{A,N}(y, V)
 end
 
+# `convert(Matrix, ::Symmetric)` goes through `copytrito!` and LAPACK's `lacpy!`, which demands
+# stride-1 columns. A lane of the element-major block is a stride-`N` view, so that path threw for
+# every chunk width above 1 -- including the default 8, leaving only an explicit `chunk_size=1`
+# working. Densifying the parent first sidesteps LAPACK; measured over the wrappers `arrayify`
+# admits, `Symmetric` is the only one that cannot convert from a strided view.
+@inline _kron_densify(z::AbstractMatrix) = convert(Matrix, z)
+@inline _kron_densify(z::Symmetric) = convert(
+    Matrix, Symmetric(Matrix(parent(z)), Symbol(z.uplo))
+)
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
     x1::Lifted{<:AbstractVecOrMat{T},N},
@@ -382,11 +405,11 @@ function Mooncake.frule!!(
 ) where {N,T<:Union{Float32,Float64}}
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
-    # `convert(Matrix, ·)` passes dense `Matrix` inputs through unchanged and materialises wrapped
-    # inputs (`view`/`UpperTriangular`) once, so the scalar `_kron!_jvp_lane!` loop below indexes
-    # plain arrays instead of paying a per-element wrapper branch.
-    mx1 = convert(Matrix, px1)
-    mx2 = convert(Matrix, px2)
+    # `_kron_densify` passes dense `Matrix` inputs through unchanged and materialises wrapped
+    # inputs (`view`/`UpperTriangular`/`Symmetric`) once, so the scalar `_kron!_jvp_lane!` loop
+    # below indexes plain arrays instead of paying a per-element wrapper branch.
+    mx1 = _kron_densify(px1)
+    mx2 = _kron_densify(px2)
     y = kron(mx1, mx2)
     A = typeof(y)
     # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` into one pass per
@@ -397,7 +420,7 @@ function Mooncake.frule!!(
     bp = Nfwd._block_storage(blk)
     for k in 1:N
         _kron!_jvp_lane_into_block!(
-            bp, k, Val(N), mx1, convert(Matrix, dx1s[k]), mx2, convert(Matrix, dx2s[k])
+            bp, k, Val(N), mx1, _kron_densify(dx1s[k]), mx2, _kron_densify(dx2s[k])
         )
     end
     V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)
@@ -473,6 +496,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 kron,
                 view(randn(rng, P, 6, 6), 1:5, 1:4),
                 UpperTriangular(randn(rng, P, 3, 3)),
+            )
+        end,
+        # `Symmetric` is the wrapper whose lane partial cannot be densified through LAPACK, so
+        # every width above 1 threw, and whose reverse cotangent needs folding onto the stored
+        # triangle. Only ONE operand is `Symmetric` per case: `kron(Symmetric, Symmetric)` returns
+        # a `Symmetric` whose unstored triangle Base leaves `undef`, and `has_equal_data` compares
+        # it, so such a case passes or fails on whatever the allocator handed back.
+        map([Float64, Float32]) do P
+            return (
+                false,
+                :none,
+                nothing,
+                kron,
+                Symmetric(randn(rng, P, 3, 3)),
+                randn(rng, P, 4, 2),
+            )
+        end,
+        map([Float64, Float32]) do P
+            return (
+                false,
+                :none,
+                nothing,
+                kron,
+                randn(rng, P, 3, 4),
+                Symmetric(randn(rng, P, 3, 3), :L),
             )
         end,
     )
