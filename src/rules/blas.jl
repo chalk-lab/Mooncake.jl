@@ -175,7 +175,11 @@ end
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
     _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
 )
-@inline _arrayify_lane(x::Hermitian{<:IEEEFloat}, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
+# No eltype bound, as the `Symmetric` method above: differentiating `Hermitian(A + t*dA)` gives
+# exactly `Hermitian(dA)` -- the stored triangle contributes `dA[i,j]`, the mirrored one
+# `conj(dA[j,i])`, and the diagonal `real(dA[i,i])`, the primal's diagonal being real already. So
+# wrapping the lane partial IS the JVP, for a complex eltype as much as a real one.
+@inline _arrayify_lane(x::Hermitian, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
     _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
 )
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a

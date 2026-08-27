@@ -556,6 +556,22 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     precisions = [Float64, Float32]
     test_cases = vcat(
+        # A COMPLEX `Hermitian`, where the two modes reach the answer differently: forward through
+        # the `_arrayify_lane` wrapper (`Hermitian(dA)` is the JVP), reverse through the derived
+        # path, since folding a complex cotangent onto the stored triangle needs a conjugation
+        # `_kron_accum!` does not apply. Both are checked here against finite differences.
+        map([ComplexF64, ComplexF32]) do C
+            return map([:U, :L]) do uplo
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    LinearAlgebra.kron,
+                    Hermitian(randn(rng, C, 3, 3), uplo),
+                    randn(rng, C, 4, 2),
+                )
+            end
+        end...,
         map(precisions) do (P)
             return (
                 false,
