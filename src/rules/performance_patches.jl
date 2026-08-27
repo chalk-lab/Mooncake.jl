@@ -48,13 +48,13 @@ end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
+    typeof(LinearAlgebra._kron!),StridedMatrix{T},StridedMatrix{T},StridedMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractVecOrMat{<:T}},
-    x2::Dual{<:AbstractVecOrMat{<:T}},
+    out::Dual{<:StridedMatrix{<:T}},
+    x1::Dual{<:StridedVecOrMat{<:T}},
+    x2::Dual{<:StridedVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
     px1, dx1 = matrixify(x1)
@@ -75,9 +75,9 @@ function Mooncake.frule!!(
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
-    out::CoDual{<:AbstractMatrix{<:T}},
-    x1::CoDual{<:AbstractVecOrMat{<:T}},
-    x2::CoDual{<:AbstractVecOrMat{<:T}},
+    out::CoDual{<:StridedMatrix{<:T}},
+    x1::CoDual{<:StridedVecOrMat{<:T}},
+    x2::CoDual{<:StridedVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
     px1, dx1 = matrixify(x1)
@@ -105,12 +105,12 @@ end
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+    typeof(kron),StridedMatrix{T},StridedMatrix{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)},
-    x1::CoDual{<:AbstractVecOrMat{<:T}},
-    x2::CoDual{<:AbstractVecOrMat{<:T}},
+    x1::CoDual{<:StridedVecOrMat{<:T}},
+    x2::CoDual{<:StridedVecOrMat{<:T}},
 ) where {T<:Base.IEEEFloat}
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
@@ -173,7 +173,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     test_cases = vcat(
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -183,7 +183,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -193,7 +193,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -203,7 +203,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -213,7 +213,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
