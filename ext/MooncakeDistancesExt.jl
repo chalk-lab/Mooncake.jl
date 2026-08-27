@@ -26,7 +26,7 @@ const PairwiseMetric = Union{SqEuclidean,Euclidean}
 
 # The rules differentiate `V[i, j] == dots[i] + dots[j] - 2 * ai'aj`, where `dots` holds
 # the squared column norms. `Euclidean` is that composed with `sqrt`.
-column_dots(A, dA) = vec(sum(A .* dA; dims=1))
+column_dots(A, dA) = map(dot, eachcol(A), eachcol(dA))
 
 # Accumulate into `dA` the cotangent reaching the columns of `pA` through the weights `W`,
 # which pair them against the columns of `pB`. Passing `transpose(W)` swaps the roles.
