@@ -93,6 +93,24 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
     return CoDual(y, dy), permutedims_pb!!
 end
 
+# `kron` reads its factors through whatever structure they carry, so `arrayify` hands back
+# tangents wrapped the same way. Entries outside that structure are not parameters -- the
+# primal reads zeros there whatever the storage holds -- so the dense contraction below is
+# accumulated in a scratch and projected before it reaches the tangent, as the `symv!` and
+# `hemv!` rules do. A strided tangent is its own scratch, so it costs nothing there.
+const KronFactor{T} = Union{
+    StridedVecOrMat{T},
+    UpperTriangular{T,<:StridedMatrix{T}},
+    LowerTriangular{T,<:StridedMatrix{T}},
+}
+
+kron_scratch(dx::StridedVecOrMat) = dx
+kron_scratch(dx::LinearAlgebra.AbstractTriangular) = zero(parent(dx))
+
+kron_project!(::StridedVecOrMat, scratch) = nothing
+kron_project!(dx::UpperTriangular, scratch) = (parent(dx) .+= UpperTriangular(scratch);)
+kron_project!(dx::LowerTriangular, scratch) = (parent(dx) .+= LowerTriangular(scratch);)
+
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other.
 # Read as `P x M x Q x N`, each `(q, n)` block of `dy` is a contiguous `P x M` matrix that
 # both contractions need, so one pass in memory order serves both without a temporary.
@@ -100,23 +118,27 @@ function _kron_pb!(dx1, dx2, dy, px1, px2, ::Type{T}) where {T}
     M, N = size(px1)
     P, Q = size(px2)
     W = reshape(dy, P, M, Q, N)
+    t1 = kron_scratch(dx1)
+    t2 = kron_scratch(dx2)
     @inbounds for n in 1:N, q in 1:Q
         B = view(W,:,:,q,n)
-        mul!(view(dx1, :, n), transpose(B), view(px2, :, q), one(T), one(T))
-        mul!(view(dx2, :, q), B, view(px1, :, n), one(T), one(T))
+        mul!(view(t1, :, n), transpose(B), view(px2, :, q), one(T), one(T))
+        mul!(view(t2, :, q), B, view(px1, :, n), one(T), one(T))
     end
+    kron_project!(dx1, t1)
+    kron_project!(dx2, t2)
     return nothing
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),StridedMatrix{T},StridedMatrix{T},StridedMatrix{T}
+    typeof(LinearAlgebra._kron!),StridedMatrix{T},KronFactor{T},KronFactor{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
     out::Dual{<:StridedMatrix{<:T}},
-    x1::Dual{<:StridedVecOrMat{<:T}},
-    x2::Dual{<:StridedVecOrMat{<:T}},
+    x1::Dual{<:KronFactor{<:T}},
+    x2::Dual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
     px1, dx1 = matrixify(x1)
@@ -138,8 +160,8 @@ end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:StridedMatrix{<:T}},
-    x1::CoDual{<:StridedVecOrMat{<:T}},
-    x2::CoDual{<:StridedVecOrMat{<:T}},
+    x1::CoDual{<:KronFactor{<:T}},
+    x2::CoDual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
     px1, dx1 = matrixify(x1)
@@ -159,12 +181,10 @@ end
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),StridedMatrix{T},StridedMatrix{T}
+    typeof(kron),KronFactor{T},KronFactor{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
-    ::CoDual{typeof(kron)},
-    x1::CoDual{<:StridedVecOrMat{<:T}},
-    x2::CoDual{<:StridedVecOrMat{<:T}},
+    ::CoDual{typeof(kron)}, x1::CoDual{<:KronFactor{<:T}}, x2::CoDual{<:KronFactor{<:T}}
 ) where {T<:Base.IEEEFloat}
     px1, dx1 = matrixify(x1)
     px2, dx2 = matrixify(x2)
