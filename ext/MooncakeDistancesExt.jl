@@ -137,8 +137,9 @@ function rrule!!(
     R = pdist isa Euclidean ? copy(pr) : pr
     function _pairwise!_pb!!(::NoRData)
         # The primal's diagonal is a structural zero, so its cotangent must not reach `A`.
-        dr[diagind(dr)] .= zero(P)
+        # This has to happen after the conversion: `normalise(0, 0)` is 1, not 0.
         W = sqdist_cotangent(pdist, dr, R)
+        W[diagind(W)] .= zero(P)
         sqdist_accumulate!(dA, pA, pA, W, vec(sum(W; dims=2)))
         sqdist_accumulate!(dA, pA, pA, transpose(W), vec(sum(W; dims=1)))
         copyto!(pr, old_pr)
