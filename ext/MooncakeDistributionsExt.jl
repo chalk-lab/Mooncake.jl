@@ -16,7 +16,6 @@ import Mooncake:
     NoFData,
     NoRData,
     RData,
-    ReverseMode,
     Tangent,
     _fields,
     arrayify,
@@ -28,9 +27,8 @@ import Mooncake:
     zero_fcodual
 
 # The rules below exist purely to work around performance limitations of Mooncake.jl: the
-# derived rules are correct, but slow. Both fuse an elementwise broadcast that AD would
-# otherwise run at roughly 25x the primal's runtime. As in `src/rules/performance_patches.jl`,
-# each signature covers a finite set of concrete types, all of which are tested.
+# derived rules are correct, but slow. As in `src/rules/performance_patches.jl`, each
+# signature covers a finite set of concrete types, all of which are tested.
 
 # Both rules below work in `z = (x - μ) / σ` rather than `σ^2`: squaring flushes the
 # derivative to `Inf` for `σ` well inside the range where it is representable
@@ -149,7 +147,7 @@ function _coordinate_derivative(
 end
 
 # The primal reaches these checks via broadcasting `x .- d.μ`, which the rules replace.
-function _check_dims(d::MvNormal, x::AbstractVector)
+function _check_dims(d::Union{MvNormal,Distributions.Product}, x::AbstractVector)
     length(x) == length(d) && return nothing
     throw(DimensionMismatch(lazy"x has length $(length(x)), expected $(length(d))"))
 end
@@ -161,10 +159,6 @@ function _check_dims(d::Distributions.ProductDistribution, x::AbstractArray)
     size(x) == size(d) && return nothing
     throw(DimensionMismatch(lazy"x has size $(size(x)), expected $(size(d))"))
 end
-function _check_dims(d::Distributions.Product, x::AbstractVector)
-    length(x) == length(d) && return nothing
-    throw(DimensionMismatch(lazy"x has length $(length(x)), expected $(length(d))"))
-end
 
 # A `Fill` mean has a single tangent value shared by every element.
 _mean_tangent(μ̇::Tangent, ::Int) = _fields(μ̇).value
@@ -173,7 +167,7 @@ _mean_tangent(μ̇::Vector, i::Int) = @inbounds μ̇[i]
 # A `Vector` mean carries its gradient in fdata; a `Fill` mean carries it in rdata, which
 # leaves the distribution with no fdata at all.
 _mean_fdata(::CoDual{<:ScalMvNormal,NoFData}) = NoFData()
-_mean_fdata(d::CoDual{<:ScalMvNormal}) = _fields(d.dx).μ
+_mean_fdata(d::CoDual{<:ScalMvNormal}) = _fields(tangent(d)).μ
 
 # Accumulate the gradients of `x` and of the mean in one pass, returning the mean's rdata.
 # Recomputing the residuals is cheaper than allocating a buffer for them in the forward
@@ -349,9 +343,7 @@ function rrule!!(
         z = (px[i] - dist.μ) / dist.σ
         y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2(z)
     end
-    # A `σ == 0` component makes the fused sum `Inf - Inf`, where the primal's `iszero(σ)`
-    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop
-    # above vectorisable; the derivative agrees with the derived rule either way.
+    # As in the `frule!!` above: recompute only where the fused sum is `Inf - Inf`.
     isnan(y) && (y = logpdf(dp, px))
     ddists = _dists(dp, tangent(d))
     function normal_product_logpdf_pb!!(dy::P)
@@ -360,10 +352,9 @@ function rrule!!(
             z = (px[i] - dist.μ) / dist.σ
             dx_i = -dy * z / dist.σ
             dx[i] += dx_i
-            fields = _fields(ddists[i])
-            ddists[i] = Tangent((
-                μ=(fields.μ - dx_i), σ=(fields.σ + dy * (abs2(z) - one(P)) / dist.σ)
-            ))
+            ddists[i] = increment!!(
+                ddists[i], Tangent((μ=(-dx_i), σ=dy * (abs2(z) - one(P)) / dist.σ))
+            )
         end
         return NoRData(), NoRData(), NoRData()
     end
@@ -703,8 +694,6 @@ function rrule!!(
     y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
     dμ = _fields(tangent(d)).μ
     function iso_loglikelihood_pb!!(dy::P)
-        # The shared variance takes a single cotangent, so it is accumulated here and
-        # returned as rdata rather than written into fdata.
         # The variance is shared, so it is divided once here rather than once per
         # observation, which `_coordinate_gradients` would do.
         excess_total = zero(P)
@@ -853,15 +842,6 @@ end
 # Precompile the AD machinery for the most common `logpdf` patterns so that users
 # who load Distributions.jl get a much smaller time-to-first-gradient when
 # differentiating through distribution log-densities.
-#
-# The workload exercises `prepare_gradient_cache` → `value_and_gradient!!` for a
-# representative subset of distribution families drawn from
-# `test/integration_testing/distributions/distributions.jl`:
-#   • a simple univariate distribution  (Normal)
-#   • a simple multivariate distribution (MvNormal with diagonal covariance)
-#   • an i.i.d. normal prior             (`sqmahal`, both mean types)
-#   • independent normals with distinct parameters, and a counting likelihood
-#   • repeated observations from one dense multivariate normal (`loglikelihood`)
 
 @setup_workload begin
     @compile_workload begin
