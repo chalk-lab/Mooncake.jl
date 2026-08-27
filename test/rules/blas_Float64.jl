@@ -133,6 +133,30 @@
         )[1]
         @test all(iszero, primal(o))
 
+        # The beta GRADIENT, not just the primal: `dβ = Σ conj(Cᵢ)·dCᵢ` contracted the whole of
+        # `C`, so one `NaN` in an entry the selected output does not depend on poisoned it, while
+        # forward returned the right number. Not a registry case: `test_rule`'s finite-difference
+        # oracle perturbs every entry, the NaN one included, so the oracle itself returns NaN.
+        @testset "beta gradient ignores a NaN in an unused entry" begin
+            xx = randn(StableRNG(5), 3)
+            ynan = [NaN, 1.0, 2.0]
+            Cnan = [NaN 1.0 2.0; 3.0 4.0 5.0; 6.0 7.0 8.0]
+            grad(f, b) = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, b), f, b
+            )[2][2]
+            @test grad(b -> (z=copy(ynan); BLAS.gemv!('N', 1.0, A, xx, b, z); z[2]), 2.0) ==
+                ynan[2]
+            @test grad(
+                b -> (z=copy(ynan); BLAS.symv!('U', 1.0, Asym, xx, b, z); z[2]), 2.0
+            ) == ynan[2]
+            @test grad(
+                b -> (Z=copy(Cnan); BLAS.gemm!('N', 'N', 1.0, A, B, b, Z); Z[2, 2]), 2.0
+            ) == Cnan[2, 2]
+            @test grad(
+                b -> (Z=copy(Cnan); BLAS.syrk!('U', 'N', 1.0, A, b, Z); Z[2, 2]), 2.0
+            ) == Cnan[2, 2]
+        end
+
         @testset "trsm! α=0 ignores a NaN A: width $Nw" for Nw in (1, 2, 3)
             r = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),

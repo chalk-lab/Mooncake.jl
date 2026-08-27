@@ -472,6 +472,24 @@ end
     return nothing
 end
 
+# `dβ = Σ conj(yᵢ)·ȳᵢ` over the ORIGINAL `y`, with a strong zero on the cotangent: where `ȳᵢ` is
+# zero the output does not depend on `yᵢ`, so a `NaN` there must contribute exactly 0 rather than
+# `0 * NaN`. `y` may hold undefined values wherever `β == 0` discarded them, and a plain `dot`
+# lets one such entry poison the whole `β` gradient. The forward rules already skip those entries.
+#
+# The `α` gradients alongside each caller contract the same way and share the exposure -- a `NaN`
+# confined to one row of a factor gives a finite primal and a `NaN` `dα`. They are NOT converted
+# here: several use the three-argument `dot(dy, A, x)` or a hoisted temporary, so each needs its
+# own formulation rather than this substitution.
+@inline function _rvs_guarded_dot(y, dy)
+    s = zero(promote_type(eltype(y), eltype(dy)))
+    @inbounds for i in eachindex(y, dy)
+        d = dy[i]
+        iszero(d) || (s += y[i]' * d)
+    end
+    return s
+end
+
 # `β`-scale a tangent block with BLAS's β semantics: `β == 0` overwrites (strong zero)
 # rather than multiplying, so a NaN already in the tangent cannot leak through `0 * NaN`.
 # `contracted` is the dimension BLAS sums over. BLAS takes a quick return when it is zero and does
@@ -1091,7 +1109,7 @@ end
             BLAS.gemv!('N', alpha, A, conj.(dy), one(eltype(A)), dx)
             conj!(dx)
         end
-        dbeta = dot(y_copy, dy)
+        dbeta = _rvs_guarded_dot(y_copy, dy)
         dy .*= beta'
 
         # Restore primal.
@@ -1259,7 +1277,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             end
 
             # gradient w.r.t. beta.
-            dβ = dot(y, dy)
+            dβ = _rvs_guarded_dot(y, dy)
 
             # gradient w.r.t. y.
             BLAS.scal!(β', dy)
@@ -1691,7 +1709,7 @@ end
         BLAS.copyto!(p_C, p_C_copy)
 
         # gradient wrt beta
-        db = dot(p_C, dC)
+        db = _rvs_guarded_dot(p_C, dC)
 
         # gradients wrt A and B (depends on transpose flags tA and tB)
         # C = a * op(A) * op(B) + b * C
@@ -1897,7 +1915,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             BLAS.$fname(s, ul, α', $(isherm ? :A : :(conj(A))), dC, one(T), dB)
 
             # gradient w.r.t. beta.
-            dβ = dot(C, dC)
+            dβ = _rvs_guarded_dot(C, dC)
 
             # gradient w.r.t. C.
             dC .*= β'
@@ -2056,7 +2074,7 @@ for (fname, elty, relty) in (
             $(isherm ? :(real_diag!(dC)) : :())
 
             B = uplo == 'U' ? triu(dC) : tril(dC)
-            ∇β = dot(C, B)
+            ∇β = _rvs_guarded_dot(C, B)
             $(isherm ? :(∇β = real(∇β)) : :())
             ∇α = dot(
                 if trans == 'N'
