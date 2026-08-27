@@ -152,8 +152,8 @@ function Mooncake.frule!!(
     x2::Dual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
     # suffers
@@ -175,8 +175,8 @@ function Mooncake.rrule!!(
     x2::CoDual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
@@ -197,8 +197,8 @@ end
 function Mooncake.rrule!!(
     ::CoDual{typeof(kron)}, x1::CoDual{<:KronFactor{<:T}}, x2::CoDual{<:KronFactor{<:T}}
 ) where {T<:Base.IEEEFloat}
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
