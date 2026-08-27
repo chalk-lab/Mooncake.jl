@@ -109,6 +109,50 @@ function arrayify(x::A, dx::DA) where {A,DA}
 end
 
 """
+    densify(dx)
+
+Somewhere dense to accumulate a contribution destined for the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`accumulate_densified!`](@ref), which adds back only the part `dx`
+can represent. A strided tangent is already dense, so the common case costs nothing.
+"""
+densify(dx::StridedArray) = dx
+function densify(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    accumulate_densified!(dx, dense)
+
+Add the part of `dense` that the structured tangent `dx` can represent. See
+[`densify`](@ref).
+"""
+accumulate_densified!(::StridedArray, dense) = nothing
+function accumulate_densified!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+function accumulate_densified!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function accumulate_densified!(dx::Symmetric, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
+end
+
+"""
     matrixify(x_dx::Union{Dual{<:AbstractVecOrMat{<:BlasFloat}},
                           CoDual{<:AbstractVecOrMat{<:BlasFloat}}})
 
