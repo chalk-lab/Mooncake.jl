@@ -420,6 +420,163 @@ function rrule!!(
     nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
     return y, nrm2_len_pb!!
 end
+# `axpy!` (y := a*x + y) and `axpby!` (y := a*x + b*y) had no rule in either mode, so ordinary
+# level-1 BLAS code failed at the foreigncall. Both are linear in every argument, so the JVP is the
+# same operation on the partials plus the `da`/`db` terms, and the pullback scatters the output
+# cotangent back. `∇a` and `∇b` contract with the strong zero on the cotangent, as the `gemv!`
+# family does: an entry the output does not depend on must not carry a `NaN` into the scalar
+# gradient.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
+    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.axpy!),Nw},
+    _n::Lifted,
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    _incx::Lifted,
+    Y_dY::Lifted{<:AbstractArray{P}},
+    _incy::Lifted,
+) where {Nw,P<:BlasFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
+    # `dy := a*dx + da*x + dy`, then the primal ONCE, after every lane has read the original `x`.
+    # Broadcast rather than `BLAS.axpy!` on the lane partial: above width 1 a lane is a stride-`Nw`
+    # view, which the pointer-based wrapper misreads -- it silently dropped the last element.
+    xv = _viewify_one(n, x, _blas_walk_step(x, incx, n))
+    for k in 1:Nw
+        dy_k = _viewify_one(n, _blas_lane_partial(Y_dY, k), _blas_walk_step(y, incy, n))
+        dx_k = _viewify_one(n, _blas_lane_partial(X_dX, k), _blas_walk_step(x, incx, n))
+        dy_k .= a .* dx_k .+ tangent(a_da, k) .* xv .+ dy_k
+    end
+    BLAS.axpy!(n, a, x, incx, y, incy)
+    return Y_dY
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpy!)},
+    _n::CoDual,
+    a_da::CoDual{P},
+    X_dX::CoDual{<:AbstractArray{P}},
+    _incx::CoDual,
+    Y_dY::CoDual{<:AbstractArray{P}},
+    _incy::CoDual,
+) where {P<:BlasFloat}
+    n, incx, incy = primal(_n), primal(_incx), primal(_incy)
+    a = primal(a_da)
+    x, dx = viewify(n, X_dX, incx)
+    y, dy = viewify(n, Y_dY, incy)
+    BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
+    function axpy!_pb!!(::NoRData)
+        y .-= a .* x                       # restore: `y_old = y_new - a*x`, exactly invertible
+        ∇a = _rvs_guarded_dot(x, dy)
+        dx .+= a' .* dy                    # `y` keeps its own cotangent: d y_new / d y_old is I
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return Y_dY, axpy!_pb!!
+end
+
+# The short form, inlined into the long one exactly as `dot`/`scal!`'s are.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Number,X,Y
+    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    f::Lifted{typeof(BLAS.axpy!),Nw},
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    ix = Lifted{Int,Nw}(stride(x, 1), NoDual())
+    iy = Lifted{Int,Nw}(stride(primal(Y_dY), 1), NoDual())
+    return frule!!(f, n, a_da, X_dX, ix, Y_dY, iy)
+end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.axpy!)},
+    a_da::CoDual{P},
+    X_dX::CoDual{<:AbstractArray{P}},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(
+        f,
+        zero_fcodual(length(x)),
+        a_da,
+        X_dX,
+        zero_fcodual(stride(x, 1)),
+        Y_dY,
+        zero_fcodual(stride(primal(Y_dY), 1)),
+    )
+    # Seven slots `(f, n, a, X, incx, Y, incy)` down to four `(f, a, X, Y)`.
+    function axpy!_short_pb!!(dy)
+        r = pb(dy)
+        return NoRData(), r[3], r[4], r[6]
+    end
+    return y, axpy!_short_pb!!
+end
+
+# `axpby!(a, x, b, y)`: `y := a*x + b*y`. `y` is NOT recoverable by inverting when `b == 0`, so the
+# pullback works from a copy, as the `gemm!` family does.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpby!),Number,X,Number,Y
+    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.axpby!),Nw},
+    a_da::Lifted{P,Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    b_db::Lifted{P,Nw},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasFloat}
+    x, y = primal(X_dX), primal(Y_dY)
+    a, b = primal(a_da), primal(b_db)
+    for k in 1:Nw
+        dy_k = _blas_lane_partial(Y_dY, k)
+        # `dy := a*dx + da*x + b*dy + db*y`, every term read before the primal overwrites `y`.
+        dy_k .=
+            a .* _blas_lane_partial(X_dX, k) .+ tangent(a_da, k) .* x .+ b .* dy_k .+
+            tangent(b_db, k) .* y
+    end
+    BLAS.axpby!(a, x, b, y)
+    return Y_dY
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpby!)},
+    a_da::CoDual{P},
+    X_dX::CoDual{<:AbstractArray{P}},
+    b_db::CoDual{P},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasFloat}
+    a, b = primal(a_da), primal(b_db)
+    x, dx = arrayify(X_dX)
+    y, dy = arrayify(Y_dY)
+    y_copy = copy(y)
+    BLAS.axpby!(a, x, b, y)
+    function axpby!_pb!!(::NoRData)
+        copyto!(y, y_copy)
+        ∇a = _rvs_guarded_dot(x, dy)
+        ∇b = _rvs_guarded_dot(y_copy, dy)
+        dx .+= a' .* dy
+        dy .*= b'
+        return NoRData(), ∇a, NoRData(), ∇b, NoRData()
+    end
+    return Y_dY, axpby!_pb!!
+end
+
 # The TWO-argument convenience forms. Julia inlines them into the long form and its `ccall`, so by
 # the time a rule could fire the boundary is gone and the raw pointer reaches the transform, which
 # refuses it above chunk width 1 -- including the DEFAULT width, so ordinary forward use failed
@@ -2644,6 +2801,55 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
 
+        # `axpy!`/`axpby!`, in both the long and short forms, dense and strided. The width sweep is
+        # what matters here: a first version called `BLAS.axpy!` on a lane partial, which above
+        # width 1 is a stride-`Nw` view the pointer wrapper misreads, and it silently dropped the
+        # last element while width 1 stayed correct.
+        Any[
+            (false, :none, nothing, BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpy!,
+                5,
+                P(2),
+                randn(rng, P, 5),
+                1,
+                randn(rng, P, 5),
+                1,
+            ),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpy!,
+                P(2),
+                view(randn(rng, P, 10), 1:2:10),
+                view(randn(rng, P, 10), 1:2:10),
+            ),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpby!,
+                P(2),
+                randn(rng, P, 5),
+                P(3),
+                randn(rng, P, 5),
+            ),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.axpby!,
+                P(2),
+                view(randn(rng, P, 10), 1:2:10),
+                P(3),
+                view(randn(rng, P, 10), 1:2:10),
+            ),
+        ]...,
+
         # The two-argument convenience forms, which reach the raw pointer without their own rules
         # and then fail above chunk width 1. Strided operands included: both use the array's own
         # stride, so a view exercises a different path from a dense vector.
@@ -2654,16 +2860,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         (
             if P <: Real
                 Any[
-                (false, :none, nothing, BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
-                (
-                    false,
-                    :none,
-                    nothing,
-                    BLAS.dot,
-                    view(randn(rng, P, 10), 1:2:10),
-                    view(randn(rng, P, 10), 1:2:10),
-                ),
-            ]
+                    (false, :none, nothing, BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                    (
+                        false,
+                        :none,
+                        nothing,
+                        BLAS.dot,
+                        view(randn(rng, P, 10), 1:2:10),
+                        view(randn(rng, P, 10), 1:2:10),
+                    ),
+                ]
             else
                 Any[]
             end
