@@ -110,12 +110,8 @@ kron_scratch(dx::StridedMatrix) = dx
 kron_scratch(dx::Union{UpperTriangular,LowerTriangular}) = zero(parent(dx))
 
 kron_project!(::StridedMatrix, scratch) = nothing
-function kron_project!(dx::UpperTriangular, scratch)
-    parent(dx) .+= UpperTriangular(scratch)
-    return nothing
-end
-function kron_project!(dx::LowerTriangular, scratch)
-    parent(dx) .+= LowerTriangular(scratch)
+function kron_project!(dx::T, scratch) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(scratch)
     return nothing
 end
 
