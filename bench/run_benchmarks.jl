@@ -100,9 +100,8 @@ _broadcast_sin_cos_exp(x::AbstractArray{<:Real}) = sum(sin.(cos.(exp.(x))))
 # about all of the operations.
 _simple_mlp(W2, W1, Y, X) = sum(abs2, Y - W2 * map(x -> x * (0 <= x), W1 * X))
 
-# Only Zygote and Mooncake can actually handle this. Note that Mooncake only has rules for
-# BLAS and LAPACK stuff, not explicit rules for things like the squared euclidean distance.
-# Consequently, Zygote is at a major advantage.
+# Only Zygote and Mooncake can actually handle this. Both have rules for the squared
+# Euclidean distance and the BLAS / LAPACK operations used here.
 _gp_lml(x, y, s) = logpdf(GP(SEKernel())(x, s), y)
 
 should_run_benchmark(::Val{:reverse_diff}, ::typeof(_gp_lml), x...) = false

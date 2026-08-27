@@ -75,6 +75,24 @@ function rrule!!(
     return CoDual(C, dC), matmul_pb!!
 end
 
+# Distances discharges `pairwise(...; dims=1)` through `permutedims`, and differentiating
+# the generic implementation element by element costs more than the rule beneath it.
+@is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:Matrix{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    return Dual(permutedims(px), permutedims(dx))
+end
+function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    y = permutedims(px)
+    dy = zero(y)
+    function permutedims_pb!!(::NoRData)
+        dx .+= transpose(dy)
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy), permutedims_pb!!
+end
+
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other.
 # Read as `P x M x Q x N`, each `(q, n)` block of `dy` is a contiguous `P x M` matrix that
 # both contractions need, so one pass in memory order serves both without a temporary.
@@ -188,6 +206,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 5, 5),
                 randn(rng, P, 10, 10),
             )
+        end,
+
+        # permutedims(x)
+        map([Float64, Float32]) do P
+            return (false, :stability, nothing, permutedims, randn(rng, P, 7, 11))
         end,
 
         # x * y
