@@ -258,6 +258,17 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
     end
 
+    # A diagonal covariance reads the sample directly rather than through `sqmahal`, and
+    # takes a contiguous view of one as well as a `Vector`.
+    @testset "logpdf(diagonal MvNormal, ::$P)" for P in [Float64, Float32, Float16]
+        d = MvNormal(randn(sr(12), P, 7), PDiagMat(rand(sr(13), P, 7) .+ P(0.5)))
+        x = randn(sr(14), P, 9)
+        interface_only = P === Float16
+        perf_flag = interface_only ? :none : :stability
+        test_rule(sr(17), logpdf, d, x[1:7]; perf_flag, interface_only)
+        test_rule(sr(17), logpdf, d, view(x, 2:8); perf_flag, interface_only)
+    end
+
     @testset "heterogeneous Normal product $N-D ::$P" for P in [Float64, Float32, Float16],
         N in (1, 2)
 
@@ -265,7 +276,9 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         μ = randn(sr(5), P, dims...)
         σ = rand(sr(6), P, dims...) .+ P(0.5)
         x = randn(sr(7), P, dims...)
-        d = product_distribution(map(Normal, μ, σ))
+        # `product_distribution` of a `Vector{<:Normal}` specialises to a diagonal
+        # `MvNormal`, so in one dimension only this constructor reaches the product rule.
+        d = Distributions.ProductDistribution(map(Normal, μ, σ))
         interface_only = P === Float16
         test_rule(
             sr(8),
@@ -274,6 +287,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             x;
             perf_flag=(interface_only ? :none : :stability),
             interface_only,
+            # `ProductDistribution` has no constructor `_add_to_primal` can call.
             unsafe_perturb=true,
         )
     end
