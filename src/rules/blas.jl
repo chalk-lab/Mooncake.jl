@@ -420,6 +420,76 @@ function rrule!!(
     nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
     return y, nrm2_len_pb!!
 end
+# The TWO-argument convenience forms. Julia inlines them into the long form and its `ccall`, so by
+# the time a rule could fire the boundary is gone and the raw pointer reaches the transform, which
+# refuses it above chunk width 1 -- including the DEFAULT width, so ordinary forward use failed
+# while width 1 and reverse both worked. Declaring the short forms keeps a boundary that survives
+# inlining. Both pass the whole array with its own stride, measured: `scal!(2.0, view(w, 1:2:10))`
+# doubles the view's LOGICAL elements, and `dot` over two such views sums their logical products.
+@is_primitive MinimalCtx Tuple{
+    typeof(BLAS.scal!),P,X
+} where {P<:BlasFloat,X<:AbstractArray{P}}
+
+function frule!!(
+    f::Lifted{typeof(BLAS.scal!),Nw}, a_da::Lifted{P,Nw}, X_dX::Lifted{<:AbstractArray{P}}
+) where {Nw,P<:BlasFloat}
+    x = primal(X_dX)
+    n = Lifted{Int,Nw}(length(x), NoDual())
+    return frule!!(f, n, a_da, X_dX, Lifted{Int,Nw}(stride(x, 1), NoDual()))
+end
+
+function rrule!!(
+    f::CoDual{typeof(BLAS.scal!)}, a_da::CoDual{P}, X_dX::CoDual{<:AbstractArray{P}}
+) where {P<:BlasFloat}
+    x = primal(X_dX)
+    y, pb = rrule!!(f, zero_fcodual(length(x)), a_da, X_dX, zero_fcodual(stride(x, 1)))
+    # The four-argument pullback returns rdata for `(f, n, a, X, incx)`; this form has
+    # `(f, a, X)`, so keep the scaling and array slots and drop the length and stride.
+    function scal!_short_pb!!(dy)
+        r = pb(dy)
+        return NoRData(), r[3], r[4]
+    end
+    return y, scal!_short_pb!!
+end
+
+# `BLAS.dot(x, y)` gets its own body rather than delegating: the five-argument form has no
+# array-level rule to call, only the raw-pointer one. Bilinear, so the JVP is
+# `<dx, y> + <x, dy>` and the pullback scatters `dv` onto each operand -- the same shape as the
+# `LinearAlgebra.dot` rule below.
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.dot),X,Y
+    } where {P<:BlasRealFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+)
+
+function frule!!(
+    ::Lifted{typeof(BLAS.dot),Nw},
+    X_dX::Lifted{<:AbstractArray{P}},
+    Y_dY::Lifted{<:AbstractArray{P}},
+) where {Nw,P<:BlasRealFloat}
+    x, dxs = arrayify(X_dX)
+    y, dys = arrayify(Y_dY)
+    v = BLAS.dot(x, y)
+    lanes = ntuple(k -> BLAS.dot(dxs[k], y) + BLAS.dot(x, dys[k]), Val(Nw))
+    return Lifted{P,Nw}(v, _scalar_ndual(v, lanes))
+end
+
+function rrule!!(
+    ::CoDual{typeof(BLAS.dot)},
+    X_dX::CoDual{<:AbstractArray{P}},
+    Y_dY::CoDual{<:AbstractArray{P}},
+) where {P<:BlasRealFloat}
+    x, dx = arrayify(X_dX)
+    y, dy = arrayify(Y_dY)
+    function blas_dot_pb!!(dv::P)
+        dx .+= y .* dv
+        dy .+= x .* dv
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(BLAS.dot(x, y)), blas_dot_pb!!
+end
+
 # BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
 # routine on the per-lane partial array (or Ptr) directly. Supports both
 # `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
@@ -2573,6 +2643,31 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 (false, :stability, nothing, BLAS.nrm2, n, x, incx)
             end
         end...,
+
+        # The two-argument convenience forms, which reach the raw pointer without their own rules
+        # and then fail above chunk width 1. Strided operands included: both use the array's own
+        # stride, so a view exercises a different path from a dense vector.
+        Any[
+            (false, :none, nothing, BLAS.scal!, P(2), randn(rng, P, 5)),
+            (false, :none, nothing, BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
+        ]...,
+        (
+            if P <: Real
+                Any[
+                (false, :none, nothing, BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                (
+                    false,
+                    :none,
+                    nothing,
+                    BLAS.dot,
+                    view(randn(rng, P, 10), 1:2:10),
+                    view(randn(rng, P, 10), 1:2:10),
+                ),
+            ]
+            else
+                Any[]
+            end
+        )...,
 
         # Strided operands whose stride divides `incx`, which BLAS's raw walk maps onto the
         # operand's own elements one step at a time. `norm(view(A, 1, :))` is the ordinary form of
