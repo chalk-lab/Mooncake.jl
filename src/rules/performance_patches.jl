@@ -46,6 +46,35 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Without this, `A * B` differentiates through the in-place `gemm!` rule, which copies the
+# output buffer so that the pullback can restore it. `*` allocates that buffer fresh, so
+# the copy is pure overhead.
+@is_primitive DefaultCtx Tuple{typeof(*),Matrix{P},Matrix{P}} where {P<:BlasRealFloat}
+function frule!!(
+    ::Dual{typeof(*)}, A::Dual{<:Matrix{P}}, B::Dual{<:Matrix{P}}
+) where {P<:BlasRealFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    C = pA * pB
+    dC = dA * pB
+    mul!(dC, pA, dB, one(P), one(P))
+    return Dual(C, dC)
+end
+function rrule!!(
+    ::CoDual{typeof(*)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
+) where {P<:BlasRealFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    C = pA * pB
+    dC = zero(C)
+    function matmul_pb!!(::NoRData)
+        mul!(dA, dC, transpose(pB), one(P), one(P))
+        mul!(dB, transpose(pA), dC, one(P), one(P))
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(C, dC), matmul_pb!!
+end
+
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other.
 # Read as `P x M x Q x N`, each `(q, n)` block of `dy` is a contiguous `P x M` matrix that
 # both contractions need, so one pass in memory order serves both without a temporary.
@@ -160,10 +189,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 10, 10),
             )
         end,
+
+        # x * y
+        map([Float64, Float32]) do P
+            return (
+                false, :stability, nothing, *, randn(rng, P, 7, 11), randn(rng, P, 11, 5)
+            )
+        end,
     )
     memory = Any[]
     return test_cases, memory
 end
+
+_square_matmul(x) = x * x
 
 function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
@@ -218,6 +256,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 view(randn(rng, P, 5, 5), 1:5, 1:5),
                 UpperTriangular(randn(rng, P, 10, 10)),
             )
+        end,
+        # `A * A` aliases the rule's arguments, so `dA === dB` and the pullback must
+        # accumulate both terms into the one array.
+        map(precisions) do (P)
+            return (false, :none, nothing, _square_matmul, randn(rng, P, 5, 5))
         end,
     )
     memory = Any[]
