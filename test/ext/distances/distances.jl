@@ -30,11 +30,9 @@ using Mooncake.TestUtils: test_rule
 
         X = randn(rng, 5, 7)
         Y = randn(rng, dims == 1 ? (3, 7) : (5, 3))
-        nX, nY = size(X, dims), size(Y, dims)
-        for args in (
-            f === pairwise ? (X,) : (zeros(nX, nX), X),
-            f === pairwise ? (X, Y) : (zeros(nX, nY), X, Y),
-        )
+        nX = size(X, dims)
+        for (n, xs) in ((nX, (X,)), (size(Y, dims), (X, Y)))
+            args = f === pairwise ? xs : (zeros(nX, n), xs...)
             test_rule(
                 rng,
                 Core.kwcall,
