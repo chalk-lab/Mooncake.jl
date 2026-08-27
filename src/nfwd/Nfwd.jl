@@ -327,8 +327,20 @@ Base.precision(::NDual{T,N}) where {T<:AbstractFloat,N} = precision(T)
 # partials while advancing or retreating the scalar value by one representable step.
 Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value), a.partials)
 Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.partials)
-# exponent / significand: scalar operations; return scalar value (integer / NDual).
+# exponent / significand / frexp: scalar operations; return scalar value (integer / NDual).
+# `significand` and `frexp` rescale `x` by a power of two that is CONSTANT within a binade, so the
+# derivative is that scale. Guarded: a subnormal `x` has a very negative exponent, so the scale
+# overflows while the value stays in `[1, 2)` -- `significand(5e-324)` is `1.0` with a coefficient
+# of `Inf`.
 Base.exponent(a::NDual) = exponent(a.value)
+@inline function Base.significand(a::NDual{T,N}) where {T,N}
+    c = ldexp(one(T), -exponent(a.value))
+    return NDual{T,N}(significand(a.value), _fwd_guarded_scale(a.partials, c))
+end
+@inline function Base.frexp(a::NDual{T,N}) where {T,N}
+    v, e = frexp(a.value)
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, ldexp(one(T), -e))), e
+end
 
 # ── Zero / One ────────────────────────────────────────────────────────────────────
 

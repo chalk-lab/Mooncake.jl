@@ -1254,6 +1254,38 @@ function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), modf_pb
 end
 
+# `significand` and `frexp` rescale by a power of two that is constant within a binade, so each
+# derivative is that scale: `2^-exponent(x)` and `2^-(exponent(x)+1)`. Both descend into bit
+# manipulation without a rule and hit the bitcast guard, as `flipsign`/`ldexp`/`rem_fast` did.
+# `frexp`'s second output is the exponent, an `Int` with no derivative.
+@is_primitive MinimalCtx Tuple{typeof(significand),P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(significand),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    dy = significand(tangent(x))
+    return Lifted{P,N}(dy.value, dy)
+end
+function rrule!!(::CoDual{typeof(significand)}, x::CoDual{P}) where {P<:IEEEFloat}
+    _x = primal(x)
+    c = ldexp(one(P), -exponent(_x))
+    significand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c))
+    return zero_fcodual(significand(_x)), significand_pb
+end
+
+@is_primitive MinimalCtx Tuple{typeof(frexp),P} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(frexp),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    dv, e = frexp(tangent(x))
+    return Lifted{Tuple{P,Int},N}((dv.value, e), (dv, NoDual()))
+end
+function rrule!!(::CoDual{typeof(frexp)}, x::CoDual{P}) where {P<:IEEEFloat}
+    y = frexp(primal(x))
+    c = ldexp(one(P), -y[2])
+    frexp_pb(ȳ) = (NoRData(), _rvs_guarded_scale(ȳ[1], c))
+    return zero_fcodual(y), frexp_pb
+end
+
 # ---- tanpi(x) = tan(π·x); derivative π·(1 + tanpi(x)²) ----
 @is_primitive MinimalCtx Tuple{typeof(tanpi),P} where {P<:IEEEFloat}
 function frule!!(
@@ -1367,6 +1399,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (flipsign, P(3.0), P(2.0)),
                 (ldexp, P(1.5), 3),
                 (ldexp, P(1.5), -3),
+                # Away from exact powers of two, where both jump to the next binade and a central
+                # difference straddles the discontinuity.
+                (significand, P(0.7)),
+                (significand, P(-3.3)),
+                (frexp, P(0.7)),
+                (frexp, P(-3.3)),
                 (Base.FastMath.rem_fast, P(7.5), P(2.3)),
                 (Base.FastMath.rem_fast, P(-7.5), P(2.3)),
                 (^, P(4.0), P(5.0)),
