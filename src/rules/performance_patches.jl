@@ -115,19 +115,26 @@ function kron_project!(dx::T, scratch) where {T<:Union{UpperTriangular,LowerTria
     return nothing
 end
 
-# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other.
-# Read as `P x M x Q x N`, each `(q, n)` block of `dy` is a contiguous `P x M` matrix that
-# both contractions need, so one pass in memory order serves both without a temporary.
-function _kron_pb!(dx1, dx2, dy, px1, px2, ::Type{T}) where {T}
+# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. Read
+# as `P x M x Q x N`, both contractions read the same element of `dy`, so a single pass in
+# memory order serves both. A `gemv` per `(q, n)` block is slower at every shape measured:
+# the blocks are small enough that BLAS call overhead dominates.
+function _kron_pb!(dx1, dx2, dy, px1, px2)
+    T = eltype(px1)
     M, N = size(px1)
     P, Q = size(px2)
     W = reshape(dy, P, M, Q, N)
     t1 = kron_scratch(dx1)
     t2 = kron_scratch(dx2)
-    @inbounds for n in 1:N, q in 1:Q
-        B = view(W,:,:,q,n)
-        mul!(view(t1, :, n), transpose(B), view(px2, :, q), one(T), one(T))
-        mul!(view(t2, :, q), B, view(px1, :, n), one(T), one(T))
+    @inbounds for n in 1:N, q in 1:Q, i in 1:M
+        acc = zero(T)
+        x1 = px1[i, n]
+        @simd for k in 1:P
+            w = W[k, i, q, n]
+            acc += w * px2[k, q]
+            t2[k, q] += w * x1
+        end
+        t1[i, n] += acc
     end
     kron_project!(dx1, t1)
     kron_project!(dx2, t2)
@@ -173,7 +180,7 @@ function Mooncake.rrule!!(
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
-        _kron_pb!(dx1, dx2, dout, px1, px2, T)
+        _kron_pb!(dx1, dx2, dout, px1, px2)
         copyto!(pout, old_pout)
         fill!(dout, zero(T))
         return NoRData(), NoRData(), NoRData(), NoRData()
@@ -195,7 +202,7 @@ function Mooncake.rrule!!(
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
-        _kron_pb!(dx1, dx2, dy, px1, px2, T)
+        _kron_pb!(dx1, dx2, dy, px1, px2)
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), kron_pb!!
