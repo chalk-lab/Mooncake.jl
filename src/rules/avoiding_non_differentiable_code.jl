@@ -34,6 +34,15 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
+# Character predicates backed by a `utf8proc` ccall, which the transform cannot see through. They
+# are `Bool`-valued and have no derivative, but without these `LinearAlgebra`'s wrapper-char
+# dispatch takes `Symmetric(A) * B` -- ordinary code -- into a `MissingForeigncallRuleError` in both
+# modes. Measured membership: `isdigit`, `isspace`, `iscntrl` and `isxdigit` take ASCII fast paths
+# and never reach the ccall, so they are not listed.
+for f in (:isuppercase, :islowercase, :isletter, :isnumeric, :ispunct, :isprint)
+    @eval @zero_derivative MinimalCtx Tuple{typeof($f),AbstractChar}
+end
+@zero_derivative MinimalCtx Tuple{typeof(Base.Unicode.category_code),AbstractChar}
 @zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
 @zero_derivative MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
@@ -290,6 +299,39 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
                 (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
                 1.0,
             ),
+
+            # `Symmetric(A) * B` is the shape that made these matter: on 1.12 `LinearAlgebra`'s
+            # wrapper-char dispatch calls `isuppercase`, whose `utf8proc` ccall the transform
+            # cannot see through, so ordinary code failed in BOTH modes. The predicates are
+            # exercised through a barrier as well, since a literal argument constant-folds the
+            # call away before the transform ever sees it.
+            (
+                false,
+                :none,
+                nothing,
+                (X, Y) -> Symmetric(X) * Y,
+                randn(rng_ctor(123), 4, 4),
+                randn(rng_ctor(124), 4, 3),
+            ),
+            (
+                false,
+                :none,
+                nothing,
+                (X, Y) -> Hermitian(X) * Y,
+                randn(rng_ctor(123), 4, 4),
+                randn(rng_ctor(124), 4, 3),
+            ),
+            map((
+                isuppercase, islowercase, isletter, isnumeric, ispunct, isprint
+            )) do pred
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    x -> (pred(Base.inferencebarrier('U')::Char) ? 2.0 : 3.0) * x,
+                    1.0,
+                )
+            end...,
 
             # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, (x) -> print(x), "Testing print"),
