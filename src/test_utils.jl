@@ -88,6 +88,13 @@ interfaces that this package defines have been implemented correctly.
 module TestUtils
 
 using Random, Mooncake, Test
+using LinearAlgebra:
+    Hermitian,
+    LowerTriangular,
+    Symmetric,
+    UnitLowerTriangular,
+    UnitUpperTriangular,
+    UpperTriangular
 using Mooncake:
     CoDual,
     NoTangent,
@@ -287,6 +294,32 @@ function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
+end
+
+# Wrappers whose backing array holds entries the wrapper never reads: `Symmetric`/`Hermitian` take
+# one triangle and mirror it, and the triangular types treat the off-pattern side (and, for the Unit
+# variants, the diagonal) as structural constants. Those entries are not data and may be `undef` --
+# `kron(Symmetric, Symmetric)` returns a `Symmetric` whose unread triangle Base leaves
+# uninitialised, and four evaluations of one expression gave four different parents while the
+# matrices were equal. Descending into fields therefore compares whatever the allocator last wrote.
+# Comparison goes element-wise through the wrapper rather than via `==`, which would report two
+# `NaN`s unequal where this function reports them equal.
+for T in (
+    :Symmetric,
+    :Hermitian,
+    :UpperTriangular,
+    :LowerTriangular,
+    :UnitUpperTriangular,
+    :UnitLowerTriangular,
+)
+    @eval function has_equal_data_internal(
+        x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
+    )
+        size(x) == size(y) || return false
+        return all(
+            has_equal_data_internal(x[i], y[i], equal_undefs, d) for i in eachindex(x, y)
+        )
+    end
 end
 
 # `Method`, `CodeInstance` and `MethodInstance` reference one another, so field descent

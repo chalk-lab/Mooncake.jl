@@ -503,9 +503,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         # `Symmetric` is the wrapper whose lane partial cannot be densified through LAPACK, so
         # every width above 1 threw, and whose reverse cotangent needs folding onto the stored
-        # triangle. Only ONE operand is `Symmetric` per case: `kron(Symmetric, Symmetric)` returns
-        # a `Symmetric` whose unstored triangle Base leaves `undef`, and `has_equal_data` compares
-        # it, so such a case passes or fails on whatever the allocator handed back.
+        # triangle. One operand each here because `@is_primitive` wants a `StridedMatrix` on one
+        # side; both-`Symmetric` is not primitive and is registered as a derived case instead.
         map([Float64, Float32]) do P
             return (
                 false,
@@ -526,6 +525,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 Symmetric(randn(rng, P, 3, 3), :L),
             )
         end,
+
         # A real `Hermitian` reaches the same two paths through its own `arrayify` overload.
         map([Float64, Float32]) do P
             return (
@@ -556,6 +556,25 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     precisions = [Float64, Float32]
     test_cases = vcat(
+        # Both operands `Symmetric`: not primitive (the declaration wants a `StridedMatrix` on one
+        # side), and previously untestable at all -- the result is a `Symmetric` whose unstored
+        # triangle Base leaves `undef`, which `has_equal_data` compared until it was taught to read
+        # through the wrapper. `Float32` is `interface_only`, as the `Float32` `det` cases in
+        # `lapack.jl` are: the finite-difference oracle cannot resolve this composite at that
+        # precision, though the rule is right -- its `Float32` gradient matches a `Float64`
+        # reference to 2.5e-7, and the `Float64` case below checks the same code path against
+        # finite differences.
+        map([Float64, Float32]) do P
+            return (
+                P == Float32,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                Symmetric(randn(rng, P, 3, 3)),
+                Symmetric(randn(rng, P, 3, 3), :L),
+            )
+        end,
+
         # A COMPLEX `Hermitian`, where the two modes reach the answer differently: forward through
         # the `_arrayify_lane` wrapper (`Hermitian(dA)` is the JVP), reverse through the derived
         # path, since folding a complex cotangent onto the stored triangle needs a conjugation
