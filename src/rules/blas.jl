@@ -490,6 +490,23 @@ end
     return s
 end
 
+# The three-argument `dot(dy, B, x)'` with the same strong zero: rows whose cotangent is zero are
+# skipped, so a `NaN` in `B` or `x` confined to such a row cannot reach `dα`. Accumulates each row
+# product in place rather than materialising `B*x`, as the three-argument `dot` does.
+@inline function _rvs_guarded_dot3(dy, B, x)
+    s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
+    @inbounds for i in eachindex(dy)
+        d = dy[i]
+        iszero(d) && continue
+        r = zero(s)
+        for j in eachindex(x)
+            r += B[i, j] * x[j]
+        end
+        s += d * r'
+    end
+    return s
+end
+
 # `β`-scale a tangent block with BLAS's β semantics: `β == 0` overwrites (strong zero)
 # rather than multiplying, so a NaN already in the tangent cannot leak through `0 * NaN`.
 # `contracted` is the dimension BLAS sums over. BLAS takes a quick return when it is zero and does
@@ -921,7 +938,7 @@ function rrule!!(
         X .= X_copy
 
         # Compute gradient w.r.t. scaling.
-        ∇a = dot(X, dX)
+        ∇a = _rvs_guarded_dot(X, dX)
 
         # Compute gradient w.r.t. DX.
         BLAS.scal!(a', dX)
@@ -1093,15 +1110,15 @@ end
 
         # Increment fdata.
         if trans == 'N'
-            dalpha = dot(dy, A, x)'
+            dalpha = _rvs_guarded_dot3(dy, A, x)
             dA .+= alpha' .* dy .* x'
             BLAS.gemv!('C', alpha', A, dy, one(eltype(A)), dx)
         elseif trans == 'C' || P <: BlasRealFloat
-            dalpha = dot(dy, A', x)'
+            dalpha = _rvs_guarded_dot3(dy, A', x)
             dA .+= alpha .* x .* dy'
             BLAS.gemv!('N', alpha', A, dy, one(eltype(A)), dx)
         else
-            dalpha = dot(dy, transpose(A), x)'
+            dalpha = _rvs_guarded_dot3(dy, transpose(A), x)
             dA .+= alpha' .* conj.(x) .* transpose(dy)
             # Should be gemv!("conjugate only", alpha', A, dy, one(eltype(A)), dx)
             # but BLAS has no "conjugate only" gemv
@@ -1239,7 +1256,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
             # dα = <dy, Ax>'
             if (α == 1 && β == 0)
                 # Don't recompute Ax, it's already in y.
-                dα = dot(dy, y)'
+                dα = _rvs_guarded_dot(y, dy)
                 BLAS.copyto!(y, y_copy)
             else
                 # Reset y.
@@ -1247,7 +1264,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
 
                 # First compute Ax with {sy,he}mv!: safe to write into memory for copy of y.
                 BLAS.$fname(ul, one(T), A, x, zero(T), y_copy)
-                dα = dot(dy, y_copy)'
+                dα = _rvs_guarded_dot(y_copy, dy)
             end
 
             # gradient w.r.t. A.
@@ -1703,7 +1720,8 @@ end
 
     function gemm!_pb!!(::NoRData)
         # gradient wrt alpha
-        da = (a == 1 && b == 0) ? dot(p_C, dC) : dot(tmp_ref[], dC)
+        da =
+            (a == 1 && b == 0) ? _rvs_guarded_dot(p_C, dC) : _rvs_guarded_dot(tmp_ref[], dC)
 
         # Restore state
         BLAS.copyto!(p_C, p_C_copy)
@@ -1892,7 +1910,11 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
-            dα = (α == 1 && β == 0) ? dot(C, dC) : dot(tmp_ref[], dC)
+            dα = if (α == 1 && β == 0)
+                _rvs_guarded_dot(C, dC)
+            else
+                _rvs_guarded_dot(tmp_ref[], dC)
+            end
 
             BLAS.copyto!(C, C_copy)
 
@@ -2076,7 +2098,7 @@ for (fname, elty, relty) in (
             B = uplo == 'U' ? triu(dC) : tril(dC)
             ∇β = _rvs_guarded_dot(C, B)
             $(isherm ? :(∇β = real(∇β)) : :())
-            ∇α = dot(
+            ∇α = _rvs_guarded_dot(
                 if trans == 'N'
                     A * $(isherm ? adjoint : transpose)(A)
                 else

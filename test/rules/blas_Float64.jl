@@ -157,6 +157,25 @@
             ) == Cnan[2, 2]
         end
 
+        # The alpha gradient has the same shape: a `NaN` confined to row 1 of a factor leaves the
+        # selected output finite, but `dα` contracted the whole product and returned `NaN`.
+        @testset "alpha gradient ignores a NaN outside the selected output" begin
+            Mn = [NaN 0.0 0.0; 1.0 2.0 3.0; 4.0 5.0 6.0]
+            v3 = randn(StableRNG(6), 3)
+            grad(f, a) = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a), f, a
+            )[2][2]
+            @test grad(
+                a -> (Z=zeros(3, 3); BLAS.gemm!('N', 'N', a, Mn, B, 1.0, Z); Z[2, 2]), 2.0
+            ) ≈ (Mn * B)[2, 2]
+            @test grad(a -> (z=zeros(3); BLAS.gemv!('N', a, Mn, v3, 1.0, z); z[2]), 2.0) ≈
+                (Mn * v3)[2]
+            @test grad(
+                a -> (Z=zeros(3, 3); BLAS.syrk!('U', 'N', a, Mn, 1.0, Z); Z[2, 2]), 2.0
+            ) ≈ (Mn * Mn')[2, 2]
+            @test grad(a -> (z=[NaN, 2.0, 3.0]; BLAS.scal!(3, a, z, 1); z[2]), 2.0) == 2.0
+        end
+
         @testset "trsm! α=0 ignores a NaN A: width $Nw" for Nw in (1, 2, 3)
             r = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
