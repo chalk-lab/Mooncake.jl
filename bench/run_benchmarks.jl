@@ -197,14 +197,14 @@ function benchmark_rules!!(
                 () -> primals,
                 primals -> (primals[1], _deepcopy(primals[2:end])),
                 (a -> a[1]((a[2]...))),
-                # Every framework below gets the same `GC.gc(false)` teardown: an
-                # asymmetric one would compare each against a differently-conditioned heap.
                 # With evals=1 and seconds=1, Chairmarks collects thousands of samples.
                 # Some benchmarks (e.g. gp_lml) allocate hundreds of KiB per call, so
                 # without GC intervention, garbage accumulates across samples until the GC
                 # fires mid-sample and inflates that sample's time by 2-3x or more. Running
                 # an incremental GC in the teardown (which is excluded from timing) keeps
                 # the heap clean and prevents GC from interrupting timed evaluations.
+                # Every framework below gets the same teardown, so that each is timed
+                # against a heap in the same condition.
                 _ -> GC.gc(false);
                 evals=1,
                 seconds=seconds,
