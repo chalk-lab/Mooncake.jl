@@ -93,11 +93,6 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
     return CoDual(y, dy), permutedims_pb!!
 end
 
-# `kron` reads its factors through whatever structure they carry, so `arrayify` hands back
-# tangents wrapped the same way. Entries outside that structure are not parameters -- the
-# primal reads zeros there whatever the storage holds -- so the dense contraction below is
-# accumulated in a scratch and projected before it reaches the tangent, as the `symv!` and
-# `hemv!` rules do. A strided tangent is its own scratch, so it costs nothing there.
 # Matrices only: `kron(::Vector, ::Vector)` returns a `Vector`, which these rules would
 # widen to a `Matrix` by matrixifying their factors.
 const KronFactor{T} = Union{
@@ -106,6 +101,11 @@ const KronFactor{T} = Union{
     LowerTriangular{T,<:StridedMatrix{T}},
 }
 
+# `kron` reads its factors through whatever structure they carry, so `arrayify` hands back
+# tangents wrapped the same way. Entries outside that structure are not parameters -- the
+# primal reads zeros there whatever the storage holds -- so `_kron_pb!`'s dense contraction
+# is accumulated in a scratch and the off-structure half discarded, as the `lacpy!` pullback
+# discards it. A strided tangent is its own scratch, so it costs nothing there.
 kron_scratch(dx::StridedVecOrMat) = dx
 kron_scratch(dx::Union{UpperTriangular,LowerTriangular}) = zero(parent(dx))
 
