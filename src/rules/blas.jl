@@ -219,28 +219,23 @@ function viewify(
         view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
     )
 end
-# The forward rules refuse an operand whose logical order differs from BLAS's raw walk; reverse
-# indexed it logically anyway, so the cotangent landed on elements the routine never read, or ran
-# off the end. One refusal here covers `nrm2`, `scal!` and `dot`: each reaches its tangent through
-# this method.
-#
-# Supporting a strided operand is left undone: BLAS's t-th element is the operand's logical index
-# `1 + (t-1) * incx ÷ stride(x, 1)`, so the divisible case (`norm` of a matrix row) could be indexed
-# directly and the indivisible one differentiated through the parent. Both modes need it together.
-@noinline function _throw_rvs_raw_walk(x, incx)
+# Raised where `_blas_walk_step` finds no logical step, i.e. BLAS visits memory the operand does not
+# address. `label` names the caller so the message says which rule refused.
+@noinline function _throw_no_walk_step(label, x, incx)
     throw(
         ArgumentError(
             LazyString(
-                "Reverse-mode BLAS does not support operand `",
+                label,
+                " does not support operand `",
                 typeof(x),
                 "` with strides ",
                 strides(x),
                 " and `incx = ",
                 incx,
-                "`: the routine reads raw memory from `pointer(X)`, which follows the operand's ",
-                "own elements only when it is dense and the increment is positive, so otherwise ",
-                "the cotangent would land on different elements from the ones it read. Pass a ",
-                "dense operand with a positive increment, or the raw-pointer form.",
+                "`: the routine reads raw memory from `pointer(X)`, and no step over this ",
+                "operand's own elements follows that walk, so the derivative would be taken of ",
+                "different elements from the ones it read. A positive increment that the ",
+                "operand's stride divides works, as does a dense operand or the raw-pointer form.",
             ),
         ),
     )
@@ -249,9 +244,11 @@ function viewify(
     n::BLAS.BlasInt, x_dx::CoDual{A}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    _blas_raw_walk_matches(x, incx) || _throw_rvs_raw_walk(x, incx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
+    step = _blas_walk_step(x, incx, n)
+    if step === nothing
+        _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+    end
+    return _viewify_one(n, x, step), _viewify_one(n, dx, step)
 end
 
 #
@@ -498,12 +495,12 @@ end
 # Per-lane nrm2 JVP: `dy_k = Σᵢ real(conj(Xᵢ)·dXₖᵢ)/y` with a removable-singularity guard. Fallback
 # for the Ptr slot and strided (incx≠1) inputs, where the contiguous-block fast path does not apply.
 @inline function _nrm2_lanes_perlane(
-    _n, X_dX, _inc, Xv, y, ::Type{R}, ::Val{Nw}
+    _n, X_dX, step, Xv, y, ::Type{R}, ::Val{Nw}
 ) where {R,Nw}
     r = _nrm2_scale_factor(y)
     return ntuple(Val(Nw)) do lane
         dX_lane = _blas_lane_partial(X_dX, lane)
-        dXv = _viewify_one(_n, dX_lane, _inc)
+        dXv = _viewify_one(_n, dX_lane, step)
         s = zero(R)
         @inbounds for i in eachindex(Xv)
             # real(a·conj(b)) and real(conj(a)·b) are bit-identical, so their sum is exactly 2×.
@@ -541,18 +538,18 @@ end
 # block accessor `_partials_block` needs a dense, unit-stride layout); per-lane otherwise. Ptr slot:
 # always per-lane (raw pointers, no block).
 @inline function _nrm2_lanes(
-    X_dX::Lifted{P,Nw}, _n, _inc, Xv, y, ::Type{R}
+    X_dX::Lifted{P,Nw}, _n, step, Xv, y, ::Type{R}
 ) where {T,P<:AbstractArray{T},Nw,R}
-    if _inc == 1
+    if step == 1
         blk, _ = _partials_block(X_dX)
         return _nrm2_lanes_block(blk, Xv, y, R, Val(Nw))
     end
-    return _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
+    return _nrm2_lanes_perlane(_n, X_dX, step, Xv, y, R, Val(Nw))
 end
 @inline function _nrm2_lanes(
-    X_dX::Lifted{P,Nw}, _n, _inc, Xv, y, ::Type{R}
+    X_dX::Lifted{P,Nw}, _n, step, Xv, y, ::Type{R}
 ) where {T,P<:Ptr{T},Nw,R}
-    return _nrm2_lanes_perlane(_n, X_dX, _inc, Xv, y, R, Val(Nw))
+    return _nrm2_lanes_perlane(_n, X_dX, step, Xv, y, R, Val(Nw))
 end
 
 # nrm2 — output is real (real or complex T); per-lane dy is real.
@@ -569,34 +566,25 @@ function frule!!(
     # primal side, so neither can follow BLAS's raw walk over a non-dense operand: the derivative
     # would then be taken of different elements from the ones `nrm2` summed. Unlike `dotc`/`dotu`
     # there is no per-lane BLAS fallback to fall to, so refuse.
-    _blas_raw_walk_matches(Xp, _inc) || throw(
-        ArgumentError(
-            LazyString(
-                "Forward-mode `BLAS.nrm2` does not support operand `",
-                typeof(Xp),
-                "` with strides ",
-                strides(Xp),
-                " and `incx = ",
-                _inc,
-                "`: `nrm2` reads raw memory from `pointer(X)`, which follows the operand's own ",
-                "elements only when it is dense and the increment is positive, so otherwise the ",
-                "partials walked would not be those of the elements summed. Pass a dense operand ",
-                "with a positive increment, or the raw-pointer form.",
-            ),
-        ),
-    )
+    step = _blas_walk_step(Xp, _inc, _n)
+    if step === nothing
+        _throw_no_walk_step("Forward-mode `BLAS.nrm2`", Xp, _inc)
+    end
     y = BLAS.nrm2(_n, Xp, _inc)
-    Xv = _viewify_one(_n, Xp, _inc)  # `viewify`-equivalent on the primal side.
+    Xv = _viewify_one(_n, Xp, step)  # `viewify`-equivalent on the primal side.
     R = typeof(y)  # nrm2 returns the real-valued norm.
-    return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, _n, _inc, Xv, y, R)))
+    return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, _n, step, Xv, y, R)))
 end
 # Shared single-side viewify: handles both Ptr and Array uniformly so the
 # Lifted bodies don't have to branch on input shape.
-@inline _viewify_one(n::Integer, x::AbstractArray, incx::Integer) = view(
-    x, 1:incx:(incx * n)
+# `step` is computed ONCE from the primal and used for its partial too: the partial mirrors the
+# primal's index space, but not necessarily its stride, so re-deriving the step from the partial
+# would index different elements.
+@inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
+    x, 1:step:(1 + (n - 1) * step)
 )
-@inline _viewify_one(n::Integer, x::Ptr{T}, incx::Integer) where {T} = view(
-    unsafe_wrap(Vector{T}, x, n * incx), 1:incx:(incx * n)
+@inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
+    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
 )
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
@@ -688,6 +676,26 @@ end
 # 5x5 has strides `(1, 5)` where a dense `(3, 2)` has `(1, 3)`, so its logical index 4 is raw offset
 # 6. And the increment must be POSITIVE: BLAS starts a negative walk at `(-n+1)*inc + 1` and runs
 # backwards over the same elements, where `1 + (t-1)*inc` would run off the front of the block.
+# The step, in `x`'s OWN logical indices, that follows BLAS's raw walk by `inc`; `nothing` when no
+# such step exists. A dense operand steps by `inc`. A strided vector already carries part of the
+# walk in its own stride, so it steps by `inc ÷ stride` -- `norm(view(A, 1, :))` passes
+# `inc == stride`, one step per element, where indexing by `inc` ran off the end. When the stride
+# does not divide `inc`, BLAS visits memory the operand does not address at all and there is no
+# step: `BLAS.scal!(5, 2.0, view(w, 1:2:10), 1)` walks `w[1:5]`, which is not a subset of the
+# view's elements. Above one dimension only a dense operand walks its own elements linearly.
+@inline function _blas_walk_step(x, inc::Integer, n::Integer)
+    inc > 0 || return nothing
+    x isa Ptr && return inc
+    step = if x isa AbstractVector
+        st = stride(x, 1)
+        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
+    else
+        strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
+    end
+    step === nothing && return nothing
+    return 1 + (n - 1) * step <= length(x) ? step : nothing
+end
+
 @inline function _blas_raw_walk_matches(x, inc::Integer)
     inc > 0 || return false
     x isa Ptr && return true
@@ -822,29 +830,17 @@ function frule!!(
     # `pointer(X)` by `incx`; those agree only for a contiguous operand. `dotc`/`dotu` fall
     # back to `_dense_lane_partial` here, but that rebuild is a copy and this rule mutates in
     # place. Supporting strided operands means updating the PARENT block at its raw offset.
-    _blas_raw_walk_matches(X, incx) || throw(
-        ArgumentError(
-            LazyString(
-                "Forward-mode `BLAS.scal!` does not support operand `",
-                typeof(X),
-                "` with strides ",
-                strides(X),
-                " and `incx = ",
-                incx,
-                "`: BLAS scales raw memory from `pointer(X)`, which follows the operand's own ",
-                "elements only when it is dense and the increment is positive, so otherwise its ",
-                "partials block cannot be updated to match. Pass a dense operand with a positive ",
-                "increment, or the raw-pointer form.",
-            ),
-        ),
-    )
+    step = _blas_walk_step(X, incx, n)
+    if step === nothing
+        _throw_no_walk_step("Forward-mode `BLAS.scal!`", X, incx)
+    end
     das = ntuple(k -> tangent(a_da, k), Val(Nw))
     Xb, copied = _partials_block(X_dX)
     Xbm = reshape(Xb, Nw, :)
     # Per-lane Frechet dX_k := a·dX_k + da_k·X, all lanes in one pass: each touched
     # element's lanes are one contiguous block column.
     @inbounds for t in 1:n
-        i = 1 + (t - 1) * incx
+        i = 1 + (t - 1) * step
         xi = X[i]
         for k in 1:Nw
             Xbm[k, i] = a * Xbm[k, i] + das[k] * xi
@@ -2486,6 +2482,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
 
+        # Strided operands whose stride divides `incx`, which BLAS's raw walk maps onto the
+        # operand's own elements one step at a time. `norm(view(A, 1, :))` is the ordinary form of
+        # this: the one-argument `nrm2` passes `incx = stride`, giving a step of 1.
+        Any[
+            (false, :none, nothing, BLAS.nrm2, 5, view(randn(rng, P, 12), 1:2:12), 2),
+            (false, :none, nothing, BLAS.nrm2, 4, view(randn(rng, P, 12), 1:3:12), 3),
+            (false, :none, nothing, BLAS.nrm2, view(randn(rng, P, 12), 1:2:12)),
+            (false, :none, nothing, BLAS.nrm2, 6, view(randn(rng, P, 6, 6), 1, :), 6),
+            (
+                false,
+                :none,
+                nothing,
+                BLAS.scal!,
+                5,
+                P(2),
+                view(randn(rng, P, 12), 1:2:12),
+                2,
+            ),
+        ]...,
+
         # nrm2(x) — the one-argument form `LinearAlgebra.norm2` calls at length >= 32. Julia inlines
         # it and its `ccall`, so the three-argument primitive above never sees a boundary and the
         # raw pointer reached the transform: `norm` of any array that size threw at chunk width > 1,
@@ -2994,21 +3010,21 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
 end
 
 function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
-    # The registered `scal!`/`nrm2` cases all pass a DENSE vector with a positive increment, where
-    # logical index and raw walk coincide, so none reach these guards. `incx == stride` is the
-    # well-formed call: its primal is correct, and it previously indexed the operand out of range.
+    # What has no step: the operand's stride does NOT divide `incx`, so BLAS walks memory the
+    # operand does not address. Stride 2 with `incx == 1` reads `w[1:5]` where the view holds the
+    # odd entries. The divisible cases (`incx == 2` here, and the one-argument form, which passes
+    # `incx = stride`) are supported and registered as working cases instead.
     x = view(P[i for i in 1:10], 1:2:10)
     # A >=2-D operand with unit FIRST-dim stride but a non-dense layout: `strides` is `(1, 5)` where
-    # a dense `(3, 2)` has `(1, 3)`, so logical index 4 is raw offset 6. The old first-dim-stride
-    # test admitted it and the rule then scaled the partials of the wrong elements, silently.
+    # a dense `(3, 2)` has `(1, 3)`, so logical index 4 is raw offset 6. No single step describes
+    # that walk, and the old first-dim-stride test admitted it and scaled the wrong elements.
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
-    # Both modes; the two messages share this substring. The one-argument `nrm2` synthesises
-    # `incx = stride(x, 1)`, which is how an ordinary `norm(view(A, 1, :))` reaches the mismatch.
+    # Both modes; the two messages share this substring.
     cases = Any[
-        ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 2), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
         ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
         ((ArgumentError, "does not support operand"), BLAS.nrm2, (6, m, 1), (;)),
-        ((ArgumentError, "does not support operand"), BLAS.nrm2, (x,), (;)),
+        ((ArgumentError, "does not support operand"), BLAS.nrm2, (5, x, 1), (;)),
     ]
     # A bare `Ptr` input can only be seeded with the `uninit_*` placeholder -- its own primal
     # address -- so without the guards both modes write derivatives over `xs`/`ys` themselves.
