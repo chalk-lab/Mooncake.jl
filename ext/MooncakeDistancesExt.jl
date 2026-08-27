@@ -133,7 +133,8 @@ end
 
 # Cotangent of the squared distances, given the cotangent `dr` of the metric's own output.
 # `SqEuclidean` needs no conversion, so it also needs no temporary; `Euclidean`'s
-# elementwise `1 / 2R` cannot fold into the matrix multiplies and forces one.
+# elementwise `1 / 2R` cannot fold into the matrix multiplies and forces one. `R` is the
+# rule's own output buffer, read before the pullback restores it.
 sqdist_cotangent(::SqEuclidean, dr, R) = dr
 sqdist_cotangent(::Euclidean, dr, R) = normalise.(dr, 2 .* R)
 
@@ -148,11 +149,10 @@ function rrule!!(
     pA, dA = arrayify(A)
     old_pr = copy(pr)
     Distances._pairwise!(pdist, pr, pA)
-    R = pdist isa Euclidean ? copy(pr) : pr
     function _pairwise!_pb!!(::NoRData)
         # The primal's diagonal is a structural zero, so its cotangent must not reach `A`.
         # This has to happen after the conversion: `normalise(0, 0)` is 1, not 0.
-        W = sqdist_cotangent(pdist, dr, R)
+        W = sqdist_cotangent(pdist, dr, pr)
         W[diagind(W)] .= zero(P)
         sqdist_accumulate!(dA, dA, pA, pA, W)
         copyto!(pr, old_pr)
@@ -175,9 +175,8 @@ function rrule!!(
     pB, dB = arrayify(B)
     old_pr = copy(pr)
     Distances._pairwise!(pdist, pr, pA, pB)
-    R = pdist isa Euclidean ? copy(pr) : pr
     function _pairwise!_pb!!(::NoRData)
-        W = sqdist_cotangent(pdist, dr, R)
+        W = sqdist_cotangent(pdist, dr, pr)
         sqdist_accumulate!(dA, dB, pA, pB, W)
         copyto!(pr, old_pr)
         fill!(dr, zero(P))
