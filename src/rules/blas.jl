@@ -2509,12 +2509,14 @@ function rrule!!(
         # `dot(B, dB)/α' = dot(op(A)·B_old, dB)` — the true, finite ∇α. But at α==0 the primal zeroed
         # `B`, making that `0/0 = NaN`; recompute the unscaled `op(A)·B_old` from the saved input in
         # that case (the mathematically-defined limit), keeping the cheap division for α≠0.
+        # Guarded on the cotangent, as the `gemv!` family is: an entry of `B` the selected output
+        # does not depend on may hold a `NaN`, and a plain `dot` lets it poison the whole gradient.
         ∇α = if iszero(α)
             M = copy(B_copy)
             BLAS.trmm!(side, uplo, tA, diag, one(P), A, M)
-            dot(M, dB)
+            _rvs_guarded_dot(M, dB)
         else
-            dot(B, dB) / α'
+            _rvs_guarded_dot(B, dB) / α'
         end
 
         # Restore initial state.
@@ -2678,12 +2680,13 @@ function rrule!!(
         # Compute α gradient. `B` holds `α·op(A)⁻¹·B_old`; `dot(B, dB)/α' = dot(op(A)⁻¹·B_old, dB)` is
         # the true finite ∇α, but α==0 zeroes `B` → `0/0 = NaN`. Recompute the unscaled
         # `op(A)⁻¹·B_old` from the saved input in that case; keep the cheap division for α≠0.
+        # Guarded on the cotangent, as in `trmm!` above.
         ∇α = if iszero(α)
             M = copy(B_copy)
             trsm!(side, uplo, trans, diag, one(P), A, M)
-            dot(M, dB)
+            _rvs_guarded_dot(M, dB)
         else
-            dot(B, dB) / α'
+            _rvs_guarded_dot(B, dB) / α'
         end
 
         # Increment cotangents.

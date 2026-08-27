@@ -176,6 +176,27 @@
             @test grad(a -> (z=[NaN, 2.0, 3.0]; BLAS.scal!(3, a, z, 1); z[2]), 2.0) == 2.0
         end
 
+        # `trmm!`/`trsm!` complete the alpha family: their `∇α` contracted the whole of `B`, so a
+        # `NaN` in a column the selected output does not depend on poisoned it. Locals, not the
+        # `A`/`B` above, because a captured const global's tangent accumulates across
+        # differentiations and would make the second assertion here depend on the first.
+        @testset "trmm!/trsm! alpha gradient ignores a NaN in an unused column" begin
+            At = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
+            Bt = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
+            gr(f, a) = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a), f, a
+            )[2][2]
+            @test gr(
+                a -> (C=copy(Bt); BLAS.trmm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]), 2.0
+            ) ≈ (At * Bt)[1, 1]
+            @test isfinite(
+                gr(
+                    a -> (C=copy(Bt); BLAS.trsm!('L', 'U', 'N', 'N', a, At, C); C[1, 1]),
+                    2.0,
+                ),
+            )
+        end
+
         @testset "trsm! α=0 ignores a NaN A: width $Nw" for Nw in (1, 2, 3)
             r = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
