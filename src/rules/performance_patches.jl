@@ -63,19 +63,101 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Without this, `A * B` differentiates through the in-place `gemm!` rule, which copies the
+# output buffer so that the pullback can restore it. `*` allocates that buffer fresh, so
+# the copy is pure overhead.
+@is_primitive DefaultCtx Tuple{typeof(*),Matrix{P},Matrix{P}} where {P<:BlasRealFloat}
+function frule!!(
+    ::Dual{typeof(*)}, A::Dual{<:Matrix{P}}, B::Dual{<:Matrix{P}}
+) where {P<:BlasRealFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    C = pA * pB
+    dC = dA * pB
+    mul!(dC, pA, dB, one(P), one(P))
+    return Dual(C, dC)
+end
+function rrule!!(
+    ::CoDual{typeof(*)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
+) where {P<:BlasRealFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    C = pA * pB
+    dC = zero(C)
+    function matmul_pb!!(::NoRData)
+        mul!(dA, dC, transpose(pB), one(P), one(P))
+        mul!(dB, transpose(pA), dC, one(P), one(P))
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(C, dC), matmul_pb!!
+end
+
+# Differentiating the generic implementation element by element costs more than the rules
+# either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
+@is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
+function frule!!(::Dual{typeof(permutedims)}, x::Dual{<:Matrix{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    return Dual(permutedims(px), permutedims(dx))
+end
+function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    y = permutedims(px)
+    dy = zero(y)
+    function permutedims_pb!!(::NoRData)
+        dx .+= transpose(dy)
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy), permutedims_pb!!
+end
+
+# Matrices only: `kron(::Vector, ::Vector)` returns a `Vector`, which these rules would
+# widen to a `Matrix` by matrixifying their factors.
+const KronFactor{T} = Union{
+    StridedMatrix{T},
+    UpperTriangular{T,<:StridedMatrix{T}},
+    LowerTriangular{T,<:StridedMatrix{T}},
+}
+
+# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
+# contraction is dense, so it goes through `densify` / `accumulate_densified!`. Read
+# as `P x M x Q x N`, both contractions read the same element of `dy`, so a single pass in
+# memory order serves both. A `gemv` per `(q, n)` block is slower at every shape measured:
+# the blocks are small enough that BLAS call overhead dominates.
+function _kron_pb!(dx1, dx2, dy, px1, px2)
+    T = eltype(px1)
+    M, N = size(px1)
+    P, Q = size(px2)
+    W = reshape(dy, P, M, Q, N)
+    t1 = densify(dx1)
+    t2 = densify(dx2)
+    @inbounds for n in 1:N, q in 1:Q, i in 1:M
+        acc = zero(T)
+        x1 = px1[i, n]
+        @simd for k in 1:P
+            w = W[k, i, q, n]
+            acc += w * px2[k, q]
+            t2[k, q] += w * x1
+        end
+        t1[i, n] += acc
+    end
+    accumulate_densified!(dx1, t1)
+    accumulate_densified!(dx2, t2)
+    return nothing
+end
+
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 @is_primitive DefaultCtx Tuple{
-    typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
+    typeof(LinearAlgebra._kron!),StridedMatrix{T},KronFactor{T},KronFactor{T}
 } where {T<:IEEEFloat}
 function Mooncake.frule!!(
     ::Dual{typeof(LinearAlgebra._kron!)},
-    out::Dual{<:AbstractMatrix{<:T}},
-    x1::Dual{<:AbstractVecOrMat{<:T}},
-    x2::Dual{<:AbstractVecOrMat{<:T}},
+    out::Dual{<:StridedMatrix{<:T}},
+    x1::Dual{<:KronFactor{<:T}},
+    x2::Dual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     # manually compute dout .= kron(dx1, px2) .+ kron(px1, dx2), otherwise performance
     # suffers
@@ -92,25 +174,17 @@ function Mooncake.frule!!(
 end
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
-    out::CoDual{<:AbstractMatrix{<:T}},
-    x1::CoDual{<:AbstractVecOrMat{<:T}},
-    x2::CoDual{<:AbstractVecOrMat{<:T}},
+    out::CoDual{<:StridedMatrix{<:T}},
+    x1::CoDual{<:KronFactor{<:T}},
+    x2::CoDual{<:KronFactor{<:T}},
 ) where {T<:Base.IEEEFloat}
     pout, dout = arrayify(out)
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
-        P, Q = size(px2)
-        for m in axes(px1, 1), n in axes(px1, 2)
-            dx1[m, n] += dot(
-                (@view dout[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
-            )
-        end
-        for p in axes(px2, 1), q in axes(px2, 2)
-            dx2[p, q] += dot((@view dout[p:P:end, q:Q:end]), px1)
-        end
+        _kron_pb!(dx1, dx2, dout, px1, px2)
         copyto!(pout, old_pout)
         fill!(dout, zero(T))
         return NoRData(), NoRData(), NoRData(), NoRData()
@@ -122,28 +196,17 @@ end
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
 @is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(kron),AbstractMatrix{T},AbstractMatrix{T}
+    typeof(kron),KronFactor{T},KronFactor{T}
 } where {T<:IEEEFloat}
 function Mooncake.rrule!!(
-    ::CoDual{typeof(kron)},
-    x1::CoDual{<:AbstractVecOrMat{<:T}},
-    x2::CoDual{<:AbstractVecOrMat{<:T}},
+    ::CoDual{typeof(kron)}, x1::CoDual{<:KronFactor{<:T}}, x2::CoDual{<:KronFactor{<:T}}
 ) where {T<:Base.IEEEFloat}
-    px1, dx1 = matrixify(x1)
-    px2, dx2 = matrixify(x2)
+    px1, dx1 = arrayify(x1)
+    px2, dx2 = arrayify(x2)
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
-        M, N = size(dx1)
-        P, Q = size(dx2)
-        for m in 1:M, n in 1:N
-            dx1[m, n] += dot(
-                (@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
-            )
-        end
-        for p in 1:P, q in 1:Q
-            dx2[p, q] += dot((@view dy[p:P:end, q:Q:end]), px1)
-        end
+        _kron_pb!(dx1, dx2, dy, px1, px2)
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), kron_pb!!
@@ -185,10 +248,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 10, 10),
             )
         end,
+
+        # permutedims(x)
+        map([Float64, Float32]) do P
+            return (false, :stability, nothing, permutedims, randn(rng, P, 7, 11))
+        end,
+
+        # x * y
+        map([Float64, Float32]) do P
+            return (
+                false, :stability, nothing, *, randn(rng, P, 7, 11), randn(rng, P, 11, 5)
+            )
+        end,
     )
     memory = Any[]
     return test_cases, memory
 end
+
+_square_matmul(x) = x * x
 
 function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
@@ -196,7 +273,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     test_cases = vcat(
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -206,7 +283,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -216,7 +293,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -226,7 +303,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
@@ -236,13 +313,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
         map(precisions) do (P)
             return (
-                true,
+                false,
                 :none,
                 nothing,
                 LinearAlgebra.kron,
                 view(randn(rng, P, 5, 5), 1:5, 1:5),
                 UpperTriangular(randn(rng, P, 10, 10)),
             )
+        end,
+        # `A * A` aliases the rule's arguments, so `dA === dB` and the pullback must
+        # accumulate both terms into the one array.
+        map(precisions) do (P)
+            return (false, :none, nothing, _square_matmul, randn(rng, P, 5, 5))
         end,
     )
     memory = Any[]
