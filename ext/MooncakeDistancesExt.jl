@@ -28,15 +28,33 @@ const PairwiseMetric = Union{SqEuclidean,Euclidean}
 # the squared column norms. `Euclidean` is that composed with `sqrt`.
 column_dots(A, dA) = map(dot, eachcol(A), eachcol(dA))
 
-# Accumulate into `dA` the cotangent reaching the columns of `pA` through the weights `W`,
-# which pair them against the columns of `pB`. Passing `transpose(W)` swaps the roles.
-# `scales` is the corresponding row sum of `W`; the caller reduces the untransposed matrix
-# because on Julia 1.10 `sum(::Transpose; dims)` is type-unstable, routing through
+# Both weight sums in one pass over `W`. Reducing `W` itself rather than its transpose also
+# avoids `sum(::Transpose; dims)`, which on Julia 1.10 is type-unstable, routing through
 # `LinearAlgebra.switch_dim12` and `PermutedDimsArray`.
-function sqdist_accumulate!(dA, pA, pB, W, scales)
+function row_and_column_sums(W::AbstractMatrix{P}) where {P}
+    rows = zeros(P, size(W, 1))
+    cols = Vector{P}(undef, size(W, 2))
+    @inbounds for j in axes(W, 2)
+        total = zero(P)
+        @simd for i in axes(W, 1)
+            w = W[i, j]
+            rows[i] += w
+            total += w
+        end
+        cols[j] = total
+    end
+    return rows, cols
+end
+
+# Accumulate the cotangent reaching the columns of `pA` and of `pB` through the weights `W`,
+# which pair the two sets against each other. `dA === dB` recovers the one-argument case.
+function sqdist_accumulate!(dA, dB, pA, pB, W)
     P = eltype(dA)
-    dA .+= 2 .* transpose(scales) .* pA
+    rows, cols = row_and_column_sums(W)
+    dA .+= 2 .* transpose(rows) .* pA
     mul!(dA, pB, transpose(W), -P(2), one(P))
+    dB .+= 2 .* transpose(cols) .* pB
+    mul!(dB, pA, W, -P(2), one(P))
     return nothing
 end
 
@@ -136,8 +154,7 @@ function rrule!!(
         # This has to happen after the conversion: `normalise(0, 0)` is 1, not 0.
         W = sqdist_cotangent(pdist, dr, R)
         W[diagind(W)] .= zero(P)
-        sqdist_accumulate!(dA, pA, pA, W, vec(sum(W; dims=2)))
-        sqdist_accumulate!(dA, pA, pA, transpose(W), vec(sum(W; dims=1)))
+        sqdist_accumulate!(dA, dA, pA, pA, W)
         copyto!(pr, old_pr)
         fill!(dr, zero(P))
         return NoRData(), zero_rdata(pdist), NoRData(), NoRData()
@@ -161,8 +178,7 @@ function rrule!!(
     R = pdist isa Euclidean ? copy(pr) : pr
     function _pairwise!_pb!!(::NoRData)
         W = sqdist_cotangent(pdist, dr, R)
-        sqdist_accumulate!(dA, pA, pB, W, vec(sum(W; dims=2)))
-        sqdist_accumulate!(dB, pB, pA, transpose(W), vec(sum(W; dims=1)))
+        sqdist_accumulate!(dA, dB, pA, pB, W)
         copyto!(pr, old_pr)
         fill!(dr, zero(P))
         return NoRData(), zero_rdata(pdist), NoRData(), NoRData(), NoRData()
