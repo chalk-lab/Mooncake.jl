@@ -25,6 +25,11 @@ end
 # Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
+set_to_zero_internal!!(::SetToZeroCache, x::NoFData) = x
+function set_to_zero_internal!!(c::SetToZeroCache, x::FData)
+    return FData(set_to_zero_internal!!(c, x.data))
+end
+
 fields_type(::Type{FData{T}}) where {T<:NamedTuple} = T
 
 function increment_internal!!(c::IncCache, x::F, y::F) where {F<:FData}
