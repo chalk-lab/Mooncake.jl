@@ -106,10 +106,10 @@ const KronFactor{T} = Union{
 # primal reads zeros there whatever the storage holds -- so `_kron_pb!`'s dense contraction
 # is accumulated in a scratch and the off-structure half discarded, as the `lacpy!` pullback
 # discards it. A strided tangent is its own scratch, so it costs nothing there.
-kron_scratch(dx::StridedVecOrMat) = dx
+kron_scratch(dx::StridedMatrix) = dx
 kron_scratch(dx::Union{UpperTriangular,LowerTriangular}) = zero(parent(dx))
 
-kron_project!(::StridedVecOrMat, scratch) = nothing
+kron_project!(::StridedMatrix, scratch) = nothing
 function kron_project!(dx::UpperTriangular, scratch)
     parent(dx) .+= UpperTriangular(scratch)
     return nothing
