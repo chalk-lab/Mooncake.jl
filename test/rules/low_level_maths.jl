@@ -188,4 +188,21 @@
     @testset "near-boundary domain-restricted functions" begin
         test_rule(StableRNG(123), sqrt, 0.005; is_primitive=true, max_fd_step=1e-3)
     end
+
+    # `tanh`'s reverse pullback used `1 - y^2`, exactly zero once `tanh(x)` rounds to `1.0`, while
+    # the true `sech(x)^2` is still normal. `test_rule` cannot pin this: the primal is flat in
+    # floating point there, so its finite-difference oracle reads 0.0 and accepts both the wrong
+    # answer and the right one -- checked, and it passes at every value below with the defect in
+    # place. Hence an analytic comparison rather than a registry entry.
+    @testset "tanh gradient survives saturation" begin
+        for x in (15.0, 19.0, 20.0, 25.0, 8.0f0, 9.0f0, 10.0f0)
+            P = typeof(x)
+            u = exp(-2 * abs(x))
+            want = 4u / (one(P) + u)^2
+            cache = Mooncake.prepare_gradient_cache(tanh, x)
+            got = Mooncake.value_and_gradient!!(cache, tanh, x)[2][2]
+            @test got == want
+            @test !iszero(got)
+        end
+    end
 end

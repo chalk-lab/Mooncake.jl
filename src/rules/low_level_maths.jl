@@ -329,7 +329,13 @@ end
 function rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = tanh(_x)
-    tanh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(y) - y^2))
+    function tanh_pb(ȳ::P)
+        # `1 - y^2` is exactly zero once `tanh(x)` rounds to `1.0` -- |x| >= 19.1 for `Float64`,
+        # 9.0 for `Float32` -- while `sech(x)^2` stays normal out to |x| ~ 350. Same stable form
+        # the `NDual` overload uses, so the two modes agree where the naive one collapses.
+        u = exp(-2 * abs(_x))
+        return NoRData(), _rvs_guarded_scale(ȳ, 4u / (one(P) + u)^2)
+    end
     return zero_fcodual(y), tanh_pb
 end
 
