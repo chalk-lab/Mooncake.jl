@@ -38,9 +38,12 @@ end
 
 # Accumulate into `dA` the cotangent reaching the columns of `pA` through the weights `W`,
 # which pair them against the columns of `pB`. Passing `transpose(W)` swaps the roles.
-function sqdist_accumulate!(dA, pA, pB, W)
+# `scales` is the corresponding row sum of `W`; the caller reduces the untransposed matrix
+# because on Julia 1.10 `sum(::Transpose; dims)` is type-unstable, routing through
+# `LinearAlgebra.switch_dim12` and `PermutedDimsArray`.
+function sqdist_accumulate!(dA, pA, pB, W, scales)
     P = eltype(dA)
-    dA .+= 2 .* transpose(sum(W; dims=2)) .* pA
+    dA .+= 2 .* transpose(scales) .* pA
     mul!(dA, pB, transpose(W), -P(2), one(P))
     return nothing
 end
@@ -136,8 +139,8 @@ function rrule!!(
         # The primal's diagonal is a structural zero, so its cotangent must not reach `A`.
         dr[diagind(dr)] .= zero(P)
         W = sqdist_cotangent(pdist, dr, R)
-        sqdist_accumulate!(dA, pA, pA, W)
-        sqdist_accumulate!(dA, pA, pA, transpose(W))
+        sqdist_accumulate!(dA, pA, pA, W, vec(sum(W; dims=2)))
+        sqdist_accumulate!(dA, pA, pA, transpose(W), vec(sum(W; dims=1)))
         copyto!(pr, old_pr)
         fill!(dr, zero(P))
         return NoRData(), zero_rdata(pdist), NoRData(), NoRData()
@@ -161,8 +164,8 @@ function rrule!!(
     R = pdist isa Euclidean ? copy(pr) : pr
     function _pairwise!_pb!!(::NoRData)
         W = sqdist_cotangent(pdist, dr, R)
-        sqdist_accumulate!(dA, pA, pB, W)
-        sqdist_accumulate!(dB, pB, pA, transpose(W))
+        sqdist_accumulate!(dA, pA, pB, W, vec(sum(W; dims=2)))
+        sqdist_accumulate!(dB, pB, pA, transpose(W), vec(sum(W; dims=1)))
         copyto!(pr, old_pr)
         fill!(dr, zero(P))
         return NoRData(), zero_rdata(pdist), NoRData(), NoRData(), NoRData()
