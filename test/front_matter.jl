@@ -160,10 +160,21 @@ function determine_test_group()
     end
 end
 
-const test_group = determine_test_group()
+# A `_forward` / `_reverse` suffix sets `TEST_MODE` and otherwise runs the group unchanged, so CI
+# can split one group across two jobs by listing both names, with no second matrix axis. An
+# explicitly set `TEST_MODE` wins, so a local override still works on a suffixed group.
+function _mode_from_group_suffix(group::AbstractString)
+    for (suffix, mode) in ("_forward" => "forward", "_reverse" => "reverse")
+        if endswith(group, suffix)
+            get!(ENV, "TEST_MODE", mode)
+            return group[1:(end - length(suffix))]
+        end
+    end
+    return group
+end
 
-# CI runs the heavy rule groups as separate forward/reverse jobs (`TEST_MODE`, honoured inside
-# `TestUtils.test_rule`/`run_rule_test_cases`); unset ⇒ both, so local runs are unchanged.
+const test_group = _mode_from_group_suffix(determine_test_group())
+
 @info "Running test group '$(test_group)' in TEST_MODE=$(get(ENV, "TEST_MODE", "both"))"
 
 sr(n::Int) = StableRNG(n)

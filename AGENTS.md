@@ -95,7 +95,7 @@ The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type
 - Changing Julia version support touches `Project.toml`, `.github/workflows/CI.yml`, and `SUPPORT_POLICY.md` together.
 - A rule that depends on an external package's internals needs a tightened `[compat]` bound.
 - Keep source, test-group wiring (`test/runtests.jl`), and CI coverage in sync when adding rules or internals.
-- `test_rule`/`run_rule_test_cases` honour a `TEST_MODE` env var (`forward`/`reverse`; unset ⇒ both), so a group can be split by mode when its compile time needs it. CI does not currently set it: forward compile is dominated by frules × chunk widths, and `test_rule` sweeps widths 1 and 8 rather than 1, 2 and 3.
+- `test_rule`/`run_rule_test_cases` honour a `TEST_MODE` env var (`forward`/`reverse`; unset ⇒ both). A `_forward`/`_reverse` suffix on a test-group name sets it (`test/front_matter.jl`) and runs the group otherwise unchanged, so CI splits a group across two jobs by listing both names, with no second matrix axis. The four `rules/blas_*` groups use it: forward compile (frules × chunk widths × complex codegen) roughly doubles the reverse-only compile, which on 1.12 left combined `blas_ComplexF64`/`blas_ComplexF32` at 67 and 54 minutes — long enough that both were lost to runner reclamation (`The runner has received a shutdown signal`) rather than to any test failure. Splitting roughly halves the longest job. Add the suffix only where a group needs it: a split group pays its precompile twice.
 
 ## Testing
 
