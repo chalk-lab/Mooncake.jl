@@ -185,6 +185,11 @@ end
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
 # `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
 # `arrayify(::AbstractTriangular)`.
+#
+# For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
+# primal with derivative zero. It is not masked here because the block scatter writes through this
+# result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
+# diagonal itself (`_kron_tangent_mask` forward, `_kron_tri_stored` reverse).
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.value.data, lane, d)
 )

@@ -130,6 +130,14 @@ end
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
+# A tangent must not carry the primal wrapper's structural constants. Every wrapper `arrayify`
+# admits stores structural *zeros* off-pattern, which are correct derivatives; the exceptions are
+# the two unit triangulars, whose diagonal reads a constant `1` with derivative zero.
+# `_arrayify_lane` cannot mask it upstream: the block scatter writes through its result.
+@inline _kron_tangent_mask(z) = z
+@inline _kron_tangent_mask(z::UnitUpperTriangular) = triu(parent(z), 1)
+@inline _kron_tangent_mask(z::UnitLowerTriangular) = tril(parent(z), -1)
+
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
 function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
@@ -229,7 +237,13 @@ function Mooncake.frule!!(
     px2, dx2_s = arrayify(x2)
     LinearAlgebra._kron!(pout, px1, px2)
     for lane in 1:N
-        _kron!_jvp_lane!(dout_s[lane], px1, dx1_s[lane], px2, dx2_s[lane])
+        _kron!_jvp_lane!(
+            dout_s[lane],
+            px1,
+            _kron_tangent_mask(dx1_s[lane]),
+            px2,
+            _kron_tangent_mask(dx2_s[lane]),
+        )
     end
     return out
 end
@@ -423,7 +437,13 @@ function Mooncake.frule!!(
     bp = Nfwd._block_storage(blk)
     for k in 1:N
         _kron!_jvp_lane_into_block!(
-            bp, k, Val(N), mx1, _kron_densify(dx1s[k]), mx2, _kron_densify(dx2s[k])
+            bp,
+            k,
+            Val(N),
+            mx1,
+            _kron_densify(_kron_tangent_mask(dx1s[k])),
+            mx2,
+            _kron_densify(_kron_tangent_mask(dx2s[k])),
         )
     end
     V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)
@@ -619,6 +639,36 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 LinearAlgebra.kron,
                 UpperTriangular(randn(rng, P, 5, 5)),
                 LowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                UnitUpperTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                randn(rng, P, 5, 5),
+                UnitLowerTriangular(randn(rng, P, 10, 10)),
+            )
+        end,
+        map(precisions) do (P)
+            return (
+                false,
+                :none,
+                nothing,
+                LinearAlgebra.kron,
+                UnitUpperTriangular(randn(rng, P, 5, 5)),
+                UnitLowerTriangular(randn(rng, P, 10, 10)),
             )
         end,
         map(precisions) do (P)
