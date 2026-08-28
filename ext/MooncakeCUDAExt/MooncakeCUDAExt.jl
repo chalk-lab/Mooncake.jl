@@ -4302,6 +4302,18 @@ function rrule!!(
     return CoDual(decoded.primal_out, dy_out), materialize_pb!!
 end
 
+# Julia 1.10 can expose the `copy` inside `materialize` as the call boundary.  Claim that
+# equivalent boundary rather than tracing through GPUArrays' KernelAbstractions launch.
+@static if VERSION < v"1.11-"
+    @is_primitive MinimalCtx Tuple{typeof(copy),<:Broadcasted{<:CuArrayStyle}}
+    function frule!!(::Dual{typeof(copy)}, bc::Dual{<:Broadcasted{<:CuArrayStyle}})
+        return frule!!(Dual(Base.Broadcast.materialize, NoTangent()), bc)
+    end
+    function rrule!!(::CoDual{typeof(copy)}, bc::CoDual{<:Broadcasted{<:CuArrayStyle}})
+        return rrule!!(CoDual(Base.Broadcast.materialize, NoFData()), bc)
+    end
+end
+
 # In-place GPU broadcast: Base.Broadcast.materialize!(dest, bc) is what
 # broadcast!(f, dest, args...) calls after constructing bc = broadcasted(f, args...).
 #

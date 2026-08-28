@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using AllocCheck, CUDA, JET, Mooncake, StableRNGs, Test
+using AllocCheck, CUDA, Distributions, JET, Mooncake, Random, StableRNGs, Test
 using CUDA.CUDACore.GPUArrays: unsafe_free!
 using CUDA.CUDACore: hasfieldcount
 using Base: unsafe_convert
@@ -17,6 +17,9 @@ using Mooncake.TestUtils:
 using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
+const _MooncakeDistributionsCUDAExt = Base.get_extension(
+    Mooncake, :MooncakeDistributionsCUDAExt
+)
 
 # A callable struct carrying a differentiable field, for the captured-state tests.
 struct _CapScale{T}
@@ -43,6 +46,47 @@ end
             p2 = CuArray(randn(ET, 4, 4))
             Mooncake._copy_to_output!!(p_copy, p2)
             @test p_copy == p2
+        end
+
+        @testset "Distributions.rand! is zero-derivative without restoring the RNG" begin
+            rng = CUDA.default_rng()
+            sampler = MvNormal(CUDA.zeros(Float32, 2), Diagonal(CUDA.ones(Float32, 2)))
+            x = CUDA.fill(-1.0f0, 2, 4)
+            dx = CUDA.fill(2.0f0, 2, 4)
+            x_before, dx_before = copy(x), copy(dx)
+
+            Random.seed!(rng, 123)
+            expected_x = similar(x)
+            Distributions.rand!(rng, sampler, expected_x)
+            expected_next = Random.rand(rng, Float32, 8)
+
+            Random.seed!(rng, 123)
+            out, pullback = _MooncakeDistributionsCUDAExt.rrule!!(
+                Mooncake.zero_fcodual(rand!),
+                Mooncake.zero_fcodual(rng),
+                Mooncake.zero_fcodual(sampler),
+                Mooncake.CoDual(x, dx),
+            )
+            @test Mooncake.primal(out) === x
+            @test x == expected_x
+            @test all(iszero, dx)
+
+            fill!(dx, 3.0f0)
+            pullback(Mooncake.NoRData())
+            @test x == x_before
+            @test dx == dx_before
+            @test Random.rand(rng, Float32, 8) == expected_next
+
+            test_rule(
+                StableRNG(123),
+                rand!,
+                rng,
+                sampler,
+                similar(x);
+                interface_only=true,
+                is_primitive=true,
+                perf_flag=:none,
+            )
         end
 
         @testset for ET in (Float32, Float64, ComplexF32, ComplexF64)
@@ -93,6 +137,7 @@ end
         _bcast_sum_lit_mul(x) = sum(2.0 .* x)
         _bcast_sum_mul(x, y) = sum(x .* y)
         _bcast_sum_sin_pow2(x) = sum(sin.(x .^ 2))
+        _bcast_copy_sin(x) = sum(copy(Base.Broadcast.broadcasted(sin, x)))
         _sum_f_sin(x) = sum(sin, x)
         _sum_f_exp(x) = sum(exp, x)
         # complex sum(f, x) wrappers
@@ -1817,6 +1862,18 @@ end
             @test !(fixed.args[2] isa Base.Broadcast.Broadcasted)
             flat_fixed = Base.Broadcast.flatten(fixed)
             @test isbitstype(typeof(flat_fixed.f))
+        end
+
+        @static if VERSION < v"1.11-"
+            @testset "copy(::Broadcasted) uses the GPU broadcast rule on Julia 1.10" begin
+                test_rule(
+                    StableRNG(123),
+                    _bcast_copy_sin,
+                    _rand(rng, 16);
+                    is_primitive=false,
+                    perf_flag=:none,
+                )
+            end
         end
 
         @testset "nested GPU broadcast gradients keep tree alignment" begin
