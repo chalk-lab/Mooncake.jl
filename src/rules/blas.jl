@@ -766,12 +766,24 @@ end
 ) where {T,D,P<:AbstractArray{T,D},N}
     return getfield(tangent(x), :partials_block), false
 end
+# A lane partial READ must not carry the primal wrapper's structural CONSTANTS. Every wrapper
+# `arrayify` admits stores structural zeros off-pattern, which are correct derivatives; the two
+# unit triangulars are the exception, their diagonal reading a constant `1` whose derivative is
+# zero. The mask cannot live in `_blas_lane_partial` itself, which must keep aliasing the slot's
+# storage because `_write_back_partials!` scatters through it, so it sits on the read path here.
+# No current rule reaches this with a unit triangular -- the BLAS rules take a data matrix plus a
+# `diag` character rather than a wrapper, and `kron`, the one primitive that admits one, reads
+# through `arrayify` and masks there -- so this guards the seam a future reader would use.
+@inline _lane_read(z) = z
+@inline _lane_read(z::UnitUpperTriangular) = triu(parent(z), 1)
+@inline _lane_read(z::UnitLowerTriangular) = tril(parent(z), -1)
+
 @inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
     p = primal(x)
     blk = Array{T,D + 1}(undef, (N, size(p)...))
     colons = ntuple(_ -> Colon(), Val(D))
     for k in 1:N
-        copyto!(view(blk, k, colons...), _blas_lane_partial(x, k))
+        copyto!(view(blk, k, colons...), _lane_read(_blas_lane_partial(x, k)))
     end
     return blk, true
 end

@@ -15,10 +15,25 @@ sr(n::Int) = StableRNG(n)
 # 1.7x SLOWER with one, since with a ~40 ns primal the cost is per-call overhead rather than the
 # element sweeps, and a hand-written rule cannot beat `NDual` arithmetic vectorising across lanes.
 # Forward therefore takes the derived path, and only the reverse rule is asserted to be reached.
-function test_reverse_only_rule(rng, f, args...; kwargs...)
-    test_rule(rng, f, args...; mode=Mooncake.ReverseMode, kwargs...)
+# A DERIVED rule is reached through a `Core.OpaqueClosure`, which JET reports as a runtime
+# dispatch because there is no method to infer through, so no derived rule satisfies
+# `:stability` — which is why every derived case in this file is driven with `:allocs` or
+# `:none`. The forward half therefore keeps the allocation assertion and drops only the
+# stability one.
+function _derived_perf_flag(flag::Symbol)
+    return flag === :stability_and_allocs ? :allocs : (flag === :stability ? :none : flag)
+end
+
+function test_reverse_only_rule(rng, f, args...; perf_flag=:none, kwargs...)
+    test_rule(rng, f, args...; mode=Mooncake.ReverseMode, perf_flag, kwargs...)
     return test_rule(
-        rng, f, args...; mode=Mooncake.ForwardMode, is_primitive=false, kwargs...
+        rng,
+        f,
+        args...;
+        mode=Mooncake.ForwardMode,
+        is_primitive=false,
+        perf_flag=_derived_perf_flag(perf_flag),
+        kwargs...,
     )
 end
 
