@@ -886,6 +886,7 @@ end
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
 @inline function get_zeroed_shared_data_field(shared_data, n)
     x = getfield(shared_data, n)
+    # Captured fdata containing `Ptr` is unsupported because it cannot be reset generically.
     t = set_to_zero!!(zero_tangent(primal(x), tangent(x)))
     return CoDual(primal(x), fdata(t))
 end
