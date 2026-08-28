@@ -2062,6 +2062,31 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
     return nothing
 end
 
+"""
+    test_lifted(rng, p; widths=(1, 2, 3), cache_free=true)
+
+Forward-mode analogue of [`test_tangent`](@ref): check the `Lifted` / `NDual` representation
+contract for the value `p`, at each chunk width in `widths`. Purely representational — rule
+correctness is [`test_rule`](@ref)'s job. Use it alongside [`test_data`](@ref) whenever a custom
+type must also work under forward-mode AD.
+
+At each width it checks that
+
+- the seed factories (`zero_lifted`, `uninit_lifted`, `randn_lifted`) return a slot of the
+  coherent type `lifted_type(Val(N), typeof(p))` whose primal ALIASES `p`;
+- every inner dual's `.value` equals the primal it shadows — the inner-value invariant, which
+  `test_rule` does not check;
+- the per-lane accessor `tangent(slot, lane)` runs for every lane;
+- a reverse tangent round-trips through `unlift(lift(p, ẋ))`;
+- the lifted value holds no more distinct partial storages than the tangent it came from, so a
+  new aggregate that fails to thread its aliasing cache fails here rather than silently
+  computing an independent JVP per alias.
+
+`cache_free=false` skips the cache-free seed factories for types whose slots are only reachable
+through the cached path.
+
+See [`test_lifted_type`](@ref) for the type-level half of the same contract.
+"""
 function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free::Bool=true)
     @nospecialize rng p
     P = typeof(p)

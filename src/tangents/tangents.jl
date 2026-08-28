@@ -335,7 +335,7 @@ tangent storage at all. Giving both `Ptr{NoTangent}` conflates them, and a re-ty
 differentiable element then cannot be checked.
 
 `elt` is the tangent ELEMENT TYPE behind the address, so a widening can be checked by exactly the
-rule that governs the one-hop case — see [`_tangent_retyping_verdict`](@ref), which both callers
+rule that governs the one-hop case — see `_tangent_retyping_verdict`, which both callers
 use. Recording the type rather than its size is what lets `Vector{Float64}` be distinguished from
 `Float64`: both occupy 8 bytes in a buffer, but one is a heap reference and storing a float over it
 corrupts the GC's view of the heap.
