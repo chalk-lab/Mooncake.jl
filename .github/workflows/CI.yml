@@ -19,13 +19,15 @@ permissions:
   
 jobs:
   test:
-    name: ${{ matrix.test_group }}-${{ matrix.mode }}-${{ matrix.version }}-${{ matrix.arch }}
+    name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
         test_group: [
+          'basic',
+          'Nfwd',
           'rules/avoiding_non_differentiable_code',
           'rules/blas_Float64',
           'rules/blas_Float32',
@@ -50,12 +52,6 @@ jobs:
           'rules/performance_patches',
           'rules/high_order_derivative_patches',
         ]
-        # Each rule group runs forward and reverse mode as separate jobs (one test script — the
-        # `TEST_MODE` env var picks the mode) so no single job's compile time exceeds the runner's
-        # time budget: forward frules × chunk widths × complex codegen roughly doubled the
-        # reverse-only compile. `basic`/`Nfwd`/`array_legacy` run both modes in one job (mode `both`,
-        # i.e. `TEST_MODE` unset semantics) since they also do non-rule work that must not run twice.
-        mode: ['forward', 'reverse']
         version:
           - 'lts'
           - '1.12'
@@ -63,27 +59,9 @@ jobs:
           - x64
         include:
           - test_group: 'basic'
-            mode: 'both'
-            version: 'lts'
-            arch: x64
-          - test_group: 'basic'
-            mode: 'both'
-            version: '1.12'
-            arch: x64
-          - test_group: 'basic'
-            mode: 'both'
             version: 'lts'
             arch: x86
-          - test_group: 'Nfwd'
-            mode: 'both'
-            version: 'lts'
-            arch: x64
-          - test_group: 'Nfwd'
-            mode: 'both'
-            version: '1.12'
-            arch: x64
           - test_group: 'rules/array_legacy'
-            mode: 'both'
             version: 'lts'
             arch: x64
     steps:
@@ -98,7 +76,6 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           TEST_GROUP: ${{ matrix.test_group }}
-          TEST_MODE: ${{ matrix.mode }}
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v7
         with:

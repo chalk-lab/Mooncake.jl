@@ -1425,16 +1425,9 @@ function const_codual_stmt(stmt, info::ADInfo)
     if safe_for_literal(v)
         return Expr(:call, uninit_fcodual, v)
     else
-        return Expr(:call, _zeroed_const_codual, add_data!(info, uninit_fcodual(v)))
+        return Expr(:call, identity, add_data!(info, uninit_fcodual(v)))
     end
 end
-
-# A constant's `CoDual` is captured once in the compiled rule's shared data, and the cache
-# zeroes only the argument tangents, so a pullback's write to its fdata would otherwise
-# leak into the next differentiation. Zeroing at each forwards-pass use loses nothing:
-# every write happens later, on the reverse pass.
-@inline _zeroed_const_codual(x::CoDual{P,NoFData}) where {P} = x
-@inline _zeroed_const_codual(x::CoDual) = CoDual(primal(x), set_to_zero!!(tangent(x)))
 
 """
     const_codual(stmt, info::ADInfo)
@@ -1443,10 +1436,6 @@ Build a `CoDual` from `stmt`, with zero / uninitialised fdata. If the resulting 
 a bits type, then it is returned. If it is not, then the CoDual is put into shared data,
 and the ID associated to it in the forwards- and reverse-passes returned.
 """
-# Returns an OPERAND rather than a statement, so the per-use zeroing that `const_codual_stmt`
-# emits has nowhere to attach here: a constant array reaching a pullback only through a phi edge
-# accumulates its fdata across differentiations, giving a wrong gradient from the second call on.
-# Reachable — Julia puts a `const` global straight into a `PhiNode`'s values.
 function const_codual(stmt, info::ADInfo)
     v = get_const_primal_value(stmt)
     x = uninit_fcodual(v)

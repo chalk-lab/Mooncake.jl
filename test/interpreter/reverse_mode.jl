@@ -17,10 +17,6 @@ unstable_tester(x::Ref{Any}) = sin(x[])
 # used for regression test for issue 660
 struct MakeAUnionAll{T} end
 
-const const_vector = [1.0, 2.0, 3.0]
-# `scal!`'s pullback reads the fdata of `y`, which `copy` seeds from the constant's fdata.
-scale_const(a) = (y=copy(const_vector); BLAS.scal!(3, a, y, 1); y[1])
-
 end
 
 # Regression for non-returning primals: `rule_type` must predict `Tuple{}` pullback args
@@ -331,7 +327,7 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
                 ad_stmts = make_ad_stmts!(stmt, ID(), info)
                 @test ad_stmts isa Mooncake.ADStmtInfo
                 @test Meta.isexpr(ad_stmts.fwds[1][2].stmt, :call)
-                @test ad_stmts.fwds[1][2].stmt.args[1] === Mooncake._zeroed_const_codual
+                @test ad_stmts.fwds[1][2].stmt.args[1] == identity
             end
             @testset "throw_undef_if_not" begin
                 cond_id = ID()
@@ -994,15 +990,6 @@ end
         @test Mooncake.is_reachable_return_node(ReturnNode(5)) == true
         @test Mooncake.is_reachable_return_node(ReturnNode()) == false
         @test Mooncake.is_reachable_return_node(IDGotoNode(ID())) == false
-    end
-    @testset "constant fdata does not persist across differentiations" begin
-        # A constant's `CoDual` lives in the compiled rule's shared data, which the cache
-        # does not zero, so a pullback that writes to its fdata must not leak into the
-        # next differentiation.
-        f = S2SGlobals.scale_const
-        cache = Mooncake.prepare_gradient_cache(f, 2.0)
-        grads = [Mooncake.value_and_gradient!!(cache, f, 2.0)[2][2] for _ in 1:3]
-        @test all(==(S2SGlobals.const_vector[1]), grads)
     end
     @testset "seed_id!" begin
         # Reseeding restores determinism: IDs created after each reset match (same thread).

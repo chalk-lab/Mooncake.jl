@@ -715,7 +715,7 @@ _chunk_lane_checkable(@nospecialize(_v)) = false
 """
     test_frule(
         rng::AbstractRNG, x...;
-        sig, frule=Mooncake.frule!!, widths=(1, 2, 3), is_primitive=true,
+        sig, frule=Mooncake.frule!!, widths=(1, 8), is_primitive=true,
         interface_only=false, perf_flag=:none, unsafe_perturb=false,
         atol=1e-3, rtol=1e-3, max_fd_step=nothing, debug_mode=false,
     )
@@ -751,7 +751,7 @@ function test_frule(
     x::Vararg{Any,P};
     sig,
     frule=Mooncake.frule!!,
-    widths=(1, 2, 3),
+    widths=(1, 8),
     is_primitive::Bool=true,
     interface_only::Bool=false,
     perf_flag::Symbol=:none,
@@ -1607,7 +1607,7 @@ function test_rule(
                         x...;
                         sig,
                         frule,
-                        widths=(skip_chunked ? (1,) : (1, 2, 3)),
+                        widths=(skip_chunked ? (1,) : (1, 8)),
                         is_primitive,
                         interface_only,
                         perf_flag,
@@ -1975,7 +1975,7 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
 end
 
 """
-    test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free=true)
+    test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free=true)
 
 Forward-mode analogue of [`test_tangent`](@ref): the de-facto definition of the forward
 representation interface. If this runs without a failing test for a value `p`, then `p`'s
@@ -2063,7 +2063,7 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
 end
 
 """
-    test_lifted(rng, p; widths=(1, 2, 3), cache_free=true)
+    test_lifted(rng, p; widths=(1, 8), cache_free=true)
 
 Forward-mode analogue of [`test_tangent`](@ref): check the `Lifted` / `NDual` representation
 contract for the value `p`, at each chunk width in `widths`. Purely representational — rule
@@ -2087,7 +2087,7 @@ through the cached path.
 
 See [`test_lifted_type`](@ref) for the type-level half of the same contract.
 """
-function test_lifted(rng::AbstractRNG, p; widths=(1, 2, 3), cache_free::Bool=true)
+function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
     @nospecialize rng p
     P = typeof(p)
     for N in widths
