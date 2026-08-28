@@ -424,13 +424,16 @@ end
         typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
-# A GPU kernel launch does not survive the forward transform: the process dies with signal 4, no
-# Julia exception to catch. A forward primitive that raises keeps it an ordinary error.
+# Claimed across `SupportedArray` so every member reaches a `frule!!`: a plain `Array` gets the
+# JVP below, a GPU array the raise (a GPU kernel launch does not survive the forward transform --
+# the process dies with signal 4, no Julia exception to catch), and a wrapped source a
+# `MethodError`. Narrowing this to the GPU members leaves the others unclaimed, so forward mode
+# traces `gather`'s raw-pointer body instead of using the JVP.
 @is_primitive(
     MinimalCtx,
     ForwardMode,
     Tuple{
-        typeof(NNlib.gather),GPUBackedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
+        typeof(NNlib.gather),SupportedArray{P,N},SupportedArray{<:Union{Integer,Tuple},M}
     } where {P<:IEEEFloat,N,M},
 )
 function Mooncake.frule!!(
