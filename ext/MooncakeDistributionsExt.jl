@@ -19,6 +19,7 @@ import Mooncake:
     RData,
     ReverseMode,
     Tangent,
+    _arrayify_lane,
     _fields,
     _scalar_ndual,
     arrayify,
@@ -169,6 +170,12 @@ Base.@propagate_inbounds Base.getindex(c::_ConstLane, ::Int) = c.value
 _mean_lane(μ̇::Nfwd.NDualArray, k::Int) = Nfwd.tangent_view(μ̇, k)
 _mean_lane(μ̇, k::Int) = _ConstLane(μ̇.value.value.partials[k])
 
+# `arrayify` is restricted to `BlasFloat`, but these rules are claimed for every `IEEEFloat`,
+# `Float16` included. `_arrayify_lane` is generic over the dual eltypes, so the lanes come from it.
+function _lanes(x, ::Val{N}) where {N}
+    return ntuple(k -> _arrayify_lane(primal(x), tangent(x), k), Val(N))
+end
+
 # A `Vector` mean carries its gradient in fdata; a `Fill` mean carries it in rdata, which
 # leaves the distribution with no fdata at all.
 _mean_fdata(::CoDual{<:ScalMvNormal,NoFData}) = NoFData()
@@ -238,7 +245,8 @@ function frule!!(
     ::Lifted{typeof(logpdf),N}, d::Lifted{<:DiagMvNormal{P},N}, x::Lifted{<:DenseVec{P},N}
 ) where {N,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(N))
     _check_dims(dp, px)
     ḋ = tangent(d).value
     variance = dp.Σ.diag
@@ -307,7 +315,8 @@ function frule!!(
     x::Lifted{Array{P,N},Nw},
 ) where {Nw,P<:IEEEFloat,N}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     dists = _dists(dp)
     ḋists = _fwd_dists(dp, tangent(d))
@@ -459,7 +468,8 @@ function frule!!(
     ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:DiagMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     ḋ = tangent(d).value
     variance = dp.Σ.diag
@@ -544,7 +554,8 @@ function frule!!(
     x::Lifted{Matrix{P},Nw},
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     ḋ = tangent(d).value
     variance = dp.Σ.diag
@@ -614,7 +625,8 @@ function frule!!(
     ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:IsoMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     ḋ = tangent(d).value
     μ = dp.μ
@@ -701,7 +713,8 @@ function frule!!(
     x::Lifted{Matrix{P},Nw},
 ) where {Nw,P<:IEEEFloat}
     dp = primal(d)
-    px, ẋs = arrayify(x)
+    px = primal(x)
+    ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
     ḋ = tangent(d).value
     μ = dp.μ

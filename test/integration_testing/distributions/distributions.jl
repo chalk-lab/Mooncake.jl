@@ -10,6 +10,18 @@ _sym(A) = A'A
 _pdmat(A) = PDMat(_sym(A) + 5I)
 sr(n::Int) = StableRNG(n)
 
+# `MooncakeDistributionsExt` claims some signatures in REVERSE mode only. Measured against the
+# derived forward path at chunk width 8, a forward rule bought nothing for them -- `sqmahal` was
+# 1.7x SLOWER with one, since with a ~40 ns primal the cost is per-call overhead rather than the
+# element sweeps, and a hand-written rule cannot beat `NDual` arithmetic vectorising across lanes.
+# Forward therefore takes the derived path, and only the reverse rule is asserted to be reached.
+function test_reverse_only_rule(rng, f, args...; kwargs...)
+    test_rule(rng, f, args...; mode=Mooncake.ReverseMode, kwargs...)
+    return test_rule(
+        rng, f, args...; mode=Mooncake.ForwardMode, is_primitive=false, kwargs...
+    )
+end
+
 const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
 const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
 
@@ -227,12 +239,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
     end
 
-    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these run
-    # with `is_primitive=true`, so they also assert that AD dispatches to the rules.
+    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these assert
+    # that AD dispatches to the rules, in whichever modes the extension claims.
     @testset "logpdf(::Normal{$P}, ::$P)" for P in [Float64, Float32, Float16]
         # Float16 finite differences are too coarse to check the gradient against.
         interface_only = P === Float16
-        test_rule(
+        test_reverse_only_rule(
             sr(1),
             logpdf,
             Normal(P(0.5), P(1.2)),
@@ -253,8 +265,12 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         x = randn(sr(2), P, 9)
         interface_only = P === Float16
         perf_flag = interface_only ? :none : :stability
-        test_rule(sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only)
-        test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
+        test_reverse_only_rule(
+            sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only
+        )
+        test_reverse_only_rule(
+            sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only
+        )
     end
 
     # A diagonal covariance reads the sample directly rather than through `sqmahal`, and
@@ -354,7 +370,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
         d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
         primal_inferable = f === logpdf || VERSION >= v"1.11-"
-        test_rule(
+        test_reverse_only_rule(
             sr(29),
             f,
             d,
@@ -494,13 +510,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 Mooncake.zero_fcodual(d),
                 Mooncake.zero_fcodual(copy(x)),
             )
-            dual = Mooncake.frule!!(
-                Mooncake.zero_dual(logpdf),
-                Mooncake.zero_dual(d),
-                Mooncake.zero_dual(copy(x)),
+            lifted = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), logpdf),
+                Mooncake.zero_lifted(Val(1), d),
+                Mooncake.zero_lifted(Val(1), copy(x)),
             )
             @test Mooncake.primal(rule) == logpdf(d, x)
-            @test Mooncake.primal(dual) == logpdf(d, x)
+            @test Mooncake.primal(lifted) == logpdf(d, x)
         end
 
         # The `frule!!` carries its own `insupport` skip; the assertions above only reach
@@ -511,13 +527,13 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         for i in eachindex(rates.fields.v)
             rates.fields.v[i] = Mooncake.Tangent((λ=1.0,))
         end
-        dual = Mooncake.frule!!(
-            Mooncake.zero_dual(logpdf),
-            Mooncake.Dual(d_counting, rates),
-            Mooncake.zero_dual([1, -1]),
+        lifted = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(1), logpdf),
+            Mooncake.lift(d_counting, rates, nothing),
+            Mooncake.zero_lifted(Val(1), [1, -1]),
         )
-        @test Mooncake.primal(dual) == -Inf
-        @test Mooncake.tangent(dual) ≈ 1 / 1.5 - 1
+        @test Mooncake.primal(lifted) == -Inf
+        @test Mooncake.tangent(lifted, 1) ≈ 1 / 1.5 - 1
 
         # Both modes count rows before touching the data. The broadcast would throw a
         # `DimensionMismatch` regardless, so the message is what these assert.
@@ -528,11 +544,9 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             Mooncake.zero_fcodual(d_dense),
             Mooncake.zero_fcodual(X_wrong),
         )
-        @test_throws "x has 3 rows, expected 2" Mooncake.frule!!(
-            Mooncake.zero_dual(loglikelihood),
-            Mooncake.zero_dual(d_dense),
-            Mooncake.zero_dual(X_wrong),
-        )
+        # No forward counterpart: `loglikelihood(::CholeskyMvNormal, ::Matrix)` is a
+        # reverse-only primitive, so forward reaches the derived path and never the rule's
+        # own row check.
 
         # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
         d = product_distribution(Fill(Normal(0.4, 1.3), 3))
