@@ -41,7 +41,7 @@ const STALE_RVS_FNS = Function[stale_rvs_mid]
 stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
 @testset "s2s_reverse_mode_ad" begin
-    @testset "const global fdata is reset between rule calls" begin
+    @testset "const global fdata is reset between rule calls (#1282)" begin
         f = S2SGlobals.const_vector_phi
         rule = build_rrule(f, [0.3, 0.5], false)
 
