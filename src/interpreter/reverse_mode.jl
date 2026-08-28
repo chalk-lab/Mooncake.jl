@@ -854,10 +854,11 @@ then the output of this function is
 shared_data_tuple(p::SharedDataPairs)::Tuple = tuple(map(last, p.pairs)...)
 
 """
-    shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
+    shared_data_stmts(p::SharedDataPairs, zero_coduals=false)::Vector{IDInstPair}
 
 Produce a sequence of id-statement pairs which will extract the data from
 `shared_data_tuple(p)` such that the correct value is associated to the correct `ID`.
+If `zero_coduals` is `true`, reset the fdata of captured `CoDual`s as they are extracted.
 
 For example, if `p.pairs` is
 ```julia
@@ -871,13 +872,24 @@ IDInstPair[
 ]
 ```
 """
-function shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
-    return map(enumerate(p.pairs)) do (n, p)
-        return (p[1], new_inst(Expr(:call, get_shared_data_field, Argument(1), n)))
+function shared_data_stmts(p::SharedDataPairs, zero_coduals::Bool=false)::Vector{IDInstPair}
+    return map(enumerate(p.pairs)) do (n, pair)
+        getter = if zero_coduals && pair[2] isa CoDual && !(tangent(pair[2]) isa NoFData)
+            get_zeroed_shared_data_field
+        else
+            get_shared_data_field
+        end
+        return (pair[1], new_inst(Expr(:call, getter, Argument(1), n)))
     end
 end
 # maybe manually inline this
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
+@inline function get_zeroed_shared_data_field(shared_data, n)
+    x = getfield(shared_data, n)
+    # Captured fdata containing `Ptr` is unsupported because it cannot be reset generically.
+    t = set_to_zero!!(zero_tangent(primal(x), tangent(x)))
+    return CoDual(primal(x), fdata(t))
+end
 
 """
 The block stack is the stack used to keep track of which basic blocks are visited on the
@@ -2339,7 +2351,7 @@ function forwards_pass_ir(
     # reverse-passes. These are assigned to the `ID`s given by the `SharedDataPairs`.
     # Push the entry id onto the block stack if needed. Create `LazyZeroRData` for each
     # argument, and put it in the `Ref` for use on the reverse-pass.
-    sds = shared_data_stmts(info.shared_data_pairs)
+    sds = shared_data_stmts(info.shared_data_pairs, true)
     if pred_is_unique_pred[blocks[1].id]
         push_block_stack_insts = IDInstPair[]
     else
