@@ -5,7 +5,7 @@ import Mooncake:
     BlasRealFloat,
     CoDual,
     DefaultCtx,
-    Dual,
+    Lifted,
     NoRData,
     @is_primitive,
     arrayify,

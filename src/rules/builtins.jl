@@ -1630,12 +1630,12 @@ function rrule!!(f::CoDual{typeof(Core.ifelse)}, cond, a::A, b::B) where {A,B}
             end
         end
 
-    # It's a good idea to split up applying ifelse to the primal and tangent. This is
-    # because if you push a `CoDual` through ifelse, it _forces_ the construction of the
-    # CoDual. Conversely, if you pass through the primal and tangents separately, the
-    # compiler will often be able to avoid constructing the CoDual at all by inlining lots
-    # of stuff away.
-    return CoDual(ifelse(_cond, p_a, p_b), ifelse(_cond, tangent(a), tangent(b))), pb!!
+    # Return the selected slot rather than rebuilding one from `ifelse`d parts, mirroring the
+    # frule. Both branches already hold exactly the pair that would be rebuilt, so nothing is
+    # constructed; and where the branches differ in type, selecting gives the two-element
+    # `Union{A,B}` that inference keeps, whereas combining two union-typed parts leaves it
+    # four combinations to widen to a bare `CoDual`.
+    return (_cond ? a : b), pb!!
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(Core.sizeof),Any}

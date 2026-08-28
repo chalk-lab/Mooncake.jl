@@ -2126,12 +2126,20 @@ end
     else
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
-        # `_scale_or_zero!` gives `b` BLAS's strong-zero semantics: at `b == 0` it OVERWRITES,
-        # so a NaN sitting in a `C` that BLAS never reads cannot leak in through `0 * NaN`. The
-        # `a` term gets no such exemption -- OpenBLAS's `gemm!` multiplies even at `a == 0`, so
-        # skipping it returned a different primal than the routine being differentiated.
-        _scale_or_zero!(p_C, b)
-        p_C .+= a .* tmp
+        if iszero(a)
+            # The reference spec lets `gemm!` skip `A` at `alpha == 0`, and builds disagree on
+            # whether it does: emulating the term as `a .* tmp` propagates a NaN that a skipping
+            # build never reads, so the primal would differ from the routine being
+            # differentiated. Ask the routine instead. Costs a second multiply, in a degenerate
+            # case that already paid for `tmp` to get `alpha`'s gradient.
+            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+        else
+            # `_scale_or_zero!` gives `b` BLAS's strong-zero semantics: at `b == 0` it
+            # OVERWRITES, so a NaN sitting in a `C` that BLAS never reads cannot leak in through
+            # `0 * NaN`.
+            _scale_or_zero!(p_C, b)
+            p_C .+= a .* tmp
+        end
     end
 
     function gemm!_pb!!(::NoRData)
