@@ -716,9 +716,9 @@ end
     x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
     d16 = Mooncake.frule!!(
-        Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(Float16(8), one(Float16))
+        Mooncake.zero_dual(f), Mooncake.Lifted{Float16,1}(Float16(8), x16)
     )
-    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    @test Float64(ndual_partial(Mooncake.tangent(d16), 1)) ≈ ref16 rtol = 1e-2
     _, pb16 = Mooncake.rrule!!(Mooncake.zero_fcodual(f), Mooncake.zero_fcodual(Float16(8)))
     @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
@@ -741,11 +741,11 @@ end
     # As for σ, the saturated derivative's precision is beyond finite differences. `1 - Ω^2`
     # returns exactly 0 at Float16(6), against a true 2.46e-5, so it separates the two forms.
     ref16 = Float64(1 - tanh(big(6.0))^2)
+    x16 = NDual{Float16,1}(Float16(6), (one(Float16),))
     d16 = Mooncake.frule!!(
-        Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
-        Mooncake.Dual(Float16(6), one(Float16)),
+        Mooncake.zero_dual(tanh_fast), Mooncake.Lifted{Float16,1}(Float16(6), x16)
     )
-    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    @test Float64(ndual_partial(Mooncake.tangent(d16), 1)) ≈ ref16 rtol = 1e-2
     _, pb16 = Mooncake.rrule!!(
         Mooncake.zero_fcodual(tanh_fast), Mooncake.zero_fcodual(Float16(6))
     )
@@ -780,7 +780,7 @@ if cuda
         xg = cu(randn(StableRNG(123), Float32, 4))
         rule = Mooncake.build_frule(gather_sum, xg)
         @test_throws ArgumentError rule(
-            Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
+            Mooncake.zero_dual(gather_sum), Mooncake.zero_dual(copy(xg))
         )
         # Reverse mode, which the raise directs users to, is covered by the `gather` cases
         # in `test_cases`: under `cuda` those run on `CuArray`s.
