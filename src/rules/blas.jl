@@ -998,6 +998,49 @@ end
 @inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
     1 + (n - 1) * abs(inc) <= length(x)
 
+# Resolve an operand into what BLAS's raw walk actually reads: the span to hand the routine, the
+# slot holding that span's partials, and how many leading elements of those partials to drop.
+#
+# BLAS walks `n` elements from `pointer(x)` in RAW memory, so for a view the walk can run past the
+# view into its parent. Those elements still belong to the parent, which is itself an argument, so
+# they carry partials -- the reverse `_foreigncall_` rule reads exactly them through the tangent
+# pointer. A one-dimensional view of a dense vector therefore widens to a span of its parent from
+# the view's own first element: same `pointer`, so BLAS reads it identically, but long enough to
+# hold the walk. Any other operand must contain its own walk.
+@inline function _dot_walk_widen(label, slot::Lifted, inc::Integer, n::Integer)
+    x = primal(slot)
+    _blas_walk_inbounds(x, inc, n) || _throw_walk_past_operand(label, x, inc, n)
+    return x, slot, 0
+end
+@inline function _dot_walk_widen(
+    label,
+    slot::Lifted{<:SubArray{T,1,Vector{T},<:Tuple{AbstractRange}},Nw},
+    inc::Integer,
+    n::Integer,
+) where {T,Nw}
+    x = primal(slot)
+    p = parent(x)
+    a = first(parentindices(x)[1])
+    a + (n - 1) * abs(inc) <= length(p) || _throw_walk_past_operand(label, x, inc, n)
+    return view(p, a:length(p)), Lifted{typeof(p),Nw}(p, tangent(slot).value.parent), a - 1
+end
+
+@inline _dot_lane_span(a, drop::Integer) = view(a, (firstindex(a) + drop):lastindex(a))
+
+# Cold path for a walk that runs past an operand. Per-lane BLAS calls, as the non-contiguous branch
+# does: the widened operand is rare and does not need the block fast path.
+@noinline function _dot_widened_acc(
+    f::F, ::Val{Nw}, ::Type{E}, label, _DX, _DY, n, incx, incy
+) where {F,Nw,E}
+    pX, sX, aX = _dot_walk_widen(label, _DX, incx, n)
+    pY, sY, aY = _dot_walk_widen(label, _DY, incy, n)
+    return ntuple(Val(Nw)) do k
+        dX = _dot_lane_span(_dense_lane_partial(sX, k), aX)
+        dY = _dot_lane_span(_dense_lane_partial(sY, k), aY)
+        f(n, dX, incx, pY, incy) + f(n, pX, incx, dY, incy)
+    end::NTuple{Nw,E}
+end
+
 @inline function _blas_raw_walk_matches(x, inc::Integer)
     inc > 0 || return false
     x isa Ptr && return true
@@ -1048,25 +1091,25 @@ for (jlfname, elty) in
     ) where {Nw}
         n, incx, incy = primal(_n), primal(_incx), primal(_incy)
         DX, DY = primal(_DX), primal(_DY)
-        # BLAS walks `n` elements from `pointer(X)`, which may leave the operand while staying
-        # inside a larger parent. NEITHER branch below survives that: the block path indexes the
-        # partials block past its end -- returning uninitialised heap, or a `BoundsError` under
-        # `--check-bounds=yes` -- and the fallback hands BLAS a rebuilt buffer of `length(X)`
-        # elements to walk `n` times. `nrm2`/`scal!` already refuse it through `_blas_walk_step`.
-        #
-        # Refusing is not the whole answer, and the gap is deliberate rather than unnoticed. Where
-        # the operand is a view of a DIFFERENTIABLE parent the walk's extra elements do belong to an
-        # argument, and reverse mode differentiates it correctly today; forward would have to widen
-        # the operand to the parent so those partials exist. Until it does, this refuses a case
-        # reverse accepts. Reading uninitialised memory is the worse of the two.
-        _blas_walk_inbounds(DX, incx, n) || _throw_walk_past_operand(
-            "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`", DX, incx, n
-        )
-        _blas_walk_inbounds(DY, incy, n) || _throw_walk_past_operand(
-            "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`", DY, incy, n
-        )
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
-        acc = if _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
+        acc = if !(_blas_walk_inbounds(DX, incx, n) && _blas_walk_inbounds(DY, incy, n))
+            # BLAS walks `n` elements from `pointer(X)`, which can leave the operand while staying
+            # inside a larger parent. Neither branch below survives that: the block path indexes the
+            # partials block past its end and the fallback hands BLAS a buffer of `length(X)`
+            # elements to walk `n` times. `_dot_walk_widen` re-expresses such an operand over its
+            # parent, where the partials for the whole walk exist.
+            _dot_widened_acc(
+                BLAS.$jlfname,
+                Val(Nw),
+                $elty,
+                "Forward-mode `BLAS.$($(QuoteNode(jlfname)))`",
+                _DX,
+                _DY,
+                n,
+                incx,
+                incy,
+            )
+        elseif _blas_raw_walk_matches(DX, incx) && _blas_raw_walk_matches(DY, incy)
             # Contiguous operands: logical indexing == BLAS's raw walk, so accumulate all lanes
             # in one pass over the element-major block columns.
             Xb, _ = _partials_block(_DX)
@@ -3360,6 +3403,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
                     # primitive. A strided operand is read out of view order by the block loop, so
                     # this hits the per-lane BLAS fallback (correct at all widths, less efficient).
                     (flags..., f, 4, randn(rng, P, 4), 1, view(randn(rng, P, 8), 1:2:8), 1),
+                    # Walk running past the view into its parent: BLAS reads raw memory, so the
+                    # elements beyond the view belong to the parent and carry partials.
+                    # `_dot_walk_widen` re-expresses the operand over that parent.
+                    (
+                        flags...,
+                        f,
+                        30,
+                        view(randn(rng, P, 40), 1:4),
+                        1,
+                        view(randn(rng, P, 40), 1:4),
+                        1,
+                    ),
                 ],
             )
         end
@@ -3421,7 +3476,10 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
     # that walk, and the old first-dim-stride test admitted it and scaled the wrong elements.
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
     # Both modes; the two messages share this substring.
-    short = view(P[i for i in 1:40], 1:4)
+    # A walk that leaves the parent as well as the view: widening has nothing to widen to, so this
+    # is still refused. A walk that stays inside the parent is supported and registered as a working
+    # case instead.
+    short = view(P[i for i in 1:40], 36:39)
     cases = Any[
         ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
         ((ArgumentError, "does not support operand"), BLAS.scal!, (6, P(2), m, 1), (;)),
@@ -3448,10 +3506,10 @@ function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
              (f, opts) in two_operand)...,
         ],
     )
-    # BLAS walking past the operand's own length: the `dotc`/`dotu` block path read the partials
-    # block out of bounds there, returning uninitialised heap. COMPLEX only -- real `dot` takes a
-    # different forward path that indexes nothing out of range, measured. FORWARD only -- reverse
-    # differentiates this correctly when the operand views a differentiable parent.
+    # BLAS walking past the operand AND past its parent: the `dotc`/`dotu` block path read the
+    # partials block out of bounds there, returning uninitialised heap. COMPLEX only -- real `dot`
+    # takes a different forward path that indexes nothing out of range, measured. FORWARD only --
+    # reverse works from the tangent pointer and has no operand length to check.
     P <: Complex && append!(
         cases,
         Any[
