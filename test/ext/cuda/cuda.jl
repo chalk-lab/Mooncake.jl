@@ -2894,8 +2894,9 @@ end
             @testset "scalar m must match x's underlying precision" begin
                 # Mixed precision makes Statistics' scalar-m varm infer
                 # Union{Float32,Float64} (its n==0 branch types σ² off x alone, its main
-                # branch promotes with m), which Mooncake's rule builder cannot handle
-                # (zero(::Type{Union{...}})).
+                # branch promotes with m). The rule is declared over an invariant
+                # `CuArray{P}`, which pins `P` to a single concrete eltype, so the mixed
+                # signature is not claimed as a primitive.
                 x = _rand(rng, Float32, 4, 3)
                 world = Base.get_world_counter()
                 kwsig = @NamedTuple{corrected::Bool}
