@@ -1,7 +1,7 @@
 include(joinpath(@__DIR__, "..", "..", "ext", "pin_develop_or_skip.jl"))
 pin_develop_or_skip(@__DIR__, "LogExpFunctions")
 
-using AllocCheck, LogExpFunctions, Mooncake, StableRNGs, Test
+using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
 
 sr(n::Int) = StableRNG(n)
@@ -41,6 +41,11 @@ sr(n::Int) = StableRNG(n)
                 (:allocs, true, logsumexp, view(randn(sr(1), P, 5), 1:4)),
                 # edge case with two equal inputs: see #881 for discussion
                 (:allocs, true, logsumexp, [1.0, 1.0]),
+                # Structured tangents: the adjoint is dense, so it has to be projected
+                # onto what the wrapper stores. `Symmetric` folds rather than masks.
+                (:none, true, logsumexp, UpperTriangular(randn(sr(20), P, 4, 4))),
+                (:none, true, logsumexp, Diagonal(randn(sr(21), P, 4))),
+                (:none, true, logsumexp, Symmetric(randn(sr(22), P, 4, 4))),
                 (:none, false, x -> logsumexp(x; dims=1), randn(sr(4), P, 5, 4)),
                 (:none, false, x -> logsumexp(x; dims=1), fill(1.0, 2, 2)),
                 (:none, false, x -> logsumexp(x; dims=2), randn(sr(5), P, 5, 4)),

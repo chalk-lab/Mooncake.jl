@@ -16,6 +16,10 @@ end
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
 
+# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
+# its parent, and reshaping an `Array` yields an `Array`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
+
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
 
@@ -55,7 +59,9 @@ function arrayify(
     _, _dx = arrayify(x.diag, _fields(dx).diag)
     return x, Diagonal(_dx)
 end
-function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
+function arrayify(
+    x::SubArray{P,B,C,D,E}, dx::TangentOrFData
+) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -189,13 +195,88 @@ end
 # For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
 # primal with derivative zero. It is not masked here because the block scatter writes through this
 # result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
-# diagonal itself (`_kron_tangent_mask` forward, `_kron_tri_stored` reverse).
+# diagonal itself (`_kron_tangent_mask` forward, `accumulate_densified!` reverse).
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.value.data, lane, d)
 )
 @inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
     T, _arrayify_lane(x.parent, V.value.parent, lane, d)
 )
+
+"""
+    densify(dx)
+
+Somewhere dense to accumulate a contribution destined for the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`accumulate_densified!`](@ref), which adds back only the part `dx`
+can represent. A strided tangent is already dense, so the common case costs nothing.
+"""
+densify(dx::StridedArray) = dx
+function densify(
+    dx::Union{
+        UpperTriangular,
+        LowerTriangular,
+        UnitUpperTriangular,
+        UnitLowerTriangular,
+        Diagonal,
+        Symmetric,
+        Hermitian,
+        Adjoint,
+        Transpose,
+    },
+)
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    accumulate_densified!(dx, dense)
+
+Add the part of `dense` that the structured tangent `dx` can represent. See
+[`densify`](@ref).
+"""
+accumulate_densified!(::StridedArray, dense) = nothing
+function accumulate_densified!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+# The unit variants store only the STRICT triangle: their diagonal reads a constant `1`, a
+# non-parameter whose contribution is dropped exactly as the off-structure entries are.
+function accumulate_densified!(dx::UnitUpperTriangular, dense)
+    p = parent(dx)
+    for j in axes(dense, 2), i in 1:(j - 1)
+        @inbounds p[i, j] += dense[i, j]
+    end
+    return nothing
+end
+function accumulate_densified!(dx::UnitLowerTriangular, dense)
+    p = parent(dx)
+    for j in axes(dense, 2), i in (j + 1):size(dense, 1)
+        @inbounds p[i, j] += dense[i, j]
+    end
+    return nothing
+end
+function accumulate_densified!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+# `Adjoint`/`Transpose` store every entry, just at the transposed position.
+accumulate_densified!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
+accumulate_densified!(dx::Transpose, dense) = (parent(dx) .+= transpose(dense); nothing)
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function accumulate_densified!(dx::Union{Symmetric,Hermitian}, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
+end
 
 """
     matrixify(x_dx::CoDual{<:AbstractVecOrMat{<:BlasFloat}})

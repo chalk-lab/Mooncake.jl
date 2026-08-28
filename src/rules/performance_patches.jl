@@ -78,6 +78,38 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
+@is_primitive(DefaultCtx, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
+# Summed straight off the parent's lane over the view's own index range: `arrayify` is
+# `BlasFloat`-only, and this rule is claimed for every `IEEEFloat`, `Float16` included.
+function frule!!(
+    ::Lifted{typeof(sum),N}, x::Lifted{ContiguousSubVector{P},N}
+) where {N,P<:IEEEFloat}
+    px = primal(x)
+    v = sum(px)
+    par = tangent(x).value.parent
+    idx = parentindices(px)[1]
+    lanes = ntuple(Val(N)) do k
+        pl = Nfwd.tangent_view(par, k)
+        acc = zero(P)
+        @inbounds @simd for i in idx
+            acc += pl[i]
+        end
+        acc
+    end
+    return Lifted{P,N}(v, _scalar_ndual(v, lanes))
+end
+function rrule!!(
+    ::CoDual{typeof(sum)}, x::CoDual{ContiguousSubVector{P}}
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    function sum_view_pb!!(dz::P)
+        dx .+= dz
+        return NoRData(), NoRData()
+    end
+    return zero_fcodual(sum(px)), sum_view_pb!!
+end
+
+# Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),typeof(abs2),Array{<:IEEEFloat}})
 function frule!!(
     ::Lifted{typeof(sum),N},
@@ -109,6 +141,100 @@ function rrule!!(
     return zero_fcodual(sum(abs2, x.x)), sum_abs2_pb!!
 end
 
+# Without this, `A * B` differentiates through the in-place `gemm!` rule, which copies the
+# output buffer so that the pullback can restore it. `*` allocates that buffer fresh, so
+# the copy is pure overhead.
+@is_primitive DefaultCtx Tuple{typeof(*),Matrix{P},Matrix{P}} where {P<:BlasRealFloat}
+function frule!!(
+    ::Lifted{typeof(*),N}, A::Lifted{<:Matrix{P},N}, B::Lifted{<:Matrix{P},N}
+) where {N,P<:BlasRealFloat}
+    pA, dAs = arrayify(A)
+    pB, dBs = arrayify(B)
+    C = pA * pB
+    V = zero_dual(Val(N), C)
+    blk = getfield(V, :partials_block)
+    dC = similar(C)                                  # one scratch for every lane
+    for k in 1:N
+        mul!(dC, dAs[k], pB)
+        mul!(dC, pA, dBs[k], one(P), one(P))
+        copyto!(view(blk,k,:,:), dC)
+    end
+    return Lifted{typeof(C),N}(C, V)
+end
+function rrule!!(
+    ::CoDual{typeof(*)}, A::CoDual{<:Matrix{P}}, B::CoDual{<:Matrix{P}}
+) where {P<:BlasRealFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    C = pA * pB
+    dC = zero(C)
+    function matmul_pb!!(::NoRData)
+        mul!(dA, dC, transpose(pB), one(P), one(P))
+        mul!(dB, transpose(pA), dC, one(P), one(P))
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(C, dC), matmul_pb!!
+end
+
+# Differentiating the generic implementation element by element costs more than the rules
+# either side of it; `Distances.pairwise(...; dims=1)` reaches it on every call.
+@is_primitive DefaultCtx Tuple{typeof(permutedims),Matrix{P}} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(permutedims),N}, x::Lifted{<:Matrix{P},N}
+) where {N,P<:IEEEFloat}
+    px, dxs = arrayify(x)
+    y = permutedims(px)
+    V = zero_dual(Val(N), y)
+    blk = getfield(V, :partials_block)
+    # Written by hand rather than with `permutedims!`, whose `PermutedDimsArray` over a view
+    # infers to a non-concrete type and costs the rule its type stability.
+    for k in 1:N
+        dk = dxs[k]
+        lane = view(blk,k,:,:)
+        @inbounds for j in axes(dk, 2), i in axes(dk, 1)
+            lane[j, i] = dk[i, j]
+        end
+    end
+    return Lifted{typeof(y),N}(y, V)
+end
+function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    y = permutedims(px)
+    dy = zero(y)
+    function permutedims_pb!!(::NoRData)
+        dx .+= transpose(dy)
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy), permutedims_pb!!
+end
+
+# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
+# contraction is dense, so it goes through `densify` / `accumulate_densified!`. Read
+# as `P x M x Q x N`, both contractions read the same element of `dy`, so a single pass in
+# memory order serves both. A `gemv` per `(q, n)` block is slower at every shape measured:
+# the blocks are small enough that BLAS call overhead dominates.
+function _kron_pb!(dx1, dx2, dy, px1, px2)
+    T = eltype(px1)
+    M, N = size(px1)
+    P, Q = size(px2)
+    W = reshape(dy, P, M, Q, N)
+    t1 = densify(dx1)
+    t2 = densify(dx2)
+    @inbounds for n in 1:N, q in 1:Q, i in 1:M
+        acc = zero(T)
+        x1 = px1[i, n]
+        @simd for k in 1:P
+            w = W[k, i, q, n]
+            acc += w * px2[k, q]
+            t2[k, q] += w * x1
+        end
+        t1[i, n] += acc
+    end
+    accumulate_densified!(dx1, t1)
+    accumulate_densified!(dx2, t2)
+    return nothing
+end
+
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
 # Forward mode is split by input shape. Dense inputs (all `Array{T,2}`) are a primitive for every
 # real `IEEEFloat`, including Float16: the dense frule below reads the `NDualArray` partials directly
@@ -124,9 +250,9 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:BlasFloat}
-# Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_accum!` folds the dense gradient into
-# dense/Triangular/Diagonal/Adjoint/Transpose fdata; Symmetric/Hermitian are admitted by the signature
-# but their off-diagonal `setindex!` throws. Complex stays derived.
+# Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_pb!` accumulates densely and
+# folds the result onto each input's stored entries via `accumulate_densified!`. Complex stays
+# derived.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -247,38 +373,6 @@ function Mooncake.frule!!(
     end
     return out
 end
-# Fold the dense per-entry cotangent `v` at (i,j) into the (possibly structured) input fdata `dx`.
-# `matrixify` returns `dx` re-wrapped in the input's wrapper; a triangular/diagonal fdata stores
-# only its structural entries, and the off-pattern (i,j) are structurally-zero *non-variables* of
-# the primal, so their gradient contribution is dropped (writing them would both throw and be
-# wrong — finite differences give zero there). Dense inputs take the first method unchanged, so the
-# hot dense path allocates nothing extra.
-@inline _kron_accum!(dx::AbstractMatrix, i, j, v) = (@inbounds dx[i, j] += v; nothing)
-@inline _kron_tri_stored(::UpperTriangular, i, j) = i <= j
-@inline _kron_tri_stored(::UnitUpperTriangular, i, j) = i < j
-@inline _kron_tri_stored(::LowerTriangular, i, j) = i >= j
-@inline _kron_tri_stored(::UnitLowerTriangular, i, j) = i > j
-@inline function _kron_accum!(dx::LinearAlgebra.AbstractTriangular, i, j, v)
-    _kron_tri_stored(dx, i, j) && (@inbounds parent(dx)[i, j] += v)
-    return nothing
-end
-@inline _kron_accum!(dx::Diagonal, i, j, v) =
-    (i == j && (@inbounds dx.diag[i] += v); nothing)
-# `Symmetric` stores one triangle, and the stored `A[i,j]` is the variable behind BOTH `S[i,j]` and
-# `S[j,i]`, so both contributions fold onto it -- the factor of 2 that `_accum_sym_logdet!` writes
-# out explicitly. The unread triangle is not a variable, so it stays zero. Without this the generic
-# `AbstractMatrix` method above throws on any off-diagonal entry. `Hermitian` shares it: `arrayify`
-# admits a real one, where it is the same wrapper.
-@inline function _kron_accum!(dx::Union{Symmetric,Hermitian}, i, j, v)
-    lo, hi = minmax(i, j)
-    @inbounds if dx.uplo == 'U'
-        parent(dx)[lo, hi] += v
-    else
-        parent(dx)[hi, lo] += v
-    end
-    return nothing
-end
-
 function Mooncake.rrule!!(
     ::CoDual{typeof(LinearAlgebra._kron!)},
     out::CoDual{<:AbstractMatrix{<:T}},
@@ -291,20 +385,7 @@ function Mooncake.rrule!!(
     old_pout = copy(pout)
     LinearAlgebra._kron!(pout, px1, px2)
     function _kron!_pb!!(::NoRData)
-        P, Q = size(px2)
-        for m in axes(px1, 1), n in axes(px1, 2)
-            _kron_accum!(
-                dx1,
-                m,
-                n,
-                dot(
-                    (@view dout[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2
-                ),
-            )
-        end
-        for p in axes(px2, 1), q in axes(px2, 2)
-            _kron_accum!(dx2, p, q, dot((@view dout[p:P:end, q:Q:end]), px1))
-        end
+        _kron_pb!(dx1, dx2, dout, px1, px2)
         copyto!(pout, old_pout)
         fill!(dout, zero(T))
         return NoRData(), NoRData(), NoRData(), NoRData()
@@ -321,8 +402,8 @@ end
 # structured wrapper; those cases route to the derived rule instead. The strided×strided
 # declaration is the intersection of the other two, so "≥1 strided operand" carries no
 # `_is_primitive` ambiguity. The derived forward path builds the canonical wrapper dual; the
-# reverse pullbacks fold the dense gradient into a structured fdata via `_kron_accum!`, keeping only
-# the wrapper's stored entries.
+# reverse pullbacks accumulate densely and fold onto a structured fdata via
+# `accumulate_densified!`, keeping only the wrapper's stored entries.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -342,19 +423,7 @@ function Mooncake.rrule!!(
     y = kron(px1, px2)
     dy = zero(y)
     function kron_pb!!(::NoRData)
-        M, N = size(dx1)
-        P, Q = size(dx2)
-        for m in 1:M, n in 1:N
-            _kron_accum!(
-                dx1,
-                m,
-                n,
-                dot((@view dy[((m - 1) * P + 1):(m * P), ((n - 1) * Q + 1):(n * Q)]), px2),
-            )
-        end
-        for p in 1:P, q in 1:Q
-            _kron_accum!(dx2, p, q, dot((@view dy[p:P:end, q:Q:end]), px1))
-        end
+        _kron_pb!(dx1, dx2, dy, px1, px2)
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), kron_pb!!
@@ -462,6 +531,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             return (flags..., sum, randn(rng, P, sz...))
         end,
 
+        # sum(view(x, a:b))
+        map(precisions) do P
+            flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
+            return (flags..., sum, view(randn(rng, P, 11), 2:9))
+        end,
+
         # sum(abs2, x)
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
@@ -567,10 +642,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 Hermitian(randn(rng, P, 3, 3), :L),
             )
         end,
+
+        # permutedims(x)
+        map([Float64, Float32]) do P
+            return (false, :stability, nothing, permutedims, randn(rng, P, 7, 11))
+        end,
+
+        # x * y
+        map([Float64, Float32]) do P
+            return (
+                false, :stability, nothing, *, randn(rng, P, 7, 11), randn(rng, P, 11, 5)
+            )
+        end,
     )
     memory = Any[]
     return test_cases, memory
 end
+
+_square_matmul(x) = x * x
 
 function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
@@ -598,7 +687,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # A COMPLEX `Hermitian`, where the two modes reach the answer differently: forward through
         # the `_arrayify_lane` wrapper (`Hermitian(dA)` is the JVP), reverse through the derived
         # path, since folding a complex cotangent onto the stored triangle needs a conjugation
-        # `_kron_accum!` does not apply. Both are checked here against finite differences.
+        # `accumulate_densified!` does not apply. Both are checked here against finite
+        # differences.
         map([ComplexF64, ComplexF32]) do C
             return map([:U, :L]) do uplo
                 return (
@@ -712,6 +802,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 randn(rng, P, 4, 4),
                 Diagonal(randn(rng, P, 3)),
             )
+        end,
+
+        # `A * A` aliases the rule's arguments, so `dA === dB` and the pullback must
+        # accumulate both terms into the one array.
+        map(precisions) do (P)
+            return (false, :none, nothing, _square_matmul, randn(rng, P, 5, 5))
         end,
     )
     memory = Any[]
