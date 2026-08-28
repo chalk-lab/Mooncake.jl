@@ -12,18 +12,22 @@ import Mooncake:
     CoDual,
     ContiguousSubVector,
     DefaultCtx,
+    Lifted,
+    Nfwd,
     NoFData,
-    ReverseMode,
     NoRData,
     RData,
+    ReverseMode,
     Tangent,
     _fields,
+    _scalar_ndual,
     arrayify,
     frule!!,
     increment!!,
     primal,
     rrule!!,
     tangent,
+    zero_dual,
     zero_fcodual
 
 # The rules below exist purely to work around performance limitations of Mooncake.jl: the
@@ -155,6 +159,16 @@ end
 _mean_tangent(μ̇::Tangent, ::Int) = _fields(μ̇).value
 _mean_tangent(μ̇::Vector, i::Int) = @inbounds μ̇[i]
 
+# Forward analogues, hoisted out of the element loop: lane `k` of the mean's tangent, as
+# something indexable by element. A `Fill` mean shares one value, so its lane is a scalar
+# wrapped to answer any index.
+struct _ConstLane{P}
+    value::P
+end
+Base.@propagate_inbounds Base.getindex(c::_ConstLane, ::Int) = c.value
+_mean_lane(μ̇::Nfwd.NDualArray, k::Int) = Nfwd.tangent_view(μ̇, k)
+_mean_lane(μ̇, k::Int) = _ConstLane(μ̇.value.value.partials[k])
+
 # A `Vector` mean carries its gradient in fdata; a `Fill` mean carries it in rdata, which
 # leaves the distribution with no fdata at all.
 _mean_fdata(::CoDual{<:ScalMvNormal,NoFData}) = NoFData()
@@ -217,9 +231,36 @@ end
 # instead and must go on using the derived rules.
 const DiagMvNormal{P} = MvNormal{P,<:PDiagMat{P,Vector{P}},<:Vector{P}}
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),DiagMvNormal{P},DenseVec{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),N}, d::Lifted{<:DiagMvNormal{P},N}, x::Lifted{<:DenseVec{P},N}
+) where {N,P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = tangent(d).value
+    variance = dp.Σ.diag
+    y = zero(P)
+    @inbounds @simd for i in eachindex(px, dp.μ, variance)
+        residual = px[i] - dp.μ[i]
+        y += log(variance[i]) + residual * (residual / variance[i])
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + y)
+    lanes = ntuple(Val(N)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        acc = zero(P)
+        @inbounds @simd for i in eachindex(px, dp.μ, variance)
+            residual = px[i] - dp.μ[i]
+            acc += _coordinate_derivative(residual, variance[i], ẋ[i] - μ̇[i], v̇[i])
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, lanes))
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{<:DenseVec{P}}
 ) where {P<:IEEEFloat}
@@ -255,10 +296,45 @@ const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P}
 
 _dists(d::Distributions.ProductDistribution) = d.dists
 _dists(::Distributions.ProductDistribution, dd) = _fields(dd).dists
+_fwd_dists(::Distributions.ProductDistribution, dd) = dd.value.dists
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),NormalProduct{P,N},Array{P,N}
 } where {P<:IEEEFloat,N}
+function frule!!(
+    ::Lifted{typeof(logpdf),Nw},
+    d::Lifted{<:NormalProduct{P,N},Nw},
+    x::Lifted{Array{P,N},Nw},
+) where {Nw,P<:IEEEFloat,N}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    dists = _dists(dp)
+    ḋists = _fwd_dists(dp, tangent(d))
+    y = zero(P)
+    @inbounds for i in eachindex(px, dists)
+        dist = dists[i]
+        y -= P(0.5) * log(P(2π)) + log(dist.σ) + P(0.5) * abs2((px[i] - dist.μ) / dist.σ)
+    end
+    # A `σ == 0` component makes the fused sum `Inf - Inf`, where the primal's `iszero(σ)`
+    # branch gives ±Inf. Recomputing only when the sum is not a number leaves the loop above
+    # vectorisable; the derivative agrees with the derived rule either way.
+    isnan(y) && (y = logpdf(dp, px))
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        acc = zero(P)
+        @inbounds for i in eachindex(px, dists, ḋists)
+            dist = dists[i]
+            ḋ = ḋists[i].value
+            z = (px[i] - dist.μ) / dist.σ
+            acc +=
+                ((abs2(z) - one(P)) * ḋ.σ.partials[k] - z * (ẋ[i] - ḋ.μ.partials[k])) /
+                dist.σ
+        end
+        acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:NormalProduct{P,N}}, x::CoDual{Array{P,N}}
 ) where {P<:IEEEFloat,N}
@@ -303,6 +379,7 @@ const CountingProduct{P} = Union{
 
 _dists(d::Distributions.Product) = d.v
 _dists(::Distributions.Product, dd) = _fields(dd).v
+_fwd_dists(::Distributions.Product, dd) = dd.value.v
 
 # One observation's contribution to its distribution's cotangent. Add a method here to
 # cover another counting distribution.
@@ -324,9 +401,32 @@ _param_tangent(ṫ) = only(values(_fields(ṫ)))
 # The sample stays an `AbstractVector`, unlike the float samples above: it is
 # non-differentiable, so it is only ever indexed, never passed to `arrayify`. That admits
 # the `BitVector` binary observations arrive as.
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),CountingProduct{P},AbstractVector{<:Integer}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),N},
+    d::Lifted{<:CountingProduct{P},N},
+    x::Lifted{<:AbstractVector{<:Integer},N},
+) where {N,P<:IEEEFloat}
+    dp = primal(d)
+    px = primal(x)
+    _check_dims(dp, px)
+    dists = _dists(dp)
+    ḋists = _fwd_dists(dp, tangent(d))
+    y = _sum_logpdf(dists, px, P)
+    lanes = ntuple(Val(N)) do k
+        acc = zero(P)
+        @inbounds for i in eachindex(px, dists, ḋists)
+            insupport(dists[i], px[i]) || continue
+            acc +=
+                _param_derivative(dists[i], px[i]) *
+                only(values(ḋists[i].value)).partials[k]
+        end
+        acc
+    end
+    return Lifted{P,N}(y, _scalar_ndual(y, lanes))
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)},
     d::CoDual{<:CountingProduct{P}},
@@ -352,9 +452,47 @@ end
 # `logpdf(d, X)` scores each column of `X` separately and returns a vector, so unlike
 # `loglikelihood` it cannot fold the columns together; the saving is the same per-column
 # triangular solve the derived rule traces.
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(logpdf),DiagMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:DiagMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
+) where {Nw,P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = tangent(d).value
+    variance = dp.Σ.diag
+    constant = -P(0.5) * (length(dp) * log(P(2π)) + sum(log, variance))
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        @simd for i in eachindex(dp.μ, variance)
+            residual = px[i, j] - dp.μ[i]
+            mahalanobis += residual * (residual / variance[i])
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+    end
+    V = zero_dual(Val(Nw), y)
+    blk = getfield(V, :partials_block)
+    for k in 1:Nw
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        lane = view(blk, k, :)
+        @inbounds for j in axes(px, 2)
+            derivative = zero(P)
+            @simd for i in eachindex(dp.μ, variance)
+                residual = px[i, j] - dp.μ[i]
+                derivative += _coordinate_derivative(
+                    residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i]
+                )
+            end
+            lane[j] = -P(0.5) * derivative
+        end
+    end
+    return Lifted{Vector{P},Nw}(y, V)
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
@@ -397,9 +535,42 @@ end
 # of `X`, and the derived rule pays one pullback per column; one pass over the matrix
 # replaces all of them. The `-n / variance` half of the log-determinant's derivative is the
 # `- variance` inside `_excess`, summed over the columns.
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),DiagMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(loglikelihood),Nw},
+    d::Lifted{<:DiagMvNormal{P},Nw},
+    x::Lifted{Matrix{P},Nw},
+) where {Nw,P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = tangent(d).value
+    variance = dp.Σ.diag
+    mahalanobis = zero(P)
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(dp.μ, variance)
+            residual = px[i, j] - dp.μ[i]
+            mahalanobis += residual * (residual / variance[i])
+        end
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + size(px, 2) * sum(log, variance) + mahalanobis)
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        acc = zero(P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(dp.μ, variance)
+                residual = px[i, j] - dp.μ[i]
+                acc += _coordinate_derivative(residual, variance[i], ẋ[i, j] - μ̇[i], v̇[i])
+            end
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
+end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:DiagMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
@@ -438,9 +609,46 @@ end
 # accumulate into, so it stays with the derived rules.
 const IsoMvNormal{P} = MvNormal{P,<:ScalMat{P},Vector{P}}
 
-@is_primitive DefaultCtx ReverseMode Tuple{
-    typeof(logpdf),IsoMvNormal{P},Matrix{P}
-} where {P<:IEEEFloat}
+@is_primitive DefaultCtx Tuple{typeof(logpdf),IsoMvNormal{P},Matrix{P}} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(logpdf),Nw}, d::Lifted{<:IsoMvNormal{P},Nw}, x::Lifted{Matrix{P},Nw}
+) where {Nw,P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = tangent(d).value
+    μ = dp.μ
+    variance = dp.Σ.value
+    constant = -P(0.5) * length(μ) * (log(P(2π)) + log(variance))
+    y = Vector{P}(undef, size(px, 2))
+    @inbounds for j in axes(px, 2)
+        mahalanobis = zero(P)
+        @simd for i in eachindex(μ)
+            residual = px[i, j] - μ[i]
+            mahalanobis += residual * (residual / variance)
+        end
+        y[j] = constant - P(0.5) * mahalanobis
+    end
+    V = zero_dual(Val(Nw), y)
+    blk = getfield(V, :partials_block)
+    for k in 1:Nw
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = ḋ.Σ.value.value.partials[k]
+        lane = view(blk, k, :)
+        @inbounds for j in axes(px, 2)
+            derivative = zero(P)
+            @simd for i in eachindex(μ)
+                residual = px[i, j] - μ[i]
+                derivative += _coordinate_derivative(
+                    residual, variance, ẋ[i, j] - μ̇[i], v̇
+                )
+            end
+            lane[j] = -P(0.5) * derivative
+        end
+    end
+    return Lifted{Vector{P},Nw}(y, V)
+end
 function rrule!!(
     ::CoDual{typeof(logpdf)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
@@ -484,9 +692,43 @@ function rrule!!(
     return out, iso_logpdf_matrix_pb!!
 end
 
-@is_primitive DefaultCtx ReverseMode Tuple{
+@is_primitive DefaultCtx Tuple{
     typeof(loglikelihood),IsoMvNormal{P},Matrix{P}
 } where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(loglikelihood),Nw},
+    d::Lifted{<:IsoMvNormal{P},Nw},
+    x::Lifted{Matrix{P},Nw},
+) where {Nw,P<:IEEEFloat}
+    dp = primal(d)
+    px, ẋs = arrayify(x)
+    _check_dims(dp, px)
+    ḋ = tangent(d).value
+    μ = dp.μ
+    variance = dp.Σ.value
+    mahalanobis = zero(P)
+    @inbounds for j in axes(px, 2)
+        @simd for i in eachindex(μ)
+            residual = px[i, j] - μ[i]
+            mahalanobis += residual * (residual / variance)
+        end
+    end
+    y = -P(0.5) * (length(px) * log(P(2π)) + length(px) * log(variance) + mahalanobis)
+    lanes = ntuple(Val(Nw)) do k
+        ẋ = ẋs[k]
+        μ̇ = _mean_lane(ḋ.μ, k)
+        v̇ = ḋ.Σ.value.value.partials[k]
+        acc = zero(P)
+        @inbounds for j in axes(px, 2)
+            @simd for i in eachindex(μ)
+                residual = px[i, j] - μ[i]
+                acc += _coordinate_derivative(residual, variance, ẋ[i, j] - μ̇[i], v̇)
+            end
+        end
+        -P(0.5) * acc
+    end
+    return Lifted{P,Nw}(y, _scalar_ndual(y, lanes))
+end
 function rrule!!(
     ::CoDual{typeof(loglikelihood)}, d::CoDual{<:IsoMvNormal{P}}, x::CoDual{Matrix{P}}
 ) where {P<:IEEEFloat}
