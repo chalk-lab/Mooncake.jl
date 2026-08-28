@@ -1,10 +1,11 @@
 module MooncakeDistributionsCUDAExt
 
 using Base: IEEEFloat
+using CUDA: RNG
 using CUDA.CUDACore: CuArray
 using Distributions: ArrayLikeVariate, Sampleable
 using Mooncake: Mooncake
-using Random: AbstractRNG, rand!
+using Random: rand!
 
 import Mooncake:
     @is_primitive,
@@ -24,12 +25,10 @@ const CuFloatArray = CuArray{<:IEEEFloat}
 # A device draw is random state, not a reparameterised sample. The result aliases `x`, so
 # `@zero_derivative` would break the primal/fdata aliasing invariant: clear the existing
 # fdata instead. Restore `x` on the reverse pass, but deliberately leave `rng` advanced.
-@is_primitive MinimalCtx Tuple{
-    typeof(rand!),AbstractRNG,<:ArrayLikeSampleable,<:CuFloatArray
-}
+@is_primitive MinimalCtx Tuple{typeof(rand!),RNG,<:ArrayLikeSampleable,<:CuFloatArray}
 function frule!!(
     ::Dual{typeof(rand!)},
-    rng::Dual{<:AbstractRNG},
+    rng::Dual{<:RNG},
     sampler::Dual{<:ArrayLikeSampleable},
     x::Dual{P,P},
 ) where {P<:CuFloatArray}
@@ -39,7 +38,7 @@ function frule!!(
 end
 function rrule!!(
     ::CoDual{typeof(rand!)},
-    rng::CoDual{<:AbstractRNG},
+    rng::CoDual{<:RNG},
     sampler::CoDual{<:ArrayLikeSampleable},
     x::CoDual{P,P},
 ) where {P<:CuFloatArray}

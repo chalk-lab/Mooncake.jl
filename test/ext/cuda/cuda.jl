@@ -77,6 +77,18 @@ end
             @test dx == dx_before
             @test Random.rand(rng, Float32, 8) == expected_next
 
+            Random.seed!(rng, 123)
+            out = _MooncakeDistributionsCUDAExt.frule!!(
+                Mooncake.zero_dual(rand!),
+                Mooncake.zero_dual(rng),
+                Mooncake.zero_dual(sampler),
+                Mooncake.Dual(x, dx),
+            )
+            @test Mooncake.primal(out) === x
+            @test x == expected_x
+            @test all(iszero, dx)
+            @test Random.rand(rng, Float32, 8) == expected_next
+
             test_rule(
                 StableRNG(123),
                 rand!,
