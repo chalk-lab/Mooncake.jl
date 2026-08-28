@@ -43,6 +43,7 @@ MooncakeCUDAExt = ["CUDA", "Statistics"]
 MooncakeChainRulesExt = "ChainRules"
 MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistancesExt = "Distances"
+MooncakeDistributionsCUDAExt = ["CUDA", "Distributions"]
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
