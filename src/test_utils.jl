@@ -761,6 +761,7 @@ function test_frule(
     max_fd_step=nothing,
     debug_mode::Bool=false,
     fwd_allocs_broken::Bool=false,
+    oracle=nothing,
 ) where {P}
     @nospecialize rng x
     # Width-1 battery. The seeds are shared across the four checks; `CoDual`-supplied args carry
@@ -773,9 +774,13 @@ function test_frule(
         interface_only || test_frule_reuse(x_ẋ...; frule)
         test_frule_interface(x_ẋ...; frule, is_primitive)
         if !interface_only
-            test_frule_correctness(
-                rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
-            )
+            if isnothing(oracle)
+                test_frule_correctness(
+                    rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
+                )
+            else
+                test_frule_oracle(x_ẋ...; frule, oracle)
+            end
         end
         test_frule_performance(perf_flag, frule, x_ẋ...; fwd_allocs_broken)
     end
@@ -842,6 +847,7 @@ function test_rrule(
     atol=1e-3,
     rtol=1e-3,
     max_fd_step=nothing,
+    oracle=nothing,
 ) where {P}
     @nospecialize rng x
     x_x̄ = map(
@@ -851,9 +857,13 @@ function test_rrule(
     interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
     test_rrule_interface(x_x̄...; rrule)
     if !interface_only
-        test_rrule_correctness(
-            rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol, max_fd_step
-        )
+        if isnothing(oracle)
+            test_rrule_correctness(
+                rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol, max_fd_step
+            )
+        else
+            test_rrule_oracle(x_x̄...; rrule, oracle, output_tangent)
+        end
     end
     return test_rrule_performance(perf_flag, rrule, x_x̄...)
 end
@@ -932,6 +942,43 @@ end
 _chunked_v_invariant(_p, _v, ::IdDict) = true
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
+# A caller-pinned reference replaces the finite-difference oracle where FD cannot express the
+# assertion: a NaN or infinite operand, an exact-zero identity at a removable singularity, a
+# saturated regime whose true derivative falls below FD's resolution. `isequal` is the default
+# comparator, so exact zero, signed zero and NaN each compare as those sites intend. Only the
+# width-1 correctness check is replaced; the chunked invariant and per-lane checks still run.
+_oracle_cmp(oracle) = haskey(oracle, :cmp) ? oracle.cmp : isequal
+# `deriv` is a single reference, or `(fwd=…, rvs=…)` where one case runs in both modes: a JVP
+# and a VJP are different objects, so a both-modes case has to carry both.
+_oracle_deriv(d, key::Symbol) = d isa NamedTuple && haskey(d, key) ? d[key] : d
+
+function test_frule_oracle(x_ẋ::Vararg{Any,P}; frule, oracle) where {P}
+    @nospecialize x_ẋ
+    out = frule(_deepcopy_all(x_ẋ)...)
+    cmp = _oracle_cmp(oracle)
+    haskey(oracle, :value) && @test cmp(primal(out), oracle.value)
+    haskey(oracle, :deriv) && @test cmp(tangent(out, 1), _oracle_deriv(oracle.deriv, :fwd))
+    return nothing
+end
+
+# `deriv` is compared against the pullback's whole return, the function's own cotangent
+# included, so a closure's captured state is not silently dropped from the comparison.
+function test_rrule_oracle(x_x̄::Vararg{Any,P}; rrule, oracle, output_tangent) where {P}
+    @nospecialize x_x̄
+    out, pb!! = rrule(_deepcopy_all(x_x̄)...)
+    cmp = _oracle_cmp(oracle)
+    haskey(oracle, :value) && @test cmp(primal(out), oracle.value)
+    haskey(oracle, :deriv) || return nothing
+    isnothing(output_tangent) && throw(
+        ArgumentError(
+            "a reverse-mode `oracle` carrying `deriv` needs `output_tangent`: without one " *
+            "the cotangent seed is random, which leaves `deriv` unpinned.",
+        ),
+    )
+    @test cmp(pb!!(Mooncake.rdata(output_tangent)), _oracle_deriv(oracle.deriv, :rvs))
+    return nothing
+end
+
 function test_rrule_correctness(
     rng::AbstractRNG,
     x_x̄...;
@@ -1554,6 +1601,7 @@ function test_rule(
     max_fd_step::Union{Nothing,Real}=nothing,
     skip_chunked::Bool=false,
     fwd_allocs_broken::Bool=false,
+    oracle=nothing,
 )
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1617,6 +1665,7 @@ function test_rule(
                         max_fd_step,
                         debug_mode,
                         fwd_allocs_broken,
+                        oracle,
                     )
                 end
             end
@@ -1635,6 +1684,7 @@ function test_rule(
                         atol,
                         rtol,
                         max_fd_step,
+                        oracle,
                     )
                 end
             end
@@ -1684,6 +1734,12 @@ _case_skip_reverse(opts) = opts isa NamedTuple ? get(opts, :skip_reverse, false)
 # (alloc-free again on 1.12) for the few cases whose type-stable forward OC 1.11's optimizer boxes.
 function _case_fwd_allocs_broken(opts)
     opts isa NamedTuple ? get(opts, :fwd_allocs_broken, false) : false
+end
+# A case whose derivative finite differences cannot pin carries its reference in `oracle`
+# (see `test_frule_oracle`); a reverse `oracle` with a `deriv` also needs `output_tangent`.
+_case_oracle(opts) = opts isa NamedTuple ? get(opts, :oracle, nothing) : nothing
+function _case_output_tangent(opts)
+    opts isa NamedTuple ? get(opts, :output_tangent, nothing) : nothing
 end
 
 """
@@ -1825,6 +1881,8 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
             mode,
             skip_chunked,
             fwd_allocs_broken,
+            oracle=_case_oracle(opts),
+            output_tangent=_case_output_tangent(opts),
         )
     end
 end
