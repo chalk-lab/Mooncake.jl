@@ -1,14 +1,13 @@
 # Tests from
 # https://github.com/FluxML/Flux.jl/blob/
 # d15c7dc54f080dd67193e8228329d6d127952b81/test/ext_mooncake.jl
-# TEST_MODELS is inlined from Flux's test/test_utils.jl so that the integration test and
+# FLUX_MODELS is inlined from Flux's test/test_utils.jl so that the integration test and
 # benchmark share one model catalog without depending on Flux's internal test files.
 
 const _gpu_enabled = true
-const _gpu_disabled = false
 
 # Tuple format: (gpu_supported, model, input, name)
-const TEST_MODELS = [
+const FLUX_MODELS = [
     (_gpu_enabled, Dense(2 => 4), randn(Float32, 2), "Dense(2 => 4)"),
     (
         _gpu_enabled,
@@ -72,6 +71,7 @@ const TEST_MODELS = [
     ),
     # LayerNorm needs MooncakeCUDAExt's Statistics.varm GPU rrule!! (via LuxLib mean_var).
     (_gpu_enabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
+    # Uses NNlibMooncakeCUDAExt's batchnorm rrule!! (FluxML/NNlib.jl#727).
     (_gpu_enabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),
     (
         _gpu_enabled,

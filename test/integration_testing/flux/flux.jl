@@ -52,7 +52,7 @@ test_cases = Any[(loss, ps, st, x, mask), (loss_acl, psacl, stacl, x)]
     )
 end
 
-include("test_models.jl")
+include("models.jl")
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
@@ -94,13 +94,12 @@ include("test_models.jl")
 #      Fix: Mooncake would need a Flux-aware rule for Dense/MHA that keeps tangents on GPU,
 #      or Flux would need to update struct type params on gpu() (an Adapt.jl issue).
 #
-# Models marked _gpu_disabled fall into one or more of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 # We only check that the gradient runs (interface_only=true), not correctness
 # against a reference. Correctness is tested separately in Flux's own test suite.
 @testset "mooncake gradient" begin
-    for (gpu_supported, model, x, name) in TEST_MODELS
+    for (gpu_supported, model, x, name) in FLUX_MODELS
         @testset "grad check $name" begin
             @info "[CPU] testing $name"
             Mooncake.TestUtils.test_rule(
@@ -118,7 +117,7 @@ end
 
 if CUDA.functional()
     @testset "mooncake gradient (GPU)" begin
-        for (gpu_supported, model, x, name) in TEST_MODELS
+        for (gpu_supported, model, x, name) in FLUX_MODELS
             gpu_supported || continue  # GPU support not yet implemented
             eltype(x) == Float64 && continue  # Float64 CuArrays not supported
             @testset "grad check $name" begin
