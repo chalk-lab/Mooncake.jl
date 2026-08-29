@@ -1438,6 +1438,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
             (false, :stability_and_allocs, nothing, modf, 1.7),
         ],
+        # `hypot` is singular at the origin: the true directional derivative is 0 in every
+        # arity, but a finite difference of `hypot(ε, ε)` returns `sqrt(2)`, so FD cannot pin
+        # this. The seeds come through the `CoDual` channel because a random seed would not
+        # sit on the singular point's ray, and `isequal` (the default comparator) is what
+        # separates an exact `0` from a denormal.
+        vec(
+            map(Iterators.product([Float16, Float32, Float64], 1:3)) do (P, arity)
+                seeds = ntuple(_ -> CoDual(P(0), P(1)), arity)
+                rvs = (NoRData(), ntuple(_ -> P(0), arity)...)
+                opts = (oracle=(value=P(0), deriv=(fwd=P(0), rvs=rvs)), output_tangent=P(1))
+                return (false, :none, opts, hypot, seeds...)
+            end,
+        ),
     )
     memory = Any[]
     return test_cases, memory

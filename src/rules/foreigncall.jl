@@ -1066,5 +1066,42 @@ function throwing_rule_test_cases(::Val{:foreigncall})
             (; mode=ForwardMode),
         ),
     )
+    # Foreigncalls no rule should ever reach: each has a Julia-level rule that claims the
+    # operation earlier, so arriving at the `ccall` means the claim was lost. Both modes raise,
+    # and pinning the message keeps the diagnostic itself under test.
+    for name in [
+        :jl_alloc_array_1d,
+        :jl_alloc_array_2d,
+        :jl_alloc_array_3d,
+        :jl_new_array,
+        :jl_array_copy,
+        :jl_type_intersection,
+        :memset,
+        :jl_get_tls_world_age,
+        :memmove,
+        :jl_object_id,
+        :jl_array_sizehint,
+        :jl_array_grow_beg,
+        :jl_array_grow_end,
+        :jl_array_grow_at,
+        :jl_array_del_beg,
+        :jl_array_del_end,
+        :jl_array_del_at,
+        :jl_value_ptr,
+        :jl_threadid,
+        :memhash_seed,
+        :memhash32_seed,
+        :jl_get_field_offset,
+    ]
+        push!(
+            cases,
+            (
+                (ErrorException, "AD has hit a :($name) ccall"),
+                _foreigncall_,
+                (Val(name),),
+                (;),
+            ),
+        )
+    end
     return cases, memory
 end

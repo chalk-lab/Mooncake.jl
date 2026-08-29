@@ -34,40 +34,6 @@
         end
     end
 
-    @testset "hypot singular-point consistency across arities" begin
-        for T in (Float16, Float32, Float64)
-            x = Mooncake.lift(zero(T), one(T))
-            y = Mooncake.lift(zero(T), one(T))
-            z = Mooncake.lift(zero(T), one(T))
-
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x), 1) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y), 1) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z), 1) === zero(T)
-
-            _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
-            _, dx1 = pb1(one(T))
-            @test dx1 === zero(T)
-
-            _, pb2 = Mooncake.rrule!!(
-                zero_fcodual(hypot), zero_fcodual(zero(T)), zero_fcodual(zero(T))
-            )
-            _, dx2, dy2 = pb2(one(T))
-            @test dx2 === zero(T)
-            @test dy2 === zero(T)
-
-            _, pb3 = Mooncake.rrule!!(
-                zero_fcodual(hypot),
-                zero_fcodual(zero(T)),
-                zero_fcodual(zero(T)),
-                zero_fcodual(zero(T)),
-            )
-            _, dx3, dy3, dz3 = pb3(one(T))
-            @test dx3 === zero(T)
-            @test dy3 === zero(T)
-            @test dz3 === zero(T)
-        end
-    end
-
     @testset "fused trig forward pole guard (inactive lane stays 0, not NaN)" begin
         # `tand(90)` hits an EXACT Float64 pole: `cosd(90) == 0` (90 is representable, unlike π/2
         # in radians), so `tand(90) = Inf` and its derivative `1 + tand^2 = Inf`. The fused-family
