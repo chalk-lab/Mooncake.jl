@@ -223,53 +223,6 @@ end
     end
 end
 
-@testset "fma_float/muladd_float forward inner-value invariant under cancellation" begin
-    # The forward frule's inner NDual `.value` must equal the single-rounding primal exactly, even
-    # under cancellation where a non-fused `x*y + z` rounds twice and drifts. `test_rule`'s value
-    # check is only approximate, so it cannot express this ~1e-17 drift — hence a direct assertion.
-    a = 1.0 + 2.0^-27
-    b = a
-    z = -(a * b)
-    for f in
-        (Mooncake.IntrinsicsWrappers.fma_float, Mooncake.IntrinsicsWrappers.muladd_float)
-        slot = Mooncake.frule!!(
-            Mooncake.lift(f, Mooncake.NoTangent()),
-            Mooncake.lift(a, 1.0),
-            Mooncake.lift(b, 0.0),
-            Mooncake.lift(z, 0.0),
-        )
-        @test Mooncake.tangent(slot).value == Mooncake.primal(slot)
-    end
-end
-
-# Regression: max_float/min_float propagate NaN, but the frule selected the tangent via
-# `a > b` / `a < b`, which is false when the FIRST operand is NaN — so it picked the other, finite
-# operand's NDual, whose `.value` then diverged from the NaN primal (inner-value invariant broken).
-@static if VERSION >= v"1.12.0-rc2"
-    @testset "max_float/min_float forward inner-value invariant with NaN operand" begin
-        for f in
-            (Mooncake.IntrinsicsWrappers.max_float, Mooncake.IntrinsicsWrappers.min_float)
-            for (av, bv) in ((NaN, 1.0), (1.0, NaN))
-                slot = Mooncake.frule!!(
-                    Mooncake.lift(f, Mooncake.NoTangent()),
-                    Mooncake.lift(av, 1.0),
-                    Mooncake.lift(bv, 2.0),
-                )
-                # primal is NaN (propagated); the inner NDual .value must match it, not stay finite.
-                @test isnan(Mooncake.primal(slot))
-                @test isnan(Mooncake.tangent(slot).value)
-            end
-            # Non-NaN: value tracks the selected operand exactly, and the derivative is unchanged.
-            s = Mooncake.frule!!(
-                Mooncake.lift(f, Mooncake.NoTangent()),
-                Mooncake.lift(2.0, 1.0),
-                Mooncake.lift(1.0, 3.0),
-            )
-            @test Mooncake.tangent(s).value == Mooncake.primal(s)
-        end
-    end
-end
-
 @testset "div_float pullback keeps `d/db` in range" begin
     # Forming `d/db` as `-a/b^2` overflows the square to `Inf` (derivative 0.0 where it is
     # -1e-200) or underflows it to 0 (giving `-Inf`), once `a` and `b` are both large or both

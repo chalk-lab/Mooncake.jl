@@ -909,13 +909,19 @@ end
         ::Lifted{typeof(max_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         p = max_float(primal(a), primal(b))
-        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `max_float` propagates
-        # NaN, so when an operand is NaN `p` is NaN even though `>` may select the other, finite
-        # operand's tangent. Take that operand's partials but force the value to `p`.
+        # `a > b` answers a different question from "which operand did the primitive return":
+        # it is false when the FIRST operand is NaN, yet `max_float` returned that NaN. Ask
+        # `isequal` against the computed primal instead, as `Base.max(::NDual)` does, or the two
+        # paths hand back different partials for the same call.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p, ifelse(primal(a) > primal(b), tangent(a).partials, tangent(b).partials)
+                p,
+                ifelse(
+                    Mooncake.Nfwd._ndual_pick_max(primal(a), primal(b)),
+                    tangent(a).partials,
+                    tangent(b).partials,
+                ),
             ),
         )
     end
@@ -941,13 +947,19 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `max_float` propagates
-        # NaN, so when an operand is NaN `p` is NaN even though `>` may select the other, finite
-        # operand's tangent. Take that operand's partials but force the value to `p`.
+        # `a > b` answers a different question from "which operand did the primitive return":
+        # it is false when the FIRST operand is NaN, yet `max_float_fast` returned that NaN. Ask
+        # `isequal` against the computed primal instead, as `Base.max(::NDual)` does, or the two
+        # paths hand back different partials for the same call.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p, ifelse(primal(a) > primal(b), tangent(a).partials, tangent(b).partials)
+                p,
+                ifelse(
+                    Mooncake.Nfwd._ndual_pick_max(primal(a), primal(b)),
+                    tangent(a).partials,
+                    tangent(b).partials,
+                ),
             ),
         )
     end
@@ -971,13 +983,19 @@ end
         ::Lifted{typeof(min_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
     ) where {N,T<:IEEEFloat}
         p = min_float(primal(a), primal(b))
-        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `min_float` propagates
-        # NaN, so when an operand is NaN `p` is NaN even though `<` may select the other, finite
-        # operand's tangent. Take that operand's partials but force the value to `p`.
+        # `a < b` answers a different question from "which operand did the primitive return":
+        # it is false when the FIRST operand is NaN, yet `min_float` returned that NaN. Ask
+        # `isequal` against the computed primal instead, as `Base.min(::NDual)` does, or the two
+        # paths hand back different partials for the same call.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p, ifelse(primal(a) < primal(b), tangent(a).partials, tangent(b).partials)
+                p,
+                ifelse(
+                    Mooncake.Nfwd._ndual_pick_min(primal(a), primal(b)),
+                    tangent(a).partials,
+                    tangent(b).partials,
+                ),
             ),
         )
     end
@@ -1003,13 +1021,19 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = min_float_fast(primal(a), primal(b))
-        # Rebuild the inner NDual with `.value = p` (inner-value invariant): `min_float` propagates
-        # NaN, so when an operand is NaN `p` is NaN even though `<` may select the other, finite
-        # operand's tangent. Take that operand's partials but force the value to `p`.
+        # `a < b` answers a different question from "which operand did the primitive return":
+        # it is false when the FIRST operand is NaN, yet `min_float_fast` returned that NaN. Ask
+        # `isequal` against the computed primal instead, as `Base.min(::NDual)` does, or the two
+        # paths hand back different partials for the same call.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p, ifelse(primal(a) < primal(b), tangent(a).partials, tangent(b).partials)
+                p,
+                ifelse(
+                    Mooncake.Nfwd._ndual_pick_min(primal(a), primal(b)),
+                    tangent(a).partials,
+                    tangent(b).partials,
+                ),
             ),
         )
     end
@@ -2367,6 +2391,63 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         for P in [Float32, Float64], f in fs
             push!(test_cases, (false, :stability_and_allocs, nothing, f, P(5.0), P(4.0)))
             push!(test_cases, (false, :stability_and_allocs, nothing, f, P(2.0), P(3.1)))
+        end
+    end
+
+    # Cancellation: a single-rounding `fma` gives 5.55e-17 where a non-fused `x*y + z` rounds
+    # twice and drifts. The seeds come through the `CoDual` channel to isolate `d/da`, and the
+    # oracle's exact comparison is what separates the two forms — `test_rule`'s approximate
+    # value check cannot see a ~1e-17 difference. Forward-only: the inner-value invariant is
+    # a forward-mode property, and the reverse rule is covered by the rows above.
+    let a = 1.0 + 2.0^-27, b = 1.0 + 2.0^-27, z = -((1.0 + 2.0^-27) * (1.0 + 2.0^-27))
+        for f in (IntrinsicsWrappers.fma_float, IntrinsicsWrappers.muladd_float)
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (oracle=(value=fma(a, b, z), deriv=b), skip_reverse=true),
+                    f,
+                    CoDual(a, 1.0),
+                    CoDual(b, 0.0),
+                    CoDual(z, 0.0),
+                ),
+            )
+        end
+    end
+
+    # A select-like primitive must take the partials of the operand it actually returned.
+    # `max_float(NaN, 1.0)` is NaN, so the answer came from the FIRST operand, but `a > b` is
+    # false there and once selected `b`'s partials — a wrong derivative behind a correct value.
+    # `isequal` (the default comparator) is what compares the NaN primal at all.
+    @static if VERSION >= v"1.12.0-rc2"
+        for (f, tie_deriv) in
+            ((IntrinsicsWrappers.max_float, 1.0), (IntrinsicsWrappers.min_float, 3.0))
+            for (av, bv, want) in ((NaN, 1.0, 1.0), (1.0, NaN, 2.0))
+                push!(
+                    test_cases,
+                    (
+                        false,
+                        :none,
+                        (oracle=(value=NaN, deriv=want), skip_reverse=true),
+                        f,
+                        CoDual(av, 1.0),
+                        CoDual(bv, 2.0),
+                    ),
+                )
+            end
+            # Non-NaN: the value tracks the selected operand and its partial comes with it.
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (oracle=(value=f(2.0, 1.0), deriv=tie_deriv), skip_reverse=true),
+                    f,
+                    CoDual(2.0, 1.0),
+                    CoDual(1.0, 3.0),
+                ),
+            )
         end
     end
     return test_cases, memory
