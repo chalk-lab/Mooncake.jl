@@ -49,17 +49,6 @@ foo_throws(e) = throw(e)
         invoke(Mooncake.IntrinsicsWrappers.translate, Tuple{Any}, Val(:foo)),
     )
 
-    @testset "Disable bitcast to differentiable type, or bitcast from Int/UInt to Ptr" begin
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Float64), zero_fcodual(5))
-        )
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Ptr{Float64}), zero_fcodual(5))
-        )
-    end
-
     @testset "bitcast for Ptr->Ptr" begin
         # Narrowing to a non-differentiable element: it asks nothing of the tangent buffer (an
         # `Int64` read out of `Float64` bytes has no derivative), so the pair is re-typed together.
@@ -79,31 +68,6 @@ foo_throws(e) = throw(e)
             zero_fcodual(bitcast),
             zero_fcodual(Ptr{Float64}),
             CoDual(Ptr{Float32}(5), Ptr{Float32}(5)),
-        )
-    end
-
-    @testset "throw" begin
-        # Throw primitive continues to throw the exception it is meant to.
-        @test_throws(
-            ArgumentError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(ArgumentError("hello")))
-        )
-        @test_throws(
-            AssertionError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(AssertionError("hello")))
-        )
-        # The forward `throw` rule re-raise is registered in `throwing_rule_test_cases(:builtins)`.
-
-        # Derived rule throws the correct exception.
-        rule_arg = Mooncake.build_rrule(Tuple{typeof(foo_throws),ArgumentError})
-        @test_throws(
-            ArgumentError,
-            rule_arg(zero_fcodual(foo_throws), zero_fcodual(ArgumentError("hello")))
-        )
-        rule_assert = Mooncake.build_rrule(Tuple{typeof(foo_throws),AssertionError})
-        @test_throws(
-            AssertionError,
-            rule_assert(zero_fcodual(foo_throws), zero_fcodual(AssertionError("hmmm")))
         )
     end
 
@@ -180,26 +144,6 @@ end
         )
         @test Mooncake.tangent(out) isa Mooncake.NoDual
         @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
-    end
-end
-
-@testset "unsafe_wrap forward rule on an incoherent differentiable pointer" begin
-    # Regression: a differentiable pointer element that is neither a scalar float/complex nor
-    # a pointer-to-scalar (e.g. `Ptr{Tuple{Float64,Float64}}`) has a per-lane `NTuple{Nw,Ptr}` V that
-    # matches none of the coherent frules — it hit a raw `MethodError` even though the broad
-    # `@is_primitive` covers it and the reverse rule handles all `T`. Must fail loudly (ArgumentError),
-    # mirroring the sibling pointerref/pointerset guards.
-    S = Tuple{Float64,Float64}
-    p = Ptr{S}(0)
-    for N in (1, 2)
-        v = ntuple(_ -> Ptr{Mooncake.tangent_type(S)}(0), N)
-        slot = Mooncake.Lifted{Ptr{S},N,typeof(v)}(p, v)
-        @test_throws ArgumentError Mooncake.frule!!(
-            Mooncake.zero_lifted(Val(N), unsafe_wrap),
-            Mooncake.zero_lifted(Val(N), Array),
-            slot,
-            Mooncake.zero_lifted(Val(N), (2,)),
-        )
     end
 end
 

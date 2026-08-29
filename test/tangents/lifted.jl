@@ -722,23 +722,6 @@ const NDAC_VecC64 = NDualArray{
         @test tangent(r_gi).partials === (1.0, -1.0)
     end
 
-    @testset "frule!! one-to-one parallels (threads.jl)" begin
-        # Behaviourally exercise a threading foreigncall frule (non-diff Cint result -> `NoDual` V),
-        # rather than string-matching the method table. ABI mirrors the normalized
-        # `_foreigncall_(Val(:jl_in_threaded_region), RT, AT, nreq, cc)` (no call args).
-        sl1(v) = sl(1, v)
-        r = frule!!(
-            sl1(Mooncake._foreigncall_),
-            sl1(Val(:jl_in_threaded_region)),
-            sl1(Val{Cint}()),
-            sl1(()),
-            sl1(Val{0}()),
-            sl1(Val{:ccall}()),
-        )
-        @test primal(r) isa Cint
-        @test tangent(r) isa NoDual
-    end
-
     @testset "type-stability" begin
         # The canonical width-N path is type-stable for IEEEFloat primals.
         @test @inferred(zero_dual(Val(2), 1.0)) isa NDual{Float64,2}

@@ -398,22 +398,28 @@ end
                 sr(1), fargs...; perf_flag=:stability, is_primitive=true, mode=ReverseMode
             )
         end
-        @testset "bad rdata" begin
-            f = ToolsForRulesResources.test_bad_rdata
-            out, pb!! = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(3.0))
-            @test_throws ArgumentError pb!!(5.0)
-        end
         @testset "ZeroTangent gradient slot" begin
-            # A CRC pullback returning ZeroTangent() for a differentiable arg must apply a zero
-            # increment, not throw. Previously increment_and_get_rdata! had no ZeroTangent method.
-            f = ToolsForRulesResources.test_zerotangent
-            out, pb!! = Mooncake.rrule!!(
-                zero_fcodual(f), zero_fcodual(3.0), zero_fcodual(5.0)
+            # A CRC pullback returning `ZeroTangent()` for a differentiable argument must apply
+            # a zero increment; `increment_and_get_rdata!` used to have no method for it and
+            # threw. `y` is unused, so the zero gradient is checked here too. Reverse only:
+            # `@from_rrule` gives no forward rule.
+            test_rule(
+                sr(1),
+                ToolsForRulesResources.test_zerotangent,
+                3.0,
+                5.0;
+                mode=ReverseMode,
+                perf_flag=:none,
             )
-            @test primal(out) == 9.0
-            _, dx, dy = pb!!(1.0)
-            @test dx == 6.0        # d(x^2)/dx = 2x = 6 at x=3
-            @test iszero(dy)       # ZeroTangent slot → zero gradient, no crash
+        end
+        @testset "bad rdata" begin
+            TestUtils._test_rule_throws(
+                sr(1),
+                ToolsForRulesResources.test_bad_rdata,
+                3.0;
+                err=ArgumentError,
+                mode=ReverseMode,
+            )
         end
         @testset "forward mode only" begin
             world = Base.get_world_counter()

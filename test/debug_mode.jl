@@ -46,33 +46,6 @@
     end
 
     @testset "forward debug mode" begin
-        @testset "valid inputs pass" begin
-            # Single argument - use Float64, not π which has NoTangent
-            rule = Mooncake.build_frule(zero_dual(sin), 0.0; debug_mode=true)
-            @test rule(Mooncake.lift(sin, NoTangent()), Mooncake.lift(3.14, 1.0)) isa Lifted
-
-            # Multiple arguments
-            f_mul(x, y) = x * y
-            rule = Mooncake.build_frule(zero_dual(f_mul), 2.0, 3.0; debug_mode=true)
-            @test rule(
-                Mooncake.lift(f_mul, NoTangent()),
-                Mooncake.lift(2.0, 1.0),
-                Mooncake.lift(3.0, 0.5),
-            ) isa Lifted
-
-            # Arrays
-            h(x) = sum(x)
-            rule = Mooncake.build_frule(zero_dual(h), randn(5); debug_mode=true)
-            @test rule(Mooncake.lift(h, NoTangent()), Mooncake.lift(randn(5), randn(5))) isa
-                Lifted
-
-            # NoTangent (non-differentiable)
-            rule = Mooncake.build_frule(zero_dual(identity), 5; debug_mode=true)
-            @test rule(
-                Mooncake.lift(identity, NoTangent()), Mooncake.lift(5, NoTangent())
-            ) isa Lifted
-        end
-
         @testset "argument checking" begin
             # Mirrors the reverse analogue: `verify_args` (the signature-subtype check that runs
             # first in the DebugFRule pipeline) prevents a segfault when the call's primal types do
@@ -114,6 +87,31 @@
                 mode=ForwardMode,
                 debug_mode=true,
                 perf_flag=:none,
+            )
+
+            # More than one differentiable argument, and a non-differentiable one whose slot
+            # carries `NoDual`: both reach the wrapper differently from the scalar case above.
+            # `is_primitive=false`: the primitive here is `mul_float`, not `*`, and `identity`
+            # is derived too, so both reach the wrapper through a `DerivedFRule`.
+            Mooncake.TestUtils.test_rule(
+                sr(123456),
+                *,
+                2.0,
+                3.0;
+                mode=ForwardMode,
+                debug_mode=true,
+                perf_flag=:none,
+                is_primitive=false,
+            )
+            Mooncake.TestUtils.test_rule(
+                sr(123456),
+                identity,
+                5;
+                mode=ForwardMode,
+                debug_mode=true,
+                perf_flag=:none,
+                interface_only=true,
+                is_primitive=false,
             )
         end
     end
