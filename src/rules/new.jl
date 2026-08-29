@@ -344,27 +344,32 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)
     end
-    test_cases = vcat(specific_test_cases, general_test_cases)
-    memory = Any[]
+    # Forward `_new_` on a type whose canonical V is a dedicated container (not a struct-lift
+    # wrapper) must fail with the coherence error naming the supported primitive
+    # (`memoryrefnew` for `MemoryRef`), not a baffling MethodError from the construction.
+    # `Memory` does not exist before 1.11, so there is nothing to build there.
+    coherence_cases, coherence_memory = @static if VERSION >= v"1.11-"
+        let mem = fill!(Memory{Float64}(undef, 3), 1.0), ref = memoryref(mem)
+            Any[(
+                false,
+                :none,
+                (throws="memoryrefnew", mode=ForwardMode),
+                _new_,
+                MemoryRef{Float64},
+                zero_lifted(Val(1), ref.ptr_or_offset),
+                mem,
+            )],
+            Any[mem, ref]
+        end
+    else
+        Any[], Any[]
+    end
+    test_cases = vcat(specific_test_cases, general_test_cases, coherence_cases)
+    memory = coherence_memory
     return test_cases, memory
 end
 
 derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
 
 @static if VERSION >= v"1.11"
-    function throwing_rule_test_cases(::Val{:new})
-        # Forward `_new_` on a type whose canonical V is a dedicated container (not a
-        # struct-lift wrapper) must fail with the clear coherence error pointing at the
-        # supported primitive (`memoryrefnew` for `MemoryRef`), not a baffling MethodError
-        # from the backing construction.
-        mem = fill!(Memory{Float64}(undef, 3), 1.0)
-        ref = memoryref(mem)
-        cases = Any[(
-            "memoryrefnew",
-            _new_,
-            (MemoryRef{Float64}, zero_lifted(Val(1), ref.ptr_or_offset), mem),
-            (; mode=ForwardMode),
-        )]
-        return cases, Any[mem, ref]
-    end
 end

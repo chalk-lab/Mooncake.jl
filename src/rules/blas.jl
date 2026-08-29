@@ -3461,7 +3461,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
-    memory = Any[]
+    throwing_rows, throwing_memory = _blas_throwing_rows(P)
+    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    memory = throwing_memory
     return test_cases, memory
 end
 
@@ -3566,7 +3568,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
     return test_cases, Any[]
 end
 
-function throwing_rule_test_cases(::Val{:blas}, P::Type{<:BlasFloat})
+function _blas_throwing_rows(P::Type{<:BlasFloat})
     # What has no step: the operand's stride does NOT divide `incx`, so BLAS walks memory the
     # operand does not address. Stride 2 with `incx == 1` reads `w[1:5]` where the view holds the
     # odd entries. The divisible cases (`incx == 2` here, and the one-argument form, which passes
@@ -3635,8 +3637,5 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     end
     @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
         return derived_rule_test_cases(rng_ctor, Val(:blas), $P)
-    end
-    @eval function throwing_rule_test_cases(::Val{$(QuoteNode(sym))})
-        return throwing_rule_test_cases(Val(:blas), $P)
     end
 end

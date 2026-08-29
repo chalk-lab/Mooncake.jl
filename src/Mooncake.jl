@@ -194,19 +194,10 @@ end
 
 include("tools_for_rules.jl")
 
-"""
-    throwing_rule_test_cases(v::Val{group})
-
-Registry of rule guard cases for a test group: rule invocations that must fail loudly on
-unsupported input. Returns `(cases, memory)`, where each case is a tuple
-`(E, f, args::Tuple)`: `E` is the expected exception type, `f` the primal callable, and
-`args` the fully built argument slots — `Lifted` slots test `frule!!`, `CoDual`s test
-`rrule!!`. Slots are built by hand because guards typically reject exactly the
-non-canonical shapes the seeding utilities cannot produce. Keep pointer-backing objects
-alive in `memory`. `TestUtils.run_rule_test_cases` runs these via `@test_throws`
-alongside the group's other registries.
-"""
-throwing_rule_test_cases(::Val) = Any[], Any[]
+# A rule invocation that must fail loudly is an ordinary registry row whose `opts` carry
+# `throws`: an exception type, a message, or both. This converts the `(expectation, f, args,
+# opts)` spelling the guard cases are written in into that row shape.
+_throwing_row(case) = (false, :none, (throws=case[1], case[4]...), case[2], case[3]...)
 
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")

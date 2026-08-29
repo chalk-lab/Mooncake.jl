@@ -914,7 +914,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
         (
             # A lane of the element-major block is stride-`N`, so no dense per-lane buffer exists
             # for a raw pointer to address above width 1; the frule throws there (covered by
-            # `throwing_rule_test_cases(::Val{:foreigncall})`). The width-1 path is correct.
+            # the `:foreigncall` guard rows). The width-1 path is correct.
             true,
             :none,
             (skip_chunked=true,),

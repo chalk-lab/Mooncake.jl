@@ -10,7 +10,7 @@ using Mooncake.TestUtils:
     test_tangent_interface,
     test_tangent_splitting,
     test_rule,
-    test_rule_throws,
+    _test_rule_throws,
     test_frule_interface,
     test_rrule_interface
 using LinearAlgebra, Statistics
@@ -2556,7 +2556,7 @@ end
                     (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
                 ),
             ]
-                test_rule_throws(StableRNG(seed), f, args...; kw...)
+                _test_rule_throws(StableRNG(seed), f, args...; kw...)
             end
         end
 

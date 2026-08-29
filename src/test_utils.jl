@@ -1602,7 +1602,17 @@ function test_rule(
     skip_chunked::Bool=false,
     fwd_allocs_broken::Bool=false,
     oracle=nothing,
+    throws=nothing,
+    chunk_size::Int=1,
+    primal_throws::Bool=false,
 )
+    # A case that must fail loudly asserts the raise instead of the correctness battery. The
+    # rule is built inside the assertion because some of these throw at build time.
+    if !isnothing(throws)
+        err, msg = _throwing_case_expectation(throws)
+        return _test_rule_throws(rng, x...; err, msg, mode, primal=primal_throws, chunk_size)
+    end
+
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
 
@@ -1738,12 +1748,18 @@ end
 # A case whose derivative finite differences cannot pin carries its reference in `oracle`
 # (see `test_frule_oracle`); a reverse `oracle` with a `deriv` also needs `output_tangent`.
 _case_oracle(opts) = opts isa NamedTuple ? get(opts, :oracle, nothing) : nothing
+# A row carrying `throws` runs through `_test_rule_throws` instead of the correctness battery;
+# `mode` restricts it to one mode, and `chunk_size` picks the width its trigger needs.
+_case_throws(opts) = opts isa NamedTuple ? get(opts, :throws, nothing) : nothing
+_case_mode(opts) = opts isa NamedTuple ? get(opts, :mode, nothing) : nothing
+_case_chunk_size(opts) = opts isa NamedTuple ? get(opts, :chunk_size, 1) : 1
+_case_primal_throws(opts) = opts isa NamedTuple ? get(opts, :primal, false) : false
 function _case_output_tangent(opts)
     opts isa NamedTuple ? get(opts, :output_tangent, nothing) : nothing
 end
 
 """
-    test_rule_throws(
+    _test_rule_throws(
         rng::AbstractRNG, f, x...;
         err::Union{Nothing,Type}=nothing,
         msg::Union{Nothing,AbstractString,Regex}=nothing,
@@ -1781,7 +1797,13 @@ _throws_slot(rng::AbstractRNG, ::Val{N}, x) where {N} = randn_lifted(Val(N), rng
 _throws_primal(x::Lifted) = primal(x)
 _throws_primal(x) = x
 
-function test_rule_throws(
+# A `throws` expectation is an exception type, a message, or both. Pinning both is what
+# `@test_throws` cannot express, and it keeps the diagnostic itself under test.
+_throwing_case_expectation(E::Type) = (E, nothing)
+_throwing_case_expectation(msg::Union{AbstractString,Regex}) = (nothing, msg)
+_throwing_case_expectation(E::Tuple{Type,Union{AbstractString,Regex}}) = E
+
+function _test_rule_throws(
     rng::AbstractRNG,
     f,
     x...;
@@ -1794,7 +1816,7 @@ function test_rule_throws(
     if isnothing(err) && isnothing(msg)
         throw(
             ArgumentError(
-                "test_rule_throws needs `err`, `msg`, or both: with neither it would only " *
+                "_test_rule_throws needs `err`, `msg`, or both: with neither it would only " *
                 "assert that something was thrown.",
             ),
         )
@@ -1869,6 +1891,8 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 
         mode === ForwardMode && _case_skip_forward(opts) && continue
         mode === ReverseMode && _case_skip_reverse(opts) && continue
+        case_mode = _case_mode(opts)
+        isnothing(case_mode) || case_mode === mode || continue
         skip_chunked = _case_skip_chunked(opts)
         fwd_allocs_broken = _case_fwd_allocs_broken(opts)
         test_rule(
@@ -1883,6 +1907,9 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
             fwd_allocs_broken,
             oracle=_case_oracle(opts),
             output_tangent=_case_output_tangent(opts),
+            throws=_case_throws(opts),
+            chunk_size=_case_chunk_size(opts),
+            primal_throws=_case_primal_throws(opts),
         )
     end
 end
@@ -1893,38 +1920,6 @@ function run_rule_test_cases(rng_ctor, v::Val, mode=nothing)
         (_filter === nothing || _filter === m) || continue
         run_rule_test_cases(rng_ctor, v, m, false)
         run_rule_test_cases(rng_ctor, v, m, true)
-    end
-    run_throwing_rule_test_cases(v)
-    return nothing
-end
-
-# Guard cases registered via `Mooncake.throwing_rule_test_cases`: each rule invocation must
-# throw the registered exception. The slot kind picks the rule family: `Lifted` args test
-# `frule!!` (the function slot is built at the args' width), `CoDual`s test `rrule!!`.
-#
-# Registered slots are hand-built because these guards fire only for a specific slot shape or
-# chunk width that seeding cannot produce — an incoherent per-lane `Ptr` V, or a width-2 dual with
-# no dense per-lane buffer. Where a guard *is* reachable from ordinary seeds, call
-# `test_rule_throws` directly instead. Both paths assert through `_test_throws`, so a registered
-# case can pin the exception type, the message, or both, exactly as `test_rule_throws` does.
-#
-# A case is `(expectation, f, args, opts::NamedTuple)` and runs through `test_rule_throws`. An
-# argument is a primal value, seeded by the helper, or a ready-made `Lifted` slot where seeding
-# cannot express the trigger; `opts` carries what seeding cannot infer (`mode`, `chunk_size`).
-# The expectation is a type (pin the exception), a string/regex (pin the `showerror` text), or
-# a `(type, message)` tuple (pin both — what a bare `@test_throws` cannot do).
-_throwing_case_expectation(E::Type) = (E, nothing)
-_throwing_case_expectation(msg::Union{AbstractString,Regex}) = (nothing, msg)
-_throwing_case_expectation(E::Tuple{Type,Union{AbstractString,Regex}}) = E
-
-function run_throwing_rule_test_cases(v::Val)
-    cases, memory = test_hook(Mooncake.throwing_rule_test_cases, v) do
-        Mooncake.throwing_rule_test_cases(v)
-    end
-    GC.@preserve memory @testset "throws $(case[1]): $(case[2])" for case in cases
-        E, f, args = case[1], case[2], case[3]
-        err, msg = _throwing_case_expectation(E)
-        test_rule_throws(Xoshiro(123456), f, args...; err, msg, case[4]...)
     end
     return nothing
 end

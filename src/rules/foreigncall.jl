@@ -769,8 +769,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, "5", UInt(3)),
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
+        # A threading foreigncall whose result is a non-differentiable `Cint`: its V must be
+        # `NoDual`. The ABI mirrors the normalized call, which carries no call arguments.
+        # Forward only: reverse refuses these outright, which the throwing case below pins.
+        (
+            false,
+            :none,
+            (skip_reverse=true,),
+            _foreigncall_,
+            Val(:jl_in_threaded_region),
+            Val{Cint}(),
+            (),
+            Val{0}(),
+            Val{:ccall}(),
+        ),
     ]
-    memory = Any[_x, _dx, _a, _da, _b, _db]
+    throwing_rows, throwing_memory = _foreigncall_throwing_rows()
+    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    memory = vcat(Any[_x, _dx, _a, _da, _b, _db], throwing_memory)
     return test_cases, memory
 end
 
@@ -933,7 +949,7 @@ mutable struct MismatchedLayout
     b::Float64
 end
 
-function throwing_rule_test_cases(::Val{:foreigncall})
+function _foreigncall_throwing_rows()
     # pointer_from_objref of a value whose forward V is immutable but differentiable
     # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
     # emit NULL lanes that silently drop the derivative downstream.
@@ -1069,6 +1085,17 @@ function throwing_rule_test_cases(::Val{:foreigncall})
     # Foreigncalls no rule should ever reach: each has a Julia-level rule that claims the
     # operation earlier, so arriving at the `ccall` means the claim was lost. Both modes raise,
     # and pinning the message keeps the diagnostic itself under test.
+    # Reverse mode refuses to differentiate through threading rather than returning a wrong
+    # gradient. Nothing exercised that refusal until the forward case above was registered.
+    push!(
+        cases,
+        (
+            (ErrorException, "Differentiating through threading is not safe"),
+            _foreigncall_,
+            (Val(:jl_in_threaded_region), Val{Cint}(), (), Val{0}(), Val{:ccall}()),
+            (; mode=ReverseMode),
+        ),
+    )
     for name in [
         :jl_alloc_array_1d,
         :jl_alloc_array_2d,

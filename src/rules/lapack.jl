@@ -984,22 +984,6 @@ end
 
 # `getrf!`'s derivative is derived for a square factor, so every rectangular shape must refuse. A
 # tall `A` gathered the row permutation out of range under `@inbounds` and segfaulted instead.
-function throwing_rule_test_cases(::Val{:lapack})
-    tall = Float64[1 1 1; 1 2 1; 1 1 3; 1 1 1; 9 1 1]
-    wide = collect(transpose(tall))
-    # Forward only: the reverse leg drives the primal through `value_and_gradient!!`, which refuses
-    # `getrf!`'s tuple return before any rule runs. Reverse refuses at `UnitLowerTriangular`.
-    cases = Any[
-        (
-            (DimensionMismatch, "matrix is not square"),
-            LAPACK.getrf!,
-            (A,),
-            (; mode=ForwardMode),
-        ) for A in (tall, wide)
-    ]
-    return cases, Any[tall, wide]
-end
-
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
@@ -1173,7 +1157,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
-    memory = Any[]
+    # `getrf!` must refuse a non-square matrix. Forward only: the reverse leg drives the primal
+    # through `value_and_gradient!!`, which refuses `getrf!`'s tuple return before any rule runs.
+    tall = Float64[1 1 1; 1 2 1; 1 1 3; 1 1 1; 9 1 1]
+    wide = collect(transpose(tall))
+    # `vcat` above types the opts slot from rows that all carry `nothing`, so a row with a
+    # `NamedTuple` there needs an `Any` element type rather than `push!`.
+    test_cases = vcat(
+        Any[test_cases...],
+        Any[
+            (
+                false,
+                :none,
+                (throws=(DimensionMismatch, "matrix is not square"), mode=ForwardMode),
+                LAPACK.getrf!,
+                A,
+            ) for A in (tall, wide)
+        ],
+    )
+    memory = Any[tall, wide]
     return test_cases, memory
 end
 

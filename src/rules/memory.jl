@@ -1712,7 +1712,23 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 2), 3), x),
         (false, :none, nothing, x -> unsafe_copyto!(memoryref(x), memoryref(x, 4), 3), x),
     ]
-    memory = Any[]
+    # A `memoryref` reaching past the partials block must refuse rather than read slack.
+    slack_v = Float64[]
+    sizehint!(slack_v, 16)
+    for i in 1:3
+        push!(slack_v, Float64(i))
+    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (throws=(ArgumentError, "past the 3 partials columns"), mode=ForwardMode),
+            memoryref_into_capacity_slack,
+            slack_v,
+        ),
+    )
+    memory = Any[slack_v]
     return test_cases, memory
 end
 
@@ -1722,20 +1738,5 @@ end
     # The primal read is legal there (uninitialised capacity); the block read would not be.
     function memoryref_into_capacity_slack(v)
         return Core.memoryrefget(Core.memoryrefnew(getfield(v, :ref), 5), :not_atomic, true)
-    end
-
-    function throwing_rule_test_cases(::Val{:memory})
-        v = Float64[]
-        sizehint!(v, 16)
-        for i in 1:3
-            push!(v, Float64(i))
-        end
-        return Any[(
-            (ArgumentError, "past the 3 partials columns"),
-            memoryref_into_capacity_slack,
-            (v,),
-            (; mode=ForwardMode),
-        )],
-        Any[v]
     end
 end

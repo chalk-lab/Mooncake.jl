@@ -2450,6 +2450,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             )
         end
     end
+    throwing_rows, throwing_memory = _builtins_throwing_rows()
+    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    memory = vcat(Any[memory...], throwing_memory)
     return test_cases, memory
 end
 
@@ -2600,7 +2603,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     return test_cases, Any[]
 end
 
-function throwing_rule_test_cases(::Val{:builtins})
+function _builtins_throwing_rows()
     # atomic_pointerset through a differentiable element with an element-wise (incoherent)
     # per-lane V must hit the loud guard, mirroring pointerset.
     xv = [1.0]
@@ -2615,6 +2618,16 @@ function throwing_rule_test_cases(::Val{:builtins})
     # wrapped array's partial read back as the primal's value and `x * unsafe_wrap(...)` returned
     # `dx*w + x*w`. A ready-made slot because seeding a `Ptr` cannot produce a placeholder.
     phslot = Lifted{Ptr{Float64},1}(ptr, (ptr,))
+    rethrows_its_argument(e) = throw(e)
+    # A differentiable pointer element that is neither a scalar float/complex nor a
+    # pointer-to-scalar has a per-lane `NTuple{Nw,Ptr}` V matching none of the coherent frules.
+    # The broad `@is_primitive` covers it and the reverse rule handles every `T`, so it must fail
+    # loudly rather than reach a raw `MethodError`, as the pointerref/pointerset guards do.
+    incoherent_slots = map((1, 2)) do N
+        S = Tuple{Float64,Float64}
+        v = ntuple(_ -> Ptr{Mooncake.tangent_type(S)}(0), N)
+        return (N, Lifted{Ptr{S},N,typeof(v)}(Ptr{S}(0), v))
+    end
     # Reverse: an atomic load through a pointer re-typed off a non-differentiable buffer has a NULL
     # tangent pointer, and dereferencing it segfaulted before the atomic rules carried the guard
     # their non-atomic siblings already had. `Vector{UInt8}` rather than `Memory{UInt8}` so the case
@@ -2722,8 +2735,15 @@ function throwing_rule_test_cases(::Val{:builtins})
             (; mode=ForwardMode),
         ),
         # Forward `throw` rule must re-raise (the reverse rule is covered by the `throw` rrule cases).
-        (ArgumentError, throw, (ArgumentError("hello"),), (; mode=ForwardMode)),
-        (AssertionError, throw, (AssertionError("hello"),), (; mode=ForwardMode)),
+        (ArgumentError, throw, (ArgumentError("hello"),), (;)),
+        (AssertionError, throw, (AssertionError("hello"),), (;)),
+        # A DERIVED rule must re-raise what the primal threw, not just the primitive.
+        (ArgumentError, rethrows_its_argument, (ArgumentError("hello"),), (;)),
+        (AssertionError, rethrows_its_argument, (AssertionError("hmmm"),), (;)),
+        # `bitcast` to a differentiable type, and an integer reinterpreted as a pointer: neither
+        # has a tangent that means anything, so both must refuse.
+        (ArgumentError, IntrinsicsWrappers.bitcast, (Float64, 5), (;)),
+        (ArgumentError, IntrinsicsWrappers.bitcast, (Ptr{Float64}, 5), (;)),
     ]
     # Refused at the re-typing itself, so both run on every version. They used to depend on the
     # `Memory` NULL tangent-pointer sentinel, which exists only on 1.11+; on 1.10 the tangent pointer
@@ -2758,5 +2778,16 @@ function throwing_rule_test_cases(::Val{:builtins})
             (; mode=ReverseMode),
         ),
     )
+    for (N, slot) in incoherent_slots
+        push!(
+            cases,
+            (
+                ArgumentError,
+                unsafe_wrap,
+                (Array, slot, (2,)),
+                (; mode=ForwardMode, chunk_size=N),
+            ),
+        )
+    end
     return cases, Any[xv]
 end
