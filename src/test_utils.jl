@@ -752,9 +752,30 @@ the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
 function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
     c = IdDict{Any,Any}()
     return Mooncake.tuple_map(x) do z
-        z isa CoDual && return lift(primal(z), tangent(z))
-        return Lifted{typeof(z),N}(z, Mooncake._randn_dual_internal(Val(N), rng, z, c))
+        if z isa CoDual
+            pinned = _pin_lanes(Val(N), z)
+            isnothing(pinned) || return pinned
+        end
+        p = z isa CoDual ? primal(z) : z
+        return Lifted{typeof(p),N}(p, Mooncake._randn_dual_internal(Val(N), rng, p, c))
     end
+end
+
+# Give every lane the pinned tangent, so a case that deliberately pins a ZERO derivative --
+# `dα = 0` in the BLAS rows, which exist to reach the rules' masked-lane branches -- still
+# reaches those branches above width 1. A random seed never lands on exactly zero. Only scalar
+# tangents are replicated: there is no width-parameterised `lift`, so other shapes keep the
+# random seed and their pinned value is still only honoured at width 1.
+_pin_lanes(::Val{N}, z::CoDual) where {N} = _pin_lanes(Val(N), primal(z), tangent(z))
+_pin_lanes(::Val{N}, ::Any, ::Any) where {N} = nothing
+function _pin_lanes(::Val{1}, p, t)
+    return lift(p, t)
+end
+function _pin_lanes(::Val{N}, p::P, t::P) where {N,P<:Base.IEEEFloat}
+    return Lifted{P,N}(p, Mooncake.Nfwd.NDual{P,N}(p, ntuple(_ -> t, Val(N))))
+end
+function _pin_lanes(::Val{1}, p::P, t::P) where {P<:Base.IEEEFloat}
+    return lift(p, t)
 end
 
 function test_frule(
@@ -805,7 +826,7 @@ function test_frule(
     interp = get_interpreter(ForwardMode)
     for N in chunked_widths
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
-        seeds = _seed_lifteds(Val(N), rng, _deepcopy_all(base))
+        seeds = _seed_lifteds(Val(N), rng, _deepcopy_all(x))
         # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
         # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
         # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
