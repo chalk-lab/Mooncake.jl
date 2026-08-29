@@ -746,6 +746,17 @@ primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-l
 gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
 the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
 """
+# Seed an argument tuple for a forward rule: a `CoDual` argument carries its pinned tangent
+# across the bridge, everything else is seeded through ONE cache so aliased arguments share
+# their partial storage.
+function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
+    c = IdDict{Any,Any}()
+    return Mooncake.tuple_map(x) do z
+        z isa CoDual && return lift(primal(z), tangent(z))
+        return Lifted{typeof(z),N}(z, Mooncake._randn_dual_internal(Val(N), rng, z, c))
+    end
+end
+
 function test_frule(
     rng::AbstractRNG,
     x::Vararg{Any,P};
@@ -767,10 +778,9 @@ function test_frule(
     # Width-1 battery. The seeds are shared across the four checks; `CoDual`-supplied args carry
     # their tangent across the bridge, everything else gets a random width-1 seed.
     if 1 in widths
-        x_ẋ = map(
-            z -> z isa CoDual ? lift(primal(z), tangent(z)) : randn_lifted(Val(1), rng, z),
-            x,
-        )
+        # One cache across the tuple: seeding each argument separately gives two arguments over
+        # one array independent partials, so an aliasing rule could not be tested at all.
+        x_ẋ = _seed_lifteds(Val(1), rng, x)
         interface_only || test_frule_reuse(x_ẋ...; frule)
         test_frule_interface(x_ẋ...; frule, is_primitive)
         if !interface_only
@@ -795,7 +805,7 @@ function test_frule(
     interp = get_interpreter(ForwardMode)
     for N in chunked_widths
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
-        seeds = map(p -> randn_lifted(Val(N), rng, p), _deepcopy_all(base))
+        seeds = _seed_lifteds(Val(N), rng, _deepcopy_all(base))
         # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
         # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
         # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
@@ -850,9 +860,19 @@ function test_rrule(
     oracle=nothing,
 ) where {P}
     @nospecialize rng x
-    x_x̄ = map(
-        z -> z isa CoDual ? z : (interface_only ? uninit_codual(z) : zero_codual(z)), x
-    )
+    # One cache across the tuple, mirroring `__create_coduals`: seeding each argument
+    # separately gives two arguments over one array independent fdata, which breaks the
+    # aliasing invariant the rules rely on and makes an aliasing rule untestable.
+    x_x̄ = let c = Mooncake._friendly_cache(x)
+        Mooncake.tuple_map(x) do z
+            z isa CoDual && return z
+            return if interface_only
+                uninit_codual(z)
+            else
+                Mooncake._zero_codual_cached(z, c)
+            end
+        end
+    end
     # Isolated rng for reuse so it does not perturb correctness's rng state.
     interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
     test_rrule_interface(x_x̄...; rrule)
@@ -1610,7 +1630,9 @@ function test_rule(
     # rule is built inside the assertion because some of these throw at build time.
     if !isnothing(throws)
         err, msg = _throwing_case_expectation(throws)
-        return _test_rule_throws(rng, x...; err, msg, mode, primal=primal_throws, chunk_size)
+        return _test_rule_throws(
+            rng, x...; err, msg, mode, primal=primal_throws, chunk_size
+        )
     end
 
     # Take a copy of `x` to ensure that we do not mutate the original.

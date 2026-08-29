@@ -2600,6 +2600,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0, 6.0], [1, 2, 2]),
     ]
+    # The same array passed twice: the gradient is `2x`, which only comes out if both
+    # arguments share one tangent. Seeding arguments independently makes the aliasing
+    # invisible to the test, so this is what keeps the shared seeding cache honest.
+    let x = randn(rng_ctor(1), 3)
+        push!(test_cases, (false, :none, nothing, (a, b) -> sum(a .* b), x, x))
+    end
     return test_cases, Any[]
 end
 
