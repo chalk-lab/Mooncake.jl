@@ -94,6 +94,11 @@
     # Regression: the REVERSE llvm.powi pullback must apply the same zero-cotangent guard, so a
     # zero incoming cotangent yields an exact 0 even where grad is ±Inf (x=0, negative exponent).
     # Unguarded `grad * dy` gave `Inf * 0 = NaN`.
+    #
+    # Not a registry row: the hand-built llvmcall argument list is not one the interpreter ever
+    # produces, and its pullback returns eight cotangents for nine arguments, so the registry's
+    # interface check rejects it. Reaching the pole needs that synthetic call; ordinary `x^n`
+    # traffic is covered by the derived cases.
     @testset "llvm.powi reverse zero-cotangent guard at x=0 negative exponent" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")

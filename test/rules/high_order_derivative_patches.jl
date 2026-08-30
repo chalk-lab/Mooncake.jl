@@ -184,8 +184,12 @@ end
 
 @testset "get_inner_rrule is forward-over-reverse only" begin
     for_rule = Mooncake.compile_for_rule(x -> sum(x .* x), [1.0, 2.0])
-    @test_throws "forward-over-reverse only" Mooncake.rrule!!(
-        zero_fcodual(Mooncake.get_inner_rrule), zero_fcodual(for_rule)
+    test_rule(
+        sr(1),
+        Mooncake.get_inner_rrule,
+        for_rule;
+        throws="forward-over-reverse only",
+        mode=ReverseMode,
     )
 end
 
