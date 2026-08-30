@@ -3,6 +3,10 @@ struct _RefCaptureWrap{F}
 end
 (w::_RefCaptureWrap)(x) = w.f(x)
 Mooncake.tangent_type(::Type{<:_RefCaptureWrap}) = Mooncake.NoTangent
+
+const _EMPTY_FDATA_EXCEPTION = ErrorException("x")
+_throw_empty_fdata_exception(x) = x < 0 ? throw(_EMPTY_FDATA_EXCEPTION) : x^2
+
 function _compute_grad(rule, f, x::Vector{Float64}, x_fdata::Vector{Float64})
     fill!(x_fdata, 0.0)
     _, pb!! = rule(zero_fcodual(f), CoDual(x, x_fdata))
@@ -190,6 +194,12 @@ end
 end
 
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "captured constant with empty structural fdata" begin
+        # The closure-captured variant follows a separate failing path tracked in #1286.
+        f = _throw_empty_fdata_exception
+        @test value_and_hvp!!(prepare_hvp_cache(f, 1.0), f, 1.0, 1.0) == (1.0, 2.0, 2.0)
+    end
+
     @testset "gradient correctness for x^4" begin
         f(x) = x[1]^4.0
         x = [2.0]

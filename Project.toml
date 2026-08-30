@@ -1,7 +1,7 @@
 name = "Mooncake"
 uuid = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
 authors = ["Will Tebbutt, Hong Ge, and contributors"]
-version = "0.5.49"
+version = "0.5.50"
 
 [deps]
 ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
@@ -43,7 +43,6 @@ MooncakeCUDAExt = ["CUDA", "Statistics"]
 MooncakeChainRulesExt = "ChainRules"
 MooncakecuDNNExt = ["CUDA", "cuDNN"]
 MooncakeDistancesExt = "Distances"
-MooncakeDistributionsCUDAExt = ["CUDA", "Distributions"]
 MooncakeDistributionsExt = "Distributions"
 MooncakeDynamicExpressionsExt = "DynamicExpressions"
 MooncakeFluxExt = "Flux"
