@@ -662,10 +662,12 @@ const GPUFastActivation = Union{typeof(tanh),typeof(tanh_fast)}
     typeof(bias_act!),GPUFastActivation,AbstractGPUArray{P},AbstractGPUArray{P}
 } where {P<:IEEEFloat}
 
-@inline function _bias_act_derivative(activation::GPUFastActivation, x)
-    y = NNlib.fast_act(activation)(x)
-    return one(y) - y^2
+@inline function _tanh_fast_derivative(x)
+    u = exp(-2 * abs(x))
+    return 4u / (one(x) + u)^2
 end
+
+@inline _bias_act_derivative(::GPUFastActivation, x) = _tanh_fast_derivative(x)
 
 function frule!!(
     ::Dual{typeof(bias_act!)},
@@ -755,13 +757,11 @@ end
 # once `tanh(x)` rounds to `1.0` (Float64 `|x| ≳ 19.5`, Float32 `≳ 9`).
 @is_primitive MinimalCtx Tuple{typeof(tanh_fast),P} where {P<:IEEEFloat}
 function Mooncake.frule!!(::Dual{typeof(tanh_fast)}, x::Dual{P}) where {P<:IEEEFloat}
-    u = exp(-2 * abs(primal(x)))
-    d = 4u / (one(P) + u)^2
+    d = _tanh_fast_derivative(primal(x))
     return Dual(tanh_fast(primal(x)), tangent(x) * d)
 end
 function Mooncake.rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
-    u = exp(-2 * abs(primal(x)))
-    d = 4u / (one(P) + u)^2
+    d = _tanh_fast_derivative(primal(x))
     tanh_fast_pb!!(dΩ::P) = NoRData(), dΩ * d
     return zero_fcodual(tanh_fast(primal(x))), tanh_fast_pb!!
 end

@@ -568,6 +568,38 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
     end
 end
 
+if cuda
+    @testset "saturated GPU bias activations" begin
+        ref = 4 * exp(-40.0f0) / (1 + exp(-40.0f0))^2
+        for activation in (tanh, tanh_fast)
+            x = CUDA.fill(20.0f0, 1)
+            b = CUDA.zeros(Float32, 1)
+            out = Mooncake.frule!!(
+                Mooncake.zero_dual(bias_act!),
+                Mooncake.zero_dual(activation),
+                Mooncake.Dual(x, CUDA.ones(Float32, 1)),
+                Mooncake.Dual(b, CUDA.zeros(Float32, 1)),
+            )
+            @test only(Array(Mooncake.tangent(out))) ≈ ref
+
+            x = CUDA.fill(20.0f0, 1)
+            dx = CUDA.zeros(Float32, 1)
+            b = CUDA.zeros(Float32, 1)
+            db = CUDA.zeros(Float32, 1)
+            out, pullback = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(bias_act!),
+                Mooncake.zero_fcodual(activation),
+                Mooncake.CoDual(x, dx),
+                Mooncake.CoDual(b, db),
+            )
+            fill!(Mooncake.tangent(out), 1)
+            pullback(Mooncake.NoRData())
+            @test only(Array(dx)) ≈ ref
+            @test only(Array(db)) ≈ ref
+        end
+    end
+end
+
 # Testing arrayify for general adjoint, transpose types (LinearAlgebra.jl, NNlib.jl etc)
 @testset "arrayify wrapper tests" begin
     rng = StableRNG(123)
