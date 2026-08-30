@@ -874,7 +874,7 @@ IDInstPair[
 """
 function shared_data_stmts(p::SharedDataPairs, zero_coduals::Bool=false)::Vector{IDInstPair}
     return map(enumerate(p.pairs)) do (n, pair)
-        getter = if zero_coduals && pair[2] isa CoDual && !(tangent(pair[2]) isa NoFData)
+        getter = if zero_coduals && pair[2] isa CoDual && _may_have_fdata(tangent(pair[2]))
             get_zeroed_shared_data_field
         else
             get_shared_data_field
