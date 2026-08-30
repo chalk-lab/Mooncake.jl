@@ -59,50 +59,6 @@ end
 #
 
 const _gpu_enabled = true
-const _gpu_disabled = false
-
-# ── GPU AD status notes ──────────────────────────────────────────────────────────────
-#
-# When Mooncake lacks an explicit rule for a GPU operation, it falls back to
-# differentiating CUDA kernel via a forward-mode (chunked) broadcast
-# using NDual{T,N} dual numbers inside GPU kernels.  N = total real DOFs across all
-# broadcast inputs (1 per Float arg, 2 per Complex arg).  This works for pure
-# element-wise Julia functions, but has two important limitations:
-#
-#   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
-#      explicit rules:
-#        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
-#        • Base.permutedims(::CuArray) — called by LuxLib.batched_matmul in the
-#          MultiHeadAttention path; needs an explicit rule
-#      Fix: add an rrule!! or @zero_derivative for the operator (see fill!,
-#      unsafe_copyto! in MooncakeCUDAExt.jl for the pattern).
-#
-#   2. PERFORMANCE — forward-mode broadcast is essentially chunked forward-mode AD:
-#      it requires one GPU kernel launch per output DOF.  For models with many
-#      parameters, this scales as O(params) in memory and time, which is prohibitive
-#      for large models even when it compiles.  Fix: add reverse-mode rrule!! so
-#      Mooncake runs a single backward pass regardless of parameter count.
-#
-#   3. CPU/GPU TANGENT MISMATCH (Flux-specific) — Flux stores weights directly as
-#      struct type parameters, e.g. Dense{identity, Matrix{Float32}, Vector{Float32}}.
-#      gpu() replaces the runtime values, but the static type params remain Matrix{Float32}.
-#      Mooncake computes tangent_type from static types, so weight tangents are
-#      Matrix{Float32} (CPU).  During test_rule, the perturbed primal is reconstructed
-#      as (primal + tangent), giving a Dense with a CPU weight matrix that is then
-#      called on a GPU input:
-#
-#        Dense(gpu_x)
-#          → weight * gpu_x                               ← Matrix{Float32} × CuArray
-#            → BLAS.gemm!(A::Matrix{Float32}, B::CuArray) ← mixed CPU/GPU
-#              → unsafe_convert(Ptr{Float32}, CuArray)    ← ILLEGAL: DeviceMemory has no CPU ptr
-#
-#      Lux avoids this because parameters live in a separate `ps` NamedTuple that is
-#      explicitly moved to the GPU, so tangent_type(CuArray) = CuArray fires correctly.
-#      Fix: Mooncake would need a Flux-aware rule for Dense/MHA that keeps tangents on GPU,
-#      or Flux would need to update struct type params on gpu() (an Adapt.jl issue).
-#
-# Models marked _gpu_disabled fall into one or more of the above categories.
-# ─────────────────────────────────────────────────────────────────────────────────────
 
 # Tuple format: (gpu_supported, model, input, name)
 const TEST_MODELS = [
@@ -193,6 +149,53 @@ const TEST_MODELS = [
     ),
 ]
 
+primitive_cases = (
+    (Flux.Scale([1.0f0 2 3 4], true), randn(Float32, 2, 1, 3)),
+    (Flux.Scale([1.0f0 2 3 4], true, abs2), randn(Float32, 2, 1, 3)),
+    (LayerNorm((2, 4)), randn(Float32, 2, 4, 3)),
+    (Dense(2 => 4), randn(Float32, 2, 3)),
+    (Dense(2 => 4), randn(Float32, 2, 3, 2)),
+    (Dense(2 => 4, tanh), randn(Float32, 2, 3)),
+    (Dense(zeros(Float32, 4, 2), fill(20.0f0, 4), tanh), randn(Float32, 2, 3)),
+    (Conv((3,), 2 => 3), randn(Float32, 5, 2, 2)),
+    (Conv((3, 3), 2 => 3, tanh), randn(Float32, 5, 5, 2, 2)),
+    (
+        Conv((2, 3), 4 => 6; groups=2, stride=(2, 1), pad=(1, 0, 2, 1), dilation=(1, 2)),
+        randn(Float32, 8, 9, 4, 2),
+    ),
+    (ConvTranspose((3,), 3 => 2; stride=2), randn(Float32, 5, 3, 2)),
+    (
+        ConvTranspose(
+            (2, 3),
+            4 => 6;
+            groups=2,
+            stride=(2, 1),
+            pad=(1, 0, 2, 1),
+            outpad=(1, 0),
+            dilation=(1, 2),
+        ),
+        randn(Float32, 8, 9, 4, 2),
+    ),
+    (MeanPool((3,); pad=SamePad()), randn(Float32, 5, 2, 2)),
+)
+
+@testset "Flux layer rules" for (layer, x) in primitive_cases
+    Mooncake.TestUtils.test_rule(
+        StableRNG(123), layer, x; is_primitive=true, unsafe_perturb=true
+    )
+end
+
+mse_inputs = (randn(Float32, 2, 3), randn(Float32, 2, 3))
+@testset "Flux.Losses.mse" begin
+    Mooncake.TestUtils.test_rule(
+        StableRNG(123),
+        Flux.Losses.mse,
+        mse_inputs...;
+        is_primitive=true,
+        unsafe_perturb=true,
+    )
+end
+
 # We only check that the gradient runs (interface_only=true), not correctness
 # against a reference. Correctness is tested separately in Flux's own test suite.
 @testset "mooncake gradient" begin
@@ -213,10 +216,25 @@ const TEST_MODELS = [
 end
 
 if CUDA.functional()
+    @testset "Flux layer rules (GPU)" for (layer, x) in primitive_cases
+        Mooncake.TestUtils.test_rule(
+            StableRNG(123), gpu(layer), cu(x); is_primitive=true, unsafe_perturb=true
+        )
+    end
+
+    @testset "Flux.Losses.mse (GPU)" begin
+        Mooncake.TestUtils.test_rule(
+            StableRNG(123),
+            Flux.Losses.mse,
+            cu.(mse_inputs)...;
+            is_primitive=true,
+            unsafe_perturb=true,
+        )
+    end
+
     @testset "mooncake gradient (GPU)" begin
         for (gpu_supported, model, x, name) in TEST_MODELS
             gpu_supported || continue  # GPU support not yet implemented
-            eltype(x) == Float64 && continue  # Float64 CuArrays not supported
             @testset "grad check $name" begin
                 @info "[GPU] testing $name"
                 gpu_model = gpu(model)
