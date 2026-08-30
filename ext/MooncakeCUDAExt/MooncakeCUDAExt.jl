@@ -2153,7 +2153,7 @@ function _gpu_sum_f_frule(f, x)
     flat_pargs = (flat_px,)
     flat_tangents = (flat_dx,)
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out)
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
         _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
     else
@@ -2169,11 +2169,10 @@ function _gpu_sum_f_rrule(f, x)
     flat_pargs = (flat_px,)
     flat_fdatas = (flat_dx,)
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, flat_pargs; extract_partials=true)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out)
     function sum_f_pb!!(dy)
-        isnothing(decoded.partial_slots) || _gpu_accumulate_reduced_pullback!(
-            flat_pargs, flat_fdatas, decoded.partial_slots, dy
-        )
+        decoded.is_diff &&
+            _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, out, dy)
         return NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(decoded.primal_out), sum_f_pb!!
@@ -2182,6 +2181,21 @@ end
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Adjoint{<:IEEEFloat,<:CuFloatArray}})
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,<:Transpose{<:IEEEFloat,<:CuFloatArray}})
+
+# `abs2` has a simple analytic derivative, so avoid the generic NDual reduction's temporary
+# arrays and partial-extraction kernels. This is the loss reduction used by Flux's model tests.
+function frule!!(::Dual{typeof(sum)}, ::Dual{typeof(abs2)}, x::Dual{<:CuGpuSumFArray})
+    px, dx = arrayify(x)
+    return Dual(sum(abs2, px), 2 * real(dot(px, dx)))
+end
+function rrule!!(::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:CuGpuSumFArray})
+    px, dx = arrayify(x)
+    function sum_abs2_pb!!(dy)
+        dx .+= (2 * dy) .* px
+        return NoRData(), NoRData(), NoRData()
+    end
+    return zero_fcodual(sum(abs2, px)), sum_abs2_pb!!
+end
 
 # Rules for `sum(f, x)` on complex CuArrays — extends the real rule above to ℂ.
 #
@@ -2849,6 +2863,39 @@ end
 # in the primal) use gemm!/gemv! in the backward, which is mathematically correct
 # only when the full matrix is populated. Direct cuBLAS calls that bypass
 # LinearAlgebra.mul! are not covered; add lower-level rules if that becomes needed.
+
+# Avoid descending through the mutating rules below when `*` allocated its output fresh.
+for BDim in (2, 1)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{
+            typeof(*),CuArray{P,2},CuArray{P,$BDim}
+        } where {P<:CuFloatOrComplex}
+        function frule!!(
+            ::Dual{typeof(*)}, A::Dual{<:CuArray{P,2}}, B::Dual{<:CuArray{P,$BDim}}
+        ) where {P<:CuFloatOrComplex}
+            pA, dA = arrayify(A)
+            pB, dB = arrayify(B)
+            C = pA * pB
+            dC = dA * pB
+            mul!(dC, pA, dB, one(eltype(C)), one(eltype(C)))
+            return Dual(C, dC)
+        end
+        function rrule!!(
+            ::CoDual{typeof(*)}, A::CoDual{<:CuArray{P,2}}, B::CoDual{<:CuArray{P,$BDim}}
+        ) where {P<:CuFloatOrComplex}
+            pA, dA = arrayify(A)
+            pB, dB = arrayify(B)
+            C = pA * pB
+            dC = zero(C)
+            function gpu_mul_pb!!(::NoRData)
+                mul!(dA, dC, adjoint(pB), one(eltype(C)), one(eltype(C)))
+                mul!(dB, adjoint(pA), dC, one(eltype(C)), one(eltype(C)))
+                return NoRData(), NoRData(), NoRData()
+            end
+            return CoDual(C, dC), gpu_mul_pb!!
+        end
+    end
+end
 
 # Guard helpers shared by the generic_matmatmul! and generic_matvecmul! rules.
 
@@ -3587,41 +3634,21 @@ end
 )
 @inline _gpu_rep_element(::Any) = ()
 
-@inline _gpu_total_slots(flat_pargs) = Nfwd._nfwd_input_dof(
-    map(_gpu_rep_element, flat_pargs)
-)
-
 @inline function _gpu_leaf_slot_meta(pa, offset)
     dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
     return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex)
 end
 
-@inline function _gpu_extract_partial_slots(out, n_slots::Int)
-    return [broadcast(o -> Nfwd._nfwd_dual_partial(o, k), out) for k in 1:n_slots]
-end
-
-@inline function _gpu_decode_ndual_meta(out, flat_pargs; extract_partials::Bool=false)
-    is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
-    n_slots = is_diff ? _gpu_total_slots(flat_pargs) : 0
-    partial_slots =
-        extract_partials && is_diff ? _gpu_extract_partial_slots(out, n_slots) : nothing
-    return (; is_diff, n_slots, partial_slots)
-end
-
 @inline function _gpu_decode_ndual_output(
-    ::Val{:broadcast},
-    out,
-    flat_pargs;
-    extract_partials::Bool=false,
-    extract_primal::Bool=true,
+    ::Val{:broadcast}, out, ; extract_primal::Bool=true
 )
-    decoded = _gpu_decode_ndual_meta(out, flat_pargs; extract_partials)
+    is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
     primal_out = if extract_primal
-        decoded.is_diff ? broadcast(Nfwd._nfwd_dual_value, out) : out
+        is_diff ? broadcast(Nfwd._nfwd_dual_value, out) : out
     else
         nothing
     end
-    return (; decoded..., primal_out)
+    return (; is_diff, primal_out)
 end
 
 @inline function _gpu_write_broadcast_primal!(dest, out, is_diff::Bool)
@@ -3637,14 +3664,12 @@ end
     return dest
 end
 
-@inline function _gpu_decode_ndual_output(
-    ::Val{:sum}, out, flat_pargs; extract_partials::Bool=false
-)
-    decoded = _gpu_decode_ndual_meta(out, flat_pargs; extract_partials)
+@inline function _gpu_decode_ndual_output(::Val{:sum}, out)
+    is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
     primal_out = sum(
         Nfwd._nfwd_dual_value, out; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))
     )
-    return (; decoded..., primal_out)
+    return (; is_diff, primal_out)
 end
 
 # Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
@@ -3855,6 +3880,23 @@ end
     )
 end
 @inline _leaf_accum_fdata!(_, _, _) = nothing  # non-differentiable
+
+# A same-shaped broadcast contribution can be accumulated without first materializing a
+# temporary array. Return whether the leaf supports this fused path.
+@inline function _leaf_accum_broadcast!(
+    ::CuMaybeComplexArray, fd::CuArray, contrib::Broadcasted
+)
+    fd .+= contrib
+    return true
+end
+@inline function _leaf_accum_broadcast!(
+    pa::SubArray{P,N,A}, fd, contrib::Broadcasted
+) where {P<:CuFloatOrComplex,N,A<:CuMaybeComplexArray}
+    _, dpa = arrayify(pa, fd)
+    dpa .+= contrib
+    return true
+end
+@inline _leaf_accum_broadcast!(_, _, _) = false
 
 # Recursively extract leaf (non-Broadcasted) arg primals and their tangent data from a
 # possibly-nested Broadcasted / tangent pair.  Works for both reverse mode (FData, uses
@@ -4135,13 +4177,7 @@ end
 #
 # Returns r_bc (the Broadcasted rdata), or zero_rdata(bc_primal) if no scalars.
 function _gpu_accum_pullback!(
-    flat_pargs,
-    flat_fdatas,
-    partial_slots::AbstractVector,
-    dy_out,
-    bc_primal,
-    scalar_map,
-    scalar_count,
+    flat_pargs, flat_fdatas, dual_out, dy_out, bc_primal, scalar_map, scalar_count
 )
     scalar_grads = isnothing(scalar_map) ? nothing : Vector{Any}(undef, scalar_count)
     scalar_index = 1
@@ -4149,23 +4185,9 @@ function _gpu_accum_pullback!(
     for (pa, fd) in zip(flat_pargs, flat_fdatas)
         meta = _gpu_leaf_slot_meta(pa, offset)
         if meta.dof == 1
-            contrib = broadcast(
-                (p, d) -> real(conj(d) * p), partial_slots[meta.slot1], dy_out
-            )
-            if meta.is_scalar
-                # The partials carry whatever type the broadcast promoted to, which is the
-                # array's eltype whenever it is the wider one, but a leaf's rdata follows
-                # the leaf — the same `oftype` the BLAS scalars take.
-                (scalar_grads::Vector{Any})[scalar_index] = oftype(pa, sum(contrib))
-                scalar_index += 1
-            else
-                _leaf_accum_fdata!(pa, fd, contrib)
-            end
-        elseif meta.dof == 2
-            contrib = broadcast(
-                (p1, p2, d) -> complex(real(conj(d) * p1), real(conj(d) * p2)),
-                partial_slots[meta.slot1],
-                partial_slots[meta.slot2],
+            contrib = Base.broadcasted(
+                (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
+                dual_out,
                 dy_out,
             )
             if meta.is_scalar
@@ -4175,7 +4197,29 @@ function _gpu_accum_pullback!(
                 (scalar_grads::Vector{Any})[scalar_index] = oftype(pa, sum(contrib))
                 scalar_index += 1
             else
-                _leaf_accum_fdata!(pa, fd, contrib)
+                if !(size(pa) == size(dy_out) && _leaf_accum_broadcast!(pa, fd, contrib))
+                    _leaf_accum_fdata!(pa, fd, Base.Broadcast.materialize(contrib))
+                end
+            end
+        elseif meta.dof == 2
+            contrib = Base.broadcasted(
+                (o, d) -> complex(
+                    real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
+                    real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot2)),
+                ),
+                dual_out,
+                dy_out,
+            )
+            if meta.is_scalar
+                # The partials carry whatever type the broadcast promoted to, which is the
+                # array's eltype whenever it is the wider one, but a leaf's rdata follows
+                # the leaf — the same `oftype` the BLAS scalars take.
+                (scalar_grads::Vector{Any})[scalar_index] = oftype(pa, sum(contrib))
+                scalar_index += 1
+            else
+                if !(size(pa) == size(dy_out) && _leaf_accum_broadcast!(pa, fd, contrib))
+                    _leaf_accum_fdata!(pa, fd, Base.Broadcast.materialize(contrib))
+                end
             end
         end
         offset += meta.dof
@@ -4187,19 +4231,23 @@ function _gpu_accum_pullback!(
     end
 end
 
-function _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, partial_slots, dy)
+function _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, dual_out, dy)
     offset = 0
     for (pa, fd) in zip(flat_pargs, flat_fdatas)
         meta = _gpu_leaf_slot_meta(pa, offset)
         if meta.dof == 1
-            contrib = broadcast(p -> real(conj(dy) * p), partial_slots[meta.slot1])
+            contrib = broadcast(
+                o -> real(conj(dy) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out
+            )
             _leaf_accum_fdata!(pa, fd, contrib)
         elseif meta.dof == 2
             cdy = conj(dy)
             contrib = broadcast(
-                (p1, p2) -> complex(real(cdy * p1), real(cdy * p2)),
-                partial_slots[meta.slot1],
-                partial_slots[meta.slot2],
+                o -> complex(
+                    real(cdy * Nfwd._nfwd_dual_partial(o, meta.slot1)),
+                    real(cdy * Nfwd._nfwd_dual_partial(o, meta.slot2)),
+                ),
+                dual_out,
             )
             _leaf_accum_fdata!(pa, fd, contrib)
         end
@@ -4243,7 +4291,7 @@ function frule!!(
     # One GPU kernel: compute primal AND all partial derivatives simultaneously.
     # Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    decoded = _gpu_decode_ndual_output(Val(:broadcast), out, flat_pargs)
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
     # `is_diff` says the kernel's element type carried no partials, which is not the same as
     # the output being non-differentiable: a float array built only from index arrays, say
@@ -4273,9 +4321,7 @@ function rrule!!(
 
     # One GPU kernel: compute primal AND all N partial derivatives simultaneously.
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    decoded = _gpu_decode_ndual_output(
-        Val(:broadcast), out, flat_pargs; extract_partials=true
-    )
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
     # As in the frule: a float output with no differentiable leaf still needs an fdata of
     # its declared type, or the caller is handed a NoFData where it expects a CuArray.
@@ -4288,13 +4334,7 @@ function rrule!!(
 
     function materialize_pb!!(::NoRData)
         r_bc = _gpu_accum_pullback!(
-            flat_pargs,
-            flat_fdatas,
-            decoded.partial_slots,
-            dy_out,
-            bc_primal,
-            scalar_map,
-            scalar_count,
+            flat_pargs, flat_fdatas, out, dy_out, bc_primal, scalar_map, scalar_count
         )
         return NoRData(), r_bc
     end
@@ -4354,9 +4394,7 @@ function frule!!(
 
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     pout, dout = arrayify(dest)
-    decoded = _gpu_decode_ndual_output(
-        Val(:broadcast), dual_out, flat_pargs; extract_primal=false
-    )
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), dual_out; extract_primal=false)
 
     # Write primal result in-place into dest.
     _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
@@ -4393,9 +4431,7 @@ function rrule!!(
 
     # Single GPU kernel: primal + all partial derivatives simultaneously.
     dual_out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
-    decoded = _gpu_decode_ndual_output(
-        Val(:broadcast), dual_out, flat_pargs; extract_partials=true, extract_primal=false
-    )
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), dual_out; extract_primal=false)
 
     # Write primal result in-place into dest.
     _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
@@ -4425,13 +4461,7 @@ function rrule!!(
         g = copy(dout)
         fill!(dout, 0)
         r_bc = _gpu_accum_pullback!(
-            flat_pargs,
-            flat_fdatas,
-            decoded.partial_slots,
-            g,
-            bc_primal,
-            scalar_map,
-            scalar_count,
+            flat_pargs, flat_fdatas, dual_out, g, bc_primal, scalar_map, scalar_count
         )
         # Restore primal to allow the reverse pass to see the pre-broadcast value.
         copyto!(pout, old_pout)

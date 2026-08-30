@@ -13,6 +13,33 @@ dropout_tester_1(Trng, x, p) = dropout(Trng(1), x, p; dims=1)
 dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
+@testset "batched_mul CPU rule" for batches in ((3, 3), (1, 3), (3, 1))
+    test_rule(
+        StableRNG(123),
+        batched_mul,
+        randn(3, 2, batches[1]),
+        randn(2, 5, batches[2]);
+        is_primitive=true,
+        unsafe_perturb=true,
+    )
+end
+
+@testset "affine normalization rule" for device in
+                                         (CUDA.functional() ? (identity, cu) : (identity,))
+    test_rule(
+        StableRNG(123),
+        NNlib._affine_normalize,
+        device(randn(Float32, 2, 5)),
+        device(randn(Float32, 2, 1)),
+        device(rand(Float32, 2, 1)),
+        device(randn(Float32, 2, 1)),
+        device(randn(Float32, 2, 1)),
+        1.0f-5;
+        is_primitive=true,
+        unsafe_perturb=true,
+    )
+end
+
 # At p == 0 `dropout` returns its input itself, so mutating the result doubles the sum. `p`
 # is fixed inside because `test_rule` would perturb it to `-ε`, outside `dropout`'s domain.
 function dropout_alias_tester(Trng, x)
@@ -500,7 +527,21 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         (false, :stability, true, bias_act!, identity, _rand(rng, 8, 4), _rand(rng, 8)),
         (false, :stability, true, bias_act!, identity, _rand(rng, 8), _rand(rng, 8)),
     ]
-    if !cuda
+    if cuda
+        push!(
+            test_cases,
+            (false, :none, true, bias_act!, tanh, _rand(rng, 8, 4), _rand(rng, 8)),
+            (
+                false,
+                :none,
+                true,
+                bias_act!,
+                tanh,
+                CUDA.fill(20.0f0, 8),
+                CUDA.zeros(Float32, 8),
+            ),
+        )
+    else
 
         # Tests here fail on CUDA.
         cpu_only_test_cases = Any[

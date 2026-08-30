@@ -20,7 +20,6 @@ const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
 const _MooncakeDistributionsCUDAExt = Base.get_extension(
     Mooncake, :MooncakeDistributionsCUDAExt
 )
-
 # A callable struct carrying a differentiable field, for the captured-state tests.
 struct _CapScale{T}
     a::T
@@ -407,6 +406,7 @@ end
         # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-DOF partials.
         _inplace_sin!(x, y) = (x.=sin.(y); sum(x))
         _inplace_add_alias!(x, y) = (x.=x .+ y; sum(x))
+        _inplace_vec_to_mat!(x, y) = (x.=y; sum(x))
         _inplace_cx_abs2!(x, y) = (x.=abs2.(y); real(sum(x)))
         # GPU→CPU transfer inside the function: Array(x::CuArray) path.
         _gpu_to_cpu(x) = sum(Array(x) .^ 2)
@@ -1254,10 +1254,11 @@ end
             # assert that the built rule is frule!!/rrule!!.
             (false, :none, false, (a) -> (fill!(a, Int32(0)); sum(a)), _rand(rng, 16)),
             # in-place broadcast — exercises materialize! frule!! / rrule!!.
-            # Three cases: basic (sin), aliased dest (x .= x .+ y),
-            # and real-output-into-complex-dest (abs2: ℂ→ℝ stored into ComplexF64 array).
+            # Cover a basic expression, an aliased destination, an expanded right-hand side,
+            # and real output stored in a complex destination.
             (false, :none, false, _inplace_sin!, _rand(rng, 16), _rand(rng, 16)),
             (false, :none, false, _inplace_add_alias!, _rand(rng, 16), _rand(rng, 16)),
+            (false, :none, false, _inplace_vec_to_mat!, _rand(rng, 4, 3), _rand(rng, 4)),
             (
                 false,
                 :none,
@@ -1285,6 +1286,18 @@ end
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4, 4),
                 _rand(rng, ComplexF64, 4),
+            ),
+            # Non-mutating matrix multiplication avoids the output restoration required by
+            # the lower-level mul! rules.
+            (false, :none, true, *, _rand(rng, 4, 3), _rand(rng, 3)),
+            (false, :none, true, *, _rand(rng, 4, 3), _rand(rng, 3, 2)),
+            (
+                false,
+                :none,
+                true,
+                *,
+                _rand(rng, ComplexF64, 4, 3),
+                _rand(rng, ComplexF64, 3),
             ),
             # vcat on CuArrays
             (
@@ -3144,17 +3157,19 @@ end
             dotsq = z -> dot(z, z)
             _, _, h = value_and_hvp!!(prepare_hvp_cache(dotsq, x), dotsq, v, x)
             @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
+            sumabs2 = z -> sum(abs2, z)
+            _, _, h = value_and_hvp!!(prepare_hvp_cache(sumabs2, x), sumabs2, v, x)
+            @test isapprox(Array(h), 2 .* Array(v); rtol=1.0f-4)
             # Full Hessian: buffers are device-resident, no scalar indexing.
             hess_cache = Mooncake.prepare_hessian_cache(dotsq, x)
             _, _, H = Mooncake.value_gradient_and_hessian!!(hess_cache, dotsq, x)
             @test H isa CuMatrix{Float32}
             @test isapprox(Array(H), 2 * I(8); atol=1.0f-4)
             # NDual-based elementwise rules error loudly under forward-over-reverse.
-            for f in (z -> sum(abs2, z), z -> sum(abs2.(z)))
-                @test_throws r"not yet supported" value_and_hvp!!(
-                    prepare_hvp_cache(f, x), f, v, x
-                )
-            end
+            f = z -> sum(abs2.(z))
+            @test_throws r"not yet supported" value_and_hvp!!(
+                prepare_hvp_cache(f, x), f, v, x
+            )
         end
     else
         println("Tests are skipped because no CUDA device was found.")
