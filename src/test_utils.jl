@@ -773,9 +773,18 @@ function _pin_lanes(::Val{N}, z::CoDual) where {N}
     p, t = primal(z), tangent(z)
     replicated = _replicate_lanes(Val(N), p, t)
     isnothing(replicated) || return replicated
-    # No replication for this shape. At width 1 the pinned tangent is the whole seed, so `lift`
-    # still honours it; above width 1 the caller falls back to a random seed.
-    return N == 1 ? lift(p, t) : nothing
+    # At width 1 the pinned tangent is the whole seed, so `lift` honours it directly.
+    N == 1 && return lift(p, t)
+    # Above width 1 there is nothing to replicate the pin into, and quietly seeding at random
+    # would hand the case a different tangent from the one it asked for -- the pin would read as
+    # honoured while the branch it exists to reach went unvisited.
+    msg =
+        "a case pins a tangent of type $(typeof(t)), which cannot be spread across the " *
+        "$N lanes of a chunked seed: `_replicate_lanes` has no method for it, so the seed " *
+        "would silently differ from the pinned one. Add `skip_chunked=true` to the case if " *
+        "the pin is only meaningful at width 1, or give `_replicate_lanes` a method for " *
+        "$(typeof(t))."
+    throw(ArgumentError(msg))
 end
 
 # Give every lane the pinned tangent. A case pins a tangent to reach a branch a random seed
