@@ -17,9 +17,6 @@ using Mooncake.TestUtils:
 using LinearAlgebra, Statistics
 
 const _MooncakeCUDAExt = Base.get_extension(Mooncake, :MooncakeCUDAExt)
-const _MooncakeDistributionsCUDAExt = Base.get_extension(
-    Mooncake, :MooncakeDistributionsCUDAExt
-)
 
 # A callable struct carrying a differentiable field, for the captured-state tests.
 struct _CapScale{T}
@@ -61,7 +58,7 @@ end
             expected_next = Random.rand(rng, Float32, 8)
 
             Random.seed!(rng, 123)
-            out, pullback = _MooncakeDistributionsCUDAExt.rrule!!(
+            out, pullback = Mooncake.rrule!!(
                 Mooncake.zero_fcodual(rand!),
                 Mooncake.zero_fcodual(rng),
                 Mooncake.zero_fcodual(sampler),
@@ -78,7 +75,7 @@ end
             @test Random.rand(rng, Float32, 8) == expected_next
 
             Random.seed!(rng, 123)
-            out = _MooncakeDistributionsCUDAExt.frule!!(
+            out = Mooncake.frule!!(
                 Mooncake.zero_dual(rand!),
                 Mooncake.zero_dual(rng),
                 Mooncake.zero_dual(sampler),
