@@ -712,40 +712,6 @@ _chunk_lane_checkable(v::Tuple) = all(_chunk_lane_checkable, v)
 _chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
 _chunk_lane_checkable(@nospecialize(_v)) = false
 
-"""
-    test_frule(
-        rng::AbstractRNG, x...;
-        sig, frule=Mooncake.frule!!, widths=(1, 8), is_primitive=true,
-        interface_only=false, perf_flag=:none, unsafe_perturb=false,
-        atol=1e-3, rtol=1e-3, max_fd_step=nothing, debug_mode=false,
-    )
-
-The width-parameterised forward-rule harness: one entry point covering every chunk width.
-
-For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
-across calls), interface (types / aliasing), finite-difference correctness, and performance.
-
-For each `N > 1` (primitive rules only) it builds the frule at chunk size `N`, seeds each
-argument with `N` independent random lane directions, runs it, and checks invariants the
-width-1 battery cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
-in-place primal, lets an inner dual's `.value` drift from the primal, or computes a
-wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
-across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
-`.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
-partials match what the width-1 frule produces when seeded with *that lane's* direction — the
-width-1 path being finite-difference-validated above, so it is the trusted per-lane oracle.
-
-Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
-is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
-at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-supplied `frule`
-is honoured only at width 1.
-
-No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
-only for primitive rules (a derived rule's width-N execution is the composition of its
-primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-level width-N
-gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
-the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
-"""
 # Seed an argument tuple for a forward rule: a `CoDual` argument carries its pinned tangent
 # across the bridge, everything else is seeded through ONE cache so aliased arguments share
 # their partial storage.
@@ -761,11 +727,6 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
     end
 end
 
-# Give every lane the pinned tangent, so a case that deliberately pins a ZERO derivative --
-# `dα = 0` in the BLAS rows, which exist to reach the rules' masked-lane branches -- still
-# reaches those branches above width 1. A random seed never lands on exactly zero. Only scalar
-# tangents are replicated: there is no width-parameterised `lift`, so other shapes keep the
-# random seed and their pinned value is still only honoured at width 1.
 # Width is decided here, once, so replication dispatches on the tangent's type alone. Adding a
 # `Val{1}` method beside the type-dispatched ones instead makes every new shape ambiguous with
 # it, which is a `MethodError` at width 1 rather than a compile error where the method is added.
@@ -803,6 +764,40 @@ function _replicate_lanes(
     return Lifted{Complex{P},N}(p, Complex(re, im))
 end
 
+"""
+    test_frule(
+        rng::AbstractRNG, x...;
+        sig, frule=Mooncake.frule!!, widths=(1, 8), is_primitive=true,
+        interface_only=false, perf_flag=:none, unsafe_perturb=false,
+        atol=1e-3, rtol=1e-3, max_fd_step=nothing, debug_mode=false,
+    )
+
+The width-parameterised forward-rule harness: one entry point covering every chunk width.
+
+For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
+across calls), interface (types / aliasing), finite-difference correctness, and performance.
+
+For each `N > 1` (primitive rules only) it builds the frule at chunk size `N`, seeds each
+argument with `N` independent random lane directions, runs it, and checks invariants the
+width-1 battery cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
+in-place primal, lets an inner dual's `.value` drift from the primal, or computes a
+wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
+across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
+`.value` tracks the primal (to float tolerance) with finite partials; (3) each lane's output
+partials match what the width-1 frule produces when seeded with *that lane's* direction — the
+width-1 path being finite-difference-validated above, so it is the trusted per-lane oracle.
+
+Under `debug_mode=true` the chunked (`N > 1`) builds are wrapped in `DebugFRule` just as width 1
+is (the width-1 path inherits it via the passed-in `frule`), so the same V-coherence checks apply
+at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-supplied `frule`
+is honoured only at width 1.
+
+No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
+only for primitive rules (a derived rule's width-N execution is the composition of its
+primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-level width-N
+gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
+the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
+"""
 function test_frule(
     rng::AbstractRNG,
     x::Vararg{Any,P};

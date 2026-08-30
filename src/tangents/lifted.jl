@@ -2066,7 +2066,7 @@ end
     randn_lifteds(::Val{N}, rng::AbstractRNG, xs::Tuple)
 
 Seed a whole argument tuple, sharing one cache across it, so arguments that alias one object
-share their partial storage. Seeding each argument with [`randn_lifted`](@ref) severs that:
+share their partial storage. Seeding each argument with `randn_lifted` severs that:
 each call builds its own `IdDict`, so `f(a, a)` receives two independent directions. This is
 the forward counterpart of `__create_coduals`.
 """
