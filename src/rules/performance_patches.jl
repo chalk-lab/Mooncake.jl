@@ -127,9 +127,11 @@ function rrule!!(
     pperm = primal(perm)
     y = permutedims(px, pperm)
     dy = zero(y)
-    iperm = invperm(pperm)
     function permutedims_pb!!(::NoRData)
-        dx .+= permutedims(dy, iperm)
+        @inbounds for I in CartesianIndices(dx)
+            J = CartesianIndex(ntuple(d -> I[pperm[d]], Val(N)))
+            dx[I] += dy[J]
+        end
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), permutedims_pb!!
