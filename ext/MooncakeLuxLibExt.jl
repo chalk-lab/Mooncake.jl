@@ -6,6 +6,7 @@ using Base: IEEEFloat
 import LuxLib: Impl, Utils
 import LuxLib.NNlib.GPUArraysCore: AbstractGPUArray
 using MLDataDevices: get_device_type
+using Static: StaticBool
 using Mooncake:
     @from_rrule,
     DefaultCtx,
@@ -34,6 +35,20 @@ using Mooncake:
     Tuple{
         typeof(Impl.batched_matmul_fallback),AbstractGPUArray{P,3},AbstractGPUArray{P,3}
     } where {P<:IEEEFloat},
+)
+@from_rrule(
+    DefaultCtx,
+    Tuple{
+        typeof(Impl.batchnorm_cudnn),
+        Union{Nothing,AbstractGPUArray{P,1}},
+        Union{Nothing,AbstractGPUArray{P,1}},
+        AbstractGPUArray{P,N},
+        Union{Nothing,AbstractGPUArray{P,1}},
+        Union{Nothing,AbstractGPUArray{P,1}},
+        P,
+        P,
+        StaticBool,
+    } where {P<:IEEEFloat,N},
 )
 
 ## For mooncake we are missing some rules. For now use the basic versions of the kernels

@@ -8,8 +8,9 @@ using Mooncake.TestUtils: test_rule
 sr(x) = StableRNG(x)
 
 const P = Float32
-const _gpu_enabled = true
-const _gpu_disabled = false
+const _gpu_enabled = :correctness
+const _gpu_interface_only = :interface
+const _gpu_disabled = :disabled
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
@@ -19,15 +20,7 @@ const _gpu_disabled = false
 # broadcast inputs (1 per Float arg, 2 per Complex arg).  This works for pure
 # element-wise Julia functions, but has two important limitations:
 #
-#   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
-#      explicit rules:
-#        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
-#        • Base.permutedims(::CuArray), SkipConnection+vcat — rules in MooncakeCUDAExt
-#        • GroupNorm / InstanceNorm — call Statistics.varm; needs an rrule!! for varm
-#        • StatefulRecurrentCell (RNN/LSTM/GRU) — state mutation (setfield! on cell)
-#          not yet differentiable on GPU
-#      Fix: add an rrule!! or @zero_derivative for the operator (see fill!,
-#      unsafe_copyto! in MooncakeCUDAExt.jl for the pattern).
+#   1. COVERAGE — GPU operations without differentiable Julia IR need explicit rules.
 #
 #   2. PERFORMANCE — forward-mode broadcast is essentially chunked forward-mode AD:
 #      it requires one GPU kernel launch per output DOF.  For models with many
@@ -35,7 +28,9 @@ const _gpu_disabled = false
 #      for large models even when it compiles.  Fix: add reverse-mode rrule!! so
 #      Mooncake runs a single backward pass regardless of parameter count.
 #
-# Models marked _gpu_disabled fall into one or both of the above categories.
+# Models marked _gpu_interface_only skip numerical checks that the GPU primal or
+# aliased output cannot support. Models marked _gpu_disabled fall into one or both
+# of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 function _model_name(f)
@@ -52,7 +47,7 @@ end
 _model_name(f::SkipConnection) = "SkipConnection($(_model_name(f.layers)), $(f.connection))"
 _model_name(f::MultiHeadAttention) = "MultiHeadAttention($(f.q_proj.in_dims))"
 
-# Tuple format: (interface_only, gpu_supported, model, input)
+# Tuple format: (interface_only, gpu_status, model, input)
 const TEST_MODELS = Any[
     (false, _gpu_enabled, Dense(2, 4), randn(sr(1), P, 2, 3)),
     # tests for https://github.com/chalk-lab/Mooncake.jl/issues/563
@@ -114,78 +109,94 @@ const TEST_MODELS = Any[
         ConvTranspose((3, 3), 3 => 2; stride=2),
         rand(sr(15), P, 5, 5, 3, 1),
     ),
-    # StatefulRecurrentCell GPU AD is disabled: state mutation (setfield! on cell) is not
-    # yet differentiable on GPU.
-    (false, _gpu_disabled, StatefulRecurrentCell(RNNCell(3 => 5)), rand(sr(16), P, 3, 2)),
+    # Recurrent outputs alias the returned carry, which prevents numerical checking.
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
+        StatefulRecurrentCell(RNNCell(3 => 5)),
+        rand(sr(16), P, 3, 2),
+    ),
+    (
+        false,
+        _gpu_interface_only,
         StatefulRecurrentCell(RNNCell(3 => 5, gelu)),
         rand(sr(17), P, 3, 2),
     ),
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
         StatefulRecurrentCell(RNNCell(3 => 5, gelu; use_bias=false)),
         rand(sr(18), P, 3, 2),
     ),
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
         Chain(
             StatefulRecurrentCell(RNNCell(3 => 5)), StatefulRecurrentCell(RNNCell(5 => 3))
         ),
         rand(sr(19), P, 3, 2),
     ),
-    (false, _gpu_disabled, StatefulRecurrentCell(LSTMCell(3 => 5)), rand(sr(20), P, 3, 2)),
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
+        StatefulRecurrentCell(LSTMCell(3 => 5)),
+        rand(sr(20), P, 3, 2),
+    ),
+    (
+        false,
+        _gpu_interface_only,
         Chain(
             StatefulRecurrentCell(LSTMCell(3 => 5)), StatefulRecurrentCell(LSTMCell(5 => 3))
         ),
         rand(sr(21), P, 3, 2),
     ),
-    (false, _gpu_disabled, StatefulRecurrentCell(GRUCell(3 => 5)), rand(sr(22), P, 3, 10)),
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
+        StatefulRecurrentCell(GRUCell(3 => 5)),
+        rand(sr(22), P, 3, 10),
+    ),
+    (
+        false,
+        _gpu_interface_only,
         Chain(
             StatefulRecurrentCell(GRUCell(3 => 5)), StatefulRecurrentCell(GRUCell(5 => 3))
         ),
         rand(sr(23), P, 3, 10),
     ),
-    # BatchNorm GPU AD is disabled: LuxLib's batchnorm_cudnn! is not yet differentiable.
-    (true, _gpu_disabled, Chain(Dense(2, 4), BatchNorm(4)), randn(sr(24), P, 2, 3)),
-    (true, _gpu_disabled, Chain(Dense(2, 4), BatchNorm(4, gelu)), randn(sr(25), P, 2, 3)),
+    (true, _gpu_enabled, Chain(Dense(2, 4), BatchNorm(4)), randn(sr(24), P, 2, 3)),
+    (true, _gpu_enabled, Chain(Dense(2, 4), BatchNorm(4, gelu)), randn(sr(25), P, 2, 3)),
     (
         true,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Dense(2, 4), BatchNorm(4, gelu; track_stats=false)),
         randn(sr(26), P, 2, 3),
     ),
     (
         true,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6), BatchNorm(6)),
         randn(sr(27), P, 6, 6, 2, 2),
     ),
     (
         true,
-        _gpu_disabled,
+        _gpu_enabled,
         Chain(Conv((3, 3), 2 => 6, tanh), BatchNorm(6)),
         randn(sr(28), P, 6, 6, 2, 2),
     ),
-    # GroupNorm needs the Statistics.varm GPU rrule!! (via LuxLib mean_var). 2D is disabled:
-    # its groupnorm_affine_normalize_internal! kernel calls rsqrt, which DomainErrors on the
-    # correctness checker's complex perturbations; 4D takes another kernel path.
+    # The 2D GPU primal rejects the checker's complex perturbations.
     (
         false,
-        _gpu_disabled,
+        _gpu_interface_only,
         Chain(Dense(2, 4), GroupNorm(4, 2, gelu)),
         randn(sr(29), P, 2, 3),
     ),
-    (false, _gpu_disabled, Chain(Dense(2, 4), GroupNorm(4, 2)), randn(sr(30), P, 2, 3)),
+    (
+        false,
+        _gpu_interface_only,
+        Chain(Dense(2, 4), GroupNorm(4, 2)),
+        randn(sr(30), P, 2, 3),
+    ),
     (
         false,
         _gpu_enabled,
@@ -198,14 +209,12 @@ const TEST_MODELS = Any[
         Chain(Conv((3, 3), 2 => 6, tanh), GroupNorm(6, 3)),
         randn(sr(32), P, 6, 6, 2, 2),
     ),
-    # LayerNorm needs MooncakeCUDAExt's Statistics.varm GPU rrule!! (via LuxLib mean_var).
     (
         false,
         _gpu_enabled,
         Chain(Conv((3, 3), 2 => 3, gelu), LayerNorm((1, 1, 3))),
         randn(sr(33), P, 4, 4, 2, 2),
     ),
-    # InstanceNorm needs the Statistics.varm GPU rrule!! too, via the same LuxLib path.
     (false, _gpu_enabled, InstanceNorm(6), randn(sr(34), P, 6, 6, 2, 2)),
     (
         false,
@@ -222,14 +231,13 @@ const TEST_MODELS = Any[
     # From Flux TEST_MODELS: Scale with non-default activation (abs2)
     (false, _gpu_enabled, Scale(4, abs2), randn(sr(37), P, 4, 3)),
     (false, _gpu_enabled, LayerNorm(2), randn(sr(38), P, 2, 10)),
-    # From Flux TEST_MODELS: standalone BatchNorm — same batchnorm_cudnn! issue.
-    (true, _gpu_disabled, BatchNorm(2), randn(sr(39), P, 2, 10)),
+    (true, _gpu_enabled, BatchNorm(2), randn(sr(39), P, 2, 10)),
     # From Flux TEST_MODELS: Float64 parameters and inputs
     (false, _gpu_enabled, Chain(Dense(2, 4), Dense(4, 2)), randn(sr(40), Float64, 2, 1)),
 ]
 
 @testset "lux" begin
-    @testset "$(_model_name(f))" for (interface_only, gpu_supported, f, x) in TEST_MODELS
+    @testset "$(_model_name(f))" for (interface_only, gpu_status, f, x) in TEST_MODELS
         @info "[CPU] testing $(_model_name(f))"
         rng = sr(123546)
         cvt = eltype(x) == Float64 ? f64 : f32
@@ -251,10 +259,8 @@ end
 if CUDA.functional()
     dev = gpu_device()
     @testset "lux (GPU)" begin
-        @testset "$(_model_name(f))" for (interface_only, gpu_supported, f, x) in
-                                         TEST_MODELS
-
-            gpu_supported || continue  # GPU support not yet implemented
+        @testset "$(_model_name(f))" for (interface_only, gpu_status, f, x) in TEST_MODELS
+            gpu_status === _gpu_disabled && continue
             eltype(x) == Float64 && continue  # Float64 CuArrays not supported
             @info "[GPU] testing $(_model_name(f))"
             rng = sr(123546)
@@ -268,7 +274,7 @@ if CUDA.functional()
                 ps,
                 st;
                 is_primitive=false,
-                interface_only,
+                interface_only=(interface_only || gpu_status === _gpu_interface_only),
                 unsafe_perturb=true,
                 mode=Mooncake.ReverseMode,
             )
