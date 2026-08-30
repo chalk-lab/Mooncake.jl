@@ -45,6 +45,55 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     # unloads the whole extension with only a warning, taking every rule in it with it.
     @test Base.get_extension(Mooncake, :MooncakeDistributionsExt) !== nothing
 
+    @testset "rand! restores arrays but not the RNG" begin
+        rng = StableRNG(123)
+        sampler = MvNormal(zeros(2), I)
+        x, dx = fill(-1.0, 2, 4), fill(2.0, 2, 4)
+        x_before, dx_before = copy(x), copy(dx)
+        expected_rng = copy(rng)
+        expected_x = similar(x)
+        Distributions.rand!(expected_rng, sampler, expected_x)
+        expected_next = rand(expected_rng)
+
+        out, pullback = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Distributions.rand!),
+            Mooncake.zero_fcodual(rng),
+            Mooncake.zero_fcodual(sampler),
+            Mooncake.CoDual(x, dx),
+        )
+        @test Mooncake.primal(out) === x
+        @test x == expected_x
+        @test all(iszero, dx)
+        fill!(dx, 3)
+        pullback(Mooncake.NoRData())
+        @test x == x_before
+        @test dx == dx_before
+        @test rand(rng) == expected_next
+
+        rng = StableRNG(123)
+        out = Mooncake.frule!!(
+            Mooncake.zero_dual(Distributions.rand!),
+            Mooncake.zero_dual(rng),
+            Mooncake.zero_dual(sampler),
+            Mooncake.Dual(x, dx),
+        )
+        @test Mooncake.primal(out) === x
+        @test x == expected_x
+        @test all(iszero, dx)
+        @test rand(rng) == expected_next
+
+        test_rule(
+            StableRNG(123),
+            Distributions.rand!,
+            StableRNG(123),
+            sampler,
+            similar(x);
+            interface_only=true,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
+
     logpdf_test_cases = Any[
 
         #

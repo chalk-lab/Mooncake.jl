@@ -2,10 +2,11 @@ module MooncakeDistributionsExt
 
 using Distributions, Mooncake, LinearAlgebra
 using Base: IEEEFloat
-using Distributions: loglikelihood, sqmahal
+using Distributions: ArrayLikeVariate, Sampleable, loglikelihood, sqmahal
 using Distributions.FillArrays: Fill
 using Distributions.PDMats: PDiagMat, PDMat, ScalMat
 using PrecompileTools: @setup_workload, @compile_workload
+using Random: AbstractRNG, rand!
 
 import Mooncake:
     @is_primitive,
@@ -13,6 +14,7 @@ import Mooncake:
     ContiguousSubVector,
     DefaultCtx,
     Lifted,
+    MinimalCtx,
     Nfwd,
     NoFData,
     NoRData,
@@ -29,7 +31,50 @@ import Mooncake:
     rrule!!,
     tangent,
     zero_dual,
-    zero_fcodual
+    zero_fcodual,
+    zero_rdata
+
+const ArrayLikeSampleable = Sampleable{<:ArrayLikeVariate}
+const DenseFloatArray = DenseArray{<:IEEEFloat}
+
+# A draw is random state, not a reparameterised sample. The result aliases `x`, so clear
+# its fdata and restore both arrays in reverse, but leave the RNG advanced.
+@is_primitive MinimalCtx Tuple{
+    typeof(rand!),AbstractRNG,<:ArrayLikeSampleable,<:DenseFloatArray
+}
+function frule!!(
+    ::Lifted{typeof(rand!),Nw},
+    rng::Lifted{<:AbstractRNG,Nw},
+    sampler::Lifted{<:ArrayLikeSampleable,Nw},
+    x::Lifted{P,Nw},
+) where {P<:DenseFloatArray,Nw}
+    px, dx = arrayify(x)
+    rand!(primal(rng), primal(sampler), px)
+    for lane in 1:Nw
+        fill!(dx[lane], zero(eltype(P)))
+    end
+    return x
+end
+function rrule!!(
+    ::CoDual{typeof(rand!)},
+    rng::CoDual{<:AbstractRNG},
+    sampler::CoDual{<:ArrayLikeSampleable},
+    x::CoDual{P,P},
+) where {P<:DenseFloatArray}
+    px, dx = primal(x), tangent(x)
+    px_copy = copy(px)
+    dx_copy = copy(dx)
+    rand!(primal(rng), primal(sampler), px)
+    fill!(dx, zero(eltype(P)))
+    rng_rdata = zero_rdata(primal(rng))
+    sampler_rdata = zero_rdata(primal(sampler))
+    function rand!_pb!!(::NoRData)
+        copyto!(px, px_copy)
+        copyto!(dx, dx_copy)
+        return NoRData(), rng_rdata, sampler_rdata, NoRData()
+    end
+    return x, rand!_pb!!
+end
 
 # The rules below exist purely to work around performance limitations of Mooncake.jl: the
 # derived rules are correct, but slow. As in `src/rules/performance_patches.jl`, each
