@@ -677,7 +677,7 @@ end
     return Lifted{MemoryRef{P},Nw}(
         y,
         NDualMemoryRef{P,Nw,Memory{P}}(
-            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
+            y, getfield(v, :partials_parent), getfield(v, :ncols), newcol
         ),
     )
 end
