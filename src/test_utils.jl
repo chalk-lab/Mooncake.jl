@@ -766,16 +766,32 @@ end
 # reaches those branches above width 1. A random seed never lands on exactly zero. Only scalar
 # tangents are replicated: there is no width-parameterised `lift`, so other shapes keep the
 # random seed and their pinned value is still only honoured at width 1.
-_pin_lanes(::Val{N}, z::CoDual) where {N} = _pin_lanes(Val(N), primal(z), tangent(z))
-_pin_lanes(::Val{N}, ::Any, ::Any) where {N} = nothing
-function _pin_lanes(::Val{1}, p, t)
-    return lift(p, t)
+# Width is decided here, once, so replication dispatches on the tangent's type alone. Adding a
+# `Val{1}` method beside the type-dispatched ones instead makes every new shape ambiguous with
+# it, which is a `MethodError` at width 1 rather than a compile error where the method is added.
+function _pin_lanes(::Val{N}, z::CoDual) where {N}
+    p, t = primal(z), tangent(z)
+    replicated = _replicate_lanes(Val(N), p, t)
+    isnothing(replicated) || return replicated
+    # No replication for this shape. At width 1 the pinned tangent is the whole seed, so `lift`
+    # still honours it; above width 1 the caller falls back to a random seed.
+    return N == 1 ? lift(p, t) : nothing
 end
-function _pin_lanes(::Val{N}, p::P, t::P) where {N,P<:Base.IEEEFloat}
+
+# Give every lane the pinned tangent. A case pins a tangent to reach a branch a random seed
+# cannot -- the BLAS rows pin `dα = 0` for the `iszero(dαs[k])` paths -- and a pin that held
+# only at width 1 left those paths unexercised above it. One method per replicable shape.
+_replicate_lanes(::Val, ::Any, ::Any) = nothing
+function _replicate_lanes(::Val{N}, p::P, t::P) where {N,P<:Base.IEEEFloat}
     return Lifted{P,N}(p, Mooncake.Nfwd.NDual{P,N}(p, ntuple(_ -> t, Val(N))))
 end
-function _pin_lanes(::Val{1}, p::P, t::P) where {P<:Base.IEEEFloat}
-    return lift(p, t)
+# A complex dual is a `Complex` of two real duals, so each part replicates on its own.
+function _replicate_lanes(
+    ::Val{N}, p::Complex{P}, t::Complex{P}
+) where {N,P<:Base.IEEEFloat}
+    re = Mooncake.Nfwd.NDual{P,N}(real(p), ntuple(_ -> real(t), Val(N)))
+    im = Mooncake.Nfwd.NDual{P,N}(imag(p), ntuple(_ -> imag(t), Val(N)))
+    return Lifted{Complex{P},N}(p, Complex(re, im))
 end
 
 function test_frule(
