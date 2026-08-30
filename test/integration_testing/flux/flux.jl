@@ -156,7 +156,6 @@ primitive_cases = (
     (Dense(2 => 4), randn(Float32, 2, 3)),
     (Dense(2 => 4), randn(Float32, 2, 3, 2)),
     (Dense(2 => 4, tanh), randn(Float32, 2, 3)),
-    (Dense(zeros(Float32, 4, 2), fill(20.0f0, 4), tanh), randn(Float32, 2, 3)),
     (Conv((3,), 2 => 3), randn(Float32, 5, 2, 2)),
     (Conv((3, 3), 2 => 3, tanh), randn(Float32, 5, 5, 2, 2)),
     (
@@ -183,6 +182,23 @@ primitive_cases = (
     Mooncake.TestUtils.test_rule(
         StableRNG(123), layer, x; is_primitive=true, unsafe_perturb=true
     )
+end
+
+@testset "saturated tanh layer rule" begin
+    layer = Dense(zeros(Float32, 4, 2), fill(20.0f0, 4), tanh)
+    x = zeros(Float32, 2, 3)
+    ref = 4 * exp(-40.0f0) / (1 + exp(-40.0f0))^2
+
+    layer_dual = Mooncake.zero_dual(layer)
+    fill!(Mooncake._fields(Mooncake.tangent(layer_dual)).bias, 1)
+    out = Mooncake.frule!!(layer_dual, Mooncake.zero_dual(x))
+    @test all(≈(ref), Mooncake.tangent(out))
+
+    layer_codual = Mooncake.zero_fcodual(layer)
+    out, pullback = Mooncake.rrule!!(layer_codual, Mooncake.zero_fcodual(x))
+    fill!(Mooncake.tangent(out), 1)
+    pullback(Mooncake.NoRData())
+    @test all(≈(size(x, 2) * ref), Mooncake._fields(Mooncake.tangent(layer_codual)).bias)
 end
 
 mse_inputs = (randn(Float32, 2, 3), randn(Float32, 2, 3))
@@ -238,6 +254,7 @@ if CUDA.functional()
             @testset "grad check $name" begin
                 @info "[GPU] testing $name"
                 gpu_model = gpu(model)
+                # `gpu` and `cu` convert floating-point arrays to `Float32`.
                 gpu_x = cu(x)
                 Mooncake.TestUtils.test_rule(
                     StableRNG(123),

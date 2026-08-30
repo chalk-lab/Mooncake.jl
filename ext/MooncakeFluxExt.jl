@@ -26,8 +26,8 @@ const FastScaleActivation = Union{typeof(identity),typeof(abs2)}
 
 @inline _activation_derivative(::typeof(identity), x) = one(x)
 @inline function _activation_derivative(::typeof(tanh), x)
-    y = NNlib.tanh_fast(x)
-    return one(y) - y^2
+    u = exp(-2 * abs(x))
+    return 4u / (one(x) + u)^2
 end
 
 function _bias_activate!(::typeof(identity), x, b)
@@ -35,6 +35,7 @@ function _bias_activate!(::typeof(identity), x, b)
     return x
 end
 function _bias_activate!(activation::typeof(tanh), x, b)
+    # Preserve the preactivation: saturated outputs do not determine nonzero derivatives.
     return NNlib.fast_act(activation, x).(x .+ b)
 end
 
