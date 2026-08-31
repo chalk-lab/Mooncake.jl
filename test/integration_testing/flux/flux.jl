@@ -91,6 +91,18 @@ include("models.jl")
 end
 
 if CUDA.functional()
+    @testset "Flux loss (GPU)" begin
+        x = cu(Float32[1, 2, 4, 8])
+        y = cu(Float32[0, 3, 2, 5])
+        cache = Mooncake.prepare_gradient_cache(Flux.Losses.mse, x, y)
+        value, (_, dx, dy) = Mooncake.value_and_gradient!!(cache, Flux.Losses.mse, x, y)
+        expected_dx = 2 .* (Array(x) .- Array(y)) ./ length(x)
+
+        @test value ≈ Flux.Losses.mse(Array(x), Array(y))
+        @test Array(dx) ≈ expected_dx
+        @test Array(dy) ≈ -expected_dx
+    end
+
     @testset "mooncake gradient (GPU)" begin
         for (gpu_supported, model, x, name) in FLUX_MODELS
             gpu_supported || continue  # GPU support not yet implemented
