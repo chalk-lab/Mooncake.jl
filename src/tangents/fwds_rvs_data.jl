@@ -22,6 +22,14 @@ struct FData{T<:NamedTuple}
     data::T
 end
 
+# `ErrorException("x")` has `FData((msg=NoFData(),))`, so an `FData`
+# wrapper does not necessarily contain state to reset.
+_may_have_fdata(::NoFData) = false
+_may_have_fdata(x::FData) = any(_may_have_fdata, x.data)
+_may_have_fdata(x::Union{Tuple,NamedTuple}) = any(_may_have_fdata, x)
+_may_have_fdata(x::PossiblyUninitTangent) = is_init(x) && _may_have_fdata(val(x))
+_may_have_fdata(x) = true
+
 # Recursively copy the wrapped data
 _copy(x::P) where {P<:FData} = P(_copy(x.data))
 
