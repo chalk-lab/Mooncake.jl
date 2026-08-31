@@ -188,14 +188,19 @@ end
         _mapreduce_exp(x) = mapreduce(exp, +, x)
         _mapreduce_cx_abs2(x) = mapreduce(abs2, +, x)
         _mapreduce_cx_sin_re(x) = real(mapreduce(sin, +, x))
+        _sum_f_abs2_d1(x) = sum(abs2, x; dims=1)
+        _sum_f_sin_d12(x) = sum(sin, x; dims=(1, 2))
+        _sum_f_cx_abs2_d1(x) = sum(abs2, x; dims=1)
+        _sum_f_cx_sin_d2(x) = sum(sin, x; dims=2)
+        _mapreduce_abs2_d1(x) = mapreduce(abs2, +, x; dims=1)
+        _mapreduce_abs2_add_sum_d1(x) = mapreduce(abs2, Base.add_sum, x; dims=1)
         _reduce_plus(x) = reduce(+, x)
         # _reduce_plus_cx returns a complex scalar for complex input (no real() wrap), unlike
         # _prod_cx / _cumsum_cx_sum etc.  The separate alias keeps the testset name distinct.
         _reduce_plus_cx(x) = reduce(+, x)
         _reduce_mul(x) = reduce(*, x)
         _reduce_mul_cx(x) = reduce(*, x)
-        # The Core.kwcall spellings: `reduce` forwards to the sum/prod keyword rules, and
-        # `mapreduce` to the positional sum(f, x) when the keywords leave the reduction alone.
+        # The Core.kwcall spellings delegate to the corresponding sum/prod keyword rules.
         _reduce_plus_d1(x) = sum(reduce(+, x; dims=1))
         _reduce_plus_init(x) = reduce(+, x; init=0.0f0)
         _reduce_mul_init(x) = reduce(*, x; init=1.0f0)
@@ -819,6 +824,19 @@ end
             (false, :none, false, _mapreduce_exp, _rand(rng, 16)),
             (false, :none, false, _mapreduce_cx_abs2, _rand(rng, ComplexF64, 16)),
             (false, :none, false, _mapreduce_cx_sin_re, _rand(rng, ComplexF64, 16)),
+            (false, :none, false, _sum_f_abs2_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _sum_f_sin_d12, _rand(rng, Float64, 4, 3, 2)),
+            (false, :none, false, _sum_f_cx_abs2_d1, _rand(rng, ComplexF32, 4, 3)),
+            (false, :none, false, _sum_f_cx_sin_d2, _rand(rng, ComplexF64, 4, 3)),
+            (false, :none, false, _mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
+            (
+                false,
+                :none,
+                false,
+                z -> mapreduce(abs2, +, z; init=0.0),
+                _rand(rng, Float32, 6),
+            ),
             # reduce(+, x) — explicit rule, redirects to sum machinery
             (false, :none, false, _reduce_plus, _rand(rng, 16)),
             (false, :none, false, _reduce_plus, _rand(rng, Float32, 16)),
@@ -2130,21 +2148,13 @@ end
                     (; msg=r"not its identity"),
                 ),
                 # Before the keyword claims these escaped to GPUArrays' reduction kernel and
-                # failed inside cufunction; an unsupported op or a `dims` the mapped rule
-                # cannot do yet has to say so itself.
+                # failed inside cufunction; unsupported operators have to say so themselves.
                 (
                     218,
                     "reduce, unsupported op",
                     z -> reduce(max, z; init=0.0f0),
                     (x32,),
                     (; msg=r"only supports op"),
-                ),
-                (
-                    219,
-                    "mapreduce, dims",
-                    z -> sum(mapreduce(abs2, +, z; dims=1)),
-                    (M32,),
-                    (; msg=r"not yet differentiable"),
                 ),
                 (
                     220,
@@ -2162,13 +2172,6 @@ end
                 ),
                 # One entry per @eval claim family; other functions in the same loop share
                 # the generated code verbatim.
-                (
-                    222,
-                    "kwcall sum(f, x; dims)",
-                    z -> sum(sum(abs2, z; dims=1)),
-                    (x32,),
-                    (; msg=r"not yet differentiable"),
-                ),
                 (
                     223,
                     "mapped maximum",
@@ -2306,22 +2309,13 @@ end
                     (0.0, _rand(rng, Float32, 4)),
                     (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
                 ),
-                # mapreduce delegates to the keyword-free rule, so a differentiated `init`
-                # would be dropped instead of folded, and an `init` of another type would
-                # change an output type the delegate cannot produce.
+                # A differentiated `init` would be dropped instead of folded.
                 (
                     250,
                     "mapreduce, differentiated init",
                     (c, z) -> mapreduce(abs2, +, z; init=c),
                     (0.0f0, x32),
                     (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
-                ),
-                (
-                    251,
-                    "mapreduce, init widens the output",
-                    z -> mapreduce(abs2, +, z; init=0.0),
-                    (x32,),
-                    (; msg=r"init::Float64 where the reduction produces"),
                 ),
                 # Forward mode alone refuses a differentiated `init` the rule treats as a
                 # constant; reverse mode reports a zero derivative for it instead.

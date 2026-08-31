@@ -1641,22 +1641,6 @@ function _check_reduction_identity(f, pkw)
     )
 end
 
-# The keyword mapreduce rules delegate to the keyword-free `sum(f, x)` rule, which seeds its
-# accumulator from the array. GPUArrays instead takes the output eltype from `init`, so an
-# `init` of any other type returns a value the delegate cannot produce — and a tangent typed
-# to match it. Compare against what the delegate actually returned rather than guessing the
-# natural output type, which the mapped function decides.
-function _check_mapreduce_init_type(pkw, y)
-    (!haskey(pkw, :init) || typeof(pkw.init) === typeof(y)) && return nothing
-    return _throw_gpu_argument_error(
-        "Mooncake: mapreduce over CuArray was given init::$(typeof(pkw.init)) where the " *
-        "reduction produces $(typeof(y)). GPUArrays takes the output eltype from `init`, " *
-        "so this changes the result type, which the rule cannot follow. Pass an init of " *
-        "type $(typeof(y)). " *
-        _UNIMPL_MSG,
-    )
-end
-
 function _check_reduction_init(dkw)
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
@@ -2147,36 +2131,46 @@ _gpu_threads_leaf(::CuMaybeWrappedArray) = true
 _gpu_threads_leaf(::CuFloatOrComplex) = true
 _gpu_threads_leaf(x) = !_carries_differentiable_state(x)
 
-function _gpu_sum_f_frule(f, x)
+function _gpu_sum_f_frule(f, x, pkw=NamedTuple())
     _check_gpu_sum_f(f)
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
-    flat_pargs = (flat_px,)
-    flat_tangents = (flat_dx,)
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
     dy = if decoded.is_diff && !(flat_dx isa NoTangent)
-        _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, decoded.primal_out)
+        _gpu_reduced_jvp(out, flat_px, flat_dx, decoded.primal_out, get(pkw, :dims, :))
     else
-        zero(decoded.primal_out)
+        T = tangent_type(typeof(decoded.primal_out))
+        T === NoTangent ? NoTangent() : zero_tangent(decoded.primal_out)
     end
     return Dual(decoded.primal_out, dy)
 end
 
-function _gpu_sum_f_rrule(f, x)
+function _gpu_sum_f_rrule(f, x, pkw=NamedTuple())
     _check_gpu_sum_f(f)
     flat_px = parent(primal(x))
     flat_dx = _fields(tangent(x)).parent
-    flat_pargs = (flat_px,)
-    flat_fdatas = (flat_dx,)
     out = _gpu_broadcast_dual(f, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out)
-    function sum_f_pb!!(dy)
-        decoded.is_diff &&
-            _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, out, dy)
-        return NoRData(), NoRData(), NoRData()
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
+    if tangent_type(typeof(decoded.primal_out)) === NoTangent
+        function sum_f_nondiff_pb!!(::NoRData)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(decoded.primal_out), sum_f_nondiff_pb!!
+    elseif get(pkw, :dims, :) isa Colon
+        function sum_f_scalar_pb!!(dy)
+            decoded.is_diff && _gpu_reduced_pullback!(flat_px, flat_dx, out, dy)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return zero_fcodual(decoded.primal_out), sum_f_scalar_pb!!
+    else
+        dy_out = zero_tangent(decoded.primal_out)
+        function sum_f_array_pb!!(::NoRData)
+            decoded.is_diff && _gpu_reduced_pullback!(flat_px, flat_dx, out, dy_out)
+            return NoRData(), NoRData(), NoRData()
+        end
+        return CoDual(decoded.primal_out, dy_out), sum_f_array_pb!!
     end
-    return zero_fcodual(decoded.primal_out), sum_f_pb!!
 end
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuFloatArray})
@@ -2320,11 +2314,6 @@ for (_op, _fn) in ((:(+), :sum), (:(Base.:*), :prod))
     end
 end
 
-# mapreduce's keyword spelling equals its positional one exactly when the keywords do not
-# change the reduction: no `dims` (or `dims=:`) and an `init` at the operator's identity.  A
-# real `dims` would need the `sum(f, x; dims)` rule that is not written yet, and a
-# non-identity `init` is refused for the folding reason `sum` refuses it.
-_mapreduce_kw_is_plain(pkw) = get(pkw, :dims, :) isa Colon
 for _op in (:(+), :(Base.add_sum))
     @eval @is_primitive(
         MinimalCtx,
@@ -2338,49 +2327,30 @@ for _op in (:(+), :(Base.add_sum))
         },
     )
     @eval function frule!!(
-        ::Dual{typeof(Core.kwcall)},
+        kc::Dual{typeof(Core.kwcall)},
         kw::Dual{<:NamedTuple},
         ::Dual{typeof(mapreduce)},
         f::Dual,
         ::Dual{typeof($_op)},
         x::Dual{<:CuMaybeComplexArray},
     )
-        pkw = primal(kw)
-        _check_reduction_identity(sum, pkw)
-        _check_reduction_init(tangent(kw))
-        _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
-        out = frule!!(Dual(sum, NoTangent()), f, x)
-        _check_mapreduce_init_type(pkw, primal(out))
-        return out
+        return frule!!(kc, kw, Dual(sum, NoTangent()), f, x)
     end
     @eval function rrule!!(
-        ::CoDual{typeof(Core.kwcall)},
+        kc::CoDual{typeof(Core.kwcall)},
         kw::CoDual{<:NamedTuple},
         ::CoDual{typeof(mapreduce)},
         f::CoDual,
         ::CoDual{typeof($_op)},
         x::CoDual{<:CuMaybeComplexArray},
     )
-        pkw = primal(kw)
-        _check_reduction_identity(sum, pkw)
-        _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
-        kw_rdata = zero_rdata(pkw)
-        y, pb!! = rrule!!(zero_fcodual(sum), f, x)
-        _check_mapreduce_init_type(pkw, primal(y))
+        y, pb!! = rrule!!(kc, kw, zero_fcodual(sum), f, x)
         function mapreduce_kw_pb!!(dy)
-            _, r_f, r_x = pb!!(dy)          # delegate pullback: (sum, f, x)
-            return NoRData(), kw_rdata, NoRData(), r_f, NoRData(), r_x
+            _, r_kw, _, r_f, r_x = pb!!(dy)
+            return NoRData(), r_kw, NoRData(), r_f, NoRData(), r_x
         end
         return y, mapreduce_kw_pb!!
     end
-end
-function _throw_gpu_mapreduce_dims()
-    return _throw_gpu_argument_error(
-        "Mooncake: keyword mapreduce(f, op, x; dims) on CuArray is not yet differentiable, " *
-        "for the same reason keyword sum(f, x; dims) is not: it needs the mapped rule's " *
-        "NDual machinery combined with per-slice geometry. " *
-        _UNIMPL_MSG,
-    )
 end
 
 # Catch-all rules for unsupported operators — give a clear error rather than letting
@@ -2610,18 +2580,50 @@ function rrule!!(
     return CoDual(y, dy_out), sum_kw_array_pb!!
 end
 
-# sum(f, x; dims): the mapped keyword spelling needs the NDual machinery of the
-# sum(f, x) rule combined with per-slice geometry; not yet written.
+@is_primitive(
+    MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),Any,CuMaybeComplexArray},
+)
+function frule!!(
+    ::Dual{typeof(Core.kwcall)},
+    kw::Dual{<:NamedTuple},
+    ::Dual{typeof(sum)},
+    f::Dual,
+    x::Dual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    _check_reduction_identity(sum, pkw)
+    _check_reduction_init(tangent(kw))
+    return _gpu_sum_f_frule(primal(f), x, pkw)
+end
+function rrule!!(
+    ::CoDual{typeof(Core.kwcall)},
+    kw::CoDual{<:NamedTuple},
+    ::CoDual{typeof(sum)},
+    f::CoDual,
+    x::CoDual{<:CuMaybeComplexArray},
+)
+    pkw = primal(kw)
+    _check_reduction_identity(sum, pkw)
+    kw_rdata = zero_rdata(pkw)
+    y, pb!! = _gpu_sum_f_rrule(primal(f), x, pkw)
+    function sum_f_kw_pb!!(dy)
+        _, r_f, r_x = pb!!(dy)
+        return NoRData(), kw_rdata, NoRData(), r_f, r_x
+    end
+    return y, sum_f_kw_pb!!
+end
+
 @is_primitive(MinimalCtx, Tuple{typeof(Core.kwcall),NamedTuple,typeof(sum),Any,CuArray})
 function frule!!(
     ::Dual{typeof(Core.kwcall)},
     ::Dual{<:NamedTuple},
     ::Dual{typeof(sum)},
     ::Dual,
-    ::Dual{<:CuArray},
+    x::Dual{<:CuArray},
 )
     return _throw_gpu_argument_error(
-        "Mooncake: keyword sum(f, x; ...) on CuArray is not yet differentiable. " *
+        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
+        "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
 end
@@ -2630,10 +2632,11 @@ function rrule!!(
     ::CoDual{<:NamedTuple},
     ::CoDual{typeof(sum)},
     ::CoDual,
-    ::CoDual{<:CuArray},
+    x::CoDual{<:CuArray},
 )
     return _throw_gpu_argument_error(
-        "Mooncake: keyword sum(f, x; ...) on CuArray is not yet differentiable. " *
+        "Mooncake: sum(f, x; ...) on CuArray only supports float or complex arrays; got " *
+        "$(eltype(primal(x))). " *
         _UNIMPL_MSG,
     )
 end
@@ -3665,11 +3668,10 @@ end
     return dest
 end
 
-@inline function _gpu_decode_ndual_output(::Val{:sum}, out)
+@inline function _gpu_decode_ndual_output(::Val{:sum}, out, pkw=NamedTuple())
     is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
-    primal_out = sum(
-        Nfwd._nfwd_dual_value, out; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))
-    )
+    reduction_kw = merge((; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))), pkw)
+    primal_out = sum(Nfwd._nfwd_dual_value, out; reduction_kw...)
     return (; is_diff, primal_out)
 end
 
@@ -4127,34 +4129,28 @@ function _gpu_accumulate_jvp!(dy, flat_pargs, flat_tangents, dual_out)
     return dy
 end
 
-function _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, y)
-    dy = zero(y)
-    _gpu_foreach_jvp_leaf(
-        flat_pargs,
-        flat_tangents,
-        (meta, t_eff) -> begin
-            if meta.dof == 1
-                dy += sum(
-                    broadcast(
-                        (o, tt) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * tt,
-                        out,
-                        t_eff,
-                    ),
-                )
-            elseif meta.dof == 2
-                dy += sum(
-                    broadcast(
-                        (o, tt) ->
-                            Nfwd._nfwd_dual_partial(o, meta.slot1) * real(tt) +
-                            Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(tt),
-                        out,
-                        t_eff,
-                    ),
-                )
-            end
-        end,
-    )
-    return dy
+function _gpu_reduced_jvp(out, px, dx, y, dims)
+    meta = _gpu_leaf_slot_meta(px, 0)
+    if meta.dof == 1
+        return sum(
+            broadcast((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
+            dims,
+            init=zero(eltype(y)),
+        )
+    elseif meta.dof == 2
+        return sum(
+            broadcast(
+                (o, t) ->
+                    Nfwd._nfwd_dual_partial(o, meta.slot1) * real(t) +
+                    Nfwd._nfwd_dual_partial(o, meta.slot2) * imag(t),
+                out,
+                dx,
+            );
+            dims,
+            init=zero(eltype(y)),
+        )
+    end
+    return zero_tangent(y)
 end
 
 # Detect mixed-eltype GPU broadcasts: when CuArray leaves have different element types
@@ -4232,27 +4228,23 @@ function _gpu_accum_pullback!(
     end
 end
 
-function _gpu_accumulate_reduced_pullback!(flat_pargs, flat_fdatas, dual_out, dy)
-    offset = 0
-    for (pa, fd) in zip(flat_pargs, flat_fdatas)
-        meta = _gpu_leaf_slot_meta(pa, offset)
-        if meta.dof == 1
-            contrib = broadcast(
-                o -> real(conj(dy) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out
-            )
-            _leaf_accum_fdata!(pa, fd, contrib)
-        elseif meta.dof == 2
-            cdy = conj(dy)
-            contrib = broadcast(
-                o -> complex(
-                    real(cdy * Nfwd._nfwd_dual_partial(o, meta.slot1)),
-                    real(cdy * Nfwd._nfwd_dual_partial(o, meta.slot2)),
-                ),
-                dual_out,
-            )
-            _leaf_accum_fdata!(pa, fd, contrib)
-        end
-        offset += meta.dof
+function _gpu_reduced_pullback!(px, dx, dual_out, dy)
+    meta = _gpu_leaf_slot_meta(px, 0)
+    if meta.dof == 1
+        contrib = broadcast(
+            (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out, dy
+        )
+        _leaf_accum_fdata!(px, dx, contrib)
+    elseif meta.dof == 2
+        contrib = broadcast(
+            (o, d) -> complex(
+                real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
+                real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot2)),
+            ),
+            dual_out,
+            dy,
+        )
+        _leaf_accum_fdata!(px, dx, contrib)
     end
     return nothing
 end
