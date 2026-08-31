@@ -690,7 +690,7 @@ function test_frule_correctness(
             atol=atol,
         )
     end
-    if !any(isapprox_results)
+    if isnothing(oracle) && !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
             (
@@ -1174,7 +1174,7 @@ function test_rrule_correctness(
             atol=atol,
         )
     end
-    if !any(isapprox_results)
+    if isnothing(oracle) && !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ, ẋ_post = result
             (_dot(ȳ_delta, ẏ) + _dot(x̄_delta, ẋ_post), _dot(x̄, ẋ))
