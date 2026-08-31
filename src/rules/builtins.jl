@@ -930,8 +930,11 @@ end
     ) where {P<:Base.IEEEFloat}
         _a = primal(a)
         _b = primal(b)
-        tmp = _a > _b
         x = max_float(_a, _b)
+        # Which operand did the primitive RETURN, not which compares greater: with a NaN
+        # operand `x` is NaN and the comparison is false, so a bare test credits the other,
+        # finite operand. Mirrors `Base.max`'s rrule and this primitive's own frule.
+        tmp = isequal(x, _a) & !isequal(x, _b)
         function max_float_adjoint(dx)
             da = ifelse(tmp, dx, zero(P))
             db = ifelse(tmp, zero(P), dx)
@@ -1000,8 +1003,11 @@ end
     ) where {P<:Base.IEEEFloat}
         _a = primal(a)
         _b = primal(b)
-        tmp = _a < _b
         x = min_float(_a, _b)
+        # Which operand did the primitive RETURN, not which compares greater: with a NaN
+        # operand `x` is NaN and the comparison is false, so a bare test credits the other,
+        # finite operand. Mirrors `Base.min`'s rrule and this primitive's own frule.
+        tmp = isequal(x, _a) | !isequal(x, _b)
         function min_float_adjoint(dx)
             da = ifelse(tmp, dx, zero(P))
             db = ifelse(tmp, zero(P), dx)
@@ -2434,6 +2440,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                     f,
                     CoDual(2.0, 1.0),
                     CoDual(1.0, 3.0),
+                ),
+            )
+        end
+        # The reverse rule must credit the same operand the frule does. A bare comparison is
+        # false when the FIRST operand is NaN, so it credited the other, finite one: forward
+        # attributed to `a` and reverse to `b` for the same call. Plain primals here, not
+        # `CoDual`s: reverse needs no pinned input tangent, only the seed in `output_tangent`.
+        for (f, want) in (
+            (IntrinsicsWrappers.max_float, (NoRData(), 1.0, 0.0)),
+            (IntrinsicsWrappers.min_float, (NoRData(), 1.0, 0.0)),
+        )
+            push!(
+                test_cases,
+                (
+                    false,
+                    :none,
+                    (oracle=(value=NaN, deriv=want), output_tangent=1.0, mode=ReverseMode),
+                    f,
+                    NaN,
+                    1.0,
                 ),
             )
         end
