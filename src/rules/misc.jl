@@ -202,9 +202,13 @@ end
             # derived elementwise access, so a per-projection Array-header allocation would be
             # ~one allocation per element (the SplitEM forward-alloc regression). The backing is
             # SHARED, so mutations through the ref V land in this array's block and vice versa.
-            block_ref = getfield(getfield(getfield(V, :partials_block), :parent), :ref)
+            block_parent = getfield(getfield(V, :partials_block), :parent)
             return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
-                getfield(V.primal, :ref), block_ref, length(V.primal), 1
+                getfield(V.primal, :ref),
+                block_parent,
+                getfield(block_parent, :ref),
+                length(V.primal),
+                1,
             )
         end
         return NoDual()
@@ -240,8 +244,18 @@ end
                     ),
                 )
             end
+            parent = getfield(V, :partials_parent)
             full = if len == 0
                 NDualBlock{T,2}(undef, N, 0)
+            elseif start == 1 &&
+                getfield(parent, :ref) === bref &&
+                N * len == length(parent)
+                # The parent array already spans exactly this projection, so hand back its own
+                # storage; re-wrapping costs an array header per projection, which only 1.12's
+                # optimiser removes. The `.ref` comparison is what makes reuse safe: a
+                # reallocating resize replaces the parent's ref, leaving it over storage this
+                # ref does not address, and then only the rebuild below is correct.
+                NDualBlock{T,2}(parent, (N, len))
             else
                 flat = _new_(
                     Vector{T},

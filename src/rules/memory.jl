@@ -677,7 +677,11 @@ end
     return Lifted{MemoryRef{P},Nw}(
         y,
         NDualMemoryRef{P,Nw,Memory{P}}(
-            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
+            y,
+            getfield(v, :partials_parent),
+            getfield(v, :partials_ref),
+            getfield(v, :ncols),
+            newcol,
         ),
     )
 end
@@ -1732,6 +1736,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         test_cases,
         (false, :none, (mode=ForwardMode,), memoryref_across_realloc, collect(1.0:4.0)),
     )
+    push!(
+        test_cases,
+        (false, :none, (mode=ForwardMode,), memoryref_mem_across_realloc, collect(1.0:4.0)),
+    )
     memory = Any[slack_v]
     return test_cases, memory
 end
@@ -1753,5 +1761,17 @@ end
         push!(v, 0.0)
         pop!(v)
         return 3.0 * v[1] + Core.memoryrefget(Core.memoryrefnew(r, 2), :not_atomic, false)
+    end
+
+    # The same divergence reached through `.mem` rather than `memoryrefnew`. The write after the
+    # resize lands only in the new storage, so projecting the partials parent instead of the ref
+    # reports a derivative of 7.0 where it is 1.0.
+    function memoryref_mem_across_realloc(v)
+        r = getfield(v, :ref)
+        push!(v, 0.0)
+        pop!(v)
+        v[1] = 7.0 * v[1]
+        m = getfield(r, :mem)
+        return Core.memoryrefget(Core.memoryrefnew(m), :not_atomic, false)
     end
 end

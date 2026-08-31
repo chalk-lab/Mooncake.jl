@@ -2459,13 +2459,21 @@ end
     # alloc-free: `getfield(block, :ref)` needs no `reshape` header (the SplitEM forward-alloc
     # regression), while genuine block reconstruction (`_reconstruct_block`, bulk ops only) is
     # a `Base.wrap` off the hot path.
+    # `partials_parent` is the block's own backing array, kept alongside the ref so that
+    # projecting `.mem` over the whole backing can hand that array back instead of building a
+    # replacement header. The two are passed separately, not derived from one another: a
+    # reallocating resize (`_growend!`) replaces the parent's `.ref` while this ref still
+    # addresses the old `Memory`, so the projection compares them and only reuses the parent
+    # when they still agree.
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
+        partials_parent::Vector{Element}
         partials_ref::MemoryRef{Element}
         ncols::Int
         col::Int
         function NDualMemoryRef{Element,N,M}(
             primal::MemoryRef{Element},
+            partials_parent::Vector{Element},
             partials_ref::MemoryRef{Element},
             ncols::Int,
             col::Int,
@@ -2481,7 +2489,7 @@ end
                     "length, so there is no partials column for it.",
                 ),
             )
-            return new{Element,N,M}(primal, partials_ref, ncols, col)
+            return new{Element,N,M}(primal, partials_parent, partials_ref, ncols, col)
         end
     end
 
@@ -2496,8 +2504,9 @@ end
                 "expected the chunk width N = $N (lane-leading layout).",
             ),
         )
+        parent = getfield(block, :parent)
         return NDualMemoryRef{Element,N,M}(
-            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
+            primal, parent, getfield(parent, :ref), size(block, 2), col
         )
     end
 
