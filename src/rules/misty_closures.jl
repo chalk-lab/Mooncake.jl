@@ -90,6 +90,21 @@ end
     return MistyClosureTangent(tangent(v.captures_tangent, lane), v.dual_callable)
 end
 
+# Unlift rebuilds a reverse tangent, so it must recurse into `captures_tangent` (itself a
+# forward `Lifted` captures slot) rather than take the lane accessor: for a mutable-struct
+# capture the accessor yields the `MutableDualTangentView` write proxy, which reverse-mode
+# tangent arithmetic has no method for. The cache keys on the captures identity, so a reverse
+# rule's shared `fwds_oc`/`pb_oc` captures unlift to one tangent.
+@inline unlift(x::Lifted{P,1,MistyClosureTangent}) where {P<:MistyClosure} = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+)
+function _unlift_seed(
+    x::Lifted{P,1,MistyClosureTangent}, cache::IdDict
+) where {P<:MistyClosure}
+    v = tangent(x)
+    return MistyClosureTangent(_unlift_seed(v.captures_tangent, cache), v.dual_callable)
+end
+
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
     return MistyClosureTangent(zero_tangent_internal(p.oc.captures, d), _dual_mc(p))
 end
@@ -169,7 +184,11 @@ import .TestUtils: populate_address_map_internal, AddressMap, has_equal_data_int
 function populate_address_map_internal(
     m::AddressMap, p::MistyClosure, t::MistyClosureTangent
 )
-    return populate_address_map_internal(m, p.oc.captures, t.captures_tangent)
+    ct = t.captures_tangent
+    # `captures_tangent` is a forward `Lifted` captures slot or a reverse captures tangent, and
+    # `MistyClosureTangent`'s fields are untyped, so the shape has to be read off the value.
+    ct isa Lifted && return populate_address_map_internal(m, primal(ct), tangent(ct))
+    return populate_address_map_internal(m, p.oc.captures, ct)
 end
 
 function has_equal_data_internal(
