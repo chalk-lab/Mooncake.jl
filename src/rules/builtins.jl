@@ -947,19 +947,15 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        # `a > b` answers a different question from "which operand did the primitive return":
-        # it is false when the FIRST operand is NaN, yet `max_float_fast` returned that NaN. Ask
-        # `isequal` against the computed primal instead, as `Base.max(::NDual)` does, or the two
-        # paths hand back different partials for the same call.
+        # A bare comparison, mirroring `Base.FastMath.max_fast(::NDual)`: under `@fastmath` the
+        # tie goes to the second operand on 1.12, which `isequal` against the computed primal
+        # cannot express, and the nfwd-native path would then disagree with this one. NaN is
+        # outside FastMath's contract, so the NaN reasoning that applies to `max_float` does not
+        # apply here.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p,
-                ifelse(
-                    Mooncake.Nfwd._ndual_pick_max(primal(a), primal(b)),
-                    tangent(a).partials,
-                    tangent(b).partials,
-                ),
+                p, ifelse(primal(a) > primal(b), tangent(a).partials, tangent(b).partials)
             ),
         )
     end
@@ -1021,19 +1017,11 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = min_float_fast(primal(a), primal(b))
-        # `a < b` answers a different question from "which operand did the primitive return":
-        # it is false when the FIRST operand is NaN, yet `min_float_fast` returned that NaN. Ask
-        # `isequal` against the computed primal instead, as `Base.min(::NDual)` does, or the two
-        # paths hand back different partials for the same call.
+        # A bare comparison, mirroring `Base.FastMath.min_fast(::NDual)`; see `max_float_fast`.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
-                p,
-                ifelse(
-                    Mooncake.Nfwd._ndual_pick_min(primal(a), primal(b)),
-                    tangent(a).partials,
-                    tangent(b).partials,
-                ),
+                p, ifelse(primal(a) < primal(b), tangent(a).partials, tangent(b).partials)
             ),
         )
     end
@@ -2449,6 +2437,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                 ),
             )
         end
+        # `min_float_fast` is a different primitive from `min`, not a faster spelling: its tie
+        # goes to the SECOND operand on 1.12, which `isequal` against the computed primal cannot
+        # express — `_ndual_pick_min` gives a tie to the first. Selecting that way made this
+        # frule disagree with `Base.FastMath.min_fast(::NDual)`, so the nfwd-native and
+        # transformed paths returned different derivatives for `@fastmath min(x, 1.0)` at
+        # `x = 1.0`. No row for `max_float_fast`: within FastMath's contract (NaN excluded) the
+        # two selections agree on every tie, so such a row could not fail.
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (oracle=(value=1.0, deriv=2.0), skip_reverse=true),
+                IntrinsicsWrappers.min_float_fast,
+                CoDual(1.0, 1.0),
+                CoDual(1.0, 2.0),
+            ),
+        )
     end
     throwing_rows, throwing_memory = _builtins_throwing_rows()
     test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
