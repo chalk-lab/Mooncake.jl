@@ -105,14 +105,134 @@ const GPUBackedArray{P,N} = Union{
 end
 _maximum(x, dims, init) = maximum(x; dims, init)
 
-@from_rrule(
-    MinimalCtx,
-    Tuple{
-        typeof(batched_mul),
-        Union{Array{P,3},AbstractGPUArray{P,3}},
-        Union{Array{P,3},AbstractGPUArray{P,3}},
-    } where {P<:IEEEFloat},
-)
+const BatchedMulArray{P} = Union{Array{P,3},AbstractGPUArray{P,3}}
+
+@is_primitive MinimalCtx Tuple{
+    typeof(batched_mul),BatchedMulArray{P},BatchedMulArray{P}
+} where {P<:IEEEFloat}
+
+function frule!!(
+    ::Lifted{typeof(batched_mul),Nw},
+    A::Lifted{<:BatchedMulArray{P},Nw},
+    B::Lifted{<:BatchedMulArray{P},Nw},
+) where {P<:IEEEFloat,Nw}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    y = batched_mul(pA, pB)
+    out = zero_lifted(Val(Nw), y)
+    _, dy = arrayify(out)
+    # `dA_k * B + A * dB_k`, per lane: the map is lane-invariant, the directions are not.
+    for k in 1:Nw
+        NNlib.batched_mul!(dy[k], dA[k], pB, one(P), zero(P))
+        NNlib.batched_mul!(dy[k], pA, dB[k], one(P), one(P))
+    end
+    return out
+end
+
+function rrule!!(
+    ::CoDual{typeof(batched_mul)},
+    A::CoDual{<:BatchedMulArray{P}},
+    B::CoDual{<:BatchedMulArray{P}},
+) where {P<:IEEEFloat}
+    pA, dA = arrayify(A)
+    pB, dB = arrayify(B)
+    y = batched_mul(pA, pB)
+    dy = zero(y)
+    function batched_mul_pullback!!(::NoRData)
+        if size(pA, 3) == 1 && size(dy, 3) != 1
+            dA .+= sum(batched_mul(dy, NNlib.batched_adjoint(pB)); dims=3)
+        else
+            NNlib.batched_mul!(dA, dy, NNlib.batched_adjoint(pB), one(P), one(P))
+        end
+        if size(pB, 3) == 1 && size(dy, 3) != 1
+            dB .+= sum(batched_mul(NNlib.batched_adjoint(pA), dy); dims=3)
+        else
+            NNlib.batched_mul!(dB, NNlib.batched_adjoint(pA), dy, one(P), one(P))
+        end
+        return NoRData(), NoRData(), NoRData()
+    end
+    return CoDual(y, dy), batched_mul_pullback!!
+end
+
+@is_primitive MinimalCtx Tuple{
+    typeof(NNlib._affine_normalize),
+    DenseArray{P},
+    DenseArray{P},
+    DenseArray{P},
+    DenseArray{P},
+    DenseArray{P},
+    P,
+} where {P<:IEEEFloat}
+
+function frule!!(
+    ::Lifted{typeof(NNlib._affine_normalize),Nw},
+    x::Lifted{<:DenseArray{P},Nw},
+    mean::Lifted{<:DenseArray{P},Nw},
+    variance::Lifted{<:DenseArray{P},Nw},
+    scale::Lifted{<:DenseArray{P},Nw},
+    bias::Lifted{<:DenseArray{P},Nw},
+    eps::Lifted{P,Nw},
+) where {P<:IEEEFloat,Nw}
+    px, dx = arrayify(x)
+    pmean, dmean = arrayify(mean)
+    pvariance, dvariance = arrayify(variance)
+    pscale, dscale = arrayify(scale)
+    pbias, dbias = arrayify(bias)
+    peps = primal(eps)
+    # Lane-independent: computed once, reused by every lane.
+    centered = px .- pmean
+    inv_std = inv.(sqrt.(pvariance .+ peps))
+    y = pscale .* centered .* inv_std .+ pbias
+    out = zero_lifted(Val(Nw), y)
+    _, dy = arrayify(out)
+    for k in 1:Nw
+        dy[k] .=
+            dscale[k] .* centered .* inv_std .+ pscale .* (dx[k] .- dmean[k]) .* inv_std .-
+            P(0.5) .* pscale .* centered .* inv_std .^ 3 .*
+            (dvariance[k] .+ tangent(eps, k)) .+ dbias[k]
+    end
+    return out
+end
+
+function rrule!!(
+    ::CoDual{typeof(NNlib._affine_normalize)},
+    x::CoDual{<:DenseArray{P}},
+    mean::CoDual{<:DenseArray{P}},
+    variance::CoDual{<:DenseArray{P}},
+    scale::CoDual{<:DenseArray{P}},
+    bias::CoDual{<:DenseArray{P}},
+    eps::CoDual{P},
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    pmean, dmean = arrayify(mean)
+    pvariance, dvariance = arrayify(variance)
+    pscale, dscale = arrayify(scale)
+    pbias, dbias = arrayify(bias)
+    peps = primal(eps)
+    centered = px .- pmean
+    inv_std = inv.(sqrt.(pvariance .+ peps))
+    y = pscale .* centered .* inv_std .+ pbias
+    dy = zero(y)
+    function affine_normalize_pullback!!(::NoRData)
+        common = dy .* pscale .* inv_std
+        dx .+= common
+        dmean .+= NNlib._unbroadcast(-common, dmean)
+        variance_cotangent = -P(0.5) .* common .* centered .* inv_std .^ 2
+        dvariance .+= NNlib._unbroadcast(variance_cotangent, dvariance)
+        dscale .+= NNlib._unbroadcast(dy .* centered .* inv_std, dscale)
+        dbias .+= NNlib._unbroadcast(dy, dbias)
+        return (
+            NoRData(),
+            NoRData(),
+            NoRData(),
+            NoRData(),
+            NoRData(),
+            NoRData(),
+            sum(variance_cotangent),
+        )
+    end
+    return CoDual(y, dy), affine_normalize_pullback!!
+end
 # At `p ≤ 0` `dropout` returns its input itself, where ChainRules' rrule allocates and draws
 # from `rng` regardless. The `===` is checked, not assumed, because if that fast path ever
 # allocates, returning the input would alias where the primal does not.
@@ -585,6 +705,65 @@ function rrule!!(
     return x, bias_act_id_pb!!
 end
 
+# Handle Flux's common non-identity activations directly to avoid the generic NDual broadcast
+# machinery. Like the identity rule above, these rules restore `x` during the pullback.
+const GPUFastActivation = Union{typeof(tanh),typeof(tanh_fast)}
+@is_primitive MinimalCtx Tuple{
+    typeof(bias_act!),GPUFastActivation,AbstractGPUArray{P},AbstractGPUArray{P}
+} where {P<:IEEEFloat}
+
+@inline function _tanh_fast_derivative(x)
+    u = exp(-2 * abs(x))
+    return 4u / (one(x) + u)^2
+end
+
+@inline _bias_act_derivative(::GPUFastActivation, x) = _tanh_fast_derivative(x)
+
+function frule!!(
+    ::Lifted{typeof(bias_act!),Nw},
+    σ::Lifted{<:GPUFastActivation,Nw},
+    x::Lifted{<:AbstractGPUArray{P},Nw},
+    b::Lifted{<:AbstractGPUArray{P},Nw},
+) where {P<:IEEEFloat,Nw}
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
+    pσ = primal(σ)
+    # The factor reads the PRE-update primal, so it is taken before `bias_act!` overwrites it,
+    # and the in-place primal update happens once, after the lanes: repeating it inside the
+    # loop would corrupt the shared primal for every lane after the first.
+    factor = _bias_act_derivative.(pσ, px .+ pb)
+    for k in 1:Nw
+        dx[k] .= factor .* (dx[k] .+ db[k])
+    end
+    bias_act!(pσ, px, pb)
+    return x
+end
+
+function rrule!!(
+    ::CoDual{typeof(bias_act!)},
+    σ::CoDual{<:GPUFastActivation},
+    x::CoDual{<:AbstractGPUArray{P}},
+    b::CoDual{<:AbstractGPUArray{P}},
+) where {P<:IEEEFloat}
+    px, dx = arrayify(x)
+    pb, db = arrayify(b)
+    pσ = primal(σ)
+    old_px = copy(px)
+    bias_act!(pσ, px, pb)
+    broadcast_dims = Tuple(filter(d -> size(pb, d) == 1, 1:ndims(px)))
+    function gpu_bias_act_pb!!(::NoRData)
+        dx .*= _bias_act_derivative.(pσ, old_px .+ pb)
+        if isempty(broadcast_dims)
+            db .+= dx
+        else
+            db .+= reshape(sum(dx; dims=broadcast_dims), size(pb))
+        end
+        copyto!(px, old_px)
+        return NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return x, gpu_bias_act_pb!!
+end
+
 # σ is smooth, but tracing the primal is wrong at both ends. At zero it routes through
 # `abs(x)`, so AD picks up `sign(0) == 0` and reports `0` for `1/4`. When saturated the
 # textbook `σ(x) * (1 - σ(x))` collapses: floats near `1.0` are spaced `eps` apart, so once
@@ -636,14 +815,12 @@ function Mooncake.frule!!(
     ::Lifted{typeof(tanh_fast),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
     px = primal(x)
-    u = exp(-2 * abs(px))
-    d = 4u / (one(P) + u)^2
+    d = _tanh_fast_derivative(px)
     y = tanh_fast(px)
     return Lifted{P,N}(y, NDual{P,N}(y, d .* tangent(x).partials))
 end
 function Mooncake.rrule!!(::CoDual{typeof(tanh_fast)}, x::CoDual{P}) where {P<:IEEEFloat}
-    u = exp(-2 * abs(primal(x)))
-    d = 4u / (one(P) + u)^2
+    d = _tanh_fast_derivative(primal(x))
     tanh_fast_pb!!(dΩ::P) = NoRData(), dΩ * d
     return zero_fcodual(tanh_fast(primal(x))), tanh_fast_pb!!
 end
