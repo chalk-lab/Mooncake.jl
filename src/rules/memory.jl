@@ -677,7 +677,7 @@ end
     return Lifted{MemoryRef{P},Nw}(
         y,
         NDualMemoryRef{P,Nw,Memory{P}}(
-            y, getfield(v, :partials_parent), getfield(v, :ncols), newcol
+            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
         ),
     )
 end
@@ -1728,6 +1728,10 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             slack_v,
         ),
     )
+    push!(
+        test_cases,
+        (false, :none, (mode=ForwardMode,), memoryref_across_realloc, collect(1.0:4.0)),
+    )
     memory = Any[slack_v]
     return test_cases, memory
 end
@@ -1738,5 +1742,16 @@ end
     # The primal read is legal there (uninitialised capacity); the block read would not be.
     function memoryref_into_capacity_slack(v)
         return Core.memoryrefget(Core.memoryrefnew(getfield(v, :ref), 5), :not_atomic, true)
+    end
+
+    # A `MemoryRef` held across a reallocating resize still addresses the OLD `Memory`, so its
+    # derivative must too. Deriving the partials ref from a live parent array retargets it at
+    # the new storage instead, which reads the wrong element and reports 1.0 here where the
+    # directional derivative is 4.0 -- silently, since the primal stays correct.
+    function memoryref_across_realloc(v)
+        r = getfield(v, :ref)
+        push!(v, 0.0)
+        pop!(v)
+        return 3.0 * v[1] + Core.memoryrefget(Core.memoryrefnew(r, 2), :not_atomic, false)
     end
 end

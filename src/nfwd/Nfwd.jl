@@ -2459,19 +2459,14 @@ end
     # alloc-free: `getfield(block, :ref)` needs no `reshape` header (the SplitEM forward-alloc
     # regression), while genuine block reconstruction (`_reconstruct_block`, bulk ops only) is
     # a `Base.wrap` off the hot path.
-    # `partials_parent` is the block's own backing array, not just a ref into it: projecting
-    # `.mem` needs an array over that storage, and keeping the header means handing the same one
-    # back rather than building a replacement. `partials_ref` is derived from it here so the two
-    # cannot describe different storage.
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
-        partials_parent::Vector{Element}
         partials_ref::MemoryRef{Element}
         ncols::Int
         col::Int
         function NDualMemoryRef{Element,N,M}(
             primal::MemoryRef{Element},
-            partials_parent::Vector{Element},
+            partials_ref::MemoryRef{Element},
             ncols::Int,
             col::Int,
         ) where {Element<:NDualEltype,N,M<:Memory{Element}}
@@ -2486,9 +2481,7 @@ end
                     "length, so there is no partials column for it.",
                 ),
             )
-            return new{Element,N,M}(
-                primal, partials_parent, getfield(partials_parent, :ref), ncols, col
-            )
+            return new{Element,N,M}(primal, partials_ref, ncols, col)
         end
     end
 
@@ -2504,7 +2497,7 @@ end
             ),
         )
         return NDualMemoryRef{Element,N,M}(
-            primal, getfield(block, :parent), size(block, 2), col
+            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
         )
     end
 
