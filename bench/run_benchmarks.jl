@@ -346,6 +346,16 @@ function combine_results(result, tag, _range, default_range)
     )
 end
 
+# These benchmarks time the reverse rule against the primal, so a case that cannot run in
+# reverse has nothing to measure: a guard case must raise, and `skip_reverse` marks a rule
+# reverse mode refuses outright. Both share the registry with ordinary cases.
+function _benchmarkable(case)
+    opts = case[3]
+    isnothing(TestUtils._case_throws(opts)) || return false
+    TestUtils._case_skip_reverse(opts) && return false
+    return TestUtils._case_mode(opts) !== Mooncake.ForwardMode
+end
+
 function benchmark_hand_written_rrules!!(rng_ctor)
     test_case_data = map([
         :avoiding_non_differentiable_code,
@@ -360,9 +370,7 @@ function benchmark_hand_written_rrules!!(rng_ctor)
         :new,
     ]) do s
         test_cases, memory = hand_written_rule_test_cases(rng_ctor, Val(s))
-        # Guard cases live in the same registry as the rest. There is nothing to time in a
-        # call that must raise, and running one raises the guard it exists to assert.
-        test_cases = filter(c -> isnothing(TestUtils._case_throws(c[3])), test_cases)
+        test_cases = filter(_benchmarkable, test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
@@ -373,7 +381,7 @@ end
 function benchmark_derived_rrules!!(rng_ctor)
     test_case_data = map([:test_resources]) do s
         test_cases, memory = derived_rule_test_cases(rng_ctor, Val(s))
-        test_cases = filter(c -> isnothing(TestUtils._case_throws(c[3])), test_cases)
+        test_cases = filter(_benchmarkable, test_cases)
         ranges = map(x -> x[3], test_cases)
         tags = fill(nothing, length(test_cases))
         return map(x -> x[4:end], test_cases), memory, ranges, tags
