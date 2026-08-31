@@ -14,28 +14,28 @@
 </div>
 
 `Mooncake.jl` is an automatic differentiation (AD) package written entirely in
-Julia. Its support for mutation allows Mooncake to differentiate most numerical
-Julia code without hand-written rules. Unsupported operations fail explicitly
-rather than silently returning an incorrect gradient.
+Julia. Support for mutation allows it to differentiate most numerical Julia code
+without hand-written rules. Unsupported operations generally fail explicitly; the
+[known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
+describe exceptions and validity boundaries.
 
 See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for a fuller
 introduction.
 
 > [!NOTE]
 > **Performance varies by workload.** On one system, [Flux
-> benchmarks](test/integration_testing/flux/README.md) found cached Mooncake gradient
-> evaluations 2.03 times faster than Zygote on CPU across 19 models and comparable on
-> GPU, although first evaluations were substantially slower.
-> [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/main/benchmarks/posteriordb.md)
+> benchmarks](test/integration_testing/flux/README.md) found that cached Mooncake
+> gradient evaluations were 2.03 times faster than Zygote on CPU across 19 models and
+> comparable on GPU. First evaluations were substantially slower.
+> [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
 > covered all 147 PosteriorDB posteriors; Mooncake's geometric-mean runtime was 1.32
 > times Stan's. See the reports for the methods and complete results.
 
 ## Getting started
 
-Check that your Julia version is covered by Mooncake's [support
-policy](SUPPORT_POLICY.md).
+Check whether Mooncake's [support policy](SUPPORT_POLICY.md) covers your Julia version.
 
-Mooncake prepares reusable caches for repeated gradient and Hessian evaluations:
+Mooncake uses reusable caches for repeated gradient and Hessian evaluations:
 
 ```julia
 import Mooncake as MC
@@ -56,23 +56,20 @@ hess_cache = MC.prepare_hessian_cache(f, x);
 value, gradient, hessian = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 ```
 
-Preparing a cache takes some time, but subsequent calls that reuse it are fast. A cache
-is tied to each input's type and size; reuse with a differently sized input raises an
-error. See the [tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients)
-for a walkthrough and the [interface](https://chalk-lab.github.io/Mooncake.jl/stable/interface/)
-for details.
+Cache preparation takes some time, but calls that reuse the cache are fast. Each cache
+is tied to its inputs' types and sizes; passing a differently sized input raises an
+error. See the
+[tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients)
+for a walkthrough and the
+[interface](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) for details.
 
-## Contributions and support
+## Project scope
 
-In the spirit of long-lived projects such as R and TeX, we favour correctness,
-stability, and tightly scoped fixes over open-ended expansion.
+Mooncake is maintained as research software, taking long-lived projects such as R and
+TeX as models. It prioritises correctness and stability over broad feature coverage.
 
-We welcome reproducible reports of incorrect results, unexpected failures, or behaviour
-at odds with the documented scope. Feature requests, redesign proposals, and debugging
-queries without a minimal reproducible example are generally outside the support we can
-provide. The same applies to requests for rules beyond Julia Base and behaviour listed
-under [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/).
-Such issues will usually be closed.
-
-Accounts involved in spam or abuse will be blocked and reported. Other moderation is
-undertaken at our discretion, as capacity permits.
+Reproducible cases of incorrect results or unexpected failures within the documented
+scope guide further work. Rules for operations outside Julia Base, broad redesigns,
+general debugging support, and the documented [known
+limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/) are not
+part of the current programme of work.
