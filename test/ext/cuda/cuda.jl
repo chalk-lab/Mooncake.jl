@@ -136,6 +136,13 @@ end
                 @test all(iszero, tangent_p)
             end
         end
+
+        @testset "CuArray tangent inner products count aliases once" begin
+            x = CuArray(Float32[1, 2])
+            y = CuArray(Float32[3, 4])
+            @test Mooncake._dot((x, x), (y, y)) == Float64(real(dot(x, y)))
+        end
+
         rng = StableRNG(123)
         _rand = (rng, size...) -> CuArray(randn(rng, size...))
         _rand_pos = (rng, size...) -> CuArray(abs.(randn(rng, size...)) .+ 1.0e-3)

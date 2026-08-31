@@ -547,6 +547,7 @@ end
 function _dot_internal(c::MaybeCache, x::P, y::P) where {P<:CuMaybeComplexArray}
     key = (x, y)
     haskey(c, key) && return c[key]::Float64
+    c[key] = 0.0
     return Float64(real(dot(x, y)))
 end
 function _scale_internal(c::MaybeCache, x::Float64, y::P) where {P<:CuMaybeComplexArray}
