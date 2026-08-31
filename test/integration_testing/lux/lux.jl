@@ -26,9 +26,9 @@ const _gpu_disabled = :disabled
 #      cotangents separately for each differentiable broadcast leaf. An explicit
 #      reverse-mode `rrule!!` avoids these costs for common operations.
 #
-# Models marked _gpu_interface_only skip numerical checks whose generic perturbations
-# leave the primal domain. Models marked _gpu_disabled fall into one or both of the
-# above categories.
+# Models marked _gpu_interface_only skip comparison against a finite-difference reference
+# because its perturbations can leave the primal domain. Models marked _gpu_disabled fall
+# into one or both of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 function _model_name(f)
