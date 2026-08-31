@@ -109,56 +109,40 @@ const TEST_MODELS = Any[
         ConvTranspose((3, 3), 3 => 2; stride=2),
         rand(sr(15), P, 5, 5, 3, 1),
     ),
-    # Recurrent outputs alias the returned carry, which prevents numerical checking.
+    (false, _gpu_enabled, StatefulRecurrentCell(RNNCell(3 => 5)), rand(sr(16), P, 3, 2)),
     (
         false,
-        _gpu_interface_only,
-        StatefulRecurrentCell(RNNCell(3 => 5)),
-        rand(sr(16), P, 3, 2),
-    ),
-    (
-        false,
-        _gpu_interface_only,
+        _gpu_enabled,
         StatefulRecurrentCell(RNNCell(3 => 5, gelu)),
         rand(sr(17), P, 3, 2),
     ),
     (
         false,
-        _gpu_interface_only,
+        _gpu_enabled,
         StatefulRecurrentCell(RNNCell(3 => 5, gelu; use_bias=false)),
         rand(sr(18), P, 3, 2),
     ),
     (
         false,
-        _gpu_interface_only,
+        _gpu_enabled,
         Chain(
             StatefulRecurrentCell(RNNCell(3 => 5)), StatefulRecurrentCell(RNNCell(5 => 3))
         ),
         rand(sr(19), P, 3, 2),
     ),
+    (false, _gpu_enabled, StatefulRecurrentCell(LSTMCell(3 => 5)), rand(sr(20), P, 3, 2)),
     (
         false,
-        _gpu_interface_only,
-        StatefulRecurrentCell(LSTMCell(3 => 5)),
-        rand(sr(20), P, 3, 2),
-    ),
-    (
-        false,
-        _gpu_interface_only,
+        _gpu_enabled,
         Chain(
             StatefulRecurrentCell(LSTMCell(3 => 5)), StatefulRecurrentCell(LSTMCell(5 => 3))
         ),
         rand(sr(21), P, 3, 2),
     ),
+    (false, _gpu_enabled, StatefulRecurrentCell(GRUCell(3 => 5)), rand(sr(22), P, 3, 10)),
     (
         false,
-        _gpu_interface_only,
-        StatefulRecurrentCell(GRUCell(3 => 5)),
-        rand(sr(22), P, 3, 10),
-    ),
-    (
-        false,
-        _gpu_interface_only,
+        _gpu_enabled,
         Chain(
             StatefulRecurrentCell(GRUCell(3 => 5)), StatefulRecurrentCell(GRUCell(5 => 3))
         ),
@@ -184,7 +168,7 @@ const TEST_MODELS = Any[
         Chain(Conv((3, 3), 2 => 6, tanh), BatchNorm(6)),
         randn(sr(28), P, 6, 6, 2, 2),
     ),
-    # The 2D GPU primal rejects the checker's complex perturbations.
+    # Finite differences can perturb GroupNorm's positive epsilon outside its domain.
     (
         false,
         _gpu_interface_only,
