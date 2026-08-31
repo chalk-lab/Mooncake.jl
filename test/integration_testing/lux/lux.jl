@@ -8,9 +8,8 @@ using Mooncake.TestUtils: test_rule
 sr(x) = StableRNG(x)
 
 const P = Float32
-const _gpu_enabled = :correctness
-const _gpu_interface_only = :interface
-const _gpu_disabled = :disabled
+const _gpu_enabled = true
+const _gpu_disabled = false
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
@@ -26,9 +25,9 @@ const _gpu_disabled = :disabled
 #      cotangents separately for each differentiable broadcast leaf. An explicit
 #      reverse-mode `rrule!!` avoids these costs for common operations.
 #
-# Models marked _gpu_interface_only skip comparison against a finite-difference reference
-# because its perturbations can leave the primal domain. Models marked _gpu_disabled fall
-# into one or both of the above categories.
+# Models marked `:interface` skip comparison against a finite-difference reference because
+# its perturbations can leave the primal domain. Models marked _gpu_disabled fall into one
+# or both of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 function _model_name(f)
@@ -167,18 +166,8 @@ const TEST_MODELS = Any[
         randn(sr(28), P, 6, 6, 2, 2),
     ),
     # Finite differences can perturb GroupNorm's positive epsilon outside its domain.
-    (
-        false,
-        _gpu_interface_only,
-        Chain(Dense(2, 4), GroupNorm(4, 2, gelu)),
-        randn(sr(29), P, 2, 3),
-    ),
-    (
-        false,
-        _gpu_interface_only,
-        Chain(Dense(2, 4), GroupNorm(4, 2)),
-        randn(sr(30), P, 2, 3),
-    ),
+    (false, :interface, Chain(Dense(2, 4), GroupNorm(4, 2, gelu)), randn(sr(29), P, 2, 3)),
+    (false, :interface, Chain(Dense(2, 4), GroupNorm(4, 2)), randn(sr(30), P, 2, 3)),
     (
         false,
         _gpu_enabled,
@@ -256,7 +245,7 @@ if CUDA.functional()
                 ps,
                 st;
                 is_primitive=false,
-                interface_only=(interface_only || gpu_status === _gpu_interface_only),
+                interface_only=(interface_only || gpu_status === :interface),
                 unsafe_perturb=true,
                 mode=Mooncake.ReverseMode,
             )
