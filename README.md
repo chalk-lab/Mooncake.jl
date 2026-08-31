@@ -73,3 +73,9 @@ scope guide further work. Rules for operations outside Julia Base, broad redesig
 general debugging support, and the documented [known
 limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/) are not
 part of the current programme of work.
+
+## Licensing
+
+Mooncake is licensed under the [MIT License](LICENSE). Its required and optional
+dependencies are licensed separately and may impose additional terms on redistributed
+applications or binaries. See [`Project.toml`](Project.toml) for the dependency list.
