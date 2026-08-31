@@ -63,19 +63,17 @@ const _gpu_disabled = false
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
-# When Mooncake lacks an explicit rule for a GPU operation, it falls back to
-# differentiating through the CUDA kernel via a forward-mode (chunked) broadcast
-# using NDual{T,N} dual numbers inside GPU kernels.  N = total real DOFs across all
-# broadcast inputs (1 per Float arg, 2 per Complex arg).  This works for pure
-# element-wise Julia functions, but has two important limitations:
+# Without an explicit rule for a GPU broadcast, Mooncake evaluates the fused scalar
+# function on forward-mode `NDual{T,N}` values in one GPU kernel. `N` is the number of
+# real degrees of freedom per broadcast element: one per real operand and two per complex
+# operand. This covers pure element-wise Julia functions, subject to two limitations:
 #
 #   1. COVERAGE — GPU operations without differentiable Julia IR need explicit rules.
 #
-#   2. PERFORMANCE — forward-mode broadcast is essentially chunked forward-mode AD:
-#      it requires one GPU kernel launch per output DOF.  For models with many
-#      parameters, this scales as O(params) in memory and time, which is prohibitive
-#      for large models even when it compiles.  Fix: add reverse-mode rrule!! so
-#      Mooncake runs a single backward pass regardless of parameter count.
+#   2. PERFORMANCE — widening each element by `N` partials increases arithmetic,
+#      register pressure, and compiled code size. The pullback also accumulates
+#      cotangents separately for each differentiable broadcast leaf. An explicit
+#      reverse-mode `rrule!!` avoids these costs for common operations.
 #
 # Models marked _gpu_disabled fall into one or both of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────

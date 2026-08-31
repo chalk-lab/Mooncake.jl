@@ -3488,8 +3488,8 @@ end
 #   - `Base.Broadcast.flatten` fuses nested broadcast trees into one function,
 #     so a single kernel handles arbitrarily deep `.`-fusion (e.g. sin.(x .^ 2)).
 #
-# Cost: one fused GPU kernel evaluating f with N extra NDual slots (N = total real DOFs
-# across all CuArray args).  Comparable to a single NDual pass over f.
+# Cost: one fused GPU kernel evaluating f with one NDual slot per real operand and two
+# per complex operand. Wider elements increase per-thread arithmetic and register use.
 #
 # Analogy with JAX vmap: JAX's vmap lifts f(x_scalar) -> f(x_batch) by adding a batch
 # dimension, using a single kernel where each thread handles one element.  We do the
