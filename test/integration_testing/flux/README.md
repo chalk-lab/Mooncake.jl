@@ -14,7 +14,7 @@ Pass `cpu` or `gpu` to select one device. A following integer selects one model,
 ## Environment
 
 ```text
-Julia 1.12.7, Flux 0.16.11, Mooncake 0.5.49 (bb27233ea), CUDA 6.3.1, cuDNN 6.3.1
+Julia 1.12.7, Flux 0.16.11, Mooncake 0.5.51 (ed99f98b0-dirty), CUDA 6.3.1, cuDNN 6.3.1
 aarch64-linux-gnu; CPU: Cortex-A725 + Cortex-X925; GPU: NVIDIA GB10
 1 Julia thread(s); BLAS lbt, 1 thread(s)
 2.0-second warm budget; 32x input workload
@@ -34,30 +34,30 @@ Inputs are enlarged by a factor of 32, and Flux layers run in test mode. `Mc / Z
                                                            ---------------------------------  ---------------------------------
 Model                                                           Zygote   Mooncake   Mc / Zyg       Zygote   Mooncake   Mc / Zyg
 -------------------------------------------------------------------------------------------------------------------------------
-Dense(2 => 4)                                                 693.0 ms     12.5 s     17.99x       4.0 us   976.0 ns      0.24x
-Chain(Dense(2 => 4, tanh), Dense(4 => 3))                       1.05 s     16.1 s     15.31x      8.42 us    3.46 us      0.41x
-f64(Chain(Dense(2 => 4), Dense(4 => 2)))                      784.0 ms     13.1 s     16.67x      8.34 us    2.08 us      0.25x
-Flux.Scale(4, abs2)                                           828.0 ms     15.6 s     18.89x      3.66 us    4.67 us      1.28x
-Conv((3, 3), 2 => 3)                                            1.42 s     17.8 s     12.55x      22.4 us    20.7 us      0.92x
-Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh))         1.88 s     20.7 s     11.04x      69.4 us    64.1 us      0.92x
-Chain(Conv((4, 4), 2 => 2), MeanPool((5, 5)))                   2.93 s     20.3 s      6.93x     307.0 us   300.0 us      0.98x
-Maxout(Dense(5 => 4, tanh), 3)                                  4.76 s     18.0 s      3.78x     138.0 us    11.4 us      0.08x
-SkipConnection(Dense(2 => 2), vcat)                           883.0 ms     17.5 s     19.77x      5.68 us    5.84 us      1.03x
-Bilinear((2, 2) => 3)                                           1.29 s     15.8 s     12.28x      14.9 us    3.06 us      0.21x
-ConvTranspose((3, 3), 3 => 2)                                   1.43 s     18.0 s     12.61x      62.1 us    62.8 us      1.01x
-LayerNorm(2)                                                    3.88 s     23.7 s      6.11x      38.8 us    55.0 us      1.42x
-BatchNorm(2)                                                    1.45 s     22.4 s     15.45x      15.4 us    17.8 us      1.15x
-MultiHeadAttention(16)                                          13.0 s     27.9 s      2.15x      2.22 ms    3.18 ms      1.44x
-RNN(3 => 2)                                                     2.87 s     36.9 s     12.86x      1.62 ms   311.0 us      0.19x
-LSTM(3 => 5)                                                    5.02 s     49.6 s      9.88x      4.11 ms    1.73 ms      0.42x
-GRU(3 => 5)                                                     5.23 s     52.4 s     10.02x      39.8 ms    19.1 ms      0.48x
-Chain(RNN(3 => 4), RNN(4 => 3))                                 3.08 s     39.8 s     12.93x      3.45 ms   633.0 us      0.18x
-Chain(LSTM(3 => 5), LSTM(5 => 3))                               5.23 s     51.4 s      9.82x      7.64 ms    3.59 ms      0.47x
+Dense(2 => 4)                                                 693.0 ms     12.5 s     18.02x      3.98 us   960.0 ns      0.24x
+Chain(Dense(2 => 4, tanh), Dense(4 => 3))                       1.05 s     16.2 s     15.52x      8.27 us    3.44 us      0.42x
+f64(Chain(Dense(2 => 4), Dense(4 => 2)))                      783.0 ms     13.1 s     16.74x      8.26 us    1.76 us      0.21x
+Flux.Scale(4, abs2)                                           828.0 ms     15.7 s     18.91x      3.71 us    4.69 us      1.26x
+Conv((3, 3), 2 => 3)                                            1.42 s     17.7 s     12.50x      22.3 us    20.5 us      0.92x
+Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh))         1.87 s     20.4 s     10.89x      69.5 us    64.7 us      0.93x
+Chain(Conv((4, 4), 2 => 2), MeanPool((5, 5)))                   2.92 s     20.3 s      6.95x     308.0 us   300.0 us      0.98x
+Maxout(Dense(5 => 4, tanh), 3)                                  4.76 s     18.0 s      3.79x     136.0 us    11.4 us      0.08x
+SkipConnection(Dense(2 => 2), vcat)                           881.0 ms     17.5 s     19.82x      5.65 us    5.84 us      1.03x
+Bilinear((2, 2) => 3)                                           1.28 s     15.5 s     12.07x      14.9 us    2.99 us      0.20x
+ConvTranspose((3, 3), 3 => 2)                                   1.45 s     18.2 s     12.57x      62.6 us    62.8 us      1.00x
+LayerNorm(2)                                                     3.9 s     23.8 s      6.11x      39.4 us    54.6 us      1.38x
+BatchNorm(2)                                                    1.45 s     20.6 s     14.20x      15.3 us    10.1 us      0.66x
+MultiHeadAttention(16)                                          13.0 s     28.0 s      2.16x      2.23 ms    3.06 ms      1.37x
+RNN(3 => 2)                                                     2.89 s     37.0 s     12.80x      1.62 ms   313.0 us      0.19x
+LSTM(3 => 5)                                                    5.02 s     49.7 s      9.88x      4.04 ms    1.75 ms      0.43x
+GRU(3 => 5)                                                     5.24 s     52.4 s     10.00x      39.9 ms    18.1 ms      0.45x
+Chain(RNN(3 => 4), RNN(4 => 3))                                 3.09 s     39.8 s     12.87x      3.46 ms   638.0 us      0.18x
+Chain(LSTM(3 => 5), LSTM(5 => 3))                               5.23 s     51.4 s      9.82x      8.27 ms    3.56 ms      0.43x
 ===============================================================================================================================
 ```
 
-Across the 19 supported models, the geometric-mean Mooncake/Zygote ratio is 10.62 for first-gradient time and 0.518 for warm-gradient time.
-Mooncake is 1.93 times faster on warm gradients by geometric mean.
+Across the 19 supported models, the geometric-mean Mooncake/Zygote ratio is 10.57 for first-gradient time and 0.493 for warm-gradient time.
+Mooncake is 2.03 times faster on warm gradients by geometric mean.
 
 ## GPU results
 
@@ -67,27 +67,27 @@ Mooncake is 1.93 times faster on warm gradients by geometric mean.
                                                            ---------------------------------  ---------------------------------
 Model                                                           Zygote   Mooncake   Mc / Zyg       Zygote   Mooncake   Mc / Zyg
 -------------------------------------------------------------------------------------------------------------------------------
-Dense(2 => 4)                                                   5.05 s     19.4 s      3.84x     106.0 us   115.0 us      1.09x
-Chain(Dense(2 => 4, tanh), Dense(4 => 3))                       5.81 s     22.1 s      3.80x     174.0 us   231.0 us      1.33x
-f64(Chain(Dense(2 => 4), Dense(4 => 2)))                        5.13 s     19.8 s      3.85x     170.0 us   188.0 us      1.11x
-Flux.Scale(4, abs2)                                             4.73 s     18.7 s      3.96x      94.1 us   128.0 us      1.36x
-Conv((3, 3), 2 => 3)                                            8.39 s     26.5 s      3.16x     115.0 us   150.0 us      1.31x
-Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh))         10.9 s     31.5 s      2.90x     197.0 us   299.0 us      1.52x
-Chain(Conv((4, 4), 2 => 2), MeanPool((5, 5)))                   10.9 s     30.4 s      2.80x     200.0 us   222.0 us      1.11x
-Maxout(Dense(5 => 4, tanh), 3)                                  10.2 s     22.1 s      2.17x     458.0 us   447.0 us      0.98x
-SkipConnection(Dense(2 => 2), vcat)                             6.19 s     21.6 s      3.48x     135.0 us   149.0 us      1.10x
-Bilinear((2, 2) => 3)                                           6.11 s     22.1 s      3.61x     155.0 us   159.0 us      1.03x
-ConvTranspose((3, 3), 3 => 2)                                   8.63 s     27.3 s      3.17x     152.0 us   181.0 us      1.19x
-LayerNorm(2)                                                    11.7 s     29.7 s      2.53x     246.0 us   287.0 us      1.17x
-BatchNorm(2)                                                    7.51 s     22.2 s      2.96x     100.0 us   117.0 us      1.17x
-MultiHeadAttention(16)                                          22.8 s     50.6 s      2.22x     689.0 us   580.0 us      0.84x
-RNN(3 => 2)                                                     8.85 s     40.8 s      4.61x      7.86 ms    10.9 ms      1.39x
-LSTM(3 => 5)                                                    11.7 s     54.4 s      4.64x      18.1 ms    21.8 ms      1.21x
-GRU(3 => 5)                                                     12.9 s     56.7 s      4.40x     127.0 ms   149.0 ms      1.17x
-Chain(RNN(3 => 4), RNN(4 => 3))                                 9.03 s     44.5 s      4.92x      15.9 ms    21.9 ms      1.38x
-Chain(LSTM(3 => 5), LSTM(5 => 3))                               12.2 s     56.7 s      4.64x      36.2 ms    43.7 ms      1.21x
+Dense(2 => 4)                                                   5.21 s     18.2 s      3.49x     106.0 us   105.0 us      0.99x
+Chain(Dense(2 => 4, tanh), Dense(4 => 3))                       5.64 s     19.3 s      3.42x     174.0 us   186.0 us      1.07x
+f64(Chain(Dense(2 => 4), Dense(4 => 2)))                        5.16 s     18.4 s      3.55x     166.0 us   179.0 us      1.08x
+Flux.Scale(4, abs2)                                             4.92 s     17.6 s      3.58x      94.8 us    98.3 us      1.04x
+Conv((3, 3), 2 => 3)                                            8.25 s     25.1 s      3.04x     116.0 us   121.0 us      1.05x
+Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh))         10.8 s     28.3 s      2.63x     203.0 us   222.0 us      1.10x
+Chain(Conv((4, 4), 2 => 2), MeanPool((5, 5)))                   10.9 s     28.8 s      2.64x     197.0 us   195.0 us      0.99x
+Maxout(Dense(5 => 4, tanh), 3)                                  10.3 s     20.7 s      2.02x     454.0 us   331.0 us      0.73x
+SkipConnection(Dense(2 => 2), vcat)                             6.09 s     19.2 s      3.15x     130.0 us   132.0 us      1.02x
+Bilinear((2, 2) => 3)                                           5.77 s     20.2 s      3.51x     153.0 us   137.0 us      0.90x
+ConvTranspose((3, 3), 3 => 2)                                    8.5 s     25.9 s      3.04x     146.0 us   153.0 us      1.05x
+LayerNorm(2)                                                    11.2 s     26.4 s      2.35x     242.0 us   215.0 us      0.89x
+BatchNorm(2)                                                    7.17 s     21.0 s      2.93x      98.4 us   101.0 us      1.03x
+MultiHeadAttention(16)                                          22.7 s     45.9 s      2.03x     685.0 us   521.0 us      0.76x
+RNN(3 => 2)                                                     8.48 s     37.5 s      4.42x      7.68 ms    7.83 ms      1.02x
+LSTM(3 => 5)                                                    11.4 s     50.8 s      4.46x      17.4 ms    15.3 ms      0.88x
+GRU(3 => 5)                                                     12.1 s     53.2 s      4.38x     120.0 ms    93.7 ms      0.78x
+Chain(RNN(3 => 4), RNN(4 => 3))                                 8.59 s     40.7 s      4.74x      15.5 ms    15.8 ms      1.02x
+Chain(LSTM(3 => 5), LSTM(5 => 3))                               11.4 s     52.8 s      4.61x      35.8 ms    29.7 ms      0.83x
 ===============================================================================================================================
 ```
 
-Across the 19 supported models, the geometric-mean Mooncake/Zygote ratio is 3.46 for first-gradient time and 1.181 for warm-gradient time.
-Mooncake is 1.18 times slower on warm gradients by geometric mean.
+Across the 19 supported models, the geometric-mean Mooncake/Zygote ratio is 3.26 for first-gradient time and 0.952 for warm-gradient time.
+Mooncake is 1.05 times faster on warm gradients by geometric mean.
