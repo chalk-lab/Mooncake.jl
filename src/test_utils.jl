@@ -723,7 +723,7 @@ _chunk_lane_checkable(@nospecialize(_v)) = false
 # their partial storage.
 function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
     c = IdDict{Any,Any}()
-    return Mooncake.tuple_map(x) do z
+    slots = Mooncake.tuple_map(x) do z
         if z isa CoDual
             pinned = _pin_lanes(Val(N), z)
             isnothing(pinned) || return pinned
@@ -731,6 +731,22 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
         p = z isa CoDual ? primal(z) : z
         return Lifted{typeof(p),N}(p, Mooncake._randn_dual_internal(Val(N), rng, p, c))
     end
+    _check_aliased_seeds(slots)
+    return slots
+end
+
+# Two arguments over one primal must share partial storage. Forward mode cannot catch a
+# violation numerically -- independent directions on two aliased primals is a consistent
+# computation and finite differences reproduce it exactly -- so the seeds are checked
+# structurally instead. Reverse mode has no counterpart: it runs the rule on the `CoDual`s it
+# was handed, so their aliasing reaches the rule directly.
+function _check_aliased_seeds(slots::Tuple)
+    for i in eachindex(slots), j in (i + 1):lastindex(slots)
+        p = primal(slots[i])
+        (ismutable(p) && p === primal(slots[j])) || continue
+        @test tangent(slots[i]) === tangent(slots[j])
+    end
+    return nothing
 end
 
 # Width is decided here, once, so replication dispatches on the tangent's type alone. Adding a
