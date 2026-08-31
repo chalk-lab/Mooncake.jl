@@ -54,6 +54,23 @@ end
 
 include("models.jl")
 
+# ── GPU AD status notes ──────────────────────────────────────────────────────────────
+#
+# Without an explicit rule for a GPU broadcast, Mooncake evaluates the fused scalar
+# function on forward-mode `NDual{T,N}` values in one GPU kernel. `N` is the number of
+# real degrees of freedom per broadcast element: one per real operand and two per complex
+# operand. This covers pure element-wise Julia functions, subject to two limitations:
+#
+#   1. COVERAGE — GPU operations without differentiable Julia IR need explicit rules.
+#
+#   2. PERFORMANCE — widening each element by `N` partials increases arithmetic,
+#      register pressure, and compiled code size. The pullback also accumulates
+#      cotangents separately for each differentiable broadcast leaf. An explicit
+#      reverse-mode `rrule!!` avoids these costs for common operations.
+#
+# Models marked _gpu_disabled fall into one or both of the above categories.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
 # We only check that the gradient runs (interface_only=true), not correctness
 # against a reference. Correctness is tested separately in Flux's own test suite.
 @testset "mooncake gradient" begin

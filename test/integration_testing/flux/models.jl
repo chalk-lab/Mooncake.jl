@@ -5,6 +5,7 @@
 # benchmark share one model catalog without depending on Flux's internal test files.
 
 const _gpu_enabled = true
+const _gpu_disabled = false
 
 # Tuple format: (gpu_supported, model, input, name)
 const FLUX_MODELS = [
