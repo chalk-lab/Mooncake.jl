@@ -52,14 +52,7 @@ test_cases = Any[(loss, ps, st, x, mask), (loss_acl, psacl, stacl, x)]
     )
 end
 
-#
-# Tests from https://github.com/FluxML/Flux.jl/blob/d15c7dc54f080dd67193e8228329d6d127952b81/test/ext_mooncake.jl
-# TEST_MODELS inlined from https://github.com/FluxML/Flux.jl/blob/master/test/test_utils.jl
-# to avoid a runtime dependency on Flux's internal test files.
-#
-
-const _gpu_enabled = true
-const _gpu_disabled = false
+include("models.jl")
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
@@ -78,99 +71,10 @@ const _gpu_disabled = false
 # Models marked _gpu_disabled fall into one or both of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
-# Tuple format: (gpu_supported, model, input, name)
-const TEST_MODELS = [
-    (_gpu_enabled, Dense(2 => 4), randn(Float32, 2), "Dense(2 => 4)"),
-    (
-        _gpu_enabled,
-        Chain(Dense(2 => 4, tanh), Dense(4 => 3)),
-        randn(Float32, 2),
-        "Chain(Dense(2 => 4, tanh), Dense(4 => 3))",
-    ),
-    (
-        _gpu_enabled,
-        f64(Chain(Dense(2 => 4), Dense(4 => 2))),
-        randn(Float64, 2, 1),
-        "f64(Chain(Dense(2 => 4), Dense(4 => 2)))",
-    ),
-    (
-        _gpu_enabled,
-        Flux.Scale([1.0f0 2.0f0 3.0f0 4.0f0], true, abs2),
-        randn(Float32, 2),
-        "Flux.Scale(4, abs2)",
-    ),
-    (
-        _gpu_enabled,
-        Conv((3, 3), 2 => 3),
-        randn(Float32, 3, 3, 2, 1),
-        "Conv((3, 3), 2 => 3)",
-    ),
-    (
-        _gpu_enabled,
-        Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh)),
-        rand(Float32, 5, 5, 2, 1),
-        "Chain(Conv((3, 3), 2 => 3), Conv((3, 3), 3 => 1, tanh))",
-    ),
-    (
-        _gpu_enabled,
-        Chain(Conv((4, 4), 2 => 2; pad=SamePad()), MeanPool((5, 5); pad=SamePad())),
-        rand(Float32, 5, 5, 2, 2),
-        "Chain(Conv((4, 4), 2 => 2), MeanPool((5, 5)))",
-    ),
-    (
-        _gpu_enabled,
-        Maxout(() -> Dense(5 => 4, tanh), 3),
-        randn(Float32, 5, 1),
-        "Maxout(Dense(5 => 4, tanh), 3)",
-    ),
-    (
-        _gpu_enabled,
-        SkipConnection(Dense(2 => 2), vcat),
-        randn(Float32, 2, 3),
-        "SkipConnection(Dense(2 => 2), vcat)",
-    ),
-    (
-        _gpu_enabled,
-        Flux.Bilinear((2, 2) => 3),
-        randn(Float32, 2, 1),
-        "Bilinear((2, 2) => 3)",
-    ),
-    (
-        _gpu_enabled,
-        ConvTranspose((3, 3), 3 => 2; stride=2),
-        rand(Float32, 5, 5, 3, 1),
-        "ConvTranspose((3, 3), 3 => 2)",
-    ),
-    # LayerNorm needs MooncakeCUDAExt's Statistics.varm GPU rrule!! (via LuxLib mean_var).
-    (_gpu_enabled, LayerNorm(2), randn(Float32, 2, 10), "LayerNorm(2)"),
-    (_gpu_enabled, BatchNorm(2), randn(Float32, 2, 10), "BatchNorm(2)"),  # NNlib.batchnorm rrule!! (NNlibMooncakeCUDAExt, FluxML/NNlib.jl#727)
-    (
-        _gpu_enabled,
-        first ∘ MultiHeadAttention(16),
-        randn32(16, 20, 2),
-        "MultiHeadAttention(16)",
-    ),
-    (_gpu_enabled, RNN(3 => 2), randn(Float32, 3, 2), "RNN(3 => 2)"),
-    (_gpu_enabled, LSTM(3 => 5), randn(Float32, 3, 2), "LSTM(3 => 5)"),
-    (_gpu_enabled, GRU(3 => 5), randn(Float32, 3, 10), "GRU(3 => 5)"),
-    (
-        _gpu_enabled,
-        Chain(RNN(3 => 4), RNN(4 => 3)),
-        randn(Float32, 3, 2),
-        "Chain(RNN(3 => 4), RNN(4 => 3))",
-    ),
-    (
-        _gpu_enabled,
-        Chain(LSTM(3 => 5), LSTM(5 => 3)),
-        randn(Float32, 3, 2),
-        "Chain(LSTM(3 => 5), LSTM(5 => 3))",
-    ),
-]
-
 # We only check that the gradient runs (interface_only=true), not correctness
 # against a reference. Correctness is tested separately in Flux's own test suite.
 @testset "mooncake gradient" begin
-    for (gpu_supported, model, x, name) in TEST_MODELS
+    for (gpu_supported, model, x, name) in FLUX_MODELS
         @testset "grad check $name" begin
             @info "[CPU] testing $name"
             Mooncake.TestUtils.test_rule(
@@ -187,8 +91,20 @@ const TEST_MODELS = [
 end
 
 if CUDA.functional()
+    @testset "Flux loss (GPU)" begin
+        x = cu(Float32[1, 2, 4, 8])
+        y = cu(Float32[0, 3, 2, 5])
+        cache = Mooncake.prepare_gradient_cache(Flux.Losses.mse, x, y)
+        value, (_, dx, dy) = Mooncake.value_and_gradient!!(cache, Flux.Losses.mse, x, y)
+        expected_dx = 2 .* (Array(x) .- Array(y)) ./ length(x)
+
+        @test value ≈ Flux.Losses.mse(Array(x), Array(y))
+        @test Array(dx) ≈ expected_dx
+        @test Array(dy) ≈ -expected_dx
+    end
+
     @testset "mooncake gradient (GPU)" begin
-        for (gpu_supported, model, x, name) in TEST_MODELS
+        for (gpu_supported, model, x, name) in FLUX_MODELS
             gpu_supported || continue  # GPU support not yet implemented
             eltype(x) == Float64 && continue  # Float64 CuArrays not supported
             @testset "grad check $name" begin
