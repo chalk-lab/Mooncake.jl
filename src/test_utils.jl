@@ -611,6 +611,7 @@ function test_frule_correctness(
     rtol=1e-3,
     atol=1e-3,
     max_fd_step::Union{Nothing,Real}=nothing,
+    oracle=nothing,
 )
     @nospecialize rng x_ẋ
 
@@ -635,8 +636,10 @@ function test_frule_correctness(
             ),
         )
     end
-    fd_results = Vector{Any}(undef, length(ε_list))
-    for (n, ε) in enumerate(ε_list)
+    # A case with a supplied reference skips the sweep: finite differences are inapplicable
+    # by definition there, and perturbing a NaN or infinite operand is what it cannot survive.
+    fd_results = Vector{Any}(undef, isnothing(oracle) ? length(ε_list) : 0)
+    for (n, ε) in (isnothing(oracle) ? collect(enumerate(ε_list)) : ())
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
         y′_l = x′_l[1](x′_l[2:end]...)
         x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
@@ -697,7 +700,10 @@ function test_frule_correctness(
         end
         display(vals)
     end
-    @test any(isapprox_results)
+    # The reference replaces the finite-difference comparison and nothing else: the input,
+    # output-primal and aliasing checks above hold either way.
+    isnothing(oracle) && @test any(isapprox_results)
+    return nothing
 end
 
 # Positive allowlist for the per-lane correctness oracle: V shapes whose lane tangents lift back to
@@ -825,13 +831,10 @@ function test_frule(
         interface_only || test_frule_reuse(x_ẋ...; frule)
         test_frule_interface(x_ẋ...; frule, is_primitive)
         if !interface_only
-            if isnothing(oracle)
-                test_frule_correctness(
-                    rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step
-                )
-            else
-                test_frule_oracle(x_ẋ...; frule, oracle)
-            end
+            test_frule_correctness(
+                rng, x_ẋ...; frule, unsafe_perturb, atol, rtol, max_fd_step, oracle
+            )
+            isnothing(oracle) || test_frule_oracle(x_ẋ...; frule, oracle)
         end
         test_frule_performance(perf_flag, frule, x_ẋ...; fwd_allocs_broken)
     end
@@ -918,13 +921,18 @@ function test_rrule(
     interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
     test_rrule_interface(x_x̄...; rrule)
     if !interface_only
-        if isnothing(oracle)
-            test_rrule_correctness(
-                rng, x_x̄...; rrule, unsafe_perturb, output_tangent, atol, rtol, max_fd_step
-            )
-        else
-            test_rrule_oracle(x_x̄...; rrule, oracle, output_tangent)
-        end
+        test_rrule_correctness(
+            rng,
+            x_x̄...;
+            rrule,
+            unsafe_perturb,
+            output_tangent,
+            atol,
+            rtol,
+            max_fd_step,
+            oracle,
+        )
+        isnothing(oracle) || test_rrule_oracle(x_x̄...; rrule, oracle, output_tangent)
     end
     return test_rrule_performance(perf_flag, rrule, x_x̄...)
 end
@@ -1009,6 +1017,31 @@ _chunked_v_invariant(_p, _v, ::IdDict) = true
 # comparator, so exact zero, signed zero and NaN each compare as those sites intend. Only the
 # width-1 correctness check is replaced; the chunked invariant and per-lane checks still run.
 _oracle_cmp(oracle) = haskey(oracle, :cmp) ? oracle.cmp : isequal
+
+# A misspelled or empty reference would otherwise leave a case asserting nothing while reading
+# as green, which is the failure mode a pinned reference exists to avoid.
+const _ORACLE_FIELDS = (:value, :deriv, :cmp)
+function _check_oracle(oracle)
+    oracle isa NamedTuple || throw(
+        ArgumentError(
+            "`oracle` must be a NamedTuple of $(_ORACLE_FIELDS); got $(typeof(oracle))."
+        ),
+    )
+    unknown = filter(k -> !(k in _ORACLE_FIELDS), keys(oracle))
+    isempty(unknown) || throw(
+        ArgumentError(
+            "`oracle` has unknown field(s) $(unknown); expected $(_ORACLE_FIELDS)."
+        ),
+    )
+    haskey(oracle, :value) ||
+        haskey(oracle, :deriv) ||
+        throw(
+            ArgumentError(
+                "`oracle` names neither `value` nor `deriv`, so it asserts nothing."
+            ),
+        )
+    return nothing
+end
 # `deriv` is a single reference, or `(fwd=…, rvs=…)` where one case runs in both modes: a JVP
 # and a VJP are different objects, so a both-modes case has to carry both.
 _oracle_deriv(d, key::Symbol) = d isa NamedTuple && haskey(d, key) ? d[key] : d
@@ -1049,6 +1082,7 @@ function test_rrule_correctness(
     rtol=1e-3,
     atol=1e-3,
     max_fd_step::Union{Nothing,Real}=nothing,
+    oracle=nothing,
 )
     @nospecialize rng x_x̄
 
@@ -1078,8 +1112,9 @@ function test_rrule_correctness(
             ),
         )
     end
-    fd_results = Vector{Any}(undef, length(ε_list))
-    for (n, ε) in enumerate(ε_list)
+    # Skipped when a reference is supplied: see the forward counterpart.
+    fd_results = Vector{Any}(undef, isnothing(oracle) ? length(ε_list) : 0)
+    for (n, ε) in (isnothing(oracle) ? collect(enumerate(ε_list)) : ())
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
         y′_l = x′_l[1](x′_l[2:end]...)
         x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
@@ -1147,7 +1182,8 @@ function test_rrule_correctness(
         display(vals)
         println()
     end
-    @test any(isapprox_results)
+    # The reference replaces the finite-difference comparison and nothing else.
+    isnothing(oracle) && @test any(isapprox_results)
 end
 
 get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
@@ -1669,6 +1705,7 @@ function test_rule(
 )
     # A case that must fail loudly asserts the raise instead of the correctness battery. The
     # rule is built inside the assertion because some of these throw at build time.
+    isnothing(oracle) || _check_oracle(oracle)
     if !isnothing(throws)
         err, msg = _throwing_case_expectation(throws)
         return _test_rule_throws(

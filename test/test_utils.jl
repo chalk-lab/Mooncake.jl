@@ -190,4 +190,27 @@
         # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
         @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
     end
+
+    @testset "oracle validation" begin
+        # A reference that names nothing, or names it wrongly, would leave a case asserting
+        # nothing while reading as green — the failure mode a pinned reference exists to avoid.
+        f(x, y) = x * y
+        run(o) = TestUtils.test_rule(
+            Xoshiro(1),
+            f,
+            2.0,
+            3.0;
+            is_primitive=false,
+            mode=Mooncake.ForwardMode,
+            print_results=false,
+            oracle=o,
+        )
+        @test_throws ArgumentError run((;))
+        @test_throws ArgumentError run((vlaue=6.0,))
+        @test_throws ArgumentError run((value=6.0, extra=1))
+        @test_throws ArgumentError run(6.0)
+        # A well-formed one is accepted, and the checks that are not the finite-difference
+        # comparison still run — its own assertions register in this testset.
+        run((value=6.0,))
+    end
 end
