@@ -71,15 +71,18 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         @test rand(rng) == expected_next
 
         rng = StableRNG(123)
+        x_slot = Mooncake.zero_lifted(Val(1), x)
+        _, x_partials = Mooncake.arrayify(x_slot)
+        fill!(x_partials[1], 2.0)
         out = Mooncake.frule!!(
-            Mooncake.zero_dual(Distributions.rand!),
-            Mooncake.zero_dual(rng),
-            Mooncake.zero_dual(sampler),
-            Mooncake.Dual(x, dx),
+            Mooncake.zero_lifted(Val(1), Distributions.rand!),
+            Mooncake.zero_lifted(Val(1), rng),
+            Mooncake.zero_lifted(Val(1), sampler),
+            x_slot,
         )
         @test Mooncake.primal(out) === x
         @test x == expected_x
-        @test all(iszero, dx)
+        @test all(iszero, x_partials[1])
         @test rand(rng) == expected_next
 
         test_rule(
