@@ -191,6 +191,25 @@
         @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
     end
 
+    @testset "a pinned tangent spreads over distinct lanes" begin
+        # Giving every lane the same direction makes the per-lane oracle compare one reference
+        # against itself N times, so a rule broadcasting lane 1 across all lanes -- the bug that
+        # check exists for -- passes. Lane k carries k times the pin.
+        lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
+        p = lanes(CoDual(2.0, 1.5), 8).partials
+        @test p[1] == 1.5                      # lane 1 is the pin exactly
+        @test length(unique(p)) == 8           # ...and no two lanes agree
+        @test lanes(CoDual(2.0, 1.5), 1).partials == (1.5,)
+        # A zero pin -- what the BLAS rows use to reach their `iszero(dα)` paths -- stays zero in
+        # every lane. Scaling preserves what a pin selects on.
+        @test all(iszero, lanes(CoDual(2.0, 0.0), 8).partials)
+        # A complex pin scales per part.
+        c = lanes(CoDual(2.0 + 0.0im, 1.0 + 2.0im), 8)
+        @test real(c).partials[1] == 1.0
+        @test imag(c).partials[1] == 2.0
+        @test length(unique(real(c).partials)) == 8
+    end
+
     @testset "oracle validation" begin
         # A reference that names nothing, or names it wrongly, would leave a case asserting
         # nothing while reading as green — the failure mode a pinned reference exists to avoid.

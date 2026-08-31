@@ -754,19 +754,24 @@ function _pin_lanes(::Val{N}, z::CoDual) where {N}
     throw(ArgumentError(msg))
 end
 
-# Give every lane the pinned tangent. A case pins a tangent to reach a branch a random seed
-# cannot -- the BLAS rows pin `dα = 0` for the `iszero(dαs[k])` paths -- and a pin that held
-# only at width 1 left those paths unexercised above it. One method per replicable shape.
+# Spread a pinned tangent over the lanes as lane `k` times the pin, so lane 1 is the pin exactly.
+# A case pins a tangent to reach a branch a random seed cannot -- the BLAS rows pin `dα = 0` for
+# the `iszero(dαs[k])` paths -- and a pin that held only at width 1 left those paths unexercised
+# above it. Scaling preserves everything a pin selects on (zero-ness, sign, NaN/Inf-ness, and the
+# ratio between two pinned arguments) while keeping the lanes distinct: giving every lane the SAME
+# direction makes the per-lane oracle compare one reference against itself N times, so a rule
+# broadcasting lane 1 across all lanes -- the bug that check exists for -- passes. One method per
+# replicable shape.
 _replicate_lanes(::Val, ::Any, ::Any) = nothing
 function _replicate_lanes(::Val{N}, p::P, t::P) where {N,P<:Base.IEEEFloat}
-    return Lifted{P,N}(p, Mooncake.Nfwd.NDual{P,N}(p, ntuple(_ -> t, Val(N))))
+    return Lifted{P,N}(p, Mooncake.Nfwd.NDual{P,N}(p, ntuple(k -> k * t, Val(N))))
 end
 # A complex dual is a `Complex` of two real duals, so each part replicates on its own.
 function _replicate_lanes(
     ::Val{N}, p::Complex{P}, t::Complex{P}
 ) where {N,P<:Base.IEEEFloat}
-    re = Mooncake.Nfwd.NDual{P,N}(real(p), ntuple(_ -> real(t), Val(N)))
-    im = Mooncake.Nfwd.NDual{P,N}(imag(p), ntuple(_ -> imag(t), Val(N)))
+    re = Mooncake.Nfwd.NDual{P,N}(real(p), ntuple(k -> k * real(t), Val(N)))
+    im = Mooncake.Nfwd.NDual{P,N}(imag(p), ntuple(k -> k * imag(t), Val(N)))
     return Lifted{Complex{P},N}(p, Complex(re, im))
 end
 
