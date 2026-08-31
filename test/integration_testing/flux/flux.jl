@@ -63,45 +63,19 @@ const _gpu_disabled = false
 
 # ── GPU AD status notes ──────────────────────────────────────────────────────────────
 #
-# When Mooncake lacks an explicit rule for a GPU operation, it falls back to
-# differentiating CUDA kernel via a forward-mode (chunked) broadcast
-# using NDual{T,N} dual numbers inside GPU kernels.  N = total real DOFs across all
-# broadcast inputs (1 per Float arg, 2 per Complex arg).  This works for pure
-# element-wise Julia functions, but has two important limitations:
+# Without an explicit rule for a GPU broadcast, Mooncake evaluates the fused scalar
+# function on forward-mode `NDual{T,N}` values in one GPU kernel. `N` is the number of
+# real degrees of freedom per broadcast element: one per real operand and two per complex
+# operand. This covers pure element-wise Julia functions, subject to two limitations:
 #
-#   1. COVERAGE — some GPU operations are not differentiable by Mooncake without
-#      explicit rules:
-#        • cuDNN operators (batchnorm_cudnn!, …) — need an rrule!!
-#        • Base.permutedims(::CuArray) — called by LuxLib.batched_matmul in the
-#          MultiHeadAttention path; needs an explicit rule
-#      Fix: add an rrule!! or @zero_derivative for the operator (see fill!,
-#      unsafe_copyto! in MooncakeCUDAExt.jl for the pattern).
+#   1. COVERAGE — GPU operations without differentiable Julia IR need explicit rules.
 #
-#   2. PERFORMANCE — forward-mode broadcast is essentially chunked forward-mode AD:
-#      it requires one GPU kernel launch per output DOF.  For models with many
-#      parameters, this scales as O(params) in memory and time, which is prohibitive
-#      for large models even when it compiles.  Fix: add reverse-mode rrule!! so
-#      Mooncake runs a single backward pass regardless of parameter count.
+#   2. PERFORMANCE — widening each element by `N` partials increases arithmetic,
+#      register pressure, and compiled code size. The pullback also accumulates
+#      cotangents separately for each differentiable broadcast leaf. An explicit
+#      reverse-mode `rrule!!` avoids these costs for common operations.
 #
-#   3. CPU/GPU TANGENT MISMATCH (Flux-specific) — Flux stores weights directly as
-#      struct type parameters, e.g. Dense{identity, Matrix{Float32}, Vector{Float32}}.
-#      gpu() replaces the runtime values, but the static type params remain Matrix{Float32}.
-#      Mooncake computes tangent_type from static types, so weight tangents are
-#      Matrix{Float32} (CPU).  During test_rule, the perturbed primal is reconstructed
-#      as (primal + tangent), giving a Dense with a CPU weight matrix that is then
-#      called on a GPU input:
-#
-#        Dense(gpu_x)
-#          → weight * gpu_x                               ← Matrix{Float32} × CuArray
-#            → BLAS.gemm!(A::Matrix{Float32}, B::CuArray) ← mixed CPU/GPU
-#              → unsafe_convert(Ptr{Float32}, CuArray)    ← ILLEGAL: DeviceMemory has no CPU ptr
-#
-#      Lux avoids this because parameters live in a separate `ps` NamedTuple that is
-#      explicitly moved to the GPU, so tangent_type(CuArray) = CuArray fires correctly.
-#      Fix: Mooncake would need a Flux-aware rule for Dense/MHA that keeps tangents on GPU,
-#      or Flux would need to update struct type params on gpu() (an Adapt.jl issue).
-#
-# Models marked _gpu_disabled fall into one or more of the above categories.
+# Models marked _gpu_disabled fall into one or both of the above categories.
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 # Tuple format: (gpu_supported, model, input, name)
