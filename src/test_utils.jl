@@ -1080,7 +1080,8 @@ end
 # included, so a closure's captured state is not silently dropped from the comparison.
 function test_rrule_oracle(x_x̄::Vararg{Any,P}; rrule, oracle, output_tangent) where {P}
     @nospecialize x_x̄
-    out, pb!! = rrule(_deepcopy_all(x_x̄)...)
+    # `to_fwds` as everywhere else: the rule takes fdata, and the seeds carry full tangents.
+    out, pb!! = rrule(map(to_fwds, _deepcopy_all(x_x̄))...)
     cmp = _oracle_cmp(oracle)
     haskey(oracle, :value) && @test cmp(primal(out), oracle.value)
     haskey(oracle, :deriv) || return nothing

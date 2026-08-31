@@ -2326,6 +2326,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         # rule triggers type-system dispatch, making the ratio large. Loose bounds are intentional.
         (false, :none, (lb=1e-3, ub=200), getfield, (Float64, Float64), 1),
         (false, :none, (lb=1e-3, ub=250), getfield, (Float64, Float64), 2, false),
+        # A reverse reference on an argument whose fdata differs from its tangent: this tuple's
+        # tangent is `NoTangent` where the rule takes `NoFData`. The reference path has to convert
+        # with `to_fwds` like every other path, or it hands the rule a shape it cannot take. The
+        # derivative here is trivially zero -- the row exists for that conversion, not the value.
+        (
+            false,
+            :none,
+            (
+                oracle=(value=1, deriv=(NoRData(), NoRData(), NoRData())),
+                output_tangent=NoTangent(),
+                mode=ReverseMode,
+            ),
+            getfield,
+            (1, 2),
+            1,
+        ),
         (false, :none, _range, getfield, (a=5.0, b=4), 1),
         (false, :none, _range, getfield, (a=5.0, b=4), 2),
         (false, :none, _range, getfield, UInt8, :name),
