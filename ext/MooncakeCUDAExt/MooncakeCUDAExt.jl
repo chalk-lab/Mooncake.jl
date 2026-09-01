@@ -2196,14 +2196,16 @@ end
 # GPUArrays takes a reduction's output eltype from `init`, so an `init` whose type differs from
 # what the reduction produces returns a value the delegate cannot produce -- and a tangent typed
 # to match it. Compare against what the delegate actually returned rather than guessing the
-# natural output type, which the mapped function decides.
+# natural output type, which the mapped function decides. Against its ELEMENT type: a `dims`
+# reduction returns an array, and `eltype` is the same test for the scalar case since a Number's
+# `eltype` is its own type.
 function _check_mapreduce_init_type(pkw, y)
-    (!haskey(pkw, :init) || typeof(pkw.init) === typeof(y)) && return nothing
+    (!haskey(pkw, :init) || typeof(pkw.init) === eltype(y)) && return nothing
     return _throw_gpu_argument_error(
         "Mooncake: mapreduce over CuArray was given init::$(typeof(pkw.init)) where the " *
-        "reduction produces $(typeof(y)). GPUArrays takes the output eltype from `init`, " *
-        "so this changes the result type, which the rule cannot follow. Pass an init of " *
-        "type $(typeof(y)). " *
+        "reduction produces $(eltype(y)) elements. GPUArrays takes the output eltype from " *
+        "`init`, so this changes the result type, which the rule cannot follow. Pass an init " *
+        "of type $(eltype(y)). " *
         _UNIMPL_MSG,
     )
 end

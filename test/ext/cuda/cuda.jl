@@ -203,6 +203,10 @@ end
         _sum_f_cx_abs2_d1(x) = sum(abs2, x; dims=1)
         _sum_f_cx_sin_d2(x) = sum(sin, x; dims=2)
         _mapreduce_abs2_d1(x) = mapreduce(abs2, +, x; dims=1)
+        # `dims` AND `init` together: the init-type guard has to compare against the
+        # reduction's element type, since a `dims` reduction returns an array and no scalar
+        # `init` can ever equal its type.
+        _mapreduce_abs2_d1_init(x) = mapreduce(abs2, +, x; dims=1, init=0.0f0)
         _mapreduce_abs2_add_sum_d1(x) = mapreduce(abs2, Base.add_sum, x; dims=1)
         _reduce_plus(x) = reduce(+, x)
         # _reduce_plus_cx returns a complex scalar for complex input (no real() wrap), unlike
@@ -848,6 +852,7 @@ end
             (false, :none, false, _sum_f_cx_abs2_d1, _rand(rng, ComplexF32, 4, 3)),
             (false, :none, false, _sum_f_cx_sin_d2, _rand(rng, ComplexF64, 4, 3)),
             (false, :none, false, _mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _mapreduce_abs2_d1_init, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
             (
                 false,
