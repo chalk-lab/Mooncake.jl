@@ -370,6 +370,3 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
 end
 
 derived_rule_test_cases(rng_ctor, ::Val{:new}) = Any[], Any[]
-
-@static if VERSION >= v"1.11"
-end
