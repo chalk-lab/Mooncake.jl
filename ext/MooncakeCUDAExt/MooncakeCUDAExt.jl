@@ -2823,10 +2823,12 @@ end
 # Transpose/Adjoint ImmutableDual parent). A non-differentiable mapping result (e.g. a Bool/Int-valued
 # `f`) yields a `NoDual` V — a non-float `primal_out` must NOT go through `_wrap_scalar_v_lanes`
 # (float-only). Mirrors the zero-derivative reverse rrule.
-@inline function _gpu_sum_f_lifted(::Val{Nw}, pf, flat_px, x_partials) where {Nw}
+@inline function _gpu_sum_f_lifted(
+    ::Val{Nw}, pf, flat_px, x_partials, pkw=NamedTuple()
+) where {Nw}
     _check_gpu_sum_f(pf)
     out = _gpu_broadcast_dual(pf, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out)
+    decoded = _gpu_decode_ndual_output(Val(:sum), out, pkw)
     P_out = typeof(decoded.primal_out)
     # `is_diff` reports that the kernel's elements carried no partials, NOT that the result is
     # non-differentiable — a mapped `f` that strips the dual lands here with a differentiable
@@ -2834,15 +2836,24 @@ end
     decoded.is_diff || return Lifted{P_out,Nw}(
         decoded.primal_out, Mooncake.zero_dual(Val(Nw), decoded.primal_out)
     )
-    dy_lanes = ntuple(
-        k -> _gpu_accumulate_reduced_jvp(
-            out, (flat_px,), (x_partials[k],), decoded.primal_out
-        ),
-        Val(Nw),
-    )
-    return Lifted{P_out,Nw}(
-        decoded.primal_out, _wrap_scalar_v_lanes(decoded.primal_out, dy_lanes)
-    )
+    # A Colon reduction takes the fused accumulator, which sums the map without materialising it.
+    # A `dims` one cannot: the map has to exist before a dimensional `sum` can slice it.
+    dims = get(pkw, :dims, :)
+    dy_lanes = if dims isa Colon
+        ntuple(
+            k -> _gpu_accumulate_reduced_jvp(
+                out, (flat_px,), (x_partials[k],), decoded.primal_out
+            ),
+            Val(Nw),
+        )
+    else
+        ntuple(
+            k ->
+                _gpu_reduced_jvp(out, flat_px, x_partials[k], decoded.primal_out, dims),
+            Val(Nw),
+        )
+    end
+    return Lifted{P_out,Nw}(decoded.primal_out, _wrap_v_lanes(decoded.primal_out, dy_lanes))
 end
 
 function frule!!(
@@ -2887,19 +2898,6 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
-end
-
-# mapreduce's keyword spelling equals its positional one exactly when the keywords do not change
-# the reduction: no `dims` (or `dims=:`). A real `dims` needs the `sum(f, x; dims)` forward path
-# that is not written yet.
-_mapreduce_kw_is_plain(pkw) = get(pkw, :dims, :) isa Colon
-function _throw_gpu_mapreduce_dims()
-    return _throw_gpu_argument_error(
-        "Mooncake: keyword mapreduce(f, op, x; dims) on CuArray is not yet differentiable in " *
-        "forward mode, for the same reason keyword sum(f, x; dims) is not: it needs the mapped " *
-        "rule's NDual machinery combined with per-slice geometry. " *
-        _UNIMPL_MSG,
-    )
 end
 
 # Rules for `mapreduce(f, op, x)` on GPU arrays.
@@ -3033,8 +3031,9 @@ for _op in (:(+), :(Base.add_sum))
         for k in 1:Nw
             _check_reduction_init(tangent(kw, k))
         end
-        _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
-        out = frule!!(zero_lifted(Val(Nw), sum), f, x)
+        out = frule!!(
+            zero_lifted(Val(Nw), Core.kwcall), kw, zero_lifted(Val(Nw), sum), f, x
+        )
         _check_mapreduce_init_type(pkw, primal(out))
         return out
     end
@@ -3311,10 +3310,9 @@ function frule!!(
     for k in 1:Nw
         _check_reduction_init(tangent(kw, k))
     end
-    # `dims` is not yet threaded through the lifted reduction path; refuse it rather than
-    # silently reducing over everything.
-    _mapreduce_kw_is_plain(pkw) || return _throw_gpu_mapreduce_dims()
-    return _gpu_sum_f_lifted(Val(Nw), primal(f), primal(x), Nfwd._lane_views(tangent(x)))
+    return _gpu_sum_f_lifted(
+        Val(Nw), primal(f), primal(x), Nfwd._lane_views(tangent(x)), pkw
+    )
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
