@@ -1695,9 +1695,25 @@ when *any* single `ε` on the grid agrees, which is what lets several things thr
     both are subgradients, so a disagreement is not evidence of a defect, and an agreement
     is not evidence of correctness.
 
-Accepting a caller-supplied reference derivative would close the first two. Until then, a
-rule whose derivative depends on any of these needs pinning some other way — calling the
-rule and comparing a wider-precision or analytic reference is what the rules in `ext/` do.
+`oracle` closes the first two: a case that supplies a reference derivative has it compared
+against that instead of against finite differences, which are inapplicable there by
+definition. See the keyword below.
+
+# Additional keywords
+
+- `oracle=nothing`: a `NamedTuple` pinning the expected result where finite differences
+    cannot — `value`, `deriv`, or both, and an optional `cmp` comparator (`isequal` by
+    default, which is what separates a NaN or a signed zero). It replaces the
+    finite-difference comparison alone; the input, output-primal and aliasing checks still
+    run. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent seed is random
+    and the reference is unpinned.
+- `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
+    a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
+- `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
+- `chunk_size=nothing`: pin the forward chunk width instead of testing widths 1 and 8.
+- `print_results::Bool=false`: show the sub-testset output rather than discarding it.
+- `fwd_allocs_broken::Bool=false`: the forward allocation check is expected to fail. Prefer
+    narrowing it to the versions where it holds over setting it unconditionally.
 """
 function test_rule(
     rng::AbstractRNG,
