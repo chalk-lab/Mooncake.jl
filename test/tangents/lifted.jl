@@ -337,6 +337,13 @@ const NDAC_VecC64 = NDualArray{
         @test_throws ArgumentError unlift(
             Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
         )
+        # An ARRAY of `Ptr` to a non-differentiable element takes the all-`NoDual` fast path,
+        # whose lane accessor is the reverse tangent only when the ELEMENT's tangent is
+        # `NoTangent`. Here it is `Ptr{NoTangent}`, so the accessor's `Vector{NoTangent}` is the
+        # wrong shape and the element-wise path has to rebuild it.
+        pv = [Ptr{Int}(0), Ptr{Int}(0)]
+        @test last(unlift(Mooncake.zero_lifted(Val(1), pv))) isa
+            Mooncake.tangent_type(Vector{Ptr{Int}})
         # A `Ptr` nested in an aggregate reaches the terminal too, and rebuilds the reverse
         # placeholder rather than handing back the raw lane address.
         x = [1.0]

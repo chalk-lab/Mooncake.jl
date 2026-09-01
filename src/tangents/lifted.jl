@@ -387,8 +387,9 @@ end
 )
 # Block-backed and all-`NoDual` arrays ARE leaves, so they keep the accessor and skip the cache:
 # routing them through the seed path costs an `IdDict` (measured +320 B) on every boundary call.
-@inline unlift(x::Lifted{P,1,<:Union{NDualArray,AbstractArray{NoDual}}}) where {P} = (
-    primal(x), tangent(x, 1)
+@inline unlift(x::Lifted{P,1,<:NDualArray}) where {P} = (primal(x), tangent(x, 1))
+@inline unlift(x::Lifted{P,1,<:AbstractArray{NoDual}}) where {P} = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
 )
 # A `Ptr` lane is a raw address, which equals the reverse tangent only where
 # `tangent_type(Ptr{T})` is itself a `Ptr{T}`. `Ptr{Nothing}`'s is a `VoidPtrTangent`, and a
@@ -467,8 +468,20 @@ end
 # `MutableTangent` that `tangent_type(eltype(P))` storage demands, so only the seed path can build
 # this shape.
 _unlift_seed(x::Lifted{P,1,<:NDualArray}, ::IdDict) where {P} = tangent(x, 1)
-_unlift_seed(x::Lifted{P,1,<:AbstractArray{NoDual}}, ::IdDict) where {P} = tangent(x, 1)
+# An all-`NoDual` V is a leaf only when the ELEMENT's reverse tangent is `NoTangent` too. A `Ptr`
+# to a non-differentiable element breaks that: `dual_type(Vector{Ptr{Int}})` is `Vector{NoDual}`
+# while `tangent_type` is `Vector{Ptr{NoTangent}}`, so the accessor returns the wrong shape and
+# only the element-wise path rebuilds it (through the scalar `Ptr`/`NoDual` method above).
+@inline function _unlift_seed(
+    x::Lifted{P,1,<:AbstractArray{NoDual}}, cache::IdDict
+) where {P}
+    tangent_type(eltype(P)) === NoTangent && return tangent(x, 1)
+    return _unlift_seed_elementwise(x, cache)
+end
 function _unlift_seed(x::Lifted{P,1,V}, cache::IdDict) where {P,V<:AbstractArray}
+    return _unlift_seed_elementwise(x, cache)
+end
+function _unlift_seed_elementwise(x::Lifted{P,1}, cache::IdDict) where {P}
     p = primal(x)
     haskey(cache, p) && return cache[p]
     t = similar(p, tangent_type(eltype(P)))
