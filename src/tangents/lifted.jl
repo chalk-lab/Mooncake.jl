@@ -2090,29 +2090,6 @@ end
     )
 end
 
-"""
-    randn_lifteds(::Val{N}, rng::AbstractRNG, xs::Tuple)
-
-Seed a whole argument tuple, sharing one cache across it, so arguments that alias one object
-share their partial storage. Seeding each argument with `randn_lifted` severs that:
-each call builds its own `IdDict`, so `f(a, a)` receives two independent directions. This is
-the forward counterpart of `__create_coduals`.
-"""
-function randn_lifteds(w::Val{N}, rng::AbstractRNG, xs::Tuple) where {N}
-    c = IdDict{Any,Any}()
-    return tuple_map(x -> Lifted{typeof(x),N}(x, _randn_dual_internal(w, rng, x, c)), xs)
-end
-
-"""
-    zero_lifteds(::Val{N}, xs::Tuple)
-
-Zero-seed a whole argument tuple through one cache. See [`randn_lifteds`](@ref).
-"""
-function zero_lifteds(w::Val{N}, xs::Tuple) where {N}
-    c = IdDict{Any,Any}()
-    return tuple_map(x -> Lifted{typeof(x),N}(x, _zero_dual_internal(w, x, c)), xs)
-end
-
 # ── Standard-basis seed (`basis_lifted!!`) ──────────────────────────────────
 #
 # `basis_lifted!!(seed, slots)` resets `seed` (built by `zero_lifted`) to the

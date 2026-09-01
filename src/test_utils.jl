@@ -724,12 +724,9 @@ _chunk_lane_checkable(@nospecialize(_v)) = false
 function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
     c = IdDict{Any,Any}()
     slots = Mooncake.tuple_map(x) do z
-        if z isa CoDual
-            pinned = _pin_lanes(Val(N), z)
-            isnothing(pinned) || return pinned
-        end
-        p = z isa CoDual ? primal(z) : z
-        return Lifted{typeof(p),N}(p, Mooncake._randn_dual_internal(Val(N), rng, p, c))
+        # `_pin_lanes` returns a slot or throws, so a `CoDual` never falls through to seeding.
+        z isa CoDual && return _pin_lanes(Val(N), z)
+        return Lifted{typeof(z),N}(z, Mooncake._randn_dual_internal(Val(N), rng, z, c))
     end
     _check_aliased_seeds(slots)
     return slots
