@@ -732,6 +732,23 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
     return slots
 end
 
+# Two arguments over one primal must share fdata, the reverse counterpart of
+# `_check_aliased_seeds`. Only where the shared cache above governs the seeding: an
+# `interface_only` case seeds with `uninit_codual`, which takes no cache and hands aliased
+# arguments independent placeholders. Whether that should share too is a question about
+# `uninit_codual`'s contract, not about this check. Checked structurally for the same reason: `test_rrule_correctness`
+# rebuilds the `CoDual`s per argument, so a rule that lost the aliasing would still be run on the
+# unaliased problem and the finite-difference comparison could not see it. Checking the seeds is
+# what the shared cache above exists for, and nothing else asserts it.
+function _check_aliased_coduals(x_x̄::Tuple)
+    for i in eachindex(x_x̄), j in (i + 1):lastindex(x_x̄)
+        p = primal(x_x̄[i])
+        (ismutable(p) && p === primal(x_x̄[j])) || continue
+        @test tangent(x_x̄[i]) === tangent(x_x̄[j])
+    end
+    return nothing
+end
+
 # Two arguments over one primal must share partial storage. Forward mode cannot catch a
 # violation numerically -- independent directions on two aliased primals is a consistent
 # computation and finite differences reproduce it exactly -- so the seeds are checked
@@ -935,6 +952,7 @@ function test_rrule(
             end
         end
     end
+    interface_only || _check_aliased_coduals(x_x̄)
     # Isolated rng for reuse so it does not perturb correctness's rng state.
     interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
     test_rrule_interface(x_x̄...; rrule)
