@@ -1588,13 +1588,11 @@ end
             )
         end
 
-        # Forward mode only: a fused cast of a differentiable SCALAR inside a broadcast. The cast
-        # diff decorates the tangent, so handling it by overloading the leaf helpers' second
-        # argument made them ambiguous with every leaf-primal method and forward died on dispatch.
-        # Reverse has a SEPARATE, pre-existing defect on the same expression -- the cast's rdata
-        # keeps `Float64` where the broadcast produced `Float32`, so `increment!!` has no method --
-        # so its coverage waits on that being fixed rather than being asserted here.
-        @testset "fused scalar cast in a broadcast (forward only)" begin
+        # A fused cast of a differentiable SCALAR inside a broadcast, which broke both modes for
+        # different reasons: forward on an ambiguity between the leaf helpers' primal dispatch and
+        # the cast decorator, reverse because the accumulated gradient reached the Broadcasted
+        # rdata carrying the kernel's element type rather than the argument's.
+        @testset "fused scalar cast in a broadcast" begin
             test_rule(
                 StableRNG(123),
                 _bcast_cast_scalar,
@@ -1602,7 +1600,6 @@ end
                 2.0;
                 perf_flag=:none,
                 is_primitive=false,
-                mode=Mooncake.ForwardMode,
             )
         end
 

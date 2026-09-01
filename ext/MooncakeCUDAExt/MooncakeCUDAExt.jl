@@ -4922,7 +4922,12 @@ function _gpu_fill_args_rdata(
         if a isa Broadcasted
             za isa NoRData ? za : _gpu_fill_scalar_rdata(za, a, scalar_meta, scalar_grads)
         elseif scalar_meta isa Int
-            scalar_grads[scalar_meta]
+            # Convert to the slot's declared rdata type. The accumulated gradient carries the
+            # KERNEL's element type and the slot carries the PRIMAL argument's; they coincide
+            # until a fused cast separates them (`Float32(y)` over a `Float64` scalar), and then
+            # the `RData` built here has a type `increment!!` has no method for. `za` is that
+            # argument's zero rdata, so it already has the right type.
+            convert(typeof(za), scalar_grads[scalar_meta])
         else
             za
         end
