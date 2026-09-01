@@ -609,10 +609,15 @@ end
 function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
     return VoidPtrTangent(x, NoTangent)
 end
+# A `SimpleVector` is mutable and can be aliased, so it must participate in the cache and not
+# merely thread it into its elements: two arguments over one `SimpleVector` have to come back with
+# the same tangent, or cotangent accumulation splits across two storages. Registered before
+# filling, as the `Array` method does, so a cycle through an element terminates.
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
-    return map!(
-        n -> zero_tangent_internal(x[n], dict), Vector{Any}(undef, length(x)), eachindex(x)
-    )
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> zero_tangent_internal(x[n], dict), t, eachindex(x))
 end
 @inline @generated function zero_tangent_internal(x::P, d::MaybeCache) where {P}
 
@@ -728,9 +733,10 @@ function randn_tangent_internal(rng::AbstractRNG, x::NamedTuple, dict::MaybeCach
     return tuple_map(x -> randn_tangent_internal(rng, x, dict), x)
 end
 function randn_tangent_internal(rng::AbstractRNG, x::SimpleVector, dict::MaybeCache)
-    return map!(Vector{Any}(undef, length(x)), eachindex(x)) do n
-        return randn_tangent_internal(rng, x[n], dict)
-    end
+    haskey(dict, x) && return dict[x]::Vector{Any}
+    t = Vector{Any}(undef, length(x))
+    dict[x] = t
+    return map!(n -> randn_tangent_internal(rng, x[n], dict), t, eachindex(x))
 end
 @generated function randn_tangent_internal(rng::AbstractRNG, x::P, d::MaybeCache) where {P}
 
