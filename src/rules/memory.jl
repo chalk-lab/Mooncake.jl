@@ -677,11 +677,7 @@ end
     return Lifted{MemoryRef{P},Nw}(
         y,
         NDualMemoryRef{P,Nw,Memory{P}}(
-            y,
-            getfield(v, :partials_parent),
-            getfield(v, :partials_ref),
-            getfield(v, :ncols),
-            newcol,
+            y, getfield(v, :partials_ref), getfield(v, :ncols), newcol
         ),
     )
 end
@@ -1740,18 +1736,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         test_cases,
         (false, :none, (mode=ForwardMode,), memoryref_mem_across_realloc, collect(1.0:4.0)),
     )
-    @static if VERSION >= v"1.12"
-        push!(
-            test_cases,
-            (
-                false,
-                :none,
-                (mode=ForwardMode,),
-                memoryref_mem_projected_then_realloc,
-                collect(1.0:4.0),
-            ),
-        )
-    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ForwardMode,),
+            memoryref_mem_projected_then_realloc,
+            collect(1.0:4.0),
+        ),
+    )
+    push!(
+        test_cases,
+        (false, :allocs, (mode=ForwardMode,), memoryref_mem_sum, collect(1.0:4.0)),
+    )
     memory = Any[slack_v]
     return test_cases, memory
 end
@@ -1776,8 +1774,7 @@ end
     end
 
     # The resize happens AFTER the projection, so no check at projection time can see it: the
-    # block must already be pinned to storage a later reallocation cannot retarget. Gated to the
-    # versions that take the rebuild -- 1.11 still reuses the parent and knowingly fails this.
+    # block must already be pinned to storage a later reallocation cannot retarget.
     function memoryref_mem_projected_then_realloc(v)
         r = getfield(v, :ref)
         m = getfield(r, :mem)
@@ -1785,6 +1782,20 @@ end
         pop!(v)
         v[1] = 7.0 * v[1]
         return Core.memoryrefget(Core.memoryrefnew(m), :not_atomic, false)
+    end
+
+    # Reading through a projected `.mem` must not allocate. The projection materialises an array
+    # header over the partials backing, which the optimiser drops only while nothing escapes the
+    # block; anything that does costs an allocation per projection, and the primal projects
+    # `.mem` per element wherever `length` or a bounds check reaches through the `MemoryRef`.
+    function memoryref_mem_sum(v)
+        m = getfield(getfield(v, :ref), :mem)
+        r = Core.memoryrefnew(m)
+        y = 0.0
+        for i in 1:length(m)
+            y += Core.memoryrefget(Core.memoryrefnew(r, i, false), :not_atomic, false)
+        end
+        return y
     end
 
     # The same divergence reached through `.mem` rather than `memoryrefnew`. The write after the

@@ -202,23 +202,15 @@ end
             # derived elementwise access, so a per-projection Array-header allocation would be
             # ~one allocation per element (the SplitEM forward-alloc regression). The backing is
             # SHARED, so mutations through the ref V land in this array's block and vice versa.
-            block_parent = getfield(getfield(V, :partials_block), :parent)
             return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
                 getfield(V.primal, :ref),
-                block_parent,
-                getfield(block_parent, :ref),
+                getfield(getfield(getfield(V, :partials_block), :parent), :ref),
                 length(V.primal),
                 1,
             )
         end
         return NoDual()
     end
-    # Reusing the parent's storage is correct only while nothing retargets it (see the hazard
-    # note at the reuse branch). 1.12 elides the replacement header on its own, so it takes the
-    # always-correct rebuild for free; 1.11 does not, and keeps the reuse until the block can pin
-    # to a `Memory`.
-    const _REUSE_PROJECTED_BLOCK = VERSION < v"1.12"
-
     # `.mem` of a `MemoryRef` is the underlying `Memory`; project the block-backed memory-ref V
     # to the `NDualArray` over that whole `Memory`. The ref's block may be a WINDOW into a larger
     # backing (an `Array`-projected ref covers only the array's elements, and a grown `Vector`'s
@@ -250,38 +242,17 @@ end
                     ),
                 )
             end
-            parent = getfield(V, :partials_parent)
-            full = if len == 0
-                NDualBlock{T,2}(undef, N, 0)
-            elseif _REUSE_PROJECTED_BLOCK &&
-                start == 1 &&
-                getfield(parent, :ref) === bref &&
-                N * len == length(parent)
-                # Hand back the parent's own storage rather than re-wrapping, which costs an
-                # array header per projection -- one PER ELEMENT for element-wise access
-                # (measured: 524320 B for a 128x128 sum, against 96 B here).
-                #
-                # KNOWN HAZARD, 1.11 only. This pins the projection to the parent VECTOR, and a
-                # `.mem` projection is a MEMORY holder: in the primal a Vector holder follows a
-                # reallocation and a Memory holder does not, so a resize after this call
-                # retargets the block at storage the projected primal does not address, and the
-                # derivative silently follows it. No test at projection time can catch it -- the
-                # retargeting happens later. The fix is to pin the block to the `Memory`, which
-                # removes the hazard and the allocation together, and needs a Memory-backed block
-                # representation. Until then this is confined to 1.11, the only version where it
-                # buys anything: 1.12 elides the header either way (0 B measured for
-                # `circshift!`, `kron!` and the hand-written sum, with and without), and 1.10 has
-                # no `MemoryRef` path at all.
-                NDualBlock{T,2}(parent, (N, len))
+            # One header construction, branching on the REF rather than on the header: LLVM
+            # will not promote an allocation that reaches a phi node, so building the empty
+            # case separately keeps both headers alive. An empty window has no slot to address,
+            # so it takes the block's own ref, which `_new_` never dereferences at length 0.
+            ref = if len == 0
+                bref
             else
-                flat = _new_(
-                    Vector{T},
-                    Core.memoryrefnew(Core.memoryrefnew(backing), start, true),
-                    (N * len,),
-                )
-                NDualBlock{T,2}(flat, (N, len))
+                Core.memoryrefnew(Core.memoryrefnew(backing), start, true)
             end
-            return Nfwd.NDualArray{T,N,1,M}(primal_mem, full)
+            flat = _new_(Vector{T}, ref, (N * len,))
+            return Nfwd.NDualArray{T,N,1,M}(primal_mem, NDualBlock{T,2}(flat, (N, len)))
         elseif name === :ptr_or_offset
             # Per-lane raw pointers require dense per-lane storage; in the element-major block
             # a lane is strided (stride N), so only width 1 has an addressable lane. The

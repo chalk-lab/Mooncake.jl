@@ -786,12 +786,6 @@ end
 # this returned NaN for both value and derivative, where the primal is 1.0 and the derivative 0.
 removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
 
-# These two allocate under forward mode on 1.10 and 1.12 but not on 1.11, where projecting a
-# lifted `MemoryRef`'s `.mem` reuses the partials block's own array instead of materialising a
-# header. Measured, not derived: 1.10's allocation is the `__call_rule` barrier and 1.12's has a
-# separate source.
-const _FWD_ALLOCS_BROKEN_EXCEPT_1_11 = !(v"1.11" <= VERSION < v"1.12")
-
 function generate_test_functions()
     return Any[
         (false, :allocs, nothing, const_tester),
@@ -994,15 +988,7 @@ function generate_test_functions()
             randn(5, 5),
             randn(5, 5),
         ),
-        (
-            false,
-            :allocs,
-            (fwd_allocs_broken=_FWD_ALLOCS_BROKEN_EXCEPT_1_11,),
-            kron!,
-            randn(25, 25),
-            Diagonal(randn(5)),
-            randn(5, 5),
-        ),
+        (false, :allocs, nothing, kron!, randn(25, 25), Diagonal(randn(5)), randn(5, 5)),
         (
             false,
             :none,
@@ -1012,13 +998,7 @@ function generate_test_functions()
             randn(sr(2), 70, 50),
             randn(sr(3), 30, 70),
         ),
-        (
-            false,
-            :allocs,
-            (fwd_allocs_broken=_FWD_ALLOCS_BROKEN_EXCEPT_1_11,),
-            test_handwritten_sum,
-            randn(128, 128),
-        ),
+        (false, :allocs, nothing, test_handwritten_sum, randn(128, 128)),
         (false, :allocs, nothing, _naive_map_sin_cos_exp, randn(1024), randn(1024)),
         (false, :allocs, nothing, _naive_map_negate, randn(1024), randn(1024)),
         (false, :allocs, nothing, test_from_slack, randn(10_000)),

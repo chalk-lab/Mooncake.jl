@@ -2138,6 +2138,15 @@ end
 @inline _block_reshape(block, N::Int, p) = block
 @inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
 
+@noinline function _throw_block_shape_error(block_size, N, primal_size)
+    return throw(
+        DimensionMismatch(
+            "NDualArray partials block has size $block_size; expected $N lanes over a " *
+            "primal of size $primal_size.",
+        ),
+    )
+end
+
 struct NDualArray{
     Element<:NDualEltype,N,D,A<:AbstractArray{Element,D},Wrapped,B<:AbstractArray{Element}
 } <: AbstractArray{Wrapped,D}
@@ -2174,13 +2183,11 @@ struct NDualArray{
         # `(N, dims...)` on the host, and lane-major `(dims..., N)` for `CuArray` (overridden
         # in the CUDA extension, where lanes must be contiguous). The `B === _block_type(A)`
         # check above already pins the block type.
-        _block_shape_ok(partials_block, N, primal) || throw(
-            DimensionMismatch(
-                "NDualArray partials block has size $(size(partials_block)) (length " *
-                "$(length(partials_block))); expected $N lanes over a primal of size " *
-                "$(size(primal)).",
-            ),
-        )
+        # `_throw_block_shape_error` takes the block's size, never the block: a call taking a
+        # freshly built block escapes it, and the caller's array header then survives -- one
+        # allocation per `.mem` projection, which element-wise access performs per element.
+        _block_shape_ok(partials_block, N, primal) ||
+            _throw_block_shape_error(size(partials_block), N, size(primal))
         return new{Element,N,D,A,Wrapped,B}(primal, partials_block)
     end
 end
@@ -2459,21 +2466,13 @@ end
     # alloc-free: `getfield(block, :ref)` needs no `reshape` header (the SplitEM forward-alloc
     # regression), while genuine block reconstruction (`_reconstruct_block`, bulk ops only) is
     # a `Base.wrap` off the hot path.
-    # `partials_parent` is the block's own backing array, kept alongside the ref so that
-    # projecting `.mem` over the whole backing can hand that array back instead of building a
-    # replacement header. The two are passed separately, not derived from one another: a
-    # reallocating resize (`_growend!`) replaces the parent's `.ref` while this ref still
-    # addresses the old `Memory`, so the projection compares them and only reuses the parent
-    # when they still agree.
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
-        partials_parent::Vector{Element}
         partials_ref::MemoryRef{Element}
         ncols::Int
         col::Int
         function NDualMemoryRef{Element,N,M}(
             primal::MemoryRef{Element},
-            partials_parent::Vector{Element},
             partials_ref::MemoryRef{Element},
             ncols::Int,
             col::Int,
@@ -2489,7 +2488,7 @@ end
                     "length, so there is no partials column for it.",
                 ),
             )
-            return new{Element,N,M}(primal, partials_parent, partials_ref, ncols, col)
+            return new{Element,N,M}(primal, partials_ref, ncols, col)
         end
     end
 
@@ -2504,9 +2503,8 @@ end
                 "expected the chunk width N = $N (lane-leading layout).",
             ),
         )
-        parent = getfield(block, :parent)
         return NDualMemoryRef{Element,N,M}(
-            primal, parent, getfield(parent, :ref), size(block, 2), col
+            primal, getfield(getfield(block, :parent), :ref), size(block, 2), col
         )
     end
 
