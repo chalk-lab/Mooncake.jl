@@ -4661,11 +4661,19 @@ end
     typeof(pa), _project_cotangent(pa, contrib)
 )
 
-@inline function _leaf_effective_tangent(_, diff::_GpuBroadcastCastDiff{T}) where {T}
-    t_eff = _leaf_effective_tangent(diff.primal_arg, diff.diff_arg)
+@inline _leaf_effective_tangent(_, _) = nothing  # non-differentiable
+
+# A cast diff DECORATES the tangent; it is not a kind of leaf primal. Overloading slot 2 of
+# `_leaf_effective_tangent`, which dispatches on slot 1, made it ambiguous with every member of
+# that family -- 8 such pairs across the two helpers, and a GPU broadcast carrying a fused scalar
+# cast died on the ambiguity rather than computing a JVP. These entry points dispatch on the
+# DECORATED slot alone, so their two methods order cleanly, and the leaf families below stay
+# dispatched on the primal. Callers use these.
+@inline function _leaf_tangent(_, diff::_GpuBroadcastCastDiff{T}) where {T}
+    t_eff = _leaf_tangent(diff.primal_arg, diff.diff_arg)
     return t_eff === nothing ? nothing : _gpu_cast_like(T, t_eff)
 end
-@inline _leaf_effective_tangent(_, _) = nothing  # non-differentiable
+@inline _leaf_tangent(pa, t) = _leaf_effective_tangent(pa, t)
 
 # Reduce `dx` (broadcast-output shape) back to `sz` by summing over any dimensions that
 # were singleton-expanded or added during broadcasting.  Mirrors ChainRules' `unbroadcast`.
@@ -4705,12 +4713,15 @@ end
     dpa .+= _unbroadcast(contrib, size(pa))
     return dpa
 end
-@inline function _leaf_accum_fdata!(_, diff::_GpuBroadcastCastDiff, contrib)
-    return _leaf_accum_fdata!(
+@inline _leaf_accum_fdata!(_, _, _) = nothing  # non-differentiable
+
+# The accumulator's counterpart to `_leaf_tangent`; see the note there.
+@inline function _leaf_accum!(_, diff::_GpuBroadcastCastDiff, contrib)
+    return _leaf_accum!(
         diff.primal_arg, diff.diff_arg, _gpu_cast_back_like(diff.primal_arg, contrib)
     )
 end
-@inline _leaf_accum_fdata!(_, _, _) = nothing  # non-differentiable
+@inline _leaf_accum!(pa, fd, contrib) = _leaf_accum_fdata!(pa, fd, contrib)
 
 # A same-shaped broadcast contribution can be accumulated without first materializing a
 # temporary array. Return whether the leaf supports this fused path.
@@ -4924,7 +4935,7 @@ function _gpu_foreach_jvp_leaf(flat_pargs, flat_tangents, visit!)
     offset = 0
     for (pa, t) in zip(flat_pargs, flat_tangents)
         meta = _gpu_leaf_slot_meta(pa, offset)
-        t_eff = _leaf_effective_tangent(pa, t)
+        t_eff = _leaf_tangent(pa, t)
         t_eff === nothing || visit!(meta, t_eff)
         offset += meta.dof
     end
@@ -5048,7 +5059,7 @@ function _gpu_accum_pullback!(
                 scalar_index += 1
             else
                 if !(size(pa) == size(dy_out) && _leaf_accum_broadcast!(pa, fd, contrib))
-                    _leaf_accum_fdata!(pa, fd, Base.Broadcast.materialize(contrib))
+                    _leaf_accum!(pa, fd, Base.Broadcast.materialize(contrib))
                 end
             end
         elseif meta.dof == 2
@@ -5068,7 +5079,7 @@ function _gpu_accum_pullback!(
                 scalar_index += 1
             else
                 if !(size(pa) == size(dy_out) && _leaf_accum_broadcast!(pa, fd, contrib))
-                    _leaf_accum_fdata!(pa, fd, Base.Broadcast.materialize(contrib))
+                    _leaf_accum!(pa, fd, Base.Broadcast.materialize(contrib))
                 end
             end
         end
@@ -5087,7 +5098,7 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
         contrib = broadcast(
             (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out, dy
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        _leaf_accum!(px, dx, contrib)
     elseif meta.dof == 2
         contrib = broadcast(
             (o, d) -> complex(
@@ -5097,7 +5108,7 @@ function _gpu_reduced_pullback!(px, dx, dual_out, dy)
             dual_out,
             dy,
         )
-        _leaf_accum_fdata!(px, dx, contrib)
+        _leaf_accum!(px, dx, contrib)
     end
     return nothing
 end

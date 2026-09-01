@@ -375,6 +375,10 @@ end
         # reattached belongs to the array at the bottom rather than to the outer cast's
         # immediate argument.  Both modes agreed on an exact zero before, so nothing but a
         # value comparison catches it.
+        # A fused cast of a differentiable SCALAR inside a broadcast: the cast diff decorates
+        # the tangent, so handling it by overloading the leaf helpers' second argument made
+        # them ambiguous with every leaf-primal method and this died on dispatch.
+        _bcast_cast_scalar(x, y) = sum(@. x + Float32(y))
         _bcast_cast_chain_exp(x) = sum(exp.(Float64.(Float32.(x))))
         _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
         _bcast_cast_chain_same(x) = sum(Float32.(Float32.(x)) .^ 2)
@@ -1581,6 +1585,24 @@ end
             # unrelated to our rules, so stability checks are not meaningful on GPU.
             test_rule(
                 StableRNG(123), fargs...; perf_flag=:none, is_primitive, interface_only
+            )
+        end
+
+        # Forward mode only: a fused cast of a differentiable SCALAR inside a broadcast. The cast
+        # diff decorates the tangent, so handling it by overloading the leaf helpers' second
+        # argument made them ambiguous with every leaf-primal method and forward died on dispatch.
+        # Reverse has a SEPARATE, pre-existing defect on the same expression -- the cast's rdata
+        # keeps `Float64` where the broadcast produced `Float32`, so `increment!!` has no method --
+        # so its coverage waits on that being fixed rather than being asserted here.
+        @testset "fused scalar cast in a broadcast (forward only)" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_cast_scalar,
+                _rand(rng, Float32, 4),
+                2.0;
+                perf_flag=:none,
+                is_primitive=false,
+                mode=Mooncake.ForwardMode,
             )
         end
 
