@@ -733,10 +733,9 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
 end
 
 # Two arguments over one primal must share fdata, the reverse counterpart of
-# `_check_aliased_seeds`. Only where the shared cache above governs the seeding: an
-# `interface_only` case seeds with `uninit_codual`, which takes no cache and hands aliased
-# arguments independent placeholders. Whether that should share too is a question about
-# `uninit_codual`'s contract, not about this check. Checked structurally for the same reason: `test_rrule_correctness`
+# `_check_aliased_seeds`. Checked structurally for the same reason: `test_rrule_correctness`
+# rebuilds the `CoDual`s per argument, so a rule that lost the aliasing would still be run on the
+# unaliased problem and the finite-difference comparison could not see it. Checked structurally for the same reason: `test_rrule_correctness`
 # rebuilds the `CoDual`s per argument, so a rule that lost the aliasing would still be run on the
 # unaliased problem and the finite-difference comparison could not see it. Checking the seeds is
 # what the shared cache above exists for, and nothing else asserts it.
@@ -945,14 +944,14 @@ function test_rrule(
     x_x̄ = let c = Mooncake._friendly_cache(x)
         Mooncake.tuple_map(x) do z
             z isa CoDual && return z
-            return if interface_only
-                uninit_codual(z)
-            else
-                Mooncake._zero_codual_cached(z, c)
-            end
+            # `_zero_codual_cached` for every shape, `interface_only` included. It routes `Ptr`
+            # through `uninit_codual` itself, and `uninit_tangent` IS `zero_tangent` for
+            # everything else -- so the old `interface_only` branch differed only in skipping the
+            # cache, which handed two arguments over one primal independent fdata.
+            return Mooncake._zero_codual_cached(z, c)
         end
     end
-    interface_only || _check_aliased_coduals(x_x̄)
+    _check_aliased_coduals(x_x̄)
     # Isolated rng for reuse so it does not perturb correctness's rng state.
     interface_only || test_rrule_reuse(Xoshiro(123), x_x̄...; rrule, output_tangent)
     test_rrule_interface(x_x̄...; rrule)
@@ -1509,10 +1508,9 @@ function test_frule_performance(
         @static if VERSION >= v"1.11-"
             __forwards(rule, f_ḟ, x_ẋ...)
             n_fwd_allocs = count_allocs(__forwards, rule, f_ḟ, x_ẋ...)
-            # Julia 1.11 boxes a few forward OCs whose transform IR is type-stable and which are
+            # Julia 1.11 boxes a forward OC whose transform IR is type-stable and which is
             # alloc-free again on 1.12: `large_tuple_inference` trips a 1.11 inference stack
-            # overflow on `NTuple{1000}`, and `kron!`/`test_handwritten_sum` hit 1.11 codegen
-            # boxing of the type-stable OC. Those cases set `fwd_allocs_broken`; mark them
+            # overflow on `NTuple{1000}`. Such a case sets `fwd_allocs_broken`; mark it
             # `@test_broken` on 1.11 rather than weakening the zero-alloc contract elsewhere.
             if fwd_allocs_broken && VERSION < v"1.12-"
                 @test_broken n_fwd_allocs == 0
