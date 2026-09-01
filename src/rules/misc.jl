@@ -213,6 +213,12 @@ end
         end
         return NoDual()
     end
+    # Reusing the parent's storage is correct only while nothing retargets it (see the hazard
+    # note at the reuse branch). 1.12 elides the replacement header on its own, so it takes the
+    # always-correct rebuild for free; 1.11 does not, and keeps the reuse until the block can pin
+    # to a `Memory`.
+    const _REUSE_PROJECTED_BLOCK = VERSION < v"1.12"
+
     # `.mem` of a `MemoryRef` is the underlying `Memory`; project the block-backed memory-ref V
     # to the `NDualArray` over that whole `Memory`. The ref's block may be a WINDOW into a larger
     # backing (an `Array`-projected ref covers only the array's elements, and a grown `Vector`'s
@@ -247,14 +253,25 @@ end
             parent = getfield(V, :partials_parent)
             full = if len == 0
                 NDualBlock{T,2}(undef, N, 0)
-            elseif start == 1 &&
+            elseif _REUSE_PROJECTED_BLOCK &&
+                start == 1 &&
                 getfield(parent, :ref) === bref &&
                 N * len == length(parent)
-                # The parent array already spans exactly this projection, so hand back its own
-                # storage; re-wrapping costs an array header per projection, which only 1.12's
-                # optimiser removes. The `.ref` comparison is what makes reuse safe: a
-                # reallocating resize replaces the parent's ref, leaving it over storage this
-                # ref does not address, and then only the rebuild below is correct.
+                # Hand back the parent's own storage rather than re-wrapping, which costs an
+                # array header per projection -- one PER ELEMENT for element-wise access
+                # (measured: 524320 B for a 128x128 sum, against 96 B here).
+                #
+                # KNOWN HAZARD, 1.11 only. This pins the projection to the parent VECTOR, and a
+                # `.mem` projection is a MEMORY holder: in the primal a Vector holder follows a
+                # reallocation and a Memory holder does not, so a resize after this call
+                # retargets the block at storage the projected primal does not address, and the
+                # derivative silently follows it. No test at projection time can catch it -- the
+                # retargeting happens later. The fix is to pin the block to the `Memory`, which
+                # removes the hazard and the allocation together, and needs a Memory-backed block
+                # representation. Until then this is confined to 1.11, the only version where it
+                # buys anything: 1.12 elides the header either way (0 B measured for
+                # `circshift!`, `kron!` and the hand-written sum, with and without), and 1.10 has
+                # no `MemoryRef` path at all.
                 NDualBlock{T,2}(parent, (N, len))
             else
                 flat = _new_(

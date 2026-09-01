@@ -1740,6 +1740,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         test_cases,
         (false, :none, (mode=ForwardMode,), memoryref_mem_across_realloc, collect(1.0:4.0)),
     )
+    @static if VERSION >= v"1.12"
+        push!(
+            test_cases,
+            (
+                false,
+                :none,
+                (mode=ForwardMode,),
+                memoryref_mem_projected_then_realloc,
+                collect(1.0:4.0),
+            ),
+        )
+    end
     memory = Any[slack_v]
     return test_cases, memory
 end
@@ -1761,6 +1773,18 @@ end
         push!(v, 0.0)
         pop!(v)
         return 3.0 * v[1] + Core.memoryrefget(Core.memoryrefnew(r, 2), :not_atomic, false)
+    end
+
+    # The resize happens AFTER the projection, so no check at projection time can see it: the
+    # block must already be pinned to storage a later reallocation cannot retarget. Gated to the
+    # versions that take the rebuild -- 1.11 still reuses the parent and knowingly fails this.
+    function memoryref_mem_projected_then_realloc(v)
+        r = getfield(v, :ref)
+        m = getfield(r, :mem)
+        push!(v, 0.0)
+        pop!(v)
+        v[1] = 7.0 * v[1]
+        return Core.memoryrefget(Core.memoryrefnew(m), :not_atomic, false)
     end
 
     # The same divergence reached through `.mem` rather than `memoryrefnew`. The write after the
