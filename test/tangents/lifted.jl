@@ -329,6 +329,25 @@ const NDAC_VecC64 = NDualArray{
         @test unlift(Lifted{typeof(w),1}(w, (w,))) === (w, w)
     end
 
+    @testset "the unlift terminal refuses a non-leaf" begin
+        # The terminal hands back the lane accessor, which is the reverse tangent only for a leaf.
+        # An aggregate V with no `_unlift_seed` of its own silently took that path and failed
+        # several frames later inside reverse tangent arithmetic; it now says so at the boundary.
+        s = TestResources.StructFoo(6.0, [1.0, 2.0])
+        @test_throws ArgumentError unlift(
+            Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
+        )
+        # A `Ptr` nested in an aggregate reaches the terminal too, and rebuilds the reverse
+        # placeholder rather than handing back the raw lane address.
+        x = [1.0]
+        @test Mooncake._unlift_seed(
+            Lifted{Ptr{Nothing},1}(
+                Ptr{Nothing}(UInt(pointer(x))), (Ptr{Nothing}(UInt(pointer(x))),)
+            ),
+            IdDict(),
+        ) isa Mooncake.VoidPtrTangent
+    end
+
     @testset "metatype kinds get an unbounded slot" begin
         # A type-valued result inferred as its KIND is wrapped at runtime as `Lifted{Type{X}}`, and
         # `Lifted` is invariant in `P`, so a bounded slot rejects it. All four kinds are

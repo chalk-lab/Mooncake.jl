@@ -399,7 +399,35 @@ end
     primal(x), uninit_tangent(primal(x))
 )
 
-@inline _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P} = tangent(x, 1)
+# Terminal: a LEAF V, whose lane tangent already is the reverse tangent. An aggregate V that
+# reaches here has no `_unlift_seed` of its own and silently gets the lane accessor -- for a
+# mutable-struct leaf a `MutableDualTangentView` write proxy, which reverse tangent arithmetic
+# has no method for and which fails several frames downstream. Check the shape here instead, so
+# the next custom aggregate V says what is missing at the boundary that produced it.
+@inline function _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P}
+    t = tangent(x, 1)
+    t isa tangent_type(P) || _throw_unlift_not_a_leaf(P, t)
+    return t
+end
+@noinline function _throw_unlift_not_a_leaf(::Type{P}, t) where {P}
+    throw(
+        ArgumentError(
+            "unlift has no method for the forward value of `$P`, so it fell back to the lane " *
+            "accessor, which gave a `$(typeof(t))` where the reverse tangent is " *
+            "`$(tangent_type(P))`. That fallback is right only for a leaf; an aggregate needs " *
+            "its own `_unlift_seed` rebuilding a reverse tangent from its components.",
+        ),
+    )
+end
+# The `unlift` overrides below rebuild the reverse `Ptr` placeholder rather than hand back the
+# lane, and a `Ptr` nested in an aggregate needs the same: its lane is a raw address, which
+# equals the reverse tangent only where `tangent_type(Ptr{T})` is itself a `Ptr{T}`.
+@inline _unlift_seed(x::Lifted{Ptr{Nothing},1,<:Tuple}, ::IdDict) = uninit_tangent(
+    primal(x)
+)
+@inline _unlift_seed(x::Lifted{P,1,NoDual}, ::IdDict) where {P<:Ptr} = uninit_tangent(
+    primal(x)
+)
 function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
     p = primal(x)
     haskey(cache, p) && return cache[p]
