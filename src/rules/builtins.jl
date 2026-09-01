@@ -950,11 +950,15 @@ end
         b::Lifted{T,N,NDual{T,N}},
     ) where {N,T<:IEEEFloat}
         p = max_float_fast(primal(a), primal(b))
-        # A bare comparison, mirroring `Base.FastMath.max_fast(::NDual)`: under `@fastmath` the
-        # tie goes to the second operand on 1.12, which `isequal` against the computed primal
-        # cannot express, and the nfwd-native path would then disagree with this one. NaN is
-        # outside FastMath's contract, so the NaN reasoning that applies to `max_float` does not
-        # apply here.
+        # A bare comparison, mirroring `Base.FastMath.max_fast(::NDual)`, so the nfwd-native path
+        # and this one credit the same operand. The `isequal`-against-the-primal test that
+        # `max_float` needs cannot be used here: at a signed-zero tie fast-math leaves the result
+        # UNSPECIFIED, and it genuinely varies -- `max_float_fast(0.0, -0.0)` measured as `0.0`
+        # constant-folded and through a `Ref`, and `-0.0` from a `@noinline` call and from inside
+        # this rule. So there is nothing stable for `isequal` to compare against, and no reference
+        # can pin the tie either. It costs nothing: the operands are numerically equal there
+        # (`0.0 == -0.0`), so either partial is a valid subgradient. NaN is outside FastMath's
+        # contract, so the NaN reasoning that applies to `max_float` does not apply here.
         return Lifted{T,N}(
             p,
             NDual{T,N}(
