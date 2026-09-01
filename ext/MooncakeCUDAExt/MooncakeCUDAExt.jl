@@ -2193,6 +2193,21 @@ function _check_reduction_identity(f, pkw)
     )
 end
 
+# GPUArrays takes a reduction's output eltype from `init`, so an `init` whose type differs from
+# what the reduction produces returns a value the delegate cannot produce -- and a tangent typed
+# to match it. Compare against what the delegate actually returned rather than guessing the
+# natural output type, which the mapped function decides.
+function _check_mapreduce_init_type(pkw, y)
+    (!haskey(pkw, :init) || typeof(pkw.init) === typeof(y)) && return nothing
+    return _throw_gpu_argument_error(
+        "Mooncake: mapreduce over CuArray was given init::$(typeof(pkw.init)) where the " *
+        "reduction produces $(typeof(y)). GPUArrays takes the output eltype from `init`, " *
+        "so this changes the result type, which the rule cannot follow. Pass an init of " *
+        "type $(typeof(y)). " *
+        _UNIMPL_MSG,
+    )
+end
+
 function _check_reduction_init(dkw)
     dinit = dkw isa NamedTuple ? get(dkw, :init, NoTangent()) : NoTangent()
     (dinit isa NoTangent || iszero(dinit)) && return nothing
@@ -2752,14 +2767,33 @@ end
 
 # `abs2` has a simple analytic derivative, so avoid the generic NDual reduction's temporary
 # arrays and partial-extraction kernels. This is the loss reduction used by Flux's model tests.
-function frule!!(
-    ::Lifted{typeof(sum),Nw}, ::Lifted{typeof(abs2),Nw}, x::Lifted{<:CuGpuSumFArray,Nw}
-) where {Nw}
+# Split by V shape to match the generic `sum(f, x)` pair below: sharing their argument types and
+# pinning `f` keeps each of these strictly more specific, where one method spanning both shapes
+# is ambiguous with each.
+@inline function _gpu_sum_abs2_lifted(::Val{Nw}, x) where {Nw}
     px, dx = arrayify(x)
     y = sum(abs2, px)
     return Lifted{typeof(y),Nw}(
         y, _wrap_scalar_v_lanes(y, ntuple(k -> 2 * real(dot(px, dx[k])), Val(Nw)))
     )
+end
+function frule!!(
+    ::Lifted{typeof(sum),Nw},
+    ::Lifted{typeof(abs2),Nw},
+    x::Lifted{<:CuMaybeComplexArray,Nw,<:Nfwd.NDualArray},
+) where {Nw}
+    return _gpu_sum_abs2_lifted(Val(Nw), x)
+end
+function frule!!(
+    ::Lifted{typeof(sum),Nw},
+    ::Lifted{typeof(abs2),Nw},
+    x::Lifted{
+        <:Union{Adjoint{<:IEEEFloat,<:CuFloatArray},Transpose{<:IEEEFloat,<:CuFloatArray}},
+        Nw,
+        <:ImmutableDual,
+    },
+) where {Nw}
+    return _gpu_sum_abs2_lifted(Val(Nw), x)
 end
 function rrule!!(::CoDual{typeof(sum)}, ::CoDual{typeof(abs2)}, x::CoDual{<:CuGpuSumFArray})
     px, dx = arrayify(x)
@@ -2780,6 +2814,7 @@ end
 #
 # Works for both f: ℂ→ℝ (e.g. abs2, real, imag) and f: ℂ→ℂ (e.g. sin, exp).
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
+
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
 # Width-`Nw` forward rule for `sum(f, x)` on real/complex CuArrays.
 # Shared width-N `sum(f, x)` forward body: one dual broadcast computes f and df/dx for every
@@ -2791,7 +2826,7 @@ end
 @inline function _gpu_sum_f_lifted(::Val{Nw}, pf, flat_px, x_partials) where {Nw}
     _check_gpu_sum_f(pf)
     out = _gpu_broadcast_dual(pf, flat_px)
-    decoded = _gpu_decode_ndual_output(Val(:sum), out, (flat_px,))
+    decoded = _gpu_decode_ndual_output(Val(:sum), out)
     P_out = typeof(decoded.primal_out)
     # `is_diff` reports that the kernel's elements carried no partials, NOT that the result is
     # non-differentiable — a mapped `f` that strips the dual lands here with a differentiable
@@ -2852,6 +2887,19 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
     return _gpu_sum_f_rrule(primal(f), x)
+end
+
+# mapreduce's keyword spelling equals its positional one exactly when the keywords do not change
+# the reduction: no `dims` (or `dims=:`). A real `dims` needs the `sum(f, x; dims)` forward path
+# that is not written yet.
+_mapreduce_kw_is_plain(pkw) = get(pkw, :dims, :) isa Colon
+function _throw_gpu_mapreduce_dims()
+    return _throw_gpu_argument_error(
+        "Mooncake: keyword mapreduce(f, op, x; dims) on CuArray is not yet differentiable in " *
+        "forward mode, for the same reason keyword sum(f, x; dims) is not: it needs the mapped " *
+        "rule's NDual machinery combined with per-slice geometry. " *
+        _UNIMPL_MSG,
+    )
 end
 
 # Rules for `mapreduce(f, op, x)` on GPU arrays.
@@ -4439,22 +4487,20 @@ end
     return dest
 end
 
-@inline function _gpu_decode_ndual_output(
-    ::Val{:sum}, out, flat_pargs; extract_partials::Bool=false, pkw=NamedTuple()
-)
-    decoded = _gpu_decode_ndual_meta(out, flat_pargs; extract_partials)
+@inline function _gpu_decode_ndual_output(::Val{:sum}, out, pkw=NamedTuple())
+    is_diff = Nfwd._nfwd_dual_has_partials(eltype(out))
     # Differentiable output: reduce the NDual `.value`s with a matching-typed `init`. Non-differentiable
     # output (a non-`NDual` element type, e.g. a `Bool` from a predicate `f`): reduce the array
     # directly and let the result type promote naturally (`sum(::Bool array)::Int`). Forcing the
     # NDual-derived `init` there mismatched the promoted accumulator and crashed the GPU reduction.
     # `pkw` carries the caller's reduction keywords, `dims` among them.
-    primal_out = if decoded.is_diff
+    primal_out = if is_diff
         reduction_kw = merge((; init=zero(Nfwd._nfwd_dual_primal_type(eltype(out)))), pkw)
         sum(Nfwd._nfwd_dual_value, out; reduction_kw...)
     else
         sum(out; pkw...)
     end
-    return (; decoded..., primal_out)
+    return (; is_diff, primal_out)
 end
 
 # Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
@@ -5274,9 +5320,7 @@ function frule!!(
     # `arrayify` covers a bare CuArray and the Adjoint/Transpose/SubArray wrappers the claim
     # admits alike; each lane view writes through to the slot's own partials.
     pout, dest_partials = arrayify(dest)
-    decoded = _gpu_decode_ndual_output(
-        Val(:broadcast), dual_out, flat_pargs; extract_primal=false
-    )
+    decoded = _gpu_decode_ndual_output(Val(:broadcast), dual_out; extract_primal=false)
     _gpu_write_broadcast_primal!(pout, dual_out, decoded.is_diff)
     if !decoded.is_diff
         for lane in 1:Nw
