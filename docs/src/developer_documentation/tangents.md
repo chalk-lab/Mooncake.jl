@@ -30,7 +30,7 @@ The functions above define the *reverse-mode* tangent interface. The forward-mod
 `NDual`) representation has a parallel, rule-free contract checked by
 [`Mooncake.TestUtils.test_lifted`](@ref) (with [`Mooncake.TestUtils.test_lifted_type`](@ref) for the
 type-level part) — the forward counterpart of [`Mooncake.TestUtils.test_tangent`](@ref). It verifies,
-at chunk widths 1, 2 and 3, that the forward seed factories produce a coherent slot whose primal aliases
+at chunk widths 1 and 8, that the forward seed factories produce a coherent slot whose primal aliases
 the input, that every inner dual's `.value` tracks the primal it shadows (the inner-value invariant
 `test_rule` does not check), and that a reverse tangent round-trips through `unlift`/`lift`.
 

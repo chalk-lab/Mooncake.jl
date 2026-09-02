@@ -567,7 +567,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
 
         # The ALLOCATING `kron`, which the in-place cases above do not reach: it has its own frule
         # that builds the result's block and writes each lane into it at stride `N`. Registered so
-        # `test_rule` drives it at widths 1-3 — the width > 1 path was previously untested, and an
+        # `test_rule` drives it at widths 1 and 8 — the width > 1 path was previously untested, and an
         # element the lane writer skipped would keep the `undef` the block is allocated with.
         # `interface_only=false` unlike the `_kron!` cases above: the result here is freshly
         # allocated, so finite differences are meaningful and the derivative itself is checked.

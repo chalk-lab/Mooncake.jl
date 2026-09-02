@@ -620,11 +620,11 @@ const NDAC_VecC64 = NDualArray{
 
     # complex.jl rules: `lgetfield(::Complex, Val(:re)/:im)` and `_new_(ComplexF64, re, im)` are
     # registered in `hand_written_rule_test_cases(:complex)`, driven through test_rule (both modes,
-    # widths 1-3, :stability_and_allocs) by the complex group — no bespoke parallel needed.
+    # widths 1 and 8, :stability_and_allocs) by the complex group — no bespoke parallel needed.
 
     # performance_patches.jl rules (sum, sum(abs2,·), LinearAlgebra._kron!) are registered in
     # `hand_written_rule_test_cases(:performance_patches)`; their NDualArray V is per-lane
-    # oracle-checkable, so `test_rule` covers value + per-lane partials across widths 1-3.
+    # oracle-checkable, so `test_rule` covers value + per-lane partials across widths 1 and 8.
 
     @testset "MutableDualTangentView (NDual field)" begin
         r = LiftedTest_RefF(3.0)
@@ -715,7 +715,7 @@ const NDAC_VecC64 = NDualArray{
 
     # builtins.jl intrinsics (abs/add/copysign/div/mul/neg/sub/fma/muladd/fpext/fptrunc) are
     # registered in `hand_written_rule_test_cases(:builtins)`, which drives them through
-    # `test_rule` (both modes, widths 1-3, FD) plus the per-lane oracle, so no bespoke
+    # `test_rule` (both modes, widths 1 and 8, FD) plus the per-lane oracle, so no bespoke
     # one-to-one parallel testset is needed here.
 
     # low_level_maths.jl scalar primitives are registry-covered under Val{:low_level_maths}
@@ -725,7 +725,7 @@ const NDAC_VecC64 = NDualArray{
 
     # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
     # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via
-    # `verify_lifted_type` across widths 1-3, so no bespoke parallel is needed. `_new_` on immutable
+    # `verify_lifted_type` across widths 1 and 8, so no bespoke parallel is needed. `_new_` on immutable
     # and mutable structs is likewise registered (Val{:new}: StructFoo -> ImmutableDual, MutableFoo
     # -> MutableDual, with the V shape checked by verify_lifted_type), so no new.jl parallel either.
     # The iddict.jl parallel below IS kept: the IdDict setindex!->getindex persistence (mutation
