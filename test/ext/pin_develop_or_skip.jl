@@ -15,6 +15,17 @@ Pinning stops the resolver from silently downgrading a target to accommodate an 
 Mooncake. If a pinned target cannot coexist with the checked-out Mooncake, the resulting
 `Pkg.Resolve.ResolverError` is caught, a warning is logged, and the process exits successfully
 (`exit(0)`) so the suite is skipped instead of failing CI; any other error is re-raised.
+
+!!! warning "A skipped suite is indistinguishable from a passing one"
+    `exit(0)` means a skip shows up as green. That is deliberate — a downstream package that has
+    not yet widened its Mooncake compat should not turn CI red — but it is worth knowing that the
+    signal is a log line and a GitHub annotation, not a test result, and neither appears in the
+    aggregate summary.
+
+    This matters most immediately after a breaking release, when many downstreams still cap the
+    previous version and several suites skip at once. Measured on this branch at Mooncake 0.6.0,
+    `test/ext/differentiation_interface` already takes the skip path. Do not read a green
+    ecosystem run as coverage without checking which suites actually ran.
 """
 function pin_develop_or_skip(dir::AbstractString, targets::AbstractString...)
     Pkg.activate(dir)
