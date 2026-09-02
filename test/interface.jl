@@ -179,9 +179,14 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
+            # The prepared-cache zero-allocation contract. Asserted, rather than the
+            # `alloc_count > 0 ? @test_broken : @test` it replaces, which could not fail in
+            # either branch and so asserted nothing on any version. On 1.11 and 1.12 every case
+            # here is exactly zero; on 1.10 the `__call_rule` dispatch barrier (julia#61368, see
+            # the note in `src/utils.jl`) costs 3-4 for all but `sum`, so bound it there.
             alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
-            if alloc_count > 0
-                @test_broken alloc_count == 0
+            @static if VERSION < v"1.11-"
+                @test alloc_count <= 4
             else
                 @test alloc_count == 0
             end
@@ -369,11 +374,16 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
-            if alloc_count > 0
-                @test_broken alloc_count == 0
+            # As above, but the pullback cache does NOT reach zero on any supported version: an
+            # array-returning `f` costs 2 on 1.11 and 1.12 and 7 on 1.10, while scalar returns
+            # are 0 and 3. The unenforceable form this replaces hid that. Bound each version at
+            # what it achieves so a regression fails; the residual 2 on 1.11+ is unexplained and
+            # wants its own investigation rather than a silent waiver.
+            alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
+            @static if VERSION < v"1.11-"
+                @test alloc_count <= 7
             else
-                @test alloc_count == 0
+                @test alloc_count <= 2
             end
         end
 
