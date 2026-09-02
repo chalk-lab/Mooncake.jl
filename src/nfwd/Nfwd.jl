@@ -2125,9 +2125,10 @@ end
 # unknown container (e.g. a GPU array) must define its own method, or fail loudly here rather
 # than silently landing a CPU block.
 #
-# `_block_dims` gives the block's `undef` dimensions and `_block_reshape` presents it to
-# shape-consuming helpers (BLAS, `tangent_view`) as `(N, size(primal)...)`. Element access is
-# always linear (`_lane_offset`), so it is oblivious to the block's declared shape.
+# `_block_dims` gives the block's `undef` dimensions as `(N, size(primal)...)`. Element access is
+# always linear (`_lane_offset`), so it is oblivious to the block's declared shape. A backend whose
+# block is oriented differently overrides `tangent_view`/`_lane_views` outright, as the CUDA
+# extension does — those are the orientation seam.
 # A `Memory{T}` primal blocks to a rank-2 block — `Memory` is 1-D only, so the block cannot
 # itself be a `Memory`.
 @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = NDualBlock{Element,D + 1}
@@ -2135,7 +2136,6 @@ end
     @inline _block_type(::Type{Memory{Element}}) where {Element} = NDualBlock{Element,2}
 end
 @inline _block_dims(N::Int, p) = (N, size(p)...)
-@inline _block_reshape(block, N::Int, p) = block
 @inline _block_shape_ok(block, N::Int, p) = size(block) == (N, size(p)...)
 
 @noinline function _throw_block_shape_error(block_size, N, primal_size)
@@ -2281,18 +2281,16 @@ end
 # shape as `primal`). Reads and writes through a view land in the block. Callers use
 # `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
-    shaped = _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal))
+    block = getfield(a, :partials_block)
     colons = ntuple(_ -> Colon(), Val(D))
-    return ntuple(k -> view(shaped, k, colons...), Val(N))
+    return ntuple(k -> view(block, k, colons...), Val(N))
 end
 
 # Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
 # in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Builds just
 # the one lane — the preferred single-lane accessor; `_lane_views` builds the whole tuple.
 @inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
-    _block_reshape(getfield(a, :partials_block), N, getfield(a, :primal)),
-    k,
-    ntuple(_ -> Colon(), Val(D))...,
+    getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
 )
 
 # AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
