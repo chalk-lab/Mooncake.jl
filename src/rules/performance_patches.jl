@@ -256,14 +256,6 @@ end
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
-# A tangent must not carry the primal wrapper's structural constants. Every wrapper `arrayify`
-# admits stores structural *zeros* off-pattern, which are correct derivatives; the exceptions are
-# the two unit triangulars, whose diagonal reads a constant `1` with derivative zero.
-# `_arrayify_lane` cannot mask it upstream: the block scatter writes through its result.
-@inline _kron_tangent_mask(z) = z
-@inline _kron_tangent_mask(z::UnitUpperTriangular) = triu(parent(z), 1)
-@inline _kron_tangent_mask(z::UnitLowerTriangular) = tril(parent(z), -1)
-
 # One lane's Kronecker JVP into `dout_l`, written column-major to match `_kron!`'s fill order:
 # d(kron(x1, x2)) = kron(dx1, x2) + kron(x1, dx2), element-wise to avoid allocation.
 function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
@@ -366,9 +358,9 @@ function Mooncake.frule!!(
         _kron!_jvp_lane!(
             dout_s[lane],
             px1,
-            _kron_tangent_mask(dx1_s[lane]),
+            _mask_unit_diagonal(dx1_s[lane]),
             px2,
-            _kron_tangent_mask(dx2_s[lane]),
+            _mask_unit_diagonal(dx2_s[lane]),
         )
     end
     return out
@@ -510,9 +502,9 @@ function Mooncake.frule!!(
             k,
             Val(N),
             mx1,
-            _kron_densify(_kron_tangent_mask(dx1s[k])),
+            _kron_densify(_mask_unit_diagonal(dx1s[k])),
             mx2,
-            _kron_densify(_kron_tangent_mask(dx2s[k])),
+            _kron_densify(_mask_unit_diagonal(dx2s[k])),
         )
     end
     V = NDualArray{T,N,2,A,Nfwd._wrapped_eltype(T, Val(N)),typeof(blk)}(y, blk)

@@ -195,7 +195,7 @@ end
 # For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
 # primal with derivative zero. It is not masked here because the block scatter writes through this
 # result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
-# diagonal itself (`_kron_tangent_mask` forward, `accumulate_densified!` reverse).
+# diagonal itself (`_mask_unit_diagonal` forward, `accumulate_densified!` reverse).
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.value.data, lane, d)
 )
@@ -767,23 +767,26 @@ end
     return getfield(tangent(x), :partials_block), false
 end
 # A lane partial READ must not carry the primal wrapper's structural CONSTANTS. Every wrapper
-# `arrayify` admits stores structural zeros off-pattern, which are correct derivatives; the two
-# unit triangulars are the exception, their diagonal reading a constant `1` whose derivative is
-# zero. The mask cannot live in `_blas_lane_partial` itself, which must keep aliasing the slot's
-# storage because `_write_back_partials!` scatters through it, so it sits on the read path here.
-# No current rule reaches this with a unit triangular -- the BLAS rules take a data matrix plus a
-# `diag` character rather than a wrapper, and `kron`, the one primitive that admits one, reads
-# through `arrayify` and masks there -- so this guards the seam a future reader would use.
-@inline _lane_read(z) = z
-@inline _lane_read(z::UnitUpperTriangular) = triu(parent(z), 1)
-@inline _lane_read(z::UnitLowerTriangular) = tril(parent(z), -1)
+# A tangent must not carry the primal wrapper's structural constants. Every wrapper `arrayify`
+# admits stores structural ZEROS off-pattern, which are correct derivatives; the two unit
+# triangulars are the exception, their diagonal reading a constant `1` whose derivative is zero.
+# The mask cannot live upstream in `_blas_lane_partial`/`_arrayify_lane`, which must keep aliasing
+# the slot's storage because the block scatter writes back through it, so it sits on each read
+# path instead. Used by `_partials_block` here and by the `kron` JVP in `performance_patches.jl`.
+#
+# No BLAS rule reaches this with a unit triangular today -- they take a data matrix plus a `diag`
+# character rather than a wrapper -- so on that path it guards a seam a future reader would use.
+# `kron` does admit one, and is why the masking is not merely defensive.
+@inline _mask_unit_diagonal(z) = z
+@inline _mask_unit_diagonal(z::UnitUpperTriangular) = triu(parent(z), 1)
+@inline _mask_unit_diagonal(z::UnitLowerTriangular) = tril(parent(z), -1)
 
 @inline function _partials_block(x::Lifted{P,N}) where {T,D,P<:AbstractArray{T,D},N}
     p = primal(x)
     blk = Array{T,D + 1}(undef, (N, size(p)...))
     colons = ntuple(_ -> Colon(), Val(D))
     for k in 1:N
-        copyto!(view(blk, k, colons...), _lane_read(_blas_lane_partial(x, k)))
+        copyto!(view(blk, k, colons...), _mask_unit_diagonal(_blas_lane_partial(x, k)))
     end
     return blk, true
 end
