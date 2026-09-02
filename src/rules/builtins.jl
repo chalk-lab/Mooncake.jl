@@ -697,10 +697,16 @@ end
         "the tangent storage behind this address is laid out in `$TA` elements, so a `$TB` load " *
         "or store through the re-typed pointer would straddle two of them and corrupt both"
     end
+    # The `Ptr{Cvoid}` round trip is recoverable — re-type between the real element types and the
+    # check can see them. A direct mismatch is not, so do not tell that caller to do what they did.
+    advice = if isempty(whence)
+        "These element types genuinely differ, so there is no sound re-typing between them."
+    else
+        "Re-type directly between the element types you differentiate through."
+    end
     throw(
         ArgumentError(
-            "Cannot re-type a tangent pointer to `Ptr{$TB}` during AD$whence: $why. Re-type " *
-            "directly between the element types you differentiate through.",
+            "Cannot re-type a tangent pointer to `Ptr{$TB}` during AD$whence: $why. $advice"
         ),
     )
 end

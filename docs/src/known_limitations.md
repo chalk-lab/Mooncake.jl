@@ -310,21 +310,25 @@ A tangent pointer carries its element type, and that is what lets Mooncake check
 sound: re-typing `Ptr{Float32}` to `Ptr{Float64}` is refused, because a load or store through the
 result would address eight bytes per element in a buffer laid out in four-byte ones.
 
-Erasing the element type defeats that check, because Mooncake gives an erased pointer and a pointer
-with no tangent storage at all the same representation — both are `Ptr{Nothing}`, and `fdata_type`
-pins a pointer field's fdata to `Ptr`. Once erased, a later re-typing back to a differentiable
-element cannot be verified.
+Erasing the element type loses the information that check needs, because Mooncake gives an erased
+pointer and a pointer with no tangent storage at all the same representation — both are
+`Ptr{Nothing}`, and `fdata_type` pins a pointer field's fdata to `Ptr`.
 
-So the erasure itself is refused when the pointer has real tangent storage behind it:
+The erasure itself is allowed. What is refused is re-typing to an element type the underlying
+tangent storage cannot hold, and that is checked when the pointer is widened back:
 
 ```julia
 f(b::Vector{Float32}, x) = x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))   # ArgumentError
 ```
 
-Erasing a pointer with no tangent storage is unaffected, which is the common direction —
+Erasing and re-typing back to the *same* element type is fine, which is the common direction:
 `pointer(::Array)` passes through a `Ptr{Cvoid}` intermediate and re-types back to the element type
-a foreigncall needs. Re-type directly between the element types you differentiate through, without
-the round trip.
+a foreigncall needs.
+
+The `Ptr{Cvoid}` round trip is not itself the problem. Going straight from `Ptr{Float32}` to
+`Ptr{Float64}` is refused identically — a `Float64` load would straddle two `Float32` tangent
+elements either way. The round trip only matters in that it hides the source type until the
+widening, which is why the error for that path suggests re-typing directly instead.
 
 ```@meta
 DocTestSetup = nothing
