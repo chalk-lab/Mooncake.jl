@@ -28,7 +28,7 @@ as discontinuities or removable singularities.
 
 ## Concrete MWE
 
-Here is the full pattern for a simple scalar primitive such as `cospi(x)`.
+Here is the full pattern for a simple scalar primitive such as `exp(x)`.
 
 The `NDual` method owns the local **forward** derivative behavior. Outside `src/nfwd/Nfwd.jl`,
 the internal helper names need to be imported or qualified explicitly:
@@ -37,37 +37,35 @@ the internal helper names need to be imported or qualified explicitly:
 const NDual = Mooncake.Nfwd.NDual
 const _fwd_scale = Mooncake.Nfwd._fwd_scale
 
-@inline function Base.cospi(x::NDual{T,N}) where {T,N}
-    return NDual{T,N}(cospi(x.value), _fwd_scale(x.partials, -T(π) * sinpi(x.value)))
+@inline function Base.exp(a::NDual{T,N}) where {T,N}
+    return (ev=exp(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev)))
 end
 ```
 
 Key details:
 
-- `x.value` is the primal scalar value.
-- `x.partials` is the `N`-lane tuple of tangent directions carried by `NDual`.
-- `_fwd_scale(x.partials, s)` multiplies every tangent lane by the same local scalar derivative `s`.
-- The returned `NDual` therefore contains both the primal `cospi(x)` value and the propagated tangent lanes.
+- `a.value` is the primal scalar value.
+- `a.partials` is the `N`-lane tuple of tangent directions carried by `NDual`.
+- `_fwd_scale(a.partials, s)` multiplies every tangent lane by the same local scalar derivative `s`.
+- The returned `NDual` therefore contains both the primal `exp(a)` value and the propagated tangent
+  lanes. Here the value *is* the derivative factor, so it is computed once and used twice.
 
 The forward `frule!!` stays thin — it just runs that overload. The reverse `rrule!!` is a direct
-native pullback that writes the closed-form factor `d(cospi)/dx = -π·sinpi(x)` inline, with no `NDual`
-seeding:
+native pullback that writes the closed-form factor inline, with no `NDual` seeding:
 
 ```julia
-@is_primitive MinimalCtx Tuple{typeof(cospi),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(cospi),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = cospi(tangent(x))      # the NDual overload runs the primal once, storing it in dy.value
-    y = dy.value                # read the primal back — do NOT recompute cospi(primal(x))
+@is_primitive MinimalCtx Tuple{typeof(exp),P} where {P<:IEEEFloat}
+function frule!!(::Lifted{typeof(exp),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
+    dy = exp(tangent(x))    # the NDual overload runs the primal once, storing it in dy.value
+    y = dy.value            # read the primal back — do NOT recompute exp(primal(x))
     return Lifted{_typeof(y),N}(y, dy)
 end
 
-function rrule!!(::CoDual{typeof(cospi)}, x::CoDual{P}) where {P<:IEEEFloat}
+function rrule!!(::CoDual{typeof(exp)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
-    y = cospi(_x)
-    cospi_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -oftype(_x, π) * sinpi(_x)))
-    return zero_fcodual(y), cospi_pb
+    y = exp(_x)
+    exp_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y))
+    return zero_fcodual(y), exp_pb
 end
 ```
 
@@ -83,6 +81,33 @@ an `NDual`, so reverse mode does not depend on the forward-mode `Nfwd` submodule
 `nfwd` only supports scalar leaves it can lift to `NDual` directly, so the forward side of this pattern
 fits primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tuples of them, e.g.
 `sincos`); the reverse factors are written by hand for the same signatures.
+
+### The fused exception
+
+A handful of primitives get the value and the derivative factor from one call, and those write the
+arithmetic inline in both rules rather than delegating to the `NDual` overload. The clusters are
+`sin`/`cos`/`tan`, `sind`/`cosd`/`tand` and `sinpi`/`cospi`, each backed by one `sincos`-family call:
+
+```julia
+@inline function Base.cospi(a::NDual{T,N}) where {T,N}
+    sv, cv = sincospi(a.value)
+    return NDual{T,N}(cv, _fwd_scale(a.partials, -T(π) * sv))
+end
+
+function frule!!(
+    ::Lifted{typeof(cospi),N}, x::Lifted{P,N,NDual{P,N}}
+) where {N,P<:IEEEFloat}
+    nd = tangent(x)
+    v = nd.value
+    s, c = sincospi(v)
+    y = c
+    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, -oftype(v, π) * s)))
+end
+```
+
+`sincospi` yields `sinpi` and `cospi` together, so `cospi`'s value and its derivative factor
+`-π·sinpi(x)` cost one transcendental call between them instead of two. Follow the thin `exp` shape
+by default; reach for this one only where a fused primitive genuinely supplies both halves.
 
 ## Why This Is Useful
 
