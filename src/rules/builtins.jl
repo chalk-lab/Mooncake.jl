@@ -1696,6 +1696,9 @@ function frule!!(::Lifted{typeof(getfield),Nw}, x::Lifted, name::Lifted) where {
         # `NoDual()` here produced a non-canonical `Lifted{SimpleVector,…,NoDual}` that the svec
         # consumers reject. `uninit_lifted` builds the canonical slot (mirrors the reverse
         # `uninit_fcodual` used by the corresponding `rrule!!`).
+        #
+        # TODO(#1295): that slot's partials do not alias the storage the pass seeded for the field,
+        # the forward half of the same defect.
         return uninit_lifted(Val(Nw), y)
     else
         V_i = _get_lifted_field(tangent(x), _name)
@@ -1712,7 +1715,7 @@ function frule!!(
     P = _typeof(primal(x))
     if tangent_type(P) == NoTangent
         # See the 2-arg `getfield` frule: canonical zero V (handles a `SimpleVector` field
-        # whose V is `Vector{Any}`, not `NoDual`).
+        # whose V is `Vector{Any}`, not `NoDual`), and its TODO(#1295).
         return uninit_lifted(Val(Nw), y)
     else
         V_i = _get_lifted_field(tangent(x), _name)
@@ -1743,13 +1746,8 @@ function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
     if tangent_type(P) == NoTangent
-        # KNOWN GAP, not a safe guard: `tangent_type(P) === NoTangent` does not imply the same of
-        # `P`'s fields. `DataType`, `Method` and `Core.TypeName` are `NoTangent` with
-        # `Core.SimpleVector` fields whose `tangent_type` is `Vector{Any}`, so this mints fresh
-        # fdata for a differentiable field. If the same object is reached elsewhere in the pass,
-        # one contribution is silently dropped (measured: `Any[2.0]` against a control of
-        # `Any[4.0]`). Refusing here is wrong -- the unaliased read is legitimate and common -- so
-        # the fix needs the per-call aliasing cache threaded in, as the constant/global sites do.
+        # TODO(#1295): a `NoTangent` parent can hold a differentiable field, so this mints fresh
+        # fdata that does not alias the storage the pass already seeded, and drops a contribution.
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name)
     elseif !ismutabletype(P)
@@ -1771,13 +1769,8 @@ function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,F}, name::CoDual, order::CoDual
 ) where {P,F<:StandardFDataType}
     if tangent_type(P) == NoTangent
-        # KNOWN GAP, not a safe guard: `tangent_type(P) === NoTangent` does not imply the same of
-        # `P`'s fields. `DataType`, `Method` and `Core.TypeName` are `NoTangent` with
-        # `Core.SimpleVector` fields whose `tangent_type` is `Vector{Any}`, so this mints fresh
-        # fdata for a differentiable field. If the same object is reached elsewhere in the pass,
-        # one contribution is silently dropped (measured: `Any[2.0]` against a control of
-        # `Any[4.0]`). Refusing here is wrong -- the unaliased read is legitimate and common -- so
-        # the fix needs the per-call aliasing cache threaded in, as the constant/global sites do.
+        # TODO(#1295): a `NoTangent` parent can hold a differentiable field, so this mints fresh
+        # fdata that does not alias the storage the pass already seeded, and drops a contribution.
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name, order)
     elseif !ismutabletype(P)

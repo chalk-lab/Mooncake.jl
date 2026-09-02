@@ -147,6 +147,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     # but its forward V is the field's *canonical* zero V — `NoDual` for the usual scalars, yet
     # `Vector{Any}` for a `SimpleVector` field (e.g. `lgetfield(::DataType, Val(:parameters))`).
     # `uninit_lifted` builds that canonical slot (mirrors the reverse non-diff `getfield` path).
+    # TODO(#1295): those partials do not alias the storage the pass seeded for the field.
     tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
     _check_lifted_field_ptr_lanes(V_i, Val(Nw))
@@ -348,6 +349,9 @@ end
     return y, pb!!
 end
 
+# TODO(#1295): the `NoFData` method below mints fresh fdata for a differentiable field of a
+# `NoTangent` parent, breaking the aliasing invariant. This is the site a literal field name
+# reaches, via `lgetfield`; the dynamic-name spelling is in `builtins.jl`.
 @unstable @inline _get_fdata_field(_, t::Union{Tuple,NamedTuple}, f) = getfield(t, f)
 @unstable @inline _get_fdata_field(_, data::FData, f) = val(getfield(data.data, f))
 @unstable @inline _get_fdata_field(primal, ::NoFData, f) = uninit_fdata(getfield(primal, f))
