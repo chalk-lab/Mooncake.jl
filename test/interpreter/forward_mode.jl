@@ -26,6 +26,13 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 # `DynamicFRule` with a mutable `cache` Dict — used by the cache-hit `_copy` regression below.
 fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
 
+module FwdAliasGlobals
+# Read while also passed as the argument, to exercise the refusal of an argument that aliases a
+# differentiable global.
+const alias_vector = [1.0, 2.0]
+alias_read_only(x) = sum(x .* alias_vector)
+end
+
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
@@ -52,6 +59,30 @@ fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
                 Mooncake.UnhandledLanguageFeatureException,
                 Mooncake.build_frule(Mooncake.TestResources.non_const_global_ref, 5.0)
             )
+        end
+    end
+
+    # Forward counterpart of the reverse-mode testset of the same name, and bespoke for the same
+    # reason: a `generate_test_functions` row's third slot is allocation bounds, which the driver
+    # drops, so it cannot carry a `throws` expectation.
+    #
+    # Gated to <1.12 because the guard does not apply there, not to make the suite green: the 1.12
+    # transform surfaces no constant in `captures` (3 and no `Lifted`, against 4 and one on 1.11).
+    # That gap and the nfwd one are stated on `_aliasable_dual_constants`.
+    @static if VERSION < v"1.12-"
+        @testset "argument aliasing a differentiable global is refused" begin
+            G = FwdAliasGlobals.alias_vector
+            f = FwdAliasGlobals.alias_read_only
+            cache = Mooncake.prepare_derivative_cache(f, G)
+            @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                cache, (f, Mooncake.zero_tangent(f)), (G, [1.0, 1.0])
+            )
+            # The same global read with an unaliased argument is supported and unaffected.
+            y = [3.0, 4.0]
+            c2 = Mooncake.prepare_derivative_cache(f, y)
+            @test Mooncake.value_and_derivative!!(
+                c2, (f, Mooncake.zero_tangent(f)), (y, [1.0, 1.0])
+            )[2] ≈ sum(G)
         end
     end
 

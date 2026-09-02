@@ -121,7 +121,9 @@ function build_frule(
                 info.dual_ret_type, dual_ir, captures...; do_compile=true
             )
             sig = flatten_va_sig(sig, info.isva, info.nargs)
-            raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(dual_oc)
+            raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(
+                dual_oc, _aliasable_dual_constants(captures)
+            )
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
             return rule
@@ -135,6 +137,42 @@ end
 
 struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
+    # Constant and global primals this rule built forward values for at build time, empty for most
+    # rules. Reverse's `DerivedRule` carries the same thing; see `_aliasable_constants`.
+    consts::ConstAliasSet
+end
+
+"""
+    _aliasable_dual_constants(captures)
+
+Forward counterpart of `_aliasable_constants`. `const_dual!` builds a `Lifted` for each
+differentiable IR constant and `GlobalRef` once at rule-build time and pushes it here, so its
+partials are shared with nothing. An argument that is the same object then has its own, and the
+contribution through the constant is dropped.
+
+MUCH narrower than the reverse counterpart, which reads the whole shared-data tuple. Two gaps, both
+leaving a silently wrong JVP rather than a refusal, so do not rely on this as a complete guard:
+
+  - The nfwd-native path (`NfwdFRule`) runs the primal on `NDual` numbers and lifts no constants
+    at all, so there is nothing to collect. `x[1]*G[1]` at `x === G` routes there on 1.11 and 1.12
+    alike and returns a JVP of 1.0 against a consistent 2.0.
+  - On 1.12 the transform does not surface the constant in `captures` even with `nfwd=false`:
+    `sum(x .* G)` gives 3 captures and no `Lifted`, where 1.11 gives 4 and one. So this collects
+    nothing on 1.12.
+
+Reverse mode's guard has neither gap. Closing these needs the constants tracked somewhere both
+paths can see, which is a larger change than this.
+"""
+# `captures` is a `Vector{Any}` while the IR is being built and a `Tuple` once the rule is
+# constructed, so this takes either.
+function _aliasable_dual_constants(captures)
+    consts = Any[]
+    for c in captures
+        c isa Lifted || continue
+        tangent(c) isa NoDual && continue
+        push!(consts, primal(c))
+    end
+    return ConstAliasSet(consts)
 end
 
 # Invoke the wrapped OpaqueClosure (`fwd_oc.oc`) directly rather than the `MistyClosure`
@@ -145,6 +183,7 @@ end
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
     args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
+    _check_constant_aliasing(fwd.consts, args)
     return __call_rule(fwd.fwd_oc.oc, __unflatten_dual_varargs(isva, args, Val(nargs)))
 end
 
@@ -161,7 +200,7 @@ end
 
 # Copy forward rule with recursively copied captures
 function _copy(x::P) where {P<:DerivedFRule}
-    return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
+    return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)), x.consts)
 end
 
 _isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva

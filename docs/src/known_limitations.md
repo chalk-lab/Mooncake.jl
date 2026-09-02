@@ -74,6 +74,29 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
 
+### Passing a global as an argument
+
+Reading a global is fine only while that object is not *also* an argument. The global's derivative
+storage is built once when the rule is built, so it shares nothing with the argument's, and the
+contribution through the global is written somewhere the caller never sees:
+
+```julia
+const G = [1.0, 2.0]
+f(x) = sum(x .* G)
+value_and_gradient!!(build_rrule(f, G), f, G)   # gradient [1.0, 2.0]; the truth is [2.0, 4.0]
+```
+
+The value returned is correct, which makes this easy to miss. Reverse mode now refuses such a call
+with an `ArgumentError` rather than returning the wrong gradient.
+
+**Forward mode still returns the wrong answer here**, silently, in two cases: when the function
+takes the nfwd-native path (`x[1]*G[1]` gives a JVP of 1.0 where 2.0 is consistent), and on Julia
+1.12, where the transform does not surface the constant for the check to see. Prefer reverse mode
+when a global may alias an argument, or pass a copy.
+
+Aliasing between *arguments* is a different matter and is supported: two arguments over one array
+share derivative storage, so both positions report the one accumulated gradient.
+
 
 ## Passing Differentiable Data as a Type
 

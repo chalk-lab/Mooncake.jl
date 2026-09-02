@@ -153,3 +153,23 @@ function NoPullback(args::Vararg{CoDual,N}) where {N}
 end
 
 @inline (pb::NoPullback)(_) = tuple_map(instantiate, pb.r)
+
+"""
+    ConstAliasSet(primals::Vector{Any} = Any[])
+
+The constant and global primals a derived rule built derivative storage for at rule-build time.
+Both `DerivedRule` and `DerivedFRule` carry one, and refuse a call whose arguments include one of
+these objects: that storage is shared with nothing, so the contribution through the constant would
+be dropped.
+
+A field of this fixed, concrete, non-differentiable type rather than a type parameter. A parameter
+would make a rule's type depend on whether its function happens to read a differentiable constant,
+which defeats the `Core.Compiler.return_type(build_derived_rrule, ...)` inference that
+`__build_primitive_frule` relies on to key its cache.
+"""
+struct ConstAliasSet
+    primals::Vector{Any}
+end
+ConstAliasSet() = ConstAliasSet(Any[])
+
+tangent_type(::Type{ConstAliasSet}) = NoTangent

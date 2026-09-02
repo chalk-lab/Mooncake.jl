@@ -1755,22 +1755,6 @@ is_active(::Union{Argument,ID}) = true
 is_active(::Any) = false
 
 """
-    ConstAliasSet(primals::Vector{Any} = Any[])
-
-Wrapper so `DerivedRule` can carry its differentiable constants in a field of fixed, concrete,
-non-differentiable type. A type parameter would make the rule's type depend on whether the
-function happens to read a differentiable constant, which defeats the
-`Core.Compiler.return_type(build_derived_rrule, ...)` inference that `__build_primitive_frule`
-relies on to key its cache.
-"""
-struct ConstAliasSet
-    primals::Vector{Any}
-end
-ConstAliasSet() = ConstAliasSet(Any[])
-
-tangent_type(::Type{ConstAliasSet}) = NoTangent
-
-"""
     pullback_type(Trule, arg_types)
 
 Get a bound on the pullback type, given a rule and associated primal types.
