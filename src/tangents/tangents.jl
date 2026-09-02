@@ -794,7 +794,7 @@ circular references or aliasing. Returns `Val{true}()` if caching is required (t
 or `Val{false}()` if tangents of type [`tangent_type(P)`](@ref) are guaranteed to be free of circular references,
 uninitialized fields that could create circular references, and aliasing.
 
-This function is used internally by operations like `set_to_zero!!`. Returning `Val{false}()` 
+This function is used internally by `set_to_zero!!` and `increment!!`. Returning `Val{false}()` 
 can improve performance by avoiding cache overhead, but is only safe when the memory layout
 of the tangent type is provably tree-like. 
 
@@ -949,9 +949,9 @@ Add `x` to `y`. If `ismutabletype(T)`, then `increment!!(x, y) === x` must hold.
 That is, `increment!!` will mutate `x`.
 This must apply recursively if `T` is a composite type whose fields are mutable.
 """
-function increment!!(x::T, y::T) where {T}
-    return increment_internal!!(isbitstype(T) ? NoCache() : IdDict{Any,Any}(), x, y)
-end
+increment!!(x::T, y::T) where {T} = increment!!(x, y, require_tangent_cache(T))
+increment!!(x, y, ::Val{true}) = increment_internal!!(IdDict{Any,Any}(), x, y)
+increment!!(x, y, ::Val{false}) = increment_internal!!(NoCache(), x, y)
 
 """
     increment_internal!!(c::IncCache, x::T, y::T) where {T}

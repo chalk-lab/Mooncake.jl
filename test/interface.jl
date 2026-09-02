@@ -374,16 +374,13 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            # As above, but the pullback cache does NOT reach zero on any supported version: an
-            # array-returning `f` costs 2 on 1.11 and 1.12 and 7 on 1.10, while scalar returns
-            # are 0 and 3. The unenforceable form this replaces hid that. Bound each version at
-            # what it achieves so a regression fails; the residual 2 on 1.11+ is unexplained and
-            # wants its own investigation rather than a silent waiver.
+            # As for the gradient above: exactly zero on 1.11 and 1.12, and on 1.10 bounded by
+            # the `__call_rule` dispatch barrier (julia#61368).
             alloc_count = TestUtils.count_allocs(value_and_pullback!!, cache, ȳ, fargs...)
             @static if VERSION < v"1.11-"
-                @test alloc_count <= 7
+                @test alloc_count <= 3
             else
-                @test alloc_count <= 2
+                @test alloc_count == 0
             end
         end
 
