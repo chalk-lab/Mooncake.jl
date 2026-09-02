@@ -743,9 +743,17 @@ function _check_aliased_coduals(x_x̄::Tuple)
     for i in eachindex(x_x̄), j in (i + 1):lastindex(x_x̄)
         p = primal(x_x̄[i])
         (ismutable(p) && p === primal(x_x̄[j])) || continue
-        @test tangent(x_x̄[i]) === tangent(x_x̄[j])
+        @test _shares_tangent_storage(tangent(x_x̄[i]), tangent(x_x̄[j]))
     end
     return nothing
+end
+
+# Storage, not object identity: what the invariant buys is that accumulation lands in one place.
+# On 1.10 the legacy array path caches on the storage and hands back a fresh reshape header, so
+# two aliased arguments get tangents that share a buffer without being the same object.
+@inline _shares_tangent_storage(a, b) = a === b
+@inline function _shares_tangent_storage(a::Array, b::Array)
+    return a === b || Base.dataids(a) == Base.dataids(b)
 end
 
 # Two arguments over one primal must share partial storage. Forward mode cannot catch a
