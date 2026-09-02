@@ -331,13 +331,13 @@ end
 Convert an `Compiler.InstructionStream` into a list of `Compiler.NewInstruction`s.
 """
 function new_inst_vec(x::CC.InstructionStream)
-    stmt = @static VERSION < v"1.11.0-rc4" ? x.inst : x.stmt
+    stmts = stmt(x)
     @static if VERSION > v"1.12-"
         # In Julia 1.12+, x.line is flat: 3 codeloc entries per instruction, not one line.
-        n = length(stmt)
+        n = length(stmts)
         return [
             NewInstruction(
-                stmt[i],
+                stmts[i],
                 x.type[i],
                 x.info[i],
                 (x.line[3i - 2], x.line[3i - 1], x.line[3i]),
@@ -345,7 +345,7 @@ function new_inst_vec(x::CC.InstructionStream)
             ) for i in 1:n
         ]
     else
-        return map((v...,) -> NewInstruction(v...), stmt, x.type, x.info, x.line, x.flag)
+        return map((v...,) -> NewInstruction(v...), stmts, x.type, x.info, x.line, x.flag)
     end
 end
 

@@ -129,7 +129,7 @@ function set_ir!(ir::IRCode, idx::SSAValue, name::Symbol, value)
 end
 
 function replace_call!(ir, idx::SSAValue, new_call)
-    set_ir!(ir, idx, :inst, new_call)
+    set_ir!(ir, idx, stmt_field_name(), new_call)
     set_ir!(ir, idx, :type, Any)
     set_ir!(ir, idx, :info, CC.NoCallInfo())
     set_ir!(ir, idx, :flag, CC.IR_FLAG_REFINED)
