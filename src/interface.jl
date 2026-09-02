@@ -276,6 +276,31 @@ function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
         ),
     )
 end
+"""
+    _mutable_tangent_paths(T::Type)
+
+Field paths from a tangent of type `T` to the mutable objects reachable through immutable
+fixed-arity containers, as tuples of field indices (`()` when `T` is itself mutable). Only `Tuple`
+and `NamedTuple` are walked, because their tangents mirror the primal element-wise, so one path
+indexes both. Depth and breadth are bounded so a pathological signature cannot make the generator
+emit a quadratic pile of comparisons.
+"""
+function _mutable_tangent_paths(
+    @nospecialize(T::Type), path=(), out=Vector{Any}(), depth::Int=0
+)
+    length(out) >= 8 && return out
+    if Base.ismutabletype(T)
+        push!(out, path)
+    elseif depth < 3 && (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
+        for (k, FT) in enumerate(fieldtypes(T))
+            _mutable_tangent_paths(FT, (path..., k), out, depth + 1)
+        end
+    end
+    return out
+end
+
+# `tangents[i][p1][p2]...` as an expression.
+_path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
 
 # Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
 # prepared. If two arguments are the same object, their buffers must be too (the aliasing
@@ -290,24 +315,31 @@ end
         # the primals are — checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at
         # `(3.0, 4.0)`. An immutable tangent also holds no shared storage to accumulate into.
         #
-        # So a mutable nested inside an immutable container (a tuple-wrapped array, say) is NOT
-        # checked, and such a mismatch still returns a wrong gradient silently. Catching it needs the
-        # set of mutable objects reachable from each argument, which is O(size of the argument
-        # structure) per call — measured at 131ms and 12.6MB for a `Vector` of 100k arrays against
-        # 1.8us for a tuple of one. Not worth paying on every legitimate call to catch a misuse.
-        Base.ismutabletype(tangents.parameters[i]) &&
-        Base.ismutabletype(tangents.parameters[j]) || continue
-        push!(
-            checks.args,
-            quote
-                let same_primal = fx[$i] === fx[$j],
-                    same_tangent = tangents[$i] === tangents[$j]
+        # A mutable nested inside an immutable container (a tuple-wrapped array, say) needs
+        # comparing too, and `_mutable_tangent_paths` finds those positions from the TYPE. Doing
+        # that here rather than at run time is what keeps this affordable: the generator walks the
+        # structure once per signature and emits a fixed handful of `===` comparisons, instead of
+        # collecting the mutable objects reachable from each argument on every call — measured at
+        # 131ms and 12.6MB for a `Vector` of 100k arrays. Containers whose arity is not in the type
+        # (a `Vector` of arrays, a `Dict`) still cannot be unrolled and remain unchecked; see
+        # `known_limitations.md`.
+        for pi in _mutable_tangent_paths(tangents.parameters[i]),
+            pj in _mutable_tangent_paths(tangents.parameters[j])
 
-                    same_primal == same_tangent ||
-                        _throw_prepared_cache_aliasing_error($i, $j, same_primal)
-                end
-            end,
-        )
+            ti = _path_expr(:tangents, i, pi)
+            tj = _path_expr(:tangents, j, pj)
+            fi = _path_expr(:fx, i, pi)
+            fj = _path_expr(:fx, j, pj)
+            push!(
+                checks.args,
+                quote
+                    let same_primal = $fi === $fj, same_tangent = $ti === $tj
+                        same_primal == same_tangent ||
+                            _throw_prepared_cache_aliasing_error($i, $j, same_primal)
+                    end
+                end,
+            )
+        end
     end
     return quote
         $checks

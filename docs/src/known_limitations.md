@@ -97,6 +97,19 @@ when a global may alias an argument, or pass a copy.
 Aliasing between *arguments* is a different matter and is supported: two arguments over one array
 share derivative storage, so both positions report the one accumulated gradient.
 
+### Reusing a prepared cache with different aliasing
+
+A prepared cache holds one derivative buffer per argument, so how the arguments alias each other is
+part of the shape it was prepared for. Calling it with a different aliasing pattern writes into the
+wrong buffers, and Mooncake rejects that with a `PreparedCacheError` rather than returning a wrong
+gradient. This is checked for mutable arguments and for mutables nested inside `Tuple`s and
+`NamedTuple`s, whose positions are known from the type.
+
+It is **not** checked when the container's arity is not in its type — a `Vector` of arrays, or a
+`Dict`. Finding the aliasing there would mean walking the whole argument on every call, which costs
+131 ms for a `Vector` of 100k arrays. Prepare a separate cache per aliasing pattern if your
+arguments are shaped that way.
+
 
 ## Passing Differentiable Data as a Type
 

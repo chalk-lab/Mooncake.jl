@@ -2360,6 +2360,33 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 _, gd = Mooncake.value_and_gradient!!(distinct_cache, f, copy(x0), copy(x0))
                 @test gd[2] == [1.0, 1.0, 1.0]
                 @test gd[3] == [2.0, 1.0, 1.0]
+
+                # The same mismatch with each array wrapped in a one-tuple. The wrapper is
+                # immutable, so comparing only the top-level tangents saw nothing and this
+                # returned [3,2,2] against an aliased truth of [4,2,2], silently.
+                # `_mutable_tangent_paths` finds the nested position from the type, so the
+                # comparison costs a `===` per call rather than a traversal.
+                g(t, u) = (t[1][1] += u[1][1]; sum(t[1]) + sum(u[1]))
+                nested_distinct = prepare_gradient_cache(g, (copy(x0),), (copy(x0),))
+                tg = (copy(x0),)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    nested_distinct, g, tg, tg
+                )
+                tp = (copy(x0),)
+                nested_aliased = prepare_gradient_cache(g, tp, tp)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    nested_aliased, g, (copy(x0),), (copy(x0),)
+                )
+                # Matching aliasing keeps working through the wrapper too.
+                tg2 = (copy(x0),)
+                _, gna = Mooncake.value_and_gradient!!(nested_aliased, g, tg2, tg2)
+                @test gna[2][1] == [4.0, 2.0, 2.0]
+                @test gna[2][1] === gna[3][1]
+                _, gnd = Mooncake.value_and_gradient!!(
+                    nested_distinct, g, (copy(x0),), (copy(x0),)
+                )
+                @test gnd[2][1] == [1.0, 1.0, 1.0]
+                @test gnd[3][1] == [2.0, 1.0, 1.0]
             end
 
             @testset "forward refuses an input whose dual_type is not concrete" begin
