@@ -2211,6 +2211,26 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H1 ≈ H2
             end
 
+            # `FwdAliasHolder(w)(w)` is `sum(w .^ 2)`, whose Hessian is `2I`. A basis sweep
+            # reaches the shared leaf at one position per column, so the chunked sweep returned
+            # `I`. Both sweeps must refuse: the width-1 one inherits the guard from
+            # `value_and_hvp!!`, the chunked one only from the entry-point check.
+            @testset "aliased input is refused on both sweeps" begin
+                w = [1.0, 2.0, 3.0]
+                for cfg in (Mooncake.Config(), Mooncake.Config(; chunk_size=1))
+                    cache = prepare_hessian_cache(FwdAliasHolder(w), w; config=cfg)
+                    @test_throws ArgumentError value_gradient_and_hessian!!(
+                        cache, FwdAliasHolder(w), w
+                    )
+                end
+                # The same shape without sharing is unaffected.
+                u = copy(w)
+                cache = prepare_hessian_cache(FwdAliasHolder(w), u)
+                _, g, H = value_gradient_and_hessian!!(cache, FwdAliasHolder(w), u)
+                @test g ≈ w
+                @test H ≈ zeros(3, 3)
+            end
+
             @testset "debug_mode=true" begin
                 z = [1.2, 1.2]
                 cache = prepare_hessian_cache(

@@ -3008,6 +3008,28 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
     return value
 end
 
+# Checked at the entry point, not in the sweep: the width-1 sweep reaches
+# `_check_shared_input_tangents` through `value_and_hvp!!`, but `_chunked_hessian_sweep!` calls the
+# pre-lifted `value_and_derivative!!` method, which that guard never sees.
+@inline function _check_hessian_input_aliasing(cache::HVPCache)
+    getfield(getfield(cache, :fwd_cache), :inputs_alias) &&
+        _throw_hessian_input_alias_error()
+    return nothing
+end
+
+function _throw_hessian_input_alias_error()
+    throw(
+        ArgumentError(
+            "`value_gradient_and_hessian!!` does not support inputs that share differentiable " *
+            "storage across positions — `f` holding the same array that is also passed as an " *
+            "argument, say. Each Hessian column is one standard-basis direction, which reaches " *
+            "the shared leaf at a single position, so the columns come back missing the " *
+            "contributions from the others. Concatenate the shared storage into the single " *
+            "input vector the Hessian is taken with respect to.",
+        ),
+    )
+end
+
 """
     value_gradient_and_hessian!!(cache::HVPCache, f, x)
 
@@ -3058,6 +3080,7 @@ H
     )
     hb = cache.hess_buffers
     hb === nothing && _throw_not_hessian_cache()
+    _check_hessian_input_aliasing(cache)
     buf, chunked = hb
     T = _validate_hessian_argument(x1)
     H = buf.H
