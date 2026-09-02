@@ -77,7 +77,7 @@ Suppose that we have (somehow) produced a supposed forwards-rule. To check that 
 1. all primal state after running the rule is approximately the same as all primal state after running the primal, and
 2. the inner product between all tangents (both output and input) and a random tangent vector after running the rule is approximately the same as the estimate of the same quantity produced by finite differencing or reverse-mode AD.
 
-We already have the functionality to do this in a very general way (see [`Mooncake.TestUtils.test_rule`](@ref)), which additionally checks the chunk widths `N = 1, 2, 3` and the canonical-`V` coherence invariant.
+We already have the functionality to do this in a very general way (see [`Mooncake.TestUtils.test_rule`](@ref)), which additionally checks the chunk widths `N = 1, 8` and the canonical-`V` coherence invariant.
 
 ## Hand-Written Rules
 
