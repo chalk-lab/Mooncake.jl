@@ -22,14 +22,27 @@ stale_fwd_lazy(x) = stale_fwd_mid(x)
 const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
+# Dynamic dispatch (`inferencebarrier` hides the callee) so the derived rule captures a
+# `DynamicFRule` with a mutable `cache` Dict — used by the cache-hit `_copy` regression below.
+fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
+
 @testset "s2s_forward_mode_ad" begin
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
-    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
+    @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
         @info "$n: $(_typeof(fx))"
         rng = Xoshiro(123546)
         mode = ForwardMode
+        skip_chunked = TestUtils._case_skip_chunked(opts)
+        fwd_allocs_broken = TestUtils._case_fwd_allocs_broken(opts)
         TestUtils.test_rule(
-            rng, fx...; perf_flag=pf, interface_only=int_only, is_primitive=false, mode
+            rng,
+            fx...;
+            perf_flag=pf,
+            interface_only=int_only,
+            is_primitive=false,
+            mode,
+            skip_chunked,
+            fwd_allocs_broken,
         )
     end
 
@@ -70,12 +83,98 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
         dyn = Mooncake.build_frule(stale_fwd_dyn, 1.5)
         @eval stale_fwd_inner(x::Float64) = x * 2.0  # advance world; tightens callee's type
         lazy_out = Base.invokelatest(
-            lazy, Mooncake.zero_dual(stale_fwd_lazy), Mooncake.Dual(1.5, 1.0)
+            lazy, Mooncake.zero_lifted(Val(1), stale_fwd_lazy), Mooncake.lift(1.5, 1.0)
         )
         dyn_out = Base.invokelatest(
-            dyn, Mooncake.zero_dual(stale_fwd_dyn), Mooncake.Dual(1.5, 1.0)
+            dyn, Mooncake.zero_lifted(Val(1), stale_fwd_dyn), Mooncake.lift(1.5, 1.0)
         )
         @test Mooncake.primal(lazy_out) === 3.0f0
         @test Mooncake.primal(dyn_out) === 3.0f0
     end
+
+    # A cache hit must return an independent copy (as reverse `build_derived_rrule` does),
+    # not the shared cached object: otherwise two builds share one `DynamicFRule.cache`
+    # Dict and race under threads / nested AD.
+    @testset "cache-hit returns an independent rule copy" begin
+        interp = Mooncake.MooncakeInterpreter(ForwardMode)
+        sig = Tuple{typeof(fwd_cache_dyn),Float64}
+        r1 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)
+        r2 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)  # cache HIT
+        dyns1 = filter(c -> c isa Mooncake.DynamicFRule, collect(r1.fwd_oc.oc.captures))
+        dyns2 = filter(c -> c isa Mooncake.DynamicFRule, collect(r2.fwd_oc.oc.captures))
+        # The `Base.inferencebarrier` in `fwd_cache_dyn` only forces a captured `DynamicFRule` on
+        # Julia ≥ 1.11; 1.10 resolves it with no top-level dynamic-rule capture (empty
+        # `oc.captures`), so the shared-`cache` scenario cannot arise there (the frule still runs
+        # correctly). Check the independent-copy invariant only on ≥ 1.11, where the capture exists;
+        # `only(dyns1)` then fails loudly if a future regression drops it.
+        @static if VERSION >= v"1.11-"
+            dyn1 = only(dyns1)
+            dyn2 = only(dyns2)
+            @test dyn1 !== dyn2
+            @test dyn1.cache !== dyn2.cache
+        end
+    end
 end;
+
+@testset "nfwd primitive coverage" begin
+    # The nfwd classifier trusts one set of dual-transparent ops: structural `Core.Builtin`s
+    # in `_NFWD_SAFE_BUILTINS`. Every other builtin — and all intrinsics / foreigncalls — that touches a
+    # dual routes the function to the frule transform. If Julia gains a builtin it must be
+    # classified deliberately (safe vs opaque indirection) rather than silently trusted, so assert
+    # every current builtin is in exactly one of the two sets; a new one fails here loudly.
+    builtins = Set(
+        n for n in names(Core; all=true) if
+        isdefined(Core, n) && getfield(Core, n) isa Core.Builtin
+    )
+    accounted = Mooncake._NFWD_SAFE_BUILTINS ∪ Mooncake._NFWD_OPAQUE_BUILTINS
+    @test isempty(setdiff(builtins, accounted))
+    @test isempty(intersect(Mooncake._NFWD_SAFE_BUILTINS, Mooncake._NFWD_OPAQUE_BUILTINS))
+end
+
+@testset "nfwd rejects array-length mutation" begin
+    # A length-changing op on a dual array cannot run on the fixed-shape `NDualArray`, so the
+    # classifier must reject it and fall back to the transform (which handles growth). Regression
+    # for `append!` lowering to `invoke push!(::NDualArray, …)` → `resize!(::NDualArray)` MethodError.
+    @test !Mooncake._nfwd_safe(Any[typeof(append!), Vector{Float64}, Vector{Float64}], 1)
+    @test !Mooncake._nfwd_safe(Any[typeof(push!), Vector{Float64}, Float64], 1)
+    # A non-mutating array reduction fires natively only on 1.12+. On 1.10/1.11 the broadcast
+    # materialises an out-of-protocol `Array{NDual}` intermediate whose reduction takes a
+    # `jl_array_ptr` foreigncall (not whitelisted), so the classifier conservatively routes it to the
+    # transform — which handles it correctly (verified). 1.12's broadcast/reduction lowering keeps
+    # it in-protocol, so nfwd fires. Assert the actual per-version behaviour, not a false positive.
+    reduce_fn(x) = sum(sin.(x))
+    @test Mooncake._nfwd_safe(Any[typeof(reduce_fn), Vector{Float64}], 1) ==
+        (VERSION >= v"1.12-")
+end
+
+@testset "nfwd rejects type-observing branches" begin
+    # `sizeof`/`typeof`/`nfields` answer for the DUAL, not the primal — `sizeof(NDual{Float64,1})`
+    # is 16 against `Float64`'s 8 — so a branch on one takes the wrong side and returns a wrong
+    # VALUE, not merely a wrong derivative. Tightening the whitelist cannot catch it: inference
+    # folds the query and bakes the wrong branch in before the classifier sees the body, so the
+    # classifier infers the body at primal and at dual types and rejects when they diverge.
+    sz(x) = sizeof(x) == 8 ? x * x : x * x * x
+    ty(x) = typeof(x) === Float64 ? x * x : x * x * x
+    nf(x) = nfields(x) == 0 ? x * x : x * x * x
+    for f in (sz, ty, nf)
+        @test !Mooncake._nfwd_safe(Any[typeof(f), Float64], 1)
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_derivative_cache(f, 2.0), f, 2.0
+        )
+        @test (v, g[2]) == (4.0, 4.0)
+    end
+    # The same branch reached through a TUPLE argument. `_nfwd_undual` must invert every shape
+    # `_nfwd_projectable` admits into a dual signature; while it lacked the aggregate cases the
+    # primal and dual signatures compared equal, so the check returned early and never ran.
+    @test Mooncake._nfwd_undual(Tuple{Mooncake.Nfwd.NDual{Float64,1},Int}) ===
+        Tuple{Float64,Int}
+    @test Mooncake._nfwd_undual(
+        NamedTuple{(:p, :q),Tuple{Mooncake.Nfwd.NDual{Float64,1},Int}}
+    ) === NamedTuple{(:p, :q),Tuple{Float64,Int}}
+    szt(t) = sizeof(t[1]) == 8 ? t[1] * t[1] : t[1] * t[1] * t[1]
+    @test !Mooncake._nfwd_safe(Any[typeof(szt), Tuple{Float64,Float64}], 1)
+    v, g = Mooncake.value_and_gradient!!(
+        Mooncake.prepare_derivative_cache(szt, (2.0, 5.0)), szt, (2.0, 5.0)
+    )
+    @test (v, g[2]) == (4.0, (4.0, 0.0))
+end

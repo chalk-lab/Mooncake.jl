@@ -212,6 +212,7 @@ end
 end
 
 fdata_type(::Type{T}) where {T<:Ptr} = T
+fdata_type(::Type{VoidPtrTangent}) = VoidPtrTangent
 
 @generated function fdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{fdata_type($(P.a)),fdata_type($(P.b))})
@@ -339,6 +340,7 @@ end
 __verify_fdata_value(::IdDict{Any,Nothing}, ::IEEEFloat, ::NoFData) = nothing
 
 __verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr, ::Ptr) = nothing
+__verify_fdata_value(::IdDict{Any,Nothing}, ::Ptr{Nothing}, ::VoidPtrTangent) = nothing
 
 function __verify_fdata_value(c::IdDict{Any,Nothing}, p::Array, f::Array)
     if size(p) != size(f)
@@ -499,6 +501,7 @@ end
 end
 
 rdata_type(::Type{<:Ptr}) = NoRData
+rdata_type(::Type{VoidPtrTangent}) = NoRData
 
 @generated function rdata_type(::Type{P}) where {P<:Tuple}
     isa(P, Union) && return :(Union{rdata_type($(P.a)),rdata_type($(P.b))})
@@ -676,7 +679,15 @@ obtained from `P` alone.
     end
 end
 
-@foldable can_produce_zero_rdata_from_type(::Type{<:IEEEFloat}) = true
+# Concrete floats only, NOT `<:IEEEFloat`. `IEEEFloat` is itself `Union{Float16,Float32,Float64}`,
+# so `<:IEEEFloat` also matches every proper sub-union, and `zero_rdata_from_type` would then
+# evaluate `P(0)` and throw for, say, `Union{Float32,Float64}` -- which inference produces from an
+# ordinary branch over precisions. Dispatching on the concrete types lets a sub-union fall through
+# to the generic pair, which answers `false` and hands back `CannotProduceZeroRDataFromType`, the
+# `ZeroRData` route that exists for exactly this case.
+for P in (Float16, Float32, Float64)
+    @eval @foldable can_produce_zero_rdata_from_type(::Type{$P}) = true
+end
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:Type}) = true
 
@@ -759,7 +770,9 @@ function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
     return NamedTuple{fieldnames(P)}(tuple_map(zero_rdata_from_type, fieldtypes(P)))
 end
 
-zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)
+for P in (Float16, Float32, Float64)
+    @eval zero_rdata_from_type(::Type{$P}) = zero($P)
+end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()
 
@@ -1026,6 +1039,7 @@ tangent(::NoFData, ::NoRData) = NoTangent()
 tangent(::NoFData, r::IEEEFloat) = r
 tangent(f::Array, ::NoRData) = f
 tangent(f::Ptr, ::NoRData) = f
+tangent(f::VoidPtrTangent, ::NoRData) = f
 
 # Tuples
 tangent(f::Tuple, r::Tuple) = tuple_map(tangent, f, r)

@@ -5,7 +5,7 @@ import Mooncake:
     BlasRealFloat,
     CoDual,
     DefaultCtx,
-    Dual,
+    Lifted,
     NoRData,
     @is_primitive,
     arrayify,
@@ -81,53 +81,67 @@ end
     typeof(Distances._pairwise!),M,StridedMatrix{P},StridedMatrix{P},StridedMatrix{P}
 } where {M<:PairwiseMetric,P<:BlasRealFloat}
 
+# A lane of a width-`N` slot is a stride-`N` view, which the pointer-based BLAS wrappers misread
+# above width 1, so each lane is gathered into dense scratch and written back. The scratch is
+# hoisted, and the in-place primal runs once above the loop.
 function frule!!(
-    ::Dual{typeof(Distances._pairwise!)},
-    dist::Dual{M},
-    r::Dual{<:StridedMatrix{P}},
-    A::Dual{<:StridedMatrix{P}},
-) where {M<:PairwiseMetric,P<:BlasRealFloat}
+    ::Lifted{typeof(Distances._pairwise!),N},
+    dist::Lifted{M,N},
+    r::Lifted{<:StridedMatrix{P},N},
+    A::Lifted{<:StridedMatrix{P},N},
+) where {N,M<:PairwiseMetric,P<:BlasRealFloat}
     pdist = primal(dist)
-    pr, dr = arrayify(r)
-    pA, dA = arrayify(A)
+    pr, drs = arrayify(r)
+    pA, dAs = arrayify(A)
     Distances._pairwise!(pdist, pr, pA)
-    dots = column_dots(pA, dA)
+    sA, sr = similar(pA), similar(pr)
+    for k in 1:N
+        copyto!(sA, dAs[k])
+        dots = column_dots(pA, sA)
 
-    # `dA' * pA + pA' * dA` is symmetric, so one `syr2k!` over a single triangle does the
-    # work of the two `gemm!`s the two-argument form needs.
-    BLAS.syr2k!('U', 'T', one(P), dA, pA, zero(P), dr)
+        # `dA' * pA + pA' * dA` is symmetric, so one `syr2k!` over a single triangle does the
+        # work of the two `gemm!`s the two-argument form needs.
+        BLAS.syr2k!('U', 'T', one(P), sA, pA, zero(P), sr)
 
-    # Mirror that triangle into the full matrix. `_pairwise!` zeroes the diagonal of the
-    # one-argument form exactly, so its derivative there is zero rather than the
-    # cancelling-but-inexact value the identity gives.
-    @inbounds for j in axes(dr, 2)
-        dr[j, j] = zero(P)
-        for i in 1:(j - 1)
-            v = 2 * (dots[i] + dots[j] - dr[i, j])
-            dr[i, j] = v
-            dr[j, i] = v
+        # Mirror that triangle into the full matrix. `_pairwise!` zeroes the diagonal of the
+        # one-argument form exactly, so its derivative there is zero rather than the
+        # cancelling-but-inexact value the identity gives.
+        @inbounds for j in axes(sr, 2)
+            sr[j, j] = zero(P)
+            for i in 1:(j - 1)
+                v = 2 * (dots[i] + dots[j] - sr[i, j])
+                sr[i, j] = v
+                sr[j, i] = v
+            end
         end
+        euclidean_pushforward!(pdist, sr, pr)
+        copyto!(drs[k], sr)
     end
-    euclidean_pushforward!(pdist, dr, pr)
     return r
 end
 
 function frule!!(
-    ::Dual{typeof(Distances._pairwise!)},
-    dist::Dual{M},
-    r::Dual{<:StridedMatrix{P}},
-    A::Dual{<:StridedMatrix{P}},
-    B::Dual{<:StridedMatrix{P}},
-) where {M<:PairwiseMetric,P<:BlasRealFloat}
+    ::Lifted{typeof(Distances._pairwise!),N},
+    dist::Lifted{M,N},
+    r::Lifted{<:StridedMatrix{P},N},
+    A::Lifted{<:StridedMatrix{P},N},
+    B::Lifted{<:StridedMatrix{P},N},
+) where {N,M<:PairwiseMetric,P<:BlasRealFloat}
     pdist = primal(dist)
-    pr, dr = arrayify(r)
-    pA, dA = arrayify(A)
-    pB, dB = arrayify(B)
+    pr, drs = arrayify(r)
+    pA, dAs = arrayify(A)
+    pB, dBs = arrayify(B)
     Distances._pairwise!(pdist, pr, pA, pB)
-    mul!(dr, transpose(dA), pB)
-    mul!(dr, transpose(pA), dB, one(P), one(P))
-    dr .= 2 .* (column_dots(pA, dA) .+ transpose(column_dots(pB, dB)) .- dr)
-    euclidean_pushforward!(pdist, dr, pr)
+    sA, sB, sr = similar(pA), similar(pB), similar(pr)
+    for k in 1:N
+        copyto!(sA, dAs[k])
+        copyto!(sB, dBs[k])
+        mul!(sr, transpose(sA), pB)
+        mul!(sr, transpose(pA), sB, one(P), one(P))
+        sr .= 2 .* (column_dots(pA, sA) .+ transpose(column_dots(pB, sB)) .- sr)
+        euclidean_pushforward!(pdist, sr, pr)
+        copyto!(drs[k], sr)
+    end
     return r
 end
 

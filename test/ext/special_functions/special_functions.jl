@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "SpecialFunctions")
 
 using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
 using Mooncake.Nfwd: NDual
@@ -30,12 +29,6 @@ function _sf_nonprimitive_perf_flag(name::Symbol, default::Symbol)
     name in (:gammax, :rgammax) && return :none
     return default
 end
-
-# Helper methods to enable mixed Float32/Float64 operations. 
-# Required for compatibility with Julia 1.12+.
-Union{Float32,Float64}(x) = Float64(x)
-Mooncake.increment!!(x::Float32, y::Float64) = Float32(x + y)
-Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
 
 # Rules in this file are only lightly tested, because they are all just @from_rrule rules.
 @testset "special_functions" begin

@@ -78,8 +78,9 @@ function dual_ir(
     interp=get_interpreter(ForwardMode),
     debug_mode::Bool=false,
     do_inline::Bool=true,
+    chunk_width::Int=1,
 )
-    return generate_dual_ir(interp, sig; debug_mode, do_inline)[1]
+    return generate_dual_ir(interp, sig; debug_mode, do_inline, chunk_width)[1]
 end
 
 """

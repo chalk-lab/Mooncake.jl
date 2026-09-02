@@ -41,19 +41,19 @@ const STALE_RVS_FNS = Function[stale_rvs_mid]
 stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
 @testset "s2s_reverse_mode_ad" begin
-    @testset "const global fdata is reset between rule calls (#1282)" begin
-        f = S2SGlobals.const_vector_phi
-        rule = build_rrule(f, [0.3, 0.5], false)
-
-        function gradient(p)
-            dp = zeros(length(p))
-            y, pb = rule(zero_fcodual(f), CoDual(p, dp), zero_fcodual(false))
-            pb(one(primal(y)))
-            return dp
-        end
-
-        gradient([0.3, 0.5])
-        @test gradient([1.5, 2.0]) ≈ [-0.18944, -0.1536]
+    @testset "const global fdata is reset between rule calls" begin
+        # A captured constant's `CoDual` lives as long as the derived rule, so a pullback that
+        # accumulated into its fdata leaked cotangents into the next call. `test_rule` runs the
+        # rule twice from fresh zero tangents and compares, which is what catches the leak.
+        TestUtils.test_rule(
+            sr(123456),
+            S2SGlobals.const_vector_phi,
+            [0.3, 0.5],
+            false;
+            is_primitive=false,
+            mode=ReverseMode,
+            perf_flag=:none,
+        )
     end
 
     @testset "SharedDataPairs" begin

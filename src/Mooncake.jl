@@ -52,30 +52,11 @@ DispatchDoctor.register_macro!(
 function _foreigncall_ end
 
 """
-    frule!!(f::Dual, x::Dual...)
+    frule!!(f::Lifted, x::Lifted...)
 
-Performs AD in forward mode, possibly modifying the inputs, and returns a `Dual`.
+Performs AD in forward mode, possibly modifying the inputs, and returns a `Lifted`.
 """
 function frule!! end
-
-"""
-    _fcache_derivative_chunked!!(
-        cache, ::Val{N}, x_dx::Tuple...; friendly_tangents=false
-    )
-
-Internal batched forward-mode interface used by chunked `value_and_derivative!!` and the
-forward-mode gradient cache. Conceptually:
-- `value_and_derivative!!` calls `_fcache_derivative_chunked!!` when the
-  user provides chunk tangents.
-- `value_and_gradient!!` seeds standard-basis chunk tangents internally, then repeatedly
-  calls `_fcache_derivative_chunked!!` and accumulates the lane
-  contributions into gradient buffers.
-
-The generic implementation evaluates one lane at a time via `frule!!` (aka ir-based
-forward) / derived forward rules. Specialized backends, such as `nfwd`, may override this
-to evaluate all lanes in one pass.
-"""
-function _fcache_derivative_chunked!! end
 
 """
     build_primitive_frule(sig::Type{<:Tuple})
@@ -172,11 +153,30 @@ build_primitive_rrule(@nospecialize(sig::Type)) = rrule!!
 @stable default_mode = "disable" default_union_limit = 2 begin
 include("utils.jl")
 include(joinpath("tangents", "tangents.jl"))
-include(joinpath("tangents", "dual.jl"))
 include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
-include("debug_mode.jl")
 include("stack.jl")
+
+# Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
+# seed factories) before the interpreter — `interpreter/forward_mode.jl`
+# dispatches on `Lifted{P, N, V}` (any chunk width N).
+include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd:
+    NDual,
+    NDualArray,
+    NDualBlock,
+    NDualRef,
+    NDualEltype,
+    tangent_view,
+    _scalar_ndual,
+    _nfwd_dual_partial,
+    _fwd_scale,
+    _fwd_guarded_scale
+@static if VERSION >= v"1.11-rc4"
+    using .Nfwd: NDualMemoryRef
+end
+include(joinpath("tangents", "lifted.jl"))
+include("debug_mode.jl")
 
 @unstable begin
 include(joinpath("interpreter", "contexts.jl"))
@@ -185,17 +185,23 @@ include(joinpath("interpreter", "patch_for_319.jl"))
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))
+# The nfwd-native classifier and rule wrapper: mode-agnostic, so it precedes the mode transforms
+# that dispatch to it (`forward_mode.jl` today, reverse mode in future).
+include(joinpath("interpreter", "nfwd_utils.jl"))
 include(joinpath("interpreter", "forward_mode.jl"))
 include(joinpath("interpreter", "reverse_mode.jl"))
 end
 
 include("tools_for_rules.jl")
+
+# A rule invocation that must fail loudly is an ordinary registry row whose `opts` carry
+# `throws`: an exception type, a message, or both. This converts the `(expectation, f, args,
+# opts)` spelling the guard cases are written in into that row shape.
+_throwing_row(case) = (false, :none, (throws=case[1], case[4]...), case[2], case[3]...)
+
 @unstable include("test_utils.jl")
 @unstable include("test_resources.jl")
 include("interface.jl")
-include(joinpath("nfwd", "Nfwd.jl"))
-using .Nfwd: NDual
-include(joinpath("nfwd", "NfwdMooncake.jl"))
 
 include(joinpath("rules", "avoiding_non_differentiable_code.jl"))
 include(joinpath("rules", "blas.jl"))
@@ -223,7 +229,6 @@ end
 
 include(joinpath("rules", "threads.jl"))
 include(joinpath("rules", "performance_patches.jl"))
-include(joinpath("rules", "rules_via_nfwd.jl"))
 include(joinpath("rules", "high_order_derivative_patches.jl"))
 
 include("config.jl")
@@ -237,7 +242,7 @@ end
 #! format: on
 
 @public Config, value_and_pullback!!, prepare_pullback_cache
-@public Dual
+@public Lifted
 
 # Public, exported
 export prepare_gradient_cache, value_and_gradient!!     # reverse

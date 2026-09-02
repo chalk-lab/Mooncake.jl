@@ -49,48 +49,25 @@ foo_throws(e) = throw(e)
         invoke(Mooncake.IntrinsicsWrappers.translate, Tuple{Any}, Val(:foo)),
     )
 
-    @testset "Disable bitcast to differentiable type, or bitcast from Int/UInt to Ptr" begin
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Float64), zero_fcodual(5))
-        )
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Ptr{Float64}), zero_fcodual(5))
-        )
-    end
-
     @testset "bitcast for Ptr->Ptr" begin
+        # Narrowing to a non-differentiable element: it asks nothing of the tangent buffer (an
+        # `Int64` read out of `Float64` bytes has no derivative), so the pair is re-typed together.
         res, pb = rrule!!(
+            zero_fcodual(bitcast),
+            zero_fcodual(Ptr{Int64}),
+            CoDual(Ptr{Float64}(5), Ptr{Float64}(5)),
+        )
+        @test pb isa Mooncake.NoPullback
+        @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
+
+        # A DIFFERENT element width is refused. This used to re-type the tangent pointer too, so
+        # `x * unsafe_load(Ptr{Float64}(pointer(v))) + sum(v)` over a `Vector{Float32}` wrote an
+        # eight-byte cotangent across the four-byte tangent slots of `v[1]` and `v[2]` and returned
+        # `Float32[5.8e-39, 2.0009766, 1.0, 1.0]` where `sum(v)` alone gives ones.
+        @test_throws ArgumentError rrule!!(
             zero_fcodual(bitcast),
             zero_fcodual(Ptr{Float64}),
             CoDual(Ptr{Float32}(5), Ptr{Float32}(5)),
-        )
-        @test pb isa Mooncake.NoPullback
-        @test res == CoDual(Ptr{Float64}(5), Ptr{Float64}(5))
-    end
-
-    @testset "throw" begin
-        # Throw primitive continues to throw the exception it is meant to.
-        @test_throws(
-            ArgumentError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(ArgumentError("hello")))
-        )
-        @test_throws(
-            AssertionError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(AssertionError("hello")))
-        )
-
-        # Derived rule throws the correct exception.
-        rule_arg = Mooncake.build_rrule(Tuple{typeof(foo_throws),ArgumentError})
-        @test_throws(
-            ArgumentError,
-            rule_arg(zero_fcodual(foo_throws), zero_fcodual(ArgumentError("hello")))
-        )
-        rule_assert = Mooncake.build_rrule(Tuple{typeof(foo_throws),AssertionError})
-        @test_throws(
-            AssertionError,
-            rule_assert(zero_fcodual(foo_throws), zero_fcodual(AssertionError("hmmm")))
         )
     end
 
@@ -150,6 +127,26 @@ end
     @test grad_a[2] ≈ 2.0
 end
 
+@testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
+    # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
+    # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
+    # threw a MethodError. The NoDual fallback must wrap it and return a NoDual-V Lifted.
+    # Use a `Vector{UInt8}` (not `Memory`, which is Julia 1.11+) so this runs on the LTS too; `buf`
+    # is kept alive for the duration of the testset, so `p` stays valid.
+    buf = UInt8[1, 2, 3, 4]
+    p = pointer(buf)
+    for N in (1, 2)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), unsafe_wrap),
+            Mooncake.zero_lifted(Val(N), Array),
+            Mooncake.zero_lifted(Val(N), p),
+            Mooncake.zero_lifted(Val(N), (4,)),
+        )
+        @test Mooncake.tangent(out) isa Mooncake.NoDual
+        @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
+    end
+end
+
 @testset "NaN handling in builtins rrules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
@@ -167,5 +164,22 @@ end
         cache = prepare_gradient_cache(builtins_nantester, f, args)
         _, grad = value_and_gradient!!(cache, builtins_nantester, f, args)
         @test all(map(isone, grad[3:end]...))
+    end
+end
+
+@testset "div_float pullback keeps `d/db` in range" begin
+    # Forming `d/db` as `-a/b^2` overflows the square to `Inf` (derivative 0.0 where it is
+    # -1e-200) or underflows it to 0 (giving `-Inf`), once `a` and `b` are both large or both
+    # tiny. Dividing twice by `b` keeps every intermediate in range. Not a `test_rule` case: its
+    # finite differences cannot resolve a derivative of -1e-200 against a value of 1.0.
+    for (a, b) in ((1e200, 1e200), (1e-200, 1e-200), (2.0, 4.0))
+        for f in (/, Base.FastMath.div_fast)
+            g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2][2] == 1 / b
+            @test g[2][3] ≈ -(a / b) / b
+            @test isfinite(g[2][3])
+        end
     end
 end

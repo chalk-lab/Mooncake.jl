@@ -10,7 +10,7 @@ end
 # Fallback foreigncall rules. This is a sufficiently common special case, that it's worth
 # creating an informative error message, so that users have some chance of knowing why
 # they're not able to differentiate a piece of code.
-function frule!!(::Dual{typeof(_foreigncall_)}, args...)
+function frule!!(::Lifted{typeof(_foreigncall_)}, args...)
     return throw_missing_foreigncall_rule_error(:frule!!, args...)
 end
 function rrule!!(::CoDual{typeof(_foreigncall_)}, args...)
@@ -86,15 +86,116 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(objectid),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(pointer_from_objref),Any}
-function frule!!(::Dual{typeof(pointer_from_objref)}, x)
+# Generic fallback (a real/complex-scalar `Ref` is handled by the more-specific `NDualRef` overload
+# below). V is `NTuple{Nw, Ptr{tangent_type(Nothing)}}` — the tangent OBJECT's address, typed as the
+# reverse rule below threads it, and deliberately distinct from any per-lane-partial pointer V
+# (`Ptr{<:IEEEFloat}` / `Ptr{Nothing}`). `bitcast` preserves that element type, so the address
+# round-trips through `unsafe_pointer_to_objref` (recovering the full slot) but a raw scalar load
+# (`pointerref` after `bitcast` to a float ptr) stays incoherent and hits the loud `pointerref`
+# throw — a mutable struct's tangent interleaves value and partials with no parallel partials buffer
+# to address. Only a proven-non-differentiable (`NoDual`) tangent gets the NULL sentinel mapped back
+# to `NoDual`; an immutable differentiable V (e.g. `NDualArray`) has no tangent-object address to
+# thread, so fail loudly rather than silently dropping the derivative. The primal address
+# (identity/hashing/`objectid`) is unchanged.
+function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     y = pointer_from_objref(primal(x))
-    dy = bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x)))
-    return Dual(y, dy)
+    tx = tangent(x)
+    taddr = if tx isa NoDual
+        Ptr{tangent_type(Nothing)}(0)
+    elseif ismutable(tx)
+        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tx))
+    else
+        throw(
+            ArgumentError(
+                "Forward-mode AD cannot take `pointer_from_objref` of a `$(typeof(primal(x)))` " *
+                "whose forward tangent is the immutable `$(typeof(tx))`: there is no " *
+                "tangent-object address to thread through the pointer, so the derivative would " *
+                "be silently dropped.",
+            ),
+        )
+    end
+    return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
 end
+# `Ref{P<:NDualEltype}` (`NDualRef`): unlike the interleaved `MutableDual` fallback above, the
+# partials live in a parallel buffer with primal-identical scalar layout. Thread per-lane pointers
+# into that buffer's contiguous `NTuple` (lane `k` at offset `(k-1)*sizeof(P)`), so the existing
+# `bitcast` (re-types each `Ptr{P}` lane) and `pointerref` (`NTuple{Nw,Ptr{P}}` → scalar dual)
+# frules reconstruct the derivative. Forward raw-pointer reads of a `Ref` (real or complex) are
+# correct; `unsafe_pointer_to_objref` reads the partials back through these pointers to round-trip.
+function frule!!(
+    ::Lifted{typeof(pointer_from_objref),Nw},
+    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef{P,Nw}},
+) where {Nw,P<:NDualEltype}
+    y = pointer_from_objref(primal(x))
+    base = UInt(pointer_from_objref(tangent(x).partials))
+    return Lifted{typeof(y),Nw}(y, ntuple(k -> Ptr{P}(base + (k - 1) * sizeof(P)), Val(Nw)))
+end
+# The address handed out points at the TANGENT object, while every later `pointerref`/`pointerset`
+# through it indexes at the PRIMAL's field offsets. That arithmetic is only meaningful when the two
+# layouts agree. A non-differentiable field has a zero-size tangent counterpart, so it shifts every
+# later field: for `mutable struct M; a::Int; b::Float64; end` the primal is 16 bytes with `b` at
+# offset 8, while the tangent payload is 8 bytes with `b`'s cotangent at offset 0, and a store for
+# `b` lands one word past the end of the tangent object — silently, since the reported gradient for
+# `b` is then 0.0. Layout-identical primals (all-`IEEEFloat` structs, `Ref{Float64}`) are what this
+# admits, alongside primals with no differentiable content at all.
+@inline function _objref_tangent_layout_matches(::Type{P}) where {P}
+    T = tangent_type(P)
+    T <: MutableTangent || return false
+    NT = fieldtype(T, :fields)
+    # Nothing differentiable at all (a `Ref{UInt64}` passed to a foreigncall): taking the address is
+    # fine, so this is admitted, but the address is tagged `NoTangent` by `_objref_tangent_elt` below
+    # so a later differentiable load is refused. Admitting it as UNCHECKED is what let 64 pullback
+    # stores walk past a 0-byte tangent object whose primal was 512 bytes.
+    sizeof(NT) === 0 && return true
+    fieldcount(NT) === fieldcount(P) || return false
+    for i in 1:fieldcount(P)
+        fieldoffset(NT, i) === fieldoffset(P, i) || return false
+        _field_slot(fieldtype(NT, i)) === _field_slot(fieldtype(P, i)) || return false
+    end
+    return sizeof(NT) === sizeof(P)
+end
+
+# What a field of type `T` occupies in an object: bits types sit inline and take their own size,
+# everything else is a pointer-sized reference. Comparing `sizeof` of the field TYPE instead throws
+# for an abstract one, and would report the size of a boxed value rather than of its slot. The
+# inline flag is carried because size alone would let an inline `Float64` match a boxed slot, where
+# a load reads the pointer as a float.
+@inline function _field_slot(::Type{T}) where {T}
+    return isbitstype(T) ? (true, sizeof(T)) : (false, sizeof(Ptr{Nothing}))
+end
+
+# What lies behind a `pointer_from_objref` tangent address: `Nothing` when the tangent is an object
+# whose layout matches the primal's (checked above, so a later load is sound), `NoTangent` when the
+# tangent has no payload at all.
+@inline function _objref_tangent_elt(::Type{P}) where {P}
+    T = tangent_type(P)
+    T <: MutableTangent || return NoTangent
+    return sizeof(fieldtype(T, :fields)) === 0 ? NoTangent : Nothing
+end
+
 function rrule!!(f::CoDual{typeof(pointer_from_objref)}, x)
+    P = _typeof(primal(x))
+    if !_objref_tangent_layout_matches(P)
+        throw(
+            ArgumentError(
+                "Cannot take `pointer_from_objref` of a `$P` during reverse-mode AD: the address " *
+                "would point at the tangent object, but a load or store through it indexes at " *
+                "`$P`'s own field offsets, and `$(tangent_type(P))` does not share that layout. " *
+                "A non-differentiable field has a zero-size tangent counterpart, so every later " *
+                "field shifts and the access lands outside the tangent object. Use a struct whose " *
+                "fields are all differentiable and of the same size, or reach the field directly " *
+                "instead of through a raw pointer.",
+            ),
+        )
+    end
+    # `Nothing` marks a tangent OBJECT rather than a buffer of uniform elements, so element type is
+    # not the property to check; the layout check above is what makes a later load sound, and it runs
+    # where the address is created. A tangent with NO payload gets `NoTangent` instead: there is
+    # nothing behind the address, so any later differentiable load must be refused rather than waved
+    # through — the primal may be 512 bytes while its tangent object is 0.
     y = CoDual(
         pointer_from_objref(primal(x)),
-        bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(tangent(x))),
+        VoidPtrTangent(pointer_from_objref(tangent(x)), _objref_tangent_elt(P)),
     )
     return y, NoPullback(f, x)
 end
@@ -102,11 +203,69 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(CC.return_type),Vararg}
 
 @is_primitive MinimalCtx Tuple{typeof(Base.unsafe_pointer_to_objref),Ptr}
-function frule!!(::Dual{typeof(Base.unsafe_pointer_to_objref)}, x::Dual{<:Ptr})
-    return Dual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+# Inverse of the `pointer_from_objref` rule: recover the primal object from the primal address, and
+# — when the lane carries a non-NULL tangent-object address — recover that tangent object so the
+# forward derivative survives the round-trip. The recovered object is dynamically typed, so the
+# slot type and its V are only known at runtime; the `Lifted{typeof(y),Nw}` constructor sharpens
+# through `typeof(y)`, widening the inferred return type (the cost of this dynamic boundary).
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw}, x::Lifted{<:Ptr}
+) where {Nw}
+    y = unsafe_pointer_to_objref(primal(x))
+    tx = tangent(x)
+    # NULL means the tangent was PROVEN non-differentiable when the address was taken, so mapping it
+    # back to `NoDual` is right. The `uninit_*` placeholder means the opposite — no tangent storage
+    # exists behind a pointer whose pointee may well be differentiable — and it is the primal's own
+    # address, so it survives the NULL test and would make the recovered tangent BE the primal:
+    # a derivative written into it would mutate the user's data. Refuse instead of returning
+    # `NoDual`, which would silently report no derivative where one should exist.
+    (tx isa NoDual || tx[1] == Ptr{Nothing}(0)) && return Lifted{typeof(y),Nw}(y, NoDual())
+    UInt(tx[1]) == UInt(primal(x)) && throw(
+        ArgumentError(
+            "Forward-mode AD cannot recover a tangent object from a `Ptr` with no tangent " *
+            "storage behind it: the lane pointer is the primal's own address, so the recovered " *
+            "tangent would be the primal object itself and a derivative written into it would " *
+            "mutate the primal. Take `pointer_from_objref` of a value that carries a tangent.",
+        ),
+    )
+    return Lifted{typeof(y),Nw}(y, unsafe_pointer_to_objref(tx[1]))
 end
+# Round-trip of a `Ref{<:NDualEltype}` pointer (V `NTuple{Nw,Ptr{<:NDualEltype}}`, from the `NDualRef`
+# rule above): recover the primal `Ref` from the primal pointer, and rebuild its `NDualRef` by reading
+# the per-lane partials back through the V's pointers. Forward tangent storage is slot-local, so a
+# fresh partials buffer holding the same values is correct (the JVP through identity is identity).
+# The V's `Ptr{<:NDualEltype}` element distinguishes a `Ref`-pointer from the generic objref tag
+# (`Ptr{tangent_type(Nothing)}`, handled above), and is the only such V — arrays are not round-tripped
+# this way. The scalar element type is read at runtime (`eltype`) rather than bound as a type
+# parameter, since `P` in `NTuple{Nw,Ptr{P}}` would be unbound at the degenerate `Nw == 0`.
+function frule!!(
+    ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
+    x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
+) where {Nw}
+    ref = unsafe_pointer_to_objref(primal(x))
+    P = eltype(eltype(tangent(x)))
+    # Recover the ORIGINAL partials object rather than snapshotting its values into a fresh one:
+    # lane 1 IS that object's address (the `pointer_from_objref` rule sets lane `k` to
+    # `base + (k-1)*sizeof(P)`, so lane 1 is `base`). A fresh buffer holds the same values but is
+    # separate storage, so a write through the recovered `Ref` never reaches the original slot's
+    # partials and the derivative loses it. At `Nw == 0` there is no lane to recover from.
+    partials = if Nw == 0
+        Base.RefValue{NTuple{Nw,P}}(ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw)))
+    else
+        unsafe_pointer_to_objref(Ptr{Nothing}(UInt(tangent(x)[1])))::Base.RefValue{NTuple{Nw,P}}
+    end
+    return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
+end
+# The tangent of a `Ptr{Nothing}` carries its address alongside the erased element width; every other
+# pointer tangent IS the address.
+@inline _void_ptr_addr(p::VoidPtrTangent) = p.p
+@inline _void_ptr_addr(p::Ptr) = p
+
 function rrule!!(f::CoDual{typeof(Base.unsafe_pointer_to_objref)}, x::CoDual{<:Ptr})
-    y = CoDual(unsafe_pointer_to_objref(primal(x)), unsafe_pointer_to_objref(tangent(x)))
+    y = CoDual(
+        unsafe_pointer_to_objref(primal(x)),
+        unsafe_pointer_to_objref(_void_ptr_addr(tangent(x))),
+    )
     return y, NoPullback(f, x)
 end
 
@@ -122,17 +281,86 @@ end
 # Since we can't differentiate `memmove` (due to a lack of type information), it is
 # necessary to work with `unsafe_copyto!` instead.
 @is_primitive MinimalCtx Tuple{typeof(unsafe_copyto!),Ptr{T},Ptr{T},Any} where {T}
+# A differentiable Ptr's V is `NTuple{N, Ptr}` (per-lane partial pointers). Copy the primal
+# data and each lane's tangent data through its own per-lane pair of source/destination
+# pointers. The partial-pointer element type is element-type-agnostic, so this covers both
+# the scalar parallel-arrays case (`Ptr{T<:NDualEltype}`, V `NTuple{N,Ptr{T}}`) and the nested-array case
+# (`Ptr{Vector{Float64}}` from `pointer(::Vector{Vector{Float64}})`, V `NTuple{N,Ptr{NDualArray}}`),
+# matching the `rrule!!`'s `Ptr{T}` breadth below.
 function frule!!(
-    ::Dual{typeof(unsafe_copyto!)}, dest::Dual{Ptr{T}}, src::Dual{Ptr{T}}, n::Dual
-) where {T}
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
+    src::Lifted{P,Nw,<:NTuple{Nw,Ptr}},
+    n::Lifted,
+) where {Nw,P<:Ptr}
+    _n = primal(n)
+    dest_partials = tangent(dest)
+    src_partials = tangent(src)
+    @inbounds for lane in 1:Nw
+        IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
+            primal(dest), dest_partials[lane]
+        )
+        IntrinsicsWrappers._check_fwd_tangent_ptr_addressable(
+            primal(src), src_partials[lane]
+        )
+    end
+    unsafe_copyto!(primal(dest), primal(src), _n)
+    @inbounds for lane in 1:Nw
+        unsafe_copyto!(dest_partials[lane], src_partials[lane], _n)
+    end
+    return dest
+end
+# Mixed V: one pointer carries per-lane partials, the other reached AD with none. The broad
+# `@is_primitive` above covers this pair, so without these methods it surfaces as a raw `MethodError`
+# instead of the diagnosis. Copying constants IN would need the source's constancy to be provable,
+# which a `NoDual` V does not establish — it only says no partial storage was found.
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    ::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    ::Lifted{Ptr{T},Nw,NoDual},
+    ::Lifted,
+) where {Nw,T}
+    throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
+end
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    ::Lifted{Ptr{T},Nw,NoDual},
+    ::Lifted{Ptr{T},Nw,<:NTuple{Nw,Ptr}},
+    ::Lifted,
+) where {Nw,T}
+    throw(ArgumentError(IntrinsicsWrappers._NODUAL_DIFF_PTR_MSG))
+end
+# Non-differentiable pointers (V === NoDual, e.g. `Ptr{UInt8}` / `Ptr{Int}` — the
+# element type is non-differentiable, `tangent_type(T) === NoTangent`): copy the primal
+# data; no tangent to copy. (A `Ptr{Vector{Float64}}` is differentiable — its V is
+# `NTuple{Nw, Ptr}`, handled by the V<:NTuple frule above, not this NoDual overload.)
+function frule!!(
+    ::Lifted{typeof(unsafe_copyto!),Nw},
+    dest::Lifted{Ptr{T},Nw,NoDual},
+    src::Lifted{Ptr{T},Nw,NoDual},
+    n::Lifted,
+) where {Nw,T}
     unsafe_copyto!(primal(dest), primal(src), primal(n))
-    unsafe_copyto!(tangent(dest), tangent(src), primal(n))
     return dest
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
+    # Both pointers are dereferenced below, so both must address real tangent
+    # bytes. Same guard as the load/store rules and reverse `unsafe_wrap`; it lives
+    # in `IntrinsicsWrappers`, not the top-level module.
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
     _n = primal(n)
+
+    # A self-copy is the identity, and the snapshot-and-restore below is actively wrong for it: the
+    # pullback increments `dsrc` through `ddest` — one buffer, so it doubles — and then restores
+    # that same buffer to its pre-call value, erasing both the increment and whatever cotangent the
+    # buffer accumulates downstream. At the start of the reverse sweep the snapshot is zero, so the
+    # copied slots came back zero. Exact pointer equality, which leaves partial overlap alone.
+    if primal(dest) === primal(src)
+        return dest, NoPullback(ntuple(_ -> NoRData(), 4))
+    end
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
@@ -161,21 +389,52 @@ function rrule!!(
     return dest, unsafe_copyto!_pb!!
 end
 
+# Reshape the primal and the partials block via ccall. The block reshapes to `(Nw, dims...)` —
+# same backing, so the reshaped array's V ALIASES the original's partials exactly as the reshaped
+# primal aliases the original data. Element-type-agnostic across the whole `NDualEltype` surface
+# (real and complex floats): primal and block are plain `Array{E,·}`, so the reshape `ccall`
+# eltype tracks the array's actual eltype `E`, mirroring the element-type-generic reverse rrule
+# below. (Width parameter `W` of the V is left free so this matches both the real `NDual{E,Nw}`
+# and complex `Complex{NDual{R,Nw}}` element duals.)
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_reshape_array}},
-    ::Dual{Val{Array{P,M}}},
-    ::Dual{Tuple{Val{Any},Val{Any},Val{Any}}},
-    ::Dual, # nreq
-    ::Dual, # calling convention
-    x::Dual{Type{Array{P,M}}},
-    a::Dual{Array{P,N},Array{T,N}},
-    dims::Dual,
-) where {P,T,M,N}
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{E,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{E,M}},Nw},
+    a::Lifted{Array{E,D},Nw,<:NDualArray{E,Nw,D,Array{E,D}}},
+    dims::Lifted,
+) where {Nw,E<:NDualEltype,M,D}
+    d = primal(dims)
+    y = ccall(:jl_reshape_array, Array{E,M}, (Any, Any, Any), Array{E,M}, primal(a), d)
+    # Reshaping the block is a new header over the same flat parent, so the reshaped array's V
+    # shares the original's partials storage exactly as the reshaped primal shares its data.
+    new_block = reshape(getfield(tangent(a), :partials_block), (Nw, d...))
+    return Lifted{Array{E,M},Nw}(y, NDualArray{E,Nw,M,Array{E,M}}(y, new_block))
+end
+# Element-wise `Array{VE,D}` forward V — every element carries its own element dual `VE`: `NoDual`
+# for non-differentiable elements (e.g. the `Matrix{Tuple{Int,Colon}}` index buffer reshaped inside
+# `sortslices`), and `ImmutableDual`/tuple-of-`NDual` duals for differentiable non-numeric elements
+# (structs, tuples). Reshape primal and V in lockstep, element-type-generically, mirroring the
+# reverse rrule below. (Numeric-leaf arrays use the block-backed `NDualArray` V — which is not an
+# `Array` — and take the frule above instead.)
+function frule!!(
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_reshape_array},Nw},
+    ::Lifted{Val{Array{P,M}},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any},Val{Any}},Nw},
+    ::Lifted, # nreq
+    ::Lifted, # calling convention
+    ::Lifted{Type{Array{P,M}},Nw},
+    a::Lifted{<:Array,Nw,<:Array{VE}},
+    dims::Lifted,
+) where {Nw,P,M,VE}
     d = primal(dims)
     y = ccall(:jl_reshape_array, Array{P,M}, (Any, Any, Any), Array{P,M}, primal(a), d)
-    dy = ccall(:jl_reshape_array, Array{T,M}, (Any, Any, Any), Array{T,M}, tangent(a), d)
-    return Dual(y, dy)
+    v = ccall(:jl_reshape_array, Array{VE,M}, (Any, Any, Any), Array{VE,M}, tangent(a), d)
+    return Lifted{Array{P,M},Nw}(y, v)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -197,20 +456,20 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_array_isassigned}},
-    ::Dual{RT}, # return type is Int32
-    arg_types::Dual{AT}, # arg types are (Any, UInt64)
-    ::Dual{nreq}, # nreq
-    ::Dual{calling_convention}, # calling convention
-    a::Dual{<:Array},
-    ii::Dual{UInt},
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_array_isassigned},Nw},
+    ::Lifted,  # return type (Cint)
+    ::Lifted,  # arg types
+    ::Lifted,  # nreq
+    ::Lifted,  # calling convention
+    a::Lifted,
+    ii::Lifted,
     args...,
-) where {RT,AT,nreq,calling_convention}
+) where {Nw}
     GC.@preserve args begin
         y = ccall(:jl_array_isassigned, Cint, (Any, UInt), primal(a), primal(ii))
     end
-    return zero_dual(y)
+    return zero_lifted(Val(Nw), y)
 end
 
 function rrule!!(
@@ -231,16 +490,17 @@ function rrule!!(
 end
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)},
-    ::Dual{Val{:jl_type_unionall}},
-    ::Dual{Val{Any}}, # return type
-    ::Dual{Tuple{Val{Any},Val{Any}}}, # arg types
-    ::Dual{Val{0}}, # number of required args
-    ::Dual{Val{:ccall}},
-    a::Dual,
-    b::Dual,
-)
-    return zero_dual(ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b)))
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_type_unionall},Nw},
+    ::Lifted{Val{Any},Nw},
+    ::Lifted{Tuple{Val{Any},Val{Any}},Nw},
+    ::Lifted{Val{0},Nw},
+    ::Lifted{Val{:ccall},Nw},
+    a::Lifted,
+    b::Lifted,
+) where {Nw}
+    y = ccall(:jl_type_unionall, Any, (Any, Any), primal(a), primal(b))
+    return zero_lifted(Val(Nw), y)
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
@@ -259,7 +519,15 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(Base.has_free_typevars),Any}
 
 @is_primitive MinimalCtx Tuple{typeof(deepcopy),Any}
-frule!!(::Dual{typeof(deepcopy)}, x::Dual) = Dual(deepcopy(primal(x)), deepcopy(tangent(x)))
+# Copy primal and V through one shared `IdDict` walk: independent `deepcopy` calls would sever
+# the internal aliasing (e.g. `NDualArray.primal === primal(slot)`), so the copy's inner `.value`
+# would read a stale third array after the copied primal is mutated. (`deepcopy(x::Lifted)` of
+# the whole slot would also work, but `deepcopy_internal(::Lifted, ...)` defeats inference.)
+function frule!!(::Lifted{typeof(deepcopy),Nw}, x::Lifted{P,Nw,V}) where {Nw,P,V}
+    d = IdDict()
+    p = Base.deepcopy_internal(primal(x), d)::P
+    return Lifted{P,Nw}(p, Base.deepcopy_internal(tangent(x), d)::V)
+end
 function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     fdx = tangent(x)
     dx = zero_rdata(primal(x))
@@ -272,15 +540,26 @@ function rrule!!(::CoDual{typeof(deepcopy)}, x::CoDual)
     return y, deepcopy_pb!!
 end
 
-@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),DataType,Integer}
+# `Type`, not `DataType`: the type-value arg lifts to `Lifted{Type{T}}`, and `@zero_derivative`
+# emits the forward sig `Lifted{<:Type}`. Under `@nospecialize` (e.g. in `test_frule_correctness`)
+# inference widens that slot to the existential `Lifted{Type{S}} where S`, which is `<: Lifted{<:Type}`
+# but NOT `<: Lifted{<:DataType}` (`Lifted` is invariant; `Type{S} <: DataType` only for concrete `S`).
+# With `DataType` the existential matched no method, so the call inferred `Union{}` → `unreachable` →
+# SIGILL once the concrete arg dispatched at runtime. This also broadens the REVERSE primitive from
+# `DataType` to `Type` — deliberate and harmless, since the derivative is zero either way.
+@zero_derivative MinimalCtx Tuple{typeof(fieldoffset),Type,Integer}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Any}
 @zero_derivative MinimalCtx Tuple{Type{UnionAll},TypeVar,Type}
 @zero_derivative MinimalCtx Tuple{typeof(hash),Vararg}
 
 function frule!!(
-    ::Dual{typeof(_foreigncall_)}, ::Dual{Val{:jl_string_ptr}}, args::Vararg{Dual,N}
-) where {N}
-    return uninit_dual(_foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...))
+    ::Lifted{typeof(_foreigncall_),Nw},
+    ::Lifted{Val{:jl_string_ptr},Nw},
+    args::Vararg{Lifted,M},
+) where {Nw,M}
+    y = _foreigncall_(Val(:jl_string_ptr), tuple_map(primal, args)...)
+    # Returns a `Ptr{UInt8}` — tangent is structurally non-differentiable.
+    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 
 function rrule!!(
@@ -292,11 +571,14 @@ function rrule!!(
 end
 
 for name in (:jl_get_world_counter, :jl_matching_methods)
+    # `zero_derivative` runs the primal once and wraps it via `zero_lifted`, giving the canonical
+    # zero-derivative V for both result shapes (`jl_get_world_counter`'s `UInt64` → `NoDual`;
+    # `jl_matching_methods`'s `Vector{Any}` → `Vector{Any}`, whose `tangent_type` is not `NoTangent`).
     @eval function frule!!(
-        f::Dual{typeof(_foreigncall_)},
-        n::Dual{Val{$(QuoteNode(name))}},
-        args::Vararg{Dual,N},
-    ) where {N}
+        f::Lifted{typeof(_foreigncall_),Nw},
+        n::Lifted{Val{$(QuoteNode(name))},Nw},
+        args::Vararg{Lifted,M},
+    ) where {Nw,M}
         return zero_derivative(f, n, args...)
     end
     @eval function rrule!!(
@@ -311,21 +593,30 @@ end
 for (name, P) in
     ((Symbol("llvm.powi.f32.i32"), Float32), (Symbol("llvm.powi.f64.i32"), Float64))
     @eval function frule!!(
-        ::Dual{typeof(_foreigncall_)},
-        ::Dual{Val{$(QuoteNode(name))}},
-        ::Dual{Val{$P}},
-        ::Dual{Tuple{Val{$P},Val{Int32}}},
-        ::Dual{Val{0}},
-        ::Dual{Val{:llvmcall}},
-        x::Dual{$P},
-        n::Dual{Int32},
-        ::Dual{Int32},
-        ::Dual{$P},
-    )
-        _x, dx = extract(x)
+        ::Lifted{typeof(_foreigncall_),Nw},
+        ::Lifted{Val{$(QuoteNode(name))},Nw},
+        ::Lifted{Val{$P},Nw},
+        ::Lifted{Tuple{Val{$P},Val{Int32}},Nw},
+        ::Lifted{Val{0},Nw},
+        ::Lifted{Val{:llvmcall},Nw},
+        x::Lifted{$P,Nw,NDual{$P,Nw}},
+        n::Lifted{Int32,Nw},
+        ::Lifted{Int32,Nw},
+        ::Lifted{$P,Nw,NDual{$P,Nw}},
+    ) where {Nw}
+        _x = primal(x)
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
-        return Dual(y, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dx)
+        # Scale only the partials and set V.value to `y`. A naive `grad * tangent(x)` multiplies
+        # the inner NDual, scaling `.value` to `grad * x_p` and breaking the V.value === primal
+        # invariant (mirrors the `pow_fast` frule in low_level_maths.jl).
+        grad = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y))
+        # `_fwd_guarded_scale` (not `_fwd_scale`) so an inactive (zero-seed) lane stays exactly zero
+        # even where `grad` is `±Inf` (e.g. `x == 0` with a negative exponent) — `0 * Inf` would be
+        # `NaN`. Mirrors the `pow_fast` NDual overload's guard.
+        return Lifted{$P,Nw}(
+            y, NDual{$P,Nw}(y, Nfwd._fwd_guarded_scale(tangent(x).partials, grad))
+        )
     end
 
     @eval function rrule!!(
@@ -344,7 +635,10 @@ for (name, P) in
         _n = primal(n)
         y = Base.FastMath.pow_fast(_x, _n)
         function llvm_powi_pb!!(dy::$P)
-            dx = Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy
+            # Guard against `0 * ±Inf = NaN`: at x==0 with a negative exponent the local gradient is
+            # ±Inf, so an incoming zero cotangent must yield an exact zero contribution (mirrors the
+            # forward `_fwd_guarded_scale` and the sibling `sqrt_llvm` reverse guard).
+            dx = nan_tangent_guard(dy, Nfwd._nfwd_pow_grad_x(_x, $P(_n), float(y)) * dy)
             return (
                 NoRData(),
                 NoRData(),
@@ -405,7 +699,9 @@ for name in [
     ) where {RT,nreq,calling_convention}
         return unexpected_foreigncall_error($name)
     end
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$name},Nw}, args...
+    ) where {Nw}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
@@ -429,13 +725,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (true, :stability, nothing, objectid, randn(5)),
         (true, :stability, nothing, pointer_from_objref, _x),
         (
+            # `skip_forward`: the tangent buffer here is a reverse tangent (`_dx`), so the forward
+            # pointer round-trip recovers a reverse tangent rather than the canonical forward V — an
+            # incoherence by construction, not a rule bug. The real forward round-trip (recovering an
+            # `NDualRef`) is covered by the `unsafe_pointer_to_objref(pointer_from_objref(_x))` derived
+            # case below.
             true,
             :none, # primal is unstable
-            (lb=1e-3, ub=250),
+            (lb=1e-3, ub=250, skip_forward=true),
             unsafe_pointer_to_objref,
             CoDual(
-                pointer_from_objref(_x),
-                bitcast(Ptr{tangent_type(Nothing)}, pointer_from_objref(_dx)),
+                pointer_from_objref(_x), VoidPtrTangent(pointer_from_objref(_dx), Nothing)
             ),
         ),
         (false, :none, nothing, Core.Compiler.return_type, sin, Tuple{Float64}),
@@ -469,8 +769,24 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, "5", UInt(3)),
         (false, :none, nothing, hash, Float64, UInt(5)),
         (false, :none, nothing, hash, Float64),
+        # A threading foreigncall whose result is a non-differentiable `Cint`: its V must be
+        # `NoDual`. The ABI mirrors the normalized call, which carries no call arguments.
+        # Forward only: reverse refuses these outright, which the throwing case below pins.
+        (
+            false,
+            :none,
+            (skip_reverse=true,),
+            _foreigncall_,
+            Val(:jl_in_threaded_region),
+            Val{Cint}(),
+            (),
+            Val{0}(),
+            Val{:ccall}(),
+        ),
     ]
-    memory = Any[_x, _dx, _a, _da, _b, _db]
+    throwing_rows, throwing_memory = _foreigncall_throwing_rows()
+    test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
+    memory = vcat(Any[_x, _dx, _a, _da, _b, _db], throwing_memory)
     return test_cases, memory
 end
 
@@ -479,6 +795,15 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
 
     function unsafe_copyto_tester(x::Vector{T}, y::Vector{T}, n::Int) where {T}
         GC.@preserve x y unsafe_copyto!(pointer(x), pointer(y), n)
+        return x
+    end
+
+    # A SELF-copy is the identity, but the rule snapshotted the destination and restored it in the
+    # pullback, which for one buffer erased the increment it had just made: the copied slots came
+    # back with zero gradient. One argument rather than the same array at two positions, so the
+    # repeated-argument refusal does not intercept it first.
+    function unsafe_self_copy_tester(x::Vector{T}, n::Int) where {T}
+        GC.@preserve x unsafe_copyto!(pointer(x), pointer(x), n)
         return x
     end
 
@@ -494,15 +819,59 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (10, 2)),
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
+        # Complex reshape: the forward frule must be element-type-agnostic across `NDualEltype`
+        # (the V is `NDualArray{Complex{R}, …}`). On Julia 1.10 this lowers to a
+        # `jl_reshape_array` foreigncall, which the frule must handle for complex element types too.
+        (false, :none, nothing, reshape, randn(ComplexF64, 5, 4), (4, 5)),
+        # Reshape of an array of differentiable struct / tuple elements (Array{FloatPair},
+        # Array{Tuple{Float64,Float64}}): forward mode must reshape primal and V in lockstep.
         (
             false,
             :none,
             nothing,
+            x -> (
+                v=[TestResources.FloatPair(x, 2x), TestResources.FloatPair(3x, 4x)];
+                r=reshape(v, 2, 1);
+                r[1, 1].a + r[2, 1].b
+            ),
+            1.0,
+        ),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2]),
+            1.0,
+        ),
+        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
+        (false, :none, nothing, unsafe_self_copy_tester, randn(5), 3),
+        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
+        (
+            # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot carry the
+            # per-lane dual at width N>1 (the element-wise nested dual has no dense per-lane buffer a
+            # raw pointer could address). This now FAILS LOUDLY at width>1 (the `lgetfield`
+            # `ptr_or_offset` guard on 1.11+; a missing width>1 frule on 1.10) rather than silently
+            # dropping the derivative; the width-1 path is correct, so skip only the chunked check.
+            false,
+            :none,
+            (skip_chunked=true,),
             unsafe_copyto_tester,
             [randn(3) for _ in 1:5],
             [randn(4) for _ in 1:6],
+            4,
+        ),
+        (
+            # The same shape with an ABSTRACT element type. `tangent_type(Any)` is `Any`, and the
+            # forward guard asked `sizeof(eltype(dp)) > 0`, which THROWS for an abstract type
+            # rather than answering — so this crashed with a raw "does not have a definite size"
+            # before reaching any derivative. A reference element occupies a pointer-sized slot, so
+            # it does have storage, and the guard now says so without consulting `sizeof`.
+            false,
+            :none,
+            (skip_chunked=true,),
+            unsafe_copyto_tester,
+            Any[randn(3) for _ in 1:5],
+            Any[randn(4) for _ in 1:6],
             4,
         ),
         (
@@ -510,6 +879,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             :none,
             (lb=0.1, ub=150),
             x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+            _x,
+        ),
+        # Writing THROUGH the recovered alias, which the read-only case above cannot catch: the
+        # round-trip used to rebuild the partials into a fresh buffer, so the write never reached
+        # the original slot's partials and the derivative came out 1.0 where it is 3.0.
+        (
+            false,
+            :none,
+            (lb=0.1, ub=150),
+            x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
             _x,
         ),
         (false, :none, nothing, isassigned, randn(5), 4),
@@ -555,4 +934,201 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         ),
     ]
     return test_cases, memory
+end
+
+function unsafe_copyto_retyped_bytes(x, b)
+    y = similar(x)
+    GC.@preserve x y b unsafe_copyto!(pointer(y), Ptr{Float64}(pointer(b)), length(y))
+    return sum(x) + sum(y)
+end
+
+# A primal whose tangent layout differs from its own: `a`'s tangent is `NoTangent` (zero-size), so
+# `b`'s cotangent sits at offset 0 while `b` itself sits at offset 8.
+mutable struct MismatchedLayout
+    a::Int
+    b::Float64
+end
+
+function _foreigncall_throwing_rows()
+    # pointer_from_objref of a value whose forward V is immutable but differentiable
+    # (e.g. `NDualArray`) has no tangent-object address and must fail loudly rather than
+    # emit NULL lanes that silently drop the derivative downstream.
+    cases = Any[(ArgumentError, pointer_from_objref, ([1.0],), (; mode=ForwardMode))]
+    memory = Any[]
+    # Reverse hands out the TANGENT object's address, and a load through it indexes at the PRIMAL's
+    # field offsets. A non-differentiable field shifts every later one, so the access lands outside
+    # the tangent object; before the layout check it reported 0.0 for `b` against a truth of 2.0.
+    push!(
+        cases,
+        (
+            (ArgumentError, "does not share that layout"),
+            pointer_from_objref,
+            (MismatchedLayout(7, 3.0),),
+            (; mode=ReverseMode),
+        ),
+    )
+    # Its inverse, through a pointer with no tangent storage: the lane is the `uninit_*` placeholder,
+    # equal to the primal's own address, so it passes the NULL test and would hand back the primal
+    # object as its own tangent. A ready-made slot because seeding a raw `Ptr` primal cannot express
+    # the shape.
+    objref_target = [1.0, 2.0]
+    push!(memory, objref_target)
+    let p = pointer_from_objref(objref_target)
+        push!(
+            cases,
+            (
+                (ArgumentError, "the lane pointer is the primal's own address"),
+                Base.unsafe_pointer_to_objref,
+                (Lifted{typeof(p),1}(p, (p,)),),
+                (; mode=ForwardMode),
+            ),
+        )
+    end
+    # A tangent object with no payload at all: its address is admitted (a foreigncall may want it),
+    # but nothing differentiable lies behind it, so a later load must refuse. Admitting it as
+    # UNCHECKED let 64 pullback stores walk past a 0-byte tangent object whose primal was 512 bytes.
+    function zero_payload_objref_load(r::Base.RefValue{NTuple{8,Int}}, x::Float64)
+        return GC.@preserve r x * unsafe_load(Ptr{Float64}(pointer_from_objref(r)))
+    end
+    push!(
+        cases,
+        (
+            (ArgumentError, "no tangent storage"),
+            zero_payload_objref_load,
+            (Base.RefValue(ntuple(_ -> 0, Val(8))), 2.0),
+            (; mode=ReverseMode),
+        ),
+    )
+    @static if VERSION >= v"1.11-rc4"
+        # The raw pointer of an element-wise nested `MemoryRef` (from
+        # `pointer(::Vector{Vector})`) projects to a width-1 `Ptr` 1-tuple; at chunk width > 1 the
+        # per-element `NDualArray` dual has no dense per-lane buffer a single raw pointer could
+        # address, so `lgetfield(.ptr_or_offset)` must FAIL LOUDLY rather than silently drop the
+        # derivative. (On 1.10 there is no width>1 frule, so it is loud there via a different path.)
+        nested = [randn(2), randn(2)]
+        push!(memory, nested)
+        push!(
+            cases,
+            (
+                ArgumentError,
+                lgetfield,
+                (getfield(nested, :ref), Val(:ptr_or_offset)),
+                (; mode=ForwardMode, chunk_size=2),
+            ),
+        )
+        # The runtime-name `getfield` frules project the same V and must refuse it identically. The
+        # name arrives as an ordinary `Symbol` argument, which is what keeps it dynamic — a literal
+        # would be rewritten to `lgetfield` above. Both arities, since both were unguarded and both
+        # returned zero partials rather than throwing.
+        for extra in ((), (false,))
+            push!(
+                cases,
+                (
+                    ArgumentError,
+                    getfield,
+                    (getfield(nested, :ref), :ptr_or_offset, extra...),
+                    (; mode=ForwardMode, chunk_size=2),
+                ),
+            )
+        end
+    else
+        # Julia 1.10 has no `MemoryRef`; the same guard sits on the legacy-array raw pointer
+        # (`jl_array_ptr`), and must fail loudly at width > 1 for the same reason.
+        push!(
+            cases, (ArgumentError, pointer, (randn(2),), (; mode=ForwardMode, chunk_size=2))
+        )
+    end
+    copy_bytes = zeros(UInt8, 24)
+    push!(memory, copy_bytes)
+    # Reverse `unsafe_copyto!` dereferences BOTH tangent pointers, and the source has none: it is
+    # re-typed off a non-differentiable buffer, which the `bitcast` rrule refuses on every version.
+    push!(
+        cases,
+        (
+            (ArgumentError, "no tangent storage"),
+            unsafe_copyto_retyped_bytes,
+            (randn(3), copy_bytes),
+            (; mode=ReverseMode),
+        ),
+    )
+    # Forward reaches the same program with a MIXED V — real per-lane pointers for the destination,
+    # `NoDual` for the re-typed source. Every version, which is the point: 1.10 used to hand the
+    # source a fabricated pointer and report a derivative that varied with unrelated heap contents.
+    push!(
+        cases,
+        (
+            (ArgumentError, "forward representation is `NoDual`"),
+            unsafe_copyto_retyped_bytes,
+            (randn(3), copy_bytes),
+            (; mode=ForwardMode),
+        ),
+    )
+    # A raw `Ptr` slot carries the `uninit_*` placeholder, whose lane pointer IS the primal address,
+    # so copying through it dereferences the primal as a derivative. Ready-made slots because
+    # seeding a raw `Ptr` primal cannot express the shape. A coherent destination (its own tangent
+    # buffer) with a placeholder source is the exact mix. Not version dependent.
+    cp_dest, cp_dest_t, cp_src = randn(3), randn(3), randn(3)
+    append!(memory, (cp_dest, cp_dest_t, cp_src))
+    push!(
+        cases,
+        (
+            (ArgumentError, "forward representation is `NoDual`"),
+            unsafe_copyto!,
+            (
+                Lifted{Ptr{Float64},1}(pointer(cp_dest), (pointer(cp_dest_t),)),
+                Lifted{Ptr{Float64},1}(pointer(cp_src), (pointer(cp_src),)),
+                3,
+            ),
+            (; mode=ForwardMode),
+        ),
+    )
+    # Foreigncalls no rule should ever reach: each has a Julia-level rule that claims the
+    # operation earlier, so arriving at the `ccall` means the claim was lost. Both modes raise,
+    # and pinning the message keeps the diagnostic itself under test.
+    # Reverse mode refuses to differentiate through threading rather than returning a wrong
+    # gradient. Nothing exercised that refusal until the forward case above was registered.
+    push!(
+        cases,
+        (
+            (ErrorException, "Differentiating through threading is not safe"),
+            _foreigncall_,
+            (Val(:jl_in_threaded_region), Val{Cint}(), (), Val{0}(), Val{:ccall}()),
+            (; mode=ReverseMode),
+        ),
+    )
+    for name in [
+        :jl_alloc_array_1d,
+        :jl_alloc_array_2d,
+        :jl_alloc_array_3d,
+        :jl_new_array,
+        :jl_array_copy,
+        :jl_type_intersection,
+        :memset,
+        :jl_get_tls_world_age,
+        :memmove,
+        :jl_object_id,
+        :jl_array_sizehint,
+        :jl_array_grow_beg,
+        :jl_array_grow_end,
+        :jl_array_grow_at,
+        :jl_array_del_beg,
+        :jl_array_del_end,
+        :jl_array_del_at,
+        :jl_value_ptr,
+        :jl_threadid,
+        :memhash_seed,
+        :memhash32_seed,
+        :jl_get_field_offset,
+    ]
+        push!(
+            cases,
+            (
+                (ErrorException, "AD has hit a :($name) ccall"),
+                _foreigncall_,
+                (Val(name),),
+                (;),
+            ),
+        )
+    end
+    return cases, memory
 end

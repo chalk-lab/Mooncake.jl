@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "FunctionWrappers")
 
 using AllocCheck, FunctionWrappers, JET, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule, test_tangent_interface, test_tangent_splitting
@@ -84,5 +83,42 @@ using FunctionWrappers: FunctionWrapper
         ),
     ]
         test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+    end
+
+    # Chunked forward (width N > 1): `test_rule` runs the width-N frule but skips its per-lane
+    # oracle for FunctionWrapper — the tangent bakes all N lanes into one OpaqueClosure, so per-lane
+    # extraction is unsupported (`_chunk_lane_checkable` excludes it). Verify the output's per-lane
+    # partials directly: zero-seed the wrapper, or construct one from a closure with a
+    # differentiated capture (each lane an independent direction).
+    @testset "chunked forward (width N)" begin
+        FW = FunctionWrapper{Float64,Tuple{Float64}}
+        ndual(x, seeds) = Mooncake.Lifted{Float64,length(seeds)}(
+            x, Mooncake.Nfwd.NDual{Float64,length(seeds)}(x, seeds)
+        )
+        zl(N, v) = Mooncake.zero_lifted(Val(N), v)
+        # Fresh interpreter per build (the testset's function defs advance the world age).
+        mkfr(sig, N) = Mooncake.build_frule(
+            Mooncake.get_interpreter(Mooncake.ForwardMode), sig; chunk_size=N
+        )
+
+        call_fw(fw, x) = fw(x)
+        fw_sin = FW(sin)
+        f_construct(x, y) = FW(t -> t * y)(x)   # x*y; d/dx = y, d/dy = x
+
+        @testset "width $N" for N in (2, 3)
+            seeds = ntuple(Float64, N)
+
+            r1 = mkfr(Tuple{typeof(call_fw),FW,Float64}, N)
+            o1 = r1(zl(N, call_fw), zl(N, fw_sin), ndual(1.3, seeds))
+            @test Mooncake.primal(o1) ≈ sin(1.3)
+            @test all(k -> Mooncake.tangent(o1, k) ≈ cos(1.3) * seeds[k], 1:N)
+
+            xs, ys = ntuple(Float64, N), ntuple(k -> -Float64(k), N)
+            x0, y0 = 1.3, 2.5
+            r2 = mkfr(Tuple{typeof(f_construct),Float64,Float64}, N)
+            o2 = r2(zl(N, f_construct), ndual(x0, xs), ndual(y0, ys))
+            @test Mooncake.primal(o2) ≈ x0 * y0
+            @test all(k -> Mooncake.tangent(o2, k) ≈ y0 * xs[k] + x0 * ys[k], 1:N)
+        end
     end
 end

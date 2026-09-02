@@ -91,8 +91,8 @@ mysquare (generic function with 1 method)
 
 julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
 
-julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
-Mooncake.Dual{Float64, Float64}(9.0, 0.0)
+julia> Mooncake.value_and_derivative!!(cache, (mysquare, Mooncake.NoTangent()), (3.0, 1.0))
+(9.0, 0.0)
 ```
 As you can see, the tangent is `0.0` rather than `6.0`.
 
@@ -267,6 +267,28 @@ In this case, you will not be able to use `Mooncake.value_and_gradient!!` as thi
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
+
+### Re-typing a pointer through `Ptr{Cvoid}`
+
+A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
+sound: re-typing `Ptr{Float32}` to `Ptr{Float64}` is refused, because a load or store through the
+result would address eight bytes per element in a buffer laid out in four-byte ones.
+
+Erasing the element type defeats that check, because Mooncake gives an erased pointer and a pointer
+with no tangent storage at all the same representation — both are `Ptr{Nothing}`, and `fdata_type`
+pins a pointer field's fdata to `Ptr`. Once erased, a later re-typing back to a differentiable
+element cannot be verified.
+
+So the erasure itself is refused when the pointer has real tangent storage behind it:
+
+```julia
+f(b::Vector{Float32}, x) = x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))   # ArgumentError
+```
+
+Erasing a pointer with no tangent storage is unaffected, which is the common direction —
+`pointer(::Array)` passes through a `Ptr{Cvoid}` intermediate and re-types back to the element type
+a foreigncall needs. Re-type directly between the element types you differentiate through, without
+the round trip.
 
 ```@meta
 DocTestSetup = nothing

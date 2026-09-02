@@ -10,7 +10,6 @@ module TestResources
 using ..Mooncake
 using ..Mooncake:
     CoDual,
-    Dual,
     Tangent,
     MutableTangent,
     NoTangent,
@@ -47,6 +46,12 @@ struct StructFoo
 end
 
 Base.:(==)(a::StructFoo, b::StructFoo) = equal_field(a, b, :a) && equal_field(a, b, :b)
+
+# Immutable struct with two `Float64` fields; used to test `reshape` of an array of struct elements.
+struct FloatPair
+    a::Float64
+    b::Float64
+end
 
 mutable struct MutableFoo
     a::Float64
@@ -243,6 +248,36 @@ function make_circular_reference_array()
     a = Any[1.0, 2.0, 3.0]
     a[1] = a
     return a
+end
+
+@static if VERSION >= v"1.11"
+    struct ArrayAndItsBuffer
+        short::Vector{Float64}
+        long::Vector{Float64}
+        m::Memory{Float64}
+    end
+
+    """
+        make_array_and_its_buffer()
+
+    Two `Array`s of different lengths and the `Memory` backing both, as three differentiable
+    positions over one buffer. Operations that accumulate into shared storage
+    (`increment_internal!!`, `_dot_internal`) key on an extent, so the views overlap without
+    matching and the shared prefix used to be counted once per view.
+
+    THREE views rather than two on purpose. With only an array and its buffer the array is always
+    reached first, so the partial walk always falls to the `Memory` method; a second array of a
+    different length is what makes an ARRAY take it, and that path had a separate bug of its own.
+    """
+    function make_array_and_its_buffer()
+        base = Float64[1.0, 2.0, 3.0, 4.0, 5.0]
+        mem = getfield(base, :ref).mem
+        return ArrayAndItsBuffer(
+            Base.wrap(Array, memoryref(mem), (2,)),
+            Base.wrap(Array, memoryref(mem), (4,)),
+            mem,
+        )
+    end
 end
 
 function make_indirect_circular_reference_array()
@@ -546,6 +581,27 @@ test_struct_partial_init(a::Float64) = StructFoo(a).a
 
 test_mutable_partial_init(a::Float64) = MutableFoo(a).a
 
+# An element-wise dual element is wider than its primal (32 bytes over 16 here), so re-typing the
+# tangent pointer through `Ptr{Cvoid}` would send the copy through the dual buffer at the primal's
+# stride and move only part of it. The round trip is what `unsafe_convert(Ptr{Cvoid}, ::Array)` does
+# at a ccall boundary.
+function test_elementwise_dual_pointer_copy(
+    dst::Vector{Tuple{Float64,Float64}}, src::Vector{Tuple{Float64,Float64}}
+)
+    pd = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(dst)))
+    ps = Base.bitcast(Ptr{Tuple{Float64,Float64}}, Base.bitcast(Ptr{Cvoid}, pointer(src)))
+    GC.@preserve dst src unsafe_copyto!(pd, ps, length(dst))
+    return dst[1][1] + dst[2][2]
+end
+
+# Returns the array itself, so the forward boundary unlifts an element-wise array of mutable
+# structs — the shape whose per-element lane accessor is a write proxy, not a reverse tangent.
+function test_mutable_struct_array(a::Float64)
+    return [
+        TypeStableMutableStruct{Float64}(a, 2a), TypeStableMutableStruct{Float64}(3a, 4a)
+    ]
+end
+
 function test_naive_mat_mul!(C::Matrix{T}, A::Matrix{T}, B::Matrix{T}) where {T<:Real}
     for p in 1:size(C, 1)
         for q in 1:size(C, 2)
@@ -600,8 +656,14 @@ end
 @noinline edge_case_tester(x::Int) = 10
 @noinline edge_case_tester(x::String) = "hi"
 @is_primitive MinimalCtx Tuple{typeof(edge_case_tester),Float64}
-function Mooncake.frule!!(::Dual{typeof(edge_case_tester)}, x::Dual{Float64})
-    return Dual(5 * primal(x), 5 * tangent(x))
+function Mooncake.frule!!(
+    ::Mooncake.Lifted{typeof(edge_case_tester),Nw},
+    x::Mooncake.Lifted{Float64,Nw,Mooncake.Nfwd.NDual{Float64,Nw}},
+) where {Nw}
+    px = Mooncake.primal(x)
+    y = 5 * px
+    dy_lanes = ntuple(k -> 5 * Mooncake.tangent(x, k), Val(Nw))
+    return Mooncake.Lifted{Float64,Nw}(y, Mooncake.Nfwd.NDual{Float64,Nw}(y, dy_lanes))
 end
 function Mooncake.rrule!!(::CoDual{typeof(edge_case_tester)}, x::CoDual{Float64})
     edge_case_tester_pb!!(dy) = Mooncake.NoRData(), 5 * dy
@@ -719,12 +781,18 @@ function regression_319(θ)
     return d
 end
 
+# A branch on `iszero` of the differentiated value: the nfwd-native path runs the primal on dual
+# numbers, so a predicate that consults the partials sends it down the other branch. At `t == 0`
+# this returned NaN for both value and derivative, where the primal is 1.0 and the derivative 0.
+removable_singularity_tester(t) = iszero(t) ? one(t) : sin(t) / t
+
 function generate_test_functions()
     return Any[
         (false, :allocs, nothing, const_tester),
         (false, :allocs, nothing, const_tester_non_differentiable),
         (false, :allocs, nothing, identity, 5.0),
         (false, :allocs, nothing, foo, 5.0),
+        (false, :none, nothing, removable_singularity_tester, 0.0),
         (false, :allocs, nothing, non_differentiable_foo, 5),
         (false, :allocs, nothing, bar, 5.0, 4.0),
         (false, :allocs, nothing, unused_expression, 5.0, 1),
@@ -874,6 +942,15 @@ function generate_test_functions()
         (false, :none, (lb=1e-3, ub=500), test_mutable_struct, 5.0),
         (false, :none, nothing, test_struct_partial_init, 3.5),
         (false, :none, nothing, test_mutable_partial_init, 3.3),
+        (false, :none, nothing, test_mutable_struct_array, 3.1),
+        (
+            false,
+            :none,
+            nothing,
+            test_elementwise_dual_pointer_copy,
+            [(0.0, 0.0), (0.0, 0.0)],
+            [(1.0, 2.0), (3.0, 4.0)],
+        ),
         (
             false,
             :allocs,
@@ -946,7 +1023,13 @@ function generate_test_functions()
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
         (false, :none, nothing, sig_argcount_mismatch, ones(4)),
-        (false, :allocs, (lb=2, ub=1500), large_tuple_inference, Tuple(zeros(1_000))),
+        (
+            false,
+            :allocs,
+            (lb=2, ub=1500, fwd_allocs_broken=true),
+            large_tuple_inference,
+            Tuple(zeros(1_000)),
+        ),
         (false, :none, nothing, regression_319, randn(3)),
     ]
 end

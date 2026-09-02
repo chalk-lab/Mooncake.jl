@@ -276,6 +276,10 @@ By contrast, separate rules for `setfield!` are generally unnecessary. In Moonca
 
 By following this process—starting with a minimal set of methods and expanding as Mooncake requests more—you can support recursive types robustly in Mooncake.jl.
 
+### Forward-mode counterpart: [`TestUtils.test_lifted`](@ref)
+
+[`TestUtils.test_data`](@ref) / [`TestUtils.test_tangent`](@ref) define the *reverse-mode* tangent interface. The forward (`Lifted` / `NDual`) representation has a parallel, rule-free contract checked by [`TestUtils.test_lifted`](@ref) (with [`TestUtils.test_lifted_type`](@ref) for the type-level part). For a value `p` it verifies, at chunk widths 1, 2 and 3, that the forward seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifted`) produce a slot of the coherent type `lifted_type(Val(N), typeof(p))` whose primal *aliases* `p`, that every inner dual's `.value` tracks the primal it shadows (the inner-value invariant — the property `test_rule` does not check), that the per-lane accessor `tangent(slot, lane)` runs, and that a reverse tangent round-trips through `unlift(lift(p, ẋ))`. Run it alongside `test_data` whenever a custom type must also work under forward-mode AD; it is purely representational, so rule correctness is still the job of [`TestUtils.test_rule`](@ref).
+
 ## Appendix: Full Implementations
 
 Before defining the full implementation, [`TestUtils.test_data`](@ref) will fail.

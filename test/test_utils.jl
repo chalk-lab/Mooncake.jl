@@ -169,4 +169,67 @@
             max_fd_step=1e-3,
         )
     end
+
+    @testset "_deepcopy_all preserves cross-argument aliasing" begin
+        # The harness copies arguments defensively before running a rule. Copying them per element
+        # (`map(_deepcopy, ...)`) gives each its own cache and severs aliasing BETWEEN slots, so no
+        # registered case could present one object in two argument slots — which is why a
+        # repeated-argument gradient bug went unnoticed. One shared cache reproduces the caller's
+        # aliasing graph instead of imposing one.
+        x = [1.0, 2.0]
+        c = Mooncake.TestUtils._deepcopy_all((sum, x, x))
+        @test c[2] === c[3]                    # aliasing between slots survives
+        @test c[2] !== x                       # ...and it is still a copy, not the caller's array
+        c[2][1] = 99.0
+        @test c[3][1] == 99.0                  # a write through one slot is seen by the other
+        @test x[1] == 1.0                      # ...and never reaches the caller
+        # Distinct objects must stay distinct: a shared cache merges only what was already identical.
+        y = [1.0, 2.0]
+        d = Mooncake.TestUtils._deepcopy_all((sum, x, y))
+        @test d[2] !== d[3]
+        # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
+        @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
+    end
+
+    @testset "a pinned tangent spreads over distinct lanes" begin
+        # Giving every lane the same direction makes the per-lane oracle compare one reference
+        # against itself N times, so a rule broadcasting lane 1 across all lanes -- the bug that
+        # check exists for -- passes. Lane k carries k times the pin.
+        lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
+        p = lanes(CoDual(2.0, 1.5), 8).partials
+        @test p[1] == 1.5                      # lane 1 is the pin exactly
+        @test length(unique(p)) == 8           # ...and no two lanes agree
+        @test lanes(CoDual(2.0, 1.5), 1).partials == (1.5,)
+        # A zero pin -- what the BLAS rows use to reach their `iszero(dα)` paths -- stays zero in
+        # every lane. Scaling preserves what a pin selects on.
+        @test all(iszero, lanes(CoDual(2.0, 0.0), 8).partials)
+        # A complex pin scales per part.
+        c = lanes(CoDual(2.0 + 0.0im, 1.0 + 2.0im), 8)
+        @test real(c).partials[1] == 1.0
+        @test imag(c).partials[1] == 2.0
+        @test length(unique(real(c).partials)) == 8
+    end
+
+    @testset "oracle validation" begin
+        # A reference that names nothing, or names it wrongly, would leave a case asserting
+        # nothing while reading as green — the failure mode a pinned reference exists to avoid.
+        f(x, y) = x * y
+        run(o) = TestUtils.test_rule(
+            Xoshiro(1),
+            f,
+            2.0,
+            3.0;
+            is_primitive=false,
+            mode=Mooncake.ForwardMode,
+            print_results=false,
+            oracle=o,
+        )
+        @test_throws ArgumentError run((;))
+        @test_throws ArgumentError run((vlaue=6.0,))
+        @test_throws ArgumentError run((value=6.0, extra=1))
+        @test_throws ArgumentError run(6.0)
+        # A well-formed one is accepted, and the checks that are not the finite-difference
+        # comparison still run — its own assertions register in this testset.
+        run((value=6.0,))
+    end
 end
