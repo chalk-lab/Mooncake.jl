@@ -895,17 +895,38 @@ function rrule!!(
     return CoDual(ld, NoFData()), logdet_sym_pb!!
 end
 
+# `adj(S) = det(S)·S⁻¹` whenever `S` is invertible, which is how the rules below obtain it. At a
+# singular `S` that product is `0·Inf`, so take the eigendecomposition instead: for `S = QΛQᵀ`,
+# `adj(S) = Q·diag(∏_{j≠i} λⱼ)·Qᵀ`. That is zero at rank ≤ n-2 and rank one at rank n-1, which is
+# the derivative the product form cannot express.
+function _sym_adjugate(S::_SymHerm{P}) where {P<:BlasRealFloat}
+    F = eigen(S)
+    λ = F.values
+    cofactors = similar(λ)
+    @inbounds for i in eachindex(λ)
+        c = one(P)
+        for j in eachindex(λ)
+            j == i || (c *= λ[j])
+        end
+        cofactors[i] = c
+    end
+    return F.vectors * Diagonal(cofactors) * transpose(F.vectors)
+end
+
 """
     det(S::Union{Symmetric,Hermitian}{<:BlasRealFloat})
 
 Primitive rule for `det` of a real symmetric matrix, `Hermitian` included.
 
-Given `S = Symmetric(A, uplo)`, the Fréchet derivative follows from `det = exp ∘ logdet`:
+Given `S = Symmetric(A, uplo)`, the Fréchet derivative is the adjugate contraction:
 
-    d/dt det(S + t·dS)|_{t=0} = det(S) · dot(S⁻¹, Symmetric(dA, uplo))
+    d/dt det(S + t·dS)|_{t=0} = dot(adj(S), Symmetric(dA, uplo))
 
-The reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with scalar
-`ȳ · det(S)`.
+For invertible `S` this is `det(S) · dot(S⁻¹, Symmetric(dA, uplo))`, since `adj(S) = det(S)·S⁻¹`,
+and the reverse-mode cotangent is accumulated via [`_accum_sym_logdet!`](@ref) with scalar
+`ȳ · det(S)`. At a singular `S` that product is `0·Inf`, so both rules obtain the adjugate from
+[`_sym_adjugate`](@ref) and accumulate with scalar `ȳ`. The derivative is well defined there: it
+vanishes at rank ≤ n-2 and is rank one at rank n-1.
 """
 @is_primitive(MinimalCtx, Tuple{typeof(det),_SymHerm{P}} where {P<:BlasRealFloat},)
 function frule!!(
@@ -914,24 +935,27 @@ function frule!!(
     S = primal(_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
-    # Singular S: the gradient is zero (approximate); the canonical zero forward dual has inner
-    # value `d` and zero partials.
-    iszero(d) && return zero_lifted(Val(Nw), d)
-    Sinv = inv(F)
     # See `logdet` frule: `arrayify` applies the symmetric-storage weighting to each lane.
     _, d_lanes = arrayify(_S)
-    dy_lanes = ntuple(k -> d * dot(Sinv, d_lanes[k]), Val(Nw))
+    # `ḋ = dot(adj(S), dS)`. Keep the cheap `d·S⁻¹` form off the singular path.
+    dy_lanes = if iszero(d)
+        adj = _sym_adjugate(S)
+        ntuple(k -> dot(adj, d_lanes[k]), Val(Nw))
+    else
+        Sinv = inv(F)
+        ntuple(k -> d * dot(Sinv, d_lanes[k]), Val(Nw))
+    end
     return Lifted{P,Nw}(d, _scalar_ndual(d, dy_lanes))
 end
 function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:_SymHerm{P}}) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
     F = bunchkaufman(S; check=false)
     d = det(F)
-    Sinv = iszero(d) ? nothing : inv(F)
+    # `S̄ += ȳ·adj(S)`, weighted for symmetric storage. Keep the cheap `d·S⁻¹` form off the
+    # singular path, where it is `0·Inf`.
+    G, scale = iszero(d) ? (_sym_adjugate(S), one(P)) : (inv(F), d)
     function det_sym_pb!!(ȳ::P)
-        # Zero gradient for singular S (approximate; see frule!! for details).
-        isnothing(Sinv) && return NoRData(), NoRData()
-        _accum_sym_logdet!(ddata, Sinv, ȳ * d)
+        _accum_sym_logdet!(ddata, G, ȳ * scale)
         return NoRData(), NoRData()
     end
     return CoDual(d, NoFData()), det_sym_pb!!
@@ -1146,15 +1170,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             )
         end...,
 
-        # Singular inputs: logabsdet returns (-Inf, 0.0) without throwing.
-        # FD is not meaningful at a singular point, so interface_only = true.
-        # The gradient is zero (iszero(s) guard), which is also not FD-verifiable.
+        # Singular inputs. `logabsdet` returns (-Inf, 0.0) without throwing and its gradient is
+        # zero by the `iszero(s)` guard; neither is FD-verifiable, so it stays interface_only.
+        # `det` IS differentiable at a singular point -- the derivative is the adjugate -- so it
+        # is FD-checked here: N = 2 is rank n-1, where the adjugate is nonzero, and N = 3 is
+        # rank n-2, where it vanishes. `Float32` det is interface_only for the same
+        # FD-cancellation reason as the definite and indefinite cases above.
         map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
             # rank-1 outer-product: v*v' is symmetric and singular for N ≥ 2
             v = ones(P, N)
             A = v * v'
             S = Symmetric(A, Symbol(uplo))
-            return [(true, :none, nothing, logabsdet, S)]
+            return [
+                (true, :none, nothing, logabsdet, S), (P == Float32, :none, nothing, det, S)
+            ]
         end...,
     )
     # `getrf!` must refuse a non-square matrix. Forward only: the reverse leg drives the primal
