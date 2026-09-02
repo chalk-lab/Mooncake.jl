@@ -364,3 +364,9 @@ With reference to [the limitations of ForwardDiff.jl](https://juliadiff.org/Forw
 1. the target function can be of any arity in Mooncake.jl, but must be unary in ForwardDiff.jl.
 1. there are no limitations on the argument type constraints that Mooncake.jl can handle, while ForwardDiff.jl requires that argument type constraints be `<:Real` or arrays of `<:Real`.
 1. No special storage types are required with Mooncake.jl, while ForwardDiff.jl requires that any container you write to is able to contain `ForwardDiff.Dual`s. (Mooncake's array forward value, `NDualArray`, keeps the partials in a *separate* element-major block rather than interleaving them into the primal container.)
+
+The split representation is not what makes mutation work.
+ForwardDiff.jl handles mutation perfectly well: a `similar(x)` buffer holds `ForwardDiff.Dual`s, and `ForwardDiff.jacobian(f!, y, x)` is an in-place API.
+Its constraint is element-type pinning — storage fixed to `Float64` (a preallocated cache, a concretely-typed struct field, a buffer passed to `ccall`) cannot hold a `Dual`, which is what `PreallocationTools.DiffCache` exists to work around.
+`NDualArray` separates `primal::A` from `partials_block` so that the primal keeps its original concrete type, letting BLAS, `ccall`, and type-pinned containers see a real `Array{Float64}`.
+This is not a rejection of substitution: the nfwd-native path runs the primal function directly on `NDual` numbers where that is faster, and a classifier chooses between the two.
