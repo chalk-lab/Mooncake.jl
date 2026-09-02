@@ -1543,6 +1543,9 @@ function test_frule_performance(
             # alloc-free again on 1.12: `large_tuple_inference` trips a 1.11 inference stack
             # overflow on `NTuple{1000}`. Such a case sets `fwd_allocs_broken`; mark it
             # `@test_broken` on 1.11 rather than weakening the zero-alloc contract elsewhere.
+            # Still live, measured: 12 allocations on 1.11 against 0 on 1.12. `@test_broken`
+            # reports an unexpected pass if 1.11 is ever fixed, so this needs no manual review --
+            # the whole `fwd_allocs_broken` mechanism goes when that fires or 1.11 support ends.
             if fwd_allocs_broken && VERSION < v"1.12-"
                 @test_broken n_fwd_allocs == 0
             else
