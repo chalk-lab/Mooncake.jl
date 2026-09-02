@@ -733,12 +733,9 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
 end
 
 # Two arguments over one primal must share fdata, the reverse counterpart of
-# `_check_aliased_seeds`. Checked structurally for the same reason: `test_rrule_correctness`
-# rebuilds the `CoDual`s per argument, so a rule that lost the aliasing would still be run on the
-# unaliased problem and the finite-difference comparison could not see it. Checked structurally for the same reason: `test_rrule_correctness`
-# rebuilds the `CoDual`s per argument, so a rule that lost the aliasing would still be run on the
-# unaliased problem and the finite-difference comparison could not see it. Checking the seeds is
-# what the shared cache above exists for, and nothing else asserts it.
+# `_check_aliased_seeds`. `test_rrule_correctness` runs the rule on the aliased problem, so a rule
+# that dropped one of the two contributions fails there too; this pins the invariant itself, which
+# holds for every case rather than only for those whose gradient the comparison can resolve.
 function _check_aliased_coduals(x_x̄::Tuple)
     for i in eachindex(x_x̄), j in (i + 1):lastindex(x_x̄)
         p = primal(x_x̄[i])
@@ -1140,9 +1137,28 @@ function test_rrule_correctness(
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
-    # Construct random tangent to inputs, and normalise to be of unit length.
-    ẋ_unnormalised = map(_x -> randn_tangent(rng, _x), x)
-    ẋ = map(normalize_tangent, ẋ_unnormalised)
+    # Construct random tangent to inputs. ONE cache across the tuple, as `test_rrule` seeds the
+    # arguments with: `_dot` de-duplicates a shared buffer only when BOTH its operands share it, so
+    # a cotangent shared by two aliased arguments is counted twice unless the direction is shared
+    # too.
+    ẋ_unnormalised = let c = Mooncake._friendly_cache(x)
+        map(_x -> Mooncake.randn_tangent_internal(rng, _x, c), x)
+    end
+    # Normalise per argument, so each argument is perturbed by O(ε) whatever the others' magnitudes
+    # and the comparison stays as sensitive to a small argument's derivative as to a large one's.
+    # One buffer cannot carry two scale factors, so a tuple sharing one takes a single factor over
+    # the whole tuple instead. The two norms disagree exactly when there is such a buffer, and by at
+    # least its share of the total -- so a buffer too small to move them is also too small to matter.
+    shares_a_buffer =
+        !isapprox(
+            _dot(ẋ_unnormalised, ẋ_unnormalised),
+            sum(t -> _dot(t, t), ẋ_unnormalised; init=0.0),
+        )
+    ẋ = if shares_a_buffer
+        normalize_tangent(ẋ_unnormalised)
+    else
+        map(normalize_tangent, ẋ_unnormalised)
+    end
 
     # Use finite differences to estimate vjps. Compute the estimate at a range of different
     # step sizes. We'll just require that one of them ends up being close to what AD gives.
@@ -1171,9 +1187,16 @@ function test_rrule_correctness(
 
     # Run rule on copies of `f` and `x`. We use randomly generated tangents so that we
     # can later verify that non-zero values do not get propagated by the rule.
-    x̄_zero = map(zero_tangent, x)
+    # ONE deepcopy and ONE `zero_tangent` cache across the tuple, mirroring how `test_rrule` builds
+    # its seeds: two arguments over one primal must reach the rule aliased and sharing fdata, or the
+    # rule is exercised on a different problem from the one the case names.
+    x̄_zero = let c = Mooncake._friendly_cache(x)
+        map(_x -> Mooncake.zero_tangent_internal(_x, c), x)
+    end
     x̄_fwds = map(Mooncake.fdata, x̄_zero)
-    x_x̄_rule = map((x, x̄_f) -> fcodual_type(_typeof(x))(_deepcopy(x), x̄_f), x, x̄_fwds)
+    x_x̄_rule = map(
+        (x, x̄_f) -> fcodual_type(_typeof(x))(x, x̄_f), _deepcopy_all(x), x̄_fwds
+    )
     inputs_address_map = populate_address_map(
         map(primal, x_x̄_rule), map(tangent, x_x̄_rule)
     )
