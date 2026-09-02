@@ -221,9 +221,26 @@ function _for_rule_dual(rule, fwd_dc, rvs_dc, ::Val{N}, debug_mode::Bool) where 
             x=PossiblyUninitTangent(MistyClosureTangent(rvs_capsV, rvs_dc))
         )),
         nargs=NoDual(),
+        consts=NoDual(),
     ))
     V = debug_mode ? ImmutableDual((; rule=innerV)) : innerV
+    # The field list above is copied by hand, so it goes stale the moment `DerivedRule` gains a
+    # field. Assert here rather than let the mismatch surface as an `OpaqueClosure` `TypeError`
+    # from inside the forward pass, which names neither this function nor the missing field.
+    expected = dual_type(Val(N), typeof(rule))
+    typeof(V) === expected ||
+        _throw_for_rule_dual_mismatch(typeof(rule), typeof(V), expected)
     return Lifted{typeof(rule),N,typeof(V)}(rule, V)
+end
+
+@noinline function _throw_for_rule_dual_mismatch(
+    @nospecialize(Trule), @nospecialize(got), @nospecialize(expected)
+)
+    return error(
+        "`_for_rule_dual` assembled a forward value for $Trule that does not match " *
+        "`dual_type`. Got\n  $got\nexpected\n  $expected\nThis usually means $Trule gained or " *
+        "lost a field and the hand-written `ImmutableDual` above was not updated to match.",
+    )
 end
 
 # First-call compilation helper: build a DerivedRule (+ dual callables + tangent) for

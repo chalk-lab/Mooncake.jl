@@ -1737,6 +1737,13 @@ function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,<:StandardFDataType}, name::CoDual
 ) where {P}
     if tangent_type(P) == NoTangent
+        # KNOWN GAP, not a safe guard: `tangent_type(P) === NoTangent` does not imply the same of
+        # `P`'s fields. `DataType`, `Method` and `Core.TypeName` are `NoTangent` with
+        # `Core.SimpleVector` fields whose `tangent_type` is `Vector{Any}`, so this mints fresh
+        # fdata for a differentiable field. If the same object is reached elsewhere in the pass,
+        # one contribution is silently dropped (measured: `Any[2.0]` against a control of
+        # `Any[4.0]`). Refusing here is wrong -- the unaliased read is legitimate and common -- so
+        # the fix needs the per-call aliasing cache threaded in, as the constant/global sites do.
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name)
     elseif !ismutabletype(P)
@@ -1758,6 +1765,13 @@ function rrule!!(
     f::CoDual{typeof(getfield)}, x::CoDual{P,F}, name::CoDual, order::CoDual
 ) where {P,F<:StandardFDataType}
     if tangent_type(P) == NoTangent
+        # KNOWN GAP, not a safe guard: `tangent_type(P) === NoTangent` does not imply the same of
+        # `P`'s fields. `DataType`, `Method` and `Core.TypeName` are `NoTangent` with
+        # `Core.SimpleVector` fields whose `tangent_type` is `Vector{Any}`, so this mints fresh
+        # fdata for a differentiable field. If the same object is reached elsewhere in the pass,
+        # one contribution is silently dropped (measured: `Any[2.0]` against a control of
+        # `Any[4.0]`). Refusing here is wrong -- the unaliased read is legitimate and common -- so
+        # the fix needs the per-call aliasing cache threaded in, as the constant/global sites do.
         y = uninit_fcodual(getfield(primal(x), primal(name)))
         return y, NoPullback(f, x, name, order)
     elseif !ismutabletype(P)

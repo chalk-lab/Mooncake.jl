@@ -7,6 +7,13 @@ const const_int = 5
 const const_bool = true
 const const_vector = [1.0, 2.0]
 
+# Read while also passed as the argument, to exercise the refusal of an argument that aliases a
+# differentiable global. Kept separate from `const_vector`: if the guard ever regresses,
+# `alias_mutating` would scale the global in place and break unrelated tests confusingly.
+const alias_vector = [1.0, 2.0]
+alias_read_only(x) = sum(x .* alias_vector)
+alias_mutating(x) = (x .*= 2; sum(alias_vector))
+
 function const_vector_phi(p, flag)
     A = LowerTriangular([p[1] 0.0; p[2] p[1]] + I)
     return sum(abs2, A \ (flag ? p : const_vector))
@@ -383,6 +390,38 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
         rule = Mooncake.build_rrule(interp, sig; debug_mode)
         @test rule isa Mooncake.rule_type(interp, sig; debug_mode)
     end
+    # A global read inside the differentiated function gets its fdata minted once at rule-build
+    # time, so it shares nothing with an argument's. Passing the same object in both positions
+    # therefore drops one contribution: `sum(x .* G)` at `x === G` reported `[1,2]` where the truth
+    # is `[2,4]`, with the value correct and no error. Refused instead.
+    #
+    # Bespoke rather than registered: `generate_test_functions` rows are
+    # `(interface_only, perf_flag, bnds, f, x...)` whose third slot is allocation bounds
+    # (`(lb=..., ub=...)`), and the driver above drops it, so no `throws` expectation can be
+    # expressed there. `hand_written_rule_test_cases` does honour `throws`, but this is interpreter
+    # behaviour on a derived function rather than a rule.
+    @testset "argument aliasing a differentiable global is refused" begin
+        for f in (S2SGlobals.alias_read_only, S2SGlobals.alias_mutating)
+            @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                Mooncake.build_rrule(f, S2SGlobals.alias_vector), f, S2SGlobals.alias_vector
+            )
+        end
+        # The same global read with an unaliased argument is supported and unaffected.
+        y = [3.0, 4.0]
+        _, g = Mooncake.value_and_gradient!!(
+            Mooncake.build_rrule(S2SGlobals.alias_read_only, y),
+            S2SGlobals.alias_read_only,
+            y,
+        )
+        @test g[2] ≈ S2SGlobals.alias_vector
+        # Aliased ARGUMENTS remain supported: they share fdata through the seeding cache, so both
+        # positions report the one accumulated gradient.
+        h(a, b) = sum(a .* b)
+        _, gh = Mooncake.value_and_gradient!!(Mooncake.build_rrule(h, y, y), h, y, y)
+        @test gh[2] ≈ 2 .* y
+        @test gh[2] === gh[3]
+    end
+
     @testset "MooncakeRuleCompilationError" begin
         @test_throws(Mooncake.MooncakeRuleCompilationError, Mooncake.build_rrule(sin))
         _trycatch_fn(x::Float64) =

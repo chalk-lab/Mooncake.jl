@@ -1755,6 +1755,22 @@ is_active(::Union{Argument,ID}) = true
 is_active(::Any) = false
 
 """
+    ConstAliasSet(primals::Vector{Any} = Any[])
+
+Wrapper so `DerivedRule` can carry its differentiable constants in a field of fixed, concrete,
+non-differentiable type. A type parameter would make the rule's type depend on whether the
+function happens to read a differentiable constant, which defeats the
+`Core.Compiler.return_type(build_derived_rrule, ...)` inference that `__build_primitive_frule`
+relies on to key its cache.
+"""
+struct ConstAliasSet
+    primals::Vector{Any}
+end
+ConstAliasSet() = ConstAliasSet(Any[])
+
+tangent_type(::Type{ConstAliasSet}) = NoTangent
+
+"""
     pullback_type(Trule, arg_types)
 
 Get a bound on the pullback type, given a rule and associated primal types.
@@ -1803,14 +1819,66 @@ struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
     pb_oc_ref::Base.RefValue{RuleMC{Tpb_args,Tpb_ret}}
     nargs::Tnargs
+    # Constant and global primals this rule minted fdata for at build time, empty for most rules.
+    # See `_aliasable_constants`.
+    consts::ConstAliasSet
 end
 
 _isva(::DerivedRule{A,B,C,D,E,isva}) where {A,B,C,D,E,isva} = isva
 
 function DerivedRule(
-    sig, fwds_oc::RuleMC{FA,FR}, pb_oc::Base.RefValue{RuleMC{RA,RR}}, isva::Bool, nargs::W
+    sig,
+    fwds_oc::RuleMC{FA,FR},
+    pb_oc::Base.RefValue{RuleMC{RA,RR}},
+    isva::Bool,
+    nargs::W,
+    consts::ConstAliasSet=ConstAliasSet(),
 ) where {FA,FR,RA,RR,W}
-    return DerivedRule{sig,FA,FR,RA,RR,isva,W}(fwds_oc, pb_oc, nargs)
+    return DerivedRule{sig,FA,FR,RA,RR,isva,W}(fwds_oc, pb_oc, nargs, consts)
+end
+
+"""
+    _aliasable_constants(shared_data::Tuple)
+
+The identity-bearing primals in `shared_data` that carry real fdata: IR constants, `QuoteNode`s
+and `GlobalRef`s, whose fdata `const_codual_stmt` mints once at rule-build time via
+`uninit_fcodual`. That storage is shared with nothing, so if the caller also passes one of these
+objects as an argument, the two never accumulate into one buffer and the contribution through the
+constant is silently dropped, so `DerivedRule` refuses that call. Empty for most rules.
+"""
+function _aliasable_constants(shared_data::Tuple)
+    consts = Any[]
+    for d in shared_data
+        d isa CoDual || continue
+        tangent(d) isa NoFData && continue
+        push!(consts, primal(d))
+    end
+    return ConstAliasSet(consts)
+end
+
+@inline function _check_constant_aliasing(consts::ConstAliasSet, args)
+    isempty(consts.primals) && return nothing
+    return _check_constant_aliasing_slow(consts.primals, args)
+end
+
+@noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
+    for a in args, c in consts
+        c === primal(a) && _throw_constant_alias_error(c)
+    end
+    return nothing
+end
+
+@noinline function _throw_constant_alias_error(@nospecialize(c))
+    throw(
+        ArgumentError(
+            "An argument is the same object as a constant or global read inside the function " *
+            "being differentiated (a $(typeof(c))). Their derivative storage is separate — the " *
+            "constant's is created once when the rule is built — so the contribution through " *
+            "the constant would be silently dropped and the gradient returned would be wrong. " *
+            "Pass a copy of the argument, or read the value through an argument instead of a " *
+            "global.",
+        ),
+    )
 end
 
 # Extends functionality defined for debug_mode.
@@ -1824,10 +1892,11 @@ function _copy(x::P) where {P<:DerivedRule}
     new_captures = _copy(x.fwds_oc.oc.captures)
     new_fwds_oc = replace_captures(x.fwds_oc, new_captures)
     new_pb_oc_ref = Ref(replace_captures(x.pb_oc_ref[], new_captures))
-    return P(new_fwds_oc, new_pb_oc_ref, x.nargs)
+    return P(new_fwds_oc, new_pb_oc_ref, x.nargs, x.consts)
 end
 
 @inline function (fwds::DerivedRule{sig})(args::Vararg{CoDual,N}) where {sig,N}
+    _check_constant_aliasing(fwds.consts, args)
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
     # Route the forward-pass call through `__call_rule`: on Julia 1.10 this is the `(rule::Any)`
@@ -2124,7 +2193,14 @@ function build_derived_rrule(
             # Compute the signature. Needs careful handling with varargs.
             nargs = num_args(dri.info)
             sig = flatten_va_sig(sig, dri.isva, nargs)
-            raw_rule = DerivedRule(sig, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
+            raw_rule = DerivedRule(
+                sig,
+                fwd_oc,
+                Ref(rvs_oc),
+                dri.isva,
+                Val(nargs),
+                _aliasable_constants(dri.shared_data),
+            )
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
             return rule
