@@ -45,6 +45,9 @@ mutable struct LiftedTest_ParentField  # field names collide with the view's int
     _primal::Float64
     _lane::Float64
 end
+mutable struct LiftedTest_TupleField  # a tuple field has no per-lane view either
+    t::Tuple{Float64,Float64}
+end
 mutable struct LiftedTest_ComplexField
     z::ComplexF64
 end
@@ -690,6 +693,13 @@ const NDAC_VecC64 = NDualArray{
         )
         @test_throws ArgumentError nv.next
         @test_throws ArgumentError (nv.next = 1.0)
+
+        # Same for a TUPLE field: its V is a tuple of `NDual`s, which is not one of the shapes
+        # `_lane_tangent` decomposes, so both directions name the shape rather than erroring
+        # inside `ntuple`/`copyto!`.
+        tv = tangent(zero_lifted(Val(2), LiftedTest_TupleField((1.0, 2.0))), 1)
+        @test_throws ArgumentError tv.t
+        @test_throws ArgumentError (tv.t = (1.0, 0.0))
     end
 
     @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin
