@@ -2396,14 +2396,20 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gnd[3][1] == [2.0, 1.0, 1.0]
             end
 
-            @testset "forward refuses an input whose dual_type is not concrete" begin
-                # A NamedTuple with an abstract field widens to a non-concrete `dual_type`, and
-                # `Lifted` is invariant in that parameter, so no slot annotation works. Reverse
-                # widens `tangent_type` identically, so the shape is unsupported in both modes;
-                # the check replaces a `TypeError` naming internal slot types.
+            @testset "both modes refuse an input with no concrete representation" begin
+                # A NamedTuple with an abstract field widens to a non-concrete `dual_type` and
+                # `tangent_type` alike, and the slot wrappers are invariant in that parameter, so
+                # no annotation works in either mode. Both checks replace a `TypeError` naming
+                # internal slot types — reverse used to report only that.
                 NTA = NamedTuple{(:a,),Tuple{Any}}
                 nt_field(t) = t.a * 2.0
                 @test_throws ArgumentError Mooncake.prepare_derivative_cache(
+                    nt_field, NTA((1.0,))
+                )
+                @test_throws ArgumentError Mooncake.prepare_gradient_cache(
+                    nt_field, NTA((1.0,))
+                )
+                @test_throws ArgumentError Mooncake.prepare_pullback_cache(
                     nt_field, NTA((1.0,))
                 )
                 # `Mooncake.TestResources.Foo` has the same abstract field (`x::Real`) but keeps its

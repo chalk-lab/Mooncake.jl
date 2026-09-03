@@ -656,16 +656,27 @@ end
 # the argument types are known, replaces a `TypeError` about internal slot types. Only the inputs
 # are checked: a value of this shape built and consumed INSIDE the function differentiates fine, and
 # a return value's type is not known until the rule is built.
-@inline function _check_liftable_input(@nospecialize(P::Type), i::Int)
-    (isconcretetype(P) && !isconcretetype(dual_type(Val(1), P))) || return nothing
+# Refuses a shape whose derivative representation cannot be annotated concretely. Both modes are
+# checked from one place, and both prepare paths call it: `dual_type` and `tangent_type` widen the
+# same shapes — no disagreement across any `tangent_test_cases()` entry — so a shape works in both
+# or neither. Reverse used to report this as a bare `TypeError` naming internal `CoDual` slot types.
+@inline function _check_representable_input(@nospecialize(P::Type), i::Int)
+    isconcretetype(P) || return nothing
+    fwd_ok = isconcretetype(dual_type(Val(1), P))
+    rvs_ok = isconcretetype(tangent_type(P))
+    (fwd_ok && rvs_ok) && return nothing
+    which = if fwd_ok
+        "`tangent_type`"
+    else
+        (rvs_ok ? "`dual_type`" : "`dual_type` and `tangent_type`")
+    end
     return throw(
         ArgumentError(
-            "Argument $i has type `$P`, whose forward representation cannot be annotated: " *
-            "`dual_type` widens it to a non-concrete type, and `Lifted` is invariant in that " *
+            "Argument $i has type `$P`, whose derivative representation cannot be annotated: " *
+            "$which widens it to a non-concrete type, and the slot wrappers are invariant in that " *
             "parameter. A `NamedTuple` with an abstract field type (`@NamedTuple{a}`) is the usual " *
-            "case; reverse mode widens it identically, so the shape is unsupported in both modes. " *
-            "Use a struct with the same field instead — its representation keeps the declared " *
-            "field type and differentiates in both modes.",
+            "case, and it is unsupported in both modes. Use a struct with the same field instead — " *
+            "its representation keeps the declared field type and differentiates in both modes.",
         ),
     )
 end
@@ -874,7 +885,7 @@ is shown by the cache.
     # `_stable_typeof`, not `_typeof`: the latter sharpens NamedTuple elements, narrowing
     # `@NamedTuple{a}` to `@NamedTuple{a::Float64}`, whose `dual_type` IS concrete — the check would
     # then miss exactly the shape it exists for.
-    ntuple(i -> _check_liftable_input(Base._stable_typeof(fx[i]), i - 1), Val(N + 1))
+    ntuple(i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), Val(N + 1))
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)
         0
@@ -1720,6 +1731,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
 
     # Clear global caches if requested.
     config.empty_cache && empty_mooncake_caches!()
+    foreach(
+        i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), eachindex(fx)
+    )
 
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
@@ -1864,6 +1878,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
     config.empty_cache && empty_mooncake_caches!()
+    foreach(
+        i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), eachindex(fx)
+    )
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
