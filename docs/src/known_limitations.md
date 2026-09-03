@@ -211,6 +211,11 @@ only for the operators they were written for — `reduce` for `+` and `*`, `mapr
 derivative or an obscure error from inside a kernel. Reductions over an array whose element type is
 non-differentiable are unaffected: those correctly give a zero derivative.
 
+Forward mode over `NNlib.gather` on a GPU array refuses for a related reason: the traced kernel
+launch takes the process down with no catchable exception, so the rule raises instead. The
+limitation is specific to that combination. Reverse mode over the same signature works, and so
+does forward mode on a CPU array.
+
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
 ## Differentiating SIMD Code
