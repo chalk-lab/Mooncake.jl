@@ -13,6 +13,8 @@ function _sf_perf_flag(::Type{P}, name::Symbol, default::Symbol) where {P}
     VERSION < v"1.11" || return default
     name in (:digamma, :erfinv, :invdigamma, :trigamma, :expintx) && return :stability
     P === Float32 || return default
+    # `bessely1`'s Float32 `frule!!` does not infer on 1.10; its allocation half still holds.
+    name === :bessely1 && return :allocs
     name in (:logerfc, :logerfcx, :beta, :logbeta, :logabsgamma, :loggamma) &&
         return :stability
     return default
@@ -44,7 +46,7 @@ end
                 (:stability_and_allocs, besselj0, P(0.1)),
                 (:stability_and_allocs, besselj1, P(0.1)),
                 (:stability_and_allocs, bessely0, P(0.1)),
-                (VERSION >= v"1.11" ? :stability_and_allocs : :none, bessely1, P(0.1)),
+                (_sf_perf_flag(P, :bessely1, :stability_and_allocs), bessely1, P(0.1)),
                 (:stability_and_allocs, dawson, P(0.1)),
                 (_sf_perf_flag(P, :digamma, :stability_and_allocs), digamma, P(0.1)),
                 (:stability_and_allocs, erf, P(0.1)),
