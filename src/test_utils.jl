@@ -2142,7 +2142,9 @@ on the effects system in Julia.
 """
 function is_foldable(f, types)::Bool
     effects = Base.infer_effects(f, types)
-    tmp = VERSION > v"1.11" ? effects.noub == CC.ALWAYS_TRUE && effects.nortcall : true
+    # `>=`, not `>`: `noub` and `nortcall` exist from 1.11.0, and `> v"1.11"` is false at exactly
+    # 1.11.0, which would silently drop both checks on that patch version.
+    tmp = VERSION >= v"1.11" ? effects.noub == CC.ALWAYS_TRUE && effects.nortcall : true
     return effects.consistent == CC.ALWAYS_TRUE &&
            effects.effect_free == CC.ALWAYS_TRUE &&
            effects.terminates &&
