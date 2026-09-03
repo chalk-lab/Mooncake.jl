@@ -1826,6 +1826,37 @@ end
     end
 end
 
+# 1.10 has no backing `Memory` to window, so key on the STORAGE itself (`Base.dataids`, what Base's
+# own aliasing machinery uses, paired with the length to separate different extents) and rebuild
+# over this primal with a block sharing the cached block's parent. Sharing the parent `Vector` is
+# what makes a partial written through one view visible through the other; without it `a` and
+# `reshape(a)` get independent partials while the primal still aliases.
+#
+# One helper for every seed factory: `_randn_dual_internal` had no such branch, so on 1.10 an
+# aliased pair seeded two independent blocks and a test naming that aliasing exercised two separate
+# inputs. `owned` builds the un-shared V and is called only on a miss.
+@static if VERSION < v"1.11-rc4"
+    @inline function _cached_array_dual(
+        w::Val{N}, x::Array, d::MaybeCache, owned::F
+    ) where {N,F}
+        d isa NoCache && return owned()
+        sk = (Base.dataids(x), length(x))
+        if haskey(d, sk)
+            # The cached entry is whatever array claimed the buffer first, so its own type is not
+            # `x`'s -- a vector's seed serves a reshape. Only the block's flat `parent` is shared,
+            # and it is a `Vector{eltype(x)}` whatever the shape, so assert THAT: without it the
+            # constructor takes its argument as `Any` and dispatches at runtime.
+            shared = getfield(getfield(d[sk], :partials_block), :parent)::Vector{eltype(x)}
+            return NDualArray{eltype(x),N,ndims(x),typeof(x)}(
+                x, Nfwd.NDualBlock{eltype(x),ndims(x) + 1}(shared, (N, size(x)...))
+            )
+        end
+        v = owned()
+        d[sk] = v
+        return v
+    end
+end
+
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval begin
@@ -1879,38 +1910,7 @@ for (factory, internal) in
                     _derived_array_dual(w, x, $internal(w, getfield(x, :ref).mem, d))
                 end
             else
-                # 1.10 has no backing `Memory` to window, so key on the STORAGE itself
-                # (`Base.dataids`, what Base's own aliasing machinery uses, paired with the length
-                # to separate different extents) and rebuild over this primal with a block sharing
-                # the cached block's parent. Sharing the parent `Vector` is what makes a partial
-                # written through one view visible through the other; without it `a` and
-                # `reshape(a)` get independent partials while the primal still aliases.
-                v = if d isa NoCache
-                    $factory(w, x)
-                else
-                    sk = (Base.dataids(x), length(x))
-                    if haskey(d, sk)
-                        # The cached entry is whatever array claimed the buffer first, so its
-                        # own type is not `x`'s -- a vector's seed serves a reshape. Only the
-                        # block's flat `parent` is shared, and it is a `Vector{eltype(x)}`
-                        # whatever the shape, so assert THAT: without it the constructor takes
-                        # its argument as `Any` and dispatches at runtime.
-                        cached = d[sk]
-                        shared = getfield(
-                            getfield(cached, :partials_block), :parent
-                        )::Vector{eltype(x)}
-                        NDualArray{eltype(x),N,ndims(x),typeof(x)}(
-                            x,
-                            Nfwd.NDualBlock{eltype(x),ndims(x) + 1}(
-                                shared, (N, size(x)...)
-                            ),
-                        )
-                    else
-                        owned = $factory(w, x)
-                        d[sk] = owned
-                        owned
-                    end
-                end
+                v = _cached_array_dual(w, x, d, () -> $factory(w, x))
             end
             d[x] = v
             return v
@@ -2026,7 +2026,7 @@ function _randn_dual_internal(
             _derived_array_dual(w, x, _randn_dual_internal(w, rng, getfield(x, :ref).mem, d))
         end
     else
-        v = randn_dual(w, rng, x)
+        v = _cached_array_dual(w, x, d, () -> randn_dual(w, rng, x))
     end
     d[x] = v
     return v
