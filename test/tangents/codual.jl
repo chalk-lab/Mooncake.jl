@@ -107,4 +107,18 @@
         @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
         @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
     end
+
+    @testset "_reaches_recursive_type" begin
+        # `record_const_alias!` must not ask `tangent_type` about a type it cannot answer for.
+        # `Base.ImmutableDict` holds a `parent` of its own type; `IOContext` holds such a dict and
+        # so is equally out of reach, which is why the question is reachability and not
+        # self-reference.
+        @test Mooncake._reaches_recursive_type(Base.ImmutableDict{Symbol,Any})
+        @test Mooncake._reaches_recursive_type(IOContext{IOStream})
+        # Constants that do own shareable derivative storage stay guarded.
+        @test !Mooncake._reaches_recursive_type(Vector{Float64})
+        @test !Mooncake._reaches_recursive_type(Diagonal{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(Tuple{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(String)
+    end
 end

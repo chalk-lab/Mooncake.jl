@@ -205,6 +205,28 @@ end
     )
 end
 
+# `tangent_type` does not terminate on a recursive type -- a custom tangent type is the documented
+# remedy -- and the nfwd classifier meets such values as constants that no rule builds storage for.
+# Skipping them costs no coverage: a type with no representable tangent has no derivative storage
+# for an argument to share. Reachability, not self-reference, is the question: every `IOContext`
+# holds a `Base.ImmutableDict{Symbol,Any}` whose first field is its own type. The node cap errs
+# towards skipping, the safe direction.
+function _reaches_recursive_type(
+    @nospecialize(P::Type),
+    on_path::IdDict{Type,Bool}=IdDict{Type,Bool}(),
+    nodes::Ref{Int}=Ref(0),
+)
+    (isconcretetype(P) && !isprimitivetype(P)) || return false
+    haskey(on_path, P) && return on_path[P]
+    (nodes[] += 1) > 600 && return true
+    on_path[P] = true
+    for F in fieldtypes(P)
+        _reaches_recursive_type(F, on_path, nodes) && return true
+    end
+    on_path[P] = false
+    return false
+end
+
 """
     record_const_alias!(consts::Vector{Any}, @nospecialize(v))
 
@@ -222,6 +244,7 @@ function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     # primitive types it deliberately refuses, which the constants of an arbitrary walked body
     # include.
     isbits(v) && return nothing
+    _reaches_recursive_type(_typeof(v)) && return nothing
     fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
     any(c -> c === v, consts) || push!(consts, v)
     return nothing
