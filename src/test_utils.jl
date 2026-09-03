@@ -2331,6 +2331,12 @@ through the cached path.
 
 See [`test_lifted_type`](@ref) for the type-level half of the same contract.
 """
+# Compare two per-lane reads. A read can be a live view (a mutable struct's write proxy, or an
+# array lane view), which is not a value `has_equal_data` accepts, so reduce those to values first.
+_lane_reads_equal(a, b) = has_equal_data(_lane_read_value(a), _lane_read_value(b))
+_lane_read_value(x::AbstractArray) = collect(x)
+_lane_read_value(@nospecialize(x)) = x
+
 function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
     @nospecialize rng p
     P = typeof(p)
@@ -2362,10 +2368,17 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
         @test _chunked_v_invariant(p, tangent(z))
         @test _chunked_v_invariant(p, tangent(r))
 
-        # Per-lane accessors run for every lane.
+        # Per-lane accessors run for every lane, AND depend on the lane. `(expr; true)` alone can
+        # only fail on a throw, so an accessor reading lane 1 for every lane passed it; that let
+        # two real defects through, one returning a wrong-typed value and one refusing shapes
+        # reverse answers. Where the randn seed carries partials at all — which is exactly where
+        # it differs from the zero seed — distinct lanes must read distinct values.
         for lane in 1:N
             @test (tangent(z, lane); true)
             @test (tangent(r, lane); true)
+        end
+        if N > 1 && !_lane_reads_equal(tangent(r, 1), tangent(z, 1))
+            @test !_lane_reads_equal(tangent(r, 1), tangent(r, 2))
         end
 
         # The cache-free factories are a second entry point: `zero_lifted` and friends go
