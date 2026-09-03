@@ -72,7 +72,7 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
+The takeaway: do not attempt to differentiate functions which modify global state. Reading a global is fine, with one exception: the same object must not also be an argument.
 
 ### Passing a global as an argument
 
