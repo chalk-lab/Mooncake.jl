@@ -454,6 +454,10 @@ For primal `p` and a tangent used by ChainRules `cr_tangent`, returns the tangen
 something that Mooncake can use.
 """
 mooncake_tangent(p, ::CRC.NoTangent) = NoTangent()
+# Keep the tangent at the primal's own precision. A ChainRules rule may compute a `Float64`
+# derivative for a `Float32` primal, which infers as a `Union` and costs the caller a runtime
+# dispatch; the value has to reach that precision anyway, since it is the primal's tangent type.
+mooncake_tangent(p::P, t::IEEEFloat) where {P<:IEEEFloat} = convert(P, t)
 mooncake_tangent(p, t::IEEEFloat) = t
 mooncake_tangent(p::Array, t::Array{<:IEEEFloat}) = t
 mooncake_tangent(p::Array, t::Array) = map(mooncake_tangent, p, t)
