@@ -314,6 +314,23 @@ Instead, you will need to use lower-level (internal) functionality, such as `Moo
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
 
+### Raw pointers into a nested array, at chunk width above one
+
+Forward mode stores an array's `N` lane partials in one element-major block, so a single lane is a
+strided view rather than a dense buffer. That is fine for a flat array — `pointer` and
+`unsafe_copyto!` on a `Vector{Float64}` work at any chunk width — but an array *of arrays* has no
+dense per-lane buffer for a raw pointer to address:
+
+```julia
+f(x, y, n) = (unsafe_copyto!(pointer(x), pointer(y), n); sum(sum, x))
+x = [randn(3) for _ in 1:5]
+y = [randn(4) for _ in 1:6]
+# chunk width 1: fine. Above 1: ArgumentError naming the width.
+```
+
+The rule refuses rather than dropping the derivative. Differentiate that call at chunk width 1, or
+use reverse mode, which is unaffected.
+
 ### Re-typing a pointer through `Ptr{Cvoid}`
 
 A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
