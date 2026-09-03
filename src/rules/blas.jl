@@ -387,13 +387,17 @@ for (fname, jlfname, elty) in (
                 n, incx, incy = primal(_n), primal(_incx), primal(_incy)
                 DX = primal(_DX)
                 DY = primal(_DY)
-                dDX_partials = tangent(_DX)
-                dDY_partials = tangent(_DY)
-
                 result = BLAS.$jlfname(n, DX, incx, DY, incy)
+                # Through `_blas_lane_partial`, as every other forward pointer consumer here
+                # does: it is the one path that runs `_check_tangent_ptr`, and a zero-seeded
+                # `Ptr` slot carries the `uninit_*` placeholder — its own primal address — in
+                # every lane. Reading `tangent(_DX)[lane]` straight into BLAS dereferenced that
+                # and returned the PRIMAL as the derivative, 32.0 for a seed of zero.
                 dresult_lanes = ntuple(Val(Nw)) do lane
-                    return BLAS.$jlfname(n, dDX_partials[lane], incx, DY, incy) +
-                           BLAS.$jlfname(n, DX, incx, dDY_partials[lane], incy)
+                    dDX = _blas_lane_partial(_DX, lane)
+                    dDY = _blas_lane_partial(_DY, lane)
+                    return BLAS.$jlfname(n, dDX, incx, DY, incy) +
+                           BLAS.$jlfname(n, DX, incx, dDY, incy)
                 end
                 return Lifted{$elty,Nw}(result, _scalar_ndual(result, dresult_lanes))
             end
