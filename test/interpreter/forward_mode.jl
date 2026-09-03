@@ -177,6 +177,20 @@ _nfwd_folded_one_sided(x) = sum(x) * sizeof(x)
     @test !Mooncake._nfwd_safe(Any[typeof(_nfwd_folded_one_sided), Vector{Float64}], 1)
 end
 
+# `objectid` is content-addressed for an isbits value, so an isbits dual hashes its own partials.
+# Ran natively and returned a primal of 8.0 at seed 1.0 against a truth of 4.0.
+_nfwd_objectid_scalar(x) = iseven(objectid(x)) ? x * x : x * x * x
+# A dual that is not isbits hashes the wrapper's address instead, which the derivative does not
+# affect, so it stays admissible — that is what lets a logdensity's dict bookkeeping run natively.
+# Admissible only where the surrounding body is: `sum(sin.(x))` is in-protocol on 1.12 alone.
+_nfwd_objectid_array(x) = (objectid(x); sum(sin.(x)))
+
+@testset "objectid is trusted only for a dual that is not isbits" begin
+    @test !Mooncake._nfwd_safe(Any[typeof(_nfwd_objectid_scalar), Float64], 1)
+    @test Mooncake._nfwd_safe(Any[typeof(_nfwd_objectid_array), Vector{Float64}], 1) ==
+        (VERSION >= v"1.12-")
+end
+
 @testset "nfwd primitive coverage" begin
     # The nfwd classifier sorts builtins three ways: `_NFWD_SAFE_BUILTINS` pass a dual through
     # unchanged and are trusted unconditionally; `_NFWD_REPR_BUILTINS` answer differently for a dual

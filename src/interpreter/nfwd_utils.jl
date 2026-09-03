@@ -143,21 +143,37 @@ end
 
 # Does any SSA/argument operand carry an inner dual? Only these two operand kinds can; a constant
 # operand (`QuoteNode`/`GlobalRef`/literal) never holds a dual, so it is skipped.
+function _nfwd_operand_type(ssatypes, @nospecialize(sig), @nospecialize(a))
+    if a isa Core.SSAValue
+        t = ssatypes[a.id]
+        t = if t isa Core.Const
+            Core.Typeof(t.val)
+        elseif t isa Core.PartialStruct
+            t.typ
+        else
+            t
+        end
+        return CC.widenconst(t)
+    elseif a isa Core.Argument && 1 <= a.n <= length(sig.parameters)
+        return sig.parameters[a.n]
+    end
+    return nothing
+end
+
 function _nfwd_any_dual(ssatypes, @nospecialize(sig), args)
     for a in args
-        if a isa Core.SSAValue
-            t = ssatypes[a.id]
-            t = if t isa Core.Const
-                Core.Typeof(t.val)
-            elseif t isa Core.PartialStruct
-                t.typ
-            else
-                t
-            end
-            _nfwd_has_ndual(CC.widenconst(t)) && return true
-        elseif a isa Core.Argument && 1 <= a.n <= length(sig.parameters)
-            _nfwd_has_ndual(sig.parameters[a.n]) && return true
-        end
+        T = _nfwd_operand_type(ssatypes, sig, a)
+        T === nothing || (_nfwd_has_ndual(T) && return true)
+    end
+    return false
+end
+
+# As above, but only for a dual whose type is isbits — the case where an identity or hash query
+# reads the partials rather than an address.
+function _nfwd_any_isbits_dual(ssatypes, @nospecialize(sig), args)
+    for a in args
+        T = _nfwd_operand_type(ssatypes, sig, a)
+        T isa Type && _nfwd_has_ndual(T) && isbitstype(T) && return true
     end
     return false
 end
@@ -423,7 +439,15 @@ function _nfwd_scan_body!(work::Vector{Any}, consts::Vector{Any}, ci, @nospecial
             else
                 Symbol("")
             end
-            name in _NFWD_SAFE_FOREIGN && continue
+            # `objectid` is content-addressed for an isbits value and address-addressed
+            # otherwise, so an isbits dual hashes its own partials and answers differently from
+            # its primal: `iseven(objectid(x)) ? x*x : x*x*x` returned a primal of 8.0 at seed 1.0
+            # against a truth of 4.0. A dual that is not isbits hashes the wrapper's address,
+            # which does not depend on the derivative — that is what lets a real logdensity's dict
+            # bookkeeping run natively, so gate on the operand rather than dropping the entry.
+            if name in _NFWD_SAFE_FOREIGN
+                _nfwd_any_isbits_dual(ssatypes, sig, st.args) || continue
+            end
             _nfwd_any_dual(ssatypes, sig, st.args) && return true
         elseif st.head === :call && !isempty(st.args)
             cv = _nfwd_callee(st.args[1])
