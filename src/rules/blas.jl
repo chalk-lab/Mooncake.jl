@@ -642,11 +642,22 @@ function frule!!(
     x, y = primal(X_dX), primal(Y_dY)
     a, b = primal(a_da), primal(b_db)
     for k in 1:Nw
+        dx_k = _blas_lane_partial(X_dX, k)
         dy_k = _blas_lane_partial(Y_dY, k)
+        da, db = tangent(a_da, k), tangent(b_db, k)
         # `dy := a*dx + da*x + b*dy + db*y`, every term read before the primal overwrites `y`.
-        dy_k .=
-            a .* _blas_lane_partial(X_dX, k) .+ tangent(a_da, k) .* x .+ b .* dy_k .+
-            tangent(b_db, k) .* y
+        # Both `β` terms carry the strong zero the other `β`-taking rules use: BLAS discards `y`
+        # entirely at `β == 0`, so it may hold undefined values there and `0 * NaN` is `NaN`.
+        # Unguarded, `axpby!(a, [2.0], 0.0, [NaN])` gave a JVP of `NaN` on a primal of 2.0.
+        @inbounds for i in eachindex(dy_k, dx_k, x, y)
+            t = a * dx_k[i] + da * x[i]
+            iszero(b) || (t += b * dy_k[i])
+            if !iszero(db)
+                yi = y[i]
+                isnan(yi) || (t += db * yi)
+            end
+            dy_k[i] = t
+        end
     end
     BLAS.axpby!(a, x, b, y)
     return Y_dY
