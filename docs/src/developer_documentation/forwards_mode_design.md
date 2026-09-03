@@ -54,7 +54,7 @@ For a concrete `P` it must always hold that `V === dual_type(Val(N), P)`.
 `dual_type` plays the same role for forwards-mode that [`tangent_type`](@ref) plays for reverse-mode, and it is *recursively coherent* with it: where the reverse representation of a component is `tangent_type(component)`, the forward representation is `dual_type(Val(N), component)`, mirroring each other shape-for-shape. Concretely:
 
 - a real scalar `P` → `NDual{P, N}` (a value plus an `NTuple{N}` of per-lane partials);
-- an array `Array{T, D}` → `NDualArray{T, N, D, ...}`, a wrapper holding the primal array (a genuine `Array{T, D}` usable directly in a `ccall`, aliasing the user's storage) and the `N` lane partials in one slot-local *element-major* block of shape `(N, size...)`, so each element's partials form a contiguous column (per-lane access is a strided view, `a.partials[k]`);
+- an array `Array{T, D}` → `NDualArray{T, N, D, ...}`, a wrapper holding the primal array (a genuine `Array{T, D}` usable directly in a `ccall`, aliasing the user's storage) and the `N` lane partials in one slot-local *element-major* block of shape `(N, size...)`, so each element's partials form a contiguous column (per-lane access is a strided view, `tangent_view(a, k)`);
 - a `MemoryRef{T}` (Julia 1.11+) → `NDualMemoryRef{T, N, ...}`, holding the primal ref plus the *backing* `MemoryRef` of the enclosing `Memory`/`Array` V's element-major block (not a reshaped copy of it), the number of block columns, and the column that pairs with the referenced element. Storing the backing ref keeps the `array.ref` projection a pure field read — no reshape, no header allocation — even for a rank-`D > 1` array (its block's flat storage is still a plain `Vector{T}`, whose backing ref is a plain `MemoryRef{T}`, so the ref V's type stays coherent regardless of the source's rank). The backing is shared with the enclosing V, so mutations through any V land in one storage, mirroring the primal aliasing;
 - a struct → `ImmutableDual` / `MutableDual` wrapping the per-field forward values;
 - tuples / named-tuples → element-wise recursion;
@@ -117,7 +117,7 @@ Note that the primal `sin(x)` is read out of `dy.value` rather than recomputed �
 #### Pre-allocated Matrix-Matrix Multiply
 
 Recall that for ``Z = X Y`` we have that ``\dot{Z} = X \dot{Y} + \dot{X} Y``.
-Because the forward value of an array is an `NDualArray` (the primal is a genuine `Array`, and the lane partials live in one element-major block accessed per lane as `tangent(·).partials[k]`, a strided view), we can apply the primal `mul!` once and then a per-lane `mul!` over the lane partials — writes through the views land in the slot's block:
+Because the forward value of an array is an `NDualArray` (the primal is a genuine `Array`, and the lane partials live in one element-major block accessed per lane as `tangent_view(tangent(·), k)`, a strided view), we can apply the primal `mul!` once and then a per-lane `mul!` over the lane partials — writes through the views land in the slot's block:
 ```julia
 function frule!!(
     ::Lifted{typeof(mul!), N},
@@ -125,8 +125,8 @@ function frule!!(
 ) where {N, P<:Matrix{Float64}}
     mul!(primal(Z), primal(X), primal(Y))            # primal update, once
     for k in 1:N
-        dZ = tangent(Z).partials[k]                   # write-through lane view
-        dX, dY = tangent(X).partials[k], tangent(Y).partials[k]
+        dZ = tangent_view(tangent(Z), k)              # write-through lane view
+        dX, dY = tangent_view(tangent(X), k), tangent_view(tangent(Y), k)
         mul!(dZ, primal(X), dY)                       # X * Ẏ
         mul!(dZ, dX, primal(Y), 1.0, 1.0)            # + Ẋ * Y
     end
