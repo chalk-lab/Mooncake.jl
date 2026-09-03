@@ -688,14 +688,19 @@ end
 # them: every internal read goes through `getfield`, so `v.name` means the user's field for EVERY
 # name, matching `setproperty!` — a short-circuit on the underscored names would make a field
 # genuinely called `_parent` readable as the view's parent but writable as itself.
-struct MutableDualTangentView{SD<:MutableDual,P}
+struct MutableDualTangentView{N,SD<:MutableDual,P}
     _parent::SD
     _primal::P
     _lane::Int
 end
 
-# Lane-extraction (read) and lane-replacement (write) for individual V_i shapes.
-@inline _lane_tangent(v::NDual, lane::Int) = v.partials[lane]
+# Lane-extraction (read) and lane-replacement (write) for individual V_i shapes. A read has a
+# bespoke method only where it must differ from a plain lane read; everything else defers to
+# `_field_lane_tangent`, the same recursion the immutable path uses, which is total over the shapes
+# `dual_type` produces. Before that, a field whose V was anything but a scalar, complex or array
+# raised — including `NoDual` and a tuple of scalars, which need no primal and which reverse
+# answers with `NoTangent()` and `(0.0, 0.0)`.
+@inline _lane_tangent(::Val, ::Type, _p, _name, v::NDual, lane::Int) = v.partials[lane]
 
 @inline function _replace_lane_tangent(v::NDual{T,N}, lane::Int, x::T) where {T,N}
     new_partials = ntuple(k -> k == lane ? x : v.partials[k], Val(N))
@@ -706,15 +711,17 @@ end
 # `tangent(::Lifted, lane)`: that returns a dense reverse-shaped copy, so `view.field[i] = x` in a
 # rule body would silently update nothing. The view already addresses the block, so a write is a
 # `copyto!` and the V_i object is returned unchanged.
-@inline _lane_tangent(v::Nfwd.NDualArray, lane::Int) = Nfwd.tangent_view(v, lane)
+@inline _lane_tangent(::Val, ::Type, _p, _name, v::Nfwd.NDualArray, lane::Int) = Nfwd.tangent_view(
+    v, lane
+)
 
 @inline function _replace_lane_tangent(v::Nfwd.NDualArray, lane::Int, x)
     copyto!(Nfwd.tangent_view(v, lane), x)
     return v
 end
 
-@inline _lane_tangent(v::Complex{<:NDual}, lane::Int) = complex(
-    _lane_tangent(v.re, lane), _lane_tangent(v.im, lane)
+@inline _lane_tangent(::Val, ::Type, _p, _name, v::Complex{<:NDual}, lane::Int) = complex(
+    v.re.partials[lane], v.im.partials[lane]
 )
 
 @inline function _replace_lane_tangent(
@@ -726,15 +733,14 @@ end
     )
 end
 
-# A nested mutable struct's lane tangent would have to be another `MutableDualTangentView`, which
-# needs the nested PRIMAL — not reachable from the field's V alone. Name the shape rather than
-# leaving a bare `MethodError` from the `ntuple`/`copyto!` internals.
-@inline function _lane_tangent(v, lane::Int)
-    msg =
-        "Reading lane $lane of a mutable struct field whose forward V is $(typeof(v)) is not " *
-        "supported: only scalar, complex and array field Vs have a lane tangent."
-    throw(ArgumentError(msg))
-end
+# Everything else defers to the immutable path's recursion, which is total over what `dual_type`
+# produces. It needs the field primal, which the view stores — so the earlier claim that a nested
+# `MutableDualTangentView` was out of reach because no primal was available did not hold, and
+# neither did refusing the shapes that need no primal at all: reverse answers a non-differentiable
+# field with `NoTangent()` and a tuple-of-scalars field with `(0.0, 0.0)`.
+@inline _lane_tangent(::Val{N}, ::Type{P}, p, name, v, lane::Int) where {N,P} = _field_lane_tangent(
+    Val(N), P, p, name, v, lane
+)
 
 @inline function _replace_lane_tangent(v, lane::Int, @nospecialize(_x))
     msg =
@@ -743,9 +749,11 @@ end
     throw(ArgumentError(msg))
 end
 
-function Base.getproperty(v::MutableDualTangentView, name::Symbol)
+function Base.getproperty(v::MutableDualTangentView{N,SD,P}, name::Symbol) where {N,SD,P}
     nt = getfield(v, :_parent).fields
-    return _lane_tangent(getfield(nt, name), getfield(v, :_lane))
+    return _lane_tangent(
+        Val(N), P, getfield(v, :_primal), name, getfield(nt, name), getfield(v, :_lane)
+    )
 end
 
 function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
@@ -766,7 +774,7 @@ end
 
 # Per-lane tangent accessor on a `Lifted{MutS, N, <:MutableDual}` slot.
 @inline function tangent(d::Lifted{MutS,N,<:MutableDual}, lane::Integer) where {MutS,N}
-    return MutableDualTangentView{typeof(d.rep),MutS}(d.rep, d.primal, Int(lane))
+    return MutableDualTangentView{N,typeof(d.rep),MutS}(d.rep, d.primal, Int(lane))
 end
 
 # ──────────────────────────────────────────────────────────────────────────

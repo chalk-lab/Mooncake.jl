@@ -685,20 +685,29 @@ const NDAC_VecC64 = NDualArray{
         @test cview.z === ComplexF64(4, 5)
         @test tangent(cv, 2).z === ComplexF64(0, 0)
 
-        # A nested mutable struct's lane tangent would have to be another view, which needs a
-        # primal the field's V alone does not carry. Name the shape instead of erroring inside
-        # `ntuple`/`copyto!`.
-        nv = tangent(
-            zero_lifted(Val(2), LiftedTest_Cycle(LiftedTest_Cycle(nothing, 2.0), 1.0)), 1
-        )
-        @test_throws ArgumentError nv.next
-        @test_throws ArgumentError (nv.next = 1.0)
+        # READING any field defers to the recursion the immutable path uses, which is total over
+        # the shapes `dual_type` produces. Both of these were refused before, on the ground that
+        # a nested view needs a primal the field's V does not carry — but the view stores that
+        # primal, and a tuple field needs none at all.
+        #
+        # A nested mutable field reads as a nested WRITE-THROUGH view, not as reverse's
+        # `MutableTangent`: the two share no supertype, so compare by property.
+        cyc = LiftedTest_Cycle(LiftedTest_Cycle(nothing, 2.0), 1.0)
+        cslot = zero_lifted(Val(2), cyc)
+        nv = tangent(cslot, 1)
+        @test nv.next.w == getfield(zero_tangent(cyc).fields, :next).fields.w
+        nv.next.w = 7.0
+        @test tangent(cslot, 1).next.w == 7.0   # the write reached the block
+        @test tangent(cslot, 2).next.w == 0.0   # and only lane 1
 
-        # Same for a TUPLE field: its V is a tuple of `NDual`s, which is not one of the shapes
-        # `_lane_tangent` decomposes, so both directions name the shape rather than erroring
-        # inside `ntuple`/`copyto!`.
-        tv = tangent(zero_lifted(Val(2), LiftedTest_TupleField((1.0, 2.0))), 1)
-        @test_throws ArgumentError tv.t
+        # A tuple field is a value, so it reads as exactly what reverse gives.
+        tup = LiftedTest_TupleField((1.0, 2.0))
+        tv = tangent(zero_lifted(Val(2), tup), 1)
+        @test tv.t === getfield(zero_tangent(tup).fields, :t) === (0.0, 0.0)
+
+        # Replacing either field wholesale is still refused: a write has to address the parent's
+        # V, which a reverse-shaped value cannot. The read/write asymmetry is deliberate.
+        @test_throws ArgumentError (nv.next = 1.0)
         @test_throws ArgumentError (tv.t = (1.0, 0.0))
     end
 
