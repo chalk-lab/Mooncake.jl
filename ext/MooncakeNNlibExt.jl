@@ -307,13 +307,7 @@ function Mooncake.rrule!!(
     function logsoftmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        # TODO: Drop the `_data` fallback once NNlib >= 0.9.37 is more widely supported.
-        # See https://github.com/chalk-lab/Mooncake.jl/pull/1229 for more context.
-        @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
-            dx .+= NNlib.∇logsoftmax(dy, y; dims=1)
-        else
-            dx .+= NNlib.∇logsoftmax_data(dy, y; dims=1)
-        end
+        dx .+= NNlib.∇logsoftmax(dy, y; dims=1)
         return NoRData(), NoRData()
     end
     return res, logsoftmax_pb!!
@@ -332,11 +326,7 @@ function Mooncake.rrule!!(
     function logsoftmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        @static if hasmethod(NNlib.∇logsoftmax, Tuple{AbstractArray,AbstractArray})
-            dx .+= NNlib.∇logsoftmax(dy, y; dims)
-        else
-            dx .+= NNlib.∇logsoftmax_data(dy, y; dims)
-        end
+        dx .+= NNlib.∇logsoftmax(dy, y; dims)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, logsoftmax_kw_pb!!
@@ -359,11 +349,7 @@ function Mooncake.rrule!!(
     function softmax_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        @static if hasmethod(NNlib.∇softmax, Tuple{AbstractArray,AbstractArray})
-            dx .+= NNlib.∇softmax(dy, y; dims=1)
-        else
-            dx .+= NNlib.∇softmax_data(dy, y; dims=1)
-        end
+        dx .+= NNlib.∇softmax(dy, y; dims=1)
         return NoRData(), NoRData()
     end
     return res, softmax_pb!!
@@ -382,11 +368,7 @@ function Mooncake.rrule!!(
     function softmax_kw_pb!!(::NoRData)
         _, dx = arrayify(x)
         dy = tangent(res)
-        @static if hasmethod(NNlib.∇softmax, Tuple{AbstractArray,AbstractArray})
-            dx .+= NNlib.∇softmax(dy, y; dims)
-        else
-            dx .+= NNlib.∇softmax_data(dy, y; dims)
-        end
+        dx .+= NNlib.∇softmax(dy, y; dims)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return res, softmax_kw_pb!!
