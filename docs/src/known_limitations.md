@@ -203,6 +203,14 @@ Mooncake.jl supports differentiation of CUDA kernels in general, provided a suit
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
 
+Not every array operation on a `CuArray` has a rule yet. `maximum`, `minimum`, `diff` and `sort` do
+not, in either their plain or their `f`-mapped form, and the higher-order reductions carry a rule
+only for the operators they were written for — `reduce` for `+` and `*`, `mapreduce` for `+`, and
+`accumulate` for `+`. Anything outside those sets is registered as a primitive whose rule raises an
+`ArgumentError` naming the operation, so you get a clear failure at the call rather than a wrong
+derivative or an obscure error from inside a kernel. Reductions over an array whose element type is
+non-differentiable are unaffected: those correctly give a zero derivative.
+
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
 ## Differentiating SIMD Code
