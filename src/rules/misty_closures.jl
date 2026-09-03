@@ -86,7 +86,7 @@ end
 @inline function tangent(
     x::Lifted{P,N,MistyClosureTangent}, lane::Integer
 ) where {P<:MistyClosure,N}
-    v = x.value
+    v = x.rep
     return MistyClosureTangent(tangent(v.captures_tangent, lane), v.dual_callable)
 end
 

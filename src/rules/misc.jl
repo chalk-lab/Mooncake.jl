@@ -173,7 +173,7 @@ end
 # A `PossiblyUninitTangent` backing field is unwrapped via `val` (the caller has already read the
 # primal field, so the PUT is initialised); any other field passes through unchanged.
 @inline _get_lifted_field(V::Union{ImmutableDual,MutableDual}, name) = val(
-    getfield(getfield(V, :value), name)
+    getfield(getfield(V, :fields), name)
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
 # Complex slots (V `Complex{NDual}`): route field reads here so the generic `lgetfield` frule
@@ -516,7 +516,7 @@ end
         ::Lifted{typeof(copy),Nw}, a::Lifted{D,Nw,<:MutableDual}
     ) where {Nw,D<:Dict}
         new_primal = copy(primal(a))
-        old_nt = getfield(tangent(a), :value)
+        old_nt = getfield(tangent(a), :fields)
         new_nt = (
             slots=_copy_dict_field_v(new_primal.slots, old_nt.slots),
             keys=_copy_dict_field_v(new_primal.keys, old_nt.keys),

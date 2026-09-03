@@ -1250,7 +1250,7 @@ end
 function _fcache_jacobian_packable!!(
     cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dof::Int, x::AbstractVector{T}
 ) where {T}
-    nda = arg_seed.value
+    nda = arg_seed.rep
     z = zero(T)
     local y, J
     s = 1
@@ -2004,11 +2004,11 @@ end
 function _grad_leaves(v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
     return _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), values(v), values(g)))
 end
-_grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.value, g.fields, dict)
+_grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.fields, g.fields, dict)
 function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
     haskey(dict, v) && return nothing
     dict[v] = nothing
-    return _grad_leaves(v.value, g.fields, dict)
+    return _grad_leaves(v.fields, g.fields, dict)
 end
 _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/complex/abstract/uninit/mismatch
 
@@ -2279,7 +2279,7 @@ function value_and_gradient!!(
         # otherwise the mutation compounds across chunks and the gradient is silently wrong.
         off = 0
         @inbounds for i in 1:N
-            nda = arg_seeds[i].value
+            nda = arg_seeds[i].rep
             # Single-leaf inline of the structured path's `_refresh_seed!` (restore seed
             # primal).
             copyto!(nda.primal, xs[i])
@@ -2298,7 +2298,7 @@ function value_and_gradient!!(
         y = yv
         off = 0
         @inbounds for i in 1:N
-            nda = arg_seeds[i].value
+            nda = arg_seeds[i].rep
             gb = grad_bufs[i]
             len = length(xs[i])
             for lane in 1:W
@@ -2335,7 +2335,7 @@ function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEF
     copyto!(v.primal, x)
     return nothing
 end
-_refresh_seed!(v::Union{ImmutableDual,MutableDual}, x) = _refresh_seed!(v.value, x)
+_refresh_seed!(v::Union{ImmutableDual,MutableDual}, x) = _refresh_seed!(v.fields, x)
 @generated function _refresh_seed!(v::Tuple, x::Tuple)
     return Expr(
         :block,
@@ -2433,7 +2433,7 @@ end
         [:($(syms[i]) === getfield(p, $(QuoteNode(ns[i])))) for i in eachindex(ns)],
     )
     return quote
-        vv = getfield(v, :value)
+        vv = getfield(v, :fields)
         $(body...)
         $unchanged && return p
         return _new_($P, $(syms...))
@@ -2456,7 +2456,7 @@ end
         end for n in ns
     ]
     return quote
-        vv = getfield(v, :value)
+        vv = getfield(v, :fields)
         $(body...)
         return p
     end

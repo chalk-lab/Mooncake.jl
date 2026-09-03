@@ -2635,7 +2635,7 @@ function frule!!(
     x::Lifted{<:Transpose{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
 ) where {Nw,T<:CuFloatOrComplex}
     y = sum(primal(x))
-    parent_partials = Nfwd._lane_views(tangent(x).value.parent)
+    parent_partials = Nfwd._lane_views(tangent(x).fields.parent)
     dy_lanes = ntuple(k -> sum(parent_partials[k]), Val(Nw))
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
 end
@@ -2644,7 +2644,7 @@ function frule!!(
     x::Lifted{<:Adjoint{T,<:CuMaybeComplexArray},Nw,<:ImmutableDual},
 ) where {Nw,T<:CuFloatOrComplex}
     y = sum(primal(x))
-    parent_partials = Nfwd._lane_views(tangent(x).value.parent)
+    parent_partials = Nfwd._lane_views(tangent(x).fields.parent)
     # Adjoint applies elementwise conj — sum then conjugate.
     dy_lanes = ntuple(k -> conj(sum(parent_partials[k])), Val(Nw))
     return Lifted{typeof(y),Nw}(y, _wrap_scalar_v_lanes(y, dy_lanes))
@@ -2895,7 +2895,7 @@ function frule!!(
     },
 ) where {Nw}
     return _gpu_sum_f_lifted(
-        Val(Nw), primal(f), parent(primal(x)), Nfwd._lane_views(tangent(x).value.parent)
+        Val(Nw), primal(f), parent(primal(x)), Nfwd._lane_views(tangent(x).fields.parent)
     )
 end
 function rrule!!(::CoDual{typeof(sum)}, f::CoDual, x::CoDual{<:CuGpuSumFArray})
@@ -5158,7 +5158,7 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline function _bc_tangent(v::ImmutableDual, p::Broadcasted, lane)
-    nt = v.value
+    nt = v.fields
     targs = ntuple(length(p.args)) do i
         _bc_tangent(nt.args[i], p.args[i], lane)
     end
@@ -5166,7 +5166,7 @@ end
 end
 # Wrapper-arg fall-throughs: Transpose/Adjoint primals with parent NDualArray V.
 @inline function _bc_tangent(v::ImmutableDual, p::Union{Transpose,Adjoint}, lane)
-    parent_tangent = _bc_tangent(v.value.parent, parent(p), lane)
+    parent_tangent = _bc_tangent(v.fields.parent, parent(p), lane)
     return Tangent((; parent=parent_tangent))
 end
 # Non-contiguous SubArray leaf (a contiguous view collapses to a plain CuArray). `copy`
@@ -5174,7 +5174,7 @@ end
 # feeds `.parent` to `arrayify(::SubArray, …)`, which requires a `CuArray` there and re-applies
 # the primal's indices; the lazy block-row view is a `SubArray`, which that `arrayify` rejects.
 @inline function _bc_tangent(v::ImmutableDual, p::SubArray, lane)
-    parent_tangent = copy(_bc_tangent(v.value.parent, parent(p), lane))
+    parent_tangent = copy(_bc_tangent(v.fields.parent, parent(p), lane))
     return Tangent((; parent=parent_tangent))
 end
 # Generic Ref/struct primal with ImmutableDual or MutableDual V — the Broadcast `args`
@@ -5192,7 +5192,7 @@ end
     return NoTangent()
 end
 _bc_tangent_free(::Mooncake.NoDual) = true
-_bc_tangent_free(v::Union{ImmutableDual,MutableDual}) = all(_bc_tangent_free, v.value)
+_bc_tangent_free(v::Union{ImmutableDual,MutableDual}) = all(_bc_tangent_free, v.fields)
 _bc_tangent_free(v::Union{Tuple,NamedTuple}) = all(_bc_tangent_free, v)
 function _bc_tangent_free(v::Mooncake.PossiblyUninitTangent)
     return !Mooncake.is_init(v) || _bc_tangent_free(Mooncake.val(v))

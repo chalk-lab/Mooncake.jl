@@ -1758,10 +1758,10 @@ end
             @test V isa Mooncake.ImmutableDual
             # parent V aliases the input slot's V so the JVP stays connected (the view's tangent
             # is the view of the parent's tangent); index metadata is non-differentiable.
-            @test V.value.parent === Mooncake.tangent(xs)
-            @test V.value.indices isa Mooncake.NoDual
-            @test V.value.offset1 isa Mooncake.NoDual
-            @test V.value.stride1 isa Mooncake.NoDual
+            @test V.fields.parent === Mooncake.tangent(xs)
+            @test V.fields.indices isa Mooncake.NoDual
+            @test V.fields.offset1 isa Mooncake.NoDual
+            @test V.fields.stride1 isa Mooncake.NoDual
         end
 
         @testset "$name" for (seed, name, fargs) in [

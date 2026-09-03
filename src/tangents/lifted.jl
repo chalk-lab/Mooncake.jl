@@ -19,33 +19,33 @@
     ImmutableDual{T<:NamedTuple}
 
 Single-field immutable wrapper used as the canonical V for *immutable struct*
-primals under the forward-mode structural lift. Its `value::T` field holds
+primals under the forward-mode structural lift. Its `fields::T` holds
 the recursive `NamedTuple{fieldnames(P), Tuple{V_i...}}` of canonical field
 Vs, where each `V_i = dual_type(Val(N), fieldtype(P, i))`.
 """
 struct ImmutableDual{T<:NamedTuple}
-    value::T
+    fields::T
 end
 
-Base.:(==)(x::ImmutableDual, y::ImmutableDual) = x.value == y.value
+Base.:(==)(x::ImmutableDual, y::ImmutableDual) = x.fields == y.fields
 
 """
     MutableDual{T<:NamedTuple}
 
 Mutable counterpart to `ImmutableDual`. Must be mutable: the `MutableDualTangentView`
-proxy writes back to `value` via `setfield!`.
+proxy writes back to `fields` via `setfield!`.
 """
 mutable struct MutableDual{T<:NamedTuple}
-    value::T
+    fields::T
     # Uninitialised form, used by the cyclic-struct `lift` to register a shell
     # in the aliasing cache before its fields (which may reference back to it)
     # are built. Mirrors reverse-mode `MutableTangent()`.
     MutableDual{T}() where {T<:NamedTuple} = new{T}()
-    MutableDual{T}(value) where {T<:NamedTuple} = new{T}(value)
+    MutableDual{T}(fields) where {T<:NamedTuple} = new{T}(fields)
 end
-@inline MutableDual(value::T) where {T<:NamedTuple} = MutableDual{T}(value)
+@inline MutableDual(fields::T) where {T<:NamedTuple} = MutableDual{T}(fields)
 
-Base.:(==)(x::MutableDual, y::MutableDual) = x.value == y.value
+Base.:(==)(x::MutableDual, y::MutableDual) = x.fields == y.fields
 
 """
     Lifted{P, N, V}
@@ -56,19 +56,19 @@ Forward-mode slot wrapper for a primal value of type `P` and its canonical
 - `primal::P` — slot-level back-reference to the user's primal value. For
   mutable struct primals this aliases user storage; for immutable primals
   it carries the same value.
-- `value::V` — the canonical `N`-width forward representation. For
+- `rep::V` — the canonical `N`-width forward representation. For
   concrete runtime wrappers `V === dual_type(Val(N), P)`.
 
 Rules dispatch on `Lifted{P, N}` (V left abstract) and use `primal`,
 `tangent`, and per-lane extractors to access tangent data. Outputs are
-constructed via `Lifted{P_out, N}(primal_out, value_out)`.
+constructed via `Lifted{P_out, N}(primal_out, rep_out)`.
 
 Width `N == 1` is ordinary forward mode; `N >= 2` is chunked forward
 mode. `Lifted` never nests inside another `Lifted`'s `V`.
 """
 struct Lifted{P,N,V}
     primal::P
-    value::V
+    rep::V
 end
 
 """
@@ -86,11 +86,11 @@ is visible from its argument types.
 """
 struct NoDual end
 
-# Two-argument constructor with V inferred from typeof(value). The
-# canonical wrapping path: `value` is already a built inner V of the
-# correct shape; this overload just wraps the (primal, value) pair.
-@inline function Lifted{P,N}(primal::P, value::V) where {P,N,V}
-    return Lifted{P,N,V}(primal, value)
+# Two-argument constructor with V inferred from typeof(rep). The
+# canonical wrapping path: `rep` is already a built inner V of the
+# correct shape; this overload just wraps the (primal, rep) pair.
+@inline function Lifted{P,N}(primal::P, rep::V) where {P,N,V}
+    return Lifted{P,N,V}(primal, rep)
 end
 
 # Sharpen `P` when constructing with a `Type{X}` primal. WHY sharpen: the type-constructor frules
@@ -120,18 +120,16 @@ end
 # both jobs: `Lifted{P,N}(primal::Type{P})` would require `ComplexF64 isa Type{DataType}` (false), so the
 # wide-slot call wouldn't dispatch here at all. We thus take the wide `P_wide` for matching and rebuild
 # the slot from the sharp `P_sharp`.
-@inline function Lifted{P_wide,N}(
-    primal::Type{P_sharp}, value::V
-) where {P_wide,P_sharp,N,V}
+@inline function Lifted{P_wide,N}(primal::Type{P_sharp}, rep::V) where {P_wide,P_sharp,N,V}
     # Fall back to the broad `typeof(primal)` when `P_sharp` can't bind — a phantom `TypeVar` (e.g. an
     # over-sharpened `UnionAll`), where touching `Type{P_sharp}` throws `UndefVarError`. Identical to the
     # `CoDual(::Type{P})` ctor's `@isdefined(P) ? Type{P} : typeof(x)` fallback (chalk-lab/Mooncake.jl#1191).
-    return Lifted{(@isdefined(P_sharp) ? Type{P_sharp} : typeof(primal)),N,V}(primal, value)
+    return Lifted{(@isdefined(P_sharp) ? Type{P_sharp} : typeof(primal)),N,V}(primal, rep)
 end
 
 # Accessors — mirror the `CoDual` API.
 primal(d::Lifted) = d.primal
-tangent(d::Lifted) = d.value
+tangent(d::Lifted) = d.rep
 # `_primal` extracts a primal value from a forward-mode slot; the generic fallback returns
 # the value unchanged. The interpreter's dual IR calls `_primal` on each operand, which is
 # either a `Lifted` slot or a lifted constant.
@@ -339,7 +337,7 @@ end
     return PossiblyUninitTangent{Rt}(tangent(Lifted{typeof(pf),N}(pf, val(vfield)), lane))
 end
 @inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
-    nt = tangent(x).value
+    nt = tangent(x).fields
     p = primal(x)
     names = keys(nt)
     field_tangents = map(names) do name
@@ -435,7 +433,7 @@ function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
     Tt = tangent_type(P)
     shell = Tt()
     cache[p] = shell
-    nt = tangent(x).value
+    nt = tangent(x).fields
     field_tangents = map(keys(nt)) do name
         return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
     end
@@ -445,7 +443,7 @@ function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
     return shell
 end
 function _unlift_seed(x::Lifted{P,1,<:ImmutableDual}, cache::IdDict) where {P}
-    nt = tangent(x).value
+    nt = tangent(x).fields
     p = primal(x)
     field_tangents = map(keys(nt)) do name
         return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
@@ -552,7 +550,7 @@ end
 # `test_frule_reuse`).
 _dot_internal(::MaybeCache, ::NoDual, ::NoDual) = 0.0
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:ImmutableDual}
-    return _dot_internal(c, t.value, s.value)::Float64
+    return _dot_internal(c, t.fields, s.fields)::Float64
 end
 # A `MutableDual` may be self-referential; cache the pair to break the cycle
 # (mirrors reverse-mode `_dot_internal(::MaybeCache, ::MutableTangent, …)`).
@@ -560,7 +558,7 @@ function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:MutableDual}
     key = (t, s)
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
-    return _dot_internal(c, t.value, s.value)::Float64
+    return _dot_internal(c, t.fields, s.fields)::Float64
 end
 # Scalar NDual (forward-mode width-1 V for IEEEFloat) — sum the partials' dot.
 function _dot_internal(::MaybeCache, t::NDual{T,N}, s::NDual{T,N}) where {T<:IEEEFloat,N}
@@ -569,7 +567,7 @@ end
 
 _scale_internal(::MaybeCache, ::Float64, ::NoDual) = NoDual()
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:ImmutableDual}
-    return T(_scale_internal(c, a, t.value))
+    return T(_scale_internal(c, a, t.fields))
 end
 # Register an uninitialised result before recursing so a self-referential
 # `MutableDual` terminates (mirrors reverse-mode `_scale_internal` for `MutableTangent`).
@@ -577,7 +575,7 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:MutableDual}
     haskey(c, t) && return c[t]::T
     y = T()
     c[t] = y
-    y.value = _scale_internal(c, a, t.value)
+    y.fields = _scale_internal(c, a, t.fields)
     return y
 end
 # Scalar NDual scale — scale `.value` and each lane.
@@ -605,7 +603,7 @@ end
     # unwrapped via `is_init`/`val`, an undefined field maps to `FieldUndefined()`, and the result
     # is built through `__construct_type` so the `unsafe` flag / inner-constructor invariants and
     # the `AddToPrimalException` diagnostic are honoured (rather than always calling `_new_`).
-    nt = t.value
+    nt = t.fields
     isempty(propertynames(nt)) && return x
     fields = map(fieldnames(P)) do name
         tf = getfield(nt, name)
@@ -626,7 +624,7 @@ function _add_to_primal_internal(
 ) where {P}
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::P
-    nt = t.value
+    nt = t.fields
     # Mirror reverse-mode `_add_to_primal_internal(::MutableTangent)`: unwrap
     # `PossiblyUninitTangent` fields via `is_init`/`val`, map undefined fields to
     # `FieldUndefined()`, and build through `__construct_type` so `unsafe` is honoured.
@@ -746,14 +744,14 @@ end
 end
 
 function Base.getproperty(v::MutableDualTangentView, name::Symbol)
-    nt = getfield(v, :_parent).value
+    nt = getfield(v, :_parent).fields
     return _lane_tangent(getfield(nt, name), getfield(v, :_lane))
 end
 
 function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
     parent = getfield(v, :_parent)
     lane = getfield(v, :_lane)
-    nt = parent.value
+    nt = parent.fields
     new_V_i = _replace_lane_tangent(getfield(nt, name), lane, x)
     # `convert` to the stored NamedTuple type: `setfield!` is strict (no implicit convert) and
     # `NamedTuple` is invariant in its `Tuple` parameter, so for a mutable struct with an abstract
@@ -761,14 +759,14 @@ function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
     # `@NamedTuple{x::NDual}`, which is NOT `isa @NamedTuple{x}` — a bare `setfield!` throws. Mirrors
     # the writeback in `_setfield_tangent!(::MutableDual)`.
     setfield!(
-        parent, :value, convert(typeof(nt), merge(nt, NamedTuple{(name,)}((new_V_i,))))
+        parent, :fields, convert(typeof(nt), merge(nt, NamedTuple{(name,)}((new_V_i,))))
     )
     return x
 end
 
 # Per-lane tangent accessor on a `Lifted{MutS, N, <:MutableDual}` slot.
 @inline function tangent(d::Lifted{MutS,N,<:MutableDual}, lane::Integer) where {MutS,N}
-    return MutableDualTangentView{typeof(d.value),MutS}(d.value, d.primal, Int(lane))
+    return MutableDualTangentView{typeof(d.rep),MutS}(d.rep, d.primal, Int(lane))
 end
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1403,7 +1401,7 @@ end
     haskey(d, x) && return d[x]::LT
     lifted = LT(x, MutableDual{backing}())
     d[x] = lifted
-    lifted.value.value = _lift_backing(x, ẋ.fields, backing, d)
+    lifted.rep.fields = _lift_backing(x, ẋ.fields, backing, d)
     return lifted
 end
 # A possibly-uninit reverse-tangent field lifts to the inner V (the forward
@@ -1836,7 +1834,7 @@ for (factory, internal) in
                     haskey(d, x) && return d[x]::MutableDual{backing}
                     shell = MutableDual{backing}()
                     d[x] = shell
-                    shell.value = backing(($(seeds...),))
+                    shell.fields = backing(($(seeds...),))
                     return shell
                 end
             else
@@ -1990,7 +1988,7 @@ end
             haskey(d, x) && return d[x]::MutableDual{backing}
             shell = MutableDual{backing}()
             d[x] = shell
-            shell.value = backing(($(seeds...),))
+            shell.fields = backing(($(seeds...),))
             return shell
         end
     else
@@ -2122,10 +2120,10 @@ end
     # `Ref`/`IdDict` the general path allocates. This keeps forward seeding of scalar/tuple/
     # NamedTuple/struct-of-scalar inputs allocation-free (`isbitstype(V)` folds at compile time).
     if isbitstype(V)
-        v, _ = _basis_seed_isbits(seed.value, slots, 0)
+        v, _ = _basis_seed_isbits(seed.rep, slots, 0)
         return Lifted{P,N}(primal(seed), v)
     end
-    v = _basis_seed!!(seed.value, slots, Ref(0), IdDict{Any,Any}())
+    v = _basis_seed!!(seed.rep, slots, Ref(0), IdDict{Any,Any}())
     return Lifted{P,N}(primal(seed), v)
 end
 
@@ -2173,7 +2171,7 @@ end
 @inline function _basis_seed_isbits(
     v::ImmutableDual, slots::NTuple{N,Int}, c::Int
 ) where {N}
-    inner, c = _basis_seed_isbits(v.value, slots, c)
+    inner, c = _basis_seed_isbits(v.fields, slots, c)
     return (ImmutableDual(inner), c)
 end
 @inline function _basis_seed_isbits(
@@ -2317,12 +2315,12 @@ function _basis_seed!!(
     return v
 end
 function _basis_seed!!(v::ImmutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
-    return ImmutableDual(_basis_seed!!(v.value, slots, cursor, dict))
+    return ImmutableDual(_basis_seed!!(v.fields, slots, cursor, dict))
 end
 function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where {N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    v.value = _basis_seed!!(v.value, slots, cursor, dict)
+    v.fields = _basis_seed!!(v.fields, slots, cursor, dict)
     return v
 end
 # `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the block column

@@ -64,7 +64,7 @@ Target: correct by construction where possible, aggressively testable where not,
 
 The canonical forward value of a primal `P` at chunk width `N` is `V = dual_type(Val(N), P)`. The legacy two-field `Dual{P,T}` is gone. A *lane* is one derivative slot in a width-`N` seed; use the term consistently.
 
-- `Lifted{P,N,V}` is the slot wrapper (fields `primal::P, value::V`), parallel to `CoDual`. For concrete runtime values, `P` is concrete and `V === dual_type(Val(N), P)`; abstract slots use broad width-preserving annotations from `lifted_type`.
+- `Lifted{P,N,V}` is the slot wrapper (fields `primal::P, rep::V`), parallel to `CoDual`. For concrete runtime values, `P` is concrete and `V === dual_type(Val(N), P)`; abstract slots use broad width-preserving annotations from `lifted_type`.
 - **Recursive coherence**: for every accessible field/element of `P`, the reverse representation is `tangent_type(component)` and the forward one is `dual_type(Val(N), component)`, mirroring each other shape-for-shape:
   - structs → `Tangent`/`MutableTangent` ↔ `ImmutableDual`/`MutableDual` (single-field wrappers holding the per-field `NamedTuple`; the slot primal lives in `Lifted`, not in them);
   - arrays → `Array{tangent_type(T),D}` ↔ `NDualArray{T,N,D,A,W,B}`, the split wrapper: `primal::A` aliases user storage, `partials_block::B` is slot-local, `W` is the per-element dual eltype (`NDual{T,N}` / `Complex{NDual{T,N}}`). There is no element-type `convert` for it — converting would allocate a new primal and sever that alias — so a converting store must rebuild the dual over the destination object, as the `IdDict` `setindex!` frule does; a `MethodError` from such a store is the intended failure;

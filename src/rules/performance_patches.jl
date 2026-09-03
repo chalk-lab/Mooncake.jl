@@ -86,7 +86,7 @@ function frule!!(
 ) where {N,P<:IEEEFloat}
     px = primal(x)
     v = sum(px)
-    par = tangent(x).value.parent
+    par = tangent(x).fields.parent
     idx = parentindices(px)[1]
     lanes = ntuple(Val(N)) do k
         pl = Nfwd.tangent_view(par, k)

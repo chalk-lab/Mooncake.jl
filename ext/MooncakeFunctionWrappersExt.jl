@@ -127,7 +127,7 @@ end
             "slot: its FunctionWrapperTangent bakes all $N lanes into one OpaqueClosure.",
         ),
     )
-    return x.value
+    return x.rep
 end
 
 import .TestUtils: has_equal_data_internal

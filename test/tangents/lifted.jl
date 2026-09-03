@@ -136,10 +136,10 @@ const NDAC_VecC64 = NDualArray{
         n = LiftedTest_Cycle(nothing, 2.0)
         n.next = n
         v = tangent(lift(n, zero_tangent(n)))
-        @test v.value.next === v                      # cyclic V built, no overflow
+        @test v.fields.next === v                    # cyclic V built, no overflow
         @test Mooncake._dot(v, v) == 0.0
         s = Mooncake._scale(2.0, v)
-        @test s.value.next === s                      # scale preserves the cycle
+        @test s.fields.next === s                    # scale preserves the cycle
         p = Mooncake._add_to_primal(n, v)
         @test p isa LiftedTest_Cycle && p.next === p  # add_to_primal preserves the cycle
     end
@@ -453,13 +453,13 @@ const NDAC_VecC64 = NDualArray{
         p = LiftedTest_Point(1.0, 2.0)
         vp = zero_dual(Val(2), p)
         @test typeof(vp) === dual_type(Val(2), LiftedTest_Point)
-        @test vp.value.x === nd(1.0, 0.0, 0.0) && vp.value.y === nd(2.0, 0.0, 0.0)
+        @test vp.fields.x === nd(1.0, 0.0, 0.0) && vp.fields.y === nd(2.0, 0.0, 0.0)
         zp = zero_lifted(Val(2), p)
         @test typeof(zp) === lifted_type(Val(2), LiftedTest_Point)
         @test primal(zp) === p && tangent(zp) === vp
         vm = zero_dual(Val(2), LiftedTest_RefF(3.0))
         @test typeof(vm) === dual_type(Val(2), LiftedTest_RefF)
-        @test vm.value.v === nd(3.0, 0.0, 0.0)
+        @test vm.fields.v === nd(3.0, 0.0, 0.0)
     end
 
     @testset "NDualArray accessors + AbstractArray interface" begin
@@ -631,13 +631,13 @@ const NDAC_VecC64 = NDualArray{
         slot = zero_lifted(Val(2), r)
         view = tangent(slot, 1)  # per-lane view
         @test view isa MutableDualTangentView
-        @test getfield(view, :_parent) === slot.value
+        @test getfield(view, :_parent) === slot.rep
         @test getfield(view, :_primal) === r
         @test getfield(view, :_lane) === 1
         @test view.v === 0.0          # read: lane-1 partial of field `v`
-        view.v = 5.0                  # write: routes back to parent.value via setfield!
+        view.v = 5.0                  # write: routes back to parent.fields via setfield!
         @test view.v === 5.0
-        @test slot.value.value.v.partials === (5.0, 0.0)
+        @test slot.rep.fields.v.partials === (5.0, 0.0)
         @test tangent(slot, 2).v === 0.0  # other lane unchanged
 
         # A user field must resolve to its lane tangent whatever it is called — including the
@@ -787,7 +787,7 @@ const NDAC_VecC64 = NDualArray{
 
         # Aliased fields: `dof` dedups the shared array, so both fields share one V.
         shared = [10.0, 20.0]
-        let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).value.value
+        let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).rep.fields
             @test nt.a === nt.b
             @test tangent_view(nt.a, 1) == [1.0, 0.0]
         end
@@ -798,7 +798,7 @@ const NDAC_VecC64 = NDualArray{
         # `ẋ`-aliasing; this exercises the gap.
         let h = LiftedTest_AliasedNested([[1.0, 2.0], [3.0]], [[1.0, 2.0], [3.0]])
             h.b = h.a
-            nt = tangent(lift(h, randn_tangent(Xoshiro(1), h))).value
+            nt = tangent(lift(h, randn_tangent(Xoshiro(1), h))).fields
             @test nt.a === nt.b
         end
 
@@ -806,12 +806,12 @@ const NDAC_VecC64 = NDualArray{
         c = LiftedTest_Cycle(nothing, 5.0)
         c.next = c
         let b = bl(c, (1,))
-            @test b.value.value.next === b.value
-            @test b.value.value.w.partials[1] == 1.0  # `w` is the only dof
+            @test b.rep.fields.next === b.rep
+            @test b.rep.fields.w.partials[1] == 1.0  # `w` is the only dof
         end
 
         # Uninit field stays uninit/zero; the defined field gets the basis.
-        let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).value.value
+        let nt = bl(LiftedTest_MaybeInit(3.0), (1,)).rep.fields
             @test nt.x.partials[1] == 1.0
         end
 
@@ -851,7 +851,7 @@ const NDAC_VecC64 = NDualArray{
             @test vn.p === vn.q
         end
         let x = LiftedTest_TwoArrays(a, a)
-            v = tangent(lift(x, zero_tangent(x))).value
+            v = tangent(lift(x, zero_tangent(x))).fields
             @test v.p === v.q
         end
     end

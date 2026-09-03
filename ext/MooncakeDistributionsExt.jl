@@ -213,7 +213,7 @@ struct _ConstLane{P}
 end
 Base.@propagate_inbounds Base.getindex(c::_ConstLane, ::Int) = c.value
 _mean_lane(μ̇::Nfwd.NDualArray, k::Int) = Nfwd.tangent_view(μ̇, k)
-_mean_lane(μ̇, k::Int) = _ConstLane(μ̇.value.value.partials[k])
+_mean_lane(μ̇, k::Int) = _ConstLane(μ̇.fields.value.partials[k])
 
 # `arrayify` is restricted to `BlasFloat`, but these rules are claimed for every `IEEEFloat`,
 # `Float16` included. `_arrayify_lane` is generic over the dual eltypes, so the lanes come from it.
@@ -293,7 +293,7 @@ function frule!!(
     px = primal(x)
     ẋs = _lanes(x, Val(N))
     _check_dims(dp, px)
-    ḋ = tangent(d).value
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     y = zero(P)
     @inbounds @simd for i in eachindex(px, dp.μ, variance)
@@ -304,7 +304,7 @@ function frule!!(
     lanes = ntuple(Val(N)) do k
         ẋ = ẋs[k]
         μ̇ = _mean_lane(ḋ.μ, k)
-        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
         acc = zero(P)
         @inbounds @simd for i in eachindex(px, dp.μ, variance)
             residual = px[i] - dp.μ[i]
@@ -349,7 +349,7 @@ const NormalProduct{P,N} = Distributions.ProductDistribution{N,0,Array{Normal{P}
 
 _dists(d::Distributions.ProductDistribution) = d.dists
 _dists(::Distributions.ProductDistribution, dd) = _fields(dd).dists
-_fwd_dists(::Distributions.ProductDistribution, dd) = dd.value.dists
+_fwd_dists(::Distributions.ProductDistribution, dd) = dd.fields.dists
 
 @is_primitive DefaultCtx Tuple{
     typeof(logpdf),NormalProduct{P,N},Array{P,N}
@@ -379,7 +379,7 @@ function frule!!(
         acc = zero(P)
         @inbounds for i in eachindex(px, dists, ḋists)
             dist = dists[i]
-            ḋ = ḋists[i].value
+            ḋ = ḋists[i].fields
             z = (px[i] - dist.μ) / dist.σ
             acc +=
                 ((abs2(z) - one(P)) * ḋ.σ.partials[k] - z * (ẋ[i] - ḋ.μ.partials[k])) /
@@ -433,7 +433,7 @@ const CountingProduct{P} = Union{
 
 _dists(d::Distributions.Product) = d.v
 _dists(::Distributions.Product, dd) = _fields(dd).v
-_fwd_dists(::Distributions.Product, dd) = dd.value.v
+_fwd_dists(::Distributions.Product, dd) = dd.fields.v
 
 # One observation's contribution to its distribution's cotangent. Add a method here to
 # cover another counting distribution.
@@ -475,7 +475,7 @@ function frule!!(
             insupport(dists[i], px[i]) || continue
             acc +=
                 _param_derivative(dists[i], px[i]) *
-                only(values(ḋists[i].value)).partials[k]
+                only(values(ḋists[i].fields)).partials[k]
         end
         acc
     end
@@ -516,7 +516,7 @@ function frule!!(
     px = primal(x)
     ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = tangent(d).value
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     constant = -P(0.5) * (length(dp) * log(P(2π)) + sum(log, variance))
     y = Vector{P}(undef, size(px, 2))
@@ -533,7 +533,7 @@ function frule!!(
     for k in 1:Nw
         ẋ = ẋs[k]
         μ̇ = _mean_lane(ḋ.μ, k)
-        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
         lane = view(blk, k, :)
         @inbounds for j in axes(px, 2)
             derivative = zero(P)
@@ -602,7 +602,7 @@ function frule!!(
     px = primal(x)
     ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = tangent(d).value
+    ḋ = tangent(d).fields
     variance = dp.Σ.diag
     mahalanobis = zero(P)
     @inbounds for j in axes(px, 2)
@@ -615,7 +615,7 @@ function frule!!(
     lanes = ntuple(Val(Nw)) do k
         ẋ = ẋs[k]
         μ̇ = _mean_lane(ḋ.μ, k)
-        v̇ = Nfwd.tangent_view(ḋ.Σ.value.diag, k)
+        v̇ = Nfwd.tangent_view(ḋ.Σ.fields.diag, k)
         acc = zero(P)
         @inbounds for j in axes(px, 2)
             @simd for i in eachindex(dp.μ, variance)
@@ -673,7 +673,7 @@ function frule!!(
     px = primal(x)
     ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = tangent(d).value
+    ḋ = tangent(d).fields
     μ = dp.μ
     variance = dp.Σ.value
     constant = -P(0.5) * length(μ) * (log(P(2π)) + log(variance))
@@ -691,7 +691,7 @@ function frule!!(
     for k in 1:Nw
         ẋ = ẋs[k]
         μ̇ = _mean_lane(ḋ.μ, k)
-        v̇ = ḋ.Σ.value.value.partials[k]
+        v̇ = ḋ.Σ.fields.value.partials[k]
         lane = view(blk, k, :)
         @inbounds for j in axes(px, 2)
             derivative = zero(P)
@@ -761,7 +761,7 @@ function frule!!(
     px = primal(x)
     ẋs = _lanes(x, Val(Nw))
     _check_dims(dp, px)
-    ḋ = tangent(d).value
+    ḋ = tangent(d).fields
     μ = dp.μ
     variance = dp.Σ.value
     mahalanobis = zero(P)
@@ -775,7 +775,7 @@ function frule!!(
     lanes = ntuple(Val(Nw)) do k
         ẋ = ẋs[k]
         μ̇ = _mean_lane(ḋ.μ, k)
-        v̇ = ḋ.Σ.value.value.partials[k]
+        v̇ = ḋ.Σ.fields.value.partials[k]
         acc = zero(P)
         @inbounds for j in axes(px, 2)
             @simd for i in eachindex(μ)

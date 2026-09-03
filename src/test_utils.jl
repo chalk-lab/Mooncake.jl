@@ -490,7 +490,7 @@ end
 function populate_address_map_internal(
     m::AddressMap, p, t::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
 )
-    nt = t.value
+    nt = t.fields
     foreach(keys(nt)) do n
         t_field = getfield(nt, n)
         if isdefined(p, n) && is_init(t_field)
@@ -1020,12 +1020,12 @@ function _chunked_v_invariant(p::NamedTuple, v::NamedTuple, c::IdDict)
     return all(n -> _chunked_v_invariant(getfield(p, n), getfield(v, n), c), keys(v))
 end
 function _chunked_v_invariant(p, v::Mooncake.ImmutableDual, c::IdDict)
-    return _struct_v_invariant(p, v.value, c)
+    return _struct_v_invariant(p, v.fields, c)
 end
 function _chunked_v_invariant(p, v::Mooncake.MutableDual, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
-    return _struct_v_invariant(p, v.value, c)
+    return _struct_v_invariant(p, v.fields, c)
 end
 # An undefined primal field (partial `:new`) has no value to shadow — skip it.
 function _struct_v_invariant(p, nt::NamedTuple, c::IdDict)

@@ -45,7 +45,7 @@ A forwards-mode argument is a [`Mooncake.Lifted`](@ref) slot:
 ```julia
 struct Lifted{P, N, V}
     primal::P
-    value::V
+    rep::V
 end
 ```
 `P` is the primal type, `N` is the *chunk width* (the number of derivative directions propagated at once — `N == 1` for a standard single-direction rule, `N > 1` for batched mode), and `V` is the *forward value*: the representation of `N` tangents of `P` packed together.

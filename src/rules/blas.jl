@@ -160,33 +160,33 @@ end
 @inline function _arrayify_lane(
     x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer, d::Val
 ) where {P,B,C,D,E}
-    pp = _arrayify_lane(x.parent, V.value.parent, lane, d)
+    pp = _arrayify_lane(x.parent, V.fields.parent, lane, d)
     return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
 end
 @inline function _arrayify_lane(
     x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer, d::Val
 ) where {P,B,C,D}
-    pp = _arrayify_lane(x.parent, V.value.parent, lane, d)
+    pp = _arrayify_lane(x.parent, V.fields.parent, lane, d)
     return Base.ReshapedArray{P,B,typeof(pp),D}(pp, x.dims, x.mi)
 end
 @inline _arrayify_lane(x::Adjoint, V::ImmutableDual, lane::Integer, d::Val) = adjoint(
-    _arrayify_lane(x.parent, V.value.parent, lane, d)
+    _arrayify_lane(x.parent, V.fields.parent, lane, d)
 )
 @inline _arrayify_lane(x::Transpose, V::ImmutableDual, lane::Integer, d::Val) = transpose(
-    _arrayify_lane(x.parent, V.value.parent, lane, d)
+    _arrayify_lane(x.parent, V.fields.parent, lane, d)
 )
 @inline _arrayify_lane(x::Diagonal, V::ImmutableDual, lane::Integer, d::Val) = Diagonal(
-    _arrayify_lane(x.diag, V.value.diag, lane, d)
+    _arrayify_lane(x.diag, V.fields.diag, lane, d)
 )
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
-    _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
+    _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
 )
 # No eltype bound, as the `Symmetric` method above: differentiating `Hermitian(A + t*dA)` gives
 # exactly `Hermitian(dA)` -- the stored triangle contributes `dA[i,j]`, the mirrored one
 # `conj(dA[j,i])`, and the diagonal `real(dA[i,i])`, the primal's diagonal being real already. So
 # wrapping the lane partial IS the JVP, for a complex eltype as much as a real one.
 @inline _arrayify_lane(x::Hermitian, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
-    _arrayify_lane(x.data, V.value.data, lane, d), Symbol(x.uplo)
+    _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
 )
 # All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
 # `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
@@ -197,10 +197,10 @@ end
 # result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
 # diagonal itself (`_mask_unit_diagonal` forward, `accumulate_densified!` reverse).
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
-    _arrayify_lane(x.data, V.value.data, lane, d)
+    _arrayify_lane(x.data, V.fields.data, lane, d)
 )
 @inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
-    T, _arrayify_lane(x.parent, V.value.parent, lane, d)
+    T, _arrayify_lane(x.parent, V.fields.parent, lane, d)
 )
 
 """
@@ -1118,7 +1118,7 @@ end
     p = parent(x)
     a = first(parentindices(x)[1])
     a + (n - 1) * abs(inc) <= length(p) || _throw_walk_past_operand(label, x, inc, n)
-    return view(p, a:length(p)), Lifted{typeof(p),Nw}(p, tangent(slot).value.parent), a - 1
+    return view(p, a:length(p)), Lifted{typeof(p),Nw}(p, tangent(slot).fields.parent), a - 1
 end
 
 @inline _dot_lane_span(a, drop::Integer) = view(a, (firstindex(a) + drop):lastindex(a))

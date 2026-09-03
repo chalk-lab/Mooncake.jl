@@ -386,8 +386,8 @@ function frule!!(
     _i = primal(i)
     x = unsafe_getindex(_r, _i)
     Eout = eltype(P)
-    ref_v = tangent(r).value.ref  # NTuple{N, TWP{T}}
-    step_v = tangent(r).value.step  # NTuple{N, TWP{T}}
+    ref_v = tangent(r).fields.ref  # NTuple{N, TWP{T}}
+    step_v = tangent(r).fields.step  # NTuple{N, TWP{T}}
     offset = _r.offset
     dy_lanes = ntuple(k -> Eout(ref_v[k] + step_v[k] * (_i - offset)), Val(N))
     return Lifted{Eout,N}(x, NDual{Eout,N}(x, dy_lanes))
@@ -418,8 +418,8 @@ function frule!!(
     _i = primal(i)
     x = _getindex_hiprec(_r, _i)
     Pout = typeof(x)
-    ref_v = tangent(r).value.ref
-    step_v = tangent(r).value.step
+    ref_v = tangent(r).fields.ref
+    step_v = tangent(r).fields.step
     offset = _r.offset
     dy_lanes = ntuple(k -> (_i - offset) * step_v[k] + ref_v[k], Val(N))
     return Lifted{Pout,N}(x, dy_lanes)
@@ -468,8 +468,8 @@ function frule!!(
     y = sum(_x)
     l = _x.len
     offset = _x.offset
-    ref_v = tangent(x).value.ref
-    step_v = tangent(x).value.step
+    ref_v = tangent(x).fields.ref
+    step_v = tangent(x).fields.step
     Yout = typeof(y)
     dy_lanes = ntuple(
         k -> Yout(ref_v[k] * l + step_v[k] * (0.5 * l * (l + 1) - l * offset)), Val(N)
