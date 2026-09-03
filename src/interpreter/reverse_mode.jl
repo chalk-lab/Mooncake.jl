@@ -854,10 +854,11 @@ then the output of this function is
 shared_data_tuple(p::SharedDataPairs)::Tuple = tuple(map(last, p.pairs)...)
 
 """
-    shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
+    shared_data_stmts(p::SharedDataPairs, zero_coduals=false)::Vector{IDInstPair}
 
 Produce a sequence of id-statement pairs which will extract the data from
 `shared_data_tuple(p)` such that the correct value is associated to the correct `ID`.
+If `zero_coduals` is `true`, reset the fdata of captured `CoDual`s as they are extracted.
 
 For example, if `p.pairs` is
 ```julia
@@ -871,13 +872,24 @@ IDInstPair[
 ]
 ```
 """
-function shared_data_stmts(p::SharedDataPairs)::Vector{IDInstPair}
-    return map(enumerate(p.pairs)) do (n, p)
-        return (p[1], new_inst(Expr(:call, get_shared_data_field, Argument(1), n)))
+function shared_data_stmts(p::SharedDataPairs, zero_coduals::Bool=false)::Vector{IDInstPair}
+    return map(enumerate(p.pairs)) do (n, pair)
+        getter = if zero_coduals && pair[2] isa CoDual && _may_have_fdata(tangent(pair[2]))
+            get_zeroed_shared_data_field
+        else
+            get_shared_data_field
+        end
+        return (pair[1], new_inst(Expr(:call, getter, Argument(1), n)))
     end
 end
 # maybe manually inline this
 @inline get_shared_data_field(shared_data, n) = getfield(shared_data, n)
+@inline function get_zeroed_shared_data_field(shared_data, n)
+    x = getfield(shared_data, n)
+    # Captured fdata containing `Ptr` is unsupported because it cannot be reset generically.
+    t = set_to_zero!!(zero_tangent(primal(x), tangent(x)))
+    return CoDual(primal(x), fdata(t))
+end
 
 """
 The block stack is the stack used to keep track of which basic blocks are visited on the
@@ -917,6 +929,8 @@ codegen which produces the forwards- and reverse-passes.
     ssa rather than each argument.
 - `debug_mode`: if `true`, run in "debug mode" -- wraps all rule calls in `DebugRRule`. This
     is applied recursively, so that debug mode is also switched on in derived rules.
+- `noinline_primitive_rules`: preserve primitive rule-call boundaries when the generated
+    reverse rule will subsequently be differentiated by forward mode.
 - `is_used_dict`: for each `ID` associated to a line of code, is `false` if line is not used
     anywhere in any other line of code.
 - `lazy_zero_rdata_ref_id`: for any arguments whose type doesn't permit the construction of
@@ -939,6 +953,7 @@ struct ADInfo
     arg_rdata_ref_ids::Dict{Argument,ID}
     ssa_rdata_ref_ids::Dict{ID,ID}
     debug_mode::Bool
+    noinline_primitive_rules::Bool
     is_used_dict::Dict{ID,Bool}
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
@@ -955,7 +970,8 @@ function ADInfo(
     debug_mode::Bool,
     zero_lazy_rdata_ref::Ref{<:Tuple},
     fwd_ret_type::Type,
-    rvs_ret_type::Type,
+    rvs_ret_type::Type;
+    noinline_primitive_rules::Bool=false,
 )
     shared_data_pairs = SharedDataPairs()
     block_stack = BlockStack()
@@ -970,6 +986,7 @@ function ADInfo(
         Dict((k, ID()) for k in keys(arg_types)),
         Dict((k, ID()) for k in keys(ssa_insts)),
         debug_mode,
+        noinline_primitive_rules,
         is_used_dict,
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
         fwd_ret_type,
@@ -986,7 +1003,8 @@ function ADInfo(
     blocks::Vector{CFGBlock},
     debug_mode::Bool,
     fwd_ret_type::Type,
-    rvs_ret_type::Type,
+    rvs_ret_type::Type;
+    noinline_primitive_rules::Bool=false,
 )
     arg_types = Dict{Argument,Any}(
         map(((n, t),) -> (Argument(n) => CC.widenconst(t)), enumerate(ir.argtypes))
@@ -1004,7 +1022,8 @@ function ADInfo(
         debug_mode,
         zero_lazy_rdata_ref,
         fwd_ret_type,
-        rvs_ret_type,
+        rvs_ret_type;
+        noinline_primitive_rules,
     )
 end
 
@@ -1513,7 +1532,10 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Construct signature, and determine how the rrule is to be computed.
         sig = Tuple{arg_types...}
         interp = info.interp
-        raw_rule = if is_primitive(context_type(interp), ReverseMode, sig, interp.world)
+        is_primitive_call = is_primitive(
+            context_type(interp), ReverseMode, sig, interp.world
+        )
+        raw_rule = if is_primitive_call
             build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
@@ -1589,7 +1611,16 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         fwds = vcat(
             codual_args,
             IDInstPair[
-                (rule_call_id, new_inst(rule_call)),
+                # FoR must resolve primitive-rule calls to static invokes without opening
+                # their bodies before the forward transform. Full inlining remains
+                # available afterwards.
+                (
+                    rule_call_id,
+                    new_inst(
+                        rule_call;
+                        noinline=(info.noinline_primitive_rules && is_primitive_call),
+                    ),
+                ),
                 (raw_output_id, new_inst(raw_output)),
                 pb_stmt,
                 (output_id, new_inst(output)),
@@ -2110,6 +2141,7 @@ function generate_ir(
     debug_mode=false,
     do_inline=true,
     do_optimize=true,
+    noinline_primitive_rules=false,
 )
     # Reset id count. This ensures that the IDs generated are the same each time this
     # function runs.
@@ -2163,7 +2195,15 @@ function generate_ir(
     primal_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(ir))
 
     # Compute global info.
-    info = ADInfo(interp, ir, primal_blocks, debug_mode, fwd_ret_type, rvs_ret_type)
+    info = ADInfo(
+        interp,
+        ir,
+        primal_blocks,
+        debug_mode,
+        fwd_ret_type,
+        rvs_ret_type;
+        noinline_primitive_rules,
+    )
 
     # For each primal block, translate all statements. Running this will, in general, push
     # items to `info.shared_data_pairs`.
@@ -2311,7 +2351,7 @@ function forwards_pass_ir(
     # reverse-passes. These are assigned to the `ID`s given by the `SharedDataPairs`.
     # Push the entry id onto the block stack if needed. Create `LazyZeroRData` for each
     # argument, and put it in the `Ref` for use on the reverse-pass.
-    sds = shared_data_stmts(info.shared_data_pairs)
+    sds = shared_data_stmts(info.shared_data_pairs, true)
     if pred_is_unique_pred[blocks[1].id]
         push_block_stack_insts = IDInstPair[]
     else

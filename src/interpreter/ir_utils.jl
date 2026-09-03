@@ -49,16 +49,22 @@ is used to represent all instructions in the working-IR layer.
 const InstVector = Vector{NewInstruction}
 
 """
-    new_inst(stmt, type=Any, flag=CC.IR_FLAG_REFINED)::NewInstruction
+    new_inst(stmt, type=Any, flag=CC.IR_FLAG_REFINED; noinline=false)::NewInstruction
 
 Create a `NewInstruction` with fields:
 - `stmt` = `stmt`
 - `type` = `type`
 - `info` = `CC.NoCallInfo()`
 - `line` = `Int32(1)`
-- `flag` = `flag`
+- `flag` = `flag`, with `CC.IR_FLAG_NOINLINE` added when `noinline=true`
 """
-function new_inst(@nospecialize(stmt), @nospecialize(type)=Any, flag=CC.IR_FLAG_REFINED)
+function new_inst(
+    @nospecialize(stmt),
+    @nospecialize(type)=Any,
+    flag=CC.IR_FLAG_REFINED;
+    noinline::Bool=false,
+)
+    noinline && (flag |= CC.IR_FLAG_NOINLINE)
     return NewInstruction(stmt, type, CC.NoCallInfo(), Int32(1), flag)
 end
 
@@ -276,7 +282,7 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
     @static if VERSION ≥ v"1.13-"
-        local_interp = infer_interp = CC.NativeInterpreter()
+        local_interp = infer_interp = isnothing(interp) ? CC.NativeInterpreter() : interp
     else
         if isnothing(interp)
             # 319 -- see patch_for_319.jl for context

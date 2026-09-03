@@ -13,36 +13,29 @@
 
 </div>
 
-The goal of the `Mooncake.jl` project is to produce an AD package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`, and `Zygote.jl` in several ways.
-Please refer to [the docs](https://chalk-lab.github.io/Mooncake.jl/dev) for more info.
+`Mooncake.jl` is an automatic differentiation (AD) package written entirely in
+Julia. Support for mutation allows it to differentiate most numerical Julia code
+without hand-written rules. Unsupported operations generally fail explicitly; the
+[known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
+describe exceptions and validity boundaries.
 
-> [!IMPORTANT]
-> `Mooncake.jl` is maintained primarily by academic researchers at grant-funded research
-> institutions, with correspondingly limited capacity for triage and review. In the spirit of
-> long-lived projects such as R and TeX, we favour correctness, stability,
-> and tightly scoped fixes over open-ended expansion.
->
-> Contributions are most welcome when they concern reproducible defects:
-> incorrect results, unexpected failures, or behaviour at odds with the
-> documented scope. Feature requests, redesign proposals, and debugging
-> queries lacking a minimal reproducible example sit outside what we can
-> reasonably support, as do requests for rules beyond Julia Base, or for
-> behaviour noted on the [known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-> page; such issues will generally be closed. Direct support for mutation means
-> that most numerical Julia code differentiates without hand-written rules; the
-> exceptions usually reflect a missing rule rather than a defect. Where a
-> derivative cannot be constructed soundly, as with `Core.bitcast` or the
-> internals of another AD library, `Mooncake.jl` requires an explicit rule
-> rather than silently returning an incorrect gradient. Accounts involved in spam
-> or abuse will be blocked and reported; moderation is otherwise undertaken
-> at our discretion, as capacity permits.
+See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for a fuller
+introduction.
 
-## Getting Started
+> [!NOTE]
+> **Performance varies by workload.** On one system, [Flux
+> benchmarks](test/integration_testing/flux/README.md) found that cached Mooncake
+> gradient evaluations were 2.03 times faster than Zygote on CPU across 19 models and
+> comparable on GPU. First evaluations were substantially slower.
+> [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
+> covered all 147 PosteriorDB posteriors; Mooncake's geometric-mean runtime was 1.32
+> times Stan's. See the reports for the methods and complete results.
 
-Check that you're running a version of Julia that Mooncake.jl supports.
-See the `SUPPORT_POLICY.md` file for more info.
+## Getting started
 
-You can use `Mooncake.jl`'s API to prepare a cache once and then reuse it for fast, repeated gradient and Hessian evaluations, like this:
+Check whether Mooncake's [support policy](SUPPORT_POLICY.md) covers your Julia version.
+
+Mooncake uses reusable caches for repeated gradient and Hessian evaluations:
 
 ```julia
 import Mooncake as MC
@@ -52,18 +45,37 @@ x = [1.2, 1.2]
 
 # Reverse mode
 grad_cache = MC.prepare_gradient_cache(f, x);
-val, grad = MC.value_and_gradient!!(grad_cache, f, x)
+value, (_, gradient) = MC.value_and_gradient!!(grad_cache, f, x)
 
 # Forward mode
 fwd_cache = MC.prepare_derivative_cache(f, x);
-val_fwd, grad_fwd = MC.value_and_gradient!!(fwd_cache, f, x)
+value_fwd, (_, gradient_fwd) = MC.value_and_gradient!!(fwd_cache, f, x)
 
 # Hessian
 hess_cache = MC.prepare_hessian_cache(f, x);
-val, grad, H = MC.value_gradient_and_hessian!!(hess_cache, f, x)
-# val  : f(x)
-# grad : ∇f(x)  (length-n vector)
-# H    : ∇²f(x) (n×n matrix)
+value, gradient, hessian = MC.value_gradient_and_hessian!!(hess_cache, f, x)
 ```
 
-You should expect the `MC.prepare_*_cache` functions to take a little time to run, but subsequent gradient and Hessian calls that reuse the prepared caches are fast. A prepared cache is tied to each input's type and size, so reusing it with a differently sized input will raise an error; for more information, see the [interface docs](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) and [tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients).
+Cache preparation takes some time, but calls that reuse the cache are fast. Each cache
+is tied to its inputs' types and sizes; passing a differently sized input raises an
+error. See the
+[tutorial](https://chalk-lab.github.io/Mooncake.jl/stable/tutorial/#Computing-gradients)
+for a walkthrough and the
+[interface](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) for details.
+
+## Project scope
+
+Mooncake is maintained as research software, taking long-lived projects such as R and
+TeX as models. It prioritises correctness and stability over broad feature coverage.
+
+Reproducible cases of incorrect results or unexpected failures within the documented
+scope guide further work. Rules for operations outside Julia Base, broad redesigns,
+general debugging support, and the documented [known
+limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/) are not
+part of the current programme of work.
+
+## Licensing
+
+Mooncake is licensed under the [MIT License](LICENSE). Its required and optional
+dependencies are licensed separately and may impose additional terms on redistributed
+applications or binaries. See [`Project.toml`](Project.toml) for the dependency list.

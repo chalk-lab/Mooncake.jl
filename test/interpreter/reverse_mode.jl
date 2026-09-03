@@ -5,6 +5,12 @@ non_const_global = 5.0
 const const_float = 5.0
 const const_int = 5
 const const_bool = true
+const const_vector = [1.0, 2.0]
+
+function const_vector_phi(p, flag)
+    A = LowerTriangular([p[1] 0.0; p[2] p[1]] + I)
+    return sum(abs2, A \ (flag ? p : const_vector))
+end
 
 # used for regression test for issue 184
 struct A
@@ -35,6 +41,21 @@ const STALE_RVS_FNS = Function[stale_rvs_mid]
 stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
 
 @testset "s2s_reverse_mode_ad" begin
+    @testset "const global fdata is reset between rule calls (#1282)" begin
+        f = S2SGlobals.const_vector_phi
+        rule = build_rrule(f, [0.3, 0.5], false)
+
+        function gradient(p)
+            dp = zeros(length(p))
+            y, pb = rule(zero_fcodual(f), CoDual(p, dp), zero_fcodual(false))
+            pb(one(primal(y)))
+            return dp
+        end
+
+        gradient([0.3, 0.5])
+        @test gradient([1.5, 2.0]) ≈ [-0.18944, -0.1536]
+    end
+
     @testset "SharedDataPairs" begin
         m = SharedDataPairs()
         id = Mooncake.add_data!(m, 5.0)
@@ -983,6 +1004,8 @@ end
         @test ni.type === Float64
         @test ni.info isa CC.NoCallInfo
         @test ni.flag == CC.IR_FLAG_REFINED
+        @test new_inst(nothing; noinline=true).flag ==
+            CC.IR_FLAG_REFINED | CC.IR_FLAG_NOINLINE
     end
     @testset "is_reachable_return_node" begin
         @test Mooncake.is_reachable_return_node(ReturnNode(5)) == true

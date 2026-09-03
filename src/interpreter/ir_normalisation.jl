@@ -240,19 +240,7 @@ function __extract_foreigncall_name(x::Expr)
 end
 __extract_foreigncall_name(v::Tuple{Any}) = Val(Symbol(v[1]))
 function __extract_foreigncall_name(v::Tuple{Any,Any})
-    Val((Symbol(v[1]), _foreigncall_libsym(v[2])))
-end
-
-# Stable Symbol identifier for a ccall library reference.
-# In Julia 1.13, libraries like `BLAS.libblastrampoline` are `LazyLibrary` objects
-# whose stringified form contains a mutable handle pointer; `Symbol(lib)` is therefore
-# not stable between precompilation and runtime (see #856). Resolve to the final path
-# component instead, which matches the form used in older versions.
-_foreigncall_libsym(x) = Symbol(x)
-@static if isdefined(Base.Libc.Libdl, :LazyLibrary)
-    function _foreigncall_libsym(lib::Base.Libc.Libdl.LazyLibrary)
-        return Symbol(last(lib.path.pieces))
-    end
+    Val((Symbol(v[1]), Symbol(v[2])))
 end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)

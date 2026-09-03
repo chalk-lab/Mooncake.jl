@@ -1,8 +1,5 @@
 function blas_name(name::Symbol)
-    return (
-        BLAS.USE_BLAS64 ? Symbol(name, "64_") : name,
-        _foreigncall_libsym(BLAS.libblastrampoline),
-    )
+    return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
 function _trans(flag, mat)
@@ -18,6 +15,10 @@ end
 
 const BlasRealFloat = Union{Float32,Float64}
 const BlasComplexFloat = Union{ComplexF32,ComplexF64}
+
+# `view(x, a:b)` for an `Array` `x` of any dimensionality: a linear-index view reshapes
+# its parent, and reshaping an `Array` yields an `Array`.
+const ContiguousSubVector{P} = SubArray{P,1,Vector{P},Tuple{UnitRange{Int}},true}
 
 _fields(x::Tangent) = x.fields
 _fields(x::FData) = x.data
@@ -58,7 +59,9 @@ function arrayify(
     _, _dx = arrayify(x.diag, _fields(dx).diag)
     return x, Diagonal(_dx)
 end
-function arrayify(x::SubArray{P,B,C,D,E}, dx::TangentOrFData) where {P<:BlasFloat,B,C,D,E}
+function arrayify(
+    x::SubArray{P,B,C,D,E}, dx::TangentOrFData
+) where {P<:Union{IEEEFloat,BlasFloat},B,C,D,E}
     _, _dx = arrayify(x.parent, _fields(dx).parent)
     return x, SubArray{P,B,typeof(_dx),D,E}(_dx, x.indices, x.offset1, x.stride1)
 end
@@ -109,6 +112,50 @@ function arrayify(x::A, dx::DA) where {A,DA}
         "It should contain this error message and the associated stack trace.\n\n" *
         "Array type: $A\n\nTangent/FData type: $DA."
     return error(msg)
+end
+
+"""
+    densify(dx)
+
+Somewhere dense to accumulate a contribution destined for the tangent `dx`.
+
+[`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
+off-structure entries are not parameters: the primal reads a constant there whatever the
+storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
+and hand the result to [`accumulate_densified!`](@ref), which adds back only the part `dx`
+can represent. A strided tangent is already dense, so the common case costs nothing.
+"""
+densify(dx::StridedArray) = dx
+function densify(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+    return zeros(eltype(dx), size(dx))
+end
+
+"""
+    accumulate_densified!(dx, dense)
+
+Add the part of `dense` that the structured tangent `dx` can represent. See
+[`densify`](@ref).
+"""
+accumulate_densified!(::StridedArray, dense) = nothing
+function accumulate_densified!(
+    dx::T, dense
+) where {T<:Union{UpperTriangular,LowerTriangular}}
+    parent(dx) .+= T(dense)
+    return nothing
+end
+function accumulate_densified!(dx::Diagonal, dense)
+    dx.diag .+= view(dense, diagind(dense))
+    return nothing
+end
+
+# `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
+# stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
+# picks up both. Dropping the fold would silently halve those gradients rather than throw.
+function accumulate_densified!(dx::Symmetric, dense)
+    folded = dense .+ transpose(dense)
+    folded[diagind(folded)] .= view(dense, diagind(dense))
+    parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
+    return nothing
 end
 
 """
@@ -307,11 +354,18 @@ function frule!!(
 ) where {T<:BlasFloat}
     y = BLAS.nrm2(primal(n), primal(X_dX), primal(incx))
     X, dX = viewify(primal(n), X_dX, primal(incx))
+    # X[i]*dX[i] overflows once norm(X)*norm(dX) leaves T's range, though the JVP it
+    # divides down to is representable. Scaling X by the power of two nearest y is exact,
+    # so in-range results are unchanged; a subnormal y has no representable reciprocal,
+    # and with every X[i] subnormal too it needs none.
+    r = isfinite(y) && !iszero(y) ? ldexp(one(y), -exponent(y)) : one(y)
+    isfinite(r) || (r = one(y))
     dy = zero(y)
     @inbounds for i in eachindex(X)
-        dy = dy + real(X[i] * dX[i]') + real(X[i]' * dX[i])
+        xi = X[i] * r
+        dy = dy + real(xi * dX[i]') + real(xi' * dX[i])
     end
-    return Dual(y, dy / 2y)
+    return Dual(y, dy / 2(y * r))
 end
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},

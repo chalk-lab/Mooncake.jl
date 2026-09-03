@@ -15,6 +15,59 @@ const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
 const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
 
 @testset "distributions" begin
+    # A rule whose signature names a type parameter the loaded dependency does not have
+    # unloads the whole extension with only a warning, taking every rule in it with it.
+    @test Base.get_extension(Mooncake, :MooncakeDistributionsExt) !== nothing
+
+    @testset "rand! restores arrays but not the RNG" begin
+        rng = StableRNG(123)
+        sampler = MvNormal(zeros(2), I)
+        x, dx = fill(-1.0, 2, 4), fill(2.0, 2, 4)
+        x_before, dx_before = copy(x), copy(dx)
+        expected_rng = copy(rng)
+        expected_x = similar(x)
+        Distributions.rand!(expected_rng, sampler, expected_x)
+        expected_next = rand(expected_rng)
+
+        out, pullback = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Distributions.rand!),
+            Mooncake.zero_fcodual(rng),
+            Mooncake.zero_fcodual(sampler),
+            Mooncake.CoDual(x, dx),
+        )
+        @test Mooncake.primal(out) === x
+        @test x == expected_x
+        @test all(iszero, dx)
+        fill!(dx, 3)
+        pullback(Mooncake.NoRData())
+        @test x == x_before
+        @test dx == dx_before
+        @test rand(rng) == expected_next
+
+        rng = StableRNG(123)
+        out = Mooncake.frule!!(
+            Mooncake.zero_dual(Distributions.rand!),
+            Mooncake.zero_dual(rng),
+            Mooncake.zero_dual(sampler),
+            Mooncake.Dual(x, dx),
+        )
+        @test Mooncake.primal(out) === x
+        @test x == expected_x
+        @test all(iszero, dx)
+        @test rand(rng) == expected_next
+
+        test_rule(
+            StableRNG(123),
+            Distributions.rand!,
+            StableRNG(123),
+            sampler,
+            similar(x);
+            interface_only=true,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
+
     logpdf_test_cases = Any[
 
         #
@@ -177,6 +230,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
         (:none, MvLogNormal(MvNormal([0.2, -0.1], _pdmat([1.0 0.9; 0.7 1.1]))), [0.5, 0.1]),
         (:none, product_distribution([Normal()]), [0.3]),
         (:none, product_distribution([Normal(), Uniform()]), [-0.4, 0.3]),
+        (:none, product_distribution(Fill(Normal(0.4, 1.3), 2)), [0.1, -0.2]),
 
         #
         # Matrix-variate
@@ -221,6 +275,322 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     @testset "$(typeof(d))" for (perf_flag, d, x) in logpdf_test_cases
         @info "$(map(typeof, (d, x)))"
         test_rule(StableRNG(123546), logpdf, d, x; perf_flag, is_primitive=false)
+    end
+
+    # Hand-written rules from `MooncakeDistributionsExt`. Unlike the cases above these run
+    # with `is_primitive=true`, so they also assert that AD dispatches to the rules.
+    @testset "logpdf(::Normal{$P}, ::$P)" for P in [Float64, Float32, Float16]
+        # Float16 finite differences are too coarse to check the gradient against.
+        interface_only = P === Float16
+        test_rule(
+            sr(1),
+            logpdf,
+            Normal(P(0.5), P(1.2)),
+            P(0.3);
+            perf_flag=(interface_only ? :none : :stability_and_allocs),
+            interface_only,
+        )
+    end
+
+    # Both mean representations, which differ in whether the mean's gradient is fdata
+    # (`Vector`) or rdata (`Fill`).
+    @testset "sqmahal($(typeof(d.μ)), ::$P)" for P in [Float64, Float32, Float16],
+        d in [
+            product_distribution(Fill(Normal(P(0.4), P(1.3)), 7)),
+            MvNormal(randn(sr(4), P, 7), P(1.3)),
+        ]
+
+        x = randn(sr(2), P, 9)
+        interface_only = P === Float16
+        perf_flag = interface_only ? :none : :stability
+        test_rule(sr(3), Distributions.sqmahal, d, x[1:7]; perf_flag, interface_only)
+        test_rule(sr(3), Distributions.sqmahal, d, view(x, 2:8); perf_flag, interface_only)
+    end
+
+    # A diagonal covariance reads the sample directly rather than through `sqmahal`, and
+    # takes a contiguous view of one as well as a `Vector`.
+    @testset "logpdf(diagonal MvNormal, ::$P)" for P in [Float64, Float32, Float16]
+        d = MvNormal(randn(sr(12), P, 7), PDiagMat(rand(sr(13), P, 7) .+ P(0.5)))
+        x = randn(sr(14), P, 9)
+        interface_only = P === Float16
+        perf_flag = interface_only ? :none : :stability
+        test_rule(sr(17), logpdf, d, x[1:7]; perf_flag, interface_only)
+        test_rule(sr(17), logpdf, d, view(x, 2:8); perf_flag, interface_only)
+    end
+
+    @testset "heterogeneous Normal product $N-D ::$P" for P in [Float64, Float32, Float16],
+        N in (1, 2)
+
+        dims = N == 1 ? (7,) : (2, 3)
+        μ = randn(sr(5), P, dims...)
+        σ = rand(sr(6), P, dims...) .+ P(0.5)
+        x = randn(sr(7), P, dims...)
+        # `product_distribution` of a `Vector{<:Normal}` specialises to a diagonal
+        # `MvNormal`, so in one dimension only this constructor reaches the product rule.
+        d = Distributions.ProductDistribution(map(Normal, μ, σ))
+        interface_only = P === Float16
+        test_rule(
+            sr(8),
+            logpdf,
+            d,
+            x;
+            perf_flag=(interface_only ? :none : :stability),
+            interface_only,
+            # `ProductDistribution` has no constructor `_add_to_primal` can call.
+            unsafe_perturb=true,
+        )
+    end
+
+    # `test_rule` checks the primal's type stability alongside the rules'. Julia 1.10 reaches
+    # `Base.mapreduce_empty` by a runtime dispatch inside `sum(f, collection)`, which
+    # `logpdf(::Product, x)` and `loglikelihood(d, X)` both reduce with, so the primal is not
+    # inferable there and only the allocation half can be asserted. The rules themselves are
+    # inferable on 1.10; see `_sum_logpdf` in the extension.
+    # `product_distribution` returns the deprecated `Product`; `ProductDistribution` is
+    # what it will return once Distributions removes it.
+    @testset "$D $container ::$P" for P in [Float64, Float32, Float16],
+        D in (BernoulliLogit, Poisson),
+        container in (product_distribution, Distributions.ProductDistribution)
+
+        parameters = D === BernoulliLogit ? randn(sr(9), P, 7) : rand(sr(9), P, 7) .+ P(0.5)
+        d = container(map(D, parameters))
+        # `BitVector` is how binary observations arrive, and is not an `Array`.
+        x = D === BernoulliLogit ? BitVector(rand(sr(10), Bool, 7)) : rand(sr(10), 0:5, 7)
+        interface_only = P === Float16
+        test_rule(
+            sr(11),
+            logpdf,
+            d,
+            x;
+            perf_flag=if interface_only
+                :none
+            elseif VERSION < v"1.11-"
+                :allocs
+            else
+                :stability_and_allocs
+            end,
+            interface_only,
+            # `ProductDistribution` has no constructor `_add_to_primal` can call.
+            unsafe_perturb=true,
+        )
+    end
+
+    # Both entry points take a matrix and cover the same three covariance shapes;
+    # `logpdf` returns one density per column where `loglikelihood` sums them.
+    @testset "$name $f ::$P" for P in [Float64, Float32, Float16],
+        f in (logpdf, loglikelihood),
+        (name, covariance) in
+        (("diagonal", PDiagMat(rand(sr(25), P, 3) .+ P(0.5))), ("isotropic", P(0.8)))
+
+        d = MvNormal(randn(sr(24), P, 3), covariance)
+        interface_only = P === Float16
+        primal_inferable = f === logpdf || VERSION >= v"1.11-"
+        test_rule(
+            sr(27),
+            f,
+            d,
+            randn(sr(26), P, 3, 4);
+            perf_flag=(interface_only || !primal_inferable ? :none : :stability),
+            interface_only,
+        )
+    end
+
+    # `PDMat(Σ::Matrix)` factorises to `uplo == 'U'`, which stores `L'`, so the two
+    # conventions put the covariance's gradient in opposite triangles of `chol.factors`.
+    @testset "dense $f uplo=$uplo ::$P" for P in [Float64, Float32],
+        f in (logpdf, loglikelihood),
+        uplo in ('L', 'U')
+
+        factors = uplo === 'L' ? P[1.3 0.0; -0.2 0.8] : P[1.3 -0.2; 0.0 0.8]
+        d = MvNormal(randn(sr(28), P, 2), PDMat(Cholesky(factors, uplo, 0)))
+        primal_inferable = f === logpdf || VERSION >= v"1.11-"
+        test_rule(
+            sr(29),
+            f,
+            d,
+            randn(sr(30), P, 2, 4);
+            perf_flag=(primal_inferable ? :stability : :none),
+            unsafe_perturb=true,
+        )
+    end
+
+    # A `Fill` of distributions, a `PDiagMat` with a `Fill` diagonal and a `Fill` mean all
+    # hold their parameters in rdata alone, which the rules above cannot accumulate into.
+    # Widen any of the aliases to admit them and these fail, which is how the exclusions
+    # stay honest.
+    @testset "Fill containers keep using the derived rules" begin
+        test_rule(
+            sr(15),
+            logpdf,
+            product_distribution(Fill(Normal(0.4, 1.3), 2, 3)),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+            unsafe_perturb=true,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            product_distribution(Fill(Poisson(1.5), 3)),
+            [1, 2, 0];
+            is_primitive=false,
+            unsafe_perturb=true,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            MvNormal([0.1, -0.3], PDiagMat(Fill(0.9, 2))),
+            [0.1, -0.1];
+            is_primitive=false,
+        )
+        # The matrix rules exclude the same containers, and a `Fill` mean besides.
+        test_rule(
+            sr(15),
+            loglikelihood,
+            MvNormal([0.1, -0.3], PDiagMat(Fill(0.9, 2))),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+        )
+        test_rule(
+            sr(15),
+            logpdf,
+            MvNormal(Fill(0.1, 2), 0.8),
+            randn(sr(16), 2, 3);
+            is_primitive=false,
+            unsafe_perturb=true,
+        )
+    end
+
+    @testset "hand-written rule edge cases" begin
+        # Computing these via σ^2 overflows both to Inf well before σ stops being
+        # representable. Checks σ as well as x: the derived rule happens to get x right.
+        _, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(logpdf),
+            Mooncake.zero_fcodual(Normal(0.0f0, 1.0f-20)),
+            Mooncake.zero_fcodual(1.0f-20),
+        )
+        _, dd, dx = pb(1.0f0)
+        @test dx ≈ -1.0f20
+        @test dd.data.σ == 0.0f0
+
+        # An out-of-support sample makes the primal `-Inf`, and contributes nothing to the
+        # gradient; the remaining elements still do, `λ = 0` among them, where `k / λ`
+        # would be `NaN`.
+        d_poisson = Mooncake.zero_fcodual(
+            product_distribution([Poisson(1.5), Poisson(2.5), Poisson(0.0)])
+        )
+        y, pb = Mooncake.rrule!!(
+            Mooncake.zero_fcodual(logpdf), d_poisson, Mooncake.zero_fcodual([1, -1, 0])
+        )
+        @test Mooncake.primal(y) == -Inf
+        pb(1.0)
+        @test [t.fields.λ for t in Mooncake.tangent(d_poisson).data.v] ≈ [1 / 1.5 - 1, 0.0, -1.0]
+
+        # `inv(σ)` and `inv(variance)` overflow once the parameter drops below
+        # `1 / floatmax(P)`, at parameters where the primal and the derivative are both
+        # still finite, so the rules divide instead. Expected values come from the analytic
+        # derivative in `Float64`, not from the rules' own grouping.
+        @testset "reciprocals do not overflow: $P" for (P, σ, x) in (
+            (Float16, 1.0f-5, 1.0f-7), (Float32, 1.0f-40, 1.0f-44)
+        )
+            d = Mooncake.zero_fcodual(Normal(zero(P), P(σ)))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual(P(x))
+            )
+            _, _, dx = pb(one(P))
+            @test dx ≈ P(-Float64(P(x)) / Float64(P(σ))^2)
+        end
+
+        @testset "variance reciprocals do not overflow: $P" for (P, variance, x) in (
+            (Float16, 1.52f-5, 1.0f-3), (Float32, 1.0f-20, 1.0f-5)
+        )
+            d = Mooncake.zero_fcodual(MvNormal(P[0], PDiagMat(P[variance])))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual(P[x])
+            )
+            pb(one(P))
+            fields = Mooncake.tangent(d).data
+            r = Float64(P(x))
+            v = Float64(P(variance))
+            @test fields.μ[1] ≈ P(r / v)
+            @test Mooncake._fields(fields.Σ).diag[1] ≈ P(0.5 * (r^2 / v^2 - 1 / v))
+        end
+
+        # `residual^2` rounds to the variance itself here, so the difference the variance
+        # derivative depends on survives only if the product is kept exact. The reference
+        # evaluates the same formula at 256 bits, independent of the rule's grouping.
+        @testset "variance derivative when residual^2 == variance" begin
+            variance = 1.0e-160
+            x = 1.0e-80
+            d = Mooncake.zero_fcodual(MvNormal([0.0], PDiagMat([variance])))
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf), d, Mooncake.zero_fcodual([x])
+            )
+            pb(1.0)
+            reference = Float64(
+                (BigFloat(x)^2 - BigFloat(variance)) / (2 * BigFloat(variance)^2)
+            )
+            @test Mooncake._fields(Mooncake.tangent(d).data.Σ).diag[1] ≈ reference
+        end
+
+        # `σ = exp(-800)` underflows to zero during sampling, and the fused log-density
+        # then sums `-Inf` and `+Inf`. The primal's `iszero(σ)` branch gives ±Inf, which a
+        # sampler reads as a rejection; `NaN` would poison the chain.
+        @testset "σ == 0 component matches the primal: $(x[1])" for x in
+                                                                    ([0.5 0.1], [0.3 0.1])
+            μ = [0.3 0.0]
+            d = product_distribution(map(Normal, μ, [0.0 1.0]))
+            rule, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(logpdf),
+                Mooncake.zero_fcodual(d),
+                Mooncake.zero_fcodual(copy(x)),
+            )
+            dual = Mooncake.frule!!(
+                Mooncake.zero_dual(logpdf),
+                Mooncake.zero_dual(d),
+                Mooncake.zero_dual(copy(x)),
+            )
+            @test Mooncake.primal(rule) == logpdf(d, x)
+            @test Mooncake.primal(dual) == logpdf(d, x)
+        end
+
+        # The `frule!!` carries its own `insupport` skip; the assertions above only reach
+        # the `rrule!!` copy. Without the skip the out-of-support element would contribute
+        # `-1 / 2.5 - 1` to the derivative.
+        d_counting = product_distribution([Poisson(1.5), Poisson(2.5)])
+        rates = Mooncake.zero_tangent(d_counting)
+        for i in eachindex(rates.fields.v)
+            rates.fields.v[i] = Mooncake.Tangent((λ=1.0,))
+        end
+        dual = Mooncake.frule!!(
+            Mooncake.zero_dual(logpdf),
+            Mooncake.Dual(d_counting, rates),
+            Mooncake.zero_dual([1, -1]),
+        )
+        @test Mooncake.primal(dual) == -Inf
+        @test Mooncake.tangent(dual) ≈ 1 / 1.5 - 1
+
+        # Both modes count rows before touching the data. The broadcast would throw a
+        # `DimensionMismatch` regardless, so the message is what these assert.
+        d_dense = MvNormal(randn(sr(5), 2), PDMat([1.0 0.1; 0.1 1.0]))
+        X_wrong = randn(sr(6), 3, 4)
+        @test_throws "x has 3 rows, expected 2" Mooncake.rrule!!(
+            Mooncake.zero_fcodual(loglikelihood),
+            Mooncake.zero_fcodual(d_dense),
+            Mooncake.zero_fcodual(X_wrong),
+        )
+        @test_throws "x has 3 rows, expected 2" Mooncake.frule!!(
+            Mooncake.zero_dual(loglikelihood),
+            Mooncake.zero_dual(d_dense),
+            Mooncake.zero_dual(X_wrong),
+        )
+
+        # The primal reaches this check by broadcasting `x .- d.μ`; the rule does not.
+        d = product_distribution(Fill(Normal(0.4, 1.3), 3))
+        @test_throws DimensionMismatch Mooncake.rrule!!(
+            Mooncake.zero_fcodual(Distributions.sqmahal),
+            Mooncake.zero_fcodual(d),
+            Mooncake.zero_fcodual(randn(sr(4), 5)),
+        )
     end
 
     # ── param_logpdf_cases: unified ForwardMode / ReverseMode / NfwdMooncake tests ──────────────────
