@@ -159,6 +159,24 @@ _nfwd_egal_nondual(x, n::Int) = (n === 2) ? x * x : x * x * x
     @test Mooncake._nfwd_safe(Any[typeof(_nfwd_egal_nondual), Float64, Int], 1)
 end
 
+# `sizeof` folds to 16 for `NDual{Float64,1}` against 8 for `Float64`, so the optimiser leaves no
+# call behind for an operand test to see; the divergence shows only in the folded constants.
+_nfwd_folded_size(x) = x * sizeof(x)
+# A dual carrying the primal's value folds to a constant too, and must NOT read as divergence:
+# `sum(abs2, x)` folds `NDual{Float64,1}(0.0, (0.0,))` against `0.0`.
+_nfwd_folded_lift(x) = sum(abs2, x)
+# Only the DUAL side folds here: `sizeof(::NDualArray)` is the wrapper's fixed struct size, while
+# `sizeof(::Vector{Float64})` scales with length and stays unknown. Ran natively and returned 192.0
+# against a truth of 144.0.
+_nfwd_folded_one_sided(x) = sum(x) * sizeof(x)
+
+@testset "a folded constant must be the lift of the primal's" begin
+    # Ran natively and returned 32.0 against a primal of 16.0.
+    @test !Mooncake._nfwd_safe(Any[typeof(_nfwd_folded_size), Float64], 1)
+    @test Mooncake._nfwd_safe(Any[typeof(_nfwd_folded_lift), Vector{Float64}], 1)
+    @test !Mooncake._nfwd_safe(Any[typeof(_nfwd_folded_one_sided), Vector{Float64}], 1)
+end
+
 @testset "nfwd primitive coverage" begin
     # The nfwd classifier sorts builtins three ways: `_NFWD_SAFE_BUILTINS` pass a dual through
     # unchanged and are trusted unconditionally; `_NFWD_REPR_BUILTINS` answer differently for a dual

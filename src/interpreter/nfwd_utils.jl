@@ -488,6 +488,14 @@ function _nfwd_undual(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
     return NamedTuple{names,_nfwd_undual(T)}
 end
 
+# Strip the lift from a constant inference folded at the DUAL signature, so it can be compared with
+# the constant folded at the primal one: `sum(abs2, x)` folds `NDual{Float64,1}(0.0, (0.0,))`
+# against `0.0`. Only the shapes that yield a NUMBER need a method, since the caller compares
+# nothing else.
+_nfwd_undual_const(@nospecialize(v)) = v
+_nfwd_undual_const(v::Nfwd.NDual) = v.value
+_nfwd_undual_const(v::Complex{<:Nfwd.NDual}) = Complex(v.re.value, v.im.value)
+
 @inline function _nfwd_cond_type(ci, @nospecialize(cond))
     cond isa Core.SSAValue && return ci.ssavaluetypes[cond.id]
     cond isa Core.Argument && return ci.slottypes[cond.n]
@@ -571,7 +579,28 @@ function _nfwd_branches_agree_one(@nospecialize(dsig), work::Vector{Any})
     (pts === nothing || length(pts) != 1) && return true
     dci, pci = dts[1][1], pts[1][1]
     length(dci.code) == length(pci.code) || return true
+    dtypes, ptypes = dci.ssavaluetypes, pci.ssavaluetypes
     for (i, st) in enumerate(dci.code)
+        if dtypes isa Vector &&
+            ptypes isa Vector &&
+            i <= min(length(dtypes), length(ptypes))
+            dt, pt = dtypes[i], ptypes[i]
+            if dt isa Core.Const
+                # Compare only NUMERIC folded constants. A number is what can flow into the
+                # returned value, so a divergence there is a wrong answer: `sizeof(x)` folds to 16
+                # for `NDual{Float64,1}` against 8 for `Float64` (`x * sizeof(x)` returns 32.0
+                # where the primal is 16.0), and for an array only the DUAL side folds, since
+                # `sizeof(::NDualArray)` is the wrapper's fixed size while
+                # `sizeof(::Vector{Float64})` scales with length (`sum(x) * sizeof(x)` returned
+                # 192.0 against 144.0). Type-level metadata is excluded because it SHOULD differ:
+                # the dual genuinely has a different type, and on 1.12 `sum(sin.(x))` folds
+                # `typename(NDualArray)` against `typename(Array)`.
+                d = _nfwd_undual_const(dt.val)
+                if d isa Number
+                    (pt isa Core.Const && isequal(d, pt.val)) || return false
+                end
+            end
+        end
         st isa Core.GotoIfNot || continue
         pst = pci.code[i]
         pst isa Core.GotoIfNot || return true
