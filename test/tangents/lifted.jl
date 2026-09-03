@@ -664,6 +664,21 @@ const NDAC_VecC64 = NDualArray{
         @test aview.x === 4.0
     end
 
+    @testset "a non-differentiable element array's lane matches reverse" begin
+        # `NoDual` says there is no forward partial, not that the reverse element is `NoTangent`:
+        # `Vector{Ptr{Int}}` has reverse tangent `Vector{Ptr{NoTangent}}`, carrying the addresses.
+        # Deriving the element from the V rather than the primal returned `Vector{NoTangent}` with
+        # no error, and a `MethodError` once it had to fill a declared field. `test_lifted` cannot
+        # catch this: its per-lane check only asserts the accessor does not throw.
+        pv = Ptr{Int}[Ptr{Int}(0), Ptr{Int}(8)]
+        @test tangent(zero_lifted(Val(2), pv), 1) == zero_tangent(pv)
+        @test typeof(tangent(zero_lifted(Val(2), pv), 1)) === tangent_type(Vector{Ptr{Int}})
+        # The ordinary non-differentiable elements are unchanged.
+        for v in ([1, 2], [:a, :b])
+            @test tangent(zero_lifted(Val(2), v), 1) == zero_tangent(v)
+        end
+    end
+
     @testset "MutableDualTangentView (array, complex and nested fields)" begin
         # An ARRAY field reads as the write-through lane view, so `view.field[i] = x` from a rule
         # body lands in the block. `tangent(::Lifted, lane)` would hand back a dense copy instead,

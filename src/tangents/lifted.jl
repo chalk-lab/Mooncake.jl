@@ -264,11 +264,16 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 @inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
-# Element-wise non-differentiable array V (`Array{NoDual}`, e.g. `Vector{Int}`): the lane tangent
-# mirrors reverse `tangent_type(Array{T,D}) === Array{NoTangent,D}` — a same-shape `NoTangent`
-# array, the element-wise analogue of the whole-`NoDual` case above.
+# Element-wise non-differentiable array V (`Array{NoDual}`, e.g. `Vector{Int}`). The element comes
+# from the PRIMAL, not from the V: `NoDual` says only that there is no forward partial, and the
+# reverse element it stands for is whatever `tangent_type` gives that primal element. Mapping
+# `NoDual` to `NoTangent` is right for `Vector{Int}` and wrong for `Vector{Ptr{Int}}`, whose
+# reverse tangent is `Vector{Ptr{NoTangent}}` carrying the addresses — that returned a wrong-typed
+# `Vector{NoTangent}` with no error, and a `MethodError` once it had to fill a declared field.
+# `unlift` already rebuilt the placeholder for the same reason; deriving from the primal is what
+# makes the two agree for every element type rather than for the ones each remembered.
 @inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
-    return map(_ -> NoTangent(), tangent(x))
+    return uninit_tangent(primal(x))
 end
 # General element-wise container V — a plain `Array`/`Memory` of per-element forward Vs (e.g.
 # `Array{NDualArray}` from a nested array, or `Memory{…}` forward-over-reverse comms).
