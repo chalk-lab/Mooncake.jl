@@ -133,9 +133,9 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
     A = primal(A_dA)
     B = primal(B_dB)
     Ab, _ = _partials_block(A_dA)
@@ -225,7 +225,7 @@ function frule!!(
     _ipiv::Lifted{<:AbstractVector{Int}},
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
-    trans = primal(_trans)
+    trans = _lsame_flag(primal(_trans))
     ipiv = primal(_ipiv)
     A = primal(A_dA)
     B = primal(B_dB)
@@ -438,7 +438,7 @@ end
 function frule!!(
     ::Lifted{typeof(potrf!),Nw}, _uplo::Lifted{Char}, A_dA::Lifted{<:AbstractMatrix{P},Nw}
 ) where {Nw,P<:BlasRealFloat}
-    uplo = primal(_uplo)
+    uplo = _lsame_flag(primal(_uplo))
     A = primal(A_dA)
     Ab, acopied = _partials_block(A_dA)
     _, info = LAPACK.potrf!(uplo, A)
@@ -585,7 +585,7 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P},Nw},
     B_dB::Lifted{<:AbstractVecOrMat{P},Nw},
 ) where {Nw,P<:BlasRealFloat}
-    uplo = primal(_uplo)
+    uplo = _lsame_flag(primal(_uplo))
     A = primal(A_dA)
     B = primal(B_dB)
     Ab, _ = _partials_block(A_dA)
@@ -676,7 +676,7 @@ end
         A_dA::Lifted{<:AbstractMatrix{P},Nw},
         _uplo::Lifted{Char},
     ) where {Nw,P<:BlasFloat}
-        uplo = primal(_uplo)
+        uplo = _lsame_flag(primal(_uplo))
         B = primal(B_dB)
         A = primal(A_dA)
         Ab, _ = _partials_block(A_dA)
@@ -712,7 +712,7 @@ end
     ) where {P<:BlasFloat}
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
-        uplo = primal(_uplo)
+        uplo = _lsame_flag(primal(_uplo))
 
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)

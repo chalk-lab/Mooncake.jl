@@ -473,6 +473,14 @@ for (fname, jlfname, elty) in (
     end
 end
 
+# BLAS and LAPACK resolve their character flags with LSAME, which is case-insensitive, so `'u'` and
+# `'U'` name the same call. A rule body branches on the character, so it has to see what the routine
+# sees: reading every flag through this is what keeps the two in step. `trmm!` with `diag = 'u'`
+# took the non-unit-diagonal branch and returned a gradient of [1, 0, 1, 1] where the routine's own
+# answer is [0, 0, 1, 0], on an unchanged primal. Validation is left to the routine, which rejects
+# what it does not accept; matching its case-folding is the whole job here.
+_lsame_flag(c::Char) = uppercase(c)
+
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -1584,7 +1592,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         beta::Lifted{T,Nw},
         y_dy::Lifted{<:AbstractVector{T}},
     ) where {Nw,T<:$elty}
-        ul = primal(uplo)
+        ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
         A = primal(A_dA)
@@ -1660,7 +1668,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        ul = primal(uplo)
+        ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
         A, dA = arrayify(A_dA)
@@ -1739,9 +1747,9 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{T}},
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
     A = primal(A_dA)
     x = primal(x_dx)
     Ab, _ = _partials_block(A_dA)
@@ -1789,9 +1797,9 @@ function rrule!!(
 ) where {T<:BlasFloat}
 
     # Extract primals.
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
     x_copy = copy(x)
@@ -1867,9 +1875,9 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{T}},
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
     A = primal(A_dA)
     x = primal(x_dx)
     # Primal first — subsequent lane work needs the solved `x`.
@@ -1915,9 +1923,9 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
-    uplo = primal(_uplo)
-    trans = primal(_trans)
-    diag = primal(_diag)
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_trans))
+    diag = _lsame_flag(primal(_diag))
     A, dA = arrayify(A_dA)
     x, dx = arrayify(x_dx)
 
@@ -1994,8 +2002,8 @@ function frule!!(
     beta::Lifted{T,Nw},
     C_dC::Lifted{<:AbstractMatrix{T}},
 ) where {Nw,T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _lsame_flag(primal(transA))
+    tB = _lsame_flag(primal(transB))
     α = primal(alpha)
     β = primal(beta)
     A = _as_col(primal(A_dA))
@@ -2112,8 +2120,8 @@ end
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
-    tA = primal(transA)
-    tB = primal(transB)
+    tA = _lsame_flag(primal(transA))
+    tB = _lsame_flag(primal(transB))
     a = primal(alpha)
     b = primal(beta)
     p_A, dA = matrixify(A)
@@ -2232,7 +2240,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         C_dC::Lifted{<:AbstractMatrix{T}},
     ) where {Nw,T<:$elty}
         s = primal(side)
-        ul = primal(uplo)
+        ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
         A = primal(A_dA)
@@ -2314,7 +2322,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
         # Extract primals.
         s = primal(side)
-        ul = primal(uplo)
+        ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
         A, dA = arrayify(A_dA)
@@ -2410,7 +2418,7 @@ for (fname, elty, relty) in (
         β_dβ::Lifted{$relty,Nw},
         C_dC::Lifted{<:AbstractMatrix{$elty}},
     ) where {Nw}
-        uplo = primal(_uplo)
+        uplo = _lsame_flag(primal(_uplo))
         t = primal(_t)
         α = primal(α_dα)
         A = primal(A_dA)
@@ -2504,8 +2512,8 @@ for (fname, elty, relty) in (
     )
 
         # Extract values from pairs.
-        uplo = primal(_uplo)
-        trans = primal(_t)
+        uplo = _lsame_flag(primal(_uplo))
+        trans = _lsame_flag(primal(_t))
         α = primal(α_dα)
         A, dA = matrixify(A_dA)
         β = primal(β_dβ)
@@ -2569,10 +2577,10 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P}},
     B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    ta = primal(_ta)
-    diag = primal(_diag)
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    ta = _lsame_flag(primal(_ta))
+    diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
     A = primal(A_dA)
     B = primal(B_dB)
@@ -2643,10 +2651,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract values.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    tA = primal(_ta)
-    diag = primal(_diag)
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    tA = _lsame_flag(primal(_ta))
+    diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -2724,10 +2732,10 @@ function frule!!(
     A_dA::Lifted{<:AbstractMatrix{P}},
     B_dB::Lifted{<:AbstractMatrix{P}},
 ) where {Nw,P<:BlasFloat}
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_t))
+    diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
     A = primal(A_dA)
     B = primal(B_dB)
@@ -2814,10 +2822,10 @@ function rrule!!(
 ) where {P<:BlasFloat}
 
     # Extract parameters.
-    side = primal(_side)
-    uplo = primal(_uplo)
-    trans = primal(_t)
-    diag = primal(_diag)
+    side = _lsame_flag(primal(_side))
+    uplo = _lsame_flag(primal(_uplo))
+    trans = _lsame_flag(primal(_t))
+    diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
     A, dA = arrayify(A_dA)
     B, dB = arrayify(B_dB)
@@ -3369,6 +3377,36 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
     )
+
+    # BLAS resolves its flags with LSAME, so a lowercase one names the same call. Only `trans` and
+    # `diag` can reach the routine uncased: Julia's own wrapper compares `side` against 'L' and
+    # runs `chkuplo` on `uplo`, both case-sensitively, so those two error before BLAS sees them.
+    # One row is enough, every rule reading its flags through `_lsame_flag`, and adding lowercase
+    # to the alphabets above would multiply the whole matrix for no extra coverage. Before it,
+    # `diag = 'u'` took the non-unit-diagonal branch and returned a gradient of [1, 0, 1, 1] where
+    # the routine's own answer is [0, 0, 1, 0].
+    let
+        rng = rng_ctor(123456)
+        A = blas_matrices(rng, P, 3, 3)[1]
+        B = blas_matrices(rng, P, 3, 2)[1]
+        perf_flag = VERSION < v"1.11-" ? :none : :stability
+        push!(
+            test_cases,
+            (
+                false,
+                perf_flag,
+                nothing,
+                BLAS.trmm!,
+                'L',
+                'U',
+                'n',
+                'u',
+                randn(rng, P),
+                A,
+                B,
+            ),
+        )
+    end
 
     # trsm!
     test_cases = append!(
