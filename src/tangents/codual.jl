@@ -247,6 +247,15 @@ passed as an argument — `const C = ("a", 1.0)` — is not caught, in either mo
 Where that question cannot be asked the constant is RECORDED, not skipped. This guard exists to
 refuse, so an unknown must resolve towards refusing: an unnecessary refusal is a loud, explicable
 error, while a missed one is a silently wrong derivative.
+
+Matching is by identity at the ROOT, so nesting defeats it on either side: with
+`const A = [1.0, 2.0]; const T = (A,)`, a call at `x === A` is not refused and the reverse gradient
+comes back `[1.0, 2.0]` against `[2.0, 4.0]`. Recording every object reachable from each constant
+instead was tried and rejected on measurement, not taste: a real constant's value graph reaches
+modules and method tables, so a recursive walk overflows the stack during precompilation and an
+iterative one takes precompilation from 40 seconds past 600. Bounding that walk would put back the
+silent under-collection this function was just fixed to avoid, so the boundary stands until there
+is a way to enumerate reachable derivative storage without walking arbitrary objects.
 """
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     # An isbits value has no fdata to share (`Ptr` aside, and a `Ptr` constant is embedded as an IR
