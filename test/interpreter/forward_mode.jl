@@ -145,19 +145,41 @@ end
     end
 end;
 
+# `===` on two isbits duals compares `partials`, not just `.value`, so a branch on it flips.
+_nfwd_egal_branch(x, y) = (x === y) ? x * x * x : x * y
+# The same builtin on a non-differentiable operand stays admissible: the gate is the operand, not
+# the name. `n` lifts to `NoDual`, so egal answers for the dual exactly what it answers for the
+# primal.
+_nfwd_egal_nondual(x, n::Int) = (n === 2) ? x * x : x * x * x
+
+@testset "representation-observing builtins are refused a dual operand" begin
+    # nfwd ran `_nfwd_egal_branch(2.0, 2.0)` natively and returned 4.0 against a primal of 8.0 —
+    # a wrong VALUE, not merely a wrong derivative — because egal saw the differing seeds.
+    @test !Mooncake._nfwd_safe(Any[typeof(_nfwd_egal_branch), Float64, Float64], 1)
+    @test Mooncake._nfwd_safe(Any[typeof(_nfwd_egal_nondual), Float64, Int], 1)
+end
+
 @testset "nfwd primitive coverage" begin
-    # The nfwd classifier trusts one set of dual-transparent ops: structural `Core.Builtin`s
-    # in `_NFWD_SAFE_BUILTINS`. Every other builtin — and all intrinsics / foreigncalls — that touches a
-    # dual routes the function to the frule transform. If Julia gains a builtin it must be
-    # classified deliberately (safe vs opaque indirection) rather than silently trusted, so assert
-    # every current builtin is in exactly one of the two sets; a new one fails here loudly.
+    # The nfwd classifier sorts builtins three ways: `_NFWD_SAFE_BUILTINS` pass a dual through
+    # unchanged and are trusted unconditionally; `_NFWD_REPR_BUILTINS` answer differently for a dual
+    # than for its primal and are trusted only when no operand is dual-typed; `_NFWD_OPAQUE_BUILTINS`
+    # are indirections the scan cannot see through. Everything else — intrinsics, foreigncalls —
+    # routes to the frule transform on contact with a dual. If Julia gains a builtin it must be
+    # classified deliberately rather than silently trusted, so assert every current builtin is in
+    # exactly one of the three sets; a new one fails here loudly.
     builtins = Set(
         n for n in names(Core; all=true) if
         isdefined(Core, n) && getfield(Core, n) isa Core.Builtin
     )
-    accounted = Mooncake._NFWD_SAFE_BUILTINS ∪ Mooncake._NFWD_OPAQUE_BUILTINS
-    @test isempty(setdiff(builtins, accounted))
-    @test isempty(intersect(Mooncake._NFWD_SAFE_BUILTINS, Mooncake._NFWD_OPAQUE_BUILTINS))
+    sets = (
+        Mooncake._NFWD_SAFE_BUILTINS,
+        Mooncake._NFWD_REPR_BUILTINS,
+        Mooncake._NFWD_OPAQUE_BUILTINS,
+    )
+    @test isempty(setdiff(builtins, ∪(sets...)))
+    for (i, a) in enumerate(sets), b in sets[(i + 1):end]
+        @test isempty(intersect(a, b))
+    end
 end
 
 @testset "nfwd rejects array-length mutation" begin

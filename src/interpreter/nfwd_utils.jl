@@ -222,17 +222,8 @@ const _NFWD_SAFE_BUILTINS = Set{Symbol}([
     :arrayset,
     :arraysize,
     :const_arrayref,
-    # reflection / predicates / construction / select
-    :isdefined,
-    :nfields,
-    :fieldtype,
-    :typeof,
+    # construction / select
     :typeassert,
-    :isa,
-    :(<:),
-    :(===),
-    :applicable,
-    :sizeof,
     :current_scope,
     :tuple,
     :ifelse,
@@ -255,6 +246,25 @@ const _NFWD_SAFE_BUILTINS = Set{Symbol}([
     :_compute_sparams,
     :_expr,
     :apply_type,
+])
+
+# Builtins whose result depends on how a value is REPRESENTED rather than on the value it stands
+# for. A dual answers each of them differently from its primal — `NDual{Float64,1}` has a different
+# size, field count, type and bit pattern than `Float64` — so running one on a dual computes a
+# different function, not a differentiated one. Trusted only when no operand is dual-typed; a dual
+# reaching one routes the function to the frule transform.
+#
+# This is the property the list above was reaching for; "does not reinterpret bytes as a number" is
+# too weak, since `sizeof` reinterprets nothing. Testing the OPERAND rather than where the result
+# flows is what makes it closed: `x === y` on two duals compares `partials`, and no analysis of the
+# result's use would catch that, the result being a runtime `Bool` inference cannot fold.
+#
+# INCOMPLETE for the members inference CAN fold. `sizeof(NDual{Float64,1})` is the literal 16 before
+# the scan runs, so no operand survives to test and `x * sizeof(x)` still returns 32.0 against a
+# primal of 16.0. Catching those needs the primal and dual signatures compared statement by
+# statement, which `_nfwd_branches_agree_one` does today only for branch conditions.
+const _NFWD_REPR_BUILTINS = Set{Symbol}([
+    :isdefined, :nfields, :fieldtype, :typeof, :isa, :(<:), :(===), :applicable, :sizeof
 ])
 
 # Indirection builtins whose callee body the scan cannot see, so a dual flowing through them is
