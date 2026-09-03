@@ -897,12 +897,36 @@ function test_frule(
         # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
         # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
         # below still runs for every shape.
-        lane_checkable = all(s -> _chunk_lane_checkable(tangent(s)), seeds)
+        #
+        # An argument whose lane reads are all equal carries no direction, so it cannot
+        # distinguish lane k from lane 1 and must not veto the arguments that can: `Vector{Int}`
+        # lifts to `Vector{NoDual}`, which has no `_chunk_lane_checkable` method, and one such
+        # argument silenced the whole case. Relevance is MEASURED rather than predicted from the
+        # V's type, because a type-level test has to know every shape carrying partials and is
+        # silent when it does not — `_nfwd_has_ndual`, the nfwd classifier's, answers `false` for
+        # `NDualRef` and would wave a `Ref` past the veto that correctly refuses it.
+        irrelevant = map(
+            s -> N > 1 && _lane_reads_equal(tangent(s, 1), tangent(s, 2)), seeds
+        )
+        lane_checkable = all(zip(seeds, irrelevant)) do (s, skip)
+            return skip || _chunk_lane_checkable(tangent(s))
+        end
         # Capture the per-lane width-1 seeds *before* the width-N run, which (for in-place rules)
         # mutates the seed primals *and partials* in place — `_deepcopy` both so the captured lane
-        # directions survive the run. Each carries lane k's input direction.
+        # directions survive the run. Each carries lane k's input direction. An argument with no
+        # direction is not lifted either: its lane tangent need not be liftable, a mutable
+        # struct's being a write-through view that `lift` has no method for.
         lane_seeds = if lane_checkable
-            [map(s -> lift(_deepcopy(primal(s)), _deepcopy(tangent(s, k))), seeds) for k in 1:N]
+            [
+                map(seeds, irrelevant) do s, skip
+                    p = _deepcopy(primal(s))
+                    return if skip
+                        zero_lifted(Val(1), p)
+                    else
+                        lift(p, _deepcopy(tangent(s, k)))
+                    end
+                end for k in 1:N
+            ]
         else
             nothing
         end
