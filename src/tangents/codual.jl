@@ -157,10 +157,10 @@ end
 """
     ConstAliasSet(primals::Vector{Any} = Any[])
 
-The constant and global primals a derived rule built derivative storage for at rule-build time.
-Both `DerivedRule` and `DerivedFRule` carry one, and refuse a call whose arguments include one of
-these objects: that storage is shared with nothing, so the contribution through the constant would
-be dropped.
+The constant and global primals a rule built derivative storage for at rule-build time.
+`DerivedRule`, `DerivedFRule` and `NfwdFRule` each carry one, and refuse a call whose arguments
+include one of these objects: that storage is shared with nothing, so the contribution through the
+constant would be dropped.
 
 A field of this fixed, concrete, non-differentiable type rather than a type parameter. A parameter
 would make a rule's type depend on whether its function happens to read a differentiable constant,
@@ -173,3 +173,56 @@ end
 ConstAliasSet() = ConstAliasSet(Any[])
 
 tangent_type(::Type{ConstAliasSet}) = NoTangent
+
+"""
+    _check_constant_aliasing(consts::ConstAliasSet, args)
+
+Refuse `args` if any of them is one of the rule's build-time constants. Every rule kind calls this
+at entry; the set is empty for most rules, which is the branch that matters for cost.
+"""
+@inline function _check_constant_aliasing(consts::ConstAliasSet, args)
+    isempty(consts.primals) && return nothing
+    return _check_constant_aliasing_slow(consts.primals, args)
+end
+
+@noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
+    for a in args, c in consts
+        c === primal(a) && _throw_constant_alias_error(c)
+    end
+    return nothing
+end
+
+@noinline function _throw_constant_alias_error(@nospecialize(c))
+    throw(
+        ArgumentError(
+            "An argument is the same object as a constant or global read inside the function " *
+            "being differentiated (a $(typeof(c))). Their derivative storage is separate — the " *
+            "constant's is created once when the rule is built — so the contribution through " *
+            "the constant would be silently dropped and the derivative returned would be wrong. " *
+            "Pass a copy of the argument, or read the value through an argument instead of a " *
+            "global.",
+        ),
+    )
+end
+
+"""
+    record_const_alias!(consts::Vector{Any}, @nospecialize(v))
+
+Add the constant primal `v` to `consts` if an argument that is the same object would clash with it.
+
+Only a value owning mutable derivative storage can clash, and those are exactly the ones whose
+fdata is not `NoFData`. A scalar, or an immutable aggregate of scalars, has none: there is nothing
+for an argument to share, and excluding it is also what stops `===` matching a constant `2.0`
+against an argument that happens to be `2.0`. The cost is that a differentiable immutable constant
+passed as an argument — `const C = ("a", 1.0)` — is not caught, in either mode.
+"""
+function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
+    # An isbits value has no fdata to share (`Ptr` aside, and a `Ptr` constant is embedded as an IR
+    # literal rather than reaching here). Testing that first also keeps `tangent_type` off the
+    # primitive types it deliberately refuses, which the constants of an arbitrary walked body
+    # include.
+    isbits(v) && return nothing
+    fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
+    any(c -> c === v, consts) || push!(consts, v)
+    return nothing
+end

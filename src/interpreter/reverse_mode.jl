@@ -1824,45 +1824,18 @@ end
 """
     _aliasable_constants(shared_data::Tuple)
 
-The identity-bearing primals in `shared_data` that carry real fdata: IR constants, `QuoteNode`s
-and `GlobalRef`s, whose fdata `const_codual_stmt` mints once at rule-build time via
-`uninit_fcodual`. That storage is shared with nothing, so if the caller also passes one of these
-objects as an argument, the two never accumulate into one buffer and the contribution through the
-constant is silently dropped, so `DerivedRule` refuses that call. Empty for most rules.
+The aliasable primals in `shared_data`: IR constants, `QuoteNode`s and `GlobalRef`s, whose fdata
+`const_codual_stmt` mints once at rule-build time via `uninit_fcodual`. That storage is shared with
+nothing, so if the caller also passes one of these objects as an argument, the two never accumulate
+into one buffer and the contribution through the constant is silently dropped, so `DerivedRule`
+refuses that call. `record_const_alias!` decides which primals qualify. Empty for most rules.
 """
 function _aliasable_constants(shared_data::Tuple)
     consts = Any[]
     for d in shared_data
-        d isa CoDual || continue
-        tangent(d) isa NoFData && continue
-        push!(consts, primal(d))
+        d isa CoDual && record_const_alias!(consts, primal(d))
     end
     return ConstAliasSet(consts)
-end
-
-@inline function _check_constant_aliasing(consts::ConstAliasSet, args)
-    isempty(consts.primals) && return nothing
-    return _check_constant_aliasing_slow(consts.primals, args)
-end
-
-@noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
-    for a in args, c in consts
-        c === primal(a) && _throw_constant_alias_error(c)
-    end
-    return nothing
-end
-
-@noinline function _throw_constant_alias_error(@nospecialize(c))
-    throw(
-        ArgumentError(
-            "An argument is the same object as a constant or global read inside the function " *
-            "being differentiated (a $(typeof(c))). Their derivative storage is separate — the " *
-            "constant's is created once when the rule is built — so the contribution through " *
-            "the constant would be silently dropped and the gradient returned would be wrong. " *
-            "Pass a copy of the argument, or read the value through an argument instead of a " *
-            "global.",
-        ),
-    )
 end
 
 # Extends functionality defined for debug_mode.

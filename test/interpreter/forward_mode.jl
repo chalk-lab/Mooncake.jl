@@ -28,9 +28,11 @@ fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
 
 module FwdAliasGlobals
 # Read while also passed as the argument, to exercise the refusal of an argument that aliases a
-# differentiable global.
+# differentiable global. `alias_read_only` routes to the transform and `alias_scalar` to the
+# nfwd-native path, so the pair covers both forward rule kinds.
 const alias_vector = [1.0, 2.0]
 alias_read_only(x) = sum(x .* alias_vector)
+alias_scalar(x) = x[1] * alias_vector[1]
 end
 
 @testset "s2s_forward_mode_ad" begin
@@ -65,14 +67,10 @@ end
     # Forward counterpart of the reverse-mode testset of the same name, and bespoke for the same
     # reason: a `generate_test_functions` row's third slot is allocation bounds, which the driver
     # drops, so it cannot carry a `throws` expectation.
-    #
-    # Gated to <1.12 because the guard does not apply there, not to make the suite green: the 1.12
-    # transform surfaces no constant in `captures` (3 and no `Lifted`, against 4 and one on 1.11).
-    # That gap and the nfwd one are stated on `_aliasable_dual_constants`.
-    @static if VERSION < v"1.12-"
-        @testset "argument aliasing a differentiable global is refused" begin
-            G = FwdAliasGlobals.alias_vector
-            f = FwdAliasGlobals.alias_read_only
+    @testset "argument aliasing a differentiable global is refused" begin
+        G = FwdAliasGlobals.alias_vector
+        @testset "$f" for f in
+                          (FwdAliasGlobals.alias_read_only, FwdAliasGlobals.alias_scalar)
             cache = Mooncake.prepare_derivative_cache(f, G)
             @test_throws ArgumentError Mooncake.value_and_derivative!!(
                 cache, (f, Mooncake.zero_tangent(f)), (G, [1.0, 1.0])
@@ -82,7 +80,7 @@ end
             c2 = Mooncake.prepare_derivative_cache(f, y)
             @test Mooncake.value_and_derivative!!(
                 c2, (f, Mooncake.zero_tangent(f)), (y, [1.0, 1.0])
-            )[2] ≈ sum(G)
+            )[2] ≈ (f === FwdAliasGlobals.alias_read_only ? sum(G) : G[1])
         end
     end
 

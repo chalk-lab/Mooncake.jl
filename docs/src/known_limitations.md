@@ -86,13 +86,15 @@ f(x) = sum(x .* G)
 value_and_gradient!!(build_rrule(f, G), f, G)   # gradient [1.0, 2.0]; the truth is [2.0, 4.0]
 ```
 
-The value returned is correct, which makes this easy to miss. Reverse mode now refuses such a call
-with an `ArgumentError` rather than returning the wrong gradient.
+The value returned is correct, which makes this easy to miss. Both modes refuse such a call with an
+`ArgumentError` rather than returning the wrong derivative. Pass a copy, or read the value through
+an argument instead of a global.
 
-**Forward mode still returns the wrong answer here**, silently, in two cases: when the function
-takes the nfwd-native path (`x[1]*G[1]` gives a JVP of 1.0 where 2.0 is consistent), and on Julia
-1.12, where the transform does not surface the constant for the check to see. Prefer reverse mode
-when a global may alias an argument, or pass a copy.
+The check is by object identity, so it covers what can actually be shared: arrays, mutable structs,
+and aggregates containing them. A differentiable *immutable* constant that is also passed as an
+argument — `const C = ("a", 1.0)` — is not caught, and neither is a global read behind a call whose
+own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
+compares a rule's constants against that rule's own arguments.
 
 Aliasing between *arguments* is a different matter and is supported: two arguments over one array
 share derivative storage, so both positions report the one accumulated gradient.

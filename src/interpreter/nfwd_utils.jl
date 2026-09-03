@@ -81,9 +81,15 @@ _nfwd_backing_projectable(@nospecialize(A)) = true
 # Width-`N` forward rule for a whole function that is nfwd-safe (see `_nfwd_safe`): run
 # the primal directly on the inner dual values instead of deriving a per-op transform rule. Built
 # by `build_frule` when `nfwd` is set and the function classifies nfwd-safe.
-struct NfwdFRule{N} end
+struct NfwdFRule{N}
+    # Differentiable constants the classifier saw anywhere in the natively-executed call graph.
+    # The transform's guard is per-rule and nested rules re-check their own arguments, but nfwd
+    # flattens the whole graph into this one call, so the set has to be transitive to match.
+    consts::ConstAliasSet
+end
 
-@inline function (::NfwdFRule{N})(cf::Lifted, args::Vararg{Lifted,M}) where {N,M}
+@inline function (nf::NfwdFRule{N})(cf::Lifted, args::Vararg{Lifted,M}) where {N,M}
+    _check_constant_aliasing(nf.consts, args)
     y = primal(cf)(map(_nfwd_unwrap, args)...)
     p = _nfwd_primal(y)
     return Lifted{typeof(p),N}(p, y)
@@ -92,9 +98,9 @@ end
 _copy(nf::NfwdFRule) = nf
 
 # On Julia 1.10 the generic `__call_rule` barrier infers `Any` and boxes its arguments (see
-# `src/utils.jl` for why it exists). `NfwdFRule` is an empty singleton whose call method holds no
-# OpaqueClosure, so the world-age crash the barrier guards against cannot arise here: call it
-# directly and keep the forward pass type-stable.
+# `src/utils.jl` for why it exists). `NfwdFRule`'s call method holds no OpaqueClosure, so the
+# world-age crash the barrier guards against cannot arise here: call it directly and keep the
+# forward pass type-stable.
 @static if VERSION < v"1.11-"
     @inline __call_rule(rule::NfwdFRule, args) = rule(args...)
 end
@@ -357,9 +363,46 @@ function _nfwd_la_rule_covers(s::DataType)
     return true
 end
 
-function _nfwd_scan_body!(work::Vector{Any}, ci, @nospecialize(sig))
+# Record an operand that is a constant primal. `SSAValue`/`Argument`/`SlotNumber` name a computed
+# value and `Symbol`/`Expr` are syntax, never a value; everything else is the constant itself.
+function _nfwd_record_const!(consts::Vector{Any}, @nospecialize(a))
+    v = if a isa GlobalRef
+        (isdefined(a.mod, a.name) && isconst(a.mod, a.name)) || return nothing
+        getglobal(a.mod, a.name)
+    elseif a isa QuoteNode
+        a.value
+    elseif a isa Union{Core.SSAValue,Core.Argument,Core.SlotNumber,Expr,Symbol}
+        return nothing
+    else
+        a
+    end
+    return record_const_alias!(consts, v)
+end
+
+# Constants of a statement of any kind. Which kind carries the constant is version-dependent: on
+# 1.11 a `GlobalRef` stands as a statement of its own and the calls that use it refer to its
+# `SSAValue`, while on 1.12 the same global is folded into the operand slots of those calls.
+function _nfwd_record_stmt_consts!(consts::Vector{Any}, @nospecialize(st))
+    if st isa Expr
+        for a in st.args
+            _nfwd_record_const!(consts, a)
+        end
+    elseif st isa Union{GlobalRef,QuoteNode}
+        _nfwd_record_const!(consts, st)
+    elseif st isa Union{Core.ReturnNode,Core.PiNode,Core.UpsilonNode}
+        isdefined(st, :val) && _nfwd_record_const!(consts, st.val)
+    elseif st isa Core.PhiNode
+        for n in eachindex(st.values)
+            isassigned(st.values, n) && _nfwd_record_const!(consts, st.values[n])
+        end
+    end
+    return nothing
+end
+
+function _nfwd_scan_body!(work::Vector{Any}, consts::Vector{Any}, ci, @nospecialize(sig))
     ssatypes = ci.ssavaluetypes
     for st in ci.code
+        _nfwd_record_stmt_consts!(consts, st)
         st isa Expr || continue
         if st.head === :foreigncall
             fn = st.args[1]  # foreigncall target: a `QuoteNode`/`Symbol` name, or a dynamic ccall
@@ -554,7 +597,7 @@ end
 # call and recursively on every reachable `:invoke`, so re-deriving it for every forward build of
 # the same signature is wasted work. Cache keyed by signature and flushed whenever the world age
 # advances, since new method definitions can change inference (and hence the verdict).
-const _NFWD_SAFE_CACHE = Dict{Any,Bool}()
+const _NFWD_SAFE_CACHE = Dict{Any,Tuple{Bool,ConstAliasSet}}()
 const _NFWD_SAFE_WORLD = Ref{UInt}(typemax(UInt))
 const _NFWD_SAFE_LOCK = ReentrantLock()
 
@@ -565,7 +608,13 @@ function _nfwd_body_safe_cached(@nospecialize(sig), @nospecialize(expected))
             empty!(_NFWD_SAFE_CACHE)
             _NFWD_SAFE_WORLD[] = w
         end
-        get!(() -> _nfwd_body_safe(sig, expected), _NFWD_SAFE_CACHE, (sig, expected))
+        get!(_NFWD_SAFE_CACHE, (sig, expected)) do
+            consts = Any[]
+            safe = _nfwd_body_safe(sig, expected, consts)
+            # A rejected verdict abandons the walk part-way, so its constants are incomplete and
+            # must not be handed to a rule; nothing takes that path anyway.
+            (safe, ConstAliasSet(safe ? consts : Any[]))
+        end
     end
 end
 
@@ -575,14 +624,16 @@ end
 # scalar, so `_logrange_extra` returns `Tuple{NDual,NDual}` on duals but `Tuple{TwicePrecision,…}`
 # on floats), which would give a wrong primal and tangent. Requiring `rt === expected` rejects
 # those and routes them to the transform.
-function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::Int=600)
+function _nfwd_body_safe(
+    @nospecialize(sig), @nospecialize(expected), consts::Vector{Any}; maxnodes::Int=600
+)
     cts = _nfwd_code_typed(sig)
     (cts === nothing || length(cts) != 1) && return false
     ci, rt = cts[1]
     (isconcretetype(rt) && _nfwd_projectable(rt) && rt === expected) || return false
     _nfwd_branches_agree(sig) || return false
     work = Any[]
-    _nfwd_scan_body!(work, ci, sig) && return false
+    _nfwd_scan_body!(work, consts, ci, sig) && return false
     visited = Set{Any}()
     nodes = 0
     while !isempty(work)
@@ -593,7 +644,7 @@ function _nfwd_body_safe(@nospecialize(sig), @nospecialize(expected); maxnodes::
         cs = _nfwd_code_typed(s)
         (cs === nothing || length(cs) != 1) && return false
         _nfwd_branches_agree(s) || return false
-        _nfwd_scan_body!(work, cs[1][1], s) && return false
+        _nfwd_scan_body!(work, consts, cs[1][1], s) && return false
     end
     return true
 end
@@ -616,11 +667,19 @@ end
 # inference inlines differently per width, so a callee on the reject list may be a visible `:invoke`
 # at one width and inlined away — hence invisible — at the next. Never cache or reason about a
 # verdict as "this function is nfwd-safe".
-function _nfwd_safe(sig_types::Vector, width::Int)
-    isempty(sig_types) && return false
-    all(isconcretetype, sig_types) || return false
+#
+# Returns `(safe, consts)`: `consts` is the differentiable constants the call graph reads, which
+# `NfwdFRule` carries so it can refuse an argument that is one of them. It is meaningful only when
+# `safe` — every rejection path abandons the walk part-way.
+
+# Shared rejection. No rule ever holds this set, so reusing the one empty vector is safe.
+const _NFWD_UNSAFE = (false, ConstAliasSet())
+
+function _nfwd_verdict(sig_types::Vector, width::Int)
+    isempty(sig_types) && return _NFWD_UNSAFE
+    all(isconcretetype, sig_types) || return _NFWD_UNSAFE
     # callee must be non-differentiable: nfwd call cannot carry a closure-field derivative.
-    dual_type(Val(width), sig_types[1]) === NoDual || return false
+    dual_type(Val(width), sig_types[1]) === NoDual || return _NFWD_UNSAFE
     dsig_args = Any[]
     for i in 2:length(sig_types)
         dt = dual_type(Val(width), sig_types[i])
@@ -629,19 +688,21 @@ function _nfwd_safe(sig_types::Vector, width::Int)
         elseif _nfwd_projectable(dt)
             push!(dsig_args, dt)                     # inner dual → dispatch on the dual
         else
-            return false                            # struct dual (ImmutableDual/…) → not nfwd
+            return _NFWD_UNSAFE                     # struct dual (ImmutableDual/…) → not nfwd
         end
     end
     # The nfwd dual result must equal the canonical dual of the primal result; infer the primal
     # return type and hand its `dual_type` to the safety check as the required shape.
     pcts = _nfwd_code_typed(Tuple{sig_types...})
-    (pcts === nothing || length(pcts) != 1) && return false
+    (pcts === nothing || length(pcts) != 1) && return _NFWD_UNSAFE
     prt = pcts[1][2]
-    isconcretetype(prt) || return false
+    isconcretetype(prt) || return _NFWD_UNSAFE
     expected = try
         dual_type(Val(width), prt)
     catch
-        return false
+        return _NFWD_UNSAFE
     end
     return _nfwd_body_safe_cached(Tuple{sig_types[1],dsig_args...}, expected)
 end
+
+_nfwd_safe(sig_types::Vector, width::Int) = _nfwd_verdict(sig_types, width)[1]

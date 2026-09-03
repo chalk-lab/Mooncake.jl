@@ -38,6 +38,7 @@ struct DualRuleInfo
     isva::Bool
     nargs::Int
     dual_ret_type::Type
+    consts::ConstAliasSet
 end
 
 """
@@ -93,8 +94,9 @@ function build_frule(
     # If the whole function is nfwd-safe, run it directly on the inner dual values (bypassing the
     # per-op `Lifted`/frule transform envelope) rather than deriving a rule. This is the default;
     # `nfwd=false` or `debug_mode` keeps the fully-checked transform path.
-    if nfwd && !debug_mode && _nfwd_safe(Any[sig.parameters...], chunk_size)
-        return NfwdFRule{chunk_size}()
+    if nfwd && !debug_mode
+        nfwd_safe, nfwd_consts = _nfwd_verdict(Any[sig.parameters...], chunk_size)
+        nfwd_safe && return NfwdFRule{chunk_size}(nfwd_consts)
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -122,7 +124,7 @@ function build_frule(
             )
             sig = flatten_va_sig(sig, info.isva, info.nargs)
             raw_rule = DerivedFRule{sig,typeof(dual_oc),info.isva,info.nargs}(
-                dual_oc, _aliasable_dual_constants(captures)
+                dual_oc, info.consts
             )
             rule = debug_mode ? DebugFRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule
@@ -138,41 +140,8 @@ end
 struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
     # Constant and global primals this rule built forward values for at build time, empty for most
-    # rules. Reverse's `DerivedRule` carries the same thing; see `_aliasable_constants`.
+    # rules. Collected by `const_lifted!`; reverse's `DerivedRule` carries the same thing.
     consts::ConstAliasSet
-end
-
-"""
-    _aliasable_dual_constants(captures)
-
-Forward counterpart of `_aliasable_constants`. `const_dual!` builds a `Lifted` for each
-differentiable IR constant and `GlobalRef` once at rule-build time and pushes it here, so its
-partials are shared with nothing. An argument that is the same object then has its own, and the
-contribution through the constant is dropped.
-
-MUCH narrower than the reverse counterpart, which reads the whole shared-data tuple. Two gaps, both
-leaving a silently wrong JVP rather than a refusal, so do not rely on this as a complete guard:
-
-  - The nfwd-native path (`NfwdFRule`) runs the primal on `NDual` numbers and lifts no constants
-    at all, so there is nothing to collect. `x[1]*G[1]` at `x === G` routes there on 1.11 and 1.12
-    alike and returns a JVP of 1.0 against a consistent 2.0.
-  - On 1.12 the transform does not surface the constant in `captures` even with `nfwd=false`:
-    `sum(x .* G)` gives 3 captures and no `Lifted`, where 1.11 gives 4 and one. So this collects
-    nothing on 1.12.
-
-Reverse mode's guard has neither gap. Closing these needs the constants tracked somewhere both
-paths can see, which is a larger change than this.
-"""
-# `captures` is a `Vector{Any}` while the IR is being built and a `Tuple` once the rule is
-# constructed, so this takes either.
-function _aliasable_dual_constants(captures)
-    consts = Any[]
-    for c in captures
-        c isa Lifted || continue
-        tangent(c) isa NoDual && continue
-        push!(consts, primal(c))
-    end
-    return ConstAliasSet(consts)
 end
 
 # Invoke the wrapped OpaqueClosure (`fwd_oc.oc`) directly rather than the `MistyClosure`
@@ -251,6 +220,8 @@ struct DualInfo
     # Chunk width of the forward rule: every lifted slot / constant in the dual IR is
     # `Lifted{P, width, V}`. `width == 1` is the ordinary single-direction rule.
     width::Int
+    # Constant primals an argument must not alias, accumulated by `const_lifted!`.
+    consts::Vector{Any}
 end
 
 function generate_dual_ir(
@@ -313,7 +284,7 @@ function generate_dual_ir(
     captures = Any[]
 
     is_used = characterised_used_ssas(stmt(primal_ir.stmts))
-    info = DualInfo(primal_ir, interp, is_used, debug_mode, chunk_width)
+    info = DualInfo(primal_ir, interp, is_used, debug_mode, chunk_width, Any[])
     for (n, inst) in enumerate(dual_ir.stmts)
         ssa = SSAValue(n)
         modify_fwd_ad_stmts!(stmt(inst), dual_ir, ssa, captures, info)
@@ -334,33 +305,49 @@ function generate_dual_ir(
     dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
     return dual_ir,
     captures_tuple,
-    DualRuleInfo(isva, nargs, dual_ret_type(primal_ir, Val(chunk_width)))
+    DualRuleInfo(
+        isva, nargs, dual_ret_type(primal_ir, Val(chunk_width)), ConstAliasSet(info.consts)
+    )
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
 
 """
-    const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int}
+    const_lifted!(v, info::DualInfo)
 
-Build a width-`N` `Lifted` from `stmt` with a zero tangent — `stmt` is a constant, whose
-derivative is zero, so its tangent must be zeroed (an uninitialised array tangent would leak
-garbage into any op that reads the constant's tangent). `N` is the chunk width, threaded into
-`zero_lifted(Val(N), v)` so the constant's V matches the surrounding chunked slots (`Val(1)`
-for a standard forward rule). If the resulting `Lifted` is a bits type, then it is returned. If
-it is not, then the `Lifted` is put into captures, and its location in `captures` returned.
+Build the width-`info.width` `Lifted` for the constant primal `v`, with a zero tangent — `v` is a
+constant, whose derivative is zero, so its tangent must be zeroed (an uninitialised array tangent
+would leak garbage into any op that reads the constant's tangent). The chunk width is threaded
+through so the constant's V matches the surrounding chunked slots (`1` for a standard forward
+rule).
+
+Every constant the transform lifts goes through here, which is also where the rule's
+`ConstAliasSet` is accumulated. Collecting at the mint site rather than from the finished
+`captures` is what makes the guard version-independent: a constant only reaches `captures` when it
+appears as a statement of its own, and on 1.12 the optimiser folds a `GlobalRef` into the operand
+slots of the calls that use it, where it is emitted as an IR literal instead.
+"""
+function const_lifted!(v, info::DualInfo)
+    record_const_alias!(info.consts, v)
+    return zero_lifted(Val(info.width), v)
+end
+
+"""
+    const_dual!(captures::Vector{Any}, stmt, info::DualInfo)::Union{Lifted,Int}
+
+`const_lifted!` for a site that can take either form. If the resulting `Lifted` is a bits type,
+then it is returned. If it is not, then the `Lifted` is put into captures, and its location in
+`captures` returned.
 
 Whether or not the value is a literal, or an index into the captures, can be determined from
 the return type.
 """
-function const_dual!(captures::Vector{Any}, stmt, ::Val{N})::Union{Lifted,Int} where {N}
+function const_dual!(captures::Vector{Any}, stmt, info::DualInfo)::Union{Lifted,Int}
     v = get_const_primal_value(stmt)
-    x = zero_lifted(Val(N), v)
-    if safe_for_literal(v)
-        return x
-    else
-        push!(captures, x)
-        return length(captures)
-    end
+    x = const_lifted!(v, info)
+    safe_for_literal(v) && return x
+    push!(captures, x)
+    return length(captures)
 end
 
 ## Modification of IR nodes
@@ -388,13 +375,20 @@ function modify_fwd_ad_stmts!(
     stmt::GlobalRef, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isconst(stmt)
-        d = const_dual!(captures, stmt, Val(info.width))
+        d = const_dual!(captures, stmt, info)
         if d isa Int
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, get_capture, Argument(1), d))
         else
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, identity, d))
         end
     else
+        # A non-const global is read afresh on every call and zero-lifted there, so its forward
+        # value is no more shared with an argument's than a constant's is. Record the binding's
+        # current value so the guard covers it too; rebinding the global between build and call
+        # leaves that record stale, which is the same staleness reverse's `__verify_const` asserts
+        # against.
+        isdefined(stmt.mod, stmt.name) &&
+            record_const_alias!(info.consts, getglobal(stmt.mod, stmt.name))
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
         zero_lifted_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
@@ -416,7 +410,7 @@ function modify_fwd_ad_stmts!(
     end
 
     # stmt is a const, so we have to turn it into a dual.
-    d = const_dual!(captures, stmt.val, Val(info.width))
+    d = const_dual!(captures, stmt.val, info)
     if d isa Int
         get_dual = Expr(:call, get_capture, Argument(1), d)
         get_dual_ssa = CC.insert_node!(dual_ir, ssa, new_inst(get_dual), ATTACH_BEFORE)
@@ -433,9 +427,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = zero_lifted(
-            Val(info.width), get_const_primal_value(stmt.values[n])
-        )
+        stmt.values[n] = const_lifted!(get_const_primal_value(stmt.values[n]), info)
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -453,7 +445,7 @@ function modify_fwd_ad_stmts!(
     if stmt.val isa Union{Argument,SSAValue}
         v = __inc(stmt.val)
     else
-        v = zero_lifted(Val(info.width), get_const_primal_value(stmt.val))
+        v = const_lifted!(get_const_primal_value(stmt.val), info)
     end
     replace_call!(
         dual_ir, ssa, PiNode(v, lifted_type(Val(info.width), CC.widenconst(stmt.typ)))
@@ -465,7 +457,7 @@ function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if !(stmt.val isa Union{Argument,SSAValue})
-        stmt = UpsilonNode(zero_lifted(Val(info.width), get_const_primal_value(stmt.val)))
+        stmt = UpsilonNode(const_lifted!(get_const_primal_value(stmt.val), info))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -483,9 +475,7 @@ function modify_fwd_ad_stmts!(
     for n in eachindex(stmt.values)
         isassigned(stmt.values, n) || continue
         stmt.values[n] isa Union{Argument,SSAValue} && continue
-        stmt.values[n] = zero_lifted(
-            Val(info.width), get_const_primal_value(stmt.values[n])
-        )
+        stmt.values[n] = const_lifted!(get_const_primal_value(stmt.values[n]), info)
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))
     set_ir!(
@@ -544,7 +534,7 @@ function modify_fwd_ad_stmts!(
         # Lift arguments.
         dual_args = map(args) do arg
             arg isa Union{Argument,SSAValue} && return arg
-            return zero_lifted(Val(info.width), get_const_primal_value(arg))
+            return const_lifted!(get_const_primal_value(arg), info)
         end
 
         interp = info.interp
