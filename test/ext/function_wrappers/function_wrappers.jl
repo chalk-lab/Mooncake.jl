@@ -119,6 +119,17 @@ using FunctionWrappers: FunctionWrapper
             o2 = r2(zl(N, f_construct), ndual(x0, xs), ndual(y0, ys))
             @test Mooncake.primal(o2) ≈ x0 * y0
             @test all(k -> Mooncake.tangent(o2, k) ≈ y0 * xs[k] + x0 * ys[k], 1:N)
+
+            # A `FunctionWrapperTangent` bakes all N lanes into one OpaqueClosure, so a slot
+            # holding one cannot be decomposed per lane above width 1. It refuses rather than
+            # handing every lane the full width-N tangent. Bespoke because the registry drives
+            # rules, and this guard is on the `tangent(::Lifted, ::Integer)` accessor — which the
+            # chunked per-lane oracle skips for exactly this V shape, so no row reaches it.
+            @test_throws ArgumentError Mooncake.tangent(zl(N, fw_sin), 1)
+        end
+        # At width 1 the whole tangent IS lane 1, so the same call is allowed.
+        let s1 = zl(1, fw_sin)
+            @test Mooncake.tangent(s1, 1) === Mooncake.tangent(s1)
         end
     end
 end
