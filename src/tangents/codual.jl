@@ -216,6 +216,12 @@ function _reaches_recursive_type(
     on_path::IdDict{Type,Bool}=IdDict{Type,Bool}(),
     nodes::Ref{Int}=Ref(0),
 )
+    # A union is where the recursion usually hides: `next::Union{Nothing,LNode}` is how a linked
+    # list is spelled, and `tangent_type` distributes over unions, so the walk must too.
+    if P isa Union
+        return _reaches_recursive_type(P.a, on_path, nodes) ||
+               _reaches_recursive_type(P.b, on_path, nodes)
+    end
     (isconcretetype(P) && !isprimitivetype(P)) || return false
     haskey(on_path, P) && return on_path[P]
     (nodes[] += 1) > 600 && return true
@@ -237,6 +243,10 @@ fdata is not `NoFData`. A scalar, or an immutable aggregate of scalars, has none
 for an argument to share, and excluding it is also what stops `===` matching a constant `2.0`
 against an argument that happens to be `2.0`. The cost is that a differentiable immutable constant
 passed as an argument — `const C = ("a", 1.0)` — is not caught, in either mode.
+
+Where that question cannot be asked the constant is RECORDED, not skipped. This guard exists to
+refuse, so an unknown must resolve towards refusing: an unnecessary refusal is a loud, explicable
+error, while a missed one is a silently wrong derivative.
 """
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     # An isbits value has no fdata to share (`Ptr` aside, and a `Ptr` constant is embedded as an IR
@@ -244,8 +254,13 @@ function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     # primitive types it deliberately refuses, which the constants of an arbitrary walked body
     # include.
     isbits(v) && return nothing
-    _reaches_recursive_type(_typeof(v)) && return nothing
-    fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
+    # `tangent_type` does not terminate on a recursive type, and the walk that establishes this can
+    # also run out of budget, where the answer is UNKNOWN rather than "not recursive". Both cases
+    # record without asking: a constant whose tangent type cannot be computed is one no rule can
+    # build storage for, which is precisely the clash this set exists to refuse.
+    if !_reaches_recursive_type(_typeof(v))
+        fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
+    end
     any(c -> c === v, consts) || push!(consts, v)
     return nothing
 end

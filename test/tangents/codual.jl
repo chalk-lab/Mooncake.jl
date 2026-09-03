@@ -1,3 +1,15 @@
+# A linked-list node: the recursion is inside a union, which is how it is usually spelled.
+mutable struct _RecursiveNode
+    v::Float64
+    next::Union{Nothing,_RecursiveNode}
+end
+
+# Wider than `_reaches_recursive_type`'s node budget, but not recursive: the walk cannot answer.
+struct _WideConst{T}
+    junk::T
+    v::Vector{Float64}
+end
+
 @testset "codual" begin
     @test CoDual(5.0, 4.0) isa CoDual{Float64,Float64}
     @test CoDual(Float64, NoTangent()) isa CoDual{Type{Float64},NoTangent}
@@ -120,5 +132,27 @@
         @test !Mooncake._reaches_recursive_type(Diagonal{Float64,Vector{Float64}})
         @test !Mooncake._reaches_recursive_type(Tuple{Float64,Vector{Float64}})
         @test !Mooncake._reaches_recursive_type(String)
+        # A union is how recursion is usually spelled, and `tangent_type` distributes over one,
+        # so the walk must: without this the guard reported a linked-list node as answerable and
+        # then overflowed asking for its tangent type.
+        @test Mooncake._reaches_recursive_type(_RecursiveNode)
+    end
+
+    @testset "record_const_alias! records what it cannot ask about" begin
+        # The guard exists to refuse, so an unknown resolves towards refusing. A struct wider than
+        # the walk's budget is not recursive at all, but the answer is unavailable: recording it
+        # yields a loud refusal where skipping yielded a gradient of [1.0, 1.0] against [2.0, 2.0].
+        wide = _WideConst(ntuple(i -> Val(i), 601), [1.0, 2.0])
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, wide)
+        @test length(consts) == 1
+        # A recursive type is recorded without asking `tangent_type`, which would not terminate.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, Base.ImmutableDict{Symbol,Any}(:a, 1))
+        @test length(consts) == 1
+        # Non-differentiable constants are still skipped, so `===` cannot match one spuriously.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, "abc")
+        @test isempty(consts)
     end
 end
