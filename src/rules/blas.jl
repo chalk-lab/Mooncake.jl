@@ -545,10 +545,13 @@ function frule!!(
     # `dy := a*dx + da*x + dy`, then the primal ONCE, after every lane has read the original `x`.
     # Broadcast rather than `BLAS.axpy!` on the lane partial: above width 1 a lane is a stride-`Nw`
     # view, which the pointer-based wrapper misreads -- it silently dropped the last element.
-    xv = _viewify_one(n, x, _blas_walk_step(x, incx, n))
+    lbl = "Forward-mode `BLAS.axpy!`"
+    step_x = _checked_walk_step(lbl, n, x, incx)
+    step_y = _checked_walk_step(lbl, n, y, incy)
+    xv = _viewify_one(n, x, step_x)
     for k in 1:Nw
-        dy_k = _viewify_one(n, _blas_lane_partial(Y_dY, k), _blas_walk_step(y, incy, n))
-        dx_k = _viewify_one(n, _blas_lane_partial(X_dX, k), _blas_walk_step(x, incx, n))
+        dy_k = _viewify_one(n, _blas_lane_partial(Y_dY, k), step_y)
+        dx_k = _viewify_one(n, _blas_lane_partial(X_dX, k), step_x)
         dy_k .= a .* dx_k .+ tangent(a_da, k) .* xv .+ dy_k
     end
     BLAS.axpy!(n, a, x, incx, y, incy)
@@ -975,6 +978,21 @@ end
 )
 @inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
     unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
+)
+
+# `_blas_walk_step` returns `nothing` where the routine's walk leaves the operand, and every caller
+# has to refuse that. Pairing the refusal with the computation is what stops one forgetting:
+# `axpy!`'s frule reached `_viewify_one` with `nothing` and raised a `MethodError` rather than the
+# message above, which says what to do about it.
+@inline function _checked_walk_step(label, n::Integer, x, inc::Integer)
+    step = _blas_walk_step(x, inc, n)
+    step === nothing && _throw_no_walk_step(label, x, inc)
+    return step
+end
+
+# A rule that skipped `_checked_walk_step`, not a user error.
+@inline _viewify_one(::Integer, @nospecialize(x), ::Nothing) = error(
+    "internal: `_viewify_one` needs a checked walk step; obtain one from `_checked_walk_step`",
 )
 function rrule!!(
     ::CoDual{typeof(BLAS.nrm2)},
