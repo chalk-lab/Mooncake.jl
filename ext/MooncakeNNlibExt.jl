@@ -1,3 +1,8 @@
+# This extension cannot load while Mooncake is at 0.6: `NNlib._affine_normalize`, a primitive
+# below, is undefined before NNlib 0.9.37, and NNlib from 0.9.37 caps Mooncake at "0.4 - 0.5", so
+# Pkg refuses the two together. `test/ext/nnlib` therefore skips rather than runs. Both halves
+# clear when NNlib admits Mooncake 0.6; the `[compat]` floor of 0.9.45 already suits that world.
+
 module MooncakeNNlibExt
 
 using NNlib, Random, Mooncake
