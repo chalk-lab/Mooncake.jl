@@ -2419,7 +2419,13 @@ See [`test_lifted_type`](@ref) for the type-level half of the same contract.
 # Compare two per-lane reads. A read can be a live view (a mutable struct's write proxy, or an
 # array lane view), which is not a value `has_equal_data` accepts, so reduce those to values first.
 _lane_reads_equal(a, b) = has_equal_data(_lane_read_value(a), _lane_read_value(b))
-_lane_read_value(x::AbstractArray) = collect(x)
+# Materialise a lane read so two reads compare by VALUE: a stride view over the partials block and
+# a plain array are different types, which `has_equal_data`'s same-type methods reject outright.
+# A storage array may hold undefined elements, which `collect` cannot copy, so hand those to
+# `has_equal_data` as they are -- it compares element-wise with its own `isassigned` handling.
+function _lane_read_value(x::AbstractArray)
+    return all(i -> isassigned(x, i), eachindex(x)) ? collect(x) : x
+end
 _lane_read_value(@nospecialize(x)) = x
 
 function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)

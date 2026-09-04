@@ -45,6 +45,16 @@ function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), t, x)::T
 end
 
+# A `MemoryRef`'s forward V is a `MemoryRef` holding the referenced value's V, mirroring reverse's
+# `tangent_type(MemoryRef{T}) === MemoryRef{tangent_type(T)}`, so the invariant recurses through the
+# reference. An unassigned slot has nothing to compare.
+function TestUtils._chunked_v_invariant(p::MemoryRef, v::MemoryRef, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    (isassigned(p) && isassigned(v)) || return true
+    return TestUtils._chunked_v_invariant(p[], v[], c)
+end
+
 function TestUtils.has_equal_data_internal(
     x::Memory{P}, y::Memory{P}, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P}
