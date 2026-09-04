@@ -2557,6 +2557,11 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
     end
     # Shifting an erased pointer: the rule claims every `Ptr`, so it must shift a `Ptr{Cvoid}`'s
     # tangent too, keeping the element type it erased.
+    # Reads a value back through its own object address. Forward-mode refuses this (see the rows
+    # below); reverse mode handles it.
+    ref_objref_roundtrip(x) = pointerref(
+        bitcast(Ptr{Float64}, pointer_from_objref(Ref(x))), 1, 1
+    )
     function shift_through_cvoid(b::Vector{Float64}, x::Float64)
         return GC.@preserve b x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b)) + 8))
     end
@@ -2596,16 +2601,18 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
             x -> +(x...),
             randn(33),
         ),
+        # Forward refuses the own-address round-trip: a read through `pointer_from_objref` is
+        # invisible to the optimiser, which may elide the store into the primal `Ref`, so the
+        # PRIMAL can come back wrong (width 8 returned 0.0 for 5.0). Reverse is unaffected and
+        # keeps its ordinary correctness test, hence the two rows.
         (
             false,
             :none,
-            nothing,
-            (function (x)
-                rx = Ref(x)
-                return pointerref(bitcast(Ptr{Float64}, pointer_from_objref(rx)), 1, 1)
-            end),
+            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+            ref_objref_roundtrip,
             5.0,
         ),
+        (false, :none, (mode=ReverseMode,), ref_objref_roundtrip, 5.0),
         (
             false,
             :none,

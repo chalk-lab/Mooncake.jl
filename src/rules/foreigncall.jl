@@ -116,19 +116,28 @@ function frule!!(::Lifted{typeof(pointer_from_objref),Nw}, x::Lifted) where {Nw}
     end
     return Lifted{typeof(y),Nw}(y, ntuple(_ -> taddr, Val(Nw)))
 end
-# `Ref{P<:NDualEltype}` (`NDualRef`): unlike the interleaved `MutableDual` fallback above, the
-# partials live in a parallel buffer with primal-identical scalar layout. Thread per-lane pointers
-# into that buffer's contiguous `NTuple` (lane `k` at offset `(k-1)*sizeof(P)`), so the existing
-# `bitcast` (re-types each `Ptr{P}` lane) and `pointerref` (`NTuple{Nw,Ptr{P}}` → scalar dual)
-# frules reconstruct the derivative. Forward raw-pointer reads of a `Ref` (real or complex) are
-# correct; `unsafe_pointer_to_objref` reads the partials back through these pointers to round-trip.
+# `Ref{P<:NDualEltype}` (`NDualRef`) is refused, at EVERY width. The partials do live in a parallel
+# buffer with primal-identical scalar layout, so threading per-lane pointers into it reconstructs
+# the DERIVATIVE correctly. The PRIMAL is the problem: when a `Ref`'s only reader is a raw pointer,
+# that read is invisible to the optimiser, which is then entitled to elide the store into the
+# primal object. At chunk width 8 it does, and
+#     f(x) = (rx = Ref(x); pointerref(bitcast(Ptr{Float64}, pointer_from_objref(rx)), 1, 1))
+# returned 0.0 for `f(5.0)` with nothing raised. Width 1 returned 5.0, but by accident of codegen
+# rather than by design: nothing makes the store observable there either. Handing out the address
+# at all is therefore unsound, so this fails loudly instead of returning a value whose correctness
+# depends on inlining.
 function frule!!(
     ::Lifted{typeof(pointer_from_objref),Nw},
     x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef{P,Nw}},
 ) where {Nw,P<:NDualEltype}
-    y = pointer_from_objref(primal(x))
-    base = UInt(pointer_from_objref(tangent(x).partials))
-    return Lifted{typeof(y),Nw}(y, ntuple(k -> Ptr{P}(base + (k - 1) * sizeof(P)), Val(Nw)))
+    throw(
+        ArgumentError(
+            "Forward-mode AD cannot take `pointer_from_objref` of a `Ref{$P}`: a read through " *
+            "that address is invisible to the optimiser, which may elide the store into the " *
+            "primal object, so the PRIMAL itself (not merely the derivative) can come back " *
+            "wrong. Hold the value in an `Array`, or use reverse mode.",
+        ),
+    )
 end
 # The address handed out points at the TANGENT object, while every later `pointerref`/`pointerset`
 # through it indexes at the PRIMAL's field offsets. That arithmetic is only meaningful when the two
@@ -723,7 +732,16 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :stability, nothing, Base.allocatedinline, Vector{Float64}),
         (false, :stability, nothing, objectid, 5.0),
         (true, :stability, nothing, objectid, randn(5)),
-        (true, :stability, nothing, pointer_from_objref, _x),
+        # Refused in forward mode: a read through the address is invisible to the optimiser,
+        # which may elide the store into the primal `Ref`. Reverse keeps its ordinary test.
+        (
+            true,
+            :stability,
+            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+            pointer_from_objref,
+            _x,
+        ),
+        (true, :stability, (mode=ReverseMode,), pointer_from_objref, _x),
         (
             # `skip_forward`: the tangent buffer here is a reverse tangent (`_dx`), so the forward
             # pointer round-trip recovers a reverse tangent rather than the canonical forward V — an
