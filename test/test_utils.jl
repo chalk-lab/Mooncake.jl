@@ -232,4 +232,18 @@
         # comparison still run — its own assertions register in this testset.
         run((value=6.0,))
     end
+
+    @testset "forward chunk widths" begin
+        # `chunk_size === nothing` is "unspecified", not "pin to 1" — `run_rule_test_cases`
+        # passes it for every row, so conflating the two would run every case at width 1.
+        @test TestUtils._fwd_widths(false, nothing) == (1, 8)
+        @test TestUtils._fwd_widths(true, nothing) == (1,)
+        @test TestUtils._fwd_widths(false, 4) == (4,)
+        @test TestUtils._fwd_widths(true, 1) == (1,)
+        @test_throws ArgumentError TestUtils._fwd_widths(true, 8)
+        # A pin the path cannot satisfy is refused rather than dropped, end to end.
+        @test_throws ArgumentError test_rule(
+            Xoshiro(1), sin, 1.0; skip_chunked=true, chunk_size=8
+        )
+    end
 end

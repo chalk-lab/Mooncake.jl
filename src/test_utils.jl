@@ -1681,6 +1681,23 @@ function _test_mode_filter()
     return nothing
 end
 
+# The forward widths a case runs at. `chunk_size === nothing` means unspecified, not "pin to 1":
+# conflating the two would collapse every registered case to width 1, since `run_rule_test_cases`
+# passes this for every row. An explicit pin above 1 contradicts `skip_chunked` and is refused
+# rather than silently resolved either way.
+function _fwd_widths(skip_chunked::Bool, chunk_size::Union{Nothing,Int})
+    isnothing(chunk_size) && return skip_chunked ? (1,) : (1, 8)
+    if skip_chunked && chunk_size > 1
+        throw(
+            ArgumentError(
+                "`skip_chunked=true` and `chunk_size=$chunk_size` are contradictory: the case " *
+                "declares it cannot be lane-compared above chunk width 1.",
+            ),
+        )
+    end
+    return (chunk_size,)
+end
+
 """
     test_rule(
         rng::AbstractRNG,
@@ -1844,7 +1861,7 @@ function test_rule(
     fwd_allocs_broken::Bool=false,
     oracle=nothing,
     throws=nothing,
-    chunk_size::Int=1,
+    chunk_size::Union{Nothing,Int}=nothing,
     primal_throws::Bool=false,
 )
     # A case that must fail loudly asserts the raise instead of the correctness battery. The
@@ -1853,9 +1870,19 @@ function test_rule(
     if !isnothing(throws)
         err, msg = _throwing_case_expectation(throws)
         return _test_rule_throws(
-            rng, x...; err, msg, mode, primal=primal_throws, chunk_size
+            rng,
+            x...;
+            err,
+            msg,
+            mode,
+            primal=primal_throws,
+            chunk_size=something(chunk_size, 1),
         )
     end
+
+    # Resolved before the testset: a contradictory pair is a malformed call, which must raise
+    # here rather than be recorded as a failed assertion inside it.
+    fwd_widths = _fwd_widths(skip_chunked, chunk_size)
 
     # Take a copy of `x` to ensure that we do not mutate the original.
     x = deepcopy(x)
@@ -1909,7 +1936,7 @@ function test_rule(
                         x...;
                         sig,
                         frule,
-                        widths=(skip_chunked ? (1,) : (1, 8)),
+                        widths=fwd_widths,
                         is_primitive,
                         interface_only,
                         perf_flag,
@@ -1996,7 +2023,7 @@ _case_oracle(opts) = opts isa NamedTuple ? get(opts, :oracle, nothing) : nothing
 # `mode` restricts it to one mode, and `chunk_size` picks the width its trigger needs.
 _case_throws(opts) = opts isa NamedTuple ? get(opts, :throws, nothing) : nothing
 _case_mode(opts) = opts isa NamedTuple ? get(opts, :mode, nothing) : nothing
-_case_chunk_size(opts) = opts isa NamedTuple ? get(opts, :chunk_size, 1) : 1
+_case_chunk_size(opts) = opts isa NamedTuple ? get(opts, :chunk_size, nothing) : nothing
 _case_primal_throws(opts) = opts isa NamedTuple ? get(opts, :primal, false) : false
 function _case_output_tangent(opts)
     opts isa NamedTuple ? get(opts, :output_tangent, nothing) : nothing
