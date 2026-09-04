@@ -9,6 +9,10 @@ mutable struct TaskTangent end
 
 tangent_type(::Type{Task}) = TaskTangent
 
+# A `TaskTangent` has no fields, so there is no inner value for the chunked invariant to compare
+# against the `Task`.
+TestUtils._chunked_v_invariant(::Task, ::TaskTangent, ::IdDict) = true
+
 function zero_tangent_internal(p::Task, dict::MaybeCache)
     if haskey(dict, p)
         return dict[p]::TaskTangent

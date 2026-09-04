@@ -74,6 +74,10 @@ zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 ) where {N,P<:IEEEFloat}
     return NTuple{N,TwicePrecision{P}}
 end
+# Per-lane partials carry no inner value, so the chunked invariant has nothing to compare against
+# the primal — the same exemption the `Ptr` V pattern above takes.
+TestUtils._chunked_v_invariant(::TWP, ::Tuple{Vararg{TWP}}, ::IdDict) = true
+
 # No `lifted_type(::Type{TwicePrecision})` override needed: the generic concrete-struct
 # `lifted_type` returns `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `TwicePrecision{P}`
 # uses the `dual_type` above and yields `Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}`.

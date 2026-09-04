@@ -117,6 +117,15 @@ function TestUtils.populate_address_map_internal(
     foreach(n -> TestUtils.populate_address_map_internal(m, p[n], t[n]), keys(p))
     return m
 end
+# An `IdDict`'s forward V is an `IdDict` over the same keys holding each value's V. It is not an
+# `AbstractArray`, so the harness's element-wise method does not match it.
+function TestUtils._chunked_v_invariant(p::IdDict, v::IdDict, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    length(p) == length(v) || return false
+    return all(k -> haskey(v, k) && TestUtils._chunked_v_invariant(p[k], v[k], c), keys(p))
+end
+
 function TestUtils.has_equal_data_internal(
     p::P, q::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:IdDict}
@@ -202,14 +211,14 @@ end
 ) where {K,V,N,DV}
     p = primal(x)
     v = tangent(x)
-    out = IdDict{K,tangent_type(V)}()
-    for (k, pe) in p
-        # Concrete `typeof(pe)`, not the declared `V`: an `IdDict{K,Any}` would otherwise build
-        # `Lifted{Any,N,...}` children, which the lane methods dispatch on and mishandle. The
-        # output dict keeps `tangent_type(V)` as its declared value type.
-        out[k] = tangent(Lifted{typeof(pe),N}(pe, v[k]), lane)
-    end
-    return out
+    # Concrete `typeof(pe)`, not the declared `V`: an `IdDict{K,Any}` would otherwise build
+    # `Lifted{Any,N,...}` children, which the lane methods dispatch on and mishandle.
+    entries = [k => tangent(Lifted{typeof(pe),N}(pe, v[k]), lane) for (k, pe) in p]
+    # The value type comes from the reads, not from `tangent_type(V)`: a mutable value's lane
+    # tangent is a live write-through view rather than a materialised `MutableTangent`, so the
+    # reverse-shaped type does not hold it. Empty keeps the reverse shape, having nothing to read.
+    isempty(entries) && return IdDict{K,tangent_type(V)}()
+    return IdDict(entries)
 end
 
 function frule!!(
