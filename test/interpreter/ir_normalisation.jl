@@ -5,6 +5,15 @@
         @test statements[2].args[2] == true
     end
     @testset "foreigncall_to_call" begin
+        @test Mooncake.__extract_foreigncall_name(Expr(:tuple, QuoteNode(:foo))) ===
+            Val(:foo)
+        @test Mooncake.__extract_foreigncall_name(
+            Expr(:tuple, QuoteNode(:foo), "libfoo")
+        ) === Val((:foo, :libfoo))
+        @test Mooncake.__extract_foreigncall_name(
+            Expr(:call, GlobalRef(Core, :tuple), QuoteNode(:foo), "libfoo")
+        ) === Val((:foo, :libfoo))
+
         foreigncall = Expr(
             :foreigncall,
             :(:jl_array_isassigned),

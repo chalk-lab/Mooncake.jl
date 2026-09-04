@@ -65,8 +65,7 @@ function recover_foreigncall_gc_roots!(ir::IRCode)
     stmts = stmt(ir.stmts)
     for inst in stmts
         Meta.isexpr(inst, :foreigncall) || continue
-        arg_types = inst.args[3]
-        arg_types isa SimpleVector || continue
+        arg_types = inst.args[3]::SimpleVector
         any(Base.isvarargtype, arg_types) && continue
         for n in (6 + length(arg_types)):length(inst.args)
             root = inst.args[n]
@@ -88,7 +87,7 @@ function _pointer_base(ir::IRCode, stmts::Vector{Any}, x::SSAValue)
         (Meta.isexpr(def, :call) && length(def.args) >= 3) || return nothing
         f = def.args[1]
         f isa GlobalRef && (f = getglobal(f.mod, f.name))
-        if f === Base.bitcast || f === Intrinsics.bitcast
+        if f === Base.bitcast
             arg = def.args[3]
         elseif f === getfield && _field_name(def.args[3]) === :ptr_or_offset
             base = def.args[2]
