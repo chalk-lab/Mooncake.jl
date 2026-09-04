@@ -53,6 +53,14 @@ sr(n::Int) = StableRNG(n)
                 (:none, false, x -> logsumexp(x; dims=2), fill(1.0, 2, 2)),
                 # subarray/view inputs, see #1035
                 (:none, false, x -> logsumexp(x; dims=2), view(fill(1.0, 3, 3), 1:2, 1:2)),
+                # Non-strided SubArray, see #1296.
+                (
+                    :none,
+                    false,
+                    (x, inds) -> logsumexp(view(x,:,:,inds,:); dims=(3, 4))[1],
+                    randn(sr(23), P, 2, 3, 5, 2),
+                    [1, 3, 4],
+                ),
                 (:none, true, logsumexp!, rand(sr(6), P, 5), randn(sr(7), P, 5, 4)),
                 (
                     :none,
