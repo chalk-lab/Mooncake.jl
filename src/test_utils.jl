@@ -1070,13 +1070,42 @@ function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
     c[v] = nothing
     return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
 end
-# Fallthrough: `NoDual`/`NoTangent` (non-differentiable) and the type-erased
-# `FunctionWrapperTangent` have nothing to check and pass. (`Memory` is *not* here — it is an
-# `AbstractArray`, so its `NDualArray` V is checked by the method above.) The differentiable
-# `NDualRef`/`NDualMemoryRef` shapes also currently land here and pass trivially; this is a known
-# open-degradation gap, untriggered because no test value produces a top-level `Ref`/`MemoryRef`
-# dual. The check degrades open: an unhandled shape passes rather than erroring.
-_chunked_v_invariant(_p, _v, ::IdDict) = true
+# A `Core.SimpleVector` is not an `AbstractArray`, so the element-wise method above does not match
+# it, but its forward V is a plain `Vector{Any}` of per-element Vs. Closing the default is what
+# surfaced this: the shape reaches the invariant from registered rows and was passing unchecked.
+function _chunked_v_invariant(p::Core.SimpleVector, v::AbstractArray, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    length(p) == length(v) || return false
+    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+end
+
+# Shapes with no inner value to check, named individually so the default can close. A `NoDual` and
+# a `NoTangent` are non-differentiable; an `NDualRef` holds only `partials`, the value living in
+# the slot's primal, and an `NDualMemoryRef` likewise addresses the block rather than carrying a
+# value. (`Memory` is *not* here — it is an `AbstractArray`, so its `NDualArray` V is checked by
+# the method above.)
+_chunked_v_invariant(_p, ::Mooncake.NoDual, ::IdDict) = true
+_chunked_v_invariant(_p, ::Mooncake.NoTangent, ::IdDict) = true
+_chunked_v_invariant(_p, ::Mooncake.Nfwd.NDualRef, ::IdDict) = true
+# A `Ptr` slot's V is the per-lane ADDRESS tuple (the `uninit_*` bitcast placeholder), so it
+# carries no value to compare with the primal either.
+_chunked_v_invariant(_p::Ptr, ::Tuple{Vararg{Ptr}}, ::IdDict) = true
+@static if isdefined(Mooncake.Nfwd, :NDualMemoryRef)
+    _chunked_v_invariant(_p, ::Mooncake.Nfwd.NDualMemoryRef, ::IdDict) = true
+end
+
+# Everything else is a shape this check does not know, which is a GAP rather than a pass. It used
+# to return `true`, degrading open: the comment claimed the differentiable `Ref`/`MemoryRef` shapes
+# were untriggered, and a registered `_new_` row on a `Base.RefValue{Float64}` produces a top-level
+# `NDualRef` at chunk width 8, so they were reaching it all along.
+function _chunked_v_invariant(@nospecialize(p), @nospecialize(v), ::IdDict)
+    error(
+        "the chunked inner-value invariant has no method for a forward value of type $(typeof(v)) " *
+        "over a primal of type $(typeof(p)); add one, or add it to the shapes above that have no " *
+        "inner value to check",
+    )
+end
 
 # Assumes that the interface has been tested, and we can simply check for numerical issues.
 # A caller-pinned reference replaces the finite-difference oracle where FD cannot express the
