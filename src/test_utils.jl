@@ -718,7 +718,8 @@ _chunk_lane_checkable(v::Tuple) = all(_chunk_lane_checkable, v)
 _chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
 # An immutable struct's lane tangent is a reverse-shaped `Tangent`, so it lifts back and is
 # checkable whenever every field V is. `MutableDual` gets no such method: its lane tangent is a
-# write-through view, so `tangent(slot, lane)` throws for every field shape, all-scalar included.
+# live write-through view with no `lift`, so it cannot rebuild the independent width-1 seed this
+# oracle compares against. `test_lifted` covers lane independence for these instead.
 _chunk_lane_checkable(v::Mooncake.ImmutableDual) = _chunk_lane_checkable(v.fields)
 _chunk_lane_checkable(@nospecialize(_v)) = false
 
