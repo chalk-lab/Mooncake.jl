@@ -456,20 +456,30 @@ end
 # `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
 # not the `NDualArray`'s parallel per-lane partials. Its pointer is the single element-wise
 # partial pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = element-wise
-# dual element), coherent with `dual_type(Val(1), Ptr{P})`. Width-1 only: width-N over an
-# abstract element type would need N distinct pointers from one interleaved element-wise array.
+# dual element), coherent with `dual_type(Val(1), Ptr{P})`. Width 1 is the only supported width:
+# N lanes would need N distinct pointers from one interleaved element-wise array. Wider chunks
+# throw here rather than falling through to a `MissingForeigncallRuleError`, matching the
+# `NDualArray` method above.
 function frule!!(
-    ::Lifted{typeof(_foreigncall_),1},
-    ::Lifted{Val{:jl_array_ptr},1},
-    ::Lifted{Val{Ptr{P}},1},
-    ::Lifted{Tuple{Val{Any}},1},
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{P}},N},
+    ::Lifted{Tuple{Val{Any}},N},
     ::Lifted, # nreq
     ::Lifted, # calling convention
-    a::Lifted{<:Array,1,<:Array{E}},
-) where {P,E}
+    a::Lifted{<:Array,N,<:Array{E}},
+) where {P,E,N}
+    N == 1 || throw(
+        ArgumentError(
+            "Forward-mode raw pointer (`jl_array_ptr`) of a lifted `Array` with element-wise " *
+            "dual element `$E` is unsupported at chunk width $N > 1: the $N lanes are " *
+            "interleaved in one element-wise array, so there is no per-lane buffer a raw " *
+            "pointer could address. Differentiate at chunk width 1.",
+        ),
+    )
     y = ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a))
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
-    return Lifted{Ptr{P},1}(y, (dy,))
+    return Lifted{Ptr{P},N}(y, (dy,))
 end
 # An all-`NoDual` element-wise V carries no derivative, so neither does its pointer: `NoDual` IS the
 # canonical V here, since a non-differentiable element type makes `dual_type(Val(1), Ptr{P})` `NoDual`.
@@ -477,16 +487,19 @@ end
 # zero-size elements — which contradicts the slot's own declared type and which a re-typing `bitcast`
 # then reads as `Float64` partials, giving a derivative that varies with unrelated heap contents.
 # Mirrors the 1.11+ `_get_lifted_field(::MemoryRef, :ptr_or_offset)` exclusion for a `NoDual` element.
+# Width-`N` unrestricted, unlike the two methods above: a non-differentiable element type has no
+# lanes to address, so `dual_type` gives `Vector{NoDual}`/`NoDual` at every width and the stride
+# argument is vacuous.
 function frule!!(
-    ::Lifted{typeof(_foreigncall_),1},
-    ::Lifted{Val{:jl_array_ptr},1},
-    ::Lifted{Val{Ptr{P}},1},
-    ::Lifted{Tuple{Val{Any}},1},
+    ::Lifted{typeof(_foreigncall_),N},
+    ::Lifted{Val{:jl_array_ptr},N},
+    ::Lifted{Val{Ptr{P}},N},
+    ::Lifted{Tuple{Val{Any}},N},
     ::Lifted, # nreq
     ::Lifted, # calling convention
-    a::Lifted{<:Array,1,<:Array{NoDual}},
-) where {P}
-    return Lifted{Ptr{P},1}(ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a)), NoDual())
+    a::Lifted{<:Array,N,<:Array{NoDual}},
+) where {P,N}
+    return Lifted{Ptr{P},N}(ccall(:jl_array_ptr, Ptr{P}, (Any,), primal(a)), NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(_foreigncall_)},
