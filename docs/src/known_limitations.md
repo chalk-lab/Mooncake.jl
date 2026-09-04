@@ -74,6 +74,49 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
 
+## Mutable aliases across inactive paths
+
+Mooncake may silently return incorrect derivatives when mutable storage is reachable through a differentiable argument and an inactive path. Inactive paths include fields of `NoTangent` parents and globals, both treated as constants. Paths can receive separate derivative storage, so mutation changes the shared primal without updating every derivative. Reverse and `frule!!`-based forward modes are affected. Reading globals is safe only while aliased storage remains unmodified. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+
+Here `box.x` and `x` refer to the same vector, but `box` is inactive:
+
+```jldoctest opaque-alias
+julia> struct OpaqueBox
+           x::Vector{Float64}
+       end
+
+julia> Mooncake.tangent_type(::Type{OpaqueBox}) = NoTangent;
+
+julia> function mutate_through_box(box, x)
+           box.x[1] *= 2
+           return x[1]
+       end;
+
+julia> x = [3.0]; box = OpaqueBox(x);
+
+julia> cache = Mooncake.prepare_gradient_cache(mutate_through_box, box, x);
+
+julia> Mooncake.value_and_gradient!!(cache, mutate_through_box, box, x)
+(6.0, (NoTangent(), NoTangent(), [1.0]))
+```
+
+A global alias has the same problem even when its binding is constant:
+
+```jldoctest global-alias
+julia> const GLOBAL_ALIAS = [3.0];
+
+julia> function mutate_through_global(x)
+           GLOBAL_ALIAS[1] *= 2
+           return x[1]
+       end;
+
+julia> cache = Mooncake.prepare_gradient_cache(mutate_through_global, GLOBAL_ALIAS);
+
+julia> Mooncake.value_and_gradient!!(cache, mutate_through_global, GLOBAL_ALIAS)
+(6.0, (NoTangent(), [1.0]))
+```
+
+Both examples report `[1.0]`; the correct derivative is `[2.0]` because the mutation doubles the aliased input. Until mixed active/inactive aliases are rejected or supported, do not mutate them.
 
 ## Passing Differentiable Data as a Type
 
