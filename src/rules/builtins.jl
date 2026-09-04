@@ -2574,7 +2574,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
 
     test_cases = Any[
         (true, :none, nothing, narrow_through_cvoid, [1.0, 2.0], 2.0),
-        (false, :none, nothing, shift_through_cvoid, [1.0, 2.0], 2.0),
+        # `skip_chunked`: takes a raw pointer to a float array (see the `unsafe_copyto_tester`
+        # rows in `foreigncall.jl`); the lane stride leaves no buffer a pointer can address.
+        (false, :none, (skip_chunked=true,), shift_through_cvoid, [1.0, 2.0], 2.0),
         (false, :none, nothing, objref_boxed_field, Base.RefValue{Any}(1.0), 2.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, 5.0, 4.0),
         (false, :none, nothing, _apply_iterate_equivalent, Base.iterate, *, (5.0, 4.0)),
@@ -2614,9 +2616,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         ),
         (false, :none, (mode=ReverseMode,), ref_objref_roundtrip, 5.0),
         (
+            # `skip_chunked`: writes through a raw pointer into a float array, whose element-major
+            # partials block stores each lane with stride N, so there is no per-lane buffer to
+            # address. Same guard as the `unsafe_copyto_tester` rows in `foreigncall.jl`.
             false,
             :none,
-            nothing,
+            (skip_chunked=true,),
             (v, x) -> (pointerset(pointer(x), v, 2, 1); x),
             3.0,
             randn(5),

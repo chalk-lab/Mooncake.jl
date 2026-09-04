@@ -3553,13 +3553,17 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloat})
     # dot (real types only)
     if P <: BlasRealFloat
         flags = (false, :none, nothing)
+        dot_flags = (false, :none, (skip_chunked=true,))
         append!(
             test_cases,
             [
-                (flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
-                (flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
-                (flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
+                # `skip_chunked`: the strided `dot` walks both arguments through raw pointers,
+                # which the element-major partials block cannot serve at width > 1 (stride N per
+                # lane). The sibling rows below take the same shape but pass, so they are left on.
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 5), 1, randn(rng, P, 4), 1),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 2, randn(rng, P, 4), 1),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 6), 1, randn(rng, P, 9), 3),
+                (dot_flags..., BLAS.dot, 3, randn(rng, P, 12), 3, randn(rng, P, 9), 2),
             ],
         )
     end

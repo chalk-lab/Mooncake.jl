@@ -861,9 +861,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             x -> (v=[(x, 2x), (3x, 4x)]; r=reshape(v, 2, 1); r[1, 1][1] + r[2, 1][2]),
             1.0,
         ),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
-        (false, :none, nothing, unsafe_self_copy_tester, randn(5), 3),
-        (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
+        # `skip_chunked`: these take a raw pointer to a float array, whose element-major partials
+        # block stores each lane with stride N, so no dense per-lane buffer exists for a pointer to
+        # address. The guard fires loudly at width > 1; the width-1 path is correct.
+        (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(3), 2),
+        (false, :none, (skip_chunked=true,), unsafe_self_copy_tester, randn(5), 3),
+        (false, :none, (skip_chunked=true,), unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             # Raw-pointer round-trip through `unsafe_copyto!` on a `Vector{Vector}` cannot carry the
             # per-lane dual at width N>1 (the element-wise nested dual has no dense per-lane buffer a

@@ -1003,10 +1003,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:array_legacy})
 end
 
 function derived_rule_test_cases(rng_ctor, ::Val{:array_legacy})
+    # `skip_chunked`: an element-wise dual array reached through a raw pointer -- the N lanes are
+    # interleaved in one array, so no per-lane buffer exists for a pointer to address.
     test_cases = Any[(
         false,
         :none,
-        nothing,
+        (skip_chunked=true,),
         Base._unsafe_copyto!,
         fill!(Matrix{Real}(undef, 5, 4), 1.0),
         3,
