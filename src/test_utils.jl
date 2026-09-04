@@ -236,8 +236,10 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
-    # Pass an atol such that we can compare approximately against 0 values.
-    return isapprox(x, y; atol=(√eps(P)), nans=true)
+    # `atol` for values near zero; `rtol` explicitly because passing `atol` alone makes
+    # `isapprox` default `rtol` to zero, leaving an absolute-only comparison whose strictness
+    # then depends on magnitude (1e-13 relative passes at 1e5 and fails at 1e6).
+    return isapprox(x, y; atol=(√eps(P)), rtol=(√eps(P)), nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::IdDict{Any,Bool}
