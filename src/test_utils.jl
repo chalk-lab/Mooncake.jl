@@ -882,9 +882,10 @@ function test_frule(
         test_frule_performance(perf_flag, frule, x_ẋ...; fwd_allocs_broken)
     end
 
-    # Chunked widths (N > 1), primitive rules only.
+    # Chunked widths (N > 1). Gated on the case's own `skip_chunked`, which empties `widths` at
+    # the call site, not on `is_primitive`: a derived rule runs the same width-N transform.
     chunked_widths = filter(>(1), Tuple(widths))
-    (is_primitive && !interface_only && !isempty(chunked_widths)) || return nothing
+    (!interface_only && !isempty(chunked_widths)) || return nothing
     base = __get_primals(x)
     # Fresh copy for the reference primal — `f` may mutate an argument in place.
     yp = _deepcopy_all(base)
@@ -1447,7 +1448,8 @@ function test_frule_interface(x_ẋ...; frule, is_primitive::Bool=true)
     # canonical inner V. Derived rules are skipped: the transform legitimately uses `NoDual` as a
     # non-differentiable marker for concrete results whose `dual_type` is not `NoDual` (e.g. a
     # `Vector{Any}` method table) — correct and handled downstream, but not the canonical V. This
-    # mirrors the `is_primitive`-gating of the chunked V invariant.
+    # is the one place provenance genuinely decides: the chunked checks are gated on the case's
+    # own `skip_chunked` instead.
     @test y_ẏ isa Lifted
     is_primitive && @test Mooncake.verify_lifted_type(y_ẏ)
 end

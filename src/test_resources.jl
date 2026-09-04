@@ -943,10 +943,12 @@ function generate_test_functions()
         (false, :none, nothing, test_struct_partial_init, 3.5),
         (false, :none, nothing, test_mutable_partial_init, 3.3),
         (false, :none, nothing, test_mutable_struct_array, 3.1),
+        # `skip_chunked`: takes a raw pointer to an element-wise dual array, which the
+        # `jl_array_ptr` frule supports at chunk width 1 only.
         (
             false,
             :none,
-            nothing,
+            (skip_chunked=true,),
             test_elementwise_dual_pointer_copy,
             [(0.0, 0.0), (0.0, 0.0)],
             [(1.0, 2.0), (3.0, 4.0)],
@@ -1023,10 +1025,13 @@ function generate_test_functions()
         (false, :allocs, nothing, inplace_invoke!, randn(1_024)),
         (false, :allocs, nothing, highly_nested_tuple, 5.0),
         (false, :none, nothing, sig_argcount_mismatch, ones(4)),
+        # `skip_chunked`: at width `N` the argument is an `NTuple{1000,NDual{Float64,N}}`, which
+        # reaches Julia's own tuple-recursion stack limit ("recursion over very long tuples").
+        # Width 1 is what this case exists to stress.
         (
             false,
             :allocs,
-            (lb=2, ub=1500, fwd_allocs_broken=true),
+            (lb=2, ub=1500, fwd_allocs_broken=true, skip_chunked=true),
             large_tuple_inference,
             Tuple(zeros(1_000)),
         ),
