@@ -179,6 +179,11 @@ tangent_type(::Type{ConstAliasSet}) = NoTangent
 
 Refuse `args` if any of them is one of the rule's build-time constants. Every rule kind calls this
 at entry; the set is empty for most rules, which is the branch that matters for cost.
+
+Detection is best effort: passing is not a guarantee of no aliasing. Matching is by identity at the
+root, so a constant that merely contains the argument is missed — with `const A = [1.0, 2.0]` and
+`const T = (A,)`, a call at `x === A` is accepted and its gradient is silently wrong. See
+[`record_const_alias!`](@ref) for why the walk that would catch this was rejected.
 """
 @inline function _check_constant_aliasing(consts::ConstAliasSet, args)
     isempty(consts.primals) && return nothing
