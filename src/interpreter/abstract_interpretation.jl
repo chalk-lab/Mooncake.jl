@@ -216,6 +216,112 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
+# Explicit `invoke` bypasses abstract_call_gf_by_type. Keep its native CallInfo: the
+# inliner needs it to preserve the selected method rather than use ordinary dispatch.
+function CC.abstract_invoke(
+    interp::MooncakeInterpreter, arginfo::CC.ArgInfo, si::CC.StmtInfo, sv::CC.AbsIntState
+)
+    ret = @invoke CC.abstract_invoke(
+        interp::CC.AbstractInterpreter,
+        arginfo::CC.ArgInfo,
+        si::CC.StmtInfo,
+        sv::CC.AbsIntState,
+    )
+    @static if VERSION < v"1.12-"
+        return widen_primitive_invoke(ret, interp, arginfo)
+    else
+        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
+            return widen_primitive_invoke(call, interp, arginfo)
+        end
+    end
+end
+
+function widen_primitive_invoke(
+    call::CC.CallMeta, interp::MooncakeInterpreter{C,M}, arginfo
+) where {C,M}
+    info = call.info
+    if info isa CC.InvokeCallInfo && is_primitive(C, M, info.match.spec_types, interp.world)
+        return widen_rettype_callmeta(call, CC.invoke_rewrite(arginfo.argtypes))
+    end
+    return call
+end
+
+# Rejecting source inlining alone is too late: the native handler can replace the call
+# with a ConcreteResult or cached ConstantCase before consulting inlining_policy.
+function CC.handle_invoke_call!(
+    todo::Vector{Pair{Int,Any}},
+    ir::CC.IRCode,
+    idx::Int,
+    stmt::Expr,
+    info::CC.InvokeCallInfo,
+    flag::typeof(CC.IR_FLAG_NOINLINE),
+    sig::CC.Signature,
+    state::CC.InliningState{<:MooncakeInterpreter{C,M}},
+) where {C,M}
+    match = info.match
+    if !is_primitive(C, M, match.spec_types, state.interp.world)
+        return @invoke CC.handle_invoke_call!(
+            todo::Vector{Pair{Int,Any}},
+            ir::CC.IRCode,
+            idx::Int,
+            stmt::Expr,
+            info::CC.InvokeCallInfo,
+            flag::typeof(flag),
+            sig::CC.Signature,
+            state::CC.InliningState,
+        )
+    end
+    match.fully_covers || return nothing
+    CC.validate_sparams(match.sparams) || return nothing
+    nargs = length(CC.invoke_rewrite(sig.argtypes))
+    method = match.method
+    (method.nargs == nargs || (method.nargs > 0 && method.isva)) || return nothing
+    # Use the compiler's specialization and edge bookkeeping, but not its constant or
+    # body-inlining paths. Conservative effects also prevent handle_single_case! folding.
+    @static if VERSION < v"1.12-"
+        case = CC.compileable_specialization(
+            match,
+            CC.Effects(),
+            CC.InliningEdgeTracker(state, sig.argtypes),
+            info;
+            compilesig_invokes=CC.OptimizationParams(state.interp).compilesig_invokes,
+        )
+    else
+        case = CC.compileable_specialization(
+            CC.specialize_method(match),
+            CC.Effects(),
+            CC.InliningEdgeTracker(state),
+            info,
+            state,
+        )
+    end
+    return CC.handle_single_case!(todo, ir, idx, stmt, case, true)
+end
+
+# Primitive rules dispatch on argument types, not on the Method selected by invoke.
+# Substituting such a rule is only safe when ordinary dispatch selects that same Method.
+function check_primitive_invoke(interp::MooncakeInterpreter, sig, target)
+    @nospecialize sig
+    target isa Core.MethodInstance || return nothing
+    matches = CC.findall(sig, CC.method_table(interp))
+    if matches !== nothing
+        methods = get_matches(matches.matches)
+        if length(methods) == 1 &&
+            only(methods).method === target.def &&
+            only(methods).fully_covers
+            return nothing
+        end
+    end
+    throw(
+        ArgumentError(
+            "Cannot apply a signature-based primitive rule to invoke of $(target.def) " *
+            "with argument signature $sig at world $(interp.world): ordinary dispatch " *
+            "does not provably select the same method. Define a rule for a wrapper " *
+            "around this invoke instead.",
+        ),
+    )
+end
+
 """
     widen_rettype_callmeta(call, argtypes)
 
