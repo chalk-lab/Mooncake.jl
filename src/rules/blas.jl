@@ -195,7 +195,7 @@ end
 # For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
 # primal with derivative zero. It is not masked here because the block scatter writes through this
 # result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
-# diagonal itself (`_mask_unit_diagonal` forward, `accumulate_densified!` reverse).
+# diagonal itself (`_mask_unit_diagonal` forward, `increment_densified_tangent!!` reverse).
 @inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
     _arrayify_lane(x.data, V.fields.data, lane, d)
 )
@@ -204,18 +204,20 @@ end
 )
 
 """
-    densify(dx)
+    densify_tangent(dx)
 
-Somewhere dense to accumulate a contribution destined for the tangent `dx`.
+Return structurally unrestricted storage in which to increment the tangent `dx`.
 
 [`arrayify`](@ref) returns tangents wrapped in the primal's own structural type, whose
 off-structure entries are not parameters: the primal reads a constant there whatever the
 storage holds. A rule whose adjoint is a dense expression must therefore accumulate here
-and hand the result to [`accumulate_densified!`](@ref), which adds back only the part `dx`
-can represent. A strided tangent is already dense, so the common case costs nothing.
+and hand the result to [`increment_densified_tangent!!`](@ref), which adds back only the
+part `dx` can represent. A tangent backed by strided storage is structurally unrestricted,
+even if indexing makes the view itself non-strided, so the common case costs nothing.
 """
-densify(dx::StridedArray) = dx
-function densify(
+densify_tangent(dx::StridedArray) = dx
+densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
+function densify_tangent(
     dx::Union{
         UpperTriangular,
         LowerTriangular,
@@ -232,13 +234,18 @@ function densify(
 end
 
 """
-    accumulate_densified!(dx, dense)
+    increment_densified_tangent!!(dx, dense)
 
-Add the part of `dense` that the structured tangent `dx` can represent. See
-[`densify`](@ref).
+Increment `dx` by the part of `dense` that it can represent. If [`densify_tangent`](@ref)
+returned `dx` itself, the increment is already complete.
 """
-accumulate_densified!(::StridedArray, dense) = nothing
-function accumulate_densified!(
+increment_densified_tangent!!(::StridedArray, dense) = nothing
+function increment_densified_tangent!!(
+    ::SubArray{T,N,A}, dense
+) where {T,N,A<:StridedArray{T}}
+    return nothing
+end
+function increment_densified_tangent!!(
     dx::T, dense
 ) where {T<:Union{UpperTriangular,LowerTriangular}}
     parent(dx) .+= T(dense)
@@ -246,32 +253,34 @@ function accumulate_densified!(
 end
 # The unit variants store only the STRICT triangle: their diagonal reads a constant `1`, a
 # non-parameter whose contribution is dropped exactly as the off-structure entries are.
-function accumulate_densified!(dx::UnitUpperTriangular, dense)
+function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
     p = parent(dx)
     for j in axes(dense, 2), i in 1:(j - 1)
         @inbounds p[i, j] += dense[i, j]
     end
     return nothing
 end
-function accumulate_densified!(dx::UnitLowerTriangular, dense)
+function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
     p = parent(dx)
     for j in axes(dense, 2), i in (j + 1):size(dense, 1)
         @inbounds p[i, j] += dense[i, j]
     end
     return nothing
 end
-function accumulate_densified!(dx::Diagonal, dense)
+function increment_densified_tangent!!(dx::Diagonal, dense)
     dx.diag .+= view(dense, diagind(dense))
     return nothing
 end
 # `Adjoint`/`Transpose` store every entry, just at the transposed position.
-accumulate_densified!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
-accumulate_densified!(dx::Transpose, dense) = (parent(dx) .+= transpose(dense); nothing)
+increment_densified_tangent!!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
+function increment_densified_tangent!!(dx::Transpose, dense)
+    (parent(dx) .+= transpose(dense); nothing)
+end
 
 # `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
 # stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
 # picks up both. Dropping the fold would silently halve those gradients rather than throw.
-function accumulate_densified!(dx::Union{Symmetric,Hermitian}, dense)
+function increment_densified_tangent!!(dx::Union{Symmetric,Hermitian}, dense)
     folded = dense .+ transpose(dense)
     folded[diagind(folded)] .= view(dense, diagind(dense))
     parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)

@@ -209,17 +209,18 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
 end
 
 # Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
-# contraction is dense, so it goes through `densify` / `accumulate_densified!`. Read
-# as `P x M x Q x N`, both contractions read the same element of `dy`, so a single pass in
-# memory order serves both. A `gemv` per `(q, n)` block is slower at every shape measured:
-# the blocks are small enough that BLAS call overhead dominates.
+# contraction is dense, so it goes through `densify_tangent` /
+# `increment_densified_tangent!!`. Read as `P x M x Q x N`, both contractions read the same
+# element of `dy`, so a single pass in memory order serves both. A `gemv` per `(q, n)` block
+# is slower at every shape measured: the blocks are small enough that BLAS call overhead
+# dominates.
 function _kron_pb!(dx1, dx2, dy, px1, px2)
     T = eltype(px1)
     M, N = size(px1)
     P, Q = size(px2)
     W = reshape(dy, P, M, Q, N)
-    t1 = densify(dx1)
-    t2 = densify(dx2)
+    t1 = densify_tangent(dx1)
+    t2 = densify_tangent(dx2)
     @inbounds for n in 1:N, q in 1:Q, i in 1:M
         acc = zero(T)
         x1 = px1[i, n]
@@ -230,8 +231,8 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
         end
         t1[i, n] += acc
     end
-    accumulate_densified!(dx1, t1)
-    accumulate_densified!(dx2, t2)
+    increment_densified_tangent!!(dx1, t1)
+    increment_densified_tangent!!(dx2, t2)
     return nothing
 end
 
@@ -251,7 +252,7 @@ end
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:BlasFloat}
 # Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_pb!` accumulates densely and
-# folds the result onto each input's stored entries via `accumulate_densified!`. Complex stays
+# folds the result onto each input's stored entries via `increment_densified_tangent!!`. Complex stays
 # derived.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
@@ -395,7 +396,7 @@ end
 # declaration is the intersection of the other two, so "≥1 strided operand" carries no
 # `_is_primitive` ambiguity. The derived forward path builds the canonical wrapper dual; the
 # reverse pullbacks accumulate densely and fold onto a structured fdata via
-# `accumulate_densified!`, keeping only the wrapper's stored entries.
+# `increment_densified_tangent!!`, keeping only the wrapper's stored entries.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -679,7 +680,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         # A COMPLEX `Hermitian`, where the two modes reach the answer differently: forward through
         # the `_arrayify_lane` wrapper (`Hermitian(dA)` is the JVP), reverse through the derived
         # path, since folding a complex cotangent onto the stored triangle needs a conjugation
-        # `accumulate_densified!` does not apply. Both are checked here against finite
+        # `increment_densified_tangent!!` does not apply. Both are checked here against finite
         # differences.
         map([ComplexF64, ComplexF32]) do C
             return map([:U, :L]) do uplo

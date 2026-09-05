@@ -3319,9 +3319,16 @@ end
 end
 
 # Tuple, NamedTuple
-function _copy_to_output!!(dst::P, src::P) where {P<:Union{Tuple,NamedTuple}}
+function _copy_to_output!!(dst::P, src::P) where {P<:Tuple}
     isbitstype(P) && return src
     return map(_copy_to_output!!, dst, src)
+end
+
+# Rebuild at the DECLARED type: `map` over a `NamedTuple` infers its own element types, so a
+# field whose copy widens (an abstract field, say) would otherwise change the tuple's type.
+function _copy_to_output!!(dst::P, src::P) where {P<:NamedTuple}
+    isbitstype(P) && return src
+    return P(map(_copy_to_output!!, values(dst), values(src)))
 end
 
 # Handling structs
@@ -3395,9 +3402,14 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
     end
     return dst
 end
-function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:Union{Tuple,NamedTuple}}
+function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:Tuple}
     isbitstype(P) && return src
     return map((d, s) -> _copy_to_output!!(d, s, c), dst, src)
+end
+
+function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:NamedTuple}
+    isbitstype(P) && return src
+    return P(map((d, s) -> _copy_to_output!!(d, s, c), values(dst), values(src)))
 end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
     isbitstype(P) && return src
@@ -3494,10 +3506,12 @@ function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Noth
 end
 
 # Tuple, NamedTuple
-function _copy_output(
-    x::Union{Tuple,NamedTuple}, c::C=nothing
-) where {C<:Union{Nothing,IdDict}}
+function _copy_output(x::Tuple, c::C=nothing) where {C<:Union{Nothing,IdDict}}
     return map(s -> _copy_output(s, c), x)::typeof(x)
+end
+
+function _copy_output(x::NamedTuple, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    return typeof(x)(map(s -> _copy_output(s, c), values(x)))
 end
 
 # Generic fallback: bitstypes, zero-field opaque types (e.g. Symbol/String), and mutable or

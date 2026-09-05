@@ -112,6 +112,52 @@ It is **not** checked when the container's arity is not in its type — a `Vecto
 131 ms for a `Vector` of 100k arrays. Prepare a separate cache per aliasing pattern if your
 arguments are shaped that way.
 
+## Mutable aliases involving `NoTangent` parents or globals
+
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+
+A `NoTangent` parent:
+
+```jldoctest opaque-alias
+julia> struct Box
+           x::Vector{Float64}
+       end
+
+julia> Mooncake.tangent_type(::Type{Box}) = NoTangent;
+
+julia> function f(state)
+           box, x = state
+           box.x[1] *= 2
+           return x[1]
+       end;
+
+julia> x = [3.0]; state = (Box(x), x);
+
+julia> rule = Mooncake.build_rrule(f, state);
+
+julia> Mooncake.value_and_gradient!!(rule, f, state)
+(6.0, (NoTangent(), (NoTangent(), [1.0])))
+```
+
+`state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
+
+A global:
+
+```jldoctest global-alias
+julia> const X = [3.0];
+
+julia> function g(x)
+           X[1] *= 2
+           return x[1]
+       end;
+
+julia> rule = Mooncake.build_rrule(g, X);
+
+julia> Mooncake.value_and_gradient!!(rule, g, X)
+(6.0, (NoTangent(), [1.0]))
+```
+
+`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
 ## Passing Differentiable Data as a Type
 

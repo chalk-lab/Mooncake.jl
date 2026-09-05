@@ -14,8 +14,8 @@ import Mooncake:
     tangent,
     tangent_view,
     @is_primitive,
-    densify,
-    accumulate_densified!,
+    densify_tangent,
+    increment_densified_tangent!!,
     zero_fcodual,
     NoRData,
     extract,
@@ -282,9 +282,9 @@ function rrule!!(
     _x, _dx = arrayify(x)
     y = logsumexp(_x; primal(kwargs)...)
     function logsumexp_pb!!(dy::P)
-        dense = densify(_dx)
+        dense = densify_tangent(_dx)
         dense .+= dy .* exp.(_x .- y)
-        accumulate_densified!(_dx, dense)
+        increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -300,9 +300,9 @@ function rrule!!(
     y = logsumexp(_x; primal(kwargs)...)
     dy = zero(y)
     function logsumexp_pb!!(::NoRData)
-        dense = densify(_dx)
+        dense = densify_tangent(_dx)
         dense .+= dy .* exp.(_x .- y)
-        accumulate_densified!(_dx, dense)
+        increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy), logsumexp_pb!!
@@ -313,9 +313,9 @@ function rrule!!(
     _x, _dx = arrayify(x)
     y = logsumexp(_x)
     function logsumexp_pb!!(dy::P)
-        dense = densify(_dx)
+        dense = densify_tangent(_dx)
         dense .+= dy .* exp.(_x .- y)
-        accumulate_densified!(_dx, dense)
+        increment_densified_tangent!!(_dx, dense)
         return NoRData(), NoRData()
     end
     return zero_fcodual(y), logsumexp_pb!!
@@ -351,9 +351,9 @@ function rrule!!(
     old_out = copy(y)
     logsumexp!(y, _x)
     function logsumexp!_pb!!(::NoRData)
-        dense = densify(_dx)
+        dense = densify_tangent(_dx)
         dense .+= _dy .* exp.(_x .- y)
-        accumulate_densified!(_dx, dense)
+        increment_densified_tangent!!(_dx, dense)
         copyto!(y, old_out)
         fill!(_dy, zero(P))
         return NoRData(), NoRData(), NoRData()
