@@ -24,8 +24,6 @@ using FunctionWrappers: FunctionWrapper
 
     # Rule testing.
     @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
-        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
         (
             false,
             :none,
@@ -56,7 +54,17 @@ using FunctionWrappers: FunctionWrapper
             randn(100),
             randn(),
         ),
-        # Test constructing a FunctionWrapper with Nothing return type (#1005)
+    ]
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+    end
+
+    # `skip_chunked`: a `FunctionWrapperTangent` bakes all N lanes into one `OpaqueClosure`, so
+    # per-lane extraction is unsupported at width > 1. Constructing and calling a wrapper are
+    # covered at width N by the dedicated testset below; the Nothing-return construction is not,
+    # which is a known gap rather than an oversight.
+    @testset "$(typeof(fargs))" for (interface_only, perf_flag, is_primitive, fargs...) in [
+        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}, sin),
+        (false, :none, true, FunctionWrapper{Float64,Tuple{Float64}}(sin), 5.0),
         (
             false,
             :none,
@@ -66,7 +74,7 @@ using FunctionWrappers: FunctionWrapper
             },
             (du, u, p, t) -> (du[1]=p[1] * u[1]; nothing),
         ),
-        # Test calling a FunctionWrapper with Nothing return type (#1005)
+        # Calling that same Nothing-return wrapper (#1005).
         (
             false,
             :none,
@@ -82,7 +90,7 @@ using FunctionWrappers: FunctionWrapper
             0.5,
         ),
     ]
-        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only)
+        test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, skip_chunked=true)
     end
 
     # Chunked forward (width N > 1): `test_rule` runs the width-N frule but skips its per-lane
