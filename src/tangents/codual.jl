@@ -190,11 +190,19 @@ root, so a constant that merely contains the argument is missed — with `const 
     return _check_constant_aliasing_slow(consts.primals, args)
 end
 
+# `args` is a heterogeneous tuple, so iterating it directly infers a union and boxes each
+# `primal(a)` — 400 bytes for three arguments. `_aliases_any_arg` recurses instead, which
+# unrolls; `any` with a closure would too, but heap-allocates the closure over `c::Any`.
 @noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
-    for a in args, c in consts
-        c === primal(a) && _throw_constant_alias_error(c)
+    for c in consts
+        _aliases_any_arg(c, args) && _throw_constant_alias_error(c)
     end
     return nothing
+end
+
+@inline _aliases_any_arg(@nospecialize(c), ::Tuple{}) = false
+@inline function _aliases_any_arg(@nospecialize(c), args::Tuple)
+    return c === primal(first(args)) || _aliases_any_arg(c, Base.tail(args))
 end
 
 @noinline function _throw_constant_alias_error(@nospecialize(c))
