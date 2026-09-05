@@ -410,8 +410,23 @@ end
 # `SSAValue`, while on 1.12 the same global is folded into the operand slots of those calls.
 function _nfwd_record_stmt_consts!(consts::Vector{Any}, @nospecialize(st))
     if st isa Expr
-        for a in st.args
-            _nfwd_record_const!(consts, a)
+        # Only some operands of a call-like `Expr` are values; the rest name dispatch and ABI
+        # machinery — an `:invoke`'s callee `MethodInstance` (`CodeInstance` on 1.12), and the
+        # target name, type signature and calling convention of a `:foreigncall`/`:cfunction`.
+        # A `MethodInstance`, a `CodeInstance` and a `SimpleVector` all reach a recursive type,
+        # so `record_const_alias!` cannot ask `tangent_type` about them and records them, which
+        # leaves every nfwd rule's set non-empty and costs an allocating aliasing check per call.
+        vals = if st.head === :foreigncall
+            6:length(st.args)
+        elseif st.head === :cfunction
+            2:2
+        elseif st.head === :invoke || st.head === :invoke_modify
+            2:length(st.args)
+        else
+            1:length(st.args)
+        end
+        for i in vals
+            _nfwd_record_const!(consts, st.args[i])
         end
     elseif st isa Union{GlobalRef,QuoteNode}
         _nfwd_record_const!(consts, st)

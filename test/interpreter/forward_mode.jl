@@ -26,6 +26,10 @@ stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 # `DynamicFRule` with a mutable `cache` Dict — used by the cache-hit `_copy` regression below.
 fwd_cache_dyn(x) = Base.inferencebarrier(sin)(x)::Float64 + x
 
+# Reads no constant, but its natively-executed call graph carries both an `:invoke` and a
+# `:foreigncall`, whose dispatch metadata must not be recorded as one.
+nfwd_metadata_only(x) = sum(abs2, x)
+
 module FwdAliasGlobals
 # Read while also passed as the argument, to exercise the refusal of an argument that aliases a
 # differentiable global. `alias_read_only` routes to the transform and `alias_scalar` to the
@@ -82,6 +86,14 @@ end
                 c2, (f, Mooncake.zero_tangent(f)), (y, [1.0, 1.0])
             )[2] ≈ (f === FwdAliasGlobals.alias_read_only ? sum(G) : G[1])
         end
+    end
+
+    # A non-empty set costs an allocating aliasing check per call, so dispatch metadata must
+    # stay out of it (see `_nfwd_record_stmt_consts!`).
+    @testset "nfwd constant set excludes dispatch metadata" begin
+        rule = Mooncake.build_frule(nfwd_metadata_only, randn(4); chunk_size=1)
+        @test rule isa Mooncake.NfwdFRule
+        @test isempty(rule.consts.primals)
     end
 
     # Try try-catch statements.
