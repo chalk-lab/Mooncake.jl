@@ -205,19 +205,31 @@ function report_opt(tt)
 end
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
+# Marks the `visited` dictionary as requesting exact float comparison. Options have to travel to
+# the leaves, and `visited` is the only argument that gets there: `has_equal_data_internal`'s
+# four-argument signature is an extension point -- `Memory`, `IdDict`, `MistyClosure` and the
+# FunctionWrappers and DynamicExpressions extensions all define methods on it -- so a fifth
+# positional would fall back to its default below the first extension-defined node and drop the
+# option silently. A singleton key cannot collide with the `(x, y)` pairs `visited` holds.
+struct ExactFloats end
+
 """
-    has_equal_data(x, y; equal_undefs=true)
+    has_equal_data(x, y; equal_undefs=true, exact_floats=false)
 
 Determine if two objects `x` and `y` have equivalent data. If `equal_undefs` 
 is `true`, undefined elements in arrays or unassigned fields in structs are 
-considered equal.
+considered equal. If `exact_floats` is `true`, floats compare by `isequal` rather than within
+the default tolerance -- use it for structural questions, where a tolerance calibrated for
+comparing computed derivatives is a false positive.
 
 The main logic is implemented in `has_equal_data_internal`, which is a recursive function
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
 """
-function has_equal_data(x, y; equal_undefs=true)
-    return has_equal_data_internal(x, y, equal_undefs, IdDict{Any,Bool}())
+function has_equal_data(x, y; equal_undefs=true, exact_floats=false)
+    visited = IdDict{Any,Bool}()
+    exact_floats && (visited[ExactFloats()] = true)
+    return has_equal_data_internal(x, y, equal_undefs, visited)
 end
 
 function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
@@ -236,6 +248,7 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
+    haskey(d, ExactFloats()) && return isequal(x, y)
     # `atol` for values near zero; `rtol` explicitly because passing `atol` alone makes
     # `isapprox` default `rtol` to zero, leaving an absolute-only comparison whose strictness
     # then depends on magnitude (1e-13 relative passes at 1e5 and fails at 1e6).
@@ -2418,7 +2431,14 @@ See [`test_lifted_type`](@ref) for the type-level half of the same contract.
 """
 # Compare two per-lane reads. A read can be a live view (a mutable struct's write proxy, or an
 # array lane view), which is not a value `has_equal_data` accepts, so reduce those to values first.
-_lane_reads_equal(a, b) = has_equal_data(_lane_read_value(a), _lane_read_value(b))
+#
+# `exact_floats`, because the answer replaces the argument's seed with a ZERO one: a false positive
+# hands the oracle a different problem from the one the width-N run solved. The default `√eps`
+# tolerance is one for any seed whose lane values both sit below it -- a `Float32` `dβ` drawn at
+# 3.3e-4 made lanes 1 and 2 of `symm!`'s `β` agree, and every lane then mismatched by `dβ_k · C`.
+function _lane_reads_equal(a, b)
+    return has_equal_data(_lane_read_value(a), _lane_read_value(b); exact_floats=true)
+end
 # Materialise a lane read so two reads compare by VALUE: a stride view over the partials block and
 # a plain array are different types, which `has_equal_data`'s same-type methods reject outright.
 # A storage array may hold undefined elements, which `collect` cannot copy, so hand those to

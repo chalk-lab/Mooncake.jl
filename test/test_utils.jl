@@ -6,6 +6,10 @@
         @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
         @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
         @test has_equal_data(5.0, 5.0)
+        # `exact_floats` drops the tolerance, and reaches the leaves through the structural
+        # recursion rather than only the top level.
+        @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
+        @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
         @test has_equal_data(Float64, Float64)
@@ -212,6 +216,20 @@
         @test real(c).partials[1] == 1.0
         @test imag(c).partials[1] == 2.0
         @test length(unique(real(c).partials)) == 8
+    end
+
+    @testset "lane relevance is decided exactly" begin
+        # An argument counts as direction-free only if its lane reads are IDENTICAL, because the
+        # answer swaps a ZERO width-1 seed in for the argument's real direction. The pair below
+        # sits within the default `atol = √eps(Float32)`, which is how a `symm!` row's `dβ` lost
+        # its `dβ · C` term in every lane.
+        @test !TestUtils._lane_reads_equal(3.31826f-4, 6.63652f-4)
+        # A genuinely direction-free read still compares equal, so the cases that rely on the
+        # exemption -- a zero pin, a non-differentiable argument -- keep it.
+        @test TestUtils._lane_reads_equal(0.0f0, 0.0f0)
+        @test TestUtils._lane_reads_equal(
+            fill(Mooncake.NoDual(), 3), fill(Mooncake.NoDual(), 3)
+        )
     end
 
     @testset "oracle validation" begin
