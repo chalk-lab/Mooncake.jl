@@ -57,7 +57,12 @@ set_to_zero_internal!!(::SetToZeroCache, ::P) = zero(P)
 _scale_internal(::MaybeCache, a::Float64, t::P) = P(a * Float64(t))
 
 # Must return Float64: _dot_internal is always accumulated into a Float64 scalar.
-_dot_internal(::MaybeCache, t::P, s::P) = Float64(t) * Float64(s)
+# `@noinline` is load-bearing on Julia 1.11: the caller maps this over a tangent tuple, and LLVM 16
+# fuses the per-element `BFloat16 -> Float64` extends into one `v8f64 fp_extend` it cannot select,
+# aborting the process. Keeping the call opaque stops the fusion. A plain accumulation loop does not
+# help -- LLVM vectorises that too -- and the crash needs only a 2-tuple, so it is not chunk-width
+# specific. Julia 1.10 skips `Core.BFloat16` entirely and 1.12 selects the wide extend fine.
+@noinline _dot_internal(::MaybeCache, t::P, s::P) = Float64(t) * Float64(s)
 
 _add_to_primal_internal(::MaybeCache, x::P, t::P, ::Bool) = x + t
 
