@@ -2424,6 +2424,12 @@ _lane_reads_equal(a, b) = has_equal_data(_lane_read_value(a), _lane_read_value(b
 # A storage array may hold undefined elements, which `collect` cannot copy, so hand those to
 # `has_equal_data` as they are -- it compares element-wise with its own `isassigned` handling.
 function _lane_read_value(x::AbstractArray)
+    # `isbitstype` first, and not merely as an optimisation: an isbits element cannot be
+    # undefined, and probing `isassigned` element-wise is SCALAR INDEXING, which a GPU array
+    # refuses outright. Only a non-isbits array can hold an undefined slot, and `collect` cannot
+    # copy one — hand those to `has_equal_data`, which compares element-wise with its own
+    # `isassigned` handling.
+    isbitstype(eltype(x)) && return collect(x)
     return all(i -> isassigned(x, i), eachindex(x)) ? collect(x) : x
 end
 _lane_read_value(@nospecialize(x)) = x
