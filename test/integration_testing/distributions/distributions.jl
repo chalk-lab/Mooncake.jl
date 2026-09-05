@@ -2067,8 +2067,16 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     ]
 
     @testset "$name" for (name, f, args, _C, modes, perf_flag) in param_logpdf_cases
+        # A Dirichlet observation must lie on the simplex, and `Distributions.jl` tolerates only
+        # about 1e-9 of drift off it. The harness's finite-difference grid bottoms out at 1e-8, so
+        # every step it can take leaves the simplex and evaluates `-Inf`; the derivative cannot be
+        # finite-differenced at all. Check the interface instead, as the Float16 cases below do for
+        # the same reason.
+        interface_only = name == "Dirichlet α+x"
         if :forward in modes && :reverse in modes
-            test_rule(StableRNG(123456), f, args...; perf_flag, is_primitive=false)
+            test_rule(
+                StableRNG(123456), f, args...; perf_flag, is_primitive=false, interface_only
+            )
         elseif :forward in modes
             test_rule(
                 StableRNG(123456),
@@ -2076,6 +2084,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 args...;
                 perf_flag,
                 is_primitive=false,
+                interface_only,
                 mode=Mooncake.ForwardMode,
             )
         elseif :reverse in modes
@@ -2085,6 +2094,7 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
                 args...;
                 perf_flag,
                 is_primitive=false,
+                interface_only,
                 mode=Mooncake.ReverseMode,
             )
         end
