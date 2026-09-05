@@ -174,6 +174,25 @@ end
                 interp = Mooncake.MooncakeInterpreter(mode)
                 @test_throws "signature-based primitive rule" build(interp, mi)
                 @test_throws "signature-based primitive rule" lazy(mi, false, interp.world)
+                @test_throws "signature-based primitive rule" Mooncake.check_primitive_invoke(
+                    interp, Tuple{typeof(invoke_nondefault),Any}, mi
+                )
+
+                # LTS can widen type-valued SSA arguments to DataType during AD.
+                for args in (
+                    (eltype, Float64),
+                    (eltype, Vector{Float32}),
+                    (eltype, NamedTuple{(:x,),Tuple{Float64}}),
+                    (promote_type, Float32, Float64),
+                    (Base.splitprec, Float64, 5),
+                )
+                    sig = Mooncake._typeof(args)
+                    match = only(Mooncake.CC._methods_by_ftype(sig, -1, interp.world))
+                    target = Mooncake.CC.specialize_method(match)
+                    widened_sig = Tuple{map(typeof, args)...}
+                    @test Mooncake.check_primitive_invoke(interp, widened_sig, target) ===
+                        nothing
+                end
             end
             # Already prepared rules remain pinned to their original world.
             @test Mooncake.value_and_gradient!!(cache, f, 0.3)[2][2] ≈ cos(0.3)

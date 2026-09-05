@@ -303,6 +303,10 @@ end
 function check_primitive_invoke(interp::MooncakeInterpreter, sig, target)
     @nospecialize sig
     target isa Core.MethodInstance || return nothing
+    # The AD signature may widen a constant type argument to DataType. Recover its
+    # precision from the argument specialization, not from the selected Method's signature
+    # (which would incorrectly justify invoking a non-default method).
+    sig = typeintersect(sig, target.specTypes)
     matches = CC.findall(sig, CC.method_table(interp))
     if matches !== nothing
         methods = get_matches(matches.matches)
