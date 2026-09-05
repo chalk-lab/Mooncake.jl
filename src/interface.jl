@@ -443,9 +443,14 @@ function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
 end
 
 # Tuple, NamedTuple
-function _copy_to_output!!(dst::P, src::P) where {P<:Union{Tuple,NamedTuple}}
+function _copy_to_output!!(dst::P, src::P) where {P<:Tuple}
     isbitstype(P) && return src
     return map(_copy_to_output!!, dst, src)
+end
+
+function _copy_to_output!!(dst::P, src::P) where {P<:NamedTuple}
+    isbitstype(P) && return src
+    return P(map(_copy_to_output!!, values(dst), values(src)))
 end
 
 # Handling structs
@@ -543,7 +548,8 @@ function _copy_output(x::P) where {P<:_BuiltinArrays}
 end
 
 # Tuple, NamedTuple
-_copy_output(x::Union{Tuple,NamedTuple}) = map(_copy_output, x)::typeof(x)
+_copy_output(x::Tuple) = map(_copy_output, x)::typeof(x)
+_copy_output(x::NamedTuple) = typeof(x)(map(_copy_output, values(x)))
 
 # mutable composite types, bitstype
 function _copy_output(x::P) where {P}
