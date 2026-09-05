@@ -82,6 +82,7 @@ function build_frule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
+        check_primitive_invoke(interp, sig, sig_or_mi)
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule(rule) : rule
     end
@@ -443,6 +444,7 @@ function modify_fwd_ad_stmts!(
 
         interp = info.interp
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
+            check_primitive_invoke(interp, sig, mi)
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)
                 replace_call!(dual_ir, ssa, Expr(:call, rule, dual_args...))
@@ -572,6 +574,7 @@ function frule_type(
 ) where {C}
     sig = _get_sig(mi)
     if is_primitive(C, ForwardMode, sig, interp.world)
+        check_primitive_invoke(interp, sig, mi)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
         # (e.g. NfwdMooncake.Rule) this allocates a throwaway instance; the cost is compile-
         # time only and does not affect hot-path performance.
