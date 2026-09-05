@@ -895,10 +895,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
             Any[randn(4) for _ in 1:6],
             4,
         ),
+        # Forward refuses these two, though the OBJECT round-trip itself is sound: recovering the
+        # object keeps the store observable, so only a raw BYTE read through the address is
+        # unsound. The guard cannot tell the two apart, because a narrower one would have to mark
+        # the pointer as objref-derived, and `dual_type(Val(N), Ptr{T})` is `NTuple{N,Ptr{T}}` --
+        # rule signatures must match only shapes `dual_type` returns, so tagging the V would change
+        # the representation contract for every `Ptr` slot rather than this one path. Refusing more
+        # than is broken is the accepted cost until that contract changes. Reverse is unaffected.
         (
             false,
             :none,
-            (lb=0.1, ub=150),
+            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+            x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+            _x,
+        ),
+        (
+            false,
+            :none,
+            (lb=0.1, ub=150, mode=ReverseMode),
             x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
             _x,
         ),
@@ -908,7 +922,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (
             false,
             :none,
-            (lb=0.1, ub=150),
+            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+            x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
+            _x,
+        ),
+        (
+            false,
+            :none,
+            (lb=0.1, ub=150, mode=ReverseMode),
             x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
             _x,
         ),
