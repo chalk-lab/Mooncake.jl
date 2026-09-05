@@ -1,3 +1,40 @@
+@static if VERSION >= v"1.11"
+    const _gc_root_memory = Ref{WeakRef}()
+
+    @noinline function _gc_root_cstring()
+        bytes = UInt8['m', 'o', 'o', 'n', 0]
+        _gc_root_memory[] = WeakRef(bytes.ref.mem)
+        return bytes
+    end
+    Mooncake.@zero_derivative MinimalCtx Tuple{typeof(_gc_root_cstring)}
+
+    function _gc_root_strlen(x::Float64)
+        bytes = _gc_root_cstring()
+        n = GC.@preserve bytes ccall(:strlen, Csize_t, (Ptr{UInt8},), pointer(bytes))
+        return x * n
+    end
+
+    # _foreigncall_ is already a primitive. Force GC inside this test rule, after the
+    # caller's preserve region was lifted. Check liveness before dereferencing the pointer
+    # so a regression fails safely instead of reading freed memory.
+    function Mooncake.frule!!(
+        ::Dual{typeof(Mooncake._foreigncall_)},
+        ::Dual{Val{:strlen}},
+        ::Dual,
+        ::Dual,
+        ::Dual,
+        ::Dual,
+        ptr::Dual{Ptr{UInt8}},
+        roots...,
+    )
+        return GC.@preserve roots begin
+            GC.gc(true)
+            _gc_root_memory[].value === nothing && error("strlen backing memory collected")
+            zero_dual(ccall(:strlen, Csize_t, (Ptr{UInt8},), primal(ptr)))
+        end
+    end
+end
+
 @testset "ir_normalisation" begin
     @testset "interpolate_boundschecks" begin
         statements = Any[Expr(:boundscheck, true), Expr(:call, sin, SSAValue(1))]
@@ -5,6 +42,18 @@
         @test statements[2].args[2] == true
     end
     @testset "foreigncall_to_call" begin
+        @test Mooncake.__extract_foreigncall_name(Expr(:tuple, QuoteNode(:foo))) ===
+            Val(:foo)
+        @test Mooncake.__extract_foreigncall_name(
+            Expr(:tuple, QuoteNode(:foo), "libfoo")
+        ) === Val((:foo, :libfoo))
+        @test Mooncake.__extract_foreigncall_name(
+            Expr(:call, GlobalRef(Core, :tuple), QuoteNode(:foo), "libfoo")
+        ) === Val((:foo, :libfoo))
+        @test Mooncake.__extract_foreigncall_name(Expr(:tuple, "foo")) === Val(:foo)
+        @test Mooncake.__extract_foreigncall_name((:foo,)) === Val(:foo)
+        @test_throws ErrorException Mooncake.__extract_foreigncall_name(:(sin(1.0)))
+
         foreigncall = Expr(
             :foreigncall,
             :(:jl_array_isassigned),
@@ -20,6 +69,45 @@
         call = Mooncake.foreigncall_to_call(foreigncall, sp_map)
         @test Meta.isexpr(call, :call)
         @test call.args[1] == Mooncake._foreigncall_
+    end
+    @testset "recover_foreigncall_gc_roots!" begin
+        if VERSION >= v"1.11" # MemoryRef does not exist on 1.10.
+            # Mimic the optimised IR shape in which a foreigncall's GC-root slot holds a
+            # pointer derived from a MemoryRef rather than the MemoryRef itself.
+            ir = Mooncake.ircode(
+                Any[
+                    Expr(:call, getfield, Argument(2), QuoteNode(:ref)),
+                    Expr(:call, getfield, SSAValue(1), QuoteNode(:ptr_or_offset)),
+                    Expr(:call, Base.bitcast, Ptr{Float64}, SSAValue(2)),
+                    Expr(
+                        :foreigncall,
+                        :(:dummy),
+                        Float64,
+                        svec(Ptr{Float64}),
+                        0,
+                        :(:ccall),
+                        SSAValue(3),
+                        SSAValue(3),
+                    ),
+                    ReturnNode(SSAValue(4)),
+                ],
+                Any[Any, Vector{Float64}],
+            )
+            ir.stmts.type[1] = MemoryRef{Float64}
+            ir.stmts.type[2] = Ptr{Nothing}
+            ir.stmts.type[3] = Ptr{Float64}
+            ir.stmts.type[4] = Float64
+            ir = Mooncake.recover_foreigncall_gc_roots!(ir)
+            foreigncall = Mooncake.stmt(ir.stmts)[4]
+            @test foreigncall.args[6] === SSAValue(3)  # ccall argument: still the pointer
+            @test foreigncall.args[7] === SSAValue(1)  # GC root: rewritten to the MemoryRef
+
+            # Exercise the actual forward transform and collect inside the foreigncall rule.
+            rule = build_frule(_gc_root_strlen, 2.0)
+            result = rule(zero_dual(_gc_root_strlen), Dual(2.0, 1.0))
+            @test primal(result) == 8.0
+            @test tangent(result) == 4.0
+        end
     end
     @testset "fix_up_invoke_inference!" begin
         if VERSION >= v"1.11" # Base.method_instance does not exist on 1.10.

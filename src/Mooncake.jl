@@ -181,7 +181,10 @@ include("stack.jl")
 @unstable begin
 include(joinpath("interpreter", "contexts.jl"))
 include(joinpath("interpreter", "abstract_interpretation.jl"))
-include(joinpath("interpreter", "patch_for_319.jl"))
+# JuliaLang/julia#56201 fixes the compiler bug from Julia 1.13 onwards.
+@static if VERSION < v"1.13-"
+    include(joinpath("interpreter", "patch_for_319.jl"))
+end
 include(joinpath("interpreter", "ir_utils.jl"))
 include(joinpath("interpreter", "ir_normalisation.jl"))
 include(joinpath("interpreter", "zero_like_rdata.jl"))

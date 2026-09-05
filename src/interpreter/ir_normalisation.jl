@@ -9,7 +9,8 @@ unchanged, but makes AD more straightforward. In particular, replace
 4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
 5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed,
+8. recognised pointer-valued foreigncall roots with their backing MemoryRefs.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
@@ -24,6 +25,7 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
+    ir = recover_foreigncall_gc_roots!(ir)
     for (n, inst) in enumerate(stmt(ir.stmts))
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
@@ -42,6 +44,42 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
     verify_no_constant_gotoifnots(ir)
 
     return ir
+end
+
+"""
+    recover_foreigncall_gc_roots!(ir::IRCode)
+
+`ccall` wrappers such as `BLAS.dot` pass `pointer(x)` and rely on `GC.@preserve x` to
+keep the buffer alive. Their foreigncall root slots can therefore contain raw pointers,
+which root nothing. This predates Julia 1.13: Mooncake's forward `gc_preserve` rule is a
+no-op, and foreigncall rules only preserve their trailing arguments, so a GC inside a
+rule can free the buffer.
+
+Recover the MemoryRef behind a `bitcast(Ptr{T}, getfield(ref, :ptr_or_offset))` root,
+the inlined array-pointer representation on Julia 1.11+, before `foreigncall_to_call`.
+Preserving that reference keeps the backing memory alive. This is not general pointer
+provenance recovery: pointer arithmetic and Julia 1.10's `jl_array_ptr` are not handled.
+"""
+function recover_foreigncall_gc_roots!(ir::IRCode)
+    for inst in stmt(ir.stmts)
+        Meta.isexpr(inst, :foreigncall) || continue
+        for n in (6 + length(inst.args[3])):length(inst.args)
+            ref = _memoryref_of_pointer(ir, inst.args[n])
+            ref === nothing || (inst.args[n] = ref)
+        end
+    end
+    return ir
+end
+
+# Follow bitcasts to the MemoryRef field access; leave unrecognised roots unchanged.
+function _memoryref_of_pointer(ir::IRCode, x)
+    x isa SSAValue || return nothing
+    def = stmt(ir.stmts)[x.id]
+    Meta.isexpr(def, :call) && length(def.args) >= 3 || return nothing
+    f = __get_arg(def.args[1])
+    f === Base.bitcast && return _memoryref_of_pointer(ir, def.args[3])
+    f === getfield && __get_arg(def.args[3]) === :ptr_or_offset && return def.args[2]
+    return nothing
 end
 
 """
@@ -165,17 +203,16 @@ end
 __extract_foreigncall_name(x::Symbol) = Val(x)
 __extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
-    # Make sure that we're getting the expression that we're expecting.
-    !Meta.isexpr(x, :call) && error("unexpected expr $x")
-    !isa(x.args[1], GlobalRef) && error("unexpected expr $x")
-    x.args[1].name != :tuple && error("unexpected expr $x")
-    length(x.args) != 3 && error("unexpected expr $x")
-
-    # Parse it into a name that can be passed as a type.
-    v = eval(x)
-    return Val((Symbol(v[1]), Symbol(v[2])))
+    # JuliaLang/julia#59165 changes Core.tuple calls to Expr(:tuple, name[, lib])
+    # in Julia 1.13. Both representations evaluate to a tuple.
+    is_call_to_tuple = Meta.isexpr(x, :call) && __get_arg(x.args[1]) === tuple
+    Meta.isexpr(x, :tuple) || is_call_to_tuple || error("unexpected expr $x")
+    return __extract_foreigncall_name(eval(x))
 end
-__extract_foreigncall_name(v::Tuple) = Val((Symbol(v[1]), Symbol(v[2])))
+__extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
+function __extract_foreigncall_name(v::Tuple{Any,Any})
+    Val((Symbol(v[1]), Symbol(v[2])))
+end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)
     return __extract_foreigncall_name(getglobal(x.mod, x.name))
