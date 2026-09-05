@@ -352,7 +352,17 @@ end
     # field is stored at its widened type (e.g. `a::Any`, not the concrete
     # `a::Float64`) — matching what reverse mode produces.
     backing = fieldtype(tangent_type(P), :fields)
-    return Tangent(backing(field_tangents))
+    return Tangent(_lane_backing(backing, NamedTuple{names}(field_tangents)))
+end
+# Coerce only when every field's lane read fits the declared reverse type. A MUTABLE field's lane
+# read is a live `MutableDualTangentView` over the parent, which has no reverse counterpart to
+# convert into, so coercing a struct containing one throws — keep the read types there. Decided
+# from types alone, so the branch folds away.
+@generated function _lane_backing(::Type{B}, nt::NT) where {B,NT}
+    fits =
+        fieldcount(B) == fieldcount(NT) &&
+        all(i -> fieldtype(NT, i) <: fieldtype(B, i), 1:fieldcount(NT))
+    return fits ? :(B(nt)) : :(nt)
 end
 # Tuple primal: V is a Tuple of per-element V; recurse element-wise.
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N}
