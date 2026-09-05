@@ -71,7 +71,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: true
+          include-all-prereleases: ${{ matrix.version == '1.13' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -129,7 +129,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: true
+          include-all-prereleases: ${{ matrix.version == '1.13' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |

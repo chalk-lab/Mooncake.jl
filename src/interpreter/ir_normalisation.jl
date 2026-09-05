@@ -9,7 +9,8 @@ unchanged, but makes AD more straightforward. In particular, replace
 4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
 5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
+7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed,
+8. recognised pointer-valued foreigncall roots with their backing MemoryRefs.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
@@ -48,63 +49,38 @@ end
 """
     recover_foreigncall_gc_roots!(ir::IRCode)
 
-On Julia 1.13+ the optimiser may replace the GC-root arguments of a `:foreigncall` with
-pointers derived from them (e.g. the `ptr_or_offset` field of a `MemoryRef`). This is
-valid natively because codegen recovers the base object of a derived pointer when placing
-GC roots, but Mooncake converts `:foreigncall`s into ordinary calls (see
-`foreigncall_to_call`), and a raw pointer passed to a rule roots nothing. The buffers
-behind the pointer arguments can then be freed mid-rule — for example by a GC triggered
-while the first call into a rule compiles its callees — producing silently-wrong results.
+`ccall` wrappers such as `BLAS.dot` pass `pointer(x)` and rely on `GC.@preserve x` to
+keep the buffer alive. Their foreigncall root slots can therefore contain raw pointers,
+which root nothing. This predates Julia 1.13: Mooncake's forward `gc_preserve` rule is a
+no-op, and foreigncall rules only preserve their trailing arguments, so a GC inside a
+rule can free the buffer.
 
-This pass rewrites each pointer-valued root slot to the object the pointer was derived
-from, restoring the invariant relied upon by ccall-boundary rules (such as those in
-`src/rules/blas.jl`) that `GC.@preserve`-ing the trailing arguments of `_foreigncall_`
-keeps the memory behind its pointer arguments alive.
+Recover the MemoryRef behind a `bitcast(Ptr{T}, getfield(ref, :ptr_or_offset))` root,
+the inlined array-pointer representation on Julia 1.11+, before `foreigncall_to_call`.
+Preserving that reference keeps the backing memory alive. This is not general pointer
+provenance recovery: pointer arithmetic and Julia 1.10's `jl_array_ptr` are not handled.
 """
 function recover_foreigncall_gc_roots!(ir::IRCode)
-    stmts = stmt(ir.stmts)
-    for inst in stmts
+    for inst in stmt(ir.stmts)
         Meta.isexpr(inst, :foreigncall) || continue
-        arg_types = inst.args[3]::SimpleVector
-        any(Base.isvarargtype, arg_types) && continue
-        for n in (6 + length(arg_types)):length(inst.args)
-            root = inst.args[n]
-            root isa SSAValue || continue
-            CC.widenconst(CC.argextype(root, ir)) <: Ptr || continue
-            base = _pointer_base(ir, stmts, root)
-            base === nothing || (inst.args[n] = base)
+        for n in (6 + length(inst.args[3])):length(inst.args)
+            ref = _memoryref_of_pointer(ir, inst.args[n])
+            ref === nothing || (inst.args[n] = ref)
         end
     end
     return ir
 end
 
-# Walk the def chain of the pointer-valued SSA value `x` back to the GC-managed object the
-# pointer was derived from. Returns `nothing` (leaving the root unchanged) if the chain
-# has an unrecognised shape.
-function _pointer_base(ir::IRCode, stmts::Vector{Any}, x::SSAValue)
-    while true
-        def = stmts[x.id]
-        (Meta.isexpr(def, :call) && length(def.args) >= 3) || return nothing
-        f = def.args[1]
-        f isa GlobalRef && (f = getglobal(f.mod, f.name))
-        if f === Base.bitcast
-            arg = def.args[3]
-        elseif f === getfield && _field_name(def.args[3]) === :ptr_or_offset
-            base = def.args[2]
-            base isa Union{SSAValue,Argument} || return nothing
-            T = CC.widenconst(CC.argextype(base, ir))
-            return (isbitstype(T) || T <: Ptr) ? nothing : base
-        else
-            return nothing
-        end
-        arg isa SSAValue || return nothing
-        x = arg
-    end
+# Follow bitcasts to the MemoryRef field access; leave unrecognised roots unchanged.
+function _memoryref_of_pointer(ir::IRCode, x)
+    x isa SSAValue || return nothing
+    def = stmt(ir.stmts)[x.id]
+    Meta.isexpr(def, :call) && length(def.args) >= 3 || return nothing
+    f = __get_arg(def.args[1])
+    f === Base.bitcast && return _memoryref_of_pointer(ir, def.args[3])
+    f === getfield && __get_arg(def.args[3]) === :ptr_or_offset && return def.args[2]
+    return nothing
 end
-
-_field_name(x::QuoteNode) = x.value
-_field_name(x::Symbol) = x
-_field_name(::Any) = nothing
 
 """
     interpolate_boundschecks!(ir::IRCode)
@@ -227,17 +203,13 @@ end
 __extract_foreigncall_name(x::Symbol) = Val(x)
 __extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
-    # On Julia 1.13+, the foreigncall name is emitted as an `Expr(:tuple, ...)`.
-    # On older versions it is `Expr(:call, Core.tuple, ...)`. Either way, evaluating
-    # yields the tuple `(name,)` or `(name, lib)`.
-    if Meta.isexpr(x, :tuple) ||
-        (Meta.isexpr(x, :call) && isa(x.args[1], GlobalRef) && x.args[1].name === :tuple)
-        v = eval(x)
-        return __extract_foreigncall_name(v)
-    end
-    error("unexpected expr $x")
+    # JuliaLang/julia#59165 changes Core.tuple calls to Expr(:tuple, name[, lib])
+    # in Julia 1.13. Both representations evaluate to a tuple.
+    is_call_to_tuple = Meta.isexpr(x, :call) && __get_arg(x.args[1]) === tuple
+    Meta.isexpr(x, :tuple) || is_call_to_tuple || error("unexpected expr $x")
+    return __extract_foreigncall_name(eval(x))
 end
-__extract_foreigncall_name(v::Tuple{Any}) = Val(Symbol(v[1]))
+__extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
 function __extract_foreigncall_name(v::Tuple{Any,Any})
     Val((Symbol(v[1]), Symbol(v[2])))
 end

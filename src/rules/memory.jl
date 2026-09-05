@@ -472,24 +472,21 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-@inline function frule!!(::Dual{typeof(memoryrefnew)}, x::Dual{<:MemoryRef}, ii::Dual{Int})
+# JuliaLang/julia#58768 adds indexed construction directly from Memory in Julia 1.13.
+@inline function frule!!(
+    ::Dual{typeof(memoryrefnew)}, x::Dual{<:Union{Memory,MemoryRef}}, ii::Dual{Int}
+)
     return Dual(memoryrefnew(primal(x), primal(ii)), memoryrefnew(tangent(x), primal(ii)))
 end
 @inline function rrule!!(
-    f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
+    f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Union{Memory,MemoryRef}}, ii::CoDual{Int}
 )
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
-const _MemoryRefNewIndexedInput = @static if VERSION >= v"1.13-"
-    Union{Memory,MemoryRef}
-else
-    MemoryRef
-end
-
 @inline function frule!!(
     ::Dual{typeof(memoryrefnew)},
-    x::Dual{<:_MemoryRefNewIndexedInput},
+    x::Dual{<:Union{Memory,MemoryRef}},
     ii::Dual{Int},
     boundscheck::Dual{Bool},
 )
@@ -499,7 +496,7 @@ end
 end
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
-    x::CoDual{<:_MemoryRefNewIndexedInput},
+    x::CoDual{<:Union{Memory,MemoryRef}},
     ii::CoDual{Int},
     boundscheck::CoDual{Bool},
 )
@@ -995,13 +992,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             mem in filter(x -> length(x.mem) > Core.memoryrefoffset(x), mem_refs) for
             bc in [false, true]
         ],
-        @static(
-            if VERSION >= v"1.13-"
-                [(false, :none, nothing, memoryrefnew, first(mems), 1, false)]
-            else
-                []
-            end
-        ),
+        if VERSION >= v"1.13-"
+            [
+                (false, :none, nothing, memoryrefnew, mem, length(mem), bc...) for
+                mem in filter(!isempty, mems) for bc in ((), (false,), (true,))
+            ]
+        else
+            []
+        end,
         [(false, :none, nothing, memoryrefoffset, mem_ref) for mem_ref in mem_refs],
         [
             (
