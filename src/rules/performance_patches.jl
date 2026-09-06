@@ -116,19 +116,25 @@ function frule!!(
     ::Lifted{typeof(abs2),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Chain rule: lane-`k` derivative of `Σᵢ pᵢ²` is `Σᵢ 2pᵢ·blockₖᵢ`: fold the contiguous block,
-    # scaling each element's lane column by `2pᵢ`. Reinterpreting the flat parent to `NTuple{N,P}`
-    # loads each lane column in one wide load; `N` separate scalar loads costs ~2x at width 8.
-    # Stack-only / 0-alloc (the `:allocs` test).
     nda = tangent(x)
     p = getfield(nda, :primal)
     v = sum(abs2, p)
-    cols = reinterpret(NTuple{N,P}, getfield(getfield(nda, :partials_block), :parent))
-    acc = ntuple(_ -> zero(P), Val(N))
-    @inbounds for j in eachindex(p)
-        acc = _tadd(acc, _tscale(cols[j], 2 * p[j]))
+    blk = getfield(getfield(nda, :partials_block), :parent)
+    lanes = if N == 1
+        # A scalar SIMD reduction avoids the tuple fold's serial dependency at width 1.
+        acc = zero(P)
+        @inbounds @simd for j in eachindex(p)
+            acc += (2 * p[j]) * blk[j]
+        end
+        (acc,)
+    else
+        cols = reinterpret(NTuple{N,P}, blk)
+        acc = ntuple(_ -> zero(P), Val(N))
+        @inbounds for j in eachindex(p)
+            acc = _tadd(acc, _tscale(cols[j], 2 * p[j]))
+        end
+        acc
     end
-    lanes = acc
     return Lifted{P,N}(v, _scalar_ndual(v, lanes))
 end
 function rrule!!(
@@ -153,11 +159,18 @@ function frule!!(
     C = pA * pB
     V = zero_dual(Val(N), C)
     blk = getfield(V, :partials_block)
-    dC = similar(C)                                  # one scratch for every lane
+    # Wider lanes have non-unit row stride; reusable dense buffers keep products on BLAS.
+    dA = N == 1 ? dAs[1] : similar(pA)
+    dB = N == 1 ? dBs[1] : similar(pB)
+    dC = N == 1 ? view(blk,1,:,:) : similar(C)
     for k in 1:N
-        mul!(dC, dAs[k], pB)
-        mul!(dC, pA, dBs[k], one(P), one(P))
-        copyto!(view(blk,k,:,:), dC)
+        if N != 1
+            copyto!(dA, dAs[k])
+            copyto!(dB, dBs[k])
+        end
+        mul!(dC, dA, pB)
+        mul!(dC, pA, dB, one(P), one(P))
+        N == 1 || copyto!(view(blk,k,:,:), dC)
     end
     return Lifted{typeof(C),N}(C, V)
 end
@@ -531,7 +544,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         end,
 
         # sum(abs2, x)
-        map_prod(sum_sizes, precisions) do (sz, P)
+        map_prod(vcat(sum_sizes, [(0,), (0, 3)]), precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., sum, abs2, randn(rng, P, sz...))
         end,

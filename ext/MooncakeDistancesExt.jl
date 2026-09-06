@@ -81,9 +81,15 @@ end
     typeof(Distances._pairwise!),M,StridedMatrix{P},StridedMatrix{P},StridedMatrix{P}
 } where {M<:PairwiseMetric,P<:BlasRealFloat}
 
-# A lane of a width-`N` slot is a stride-`N` view, which the pointer-based BLAS wrappers misread
-# above width 1, so each lane is gathered into dense scratch and written back. The scratch is
-# hoisted, and the in-place primal runs once above the loop.
+# BLAS requires unit row stride; a single lane can use its storage directly when it has it.
+function lane_scratch(lanes)
+    if length(lanes) == 1 && stride(first(lanes), 1) == 1
+        first(lanes)
+    else
+        similar(first(lanes))
+    end
+end
+
 function frule!!(
     ::Lifted{typeof(Distances._pairwise!),N},
     dist::Lifted{M,N},
@@ -94,9 +100,9 @@ function frule!!(
     pr, drs = arrayify(r)
     pA, dAs = arrayify(A)
     Distances._pairwise!(pdist, pr, pA)
-    sA, sr = similar(pA), similar(pr)
+    sA, sr = lane_scratch(dAs), lane_scratch(drs)
     for k in 1:N
-        copyto!(sA, dAs[k])
+        sA === dAs[k] || copyto!(sA, dAs[k])
         dots = column_dots(pA, sA)
 
         # `dA' * pA + pA' * dA` is symmetric, so one `syr2k!` over a single triangle does the
@@ -115,7 +121,7 @@ function frule!!(
             end
         end
         euclidean_pushforward!(pdist, sr, pr)
-        copyto!(drs[k], sr)
+        sr === drs[k] || copyto!(drs[k], sr)
     end
     return r
 end
@@ -132,15 +138,15 @@ function frule!!(
     pA, dAs = arrayify(A)
     pB, dBs = arrayify(B)
     Distances._pairwise!(pdist, pr, pA, pB)
-    sA, sB, sr = similar(pA), similar(pB), similar(pr)
+    sA, sB, sr = lane_scratch(dAs), lane_scratch(dBs), lane_scratch(drs)
     for k in 1:N
-        copyto!(sA, dAs[k])
-        copyto!(sB, dBs[k])
+        sA === dAs[k] || copyto!(sA, dAs[k])
+        sB === dBs[k] || copyto!(sB, dBs[k])
         mul!(sr, transpose(sA), pB)
         mul!(sr, transpose(pA), sB, one(P), one(P))
         sr .= 2 .* (column_dots(pA, sA) .+ transpose(column_dots(pB, sB)) .- sr)
         euclidean_pushforward!(pdist, sr, pr)
-        copyto!(drs[k], sr)
+        sr === drs[k] || copyto!(drs[k], sr)
     end
     return r
 end
