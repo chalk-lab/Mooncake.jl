@@ -648,35 +648,33 @@ else
     end
 end
 
-# A concrete primal whose `dual_type` is NOT concrete has no usable slot annotation: `Lifted` is
-# invariant in its V, so the slot the seed factories build is not a subtype of `lifted_type`'s
-# result and the OpaqueClosure boundary rejects it. In practice this is a NamedTuple with an
-# abstract field type, whose `dual_type` widens to `Any` exactly as reverse's `tangent_type` does,
-# so the shape is unsupported in both modes rather than a forward-mode gap. Refusing it here, where
-# the argument types are known, replaces a `TypeError` about internal slot types. Only the inputs
+# A concrete primal whose derivative type is NOT concrete has no usable slot annotation: `Lifted`
+# and `CoDual` are invariant in it, so the slot the seed factories build is not a subtype of the
+# annotation. Refusing it here, where the argument types are known, is load-bearing rather than
+# cosmetic: without it the reverse path SEGFAULTS in Julia's codegen emitting the OpaqueClosure
+# call (`emit_specsig_oc_call` -> `value_to_pointer` -> `zext_struct`), and the forward path builds
+# a cache for a shape it cannot represent instead of refusing. In practice this is a NamedTuple with
+# an abstract field type, which both `dual_type` and `tangent_type` widen to `Any`. Only the inputs
 # are checked: a value of this shape built and consumed INSIDE the function differentiates fine, and
 # a return value's type is not known until the rule is built.
-# Refuses a shape whose derivative representation cannot be annotated concretely. Both modes are
-# checked from one place, and both prepare paths call it: `dual_type` and `tangent_type` widen the
-# same shapes — no disagreement across any `tangent_test_cases()` entry — so a shape works in both
-# or neither. Reverse used to report this as a bare `TypeError` naming internal `CoDual` slot types.
-@inline function _check_representable_input(@nospecialize(P::Type), i::Int)
+#
+# Asked PER MODE, because the two questions are not interchangeable. An extension may give a type a
+# representation in one mode only, and then the other mode's question is not merely a different
+# answer but the wrong question to ask. `MooncakeDynamicExpressionsExt` is the live case: an
+# expression tree is self-referential, so its custom `TangentNode` is what makes `tangent_type`
+# concrete, while `dual_type` refuses outright. Asking that from a reverse-mode `prepare_*_cache`
+# turned a working gradient into an error.
+@inline function _check_representable_input(mode::Mode, @nospecialize(P::Type), i::Int)
     isconcretetype(P) || return nothing
-    fwd_ok = isconcretetype(dual_type(Val(1), P))
-    rvs_ok = isconcretetype(tangent_type(P))
-    (fwd_ok && rvs_ok) && return nothing
-    which = if fwd_ok
-        "`tangent_type`"
-    else
-        (rvs_ok ? "`dual_type`" : "`dual_type` and `tangent_type`")
-    end
+    forward = mode isa ForwardMode
+    isconcretetype(forward ? dual_type(Val(1), P) : tangent_type(P)) && return nothing
     return throw(
         ArgumentError(
             "Argument $i has type `$P`, whose derivative representation cannot be annotated: " *
-            "$which widens it to a non-concrete type, and the slot wrappers are invariant in that " *
-            "parameter. A `NamedTuple` with an abstract field type (`@NamedTuple{a}`) is the usual " *
-            "case, and it is unsupported in both modes. Use a struct with the same field instead — " *
-            "its representation keeps the declared field type and differentiates in both modes.",
+            "$(forward ? "`dual_type`" : "`tangent_type`") widens it to a non-concrete type, and " *
+            "the slot wrappers are invariant in that parameter. A `NamedTuple` with an abstract " *
+            "field type (`@NamedTuple{a}`) is the usual case. Use a struct with the same field " *
+            "instead — its representation keeps the declared field type.",
         ),
     )
 end
@@ -885,7 +883,10 @@ is shown by the cache.
     # `_stable_typeof`, not `_typeof`: the latter sharpens NamedTuple elements, narrowing
     # `@NamedTuple{a}` to `@NamedTuple{a::Float64}`, whose `dual_type` IS concrete — the check would
     # then miss exactly the shape it exists for.
-    ntuple(i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), Val(N + 1))
+    ntuple(
+        i -> _check_representable_input(ForwardMode(), Base._stable_typeof(fx[i]), i - 1),
+        Val(N + 1),
+    )
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)
         0
@@ -1229,6 +1230,12 @@ function _validate_jacobian_output(y, Tx)
     # one: forward indexes a lane's tangent and died on a raw `MethodError` from `keys`, reverse
     # died on an internal `fdata_type` assertion. The kind of representation does not depend on
     # the chunk width, so width 1 answers this for every cache.
+    # `dual_type` stands in for both modes here, which `_check_representable_input` shows is not
+    # sound in general — a self-referential type can be concrete under `tangent_type` and
+    # non-terminating under `dual_type`. Bounded here by the `AbstractVector` guard above rather
+    # than by an argument that the two agree; a recursive `AbstractVector` would still overflow on
+    # the reverse path. Asking the reverse question needs a verified `tangent_type` mirror of the
+    # `NDualArray` test across the whole wrapper family, which no failing case yet motivates.
     dual_type(Val(1), typeof(y)) <: NDualArray || throw(
         ArgumentError(
             "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
@@ -1732,7 +1739,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # Clear global caches if requested.
     config.empty_cache && empty_mooncake_caches!()
     foreach(
-        i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), eachindex(fx)
+        i -> _check_representable_input(ReverseMode(), Base._stable_typeof(fx[i]), i - 1),
+        eachindex(fx),
     )
 
     # Check that the output of `fx` is supported.
@@ -1879,7 +1887,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
 @unstable function prepare_gradient_cache(fx...; config=Config())
     config.empty_cache && empty_mooncake_caches!()
     foreach(
-        i -> _check_representable_input(Base._stable_typeof(fx[i]), i - 1), eachindex(fx)
+        i -> _check_representable_input(ReverseMode(), Base._stable_typeof(fx[i]), i - 1),
+        eachindex(fx),
     )
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = _zero_tangents(fx)

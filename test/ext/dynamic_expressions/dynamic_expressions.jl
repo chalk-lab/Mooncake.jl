@@ -31,6 +31,20 @@ using Test
     end
 end
 
+@testset "forward refuses expression trees; reverse is unaffected" begin
+    # `Node` is self-referential, so the generic recursion terminates in neither mode. The custom
+    # `TangentNode` breaks it for reverse; forward has no counterpart and refuses instead, which is
+    # what stops `dual_type` recursing until the stack runs out.
+    #
+    # Both go through a `Ref` because with a literal type the calls constant-fold and inference's
+    # recursion limiter cuts the recursion rather than executing it -- that is why the reverse case
+    # passed locally and overflowed on CI. No rule registry can express either: they are
+    # interface-level preconditions, not rules.
+    P = Ref{Any}(Node{Float64,2})
+    @test Mooncake._check_representable_input(Mooncake.ReverseMode(), P[], 0) === nothing
+    @test_throws ArgumentError Mooncake.dual_type(Val(1), P[])
+end
+
 @testset "Basic usage checks" begin
     let
         # Build up expression
