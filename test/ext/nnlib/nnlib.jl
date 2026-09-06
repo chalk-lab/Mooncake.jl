@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "NNlib")
 
 using CUDA, cuDNN, JET, Mooncake, NNlib, StableRNGs, Test
 using Mooncake.Nfwd: NDual, ndual_partial, ndual_value
@@ -566,6 +565,39 @@ cuda = CUDA.functional() && pkgversion(CUDA) > v"5.9.6"
         mode = Mooncake.ReverseMode
         test_rule(StableRNG(123), fargs...; perf_flag, is_primitive, interface_only, mode)
     end
+
+    # The loop above runs reverse mode only. The `bias_act!` forward frule must accept x and b with
+    # DIFFERENT float element types (e.g. Float64 input + Float32 bias, common in mixed-precision
+    # models) — the `@is_primitive` and reverse rule allow it, but the frule previously bound both to
+    # a shared eltype, raising a forward MethodError. Exercise it explicitly (Array-only forward; CPU).
+    @testset "bias_act! mixed-eltype forward" begin
+        test_rule(
+            StableRNG(123),
+            bias_act!,
+            identity,
+            randn(StableRNG(1), 8, 4),
+            randn(StableRNG(2), Float32, 8);
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
+
+    # `gather` is a both-modes primitive; the loop above is reverse-only, so exercise its
+    # forward frule explicitly across chunk widths (plain-Array src). Guards against the
+    # frule regressing to `gather`'s raw-pointer body, which the block layout cannot address
+    # per lane at width > 1.
+    @testset "gather forward" begin
+        test_rule(
+            StableRNG(123),
+            NNlib.gather,
+            randn(StableRNG(1), 3, 4),
+            [1, 3, 1];
+            mode=Mooncake.ForwardMode,
+            is_primitive=true,
+            perf_flag=:none,
+        )
+    end
 end
 
 if cuda
@@ -574,13 +606,16 @@ if cuda
         for activation in (tanh, tanh_fast)
             x = CUDA.fill(20.0f0, 1)
             b = CUDA.zeros(Float32, 1)
+            x_slot = Mooncake.zero_lifted(Val(1), x)
+            _, x_partials = Mooncake.arrayify(x_slot)
+            fill!(x_partials[1], 1.0f0)
             out = Mooncake.frule!!(
-                Mooncake.zero_dual(bias_act!),
-                Mooncake.zero_dual(activation),
-                Mooncake.Dual(x, CUDA.ones(Float32, 1)),
-                Mooncake.Dual(b, CUDA.zeros(Float32, 1)),
+                Mooncake.zero_lifted(Val(1), bias_act!),
+                Mooncake.zero_lifted(Val(1), activation),
+                x_slot,
+                Mooncake.zero_lifted(Val(1), b),
             )
-            @test only(Array(Mooncake.tangent(out))) ≈ ref
+            @test only(Array(Mooncake.tangent(out, 1))) ≈ ref
 
             x = CUDA.fill(20.0f0, 1)
             dx = CUDA.zeros(Float32, 1)
@@ -757,9 +792,9 @@ end
     x16 = NDual{Float16,1}(Float16(8), (one(Float16),))
     @test Float64(ndual_partial(f(x16), 1)) ≈ ref16 rtol = 1e-2
     d16 = Mooncake.frule!!(
-        Mooncake.Dual(f, Mooncake.NoTangent()), Mooncake.Dual(Float16(8), one(Float16))
+        Mooncake.zero_dual(f), Mooncake.Lifted{Float16,1}(Float16(8), x16)
     )
-    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    @test Float64(ndual_partial(Mooncake.tangent(d16), 1)) ≈ ref16 rtol = 1e-2
     _, pb16 = Mooncake.rrule!!(Mooncake.zero_fcodual(f), Mooncake.zero_fcodual(Float16(8)))
     @test Float64(pb16(one(Float16))[2]) ≈ ref16 rtol = 1e-2
 end
@@ -782,11 +817,11 @@ end
     # As for σ, the saturated derivative's precision is beyond finite differences. `1 - Ω^2`
     # returns exactly 0 at Float16(6), against a true 2.46e-5, so it separates the two forms.
     ref16 = Float64(1 - tanh(big(6.0))^2)
+    x16 = NDual{Float16,1}(Float16(6), (one(Float16),))
     d16 = Mooncake.frule!!(
-        Mooncake.Dual(tanh_fast, Mooncake.NoTangent()),
-        Mooncake.Dual(Float16(6), one(Float16)),
+        Mooncake.zero_dual(tanh_fast), Mooncake.Lifted{Float16,1}(Float16(6), x16)
     )
-    @test Float64(Mooncake.tangent(d16)) ≈ ref16 rtol = 1e-2
+    @test Float64(ndual_partial(Mooncake.tangent(d16), 1)) ≈ ref16 rtol = 1e-2
     _, pb16 = Mooncake.rrule!!(
         Mooncake.zero_fcodual(tanh_fast), Mooncake.zero_fcodual(Float16(6))
     )
@@ -821,7 +856,7 @@ if cuda
         xg = cu(randn(StableRNG(123), Float32, 4))
         rule = Mooncake.build_frule(gather_sum, xg)
         @test_throws ArgumentError rule(
-            Mooncake.zero_dual(gather_sum), Mooncake.Dual(copy(xg), CUDA.ones(Float32, 4))
+            Mooncake.zero_dual(gather_sum), Mooncake.zero_dual(copy(xg))
         )
         # Reverse mode, which the raise directs users to, is covered by the `gather` cases
         # in `test_cases`: under `cuda` those run on `CuArray`s.

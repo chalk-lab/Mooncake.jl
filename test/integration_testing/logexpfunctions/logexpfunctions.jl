@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "..", "ext", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "LogExpFunctions")
 
 using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule

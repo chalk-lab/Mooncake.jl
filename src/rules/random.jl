@@ -33,11 +33,16 @@ const KnownRNGs = Union{MersenneTwister,RandomDevice,TaskLocalRNG,Xoshiro}
 const SpecialisedRNGs = Union{MersenneTwister,TaskLocalRNG,Xoshiro}
 for f in [rand!, randn!, randexp!]
     @eval @is_primitive MinimalCtx Tuple{typeof($f),SpecialisedRNGs,Array{Float64}}
+    # `$f` is non-differentiable — it overwrites the primal with new random
+    # values; the output doesn't depend on input tangents. Write the new
+    # primal once, then zero each lane's partial.
     @eval function frule!!(
-        ::Dual{typeof($f)}, rng::Dual{<:SpecialisedRNGs}, x::Dual{<:Array{Float64}}
-    )
+        ::Lifted{typeof($f),Nw},
+        rng::Lifted{<:SpecialisedRNGs},
+        x::Lifted{Array{Float64,D},Nw,<:NDualArray{Float64,Nw,D,Array{Float64,D}}},
+    ) where {Nw,D}
         $f(primal(rng), primal(x))
-        tangent(x) .= 0
+        Nfwd._zero_seed!(tangent(x))
         return x
     end
     @eval function rrule!!(
@@ -92,7 +97,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:random})
         (false, :none, nothing, x -> x .* rand!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randn!(Xoshiro(123), x), randn(9)),
         (false, :none, nothing, x -> x .* randexp!(Xoshiro(123), x), randn(9)),
-        (false, :none, nothing, x -> x .* rand(Xoshiro(123), size(x)...), randn(9)),
+        # `skip_chunked`: `rand`'s array fill writes through a raw pointer, which the
+        # element-major partials block cannot serve at width > 1. `randn`/`randexp` below take a
+        # different path and pass, so they are left on.
+        (
+            false,
+            :none,
+            (skip_chunked=true,),
+            x -> x .* rand(Xoshiro(123), size(x)...),
+            randn(9),
+        ),
         (false, :none, nothing, x -> x .* randn(Xoshiro(123), size(x)...), randn(9)),
         (false, :none, nothing, x -> x .* randexp(Xoshiro(123), size(x)...), randn(9)),
 

@@ -24,6 +24,24 @@ function randn_tangent_internal(rng::AbstractRNG, d::P, dict::MaybeCache) where 
     end
 end
 
+# Unlift rebuilds a reverse tangent, so each value must be unlifted rather than taken from the
+# lane accessor, which yields a `MutableDualTangentView` for a mutable-struct value type. An
+# `IdDict` is mutable, so register the shell before recursing.
+@inline unlift(x::Lifted{P,1,<:IdDict}) where {P<:IdDict} = (
+    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+)
+function _unlift_seed(x::Lifted{P,1,<:IdDict}, cache::IdDict) where {P<:IdDict}
+    p = primal(x)
+    haskey(cache, p) && return cache[p]
+    t = tangent_type(P)()
+    cache[p] = t
+    for (k, v) in tangent(x)
+        pk = p[k]
+        t[k] = _unlift_seed(Lifted{typeof(pk),1}(pk, v), cache)
+    end
+    return t
+end
+
 function increment_internal!!(c::IncCache, p::T, q::T) where {T<:IdDict}
     haskey(c, p) && return p
     for k in keys(p)
@@ -99,6 +117,15 @@ function TestUtils.populate_address_map_internal(
     foreach(n -> TestUtils.populate_address_map_internal(m, p[n], t[n]), keys(p))
     return m
 end
+# An `IdDict`'s forward V is an `IdDict` over the same keys holding each value's V. It is not an
+# `AbstractArray`, so the harness's element-wise method does not match it.
+function TestUtils._chunked_v_invariant(p::IdDict, v::IdDict, c::IdDict)
+    haskey(c, v) && return true
+    c[v] = nothing
+    length(p) == length(v) || return false
+    return all(k -> haskey(v, k) && TestUtils._chunked_v_invariant(p[k], v[k], c), keys(p))
+end
+
 function TestUtils.has_equal_data_internal(
     p::P, q::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:IdDict}
@@ -121,7 +148,82 @@ tangent(f::IdDict, ::NoRData) = f
 # standard built-in functionality on `IdDict`s.
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
-function frule!!(::Dual{typeof(Base.rehash!)}, d::Dual{<:IdDict}, newsz::Dual)
+
+# Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
+# value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
+# (one dict, K → tangent_type(V)) but with V replaced by `dual_type(Val(N), V)`.
+@foldable @inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
+    return IdDict{K,dual_type(Val(N), V)}
+end
+# No `lifted_type(::IdDict)` method needed: the generic concrete-struct `lifted_type` returns
+# `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `IdDict{K,V}` uses the `dual_type` above
+# and yields exactly `Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N),V)}}`.
+
+# Forward seed / lift / lane-accessor for the custom V `IdDict{K, dual_type(V)}`. Without these the
+# generic struct-lift fallback fires on `IdDict`'s `ht::Memory{Any}` field and builds an invalid
+# `MutableDual{Memory{Any}}`. Mirror the reverse `*_tangent_internal` per-value recursion (with the
+# same aliasing/cycle cache), the `lift` boundary, and the AbstractArray lane accessor.
+for f in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $f(w::Val{N}, x::IdDict{K,V}, c::MaybeCache) where {N,K,V}
+        DV = dual_type(Val(N), V)
+        haskey(c, x) && return c[x]::IdDict{K,DV}
+        out = IdDict{K,DV}()
+        c[x] = out
+        for (k, v) in x
+            out[k] = $f(w, v, c)
+        end
+        return out
+    end
+end
+function _randn_dual_internal(
+    w::Val{N}, rng::AbstractRNG, x::IdDict{K,V}, c::MaybeCache
+) where {N,K,V}
+    DV = dual_type(Val(N), V)
+    haskey(c, x) && return c[x]::IdDict{K,DV}
+    out = IdDict{K,DV}()
+    c[x] = out
+    for (k, v) in x
+        out[k] = _randn_dual_internal(w, rng, v, c)
+    end
+    return out
+end
+# Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
+@inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, nothing)
+# Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
+# struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
+# recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict
+# terminates instead of overflowing the stack (the reverse oracle's IdDict factories all guard).
+function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
+    d = c === nothing ? IdDict() : c
+    haskey(d, x) && return d[x]::Lifted{IdDict{K,V},1}
+    DV = dual_type(Val(1), V)
+    out = IdDict{K,DV}()
+    lifted = Lifted{IdDict{K,V},1}(x, out)
+    d[x] = lifted
+    for (k, v) in x
+        out[k] = tangent(lift(v, ẋ[k], d))
+    end
+    return lifted
+end
+# Lane accessor: extract lane `l` from each value's V, producing the reverse `tangent_type` dict.
+@inline function tangent(
+    x::Lifted{IdDict{K,V},N,IdDict{K,DV}}, lane::Integer
+) where {K,V,N,DV}
+    p = primal(x)
+    v = tangent(x)
+    # Concrete `typeof(pe)`, not the declared `V`: an `IdDict{K,Any}` would otherwise build
+    # `Lifted{Any,N,...}` children, which the lane methods dispatch on and mishandle.
+    entries = [k => tangent(Lifted{typeof(pe),N}(pe, v[k]), lane) for (k, pe) in p]
+    # The value type comes from the reads, not from `tangent_type(V)`: a mutable value's lane
+    # tangent is a live write-through view rather than a materialised `MutableTangent`, so the
+    # reverse-shaped type does not hold it. Empty keeps the reverse shape, having nothing to read.
+    isempty(entries) && return IdDict{K,tangent_type(V)}()
+    return IdDict(entries)
+end
+
+function frule!!(
+    ::Lifted{typeof(Base.rehash!),N}, d::Lifted{<:IdDict,N}, newsz::Lifted
+) where {N}
     Base.rehash!(primal(d), primal(newsz))
     Base.rehash!(tangent(d), primal(newsz))
     return d
@@ -132,17 +234,46 @@ function rrule!!(::CoDual{typeof(Base.rehash!)}, d::CoDual{<:IdDict}, newsz::CoD
     return d, NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
+# Rebuild `dv` over `stored` so the primal and its dual share storage. Converting an
+# `NDualArray`'s element type must allocate a new primal, which severs it from the stored object.
+@inline function _fwd_dual_over_stored(
+    ::Val{N}, stored::Array{E}, dv::NDualArray
+) where {N,E<:NDualEltype}
+    out = zero_dual(Val(N), stored)
+    copyto!(getfield(out, :partials_block), getfield(dv, :partials_block))
+    return out
+end
+@inline _fwd_dual_over_stored(::Val, stored, _) = throw(
+    ArgumentError(
+        "forward mode cannot store into an `IdDict` with value type $(typeof(stored)) when the " *
+        "conversion allocates: the dual cannot be rebuilt over the stored object, so a later " *
+        "mutation through the dict would be lost. Convert the value before storing it.",
+    ),
+)
+
 @is_primitive MinimalCtx Tuple{typeof(setindex!),IdDict,Any,Any}
-function frule!!(::Dual{typeof(setindex!)}, d::Dual{IdDict{K,V}}, val, key) where {K,V}
+function frule!!(
+    ::Lifted{typeof(setindex!),N},
+    d::Lifted{IdDict{K,V},N,IdDict{K,Vdv}},
+    val::Lifted,
+    key::Lifted,
+) where {N,K,V,Vdv}
     setindex!(primal(d), primal(val), primal(key))
-    # `setindex!` above stored `convert(V, val)`, so the tangent slot is `tangent_type(V)`, not
-    # `tangent_type(typeof(val))`: NoTangent slot, zero for a non-diff value, else `tangent(val)`.
-    dslot = if tangent_type(V) == NoTangent
-        NoTangent()
-    elseif tangent_type(typeof(primal(val))) == NoTangent
-        zero_tangent(primal(d)[primal(key)])
+    # `setindex!` above stored `convert(V, val)`, so the dual slot is `dual_type(Val(N), V)` (= `Vdv`),
+    # not the dual type of `val`'s own type.
+    dslot = if Vdv == NoDual
+        NoDual()
+    elseif dual_type(Val(N), typeof(primal(val))) == NoDual
+        zero_dual(Val(N), primal(d)[primal(key)])
     else
-        tangent(val)
+        # A conversion that allocated a fresh mutable value leaves `val`'s dual over an object the
+        # dict does not hold, so a mutation through the dict would be invisible to it.
+        stored = primal(d)[primal(key)]
+        if stored === primal(val) || !ismutable(stored)
+            tangent(val)
+        else
+            _fwd_dual_over_stored(Val(N), stored, tangent(val))
+        end
     end
     setindex!(tangent(d), dslot, primal(key))
     return d
@@ -202,11 +333,18 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(get),IdDict,Any,Any}
 function frule!!(
-    ::Dual{typeof(get)}, d::Dual{IdDict{K,V}}, key::Dual, default::Dual
-) where {K,V}
-    x = get(primal(d), primal(key), primal(default))
-    dx = get(tangent(d), primal(key), tangent(default))
-    return Dual(x, dx)
+    ::Lifted{typeof(get),N}, d::Lifted{IdDict{K,V},N}, key::Lifted, default::Lifted
+) where {N,K,V}
+    _key = primal(key)
+    # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
+    # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
+    # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
+    haskey(primal(d), _key) || return default
+    # Typed from the STORED VALUE, not from the dict's declared `V`: for `V === Any` the latter
+    # gives a `Lifted{Any,…}` slot that downstream frule dispatch has no method for. Mirrors the
+    # reverse rrule, which derives the `CoDual`'s primal type from the value.
+    y = primal(d)[_key]
+    return Lifted{typeof(y),N}(y, tangent(d)[_key])
 end
 function rrule!!(
     ::CoDual{typeof(get)}, d::CoDual{IdDict{K,V}}, key::CoDual, default::CoDual
@@ -232,8 +370,11 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(getindex),IdDict,Any}
-function frule!!(::Dual{typeof(getindex)}, d::Dual{IdDict{K,V}}, key::Dual) where {K,V}
-    return Dual(getindex(primal(d), primal(key)), getindex(tangent(d), primal(key)))
+function frule!!(
+    ::Lifted{typeof(getindex),N}, d::Lifted{IdDict{K,V},N}, key::Lifted
+) where {N,K,V}
+    y = getindex(primal(d), primal(key))
+    return Lifted{typeof(y),N}(y, getindex(tangent(d), primal(key)))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)}, d::CoDual{IdDict{K,V}}, key::CoDual
@@ -251,7 +392,9 @@ end
 
 for name in
     [:(:jl_idtable_rehash), :(:jl_eqtable_put), :(:jl_eqtable_get), :(:jl_eqtable_nextind)]
-    @eval function frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$name}}, args...)
+    @eval function frule!!(
+        ::Lifted{typeof(_foreigncall_),N}, ::Lifted{Val{$name},N}, args...
+    ) where {N}
         return unexpected_foreigncall_error($name)
     end
     @eval function rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$name}}, args...)
@@ -260,8 +403,8 @@ for name in
 end
 
 @is_primitive MinimalCtx Tuple{Type{IdDict{K,V}} where {K,V}}
-function frule!!(::Dual{Type{IdDict{K,V}}}) where {K,V}
-    return Dual(IdDict{K,V}(), IdDict{K,tangent_type(V)}())
+function frule!!(::Lifted{Type{IdDict{K,V}},N}) where {N,K,V}
+    return Lifted{IdDict{K,V},N}(IdDict{K,V}(), IdDict{K,dual_type(Val(N), V)}())
 end
 function rrule!!(f::CoDual{Type{IdDict{K,V}}}) where {K,V}
     return CoDual(IdDict{K,V}(), IdDict{K,tangent_type(V)}()), NoPullback(f)
@@ -301,6 +444,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         ),
         (false, :none, nothing, get, IdDict(true => 5.0, false => 4.0), false, 2.0),
         (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0),
+        # Absent key with a default whose type differs from the dict value type V:
+        # the frule must return the `default` slot, not force `Lifted{V}` (regression).
+        (false, :none, nothing, get, IdDict(true => 5.0), false, 2.0f0),
         # `get` returning a default (absent key) whose rdata type differs from its tangent type.
         (
             false,
@@ -314,10 +460,42 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         # interface_only: the non-differentiable default carries no derivative.
         (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
+        # `V === Any`: the slot must be typed from the STORED VALUE. Typing it from the
+        # declared `V` gives a `Lifted{Any,…}` that downstream frule dispatch has no method for,
+        # while every concrete-`V` case above passes because there the two agree.
+        (false, :none, nothing, getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
+        (false, :none, nothing, get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
+        # A MUTABLE-STRUCT value type: unlifting the dict argument has to rebuild a reverse
+        # tangent per value, since the lane accessor gives a `MutableDualTangentView` that
+        # `IdDict{Symbol,MutableTangent}` storage cannot hold. Array and scalar value types
+        # are both leaves and so miss this.
+        (
+            false,
+            :none,
+            nothing,
+            getindex,
+            IdDict{Symbol,TestResources.TypeStableMutableStruct{Float64}}(
+                :a => TestResources.TypeStableMutableStruct{Float64}(5.0, 4.0)
+            ),
+            :a,
+        ),
         (false, :none, nothing, IdDict{Any,Any}),
     ]
     memory = Any[]
     return test_cases, memory
 end
 
-derived_rule_test_cases(rng_ctor, ::Val{:iddict}) = Any[], Any[]
+function derived_rule_test_cases(rng_ctor, ::Val{:iddict})
+    # A store whose `convert` allocates, then a mutation THROUGH the dict. Storing alone does not
+    # catch it: an unreachable primal reads the same as the right one until something mutates.
+    function converting_store_then_mutate(x::Vector{Float32})
+        d = IdDict{Int,Vector{Float64}}()
+        d[1] = x
+        d[1][1] += 1.0
+        return sum(d[1])
+    end
+    test_cases = Any[(
+        false, :none, nothing, converting_store_then_mutate, Float32[3.0, 4.0]
+    )]
+    return test_cases, Any[]
+end

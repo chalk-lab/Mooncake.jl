@@ -72,11 +72,49 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
+The takeaway: do not attempt to differentiate functions which modify global state. Reading a global is fine, with one exception: the same object must not also be an argument.
+
+### Passing a global as an argument
+
+Reading a global is fine only while that object is not *also* an argument. The global's derivative
+storage is built once when the rule is built, so it shares nothing with the argument's, and the
+contribution through the global is written somewhere the caller never sees:
+
+```julia
+const G = [1.0, 2.0]
+f(x) = sum(x .* G)
+value_and_gradient!!(build_rrule(f, G), f, G)   # gradient [1.0, 2.0]; the truth is [2.0, 4.0]
+```
+
+The value returned is correct, which makes this easy to miss. Both modes refuse such a call with an
+`ArgumentError` rather than returning the wrong derivative. Pass a copy, or read the value through
+an argument instead of a global.
+
+The check is by object identity, so it covers what can actually be shared: arrays, mutable structs,
+and aggregates containing them. A differentiable *immutable* constant that is also passed as an
+argument — `const C = ("a", 1.0)` — is not caught, and neither is a global read behind a call whose
+own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
+compares a rule's constants against that rule's own arguments.
+
+Aliasing between *arguments* is a different matter and is supported: two arguments over one array
+share derivative storage, so both positions report the one accumulated gradient.
+
+### Reusing a prepared cache with different aliasing
+
+A prepared cache holds one derivative buffer per argument, so how the arguments alias each other is
+part of the shape it was prepared for. Calling it with a different aliasing pattern writes into the
+wrong buffers, and Mooncake rejects that with a `PreparedCacheError` rather than returning a wrong
+gradient. This is checked for mutable arguments and for mutables nested inside `Tuple`s and
+`NamedTuple`s, whose positions are known from the type.
+
+It is **not** checked when the container's arity is not in its type — a `Vector` of arrays, or a
+`Dict`. Finding the aliasing there would mean walking the whole argument on every call, which costs
+131 ms for a `Vector` of 100k arrays. Prepare a separate cache per aliasing pattern if your
+arguments are shaped that way.
 
 ## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
 
 A `NoTangent` parent:
 
@@ -103,7 +141,7 @@ julia> Mooncake.value_and_gradient!!(rule, f, state)
 
 `state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
-A global:
+A global, which is refused:
 
 ```jldoctest global-alias
 julia> const X = [3.0];
@@ -116,10 +154,16 @@ julia> function g(x)
 julia> rule = Mooncake.build_rrule(g, X);
 
 julia> Mooncake.value_and_gradient!!(rule, g, X)
-(6.0, (NoTangent(), [1.0]))
+ERROR: ArgumentError: An argument is the same object as a constant or global read inside the function being differentiated (a Vector{Float64}). Their derivative storage is separate — the constant's is created once when the rule is built — so the contribution through the constant would be silently dropped and the derivative returned would be wrong. Pass a copy of the argument, or read the value through an argument instead of a global.
+[...]
 ```
 
-`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
+`X` and `x` are the same vector, and their derivative storage is separate, so the contribution
+through `X` would be dropped. Mooncake used to return `[1.0]` silently; it now raises. See
+[Passing a global as an argument](@ref) for the guard.
+
+Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
+`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
 
 ## Passing Differentiable Data as a Type
 
@@ -137,8 +181,8 @@ mysquare (generic function with 1 method)
 
 julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
 
-julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
-Mooncake.Dual{Float64, Float64}(9.0, 0.0)
+julia> Mooncake.value_and_derivative!!(cache, (mysquare, Mooncake.NoTangent()), (3.0, 1.0))
+(9.0, 0.0)
 ```
 As you can see, the tangent is `0.0` rather than `6.0`.
 
@@ -210,6 +254,19 @@ Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, a
 Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
 
 Users who need to differentiate through these code paths may do so by providing a custom rule, potentially generated with the assistance of another automatic differentiation tool (cf. [this comment](https://github.com/chalk-lab/Mooncake.jl/issues/648#issuecomment-3058010288)).
+
+Not every array operation on a `CuArray` has a rule yet. `maximum`, `minimum`, `diff` and `sort` do
+not, in either their plain or their `f`-mapped form, and the higher-order reductions carry a rule
+only for the operators they were written for — `reduce` for `+` and `*`, `mapreduce` for `+`, and
+`accumulate` for `+`. Anything outside those sets is registered as a primitive whose rule raises an
+`ArgumentError` naming the operation, so you get a clear failure at the call rather than a wrong
+derivative or an obscure error from inside a kernel. Reductions over an array whose element type is
+non-differentiable are unaffected: those correctly give a zero derivative.
+
+Forward mode over `NNlib.gather` on a GPU array refuses for a related reason: the traced kernel
+launch takes the process down with no catchable exception, so the rule raises instead. The
+limitation is specific to that combination. Reverse mode over the same signature works, and so
+does forward mode on a CPU array.
 
 Second-order AD (HVP / Hessian, via forward-over-reverse) is more restricted on CUDA: it works for array-level operations whose rules do not launch a custom per-element kernel (e.g. `sum(x)`, `dot`, matrix multiplication), but operations that map a Julia function over array elements inside a GPU kernel (broadcasting, `sum(f, x)`-style reductions) cannot yet be differentiated at second order. These raise a clear `ArgumentError` rather than silently returning wrong derivatives. Gradients and JVPs are unaffected.
 
@@ -313,6 +370,49 @@ In this case, you will not be able to use `Mooncake.value_and_gradient!!` as thi
 Instead, you will need to use lower-level (internal) functionality, such as `Mooncake.__value_and_gradient!!`, or use the rule interface directly.
 
 Honestly, your best bet is just to avoid differentiating functions whose arguments are pointers if you can.
+
+### Raw pointers into a nested array, at chunk width above one
+
+Forward mode stores an array's `N` lane partials in one element-major block, so a single lane is a
+strided view rather than a dense buffer. That is fine for a flat array — `pointer` and
+`unsafe_copyto!` on a `Vector{Float64}` work at any chunk width — but an array *of arrays* has no
+dense per-lane buffer for a raw pointer to address:
+
+```julia
+f(x, y, n) = (unsafe_copyto!(pointer(x), pointer(y), n); sum(sum, x))
+x = [randn(3) for _ in 1:5]
+y = [randn(4) for _ in 1:6]
+# chunk width 1: fine. Above 1: ArgumentError naming the width.
+```
+
+The rule refuses rather than dropping the derivative. Differentiate that call at chunk width 1, or
+use reverse mode, which is unaffected.
+
+### Re-typing a pointer through `Ptr{Cvoid}`
+
+A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
+sound: re-typing `Ptr{Float32}` to `Ptr{Float64}` is refused, because a load or store through the
+result would address eight bytes per element in a buffer laid out in four-byte ones.
+
+Erasing the element type loses the information that check needs, because Mooncake gives an erased
+pointer and a pointer with no tangent storage at all the same representation — both are
+`Ptr{Nothing}`, and `fdata_type` pins a pointer field's fdata to `Ptr`.
+
+The erasure itself is allowed. What is refused is re-typing to an element type the underlying
+tangent storage cannot hold, and that is checked when the pointer is widened back:
+
+```julia
+f(b::Vector{Float32}, x) = x * unsafe_load(Ptr{Float64}(Ptr{Cvoid}(pointer(b))))   # ArgumentError
+```
+
+Erasing and re-typing back to the *same* element type is fine, which is the common direction:
+`pointer(::Array)` passes through a `Ptr{Cvoid}` intermediate and re-types back to the element type
+a foreigncall needs.
+
+The `Ptr{Cvoid}` round trip is not itself the problem. Going straight from `Ptr{Float32}` to
+`Ptr{Float64}` is refused identically — a `Float64` load would straddle two `Float32` tangent
+elements either way. The round trip only matters in that it hides the source type until the
+widening, which is why the error for that path suggests re-typing directly instead.
 
 ```@meta
 DocTestSetup = nothing
