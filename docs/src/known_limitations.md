@@ -112,11 +112,9 @@ It is **not** checked when the container's arity is not in its type — a `Vecto
 131 ms for a `Vector` of 100k arrays. Prepare a separate cache per aliasing pattern if your
 arguments are shaped that way.
 
-## Mutable aliases involving `NoTangent` parents or globals
+## Mutable aliases reached through a `NoTangent` parent
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
-
-A `NoTangent` parent:
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and is also reachable through a parent whose `tangent_type` is `NoTangent`. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
 
 ```jldoctest opaque-alias
 julia> struct Box
@@ -141,23 +139,8 @@ julia> Mooncake.value_and_gradient!!(rule, f, state)
 
 `state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
-A global:
-
-```jldoctest global-alias
-julia> const X = [3.0];
-
-julia> function g(x)
-           X[1] *= 2
-           return x[1]
-       end;
-
-julia> rule = Mooncake.build_rrule(g, X);
-
-julia> Mooncake.value_and_gradient!!(rule, g, X)
-(6.0, (NoTangent(), [1.0]))
-```
-
-`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
+The same aliasing through a *global* rather than a `NoTangent` parent is caught, and refused with an
+`ArgumentError` — see [Passing a global as an argument](@ref).
 
 ## Passing Differentiable Data as a Type
 
