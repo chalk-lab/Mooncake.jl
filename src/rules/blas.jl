@@ -157,11 +157,10 @@ end
     IntrinsicsWrappers._check_tangent_ptr(x, dx)
     return dx
 end
-@inline function _arrayify_lane(
-    x::SubArray{P,B,C,D,E}, V::ImmutableDual, lane::Integer, d::Val
-) where {P,B,C,D,E}
+@inline function _arrayify_lane(x::SubArray, V::ImmutableDual, lane::Integer, d::Val)
     pp = _arrayify_lane(x.parent, V.fields.parent, lane, d)
-    return SubArray{P,B,typeof(pp),D,E}(pp, x.indices, x.offset1, x.stride1)
+    # Flatten nested lane views so strided inputs retain BLAS dispatch.
+    return view(pp, x.indices...)
 end
 @inline function _arrayify_lane(
     x::Base.ReshapedArray{P,B,C,D}, V::ImmutableDual, lane::Integer, d::Val
@@ -188,17 +187,17 @@ end
 @inline _arrayify_lane(x::Hermitian, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
     _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
 )
-# All four triangular wrappers (Upper/Lower and the Unit variants) share a `.data` field and a
-# `Tx(data)` constructor, so one `AbstractTriangular` method covers them — mirroring the reverse
-# `arrayify(::AbstractTriangular)`.
+# Infer the lane's storage type; the primal's concrete parent type can copy or reject it.
 #
 # For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
 # primal with derivative zero. It is not masked here because the block scatter writes through this
 # result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
 # diagonal itself (`_mask_unit_diagonal` forward, `increment_densified_tangent!!` reverse).
-@inline _arrayify_lane(x::Tx, V::ImmutableDual, lane::Integer, d::Val) where {Tx<:LinearAlgebra.AbstractTriangular} = Tx(
-    _arrayify_lane(x.data, V.fields.data, lane, d)
-)
+for W in (UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular)
+    @eval @inline _arrayify_lane(x::$W, V::ImmutableDual, lane::Integer, d::Val) = $W(
+        _arrayify_lane(x.data, V.fields.data, lane, d)
+    )
+end
 @inline _arrayify_lane(x::Base.ReinterpretArray{T}, V::ImmutableDual, lane::Integer, d::Val) where {T} = reinterpret(
     T, _arrayify_lane(x.parent, V.fields.parent, lane, d)
 )
