@@ -2078,8 +2078,18 @@ end
 # a hand-written case needs when the function is a primitive in forward mode only: `is_primitive`
 # asserts `rrule == rrule!!`, which a forward-only primitive cannot satisfy. Both kinds.
 _case_skip_chunked(opts) = opts isa NamedTuple ? get(opts, :skip_chunked, false) : false
-_case_skip_forward(opts) = opts isa NamedTuple ? get(opts, :skip_forward, false) : false
-_case_skip_reverse(opts) = opts isa NamedTuple ? get(opts, :skip_reverse, false) : false
+# `mode=X` restricts a case to one mode, which for the OTHER mode is exactly what `skip_*` says.
+# Folded in here so a consumer asks one question: keeping them separate is what let the benchmark
+# harness honour `skip_forward` but not `mode`, run the `frule!!` of a `mode=ReverseMode` row, and
+# abort on the forward `pointer_from_objref` guard.
+function _case_skip_forward(opts)
+    opts isa NamedTuple || return false
+    return get(opts, :skip_forward, false) || _case_mode(opts) === ReverseMode
+end
+function _case_skip_reverse(opts)
+    opts isa NamedTuple || return false
+    return get(opts, :skip_reverse, false) || _case_mode(opts) === ForwardMode
+end
 # `fwd_allocs_broken`: the width-1 forward zero-allocation check is `@test_broken` on Julia 1.11
 # (alloc-free again on 1.12) for the few cases whose type-stable forward OC 1.11's optimizer boxes.
 function _case_fwd_allocs_broken(opts)
@@ -2231,8 +2241,6 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
 
         mode === ForwardMode && _case_skip_forward(opts) && continue
         mode === ReverseMode && _case_skip_reverse(opts) && continue
-        case_mode = _case_mode(opts)
-        isnothing(case_mode) || case_mode === mode || continue
         skip_chunked = _case_skip_chunked(opts)
         fwd_allocs_broken = _case_fwd_allocs_broken(opts)
         test_rule(

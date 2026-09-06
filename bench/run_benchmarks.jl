@@ -352,8 +352,7 @@ end
 function _benchmarkable(case)
     opts = case[3]
     isnothing(TestUtils._case_throws(opts)) || return false
-    TestUtils._case_skip_reverse(opts) && return false
-    return TestUtils._case_mode(opts) !== Mooncake.ForwardMode
+    return !TestUtils._case_skip_reverse(opts)
 end
 
 function benchmark_hand_written_rrules!!(rng_ctor)
