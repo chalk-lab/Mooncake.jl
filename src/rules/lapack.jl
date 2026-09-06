@@ -895,10 +895,16 @@ function rrule!!(
     return CoDual(ld, NoFData()), logdet_sym_pb!!
 end
 
-# `adj(S) = det(S)·S⁻¹` whenever `S` is invertible, which is how the rules below obtain it. At a
-# singular `S` that product is `0·Inf`, so take the eigendecomposition instead: for `S = QΛQᵀ`,
-# `adj(S) = Q·diag(∏_{j≠i} λⱼ)·Qᵀ`. That is zero at rank ≤ n-2 and rank one at rank n-1, which is
-# the derivative the product form cannot express.
+"""
+    _sym_adjugate(S::Union{Symmetric,Hermitian}{<:BlasRealFloat})
+
+Adjugate of a real symmetric matrix, valid at a singular `S`.
+
+`adj(S) = det(S)·S⁻¹` whenever `S` is invertible, which is how the rules below obtain it. At a
+singular `S` that product is `0·Inf`, so take the eigendecomposition instead: for `S = QΛQᵀ`,
+`adj(S) = Q·diag(∏_{j≠i} λⱼ)·Qᵀ`. That is zero at rank ≤ n-2 and rank one at rank n-1, which is
+the derivative the product form cannot express.
+"""
 function _sym_adjugate(S::_SymHerm{P}) where {P<:BlasRealFloat}
     F = eigen(S)
     λ = F.values

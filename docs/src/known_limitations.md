@@ -96,9 +96,6 @@ argument — `const C = ("a", 1.0)` — is not caught, and neither is a global r
 own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
 compares a rule's constants against that rule's own arguments.
 
-Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
-`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
-
 Aliasing between *arguments* is a different matter and is supported: two arguments over one array
 share derivative storage, so both positions report the one accumulated gradient.
 
@@ -115,9 +112,11 @@ It is **not** checked when the container's arity is not in its type — a `Vecto
 131 ms for a `Vector` of 100k arrays. Prepare a separate cache per aliasing pattern if your
 arguments are shaped that way.
 
-## Mutable aliases reached through a `NoTangent` parent
+## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and is also reachable through a parent whose `tangent_type` is `NoTangent`. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
+
+A `NoTangent` parent:
 
 ```jldoctest opaque-alias
 julia> struct Box
@@ -142,8 +141,29 @@ julia> Mooncake.value_and_gradient!!(rule, f, state)
 
 `state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
-The same aliasing through a *global* rather than a `NoTangent` parent is caught, and refused with an
-`ArgumentError` — see [Passing a global as an argument](@ref).
+A global, which is refused:
+
+```jldoctest global-alias
+julia> const X = [3.0];
+
+julia> function g(x)
+           X[1] *= 2
+           return x[1]
+       end;
+
+julia> rule = Mooncake.build_rrule(g, X);
+
+julia> Mooncake.value_and_gradient!!(rule, g, X)
+ERROR: ArgumentError: An argument is the same object as a constant or global read inside the function being differentiated (a Vector{Float64}). Their derivative storage is separate — the constant's is created once when the rule is built — so the contribution through the constant would be silently dropped and the derivative returned would be wrong. Pass a copy of the argument, or read the value through an argument instead of a global.
+[...]
+```
+
+`X` and `x` are the same vector, and their derivative storage is separate, so the contribution
+through `X` would be dropped. Mooncake used to return `[1.0]` silently; it now raises. See
+[Passing a global as an argument](@ref) for the guard.
+
+Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
+`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
 
 ## Passing Differentiable Data as a Type
 
