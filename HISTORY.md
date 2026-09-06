@@ -17,6 +17,10 @@ Breaking release: the forward-mode AD representation was rewritten.
   derivative); 1-DOF Hessians also remain width-1. Like `value_and_jacobian!!`, HVPs and Hessians
   now accept only a single vector input — concatenate the inputs of a multi-argument function into
   one vector.
+- An argument that is the same object as a global or constant the function reads is now refused
+  with an `ArgumentError` instead of a silently wrong gradient:
+  `const G = [1.0, 2.0]; f(x) = sum(x .* G)` called at `x === G` gave `[1.0, 2.0]`, not
+  `[2.0, 4.0]`. Pass a copy. A global no argument aliases is unaffected.
 - Forward-mode seed factories are width-parameterized: `zero_dual(Val(N), x)` / `uninit_dual` /
   `randn_dual` (and the `zero_lifted` / `uninit_lifted` / `randn_lifted` slot wrappers).
 

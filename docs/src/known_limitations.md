@@ -96,6 +96,9 @@ argument — `const C = ("a", 1.0)` — is not caught, and neither is a global r
 own arguments do not include the aliased object (`f(x) = x[1] * get_G()[1]`), since the guard
 compares a rule's constants against that rule's own arguments.
 
+Nesting escapes either way — matching is by identity at the root: `const T = (A,)` read at
+`x === A`, and `f(t) = sum(t[1] .* A)` called at `t = (A,)`, are both silently wrong.
+
 Aliasing between *arguments* is a different matter and is supported: two arguments over one array
 share derivative storage, so both positions report the one accumulated gradient.
 
