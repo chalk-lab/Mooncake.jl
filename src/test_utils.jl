@@ -213,23 +213,47 @@ report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 # option silently. A singleton key cannot collide with the `(x, y)` pairs `visited` holds.
 struct ExactFloats end
 
-"""
-    has_equal_data(x, y; equal_undefs=true, exact_floats=false)
+# Marks `visited` as requesting `P`'s tolerance rather than each leaf's own type, for the
+# reason given in `has_equal_data`. Only a precision narrower than the leaf's loosens
+# anything, so `_float_tolerance` need ask about `Float16` and `Float32` alone.
+struct FloatPrecision{P} end
 
-Determine if two objects `x` and `y` have equivalent data. If `equal_undefs` 
-is `true`, undefined elements in arrays or unassigned fields in structs are 
+"""
+    has_equal_data(x, y; equal_undefs=true, exact_floats=false, float_precision=Float64)
+
+Determine if two objects `x` and `y` have equivalent data. If `equal_undefs`
+is `true`, undefined elements in arrays or unassigned fields in structs are
 considered equal. If `exact_floats` is `true`, floats compare by `isequal` rather than within
 the default tolerance -- use it for structural questions, where a tolerance calibrated for
 comparing computed derivatives is a false positive.
+
+`float_precision` names the precision the values were *computed* in, where that is narrower than
+their own type: a `Float32` reduction feeding a `Float64` result agrees only to `Float32` eps,
+whatever the result's type says, so two implementations free to reduce in different orders differ
+by more than the default tolerance allows. Floats then compare at the looser of the two.
 
 The main logic is implemented in `has_equal_data_internal`, which is a recursive function
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
 """
-function has_equal_data(x, y; equal_undefs=true, exact_floats=false)
+function has_equal_data(
+    x, y; equal_undefs=true, exact_floats=false, float_precision=Float64
+)
+    float_precision in (Float16, Float32, Float64) || throw(
+        ArgumentError(
+            "float_precision must be Float16, Float32 or Float64, got $float_precision"
+        ),
+    )
     visited = IdDict{Any,Bool}()
     exact_floats && (visited[ExactFloats()] = true)
+    float_precision === Float64 || (visited[FloatPrecision{float_precision}()] = true)
     return has_equal_data_internal(x, y, equal_undefs, visited)
+end
+
+function _float_tolerance(::Type{P}, d::IdDict{Any,Bool}) where {P<:Base.IEEEFloat}
+    haskey(d, FloatPrecision{Float16}()) && return max(√eps(P), √eps(Float16))
+    haskey(d, FloatPrecision{Float32}()) && return max(√eps(P), √eps(Float32))
+    return √eps(P)
 end
 
 function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
@@ -252,7 +276,8 @@ function has_equal_data_internal(
     # `atol` for values near zero; `rtol` explicitly because passing `atol` alone makes
     # `isapprox` default `rtol` to zero, leaving an absolute-only comparison whose strictness
     # then depends on magnitude (1e-13 relative passes at 1e5 and fails at 1e6).
-    return isapprox(x, y; atol=(√eps(P)), rtol=(√eps(P)), nans=true)
+    tol = _float_tolerance(P, d)
+    return isapprox(x, y; atol=tol, rtol=tol, nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::IdDict{Any,Bool}
@@ -676,7 +701,13 @@ function test_frule_correctness(
 
     # Verify that inputs / outputs are the same under `f` and its rrule.
     @test has_equal_data(x_primal, map(primal, x_ẋ_rule))
-    @test has_equal_data(y_primal, primal(y_ẏ_rule))
+    # The output is computed twice, by two implementations free to reduce in different
+    # orders, so it compares at the partials' precision rather than its own type.
+    @test has_equal_data(
+        y_primal,
+        primal(y_ẏ_rule);
+        float_precision=_partials_precision(map(tangent, x_ẋ_rule)),
+    )
 
     # Query both `x_ẋ` and `y`, because `x_ẋ` may have been mutated by `f`.
     outputs_address_map = populate_address_map(
@@ -737,6 +768,24 @@ _chunk_lane_checkable(v::NamedTuple) = all(_chunk_lane_checkable, values(v))
 # oracle compares against. `test_lifted` covers lane independence for these instead.
 _chunk_lane_checkable(v::Mooncake.ImmutableDual) = _chunk_lane_checkable(v.fields)
 _chunk_lane_checkable(@nospecialize(_v)) = false
+
+# The precision a slot's partials are computed in, for `has_equal_data`'s `float_precision`. The
+# harness compares a rule's output against a differently-ordered reference -- the direct call, or
+# the width-1 run of a rule whose width-N path batches its lanes into one wide reduction -- and
+# such a pair agrees only to the partials' own eps, which a `Float32` array feeding a `Float64`
+# result leaves narrower than the compared type. `Float64` is the identity: a shape carrying no
+# partials constrains nothing, and neither does one this does not recognise.
+_partials_precision(::Mooncake.Nfwd.NDual{T}) where {T<:Base.IEEEFloat} = T
+_partials_precision(::Mooncake.Nfwd.NDualArray{T}) where {T<:Base.IEEEFloat} = T
+_partials_precision(::Complex{<:Mooncake.Nfwd.NDual{T}}) where {T<:Base.IEEEFloat} = T
+function _partials_precision(v::Tuple)
+    return reduce(map(_partials_precision, v); init=Float64) do A, B
+        return eps(A) > eps(B) ? A : B
+    end
+end
+_partials_precision(v::NamedTuple) = _partials_precision(values(v))
+_partials_precision(v::Mooncake.ImmutableDual) = _partials_precision(v.fields)
+_partials_precision(@nospecialize(_v)) = Float64
 
 # Seed an argument tuple for a forward rule: a `CoDual` argument carries its pinned tangent
 # across the bridge, everything else is seeded through ONE cache so aliased arguments share
@@ -910,6 +959,10 @@ function test_frule(
     for N in chunked_widths
         # Fresh copy per width: `randn_lifted` aliases the primal and the frule may mutate it.
         seeds = _seed_lifteds(Val(N), rng, _deepcopy_all(x))
+        # Both comparisons below put the width-N run against a differently-ordered reference (the
+        # direct call, and the width-1 run of a rule whose width-N path may batch its lanes into
+        # one wide reduction), so they hold only to the partials' precision.
+        prec = _partials_precision(map(tangent, seeds))
         # Per-lane correctness reconstructs each lane as a width-1 seed (lift) and re-runs the rule.
         # Gated to args with plain numeric-dual V (allowlist `_chunk_lane_checkable`): struct-lift /
         # `Dict` / closure / `Ref` lane tangents don't lift back and compare. The invariant check
@@ -948,7 +1001,7 @@ function test_frule(
             nothing
         end
         y_ẏ = build_frule(interp, sig; chunk_size=N, debug_mode)(seeds...)
-        @test has_equal_data(y_true, primal(y_ẏ))
+        @test has_equal_data(y_true, primal(y_ẏ); float_precision=prec)
         @test _chunked_v_invariant(primal(y_ẏ), tangent(y_ẏ))
         # Per-lane correctness: lane k of the width-N output must equal the width-1 frule run on
         # lane k's direction. Skipped (same allowlist) when the output is not a plain numeric dual.
@@ -956,7 +1009,7 @@ function test_frule(
             frule1 = build_frule(interp, sig; chunk_size=1)
             for k in 1:N
                 y1 = frule1(lane_seeds[k]...)
-                @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1))
+                @test has_equal_data(tangent(y_ẏ, k), tangent(y1, 1); float_precision=prec)
             end
         end
     end

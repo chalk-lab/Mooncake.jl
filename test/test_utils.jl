@@ -232,6 +232,34 @@
         )
     end
 
+    @testset "float_precision" begin
+        # A `Float64` holding `Float32`-precision content agrees with a differently-ordered
+        # computation of itself only to `Float32` eps, whatever its own type says: one such ulp
+        # is 1e-7 relative, which `√eps(Float64)` refuses.
+        v = 0.4568637f0
+        @test !has_equal_data(10.0 * v, 10.0 * prevfloat(v))
+        @test has_equal_data(10.0 * v, 10.0 * prevfloat(v); float_precision=Float32)
+        @test_throws ArgumentError has_equal_data(1.0, 1.0; float_precision=Int)
+        # The precision comes from the seeds' partials: narrowest wins, and a shape carrying
+        # none constrains nothing.
+        p32 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), Float32[1.0]))
+        p64 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), 1.0))
+        @test TestUtils._partials_precision(p32) === Float32
+        @test TestUtils._partials_precision(p64) === Float64
+        @test TestUtils._partials_precision((p64, p32)) === Float32
+        @test TestUtils._partials_precision((p64, Mooncake.NoDual())) === Float64
+        # End to end: forward AD folds the sum sequentially where `sum` splits it pairwise, so
+        # the rule's primal differs from the direct call's at both widths. The length is above
+        # `sum`'s pairwise block size, where that split is structural -- at 64 elements the two
+        # agree under `--check-bounds=yes` and differ without it. The per-lane comparison needs
+        # a rule that reduces its PARTIALS differently across widths, which the CUDA extension's
+        # batched reductions do and no CPU rule here does.
+        mixed(a, y) = a * sum(y)
+        x = Float32[sqrt(i) for i in 1:2048]
+        @test sum(x) != foldl(+, x)
+        test_rule(Xoshiro(1), mixed, 10.0, x; is_primitive=false, perf_flag=:none)
+    end
+
     @testset "oracle validation" begin
         # A reference that names nothing, or names it wrongly, would leave a case asserting
         # nothing while reading as green — the failure mode a pinned reference exists to avoid.
