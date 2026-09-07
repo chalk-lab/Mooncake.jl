@@ -216,8 +216,11 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
-# Explicit `invoke` bypasses abstract_call_gf_by_type. Keep its native CallInfo: the
-# inliner needs it to preserve the selected method rather than use ordinary dispatch.
+# Explicit `invoke` bypasses `abstract_call_gf_by_type`, so a primitive reached this way would
+# be inlined or constant-folded before AD sees it, silently bypassing its rule (#1300). Rules
+# are selected by argument types, not by the method that `invoke` picks, so rather than
+# preserving such a call we keep it as a dynamic `invoke` and reject it in AD; see
+# `check_dynamic_invoke`.
 function CC.abstract_invoke(
     interp::MooncakeInterpreter, arginfo::CC.ArgInfo, si::CC.StmtInfo, sv::CC.AbsIntState
 )
@@ -228,100 +231,39 @@ function CC.abstract_invoke(
         sv::CC.AbsIntState,
     )
     @static if VERSION < v"1.12-"
-        return widen_primitive_invoke(ret, interp, arginfo)
+        return noinline_primitive_invoke(ret, interp, arginfo)
     else
         return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
-            return widen_primitive_invoke(call, interp, arginfo)
+            return noinline_primitive_invoke(call, interp, arginfo)
         end
     end
 end
 
-function widen_primitive_invoke(
-    call::CC.CallMeta, interp::MooncakeInterpreter{C,M}, arginfo
+function noinline_primitive_invoke(
+    call::CC.CallMeta, interp::MooncakeInterpreter{C,M}, arginfo::CC.ArgInfo
 ) where {C,M}
     info = call.info
-    if info isa CC.InvokeCallInfo && is_primitive(C, M, info.match.spec_types, interp.world)
-        return widen_rettype_callmeta(call, CC.invoke_rewrite(arginfo.argtypes))
-    end
-    return call
+    info isa CC.InvokeCallInfo || return call
+    is_primitive(C, M, info.match.spec_types, interp.world) || return call
+    argtypes = CC.invoke_rewrite(arginfo.argtypes)
+    call = widen_rettype_callmeta(call, argtypes)
+    return noinline_callmeta(call, CC.argtypes_to_type(argtypes))
 end
 
-# Rejecting source inlining alone is too late: the native handler can replace the call
-# with a ConcreteResult or cached ConstantCase before consulting inlining_policy.
-function CC.handle_invoke_call!(
-    todo::Vector{Pair{Int,Any}},
-    ir::CC.IRCode,
-    idx::Int,
-    stmt::Expr,
-    info::CC.InvokeCallInfo,
-    flag::typeof(CC.IR_FLAG_NOINLINE),
-    sig::CC.Signature,
-    state::CC.InliningState{<:MooncakeInterpreter{C,M}},
-) where {C,M}
-    match = info.match
-    if !is_primitive(C, M, match.spec_types, state.interp.world)
-        return @invoke CC.handle_invoke_call!(
-            todo::Vector{Pair{Int,Any}},
-            ir::CC.IRCode,
-            idx::Int,
-            stmt::Expr,
-            info::CC.InvokeCallInfo,
-            flag::typeof(flag),
-            sig::CC.Signature,
-            state::CC.InliningState,
-        )
-    end
-    match.fully_covers || return nothing
-    CC.validate_sparams(match.sparams) || return nothing
-    nargs = length(CC.invoke_rewrite(sig.argtypes))
-    method = match.method
-    (method.nargs == nargs || (method.nargs > 0 && method.isva)) || return nothing
-    # Use the compiler's specialization and edge bookkeeping, but not its constant or
-    # body-inlining paths. Conservative effects also prevent handle_single_case! folding.
-    @static if VERSION < v"1.12-"
-        case = CC.compileable_specialization(
-            match,
-            CC.Effects(),
-            CC.InliningEdgeTracker(state, sig.argtypes),
-            info;
-            compilesig_invokes=CC.OptimizationParams(state.interp).compilesig_invokes,
-        )
-    else
-        case = CC.compileable_specialization(
-            CC.specialize_method(match),
-            CC.Effects(),
-            CC.InliningEdgeTracker(state),
-            info,
-            state,
-        )
-    end
-    return CC.handle_single_case!(todo, ir, idx, stmt, case, true)
-end
-
-# Primitive rules dispatch on argument types, not on the Method selected by invoke.
-# Substituting such a rule is only safe when ordinary dispatch selects that same Method.
-function check_primitive_invoke(interp::MooncakeInterpreter, sig, target)
+# A dynamic `invoke` reaching AD is unsupported. Report the primitive case clearly: it is the
+# one an otherwise ordinary explicit `invoke` produces.
+function check_dynamic_invoke(interp::MooncakeInterpreter{C,M}, sig) where {C,M}
     @nospecialize sig
-    target isa Core.MethodInstance || return nothing
-    # The AD signature may widen a constant type argument to DataType. Recover its
-    # precision from the argument specialization, not from the selected Method's signature
-    # (which would incorrectly justify invoking a non-default method).
-    sig = typeintersect(sig, target.specTypes)
-    matches = CC.findall(sig, CC.method_table(interp))
-    if matches !== nothing
-        methods = get_matches(matches.matches)
-        if length(methods) == 1 &&
-            only(methods).method === target.def &&
-            only(methods).fully_covers
-            return nothing
-        end
-    end
+    ps = (Base.unwrap_unionall(sig)::DataType).parameters
+    (length(ps) >= 3 && ps[1] === typeof(Core.invoke)) || return nothing
+    fsig = Tuple{ps[2],ps[4:end]...}
+    is_primitive(C, M, fsig, interp.world) || return nothing
     throw(
         ArgumentError(
-            "Cannot apply a signature-based primitive rule to invoke of $(target.def) " *
-            "with argument signature $sig at world $(interp.world): ordinary dispatch " *
-            "does not provably select the same method. Define a rule for a wrapper " *
-            "around this invoke instead.",
+            "Mooncake does not differentiate explicit `invoke` of a primitive: there is a " *
+            "rule for argument types $fsig, but rules are selected by argument types and " *
+            "cannot honour the method that `invoke` selects. Call the function directly, " *
+            "or wrap the `invoke` in a function and write a rule for that wrapper.",
         ),
     )
 end

@@ -9,17 +9,19 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
-## Explicit `invoke` and Primitive Rules
+## Explicit `invoke` of a Primitive
 
-Statically resolved `invoke(f, types, args...)` calls preserve primitive boundaries in
-forward and reverse mode, including when Julia would otherwise inline the selected method.
-However, primitive rules dispatch on argument types, not on the method selected by `invoke`.
-Mooncake therefore rejects substituting a primitive rule when it cannot prove that ordinary
-dispatch on those argument types selects the same method. For example, invoking `f(::Real)`
-with a `Float64` argument cannot safely use a primitive rule for a different `f(::Float64)`
-method. Define a custom rule for a wrapper around that `invoke` instead.
+Mooncake's rules are selected by argument types, whereas `invoke(f, types, args...)` selects a
+method directly and bypasses ordinary dispatch. If `f` has a rule for the invoked argument
+types, Julia would inline or constant-fold the invoked method before Mooncake sees it and
+silently bypass the rule (see issue #1300). Mooncake therefore rejects an explicit `invoke` of
+a primitive with an error when the rule is built or first run. Call `f` directly, or wrap the
+`invoke` in a function and write a rule for that wrapper. Note that some macros expand to
+`invoke`, for example `Base.Math.@horner`.
 
-This does not add support for dynamically resolved `invoke` signatures or `invokelatest`.
+Explicit `invoke` of a non-primitive function is differentiated as usual, through the method
+that `invoke` selects. `invoke` whose `types` argument is not a compile-time constant, and
+`invokelatest`, remain unsupported.
 
 ## `try`/`catch`/`finally` Blocks
 

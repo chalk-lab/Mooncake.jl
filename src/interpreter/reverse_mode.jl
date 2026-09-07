@@ -1532,11 +1532,11 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Construct signature, and determine how the rrule is to be computed.
         sig = Tuple{arg_types...}
         interp = info.interp
+        check_dynamic_invoke(interp, sig)
         is_primitive_call = is_primitive(
             context_type(interp), ReverseMode, sig, interp.world
         )
         raw_rule = if is_primitive_call
-            is_invoke && check_primitive_invoke(interp, sig, get_mi(stmt.args[1]))
             build_primitive_rrule(sig) # intrinsic / builtin / thing we provably have rule for
         elseif is_invoke
             mi = get_mi(stmt.args[1])
@@ -2043,7 +2043,6 @@ function build_rrule(
     # If we have a hand-coded rule, just use that.
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
-        check_primitive_invoke(interp, sig, sig_or_mi)
         rule = build_primitive_rrule(sig)
         return (debug_mode ? DebugRRule(rule) : rule)
     end
@@ -2939,7 +2938,6 @@ properly.
 function rule_type(interp::MooncakeInterpreter{C}, sig_or_mi; debug_mode) where {C}
     sig = _get_sig(sig_or_mi)
     if is_primitive(C, ReverseMode, sig, interp.world)
-        check_primitive_invoke(interp, sig, sig_or_mi)
         # Build the rule to obtain its concrete type. For non-singleton primitive rules
         # (e.g. NfwdMooncake.RRule) this allocates a throwaway instance; the cost is compile-
         # time only and does not affect hot-path performance.

@@ -134,75 +134,46 @@ end
             @test Base.code_typed_by_type(typeof(fargs))[1][2] == Vector{Float64}
         end
 
-        @testset "1300 - explicit invoke preserves primitive rules" begin
+        @testset "1300 - explicit invoke of a primitive is rejected" begin
+            # Julia would inline or constant-fold the invoked method and silently bypass the
+            # rule, so Mooncake keeps the `invoke` dynamic and rejects it when the rule is
+            # built or first run.
             for f in (
-                contains_primitive,
                 invoke_primitive,
                 x -> invoke(a_primitive, Tuple{Any}, x),
                 x -> invoke_primitive(x),
+                x -> invoke(fake_grad_955, Tuple{Float64,Float64}, 1.0, 2x),
+                x -> invoke(fake_grad_955, Tuple{Nothing,Float64}, nothing, 2x),
             )
-                cache = Mooncake.prepare_gradient_cache(f, 0.3)
-                @test Mooncake.value_and_gradient!!(cache, f, 0.3) ==
-                    (sin(0.3), (NoTangent(), 7.0))
-                rule = Mooncake.build_frule(f, 0.3)
-                y = rule(zero_dual(f), Dual(0.3, 1.0))
-                @test primal(y) == sin(0.3)
-                @test tangent(y) == 7.0
+                @test_throws "explicit `invoke` of a primitive" begin
+                    cache = Mooncake.prepare_gradient_cache(f, 0.3)
+                    Mooncake.value_and_gradient!!(cache, f, 0.3)
+                end
+                @test_throws "explicit `invoke` of a primitive" begin
+                    rule = Mooncake.build_frule(f, 0.3)
+                    rule(zero_dual(f), Dual(0.3, 1.0))
+                end
             end
 
-            # Before a primitive declaration, invoke must keep selecting the Real method.
+            # Explicit invoke of a non-primitive is differentiated through the method that
+            # `invoke` selects.
             f = invoke_nondefault_call
             cache = Mooncake.prepare_gradient_cache(f, 0.3)
             rule = Mooncake.build_frule(f, 0.3)
             @test Mooncake.value_and_gradient!!(cache, f, 0.3)[2][2] ≈ cos(0.3)
             @test tangent(rule(zero_dual(f), Dual(0.3, 1.0))) ≈ cos(0.3)
 
+            # Once the invoked signature has a rule, new rules reject the invoke, while rules
+            # already built remain pinned to their original world.
             @eval Mooncake.@is_primitive DefaultCtx Tuple{typeof(invoke_nondefault),Float64}
-            # A rule for ordinary Float64 dispatch cannot describe this explicit Real call.
             for build in (Mooncake.build_frule, Mooncake.build_rrule)
-                @test_throws "signature-based primitive rule" build(f, 0.3)
+                @test_throws "explicit `invoke` of a primitive" build(f, 0.3)
             end
-            mi = Mooncake.CC.specialize_method(
-                which(invoke_nondefault, (Real,)),
-                Tuple{typeof(invoke_nondefault),Float64},
-                Core.svec(),
-            )
-            for (mode, build, lazy) in (
-                (ForwardMode, Mooncake.build_frule, Mooncake.LazyFRule),
-                (ReverseMode, Mooncake.build_rrule, Mooncake.LazyDerivedRule),
-            )
-                interp = Mooncake.MooncakeInterpreter(mode)
-                @test_throws "signature-based primitive rule" build(interp, mi)
-                @test_throws "signature-based primitive rule" lazy(mi, false, interp.world)
-                @test_throws "signature-based primitive rule" Mooncake.check_primitive_invoke(
-                    interp, Tuple{typeof(invoke_nondefault),Any}, mi
-                )
-
-                # LTS can widen type-valued SSA arguments to DataType during AD.
-                for args in (
-                    (eltype, Float64),
-                    (eltype, Vector{Float32}),
-                    (eltype, NamedTuple{(:x,),Tuple{Float64}}),
-                    (promote_type, Float32, Float64),
-                    (Base.splitprec, Float64, 5),
-                )
-                    sig = Mooncake._typeof(args)
-                    match = only(Mooncake.CC._methods_by_ftype(sig, -1, interp.world))
-                    target = Mooncake.CC.specialize_method(match)
-                    widened_sig = Tuple{map(typeof, args)...}
-                    @test Mooncake.check_primitive_invoke(interp, widened_sig, target) ===
-                        nothing
-                end
-            end
-            # Already prepared rules remain pinned to their original world.
             @test Mooncake.value_and_gradient!!(cache, f, 0.3)[2][2] ≈ cos(0.3)
         end
 
-        @testset "955/1300 - primitive call not const-folded away" for f in (
-            x -> fake_grad_955(1.0, 2x[1] + x[3]),
-            x -> invoke(fake_grad_955, Tuple{Float64,Float64}, 1.0, 2x[1] + x[3]),
-            x -> invoke(fake_grad_955, Tuple{Nothing,Float64}, nothing, 2x[1] + x[3]),
-        )
+        @testset "955 - primitive call not const-folded away" begin
+            f = x -> fake_grad_955(1.0, 2x[1] + x[3])
             x = [1.0, 2.0, 3.0]
 
             cache = Mooncake.prepare_gradient_cache(f, x)
