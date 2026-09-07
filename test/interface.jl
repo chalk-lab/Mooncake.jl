@@ -503,9 +503,30 @@ end
                     @test TestUtils.has_equal_data(original, test_copy)
                     @test TestUtils.has_equal_data(original, test_inplace_copy)
                     @test typeof(test_copy) == typeof(original)
+                    @test typeof(test_inplace_copy) == typeof(original)
                 end
             catch err
                 @test isa(err, Mooncake.ValueAndPullbackReturnTypeError)
+            end
+        end
+
+        @testset "NamedTuple copy preserves field types: $T" for T in (
+            Any, AbstractVector, Union{Nothing,Vector{Float64}}
+        )
+            src = @NamedTuple{values::T}(([1.0],))
+            @testset "fresh copy" begin
+                dst = Mooncake._copy_output(src)
+                @test typeof(dst) === typeof(src)
+                @test dst.values == src.values
+                @test dst.values !== src.values
+            end
+            @testset "destination reuse" begin
+                dst = deepcopy(src)
+                src.values .= 2.0
+                result = Mooncake._copy_to_output!!(dst, src)
+                @test typeof(result) === typeof(src)
+                @test result.values === dst.values
+                @test result.values == src.values
             end
         end
 
