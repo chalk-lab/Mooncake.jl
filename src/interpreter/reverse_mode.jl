@@ -1532,7 +1532,6 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # Construct signature, and determine how the rrule is to be computed.
         sig = Tuple{arg_types...}
         interp = info.interp
-        check_dynamic_invoke(interp, sig)
         is_primitive_call = is_primitive(
             context_type(interp), ReverseMode, sig, interp.world
         )

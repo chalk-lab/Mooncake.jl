@@ -12,16 +12,18 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 ## Explicit `invoke` of a Primitive
 
 Mooncake's rules are selected by argument types, whereas `invoke(f, types, args...)` selects a
-method directly and bypasses ordinary dispatch. If `f` has a rule for the invoked argument
-types, Julia would inline or constant-fold the invoked method before Mooncake sees it and
-silently bypass the rule (see issue #1300). Mooncake therefore rejects an explicit `invoke` of
-a primitive with an error when the rule is built or first run. Call `f` directly, or wrap the
+method directly and bypasses ordinary dispatch. Mooncake does not intercept an explicit
+`invoke` of a function that has a rule for the invoked argument types (see issue #1300): Julia
+resolves the `invoke` before Mooncake sees it. Usually the invoked method is inlined and its
+body is differentiated instead of the rule. If it is not inlined, Mooncake applies the rule for
+the method that ordinary dispatch would select, which is wrong whenever `invoke` picked a
+different method. Avoid explicit `invoke` of a primitive: call `f` directly, or wrap the
 `invoke` in a function and write a rule for that wrapper. Note that some macros expand to
 `invoke`, for example `Base.Math.@horner`.
 
 Explicit `invoke` of a non-primitive function is differentiated as usual, through the method
 that `invoke` selects. `invoke` whose `types` argument is not a compile-time constant, and
-`invokelatest`, remain unsupported.
+`invokelatest`, are unsupported.
 
 ## `try`/`catch`/`finally` Blocks
 

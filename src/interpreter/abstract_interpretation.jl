@@ -216,58 +216,6 @@ function any_matches_primitive(applicable, C, M, world)
     false
 end
 
-# Explicit `invoke` bypasses `abstract_call_gf_by_type`, so a primitive reached this way would
-# be inlined or constant-folded before AD sees it, silently bypassing its rule (#1300). Rules
-# are selected by argument types, not by the method that `invoke` picks, so rather than
-# preserving such a call we keep it as a dynamic `invoke` and reject it in AD; see
-# `check_dynamic_invoke`.
-function CC.abstract_invoke(
-    interp::MooncakeInterpreter, arginfo::CC.ArgInfo, si::CC.StmtInfo, sv::CC.AbsIntState
-)
-    ret = @invoke CC.abstract_invoke(
-        interp::CC.AbstractInterpreter,
-        arginfo::CC.ArgInfo,
-        si::CC.StmtInfo,
-        sv::CC.AbsIntState,
-    )
-    @static if VERSION < v"1.12-"
-        return noinline_primitive_invoke(ret, interp, arginfo)
-    else
-        return CC.Future{CC.CallMeta}(ret::CC.Future, interp, sv) do call, interp, sv
-            return noinline_primitive_invoke(call, interp, arginfo)
-        end
-    end
-end
-
-function noinline_primitive_invoke(
-    call::CC.CallMeta, interp::MooncakeInterpreter{C,M}, arginfo::CC.ArgInfo
-) where {C,M}
-    info = call.info
-    info isa CC.InvokeCallInfo || return call
-    is_primitive(C, M, info.match.spec_types, interp.world) || return call
-    argtypes = CC.invoke_rewrite(arginfo.argtypes)
-    call = widen_rettype_callmeta(call, argtypes)
-    return noinline_callmeta(call, CC.argtypes_to_type(argtypes))
-end
-
-# A dynamic `invoke` reaching AD is unsupported. Report the primitive case clearly: it is the
-# one an otherwise ordinary explicit `invoke` produces.
-function check_dynamic_invoke(interp::MooncakeInterpreter{C,M}, sig) where {C,M}
-    @nospecialize sig
-    ps = (Base.unwrap_unionall(sig)::DataType).parameters
-    (length(ps) >= 3 && ps[1] === typeof(Core.invoke)) || return nothing
-    fsig = Tuple{ps[2],ps[4:end]...}
-    is_primitive(C, M, fsig, interp.world) || return nothing
-    throw(
-        ArgumentError(
-            "Mooncake does not differentiate explicit `invoke` of a primitive: there is a " *
-            "rule for argument types $fsig, but rules are selected by argument types and " *
-            "cannot honour the method that `invoke` selects. Call the function directly, " *
-            "or wrap the `invoke` in a function and write a rule for that wrapper.",
-        ),
-    )
-end
-
 """
     widen_rettype_callmeta(call, argtypes)
 

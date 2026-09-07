@@ -442,7 +442,6 @@ function modify_fwd_ad_stmts!(
         end
 
         interp = info.interp
-        check_dynamic_invoke(interp, sig)
         if is_primitive(context_type(interp), ForwardMode, sig, interp.world)
             rule = build_primitive_frule(sig)
             if safe_for_literal(rule)

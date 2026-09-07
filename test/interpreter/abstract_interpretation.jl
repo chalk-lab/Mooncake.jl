@@ -1,56 +1,35 @@
 a_primitive(x) = sin(x)
 non_primitive(x) = sin(x)
 
-Mooncake.@is_primitive DefaultCtx Tuple{typeof(a_primitive),Float64}
-
-# Deliberately different from cos(x), so differentiating the body cannot pass these tests.
-function Mooncake.rrule!!(::CoDual{typeof(a_primitive)}, x::CoDual{Float64})
-    return Mooncake.zero_fcodual(sin(primal(x))), dy -> (NoRData(), 7dy)
-end
-function Mooncake.frule!!(::Dual{typeof(a_primitive)}, x::Dual{Float64})
-    return Dual(sin(primal(x)), 7tangent(x))
-end
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(a_primitive),Float64}
 
 contains_primitive(x) = @inline a_primitive(x)
 contains_non_primitive(x) = @inline non_primitive(x)
 contains_primitive_behind_call(x) = @inline contains_primitive(x)
 union_split_primitive_call(x::Ref{Union{Float64,Float32}}) = @inline a_primitive(x[])
 
-invoke_primitive(x) = @inline invoke(a_primitive, Tuple{Float64}, x)
-invoke_nondefault(x::Real) = sin(x)
-invoke_nondefault(x::Float64) = cos(x)
-invoke_nondefault_call(x) = invoke(invoke_nondefault, Tuple{Real}, x)
-
 # Issue #955: if a primitive call's return value is inferred as `Const`,
 # the compiler may fold the call away entirely. This makes the primitive 
 # invisible to Mooncake,  so its custom `rrule!!` never runs.
 fake_grad_955(x, y) = x
-# Also exercise a cached constant-return method, not just call-site constant propagation.
-fake_grad_955(::Nothing, y) = 1.0
-Mooncake.@is_primitive DefaultCtx Tuple{typeof(fake_grad_955),Any,Any}
+Mooncake.@is_primitive DefaultCtx ReverseMode Tuple{typeof(fake_grad_955),Any,Any}
 
 function Mooncake.rrule!!(::CoDual{typeof(fake_grad_955)}, x::CoDual, y::CoDual)
     function fake_grad_955_pullback(dy)
         return NoRData(), NoRData(), dy
     end
-    return CoDual(fake_grad_955(primal(x), primal(y)), y.dx), fake_grad_955_pullback
-end
-
-function Mooncake.frule!!(::Dual{typeof(fake_grad_955)}, x::Dual, y::Dual)
-    return Dual(fake_grad_955(primal(x), primal(y)), tangent(y))
+    return CoDual(x.x, y.dx), fake_grad_955_pullback
 end
 
 @testset "abstract_interpretation" begin
     # Check that inlining doesn't / does happen as expected.
     @testset "MooncakeInterpreter" begin
-        @testset "non-primitive continues to be inlined away" for f in (
-            contains_non_primitive, x -> invoke(non_primitive, Tuple{Float64}, x)
-        )
+        @testset "non-primitive continues to be inlined away" begin
 
             # A non-primitive is present in the IR for contains_non_primitive. It is
             # inlined away under usual interpretation, and should also be inlined away
             # when doing AD.
-            sig = Tuple{typeof(f),Float64}
+            sig = Tuple{typeof(contains_non_primitive),Float64}
 
             # Pre-condition: must inline away under usual compilation.
             usual_ir = Base.code_ircode_by_type(sig)[1][1]
@@ -134,44 +113,6 @@ end
             @test Base.code_typed_by_type(typeof(fargs))[1][2] == Vector{Float64}
         end
 
-        @testset "1300 - explicit invoke of a primitive is rejected" begin
-            # Julia would inline or constant-fold the invoked method and silently bypass the
-            # rule, so Mooncake keeps the `invoke` dynamic and rejects it when the rule is
-            # built or first run.
-            for f in (
-                invoke_primitive,
-                x -> invoke(a_primitive, Tuple{Any}, x),
-                x -> invoke_primitive(x),
-                x -> invoke(fake_grad_955, Tuple{Float64,Float64}, 1.0, 2x),
-                x -> invoke(fake_grad_955, Tuple{Nothing,Float64}, nothing, 2x),
-            )
-                @test_throws "explicit `invoke` of a primitive" begin
-                    cache = Mooncake.prepare_gradient_cache(f, 0.3)
-                    Mooncake.value_and_gradient!!(cache, f, 0.3)
-                end
-                @test_throws "explicit `invoke` of a primitive" begin
-                    rule = Mooncake.build_frule(f, 0.3)
-                    rule(zero_dual(f), Dual(0.3, 1.0))
-                end
-            end
-
-            # Explicit invoke of a non-primitive is differentiated through the method that
-            # `invoke` selects.
-            f = invoke_nondefault_call
-            cache = Mooncake.prepare_gradient_cache(f, 0.3)
-            rule = Mooncake.build_frule(f, 0.3)
-            @test Mooncake.value_and_gradient!!(cache, f, 0.3)[2][2] ≈ cos(0.3)
-            @test tangent(rule(zero_dual(f), Dual(0.3, 1.0))) ≈ cos(0.3)
-
-            # Once the invoked signature has a rule, new rules reject the invoke, while rules
-            # already built remain pinned to their original world.
-            @eval Mooncake.@is_primitive DefaultCtx Tuple{typeof(invoke_nondefault),Float64}
-            for build in (Mooncake.build_frule, Mooncake.build_rrule)
-                @test_throws "explicit `invoke` of a primitive" build(f, 0.3)
-            end
-            @test Mooncake.value_and_gradient!!(cache, f, 0.3)[2][2] ≈ cos(0.3)
-        end
-
         @testset "955 - primitive call not const-folded away" begin
             f = x -> fake_grad_955(1.0, 2x[1] + x[3])
             x = [1.0, 2.0, 3.0]
@@ -181,10 +122,6 @@ end
 
             @test val == 1.0
             @test grad[2] == [2.0, 0.0, 1.0]
-            rule = Mooncake.build_frule(f, x)
-            y = rule(zero_dual(f), Dual(x, [1.0, 1.0, 1.0]))
-            @test primal(y) == 1.0
-            @test tangent(y) == 3.0
         end
     end
 
