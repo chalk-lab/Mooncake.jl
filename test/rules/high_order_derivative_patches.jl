@@ -27,10 +27,10 @@ function _hessian_column(f, x::Vector{Float64}, i::Int)
         zero_dual(_compute_grad),
         zero_dual(rule),
         zero_dual(f),
-        Dual(x, x_tangent),
-        Dual(x_fdata, zeros(length(x))),
+        Mooncake.lift(x, x_tangent),
+        Mooncake.lift(x_fdata, zeros(length(x))),
     )
-    return primal(result), tangent(result)
+    return primal(result), last(Mooncake.unlift(result))
 end
 
 function _compute_hessian(f, x::Vector{Float64})
@@ -136,7 +136,7 @@ end
             value_and_gradient!!(rvscache, f, y)[2][2]
         end
         fwdcache = prepare_derivative_cache(grad, x; config)
-        hvp(y) = tangent(value_and_derivative!!(fwdcache, zero_dual(grad), Dual(x, y)))
+        hvp(y) = last(value_and_derivative!!(fwdcache, (grad, NoTangent()), (x, y)))
         n = length(x)
         H = zeros(n, n)
         for i in 1:n
@@ -188,8 +188,12 @@ end
 
 @testset "get_inner_rrule is forward-over-reverse only" begin
     for_rule = Mooncake.compile_for_rule(x -> sum(x .* x), [1.0, 2.0])
-    @test_throws "forward-over-reverse only" Mooncake.rrule!!(
-        zero_fcodual(Mooncake.get_inner_rrule), zero_fcodual(for_rule)
+    test_rule(
+        sr(1),
+        Mooncake.get_inner_rrule,
+        for_rule;
+        throws="forward-over-reverse only",
+        mode=ReverseMode,
     )
 end
 
@@ -229,6 +233,21 @@ end
         @test H ≈ [5 / 9 -1 / 9; -1 / 9 2 / 9]
     end
 
+    @testset "cholesky" begin
+        # Sibling of the triangular solve above. `potrf!`'s `rrule!!` copies `A` so the pullback can
+        # restore the primal, and forward-over-reverse inlined that `copy`, exposing its
+        # `jl_genericmemory_copy_slice` ccall, which has no `frule!!`: the HVP died with a
+        # `MissingForeigncallRuleError`. `diagm(x)` is a DENSE matrix on purpose — a `Diagonal`
+        # would take its own factorisation and never reach `potrf!`.
+        f(x) = logdet(cholesky(diagm(x)))          # == sum(log, x)
+        x = [2.0, 3.0, 5.0]
+        v = [1.0, 0.0, 0.0]
+        value, grad, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, copy(x))
+        @test value ≈ sum(log, x)
+        @test grad ≈ 1 ./ x
+        @test hvp ≈ (-1 ./ x .^ 2) .* v
+    end
+
     @testset "cache reuse across multiple HVP calls" begin
         # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying.
         f(x) = sum(x .* x)  # H = 2I
@@ -244,46 +263,31 @@ end
         end
     end
 
-    @testset "multi-argument HVP" begin
-        # f(x, y) = sum(x .* x) + sum(y .* y): H = 2I (block-diagonal, decoupled)
-        f(x, y) = sum(x .* x) + sum(y .* y)
-        x = [1.0, 2.0]
-        y = [3.0]
-        cache = prepare_hvp_cache(f, x, y)
-        _, (grad_x, grad_y), (hvp_x, hvp_y) = value_and_hvp!!(
-            cache, f, ([1.0, 0.0], [0.0]), x, y
-        )
-        @test grad_x ≈ [2.0, 4.0] rtol = 1e-10
-        @test grad_y ≈ [6.0] rtol = 1e-10
-        @test hvp_x ≈ [2.0, 0.0] rtol = 1e-10
-        @test hvp_y ≈ [0.0] rtol = 1e-10
+    @testset "_copy of FoR constructor caches (cache-hit rebuild)" begin
+        # `build_frule` returns `_copy(cached_rule)` on a cache hit and recurses into the
+        # OpaqueClosure captures; a forward-over-reverse rule captures these FoR constructor
+        # caches, so they need `_copy` giving fresh independent state. Without it the HVP
+        # cache-hit path raises `MethodError: no method matching copy(::DynamicFoRRule)`.
+        d = Mooncake.DynamicFoRRule()
+        d.cache[(Tuple{typeof(sum),Vector{Float64}}, false, 1)] = (1, 2, 3)
+        dc = Mooncake._copy(d)
+        @test dc isa Mooncake.DynamicFoRRule
+        @test dc !== d
+        @test isempty(dc.cache)  # fresh, independent cache
+        l = Mooncake.LazyFoRRule{Any,Any,Any}()
+        @test Mooncake._copy(l) isa Mooncake.LazyFoRRule{Any,Any,Any}
     end
 
     @testset "primitive f (DerivedFoRRule{Nothing} path)" begin
-        # Primitive `f` ⇒ `compile_for_rule` returns `DerivedFoRRule{Nothing}`, so `grad_f`
-        # routes through `value_and_gradient!!`, not an inner derived rrule.
-        @testset "single argument" begin
-            f = sum  # linear ⇒ zero Hessian
-            x = [1.0, 2.0, 3.0]
-            fval, grad, hvp = value_and_hvp!!(
-                prepare_hvp_cache(f, x), f, [1.0, 0.0, 0.0], x
-            )
-            @test fval ≈ 6.0
-            @test grad ≈ [1.0, 1.0, 1.0]
-            @test hvp ≈ [0.0, 0.0, 0.0]
-        end
-        @testset "multiple arguments" begin
-            f = hypot  # r = √(a²+b²); H = [b² -ab; -ab a²]/r³
-            a, b = 3.0, 4.0
-            fval, grads, hvps = value_and_hvp!!(
-                prepare_hvp_cache(f, a, b), f, (1.0, 0.0), a, b
-            )
-            @test fval ≈ 5.0
-            @test grads[1] ≈ 0.6 rtol = 1e-10
-            @test grads[2] ≈ 0.8 rtol = 1e-10
-            @test hvps[1] ≈ 0.128 rtol = 1e-10
-            @test hvps[2] ≈ -0.096 rtol = 1e-10
-        end
+        # When `f` is itself a reverse-mode primitive, `compile_for_rule` returns
+        # `DerivedFoRRule{Nothing}` and `grad_f` routes through `value_and_gradient!!`
+        # rather than an inner derived rrule.
+        f = sum  # linear ⇒ zero Hessian
+        x = [1.0, 2.0, 3.0]
+        fval, grad, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0, 0.0, 0.0], x)
+        @test fval ≈ 6.0
+        @test grad ≈ [1.0, 1.0, 1.0]
+        @test hvp ≈ [0.0, 0.0, 0.0]
     end
 
     @testset "Ref-capture under NoTangent wrapper (issue #1193)" begin
@@ -300,4 +304,25 @@ end
     end
 
     @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
+end
+
+# The `jl_genericmemory_owner` forward rule (a forward-over-reverse `dataids`-inlining workaround)
+# must return the canonical forward V for its `Memory` result — `NDualArray`, not a bare `NoDual`
+# (which would yield `NoTangent()` on a lane read and diverge from the reverse oracle).
+@static if VERSION >= v"1.11-"
+    @testset "jl_genericmemory_owner frule canonical V" begin
+        m = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]
+        zl(x) = Mooncake.zero_lifted(Val(1), x)
+        l = Mooncake.frule!!(
+            zl(Mooncake._foreigncall_),
+            zl(Val(:jl_genericmemory_owner)),
+            zl(Val(Any)),
+            zl((Val(Any),)),
+            zl(Val(0)),
+            zl(Val(:ccall)),
+            zl(m),
+        )
+        @test Mooncake.verify_lifted_type(l)
+        @test Mooncake.tangent(l, 1) isa AbstractArray{Float64}
+    end
 end

@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "..", "ext", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "Bijectors")
 
 using Bijectors, LinearAlgebra, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
@@ -12,10 +11,9 @@ struct TestCase
     func::Function
     arg::Any
     name::Union{String,Nothing}
-    broken::Bool
 end
 
-TestCase(f, arg; name=nothing, broken=false) = TestCase(f, arg, name, broken)
+TestCase(f, arg; name=nothing) = TestCase(f, arg, name)
 
 """
 A helper function that returns a TestCase that evaluates bijector(inverse(bijector)(x))
@@ -112,14 +110,6 @@ end
     ]
 
     @testset "$(c.name)" for c in test_cases
-        if c.broken
-            @test_broken begin
-                test_rule(StableRNG(123456), c.func, c.arg; is_primitive=false)
-                true
-            end
-        else
-            rng = StableRNG(123456)
-            test_rule(rng, c.func, c.arg; is_primitive=false, unsafe_perturb=true)
-        end
+        test_rule(StableRNG(123456), c.func, c.arg; is_primitive=false, unsafe_perturb=true)
     end
 end

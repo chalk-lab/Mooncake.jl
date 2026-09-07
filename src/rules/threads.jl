@@ -1,5 +1,11 @@
-@inline function _threading_foreigncall_frule(name::Val, args...)
-    return zero_dual(_foreigncall_(name, tuple_map(primal, args)...))
+# Run the foreigncall on extracted primals and wrap the result in its canonical zero Lifted slot.
+# These threading foreigncalls carry no forward derivative, but the result type still dictates V:
+# non-differentiable scalars (Cint, Nothing, Bool, …) get `NoDual`, while `Task` handles get a zero
+# `TaskTangent`. `zero_lifted` picks the coherent V per result type — a blanket `NoDual` would violate
+# canonical-V coherence for the `Task`-returning calls (jl_new_task, …). Width N from the signature below.
+@inline function _threading_foreigncall_lifted(::Val{Nw}, name::Val, args...) where {Nw}
+    y = _foreigncall_(name, tuple_map(primal, args)...)
+    return zero_lifted(Val(Nw), y)
 end
 
 function _threading_foreigncall_rrule()
@@ -27,8 +33,8 @@ for name in [
     :jl_get_next_task,
     :jl_task_get_next,
 ]
-    @eval frule!!(::Dual{typeof(_foreigncall_)}, ::Dual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_frule(
-        Val($(QuoteNode(name))), args...
+    @eval frule!!(::Lifted{typeof(_foreigncall_),Nw}, ::Lifted{Val{$(QuoteNode(name))},Nw}, args...) where {Nw} = _threading_foreigncall_lifted(
+        Val(Nw), Val($(QuoteNode(name))), args...
     )
 
     @eval rrule!!(::CoDual{typeof(_foreigncall_)}, ::CoDual{Val{$(QuoteNode(name))}}, args...) = _threading_foreigncall_rrule()
@@ -39,16 +45,16 @@ end
 } where {F}
 
 function frule!!(
-    ::Dual{typeof(Base.Threads.threading_run)}, fun::Dual{F}, static::Dual{Bool}
-) where {F}
-    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int})
+    ::Lifted{typeof(Base.Threads.threading_run),Nw}, fun::Lifted{F}, static::Lifted{Bool}
+) where {Nw,F}
+    worker_rule = build_frule(get_interpreter(ForwardMode), Tuple{F,Int}; chunk_size=Nw)
     worker_rules = [_copy(worker_rule) for _ in 1:Threads.threadpoolsize()]
     Base.Threads.threading_run(primal(static)) do tid
         # `threading_run` hands worker ids in the default pool's 1-based tid space.
         1 <= tid <= length(worker_rules) ||
             throw(ArgumentError("unexpected thread id $tid"))
-        worker_rules[tid](fun, zero_dual(tid))
+        worker_rules[tid](fun, zero_lifted(Val(Nw), tid))
         nothing
     end
-    return zero_dual(nothing)
+    return zero_lifted(Val(Nw), nothing)
 end

@@ -2,16 +2,15 @@
     DebugFRule(rule)
 
 Construct a callable equivalent to `rule` but with additional type checking for forward-mode
-AD. Checks:
-- Each `Dual` argument has tangent type matching `tangent_type(typeof(primal))`
-- The returned `Dual` has a correctly-typed tangent
-- Deep structural validation (array sizes, field types, etc.)
+AD. Checks that every argument and the returned value is a `Lifted`, and that each slot
+with a concrete primal type carries exactly the canonical `dual_type(Val(N), P)` V.
+`Ptr` primals are exempt: `bitcast`/`unsafe_convert` chains legitimately re-type
+per-lane pointer Vs.
 
 Forward-mode counterpart to [`DebugRRule`](@ref).
 
 *Note:* Debug mode significantly slows execution (10-100x) and should only be used for
 diagnosing problems, not production runs.
-```
 """
 struct DebugFRule{Trule}
     rule::Trule
@@ -21,11 +20,11 @@ end
 _copy(x::P) where {P<:DebugFRule} = P(_copy(x.rule))
 
 """
-    (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+    (rule::DebugFRule)(x::Vararg{Lifted,N}) where {N}
 
 Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 """
-@noinline function (rule::DebugFRule)(x::Vararg{Dual,N}) where {N}
+@noinline function (rule::DebugFRule)(x::Vararg{Lifted,N}) where {N}
     verify_args(rule.rule, x)
     verify_dual_inputs(x)
     y = __call_rule(rule.rule, x)
@@ -34,43 +33,32 @@ Apply pre- and post-condition type checking. See [`DebugFRule`](@ref).
 end
 
 @noinline function verify_dual_inputs(@nospecialize(x::Tuple))
-    try
-        for _x in x
-            _x isa Dual || error("Expected Dual, got $(typeof(_x))")
-            verify_dual_value(_x)
-        end
-    catch e
-        error("Error in inputs to rule with input types $(_typeof(x))")
+    for _x in x
+        _x isa Lifted ||
+            error("Expected Lifted, got $(typeof(_x)); input types $(_typeof(x))")
+        verify_canonical_dual_type(_x)
     end
 end
 
 @noinline function verify_dual_output(@nospecialize(x), @nospecialize(y))
-    try
-        y isa Dual || error("frule!! must return a Dual, got $(typeof(y))")
-        verify_dual_value(y)
-    catch e
-        error("Error in outputs of rule with input types $(_typeof(x))")
-    end
+    y isa Lifted ||
+        error("frule!! must return a Lifted, got $(typeof(y)); input types $(_typeof(x))")
+    return verify_canonical_dual_type(y)
 end
 
-@noinline function verify_dual_value(d::Dual{P,T}) where {P,T}
-    # Fast path: type-level check using the Dual type parameters to enforce T == tangent_type(P)
-    T_expected = tangent_type(P)
-    if T !== T_expected
-        throw(
-            InvalidFDataException(
-                "Dual tangent type mismatch: primal $P requires tangent type " *
-                "$T_expected, but got $T",
-            ),
-        )
-    end
-
-    # Slow path: deep structural validation
-    p, t = primal(d), tangent(d)
-    # We validate fdata and rdata separately so these helpers stay in sync with reverse-mode checks.
-    verify_fdata_value(p, fdata(t))
-    verify_rdata_value(p, rdata(t))
-
+# A concrete-primal slot must carry exactly the canonical V. `Ptr` primals are exempt:
+# `bitcast`/`unsafe_convert` chains legitimately re-type per-lane pointer Vs (see the
+# `pointerref` rules). This is a type-level check by design: `dual_type` fully determines the
+# recursive V *type*, and the canonical seed factories keep each `NDualArray`'s partials axes in
+# step with its primal — a runtime axis mismatch is not separately asserted here (it would surface
+# in the rule's own array ops), unlike reverse mode's structural `verify_fdata_value` walk.
+@noinline function verify_canonical_dual_type(x::Lifted{P,N,V}) where {P,N,V}
+    (isconcretetype(P) && !(P <: Ptr)) || return nothing
+    Vexp = dual_type(Val(N), P)
+    V === Vexp || error(
+        "Lifted slot with primal type $P carries a V of type $V, but the canonical " *
+        "forward representation is dual_type(Val($N), $P) === $Vexp.",
+    )
     return nothing
 end
 
@@ -171,7 +159,7 @@ end
     # DebugFRule and DebugRRule do not contain OpaqueClosure directly; their __call__
     # methods delegate to the inner rule which handles OC safety via its own
     # __call_rule specialisation. Calling them directly is safe on Julia 1.10 and avoids
-    # a second unnecessary inferencebarrier.
+    # a second unnecessary dispatch barrier.
     @inline __call_rule(rule::DebugFRule, args) = rule(args...)
     @inline __call_rule(rule::DebugRRule, args) = rule(args...)
 end

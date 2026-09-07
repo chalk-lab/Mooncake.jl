@@ -1,4 +1,16 @@
 using DispatchDoctor: allow_unstable
+mutable struct PtrMixed
+    p::Ptr{Float64}
+    w::Float64
+end
+_ptr_mixed(m::PtrMixed, x::Float64) = x * m.w
+
+mutable struct VoidPtrMixed
+    p::Ptr{Cvoid}
+    w::Float64
+end
+_void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
+
 @testset "tangents" begin
     @testset "$(tangent_type(primal_type))" for (primal_type, expected_tangent_type) in Any[
 
@@ -112,6 +124,10 @@ using DispatchDoctor: allow_unstable
         test_tangent(Xoshiro(123456), p, t...; interface_only)
     end
 
+    @testset "SimpleVector opts out of field-access interactions" begin
+        TestUtils.test_rule_and_type_interactions(Xoshiro(123456), svec(5.0))
+    end
+
     @testset "zero_tangent throws for Ptr" begin
         # Single-arg zero_tangent is not safe for Ptr types and must throw an
         # informative error directing the user to the two-argument form.
@@ -196,11 +212,182 @@ using DispatchDoctor: allow_unstable
             end
         end
     end
+    @testset "a `Ptr` tangent is inert in tangent arithmetic" begin
+        # A `Ptr` tangent is the `uninit_*` placeholder: it carries no derivative, so every
+        # arithmetic operation leaves it alone. Six of them had no `Ptr` method at all, so any `Ptr`
+        # reaching a gradient — a bare argument, or a struct with a `Ptr` field — died with a raw
+        # `MethodError` naming an internal instead of differentiating the fields that do carry
+        # derivatives.
+        #
+        # NOT a registry case: `test_rule` exercises the friendly-tangent round trip, and
+        # `primal_to_tangent!!` deliberately refuses pointers ("not available for pointers"), so a
+        # `Ptr`-carrying value cannot go through the registry battery at all.
+        pbuf = [3.0]
+        pt = Mooncake.uninit_tangent(pointer(pbuf))
+        @test Mooncake._scale(2.0, pt) === pt
+        @test Mooncake._dot(pt, pt) == 0.0
+        @test Mooncake.increment!!(pt, pt) === pt
+        @test Mooncake.set_to_zero!!(pt) === pt
+        @test Mooncake._add_to_primal(pointer(pbuf), pt, true) === pointer(pbuf)
+        # The point of inertness: the OTHER fields still differentiate.
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(_ptr_mixed, PtrMixed(pointer(pbuf), 5.0), 3.0),
+            _ptr_mixed,
+            PtrMixed(pointer(pbuf), 5.0),
+            3.0,
+        )
+        @test v == 15.0
+        @test g[2].fields.w == 3.0
+        @test g[3] == 5.0
+    end
+
+    @testset "a `VoidPtrTangent` is inert in the same way" begin
+        # `Ptr{Nothing}` carries its placeholder as a `VoidPtrTangent`, not as a bare pointer, so
+        # the `Ptr` methods above do not cover it and the same operations were partial for it
+        # alone. `randn_tangent` is included because it returned the pointer itself — a
+        # `Ptr{Nothing}` where `tangent_type` declares `VoidPtrTangent`, wrong type, no error.
+        vbuf = [3.0]
+        vp = Ptr{Cvoid}(pointer(vbuf))
+        vt = Mooncake.uninit_tangent(vp)
+        @test Mooncake._scale(2.0, vt) === vt
+        @test Mooncake._dot(vt, vt) == 0.0
+        @test Mooncake.set_to_zero!!(vt) === vt
+        @test Mooncake._add_to_primal(vp, vt, true) === vp
+        @test Mooncake.randn_tangent(Xoshiro(1), vp) isa Mooncake.tangent_type(typeof(vp))
+        # And for every other pointee: `randn_tangent` returned the primal pointer, which is
+        # only the declared tangent type when `tangent_type(P) === P`.
+        @testset "randn_tangent type for Ptr{$P}" for P in (Int, Float64, UInt8, Bool)
+            q = Ptr{P}(0)
+            @test Mooncake.randn_tangent(Xoshiro(1), q) isa Mooncake.tangent_type(typeof(q))
+        end
+        v, g = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(_void_ptr_mixed, VoidPtrMixed(vp, 5.0), 3.0),
+            _void_ptr_mixed,
+            VoidPtrMixed(vp, 5.0),
+            3.0,
+        )
+        @test v == 15.0
+        @test g[2].fields.w == 3.0
+        @test g[3] == 5.0
+    end
     @testset "restricted inner constructor" begin
         p = TestResources.NoDefaultCtor(5.0)
         t = Mooncake.Tangent((x=5.0,))
         @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(p, t)
         @test Mooncake._add_to_primal(p, t, true) isa typeof(p)
+    end
+    @static if VERSION >= v"1.11-"
+        @testset "_dot counts one buffer once across two positions" begin
+            # `a` and `reshape(a)` are DISTINCT `Array`s over ONE `Memory`, so their tangents are
+            # distinct objects over one buffer. Keying the de-duplication on the object pair counted
+            # that buffer twice, which made `test_rule`'s finite-difference comparison wrong for any
+            # argument holding two positions over one storage. No registry expresses this: they take
+            # one value, and this is a relationship between two.
+            a = collect(1.0:4.0)
+            dt = Mooncake._zero_tangents((identity, (a, reshape(a, 2, 2))))[2]
+            dt[1] .= 1.0
+            @test Mooncake._dot(dt, dt) == 4.0
+            # Distinct storage must still count twice, or the fix trades a double-count for an
+            # under-count that nothing downstream refuses.
+            d2 = Mooncake._zero_tangents((identity, (collect(1.0:4.0), collect(1.0:4.0))))[2]
+            d2[1] .= 1.0
+            d2[2] .= 1.0
+            @test Mooncake._dot(d2, d2) == 8.0
+            # An `Array` beside its own backing `Memory`: the same buffer reached another way.
+            v = collect(1.0:3.0)
+            d3 = Mooncake._zero_tangents((identity, (v, getfield(v, :ref).mem)))[2]
+            d3[1] .= 1.0
+            @test Mooncake._dot(d3, d3) == 3.0
+        end
+    end
+    @static if VERSION < v"1.11-"
+        @testset "1.10 keys array tangents on their storage" begin
+            # The 1.11+ path keys on the backing `Memory`; 1.10 has none, so two `Array`s over
+            # one buffer had nothing in common to key on and got independent tangents. A
+            # function of ONE buffer was then differentiated as a function of two.
+            a = collect(1.0:4.0)
+            b = reshape(a, 2, 2)
+            t = Mooncake._zero_tangents((identity, a, b))
+            @test pointer(t[2]) == pointer(t[3])
+            f(x, y) = sum(x) + sum(y)
+            _, g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2] == fill(2.0, 4)
+            @test g[3] == fill(2.0, 2, 2)
+            # Distinct arrays must still not deduplicate.
+            c = collect(1.0:4.0)
+            td = Mooncake._zero_tangents((identity, a, c))
+            @test pointer(td[2]) != pointer(td[3])
+            # A cache entry is stored as a `vec`, so the shapes callers get back must still be
+            # their own.
+            @test size(Mooncake.zero_tangent(zeros(2, 3, 4))) == (2, 3, 4)
+            @test ndims(Mooncake.zero_tangent(fill(1.0))) == 0
+        end
+    end
+    @static if VERSION >= v"1.11-"
+        @testset "_add_to_primal keeps two positions over one buffer" begin
+            # Perturbing a result whose sharing was severed measures a function that moves the two
+            # positions independently, which is not the function under test. That is how a
+            # finite-difference "truth" earlier in this branch came out unachievable by any
+            # direction.
+            a = collect(1.0:4.0)
+            t = (a, reshape(a, 2, 2))
+            dt = Mooncake._zero_tangents((identity, t))[2]
+            dt[1] .= 1.0
+            p = Mooncake._add_to_primal(t, dt, true)
+            @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+            @test p[1] == a .+ 1.0
+            @test vec(p[2]) == a .+ 1.0
+            # Distinct storage must stay distinct, or the perturbations of two independent
+            # arguments would land on top of each other.
+            b, d = collect(1.0:3.0), collect(1.0:3.0)
+            q = Mooncake._add_to_primal(
+                (b, d), Mooncake._zero_tangents((identity, (b, d)))[2], true
+            )
+            @test getfield(q[1], :ref).mem !== getfield(q[2], :ref).mem
+            # A `Vector` with spare capacity has a backing `Memory` longer than itself, which need
+            # not match its tangent's. Perturbing whole memories asserted on a correspondence that
+            # does not hold there. `sizehint!` rather than plain growth because 1.12 allocates
+            # `append!` exactly, so the vector had no spare capacity there and the case went
+            # untested — which the precondition below is here to keep catching.
+            w = Float64[]
+            sizehint!(w, 16)
+            append!(w, [1.0, 2.0, 3.0])
+            @test length(getfield(w, :ref).mem) > length(w)
+            @test Mooncake._add_to_primal(w, Mooncake.zero_tangent(w) .+ 0.5, true) ==
+                [1.5, 2.5, 3.5]
+        end
+        @static if VERSION >= v"1.11-"
+            @testset "_scale and increment!! respect one shared buffer" begin
+                a = collect(1.0:4.0)
+                ts = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                t1, t2 = ts[2], ts[3]
+                t1 .= 1.0
+                # `_scale` allocated per container, so the sharing was gone before
+                # `_add_to_primal` — which preserves it — was reached, and the finite-difference
+                # harness runs exactly that chain.
+                s = Mooncake.TestUtils._scale(0.5, (t1, t2))
+                @test getfield(s[1], :ref).mem === getfield(s[2], :ref).mem
+                p = Mooncake.TestUtils._add_to_primal((a, reshape(a, 2, 2)), s, true)
+                @test getfield(p[1], :ref).mem === getfield(p[2], :ref).mem
+                # `a` and `reshape(a)` are distinct `Array` objects over one buffer, so the
+                # container key incremented it twice and gave 3.0 where one buffer incremented
+                # once by one is 2.0.
+                u1, u2 = ts[2], ts[3]
+                y = Mooncake._zero_tangents((identity, a, reshape(a, 2, 2)))
+                y[2] .= 1.0
+                @test Mooncake.increment!!((u1, u2), (y[2], y[3]))[1] == fill(2.0, 4)
+                # An `Array` and the `Memory` backing it are one buffer too, and while the two
+                # methods keyed on their own containers they agreed on no key at all.
+                m1 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m1[2] .= 1.0
+                m2 = Mooncake._zero_tangents((identity, a, getfield(a, :ref).mem))
+                m2[2] .= 1.0
+                @test Mooncake.increment!!((m1[2], m1[3]), (m2[2], m2[3]))[1] ==
+                    fill(2.0, 4)
+            end
+        end
     end
     @testset "require_tangent_cache($P)" for (P, expected_result) in [
         (Float64, false),

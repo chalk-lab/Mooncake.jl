@@ -48,22 +48,26 @@ using PrecompileTools: @setup_workload, @compile_workload
 
         # Forward-mode: scalar Float64
         dcache = prepare_derivative_cache(_precompile_f, 1.0)
-        value_and_derivative!!(dcache, Dual(_precompile_f, NoTangent()), Dual(1.0, 1.0))
+        value_and_derivative!!(
+            dcache, lift(_precompile_f, NoTangent()), lift(1.0, 1.0)
+        )
 
         # Forward-mode: vector Float64
         dcache2 = prepare_derivative_cache(_precompile_g, xs)
         value_and_derivative!!(
-            dcache2, Dual(_precompile_g, NoTangent()), Dual(xs, ones(3))
+            dcache2, lift(_precompile_g, NoTangent()), lift(xs, ones(3))
         )
 
         # Forward-mode: scalar ComplexF64
         dcache3 = prepare_derivative_cache(_precompile_h, z)
-        value_and_derivative!!(dcache3, Dual(_precompile_h, NoTangent()), Dual(z, one(z)))
+        value_and_derivative!!(
+            dcache3, lift(_precompile_h, NoTangent()), lift(z, one(z))
+        )
 
         # Forward-mode: scalar ComplexF32
         dcache4 = prepare_derivative_cache(_precompile_h32, z32)
         value_and_derivative!!(
-            dcache4, Dual(_precompile_h32, NoTangent()), Dual(z32, one(z32))
+            dcache4, lift(_precompile_h32, NoTangent()), lift(z32, one(z32))
         )
     end
 end

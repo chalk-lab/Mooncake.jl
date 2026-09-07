@@ -2,15 +2,47 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-function frule!!(::Dual{typeof(Base.:(+))}, x::Dual{<:Ptr}, y::Dual{<:Integer})
-    return Dual(primal(x) + primal(y), tangent(x) + primal(y))
+# V for a differentiable `Ptr` is `NTuple{N, Ptr{E}}` (per-lane partial pointers,
+# E = parallel-arrays element type or the element-wise dual element); the pointer shift
+# `tangent_lane + primal(y)` is applied to each lane. Covers both the parallel-arrays
+# float case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the element-wise abstract-element case
+# (`Ptr{Real}`, V `NTuple{1,Ptr{Any}}`), matching the `rrule!!` breadth below.
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
+) where {Nw,P<:Ptr}
+    yp = primal(y)
+    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x, lane) + yp, Val(Nw)))
 end
+# Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
+# reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
+# breadth (a `NoDual`-V pointer arises e.g. from the generic `bitcast` fallback).
+function frule!!(
+    ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted{<:Integer}
+) where {Nw}
+    p = primal(x) + primal(y)
+    return Lifted{typeof(p),Nw}(p, NoDual())
+end
+# `@is_primitive` above claims EVERY `Ptr`, so this must shift whatever a pointer's fdata is. For a
+# `Ptr{Cvoid}` that is a `VoidPtrTangent`, which shifts its address and keeps what it erased.
+@inline _shift_ptr_fdata(dx::Ptr, n::Integer) = dx + n
+@inline _shift_ptr_fdata(dx::VoidPtrTangent, n::Integer) = VoidPtrTangent(dx.p + n, dx.elt)
+
 function rrule!!(f::CoDual{typeof(Base.:(+))}, x::CoDual{<:Ptr}, y::CoDual{<:Integer})
-    return CoDual(primal(x) + primal(y), tangent(x) + primal(y)), NoPullback(f, x, y)
+    return CoDual(primal(x) + primal(y), _shift_ptr_fdata(tangent(x), primal(y))),
+    NoPullback(f, x, y)
 end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
+# Character predicates backed by a `utf8proc` ccall, which the transform cannot see through. They
+# are `Bool`-valued and have no derivative, but without these `LinearAlgebra`'s wrapper-char
+# dispatch takes `Symmetric(A) * B` -- ordinary code -- into a `MissingForeigncallRuleError` in both
+# modes. Measured membership: `isdigit`, `isspace`, `iscntrl` and `isxdigit` take ASCII fast paths
+# and never reach the ccall, so they are not listed.
+for f in (:isuppercase, :islowercase, :isletter, :isnumeric, :ispunct, :isprint)
+    @eval @zero_derivative MinimalCtx Tuple{typeof($f),AbstractChar}
+end
+@zero_derivative MinimalCtx Tuple{typeof(Base.Unicode.category_code),AbstractChar}
 @zero_derivative MinimalCtx Tuple{Type{Symbol},Vararg}
 @zero_derivative MinimalCtx Tuple{Type{Float64},Any,RoundingMode}
 @zero_derivative MinimalCtx Tuple{Type{Float32},Any,RoundingMode}
@@ -20,10 +52,9 @@ end
 # Optional rule to avoid unnecessary allocations on Julia 1.10
 @zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
 
-# Logging: String-related primitive rules
+# Logging: String-related primitive rules.
 using Base: getindex, getproperty
 using Base.Threads: Atomic
-using Mooncake: zero_fcodual, MinimalCtx, @is_primitive, NoPullback, CoDual
 using Base.CoreLogging: LogLevel, handle_message, invokelatest
 import Base.CoreLogging as CoreLogging
 
@@ -268,6 +299,39 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
                 (x) -> (Base.get_extension(Base.PkgId(Base), :GenericTestExt); x),
                 1.0,
             ),
+
+            # `Symmetric(A) * B` is the shape that made these matter: on 1.12 `LinearAlgebra`'s
+            # wrapper-char dispatch calls `isuppercase`, whose `utf8proc` ccall the transform
+            # cannot see through, so ordinary code failed in BOTH modes. The predicates are
+            # exercised through a barrier as well, since a literal argument constant-folds the
+            # call away before the transform ever sees it.
+            (
+                false,
+                :none,
+                nothing,
+                (X, Y) -> Symmetric(X) * Y,
+                randn(rng_ctor(123), 4, 4),
+                randn(rng_ctor(124), 4, 3),
+            ),
+            (
+                false,
+                :none,
+                nothing,
+                (X, Y) -> Hermitian(X) * Y,
+                randn(rng_ctor(123), 4, 4),
+                randn(rng_ctor(124), 4, 3),
+            ),
+            map((
+                isuppercase, islowercase, isletter, isnumeric, ispunct, isprint
+            )) do pred
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    x -> (pred(Base.inferencebarrier('U')::Char) ? 2.0 : 3.0) * x,
+                    1.0,
+                )
+            end...,
 
             # Tests for Base.CoreLogging, @show macros and string related functions.
             (false, :none, nothing, (x) -> print(x), "Testing print"),

@@ -25,8 +25,7 @@ end
     @testset "tangent interface etc" begin
         rng = StableRNG(123456)
         TestUtils.test_tangent_interface(rng, mc)
-        # Do not run the `test_rule_and_type_interactions` test suite for
-        # `MistyClosure`s as we do not implement rules for `getfield` / `_new_`.
+        TestUtils.test_rule_and_type_interactions(rng, mc)
     end
 
     TestUtils.test_rule(
@@ -71,36 +70,34 @@ end
 
     # Construct a callable which performs reverse-mode, and apply forwards-mode over it.
     rule = Mooncake.build_rrule(Tuple{typeof(quadratic),Float64})
+    # `quadratic` is `x^3`, so the gradient is `3x^2 = 75` at `x = 5` and its own derivative
+    # `6x = 30`. The direction is pinned through the `CoDual` channel and the references are
+    # given outright: differentiating a compiled reverse rule is not something finite
+    # differences can perturb through.
+    TestUtils.test_rule(
+        StableRNG(123),
+        low_level_gradient,
+        rule,
+        quadratic,
+        CoDual(5.0, 1.0);
+        is_primitive=false,
+        perf_flag=:none,
+        unsafe_perturb=true,
+        mode=ForwardMode,
+        oracle=(value=75.0, deriv=30.0),
+    )
+
+    # Reverse over a `MistyClosure` evaluation is not supported and must say so.
     TestUtils.test_rule(
         StableRNG(123),
         low_level_gradient,
         rule,
         quadratic,
         5.0;
-        interface_only=true,
+        throws=ArgumentError,
+        mode=ReverseMode,
         is_primitive=false,
-        perf_flag=:none,
-        unsafe_perturb=true,
-        mode=ForwardMode,
     )
-
-    # Check that the rrule for evaluating `MistyClosure`s errors appropriately.
-    args = (low_level_gradient, rule, quadratic, 5.0)
-    higher_rule = Mooncake.build_rrule(args...)
-    @test_throws(ArgumentError, higher_rule(map(zero_fcodual, args)...))
-
-    # Manually test that this correctly computes the second derivative.
-    frule = Mooncake.build_frule(
-        Mooncake.get_interpreter(Mooncake.ForwardMode),
-        Tuple{typeof(low_level_gradient),typeof(rule),typeof(quadratic),Float64},
-    )
-    result = frule(
-        zero_dual(low_level_gradient),
-        zero_dual(rule),
-        zero_dual(quadratic),
-        Mooncake.Dual(5.0, 1.0),
-    )
-    @test tangent(result) == 6 * 5.0
 
     # Test for world-age mismatch fix in _dual_mc (Julia 1.12+ only).
     # See: https://github.com/chalk-lab/Mooncake.jl/issues/916

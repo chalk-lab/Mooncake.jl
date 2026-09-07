@@ -45,6 +45,5 @@
         @test Mooncake.lsetfield!(x, Val(:b), new_b) === new_b
         @test x.b === new_b
     end
-
     TestUtils.run_rule_test_cases(StableRNG, Val(:misc))
 end

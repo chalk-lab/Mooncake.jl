@@ -52,6 +52,24 @@ function Mooncake.tangent(t::TangentNode, ::Mooncake.NoRData)
     return t
 end
 
+# Forward mode has no representation for an expression tree. `AbstractExpressionNode` is
+# self-referential -- a node's children are nodes -- so the generic `dual_type` recursion does not
+# terminate on it; `TangentNode` is what breaks that recursion for reverse, and this extension
+# defines no `frule!!`s that would justify a forward counterpart. Refusing at the type reports the
+# gap wherever a tree is reached, rather than dying in a `StackOverflowError` inside `dual_type`.
+# Widening to `Any` would not do: a struct holding an `Any` field is still concrete, so the
+# interface's representability check passes it through and forward mode fails later and less
+# clearly.
+function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N,P<:AbstractExpressionNode}
+    throw(
+        ArgumentError(
+            "Forward-mode AD does not support `$P`: an expression tree is self-referential, and " *
+            "Mooncake has no forward derivative representation for one. Use reverse mode " *
+            "(`prepare_gradient_cache` or `prepare_pullback_cache`).",
+        ),
+    )
+end
+
 _unwrap_nullable(c::NoTangent) = c
 _unwrap_nullable(c::NamedTuple{(:null, :x)}) = c.x
 _wrap_nullable(c::NoTangent) = c

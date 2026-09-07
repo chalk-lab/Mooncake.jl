@@ -1,7 +1,15 @@
 @testset "test_utils" begin
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
+        # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s
+        # `rtol`, so a fixed relative error used to pass at 1e5 and fail at 1e6.
+        @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
+        @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
         @test has_equal_data(5.0, 5.0)
+        # `exact_floats` drops the tolerance, and reaches the leaves through the structural
+        # recursion rather than only the top level.
+        @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
+        @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
         @test has_equal_data(Float64, Float64)
@@ -167,6 +175,125 @@
             is_primitive=false,
             print_results=false,
             max_fd_step=1e-3,
+        )
+    end
+
+    @testset "_deepcopy_all preserves cross-argument aliasing" begin
+        # The harness copies arguments defensively before running a rule. Copying them per element
+        # (`map(_deepcopy, ...)`) gives each its own cache and severs aliasing BETWEEN slots, so no
+        # registered case could present one object in two argument slots — which is why a
+        # repeated-argument gradient bug went unnoticed. One shared cache reproduces the caller's
+        # aliasing graph instead of imposing one.
+        x = [1.0, 2.0]
+        c = Mooncake.TestUtils._deepcopy_all((sum, x, x))
+        @test c[2] === c[3]                    # aliasing between slots survives
+        @test c[2] !== x                       # ...and it is still a copy, not the caller's array
+        c[2][1] = 99.0
+        @test c[3][1] == 99.0                  # a write through one slot is seen by the other
+        @test x[1] == 1.0                      # ...and never reaches the caller
+        # Distinct objects must stay distinct: a shared cache merges only what was already identical.
+        y = [1.0, 2.0]
+        d = Mooncake.TestUtils._deepcopy_all((sum, x, y))
+        @test d[2] !== d[3]
+        # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
+        @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
+    end
+
+    @testset "a pinned tangent spreads over distinct lanes" begin
+        # Giving every lane the same direction makes the per-lane oracle compare one reference
+        # against itself N times, so a rule broadcasting lane 1 across all lanes -- the bug that
+        # check exists for -- passes. Lane k carries k times the pin.
+        lanes(z, N) = Mooncake.tangent(TestUtils._pin_lanes(Val(N), z))
+        p = lanes(CoDual(2.0, 1.5), 8).partials
+        @test p[1] == 1.5                      # lane 1 is the pin exactly
+        @test length(unique(p)) == 8           # ...and no two lanes agree
+        @test lanes(CoDual(2.0, 1.5), 1).partials == (1.5,)
+        # A zero pin -- what the BLAS rows use to reach their `iszero(dα)` paths -- stays zero in
+        # every lane. Scaling preserves what a pin selects on.
+        @test all(iszero, lanes(CoDual(2.0, 0.0), 8).partials)
+        # A complex pin scales per part.
+        c = lanes(CoDual(2.0 + 0.0im, 1.0 + 2.0im), 8)
+        @test real(c).partials[1] == 1.0
+        @test imag(c).partials[1] == 2.0
+        @test length(unique(real(c).partials)) == 8
+    end
+
+    @testset "lane relevance is decided exactly" begin
+        # An argument counts as direction-free only if its lane reads are IDENTICAL, because the
+        # answer swaps a ZERO width-1 seed in for the argument's real direction. The pair below
+        # sits within the default `atol = √eps(Float32)`, which is how a `symm!` row's `dβ` lost
+        # its `dβ · C` term in every lane.
+        @test !TestUtils._lane_reads_equal(3.31826f-4, 6.63652f-4)
+        # A genuinely direction-free read still compares equal, so the cases that rely on the
+        # exemption -- a zero pin, a non-differentiable argument -- keep it.
+        @test TestUtils._lane_reads_equal(0.0f0, 0.0f0)
+        @test TestUtils._lane_reads_equal(
+            fill(Mooncake.NoDual(), 3), fill(Mooncake.NoDual(), 3)
+        )
+    end
+
+    @testset "float_precision" begin
+        # A `Float64` holding `Float32`-precision content agrees with a differently-ordered
+        # computation of itself only to `Float32` eps, whatever its own type says: one such ulp
+        # is 1e-7 relative, which `√eps(Float64)` refuses.
+        v = 0.4568637f0
+        @test !has_equal_data(10.0 * v, 10.0 * prevfloat(v))
+        @test has_equal_data(10.0 * v, 10.0 * prevfloat(v); float_precision=Float32)
+        @test_throws ArgumentError has_equal_data(1.0, 1.0; float_precision=Int)
+        # The precision comes from the seeds' partials: narrowest wins, and a shape carrying
+        # none constrains nothing.
+        p32 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), Float32[1.0]))
+        p64 = Mooncake.tangent(Mooncake.zero_lifted(Val(1), 1.0))
+        @test TestUtils._partials_precision(p32) === Float32
+        @test TestUtils._partials_precision(p64) === Float64
+        @test TestUtils._partials_precision((p64, p32)) === Float32
+        @test TestUtils._partials_precision((p64, Mooncake.NoDual())) === Float64
+        # End to end: forward AD folds the sum sequentially where `sum` splits it pairwise, so
+        # the rule's primal differs from the direct call's at both widths. The length is above
+        # `sum`'s pairwise block size, where that split is structural -- at 64 elements the two
+        # agree under `--check-bounds=yes` and differ without it. The per-lane comparison needs
+        # a rule that reduces its PARTIALS differently across widths, which the CUDA extension's
+        # batched reductions do and no CPU rule here does.
+        mixed(a, y) = a * sum(y)
+        x = Float32[sqrt(i) for i in 1:2048]
+        @test sum(x) != foldl(+, x)
+        test_rule(Xoshiro(1), mixed, 10.0, x; is_primitive=false, perf_flag=:none)
+    end
+
+    @testset "oracle validation" begin
+        # A reference that names nothing, or names it wrongly, would leave a case asserting
+        # nothing while reading as green — the failure mode a pinned reference exists to avoid.
+        f(x, y) = x * y
+        run(o) = TestUtils.test_rule(
+            Xoshiro(1),
+            f,
+            2.0,
+            3.0;
+            is_primitive=false,
+            mode=Mooncake.ForwardMode,
+            print_results=false,
+            oracle=o,
+        )
+        @test_throws ArgumentError run((;))
+        @test_throws ArgumentError run((vlaue=6.0,))
+        @test_throws ArgumentError run((value=6.0, extra=1))
+        @test_throws ArgumentError run(6.0)
+        # A well-formed one is accepted, and the checks that are not the finite-difference
+        # comparison still run — its own assertions register in this testset.
+        run((value=6.0,))
+    end
+
+    @testset "forward chunk widths" begin
+        # `chunk_size === nothing` is "unspecified", not "pin to 1" — `run_rule_test_cases`
+        # passes it for every row, so conflating the two would run every case at width 1.
+        @test TestUtils._fwd_widths(false, nothing) == (1, 8)
+        @test TestUtils._fwd_widths(true, nothing) == (1,)
+        @test TestUtils._fwd_widths(false, 4) == (4,)
+        @test TestUtils._fwd_widths(true, 1) == (1,)
+        @test_throws ArgumentError TestUtils._fwd_widths(true, 8)
+        # A pin the path cannot satisfy is refused rather than dropped, end to end.
+        @test_throws ArgumentError test_rule(
+            Xoshiro(1), sin, 1.0; skip_chunked=true, chunk_size=8
         )
     end
 end

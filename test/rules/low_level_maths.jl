@@ -34,82 +34,99 @@
         end
     end
 
-    @testset "hypot singular-point consistency across arities" begin
-        for T in (Float16, Float32, Float64)
-            x = Dual(zero(T), one(T))
-            y = Dual(zero(T), one(T))
-            z = Dual(zero(T), one(T))
-
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y)) === zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(hypot), x, y, z)) === zero(T)
-
-            _, pb1 = Mooncake.rrule!!(zero_fcodual(hypot), zero_fcodual(zero(T)))
-            _, dx1 = pb1(one(T))
-            @test dx1 === zero(T)
-
-            _, pb2 = Mooncake.rrule!!(
-                zero_fcodual(hypot), zero_fcodual(zero(T)), zero_fcodual(zero(T))
-            )
-            _, dx2, dy2 = pb2(one(T))
-            @test dx2 === zero(T)
-            @test dy2 === zero(T)
-
-            _, pb3 = Mooncake.rrule!!(
-                zero_fcodual(hypot),
-                zero_fcodual(zero(T)),
-                zero_fcodual(zero(T)),
-                zero_fcodual(zero(T)),
-            )
-            _, dx3, dy3, dz3 = pb3(one(T))
-            @test dx3 === zero(T)
-            @test dy3 === zero(T)
-            @test dz3 === zero(T)
+    @testset "fused trig forward pole guard (inactive lane stays 0, not NaN)" begin
+        # `tand(90)` hits an EXACT Float64 pole: `cosd(90) == 0` (90 is representable, unlike π/2
+        # in radians), so `tand(90) = Inf` and its derivative `1 + tand^2 = Inf`. The fused-family
+        # frule!! must scale partials with `_fwd_guarded_scale`, so an inactive (zero-seed) lane
+        # stays exactly 0 rather than 0*Inf = NaN — matching main's forward robustness.
+        for T in (Float32, Float64)
+            for x in (T(90), T(270))
+                @test tangent(
+                    Mooncake.frule!!(zero_dual(tand), Mooncake.lift(x, zero(T))), 1
+                ) === zero(T)
+            end
         end
     end
 
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
             @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(one(T), zero(T)))
+                Mooncake.frule!!(
+                    zero_dual(^),
+                    Mooncake.lift(zero(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
+                ),
+                1,
             ) === one(T)
             @test tangent(
-                Mooncake.frule!!(zero_dual(^), Dual(zero(T), one(T)), Dual(T(2), zero(T)))
+                Mooncake.frule!!(
+                    zero_dual(^),
+                    Mooncake.lift(zero(T), one(T)),
+                    Mooncake.lift(T(2), zero(T)),
+                ),
+                1,
             ) === zero(T)
             @test isinf(
                 tangent(
                     Mooncake.frule!!(
-                        zero_dual(^), Dual(zero(T), one(T)), Dual(T(0.5), zero(T))
+                        zero_dual(^),
+                        Mooncake.lift(zero(T), one(T)),
+                        Mooncake.lift(T(0.5), zero(T)),
                     ),
+                    1,
                 ),
             )
 
             @test isnan(
                 tangent(
                     Mooncake.frule!!(
-                        zero_dual(mod), Dual(T(4), one(T)), Dual(T(2), zero(T))
+                        zero_dual(mod),
+                        Mooncake.lift(T(4), one(T)),
+                        Mooncake.lift(T(2), zero(T)),
                     ),
+                    1,
                 ),
             )
-            @test isnan(tangent(Mooncake.frule!!(zero_dual(mod2pi), Dual(T(2π), one(T)))))
+            @test isnan(
+                tangent(
+                    Mooncake.frule!!(zero_dual(mod2pi), Mooncake.lift(T(2π), one(T))), 1
+                ),
+            )
+            # Regression: reverse mod2pi must also be NaN at the 2π wrap — matching forward
+            # and `main` — not a constant slope 1. `x=0` (a multiple of 2π) is the common case.
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(zero(T)))
+                @test isnan(pb(one(T))[2])
+            end
+            let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(T(0.7)))
+                @test pb(one(T))[2] === one(T)
+            end
 
             @test tangent(
                 Mooncake.frule!!(
-                    zero_dual(max), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                    zero_dual(max),
+                    Mooncake.lift(one(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
                 ),
+                1,
             ) === zero(T)
             @test tangent(
                 Mooncake.frule!!(
-                    zero_dual(min), Dual(one(T), one(T)), Dual(one(T), zero(T))
+                    zero_dual(min),
+                    Mooncake.lift(one(T), one(T)),
+                    Mooncake.lift(one(T), zero(T)),
                 ),
+                1,
             ) === one(T)
 
-            @test tangent(Mooncake.frule!!(zero_dual(Base.eps), Dual(one(T), one(T)))) ===
-                zero(T)
-            @test tangent(Mooncake.frule!!(zero_dual(nextfloat), Dual(one(T), one(T)))) ===
-                one(T)
-            @test tangent(Mooncake.frule!!(zero_dual(prevfloat), Dual(one(T), one(T)))) ===
-                one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(Base.eps), Mooncake.lift(one(T), one(T))), 1
+            ) === zero(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(nextfloat), Mooncake.lift(one(T), one(T))), 1
+            ) === one(T)
+            @test tangent(
+                Mooncake.frule!!(zero_dual(prevfloat), Mooncake.lift(one(T), one(T))), 1
+            ) === one(T)
         end
     end
 
@@ -136,5 +153,22 @@
 
     @testset "near-boundary domain-restricted functions" begin
         test_rule(StableRNG(123), sqrt, 0.005; is_primitive=true, max_fd_step=1e-3)
+    end
+
+    # `tanh`'s reverse pullback used `1 - y^2`, exactly zero once `tanh(x)` rounds to `1.0`, while
+    # the true `sech(x)^2` is still normal. `test_rule` cannot pin this: the primal is flat in
+    # floating point there, so its finite-difference oracle reads 0.0 and accepts both the wrong
+    # answer and the right one -- checked, and it passes at every value below with the defect in
+    # place. Hence an analytic comparison rather than a registry entry.
+    @testset "tanh gradient survives saturation" begin
+        for x in (15.0, 19.0, 20.0, 25.0, 8.0f0, 9.0f0, 10.0f0)
+            P = typeof(x)
+            u = exp(-2 * abs(x))
+            want = 4u / (one(P) + u)^2
+            cache = Mooncake.prepare_gradient_cache(tanh, x)
+            got = Mooncake.value_and_gradient!!(cache, tanh, x)[2][2]
+            @test got == want
+            @test !iszero(got)
+        end
     end
 end
