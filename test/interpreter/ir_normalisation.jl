@@ -14,6 +14,14 @@
         return x * n
     end
 
+    # `pointer(bytes, 2)` reaches the ccall through an `:invoke` of `+(::Ptr, ::Int)`, which
+    # `recover_foreigncall_gc_roots!` does not follow. See its docstring.
+    function _gc_root_strlen_offset(x::Float64)
+        bytes = _gc_root_cstring()
+        n = GC.@preserve bytes ccall(:strlen, Csize_t, (Ptr{UInt8},), pointer(bytes, 2))
+        return x * n
+    end
+
     # _foreigncall_ is already a primitive. Force GC inside this test rule, after the
     # caller's preserve region was lifted. Check liveness before dereferencing the pointer
     # so a regression fails safely instead of reading freed memory.
@@ -107,6 +115,13 @@ end
             result = rule(zero_dual(_gc_root_strlen), Dual(2.0, 1.0))
             @test primal(result) == 8.0
             @test tangent(result) == 4.0
+
+            # Known gap: an offset pointer's root is not recovered, so the buffer is freed
+            # and the rule above raises. strlen("oon") == 3, so the fixed result is 6.0.
+            rule_offset = build_frule(_gc_root_strlen_offset, 2.0)
+            @test_broken primal(
+                rule_offset(zero_dual(_gc_root_strlen_offset), Dual(2.0, 1.0))
+            ) == 6.0
         end
     end
     @testset "fix_up_invoke_inference!" begin

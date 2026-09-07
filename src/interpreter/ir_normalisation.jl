@@ -57,8 +57,15 @@ rule can free the buffer.
 
 Recover the MemoryRef behind a `bitcast(Ptr{T}, getfield(ref, :ptr_or_offset))` root,
 the inlined array-pointer representation on Julia 1.11+, before `foreigncall_to_call`.
-Preserving that reference keeps the backing memory alive. This is not general pointer
-provenance recovery: pointer arithmetic and Julia 1.10's `jl_array_ptr` are not handled.
+Preserving that reference keeps the backing memory alive.
+
+Only that literal chain of `:call` expressions, as it appears at the point `normalise!`
+runs, is recognised. Any other root is left unchanged and its buffer stays unprotected.
+In particular this does not cover:
+- pointers produced by a helper that is still an `:invoke` at this stage, such as
+  `pointer(x, i)` (`+(::Ptr, ::Int)`), which the ranged `BLAS.axpy!` and `blascopy!`
+  methods use;
+- Julia 1.10, where the pointer comes from a `jl_array_ptr` foreigncall.
 """
 function recover_foreigncall_gc_roots!(ir::IRCode)
     for inst in stmt(ir.stmts)

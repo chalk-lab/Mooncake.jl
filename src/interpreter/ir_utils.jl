@@ -281,14 +281,16 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    # JuliaLang/julia#56201 fixes #319 in Julia 1.13. Older versions still need the
-    # BugPatchInterpreter for inference, even when an optimisation interpreter is supplied.
+    # Inference always runs with a plain native interpreter, even when `interp` is supplied;
+    # `interp` only drives the optimisation passes below. On Julia < 1.13 the native
+    # interpreter is wrapped in a BugPatchInterpreter to work around #319, which
+    # JuliaLang/julia#56201 fixes from 1.13 onwards.
     @static if VERSION ≥ v"1.13-"
-        local_interp = infer_interp = isnothing(interp) ? CC.NativeInterpreter() : interp
+        infer_interp = CC.NativeInterpreter()
     else
         infer_interp = BugPatchInterpreter()
-        local_interp = isnothing(interp) ? infer_interp : interp
     end
+    local_interp = isnothing(interp) ? infer_interp : interp
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir
