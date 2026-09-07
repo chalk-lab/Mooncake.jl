@@ -9,12 +9,6 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
-## Explicit `invoke` of a Primitive
-
-Mooncake applies a rule wherever a call's argument types match the rule's signature, assuming the call reaches the method that ordinary dispatch selects for those types. An explicit `invoke(f, types, args...)` breaks that assumption: it calls the method with signature `types` directly, and the Julia compiler resolves it during inference and inlining, before Mooncake's AD transform runs, so Mooncake cannot recognise it as a call to a primitive (see issue #1300). If the compiler inlines the invoked method, Mooncake differentiates its body and the rule is silently skipped. If it does not, for example because the invoked method is large or marked `@noinline`, the remaining call still has argument types that match the rule, so Mooncake substitutes the rule even though it was written for a different method. For example, with methods `f(x::Real)` and `f(x::Float64)` and a rule for `Tuple{typeof(f), Float64}`, `invoke(f, Tuple{Real}, x)` with `x::Float64` runs `f(::Real)` in the primal, but Mooncake either differentiates the body of `f(::Real)` or replaces the call with the rule for `f(::Float64)` and returns that method's value and derivative. Neither case raises an error.
-
-This typically arises when `invoke` is used to reach a generic fallback while a rule exists for the specialised method, or through macros that expand to `invoke`, such as `Base.Math.@horner`. Do not call a function that has a rule through `invoke`: call it directly, or wrap the `invoke` in a function and write a rule for that wrapper. `invoke` of a function without a rule is differentiated normally; `invoke` whose `types` argument is not a compile-time constant, and `invokelatest`, are not supported.
-
 ## `try`/`catch`/`finally` Blocks
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
@@ -210,6 +204,12 @@ true
 
 Mooncake infers `A` for both callers, even though the overlays would produce a `B` — so any rule written against the overlay's return type fails the runtime check.
 Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
+
+## Explicit `invoke` of a Primitive
+
+Mooncake applies a rule wherever a call's argument types match the rule's signature, assuming the call reaches the method that ordinary dispatch selects for those types. An explicit `invoke(f, types, args...)` breaks that assumption: it calls the method with signature `types` directly, and the Julia compiler resolves it during inference and inlining, before Mooncake's AD transform runs, so Mooncake cannot recognise it as a call to a primitive (see issue #1300). If the compiler inlines the invoked method, Mooncake differentiates its body and the rule is silently skipped. If it does not, for example because the invoked method is large or marked `@noinline`, the remaining call still has argument types that match the rule, so Mooncake substitutes the rule even though it was written for a different method. For example, with methods `f(x::Real)` and `f(x::Float64)` and a rule for `Tuple{typeof(f), Float64}`, `invoke(f, Tuple{Real}, x)` with `x::Float64` runs `f(::Real)` in the primal, but Mooncake either differentiates the body of `f(::Real)` or replaces the call with the rule for `f(::Float64)` and returns that method's value and derivative. Neither case raises an error.
+
+This typically arises when `invoke` is used to reach a generic fallback while a rule exists for the specialised method, or through macros that expand to `invoke`, such as `Base.Math.@horner`. Do not call a function that has a rule through `invoke`: call it directly, or wrap the `invoke` in a function and write a rule for that wrapper. `invoke` of a function without a rule is differentiated normally; `invoke` whose `types` argument is not a compile-time constant, and `invokelatest`, are not supported.
 
 ## Differentiating CUDA Kernels
 
