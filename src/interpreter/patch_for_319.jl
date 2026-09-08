@@ -4,9 +4,8 @@
 # any time at all reading / understanding this file unless you are actively working on this
 # issue, and find it useful.
 #
-# As soon as patch versions of Julia (both LTS and Release) are made which contain a fix for
-# the bug underlying the above issue, this code can and should be removed, and the minimum
-# versions of Julia which Mooncake supports bumped.
+# JuliaLang/julia#56201 fixes this in Julia 1.13. Remove this file once all supported
+# Julia versions contain that fix.
 #
 # The only place in which this code seeps into Mooncake.jl code is in Mooncake.optimise_ir!,
 # located in src/interpreter/ir_utils.jl . In particular, we replace the `local_interp`

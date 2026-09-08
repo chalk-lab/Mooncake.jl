@@ -3,13 +3,15 @@
 At any given point in time, `Mooncake.jl` supports the current Long Term Support (LTS) release of Julia, and the latest release version of Julia 1.
 Consequently, the versions of Julia which are officially supported by `Mooncake.jl` will change (almost) _immediately_ whenever a new Julia LTS version is declared, or a minor release of Julia is made.
 
-For example, the LTS is 1.10 and the latest release is 1.11, at the time of writing. When 1.12 is released, we will
-1. bump the Julia compat bounds in `Mooncake.jl` to require either 1.10 or 1.12,
-1. cease to run CI on 1.11,
-1. cease to provide bug fixes for 1.11,
-1. cease to accept 1.11-specific bug fixes, as we will not be running CI for 1.11 and therefore will not be able to test that they have worked.
+We may also run CI against a prerelease of the next Julia minor version to find compatibility problems before release. These lanes are preparatory: a Julia version becomes officially supported only when its stable release is available.
 
-In short: as far as `Mooncake.jl`'s future releases are concerned, 1.11 ceases to exist the moment 1.12 is released.
+For example, the LTS is 1.10 and the latest release is 1.12, at the time of writing. When 1.13 is released, we will
+1. bump the Julia compat bounds in `Mooncake.jl` to require either 1.10 or 1.13,
+1. cease to run CI on 1.12,
+1. cease to provide bug fixes for 1.12,
+1. cease to accept 1.12-specific bug fixes, as we will not be running CI for 1.12 and therefore will not be able to test that they have worked.
+
+In short: as far as `Mooncake.jl`'s future releases are concerned, 1.12 ceases to exist the moment 1.13 is released.
 
 Note that these changes are not applied retrospectively to existing releases of `Mooncake.jl`.
 Suppose that `Mooncake.jl` is at `v0.4.50` when 1.12 is released.
@@ -19,9 +21,9 @@ Then the above changes would be relevant to `Mooncake.jl` versions `v0.4.51` and
 
 The above only discussed minor versions of Julia (1.10, 1.11, 1.12, etc).
 However, it also applies to patch versions of Julia.
-For example, at the time of writing, Julia version 1.10.6 is _actually_ the LTS, and 1.11.1 the current release of Julia.
-The moment that 1.10.7 is released, we will cease to run any CI on 1.10.6, and will not accept fixes for it.
-The same is true of 1.11.2.
+For example, at the time of writing, Julia version 1.10.12 is _actually_ the LTS, and 1.12.7 the current release of Julia.
+The moment that 1.10.13 is released, we will cease to run any CI on 1.10.12, and will not accept fixes for it.
+The same is true of 1.12.8.
 
 Since patch releases of Julia are less invasive than minor releases, this should generally not cause users problems.
 
