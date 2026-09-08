@@ -9,8 +9,7 @@ unchanged, but makes AD more straightforward. In particular, replace
 4. `Core.IntrinsicFunction`s with counterparts from `Mooncake.IntrinsicWrappers`,
 5. `getfield(x, 1)` with `lgetfield(x, Val(1))`, and related transformations,
 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
-7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed,
-8. recognised pointer-valued foreigncall roots with their backing MemoryRefs.
+7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
@@ -25,7 +24,6 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
-    ir = recover_foreigncall_gc_roots!(ir)
     for (n, inst) in enumerate(stmt(ir.stmts))
         inst = foreigncall_to_call(inst, sp_map)
         inst = new_to_call(inst)
@@ -44,49 +42,6 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
     verify_no_constant_gotoifnots(ir)
 
     return ir
-end
-
-"""
-    recover_foreigncall_gc_roots!(ir::IRCode)
-
-`ccall` wrappers such as `BLAS.dot` pass `pointer(x)` and rely on `GC.@preserve x` to
-keep the buffer alive. Their foreigncall root slots can therefore contain raw pointers,
-which root nothing. This predates Julia 1.13: Mooncake's forward `gc_preserve` rule is a
-no-op, and foreigncall rules only preserve their trailing arguments, so a GC inside a
-rule can free the buffer.
-
-Recover the MemoryRef behind a `bitcast(Ptr{T}, getfield(ref, :ptr_or_offset))` root,
-the inlined array-pointer representation on Julia 1.11+, before `foreigncall_to_call`.
-Preserving that reference keeps the backing memory alive.
-
-Only that literal chain of `:call` expressions, as it appears at the point `normalise!`
-runs, is recognised. Any other root is left unchanged and its buffer stays unprotected.
-In particular this does not cover:
-- pointers produced by a helper that is still an `:invoke` at this stage, such as
-  `pointer(x, i)` (`+(::Ptr, ::Int)`), which the ranged `BLAS.axpy!` and `blascopy!`
-  methods use;
-- Julia 1.10, where the pointer comes from a `jl_array_ptr` foreigncall.
-"""
-function recover_foreigncall_gc_roots!(ir::IRCode)
-    for inst in stmt(ir.stmts)
-        Meta.isexpr(inst, :foreigncall) || continue
-        for n in (6 + length(inst.args[3])):length(inst.args)
-            ref = _memoryref_of_pointer(ir, inst.args[n])
-            ref === nothing || (inst.args[n] = ref)
-        end
-    end
-    return ir
-end
-
-# Follow bitcasts to the MemoryRef field access; leave unrecognised roots unchanged.
-function _memoryref_of_pointer(ir::IRCode, x)
-    x isa SSAValue || return nothing
-    def = stmt(ir.stmts)[x.id]
-    Meta.isexpr(def, :call) && length(def.args) >= 3 || return nothing
-    f = __get_arg(def.args[1])
-    f === Base.bitcast && return _memoryref_of_pointer(ir, def.args[3])
-    f === getfield && __get_arg(def.args[3]) === :ptr_or_offset && return def.args[2]
-    return nothing
 end
 
 """
@@ -217,7 +172,7 @@ function __extract_foreigncall_name(x::Expr)
     return __extract_foreigncall_name(eval(x))
 end
 __extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
-function __extract_foreigncall_name(v::Tuple{Any,Any})
+function __extract_foreigncall_name(v::Tuple)
     Val((Symbol(v[1]), Symbol(v[2])))
 end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)

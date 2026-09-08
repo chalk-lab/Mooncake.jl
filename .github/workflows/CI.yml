@@ -22,7 +22,6 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    # The 1.13 lane is a prerelease and preparatory only (see SUPPORT_POLICY.md).
     continue-on-error: ${{ matrix.version == '1.13' }}
     strategy:
       fail-fast: false
@@ -89,7 +88,6 @@ jobs:
     name: ${{matrix.test_group.test_type}}-${{ matrix.test_group.label }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    # The 1.13 lane is a prerelease and preparatory only (see SUPPORT_POLICY.md).
     continue-on-error: ${{ matrix.version == '1.13' }}
     strategy:
       fail-fast: false
