@@ -22,6 +22,7 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    continue-on-error: ${{ matrix.version == '1.13' }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,6 +56,7 @@ jobs:
         version:
           - 'lts'
           - '1.12'
+          - '1.13'
         arch:
           - x64
         include:
@@ -70,7 +72,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
+          include-all-prereleases: ${{ matrix.version == '1.13' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -86,6 +88,7 @@ jobs:
     name: ${{matrix.test_group.test_type}}-${{ matrix.test_group.label }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    continue-on-error: ${{ matrix.version == '1.13' }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +118,7 @@ jobs:
         version:
           - 'lts'
           - '1.12'
+          - '1.13'
         arch:
           - x64
         include:
@@ -127,7 +131,7 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
+          include-all-prereleases: ${{ matrix.version == '1.13' }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |

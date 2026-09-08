@@ -165,17 +165,16 @@ end
 __extract_foreigncall_name(x::Symbol) = Val(x)
 __extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
-    # Make sure that we're getting the expression that we're expecting.
-    !Meta.isexpr(x, :call) && error("unexpected expr $x")
-    !isa(x.args[1], GlobalRef) && error("unexpected expr $x")
-    x.args[1].name != :tuple && error("unexpected expr $x")
-    length(x.args) != 3 && error("unexpected expr $x")
-
-    # Parse it into a name that can be passed as a type.
-    v = eval(x)
-    return Val((Symbol(v[1]), Symbol(v[2])))
+    # JuliaLang/julia#59165 changes Core.tuple calls to Expr(:tuple, name[, lib])
+    # in Julia 1.13. Both representations evaluate to a tuple.
+    is_call_to_tuple = Meta.isexpr(x, :call) && __get_arg(x.args[1]) === tuple
+    Meta.isexpr(x, :tuple) || is_call_to_tuple || error("unexpected expr $x")
+    return __extract_foreigncall_name(eval(x))
 end
-__extract_foreigncall_name(v::Tuple) = Val((Symbol(v[1]), Symbol(v[2])))
+__extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
+function __extract_foreigncall_name(v::Tuple)
+    Val((Symbol(v[1]), Symbol(v[2])))
+end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)
     return __extract_foreigncall_name(getglobal(x.mod, x.name))

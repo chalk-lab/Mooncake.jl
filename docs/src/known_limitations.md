@@ -74,6 +74,52 @@ Observe that while it has correctly computed the identity function, the gradient
 
 The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
 
+## Mutable aliases involving `NoTangent` parents or globals
+
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+
+A `NoTangent` parent:
+
+```jldoctest opaque-alias
+julia> struct Box
+           x::Vector{Float64}
+       end
+
+julia> Mooncake.tangent_type(::Type{Box}) = NoTangent;
+
+julia> function f(state)
+           box, x = state
+           box.x[1] *= 2
+           return x[1]
+       end;
+
+julia> x = [3.0]; state = (Box(x), x);
+
+julia> rule = Mooncake.build_rrule(f, state);
+
+julia> Mooncake.value_and_gradient!!(rule, f, state)
+(6.0, (NoTangent(), (NoTangent(), [1.0])))
+```
+
+`state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
+
+A global:
+
+```jldoctest global-alias
+julia> const X = [3.0];
+
+julia> function g(x)
+           X[1] *= 2
+           return x[1]
+       end;
+
+julia> rule = Mooncake.build_rrule(g, X);
+
+julia> Mooncake.value_and_gradient!!(rule, g, X)
+(6.0, (NoTangent(), [1.0]))
+```
+
+`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
 ## Passing Differentiable Data as a Type
 
@@ -158,6 +204,28 @@ true
 
 Mooncake infers `A` for both callers, even though the overlays would produce a `B` — so any rule written against the overlay's return type fails the runtime check.
 Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
+
+## Explicit `invoke` of a primitive
+
+An explicit `invoke` encountered during differentiation bypasses Mooncake's protection against inlining primitives.
+Inlining can silently discard the custom rule; surviving calls can use the rule for ordinary dispatch, changing the value and derivative ([#1300](https://github.com/chalk-lab/Mooncake.jl/issues/1300)).
+
+```julia
+f(x::Real) = sin(x)
+f(x::Float64) = cos(x)
+g(x::Float64) = invoke(f, Tuple{Real}, x)
+```
+
+With a rule for `f(::Float64)`, `g` may incorrectly use that rule although its primal computes `sin(x)`.
+
+This can occur when differentiated code explicitly invokes a generic fallback despite a rule for the specialised call.
+It can also arise indirectly: [`Base.Math.@horner`](https://github.com/JuliaLang/julia/blob/v1.12.7/base/math.jl#L176-L179) expands to `invoke(evalpoly, Tuple{Any, Tuple}, ...)`.
+That becomes problematic if a matching `evalpoly` rule is added; the macro alone does not trigger the limitation.
+Without a matching rule, Mooncake differentiates the invoked method normally.
+
+Simply replacing `invoke` with ordinary dispatch can change the primal's behaviour.
+Wrap the `invoke` in a function with its own rule.
+Calls inside an existing primitive's body are unaffected.
 
 ## Differentiating CUDA Kernels
 
