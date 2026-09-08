@@ -205,6 +205,28 @@ true
 Mooncake infers `A` for both callers, even though the overlays would produce a `B` — so any rule written against the overlay's return type fails the runtime check.
 Apply only one of `@mooncake_overlay` or `@is_primitive` to a given signature, and make sure no overlay you rely on sits behind a primitive's rule.
 
+## Explicit `invoke` of a primitive
+
+An explicit `invoke` encountered during differentiation bypasses Mooncake's protection against inlining primitives.
+Inlining can silently discard the custom rule; surviving calls can use the rule for ordinary dispatch, changing the value and derivative ([#1300](https://github.com/chalk-lab/Mooncake.jl/issues/1300)).
+
+```julia
+f(x::Real) = sin(x)
+f(x::Float64) = cos(x)
+g(x::Float64) = invoke(f, Tuple{Real}, x)
+```
+
+With a rule for `f(::Float64)`, `g` may incorrectly use that rule although its primal computes `sin(x)`.
+
+This can occur when differentiated code explicitly invokes a generic fallback despite a rule for the specialised call.
+It can also arise indirectly: [`Base.Math.@horner`](https://github.com/JuliaLang/julia/blob/v1.12.7/base/math.jl#L176-L179) expands to `invoke(evalpoly, Tuple{Any, Tuple}, ...)`.
+That becomes problematic if a matching `evalpoly` rule is added; the macro alone does not trigger the limitation.
+Without a matching rule, Mooncake differentiates the invoked method normally.
+
+Simply replacing `invoke` with ordinary dispatch can change the primal's behaviour.
+Wrap the `invoke` in a function with its own rule.
+Calls inside an existing primitive's body are unaffected.
+
 ## Differentiating CUDA Kernels
 
 Mooncake.jl supports differentiation of CUDA kernels in general, provided a suitable rule exists. However, it does not support kernels that surface as foreign calls, such as those generated via KernelAbstractions.jl (see [issue #648](https://github.com/chalk-lab/Mooncake.jl/issues/648) and [issue #835](https://github.com/chalk-lab/Mooncake.jl/issues/835)). Support for these foreign-call kernels is outside the scope of the project and is considered a non-goal.
