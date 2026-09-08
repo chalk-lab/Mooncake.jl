@@ -137,6 +137,8 @@ jobs:
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then
             julia --code-coverage=user --eval 'include("test/run_extra.jl")'
+          elif [ "$LABEL" == 'diff_tests' ]; then
+            julia --heap-size-hint=32M --eval 'include("test/run_extra.jl")'
           else
             julia --eval 'include("test/run_extra.jl")'
           fi

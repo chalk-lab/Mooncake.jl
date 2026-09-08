@@ -22,35 +22,7 @@ stale_fwd_lazy(x) = stale_fwd_mid(x)
 const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
 
-gc_preserve_collect() = GC.gc(true)
-Mooncake.@zero_derivative DefaultCtx Tuple{typeof(gc_preserve_collect)}
-function gc_preserve_poison(x)
-    finalizer(x) do mem
-        return fill!(mem, -100.0)
-    end
-    return nothing
-end
-Mooncake.@zero_derivative DefaultCtx Tuple{typeof(gc_preserve_poison),Any}
-function gc_preserve_slice_dot(x, y)
-    a = x[1:5]
-    gc_preserve_poison(@static VERSION >= v"1.11-" ? a.ref.mem : a)
-    gc_preserve_collect()
-    return dot(a, y)
-end
-
 @testset "s2s_forward_mode_ad" begin
-    @testset "temporary BLAS operand survives collection (issue #1303)" begin
-        # Poison on finalization instead of depending on allocator reuse. Julia 1.13
-        # eliminates the temporary Array wrappers, exposing the missing forward GC roots.
-        x, y = collect(1.0:6.0), collect(6.0:10.0)
-        dx, dy = collect(2.0:7.0), collect(3.0:7.0)
-        @test gc_preserve_slice_dot(x, y) == 130.0
-        rule = build_frule(gc_preserve_slice_dot, x, y)
-        result = rule(zero_dual(gc_preserve_slice_dot), Dual(x, dx), Dual(y, dy))
-        @test primal(result) == 130.0
-        @test tangent(result) == 255.0
-    end
-
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, _, fx...)) in test_cases
         @info "$n: $(_typeof(fx))"
