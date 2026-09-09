@@ -212,7 +212,7 @@ function generate_dual_ir(
 
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
-    primal_ir = normalise!(primal_ir, spnames)
+    primal_ir = normalise!(primal_ir, spnames; preserve_gc=true)
 
     # Keep a copy of the primal IR with the insertions
     dual_ir = CC.copy(primal_ir)
@@ -406,7 +406,10 @@ __get_primal(x::Dual) = primal(x)
 function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
-    if isexpr(stmt, :invoke) || isexpr(stmt, :call)
+    if isexpr(stmt, :gc_preserve_begin) || isexpr(stmt, :gc_preserve_end)
+        # Preserve the Dual operands, keeping both primal and tangent owners alive.
+        replace_call!(dual_ir, ssa, inc_args(stmt))
+    elseif isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
         sig_types = map(raw_args) do x
             t = CC.widenconst(get_forward_primal_type(info.primal_ir, x))

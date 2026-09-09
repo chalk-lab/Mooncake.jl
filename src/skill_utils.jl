@@ -184,7 +184,11 @@ function primal_stages(interp, sig)
 
     _, spnames = is_vararg_and_sparam_names(sig)
     normalized_ir = CC.copy(raw_ir)
-    normalise!(normalized_ir, spnames)
+    normalise!(
+        normalized_ir,
+        spnames;
+        preserve_gc=interp isa MooncakeInterpreter{<:Any,ForwardMode},
+    )
 
     cfg_blocks = _remove_unreachable_cfg_blocks!(_ircode_to_cfg_blocks(normalized_ir))
     return raw_ir, normalized_ir, cfg_blocks

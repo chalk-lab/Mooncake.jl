@@ -215,6 +215,10 @@ The purpose of converting `Expr(:foreigncall...)`, `Expr(:new, ...)` and `Expr(:
 
 The purpose of translating `Expr(:call, ::IntrinsicFunction, ...)` is to do with type stability -- see the docstring for the [Mooncake.IntrinsicsWrappers](@ref) module for more info.
 
+Native `gc_preserve_begin` / `gc_preserve_end` scopes are retained in forward mode.
+Their operands are mapped to `Dual` values, keeping both primal and tangent storage
+alive throughout the differentiated pointer-use interval. Preserving raw pointers alone
+does not keep their owning Julia objects alive.
 
 #### Statement Transformation
 

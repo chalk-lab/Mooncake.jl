@@ -41,6 +41,21 @@ zero_derivative_llvmcall(x) = bar_llvmcall(x)
 Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmcall),Int}
 
 @testset "ir_inspect" begin
+    @testset "mode-specific GC preservation" begin
+        x, y = [1.0, 2.0], [3.0, 4.0]
+        sig = Tuple{typeof(BLAS.dot),typeof(x),typeof(y)}
+        for (mode, M) in ((:forward, ForwardMode), (:reverse, ReverseMode))
+            for ir in (
+                Mooncake.primal_ir(get_interpreter(M), sig),
+                inspect_ir(BLAS.dot, x, y; mode).stages[:normalized].ir,
+            )
+                @test any(
+                    s -> Meta.isexpr(s, :gc_preserve_begin), Mooncake.stmt(ir.stmts)
+                ) == (mode == :forward)
+            end
+        end
+    end
+
     @testset "inspect_ir reverse mode" begin
         ins = inspect_ir(test_fn, 1.0)
         @test ins.mode == :reverse
