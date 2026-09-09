@@ -407,8 +407,11 @@ function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isexpr(stmt, :gc_preserve_begin) || isexpr(stmt, :gc_preserve_end)
-        # The begin operands refer to Duals, keeping primal and tangent owners alive.
-        # The end operand remains the native begin token, not a Dual.
+        # Forward AD inserts a captures argument before the original arguments.
+        # Without shifting its argument references, gc_preserve_begin would preserve
+        # the wrong values. inc_args shifts them by one to refer to the intended Duals.
+        # gc_preserve_end refers to the result of its matching begin, not an argument
+        # position, so inc_args leaves that reference unchanged. See PR #1305.
         replace_call!(dual_ir, ssa, inc_args(stmt))
     elseif isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
