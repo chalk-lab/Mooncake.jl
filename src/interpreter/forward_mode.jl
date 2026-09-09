@@ -407,7 +407,8 @@ function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isexpr(stmt, :gc_preserve_begin) || isexpr(stmt, :gc_preserve_end)
-        # Preserve the Dual operands, keeping both primal and tangent owners alive.
+        # The begin operands refer to Duals, keeping primal and tangent owners alive.
+        # The end operand remains the native begin token, not a Dual.
         replace_call!(dual_ir, ssa, inc_args(stmt))
     elseif isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args

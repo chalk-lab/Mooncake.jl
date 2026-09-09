@@ -12,7 +12,7 @@ unchanged, but makes AD more straightforward. In particular, replace
 7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
 With `preserve_gc=true`, leave native GC preservation scopes intact for forward AD,
-which maps their operands to `Dual`s to retain both primal and tangent storage.
+which maps the preserved owners to `Dual`s to retain both primal and tangent storage.
 
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
