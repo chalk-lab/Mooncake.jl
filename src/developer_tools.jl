@@ -35,7 +35,9 @@ function primal_ir(interp::MooncakeInterpreter, sig::Type{<:Tuple}; normalize=tr
     end
     normalize || return ir
     _, spnames = is_vararg_and_sparam_names(sig)
-    return normalise!(ir, spnames)
+    return normalise!(
+        ir, spnames; preserve_gc=interp isa MooncakeInterpreter{<:Any,ForwardMode}
+    )
 end
 
 """

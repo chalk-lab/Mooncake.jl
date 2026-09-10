@@ -25,6 +25,7 @@ using Mooncake.SkillUtils:
 
 test_fn(x) = sin(x) * cos(x)
 multi_arg_fn(x, y) = x * y + sin(x)
+gc_preserve_test_fn(x) = GC.@preserve x unsafe_load(pointer(x))
 function bar_llvmcall(x)
     Base.llvmcall((
         """
@@ -41,6 +42,21 @@ zero_derivative_llvmcall(x) = bar_llvmcall(x)
 Mooncake.@zero_derivative Mooncake.MinimalCtx Tuple{typeof(zero_derivative_llvmcall),Int}
 
 @testset "ir_inspect" begin
+    @testset "mode-specific GC preservation" begin
+        x = [1.0, 2.0]
+        sig = Tuple{typeof(gc_preserve_test_fn),typeof(x)}
+        for (mode, M) in ((:forward, ForwardMode), (:reverse, ReverseMode))
+            for ir in (
+                Mooncake.primal_ir(get_interpreter(M), sig),
+                inspect_ir(gc_preserve_test_fn, x; mode).stages[:normalized].ir,
+            )
+                @test any(
+                    s -> Meta.isexpr(s, :gc_preserve_begin), Mooncake.stmt(ir.stmts)
+                ) == (mode == :forward)
+            end
+        end
+    end
+
     @testset "inspect_ir reverse mode" begin
         ins = inspect_ir(test_fn, 1.0)
         @test ins.mode == :reverse

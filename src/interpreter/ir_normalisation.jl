@@ -1,5 +1,5 @@
 """
-    normalise!(ir::IRCode, spnames::Vector{Symbol})
+    normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
 
 Apply a sequence of standardising transformations to `ir` which leaves its semantics
 unchanged, but makes AD more straightforward. In particular, replace
@@ -11,6 +11,9 @@ unchanged, but makes AD more straightforward. In particular, replace
 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
 7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
+With `preserve_gc=true`, leave native GC preservation scopes intact for forward AD,
+which maps the preserved owners to `Dual`s to retain both primal and tangent storage.
+
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
 static parameter names have been translated into either types, or `:static_parameter`
@@ -20,7 +23,7 @@ Unfortunately, the static parameter names are not retained in `IRCode`, and the 
 from which the `IRCode` is derived must be consulted. `Mooncake.is_vararg_and_sparam_names`
 provides a convenient way to do this.
 """
-function normalise!(ir::IRCode, spnames::Vector{Symbol})
+function normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
@@ -31,7 +34,7 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = intrinsic_to_function(inst)
         inst = lift_getfield_and_others(inst)
         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
-        inst = lift_gc_preservation(inst)
+        preserve_gc || (inst = lift_gc_preservation(inst))
         stmt(ir.stmts)[n] = inst
     end
     ir = const_prop_gotoifnots!(ir)
