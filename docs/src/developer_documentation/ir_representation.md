@@ -523,6 +523,7 @@ julia> blocks_copy[3] = CFGBlock(
 julia> blocks_copy[3].insts[end] = new_inst(IDGotoIfNot(cond_id, block_2_id));
 
 julia> for inst in blocks_copy[2].insts[1:2]
+           # Block #4 only prints before jumping back, so reuse block #3's updated values.
            phi = inst.stmt
            value = phi.values[findfirst(==(blk.id), phi.edges)]
            push!(phi.edges, new_bb_id)
@@ -547,7 +548,6 @@ julia> new_ir = lower_cfg_blocks_to_ir(blocks_copy, ir)
 Observe that in order to tie the conditional to the goto-if-not, we simply ensure that the `ID` associated to the instruction which computes the conditional appears in the `IDGotoIfNot` instruction.
 The loop header now has an additional predecessor, so both phi nodes must also accept values from the new block.
 Since that block only prints, it forwards the same updated values as block `#3`.
-Omitting these inputs leaves the loop-carried values undefined on the printing path; `verify_ir` permits incomplete phi nodes and does not catch this mistake.
 
 ### Run the new code
 
