@@ -17,7 +17,7 @@ using ..Mooncake:
     MooncakeInterpreter,
     get_interpreter,
     is_primitive,
-    lookup_ir,
+    primal_ir,
     is_vararg_and_sparam_names,
     normalise!,
     _remove_unreachable_cfg_blocks!,
@@ -25,10 +25,6 @@ using ..Mooncake:
     generate_ir,
     optimise_ir!,
     seed_id!
-
-@static if VERSION > v"1.12-"
-    using ..Mooncake: set_valid_world!
-end
 
 struct StageMeta
     block_count::Int
@@ -167,12 +163,7 @@ end
 # --- Main Inspection ---
 
 function primal_stages(interp, sig)
-    raw_ir, _ = lookup_ir(interp, sig)
-    @static if VERSION > v"1.12-"
-        # Keep the early inspection stages on the same world-restricted IR path that the
-        # AD generators use, so cross-stage diffs reflect the real pipeline.
-        raw_ir = set_valid_world!(raw_ir, interp.world)
-    end
+    raw_ir = primal_ir(interp, sig; normalize=false)
 
     _, spnames = is_vararg_and_sparam_names(sig)
     normalized_ir = CC.copy(raw_ir)
