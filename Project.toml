@@ -57,7 +57,7 @@ MooncakeSpecialFunctionsExt = "SpecialFunctions"
 
 [compat]
 ADTypes = "1.9"
-AllocCheck = "0.2.5"
+AllocCheck = "0.2.6"
 Aqua = "0.8.9"
 BFloat16s = "0.6"
 BenchmarkTools = "1"
@@ -91,7 +91,7 @@ SpecialFunctions = "2"
 StableRNGs = "1"
 Static = "1.1.1"
 Test = "1"
-julia = "~1.10.8, 1.11.6, 1.12.1"
+julia = "~1.10.8, ~1.11.6, ~1.12.1, ~1.13.0"
 
 [extras]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"

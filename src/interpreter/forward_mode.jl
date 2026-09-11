@@ -263,7 +263,7 @@ function generate_dual_ir(
 
     # Normalise the IR.
     isva, spnames = is_vararg_and_sparam_names(sig_or_mi)
-    primal_ir = normalise!(primal_ir, spnames)
+    primal_ir = normalise!(primal_ir, spnames; preserve_gc=true)
 
     # Keep a copy of the primal IR with the insertions
     dual_ir = CC.copy(primal_ir)
@@ -502,7 +502,14 @@ __get_primal(x::Lifted) = primal(x)
 function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
-    if isexpr(stmt, :invoke) || isexpr(stmt, :call)
+    if isexpr(stmt, :gc_preserve_begin) || isexpr(stmt, :gc_preserve_end)
+        # Forward AD inserts a captures argument before the original arguments, so without
+        # shifting its argument references `gc_preserve_begin` would preserve the wrong values.
+        # `inc_args` shifts them by one to reach the intended `Lifted` slots. `gc_preserve_end`
+        # refers to the result of its matching begin, not an argument position, so `inc_args`
+        # leaves that reference unchanged.
+        replace_call!(dual_ir, ssa, inc_args(stmt))
+    elseif isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args
         sig_types = map(raw_args) do x
             t = CC.widenconst(get_forward_primal_type(info.primal_ir, x))

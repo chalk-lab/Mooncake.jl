@@ -1,5 +1,5 @@
 """
-    normalise!(ir::IRCode, spnames::Vector{Symbol})
+    normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
 
 Apply a sequence of standardising transformations to `ir` which leaves its semantics
 unchanged, but makes AD more straightforward. In particular, replace
@@ -11,6 +11,9 @@ unchanged, but makes AD more straightforward. In particular, replace
 6. `memoryrefget` calls to `lmemoryrefget` calls, and related transformations,
 7. `gc_preserve_begin` / `gc_preserve_end` exprs so that memory release is delayed.
 
+With `preserve_gc=true`, leave native GC preservation scopes intact for forward AD,
+which maps the preserved owners to `Dual`s to retain both primal and tangent storage.
+
 `spnames` are the names associated to the static parameters of `ir`. These are needed when
 handling `:foreigncall` expressions, in which it is not necessarily the case that all
 static parameter names have been translated into either types, or `:static_parameter`
@@ -20,7 +23,7 @@ Unfortunately, the static parameter names are not retained in `IRCode`, and the 
 from which the `IRCode` is derived must be consulted. `Mooncake.is_vararg_and_sparam_names`
 provides a convenient way to do this.
 """
-function normalise!(ir::IRCode, spnames::Vector{Symbol})
+function normalise!(ir::IRCode, spnames::Vector{Symbol}; preserve_gc=false)
     sp_map = Dict{Symbol,CC.VarState}(zip(spnames, ir.sptypes))
     ir = interpolate_boundschecks!(ir)
     ir = fix_up_invoke_inference!(ir)
@@ -31,7 +34,7 @@ function normalise!(ir::IRCode, spnames::Vector{Symbol})
         inst = intrinsic_to_function(inst)
         inst = lift_getfield_and_others(inst)
         inst = lift_memoryrefget_and_memoryrefset_builtins(inst)
-        inst = lift_gc_preservation(inst)
+        preserve_gc || (inst = lift_gc_preservation(inst))
         stmt(ir.stmts)[n] = inst
     end
     ir = const_prop_gotoifnots!(ir)
@@ -165,17 +168,16 @@ end
 __extract_foreigncall_name(x::Symbol) = Val(x)
 __extract_foreigncall_name(x::String) = Val(Symbol(x))
 function __extract_foreigncall_name(x::Expr)
-    # Make sure that we're getting the expression that we're expecting.
-    !Meta.isexpr(x, :call) && error("unexpected expr $x")
-    !isa(x.args[1], GlobalRef) && error("unexpected expr $x")
-    x.args[1].name != :tuple && error("unexpected expr $x")
-    length(x.args) != 3 && error("unexpected expr $x")
-
-    # Parse it into a name that can be passed as a type.
-    v = eval(x)
-    return Val((Symbol(v[1]), Symbol(v[2])))
+    # JuliaLang/julia#59165 changes Core.tuple calls to Expr(:tuple, name[, lib])
+    # in Julia 1.13. Both representations evaluate to a tuple.
+    is_call_to_tuple = Meta.isexpr(x, :call) && __get_arg(x.args[1]) === tuple
+    Meta.isexpr(x, :tuple) || is_call_to_tuple || error("unexpected expr $x")
+    return __extract_foreigncall_name(eval(x))
 end
-__extract_foreigncall_name(v::Tuple) = Val((Symbol(v[1]), Symbol(v[2])))
+__extract_foreigncall_name(v::Tuple{Any}) = __extract_foreigncall_name(v[1])
+function __extract_foreigncall_name(v::Tuple)
+    Val((Symbol(v[1]), Symbol(v[2])))
+end
 __extract_foreigncall_name(x::QuoteNode) = __extract_foreigncall_name(x.value)
 function __extract_foreigncall_name(x::GlobalRef)
     return __extract_foreigncall_name(getglobal(x.mod, x.name))

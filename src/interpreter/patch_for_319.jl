@@ -4,9 +4,8 @@
 # any time at all reading / understanding this file unless you are actively working on this
 # issue, and find it useful.
 #
-# As soon as patch versions of Julia (both LTS and Release) are made which contain a fix for
-# the bug underlying the above issue, this code can and should be removed, and the minimum
-# versions of Julia which Mooncake supports bumped.
+# JuliaLang/julia#56201 fixes this in Julia 1.13. Remove this file once all supported
+# Julia versions contain that fix.
 #
 # Note when judging that: every actual patch below sits inside `@static if VERSION >= v"1.11"`.
 # On 1.10 this file defines only the struct and its forwarding methods, so `BugPatchInterpreter`

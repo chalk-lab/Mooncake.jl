@@ -2,6 +2,12 @@
 using LinearAlgebra
 using Mooncake.Nfwd
 @testset "NDual" begin
+    @testset "standalone loading" begin
+        @test Base.include(
+            Module(:StandaloneNfwd), joinpath(@__DIR__, "../../src/nfwd/Nfwd.jl")
+        ) isa Module
+    end
+
     # helpers
     _d(v, p1) = NDual{Float64,1}(v, (p1,))
     _d2(v, p1, p2) = NDual{Float64,2}(v, (p1, p2))

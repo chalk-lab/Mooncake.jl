@@ -281,15 +281,13 @@ function optimise_ir!(ir::IRCode; show_ir=false, do_inline=true, interp=nothing)
     CC.verify_ir(ir)
     ir = __strip_coverage!(ir)
     ir = CC.compact!(ir)
-    if isnothing(interp)
-        # 319 -- see patch_for_319.jl for context
-        # replace by a simple NativeInterpreter() once fixed in Julia
-        local_interp = infer_interp = BugPatchInterpreter()
+    @static if VERSION ≥ v"1.13-"
+        infer_interp = CC.NativeInterpreter()
     else
-        local_interp = interp
-        # 319 -- even if interp was explicitly given, use a BugPatchInterpreter for inference
+        # 319 -- see patch_for_319.jl for context
         infer_interp = BugPatchInterpreter()
     end
+    local_interp = isnothing(interp) ? infer_interp : interp
     mi = __get_toplevel_mi_from_ir(ir, @__MODULE__)
     ir = __infer_ir!(ir, infer_interp, mi)
     if show_ir

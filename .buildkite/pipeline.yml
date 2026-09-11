@@ -24,7 +24,7 @@ steps:
       setup:
         version:
           - "1.10"
-          - "1.12"
+          - "1.13"
         label:
           - "cuda"
           - "nnlib"
@@ -51,7 +51,7 @@ steps:
       setup:
         version:
           - "1.10"
-          - "1.12"
+          - "1.13"
         label:
           - "flux"
           - "lux"

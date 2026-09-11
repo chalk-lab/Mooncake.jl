@@ -3796,19 +3796,23 @@ function rrule!!(
     return C, generic_matmatmul!_pb!!
 end
 
-# 7-arg version of `generic_matmatmul!`: used by CUDA.jl's override of the LinearAlgebra
-# function, which always passes explicit alpha and beta scalars.  The 5-arg rule above
-# covers the pure LinearAlgebra fallback path; this rule covers the CUDA.jl path
-# (cublas/linalg.jl line 349) that is reached from `A * B` → `mul!` → matmul dispatch.
+# The 7-arg `generic_matmatmul!` is the CUDA.jl boundary through Julia 1.12; Julia 1.13
+# uses the equivalent public storage-type boundary `mul!(C, tA, tB, A, B, alpha, beta)`.
 #
 # alpha / beta are differentiated.  They are usually `true`/`false` (from `MulAddMul`), which
 # carry no derivative and cost nothing here, but a caller may pass floats — `mul!(C, A, B, α,
 # β)` — and their derivatives are simple: ⟨op_A(A)·op_B(B), dC⟩ and ⟨C_old, dC⟩.
 
+const _MatMatMul = if VERSION >= v"1.13-"
+    Union{typeof(LinearAlgebra.generic_matmatmul!),typeof(mul!)}
+else
+    typeof(LinearAlgebra.generic_matmatmul!)
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(LinearAlgebra.generic_matmatmul!),
+        _MatMatMul,
         <:CuMaybeComplexArray,
         Char,
         Char,
@@ -3819,7 +3823,7 @@ end
     },
 )
 function frule!!(
-    ::Lifted{typeof(LinearAlgebra.generic_matmatmul!),Nw},
+    ::Lifted{<:_MatMatMul,Nw},
     C::Lifted{<:CuMaybeComplexArray,Nw,<:NDualArray},
     tA::Lifted{Char},
     tB::Lifted{Char},
@@ -3870,7 +3874,7 @@ function frule!!(
     return C
 end
 function rrule!!(
-    ::CoDual{typeof(LinearAlgebra.generic_matmatmul!)},
+    ::CoDual{<:_MatMatMul},
     C::CoDual{<:CuMaybeComplexArray,<:CuMaybeComplexArray},
     tA::CoDual{Char,NoFData},
     tB::CoDual{Char,NoFData},
@@ -4067,10 +4071,16 @@ end
 #
 # Limitation: 'T' flag for complex arrays is rejected (same as generic_matmatmul!).
 
+const _MatVecMul = if VERSION >= v"1.13-"
+    Union{typeof(LinearAlgebra.generic_matvecmul!),typeof(mul!)}
+else
+    typeof(LinearAlgebra.generic_matvecmul!)
+end
+
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(LinearAlgebra.generic_matvecmul!),
+        _MatVecMul,
         <:CuMaybeComplexVec,
         <:AbstractChar,
         <:CuMaybeComplexMat,
@@ -4080,7 +4090,7 @@ end
     },
 )
 function frule!!(
-    ::Lifted{typeof(LinearAlgebra.generic_matvecmul!),Nw},
+    ::Lifted{<:_MatVecMul,Nw},
     Y::Lifted{<:CuMaybeComplexVec,Nw,<:NDualArray},
     tA::Lifted{<:AbstractChar},
     A::Lifted{<:CuMaybeComplexMat,Nw,<:NDualArray},
@@ -4125,7 +4135,7 @@ function frule!!(
     return Y
 end
 function rrule!!(
-    ::CoDual{typeof(LinearAlgebra.generic_matvecmul!)},
+    ::CoDual{<:_MatVecMul},
     Y::CoDual{<:CuMaybeComplexVec,<:CuMaybeComplexVec},
     tA::CoDual{<:AbstractChar,NoFData},
     A::CoDual{<:CuMaybeComplexMat,<:CuMaybeComplexMat},

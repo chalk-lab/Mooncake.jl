@@ -671,6 +671,19 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
+# Indexed construction straight from a `Memory`, which JuliaLang/julia#58768 adds in 1.13. Column
+# j of the block tracks mem slot j, as in the no-arg sibling above, so the ref lands at column `ii`.
+@inline function frule!!(
+    ::Lifted{typeof(memoryrefnew),Nw},
+    x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
+    ii::Lifted,
+    rest::Vararg{Lifted,K},
+) where {Nw,P<:NDualEltype,K}
+    y = memoryrefnew(primal(x), primal(ii), map(primal, rest)...)
+    block = getfield(tangent(x), :partials_block)
+    return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, block, primal(ii)))
+end
+
 # One vararg method covers both the index and index+boundscheck forms for the float
 # `NDualMemoryRef`-V slot, mirroring the element-wise `memoryrefnew` sibling below.
 @inline function frule!!(
@@ -692,14 +705,14 @@ end
     )
 end
 @inline function rrule!!(
-    f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:MemoryRef}, ii::CoDual{Int}
+    f::CoDual{typeof(memoryrefnew)}, x::CoDual{<:Union{Memory,MemoryRef}}, ii::CoDual{Int}
 )
     return CoDual(memoryrefnew(x.x, ii.x), memoryrefnew(x.dx, ii.x)), NoPullback(f, x, ii)
 end
 
 @inline function rrule!!(
     f::CoDual{typeof(memoryrefnew)},
-    x::CoDual{<:MemoryRef},
+    x::CoDual{<:Union{Memory,MemoryRef}},
     ii::CoDual{Int},
     boundscheck::CoDual{Bool},
 )
@@ -1510,6 +1523,14 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             mem in filter(x -> length(x.mem) > Core.memoryrefoffset(x), mem_refs) for
             bc in [false, true]
         ],
+        if VERSION >= v"1.13-"
+            [
+                (false, :none, nothing, memoryrefnew, mem, length(mem), bc...) for
+                mem in filter(!isempty, mems) for bc in ((), (false,), (true,))
+            ]
+        else
+            []
+        end,
         [(false, :none, nothing, memoryrefoffset, mem_ref) for mem_ref in mem_refs],
         [
             (

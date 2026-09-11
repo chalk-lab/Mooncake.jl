@@ -39,7 +39,56 @@ alias_read_only(x) = sum(x .* alias_vector)
 alias_scalar(x) = x[1] * alias_vector[1]
 end
 
+# GC preservation: a forward rule must keep BOTH the primal and the partials storage alive for
+# the duration of a `GC.@preserve` scope. `gc_preserve_storage` reaches the backing `Memory` so
+# collection can be observed without dereferencing a possibly stale pointer.
+const GC_PRESERVE_OWNERS = Ref((WeakRef(nothing), WeakRef(nothing)))
+gc_preserve_storage(x) = @static VERSION >= v"1.11-" ? x.ref.mem : x
+# The partials of an `NDualArray` live in one block whose parent vector owns the storage.
+function gc_preserve_partials(v)
+    gc_preserve_storage(getfield(getfield(v, :partials_block), :parent))
+end
+function gc_preserve_observe(x)
+    GC_PRESERVE_OWNERS[] = (
+        WeakRef(gc_preserve_storage(x)), WeakRef(gc_preserve_storage(x))
+    )
+    return x
+end
+Mooncake.@is_primitive DefaultCtx ForwardMode Tuple{
+    typeof(gc_preserve_observe),Vector{Float64}
+}
+function Mooncake.frule!!(::Lifted{typeof(gc_preserve_observe),Nw}, x::Lifted) where {Nw}
+    GC_PRESERVE_OWNERS[] = (
+        WeakRef(gc_preserve_storage(primal(x))), WeakRef(gc_preserve_partials(tangent(x)))
+    )
+    return x
+end
+@noinline function gc_preserve_alive(::Ptr{Float64})
+    GC.gc(true)
+    return map(w -> w.value !== nothing, GC_PRESERVE_OWNERS[])
+end
+Mooncake.@zero_derivative DefaultCtx Tuple{typeof(gc_preserve_alive),Ptr{Float64}}
+function gc_preserve_probe(x)
+    a = gc_preserve_observe(copy(x))
+    return GC.@preserve a gc_preserve_alive(pointer(a))
+end
+
 @testset "s2s_forward_mode_ad" begin
+    @testset "GC preservation of primal and tangent storage (issue #1303)" begin
+        # Observe collection without dereferencing a potentially stale pointer.
+        @test gc_preserve_probe([1.0, 2.0]) == (true, true)
+        rule = Mooncake.build_frule(gc_preserve_probe, [1.0, 2.0])
+        for _ in 1:2
+            result = rule(
+                Mooncake.zero_lifted(Val(1), gc_preserve_probe),
+                Mooncake.lift([1.0, 2.0], [3.0, 4.0]),
+            )
+            @test primal(result) == (true, true)
+            GC.gc(true)
+            @test all(w -> w.value === nothing, GC_PRESERVE_OWNERS[])
+        end
+    end
+
     test_cases = collect(enumerate(TestResources.generate_test_functions()))
     @testset "$n - $(_typeof((fx)))" for (n, (int_only, pf, opts, fx...)) in test_cases
         @info "$n: $(_typeof(fx))"

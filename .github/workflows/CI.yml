@@ -58,7 +58,7 @@ jobs:
         ]
         version:
           - 'lts'
-          - '1.12'
+          - '1.13'
         arch:
           - x64
         include:
@@ -74,7 +74,6 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
@@ -118,7 +117,7 @@ jobs:
         ]
         version:
           - 'lts'
-          - '1.12'
+          - '1.13'
         arch:
           - x64
         include:
@@ -131,12 +130,13 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-          include-all-prereleases: false
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - run: |
           if [ ${{ matrix.test_group.test_type }} == 'ext' ]; then
             julia --code-coverage=user --eval 'include("test/run_extra.jl")'
+          elif [ "$LABEL" == 'diff_tests' ]; then
+            julia --heap-size-hint=32M --eval 'include("test/run_extra.jl")'
           else
             julia --eval 'include("test/run_extra.jl")'
           fi
@@ -162,7 +162,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: '1.12'
+          version: '1.13'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v3
@@ -181,7 +181,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: '1.12'
+          version: '1.13'
           arch: x64
           include-all-prereleases: false
       - uses: julia-actions/cache@v3
