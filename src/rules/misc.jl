@@ -38,8 +38,11 @@
 @zero_derivative MinimalCtx Tuple{typeof(verify_fwds_inputs),Any,Tuple}
 @zero_derivative MinimalCtx Tuple{typeof(verify_fwds_output),Any,Any}
 @zero_derivative MinimalCtx Tuple{typeof(verify_fwds),CoDual}
-@zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType}
-@zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
+# `Base.padding` was removed by JuliaLang/julia#62771 (1.14-DEV)
+@static if isdefined(Base, :padding)
+    @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType}
+    @zero_derivative MinimalCtx Tuple{typeof(Base.padding),DataType,Int}
+end
 @zero_derivative MinimalCtx Tuple{Type,TypeVar,Type}
 
 # Required to avoid an ambiguity.
@@ -353,8 +356,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         ),
         (false, :allocs, nothing, Threads.nthreads),
         (false, :none, nothing, Base.eltype, randn(1)),
-        (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}),
-        (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}, 1),
+        # `Base.padding` was removed by JuliaLang/julia#62771 (1.14-DEV)
+        (isdefined(Base, :padding) ?
+            Any[
+                (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}),
+                (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}, 1),
+            ] : Any[])...,
 
         # Literal replacement for setfield!.
         (
