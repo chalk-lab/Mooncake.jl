@@ -60,6 +60,7 @@ module Nfwd
 
 using Base: IEEEFloat
 using LinearAlgebra
+using ..Mooncake: _boxed_message_width, _wrap_boxed_line
 
 export NDual,
     NDualUnsupportedError,
@@ -1798,48 +1799,14 @@ struct UnsupportedOutputError <: UnsupportedError
     msg::String
 end
 
-@inline function _nfwd_boxed_message_width(io::IO, prefix::AbstractString)
-    cols = get(io, :displaysize, displaysize(io))[2]
-    return max(20, cols - textwidth(prefix))
-end
-
-function _nfwd_wrap_boxed_line(line, width::Int)
-    text = string(line)
-    isempty(text) && return (text,)
-    width < 1 && return (text,)
-    textwidth(text) <= width && return (text,)
-
-    wrapped = String[]
-    remaining = text
-    while textwidth(remaining) > width
-        split_idx = nothing
-        for idx in eachindex(remaining)
-            textwidth(SubString(remaining, 1, idx)) > width && break
-            remaining[idx] == ' ' && (split_idx = idx)
-        end
-        if isnothing(split_idx)
-            split_idx = firstindex(remaining)
-            for idx in eachindex(remaining)
-                textwidth(SubString(remaining, firstindex(remaining), idx)) > width && break
-                split_idx = idx
-            end
-        end
-        push!(wrapped, rstrip(SubString(remaining, firstindex(remaining), split_idx)))
-        remaining = lstrip(SubString(remaining, nextind(remaining, split_idx)))
-        isempty(remaining) && break
-    end
-    isempty(remaining) || push!(wrapped, remaining)
-    return Tuple(wrapped)
-end
-
 function _nfwd_print_boxed_error(io::IO, lines)
     first_item = iterate(lines)
     isnothing(first_item) && return nothing
     line, state = first_item
     rest_prefix = "  │ "
-    first_width = _nfwd_boxed_message_width(io, "")
-    rest_width = _nfwd_boxed_message_width(io, rest_prefix)
-    first_wrapped = _nfwd_wrap_boxed_line(line, first_width)
+    first_width = _boxed_message_width(io, "")
+    rest_width = _boxed_message_width(io, rest_prefix)
+    first_wrapped = _wrap_boxed_line(line, first_width)
     println(io, first(first_wrapped))
     for wrapped_line in Base.tail(first_wrapped)
         println(io, rest_prefix, wrapped_line)
@@ -1848,7 +1815,7 @@ function _nfwd_print_boxed_error(io::IO, lines)
         item = iterate(lines, state)
         isnothing(item) && break
         line, state = item
-        for wrapped_line in _nfwd_wrap_boxed_line(line, rest_width)
+        for wrapped_line in _wrap_boxed_line(line, rest_width)
             println(io, rest_prefix, wrapped_line)
         end
     end

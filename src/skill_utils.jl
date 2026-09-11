@@ -97,11 +97,7 @@ end
 
 # --- IR Rendering ---
 
-function render_ir(ir::IRCode)::String
-    io = IOBuffer()
-    show(io, ir)
-    return String(take!(io))
-end
+render_ir(ir::IRCode)::String = sprint(show, ir)
 
 function render_ir(blks::Vector{CFGBlock})::String
     io = IOBuffer()
@@ -114,11 +110,7 @@ function render_ir(blks::Vector{CFGBlock})::String
     return String(take!(io))
 end
 
-function render_ir(x)::String
-    io = IOBuffer()
-    show(io, MIME"text/plain"(), x)
-    return String(take!(io))
-end
+render_ir(x)::String = sprint(show, MIME"text/plain"(), x)
 
 # --- Metadata Extraction ---
 
