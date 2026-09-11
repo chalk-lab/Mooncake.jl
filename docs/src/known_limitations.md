@@ -173,14 +173,14 @@ julia> struct B end
 julia> direct_primitive(::A) = A()
 direct_primitive (generic function with 1 method)
 
-julia> Mooncake.@mooncake_overlay direct_primitive(::A) = B()
+julia> Mooncake.@mooncake_overlay direct_primitive(::A) = B();
 
 julia> Mooncake.@is_primitive Mooncake.DefaultCtx Mooncake.ReverseMode Tuple{typeof(direct_primitive), A}
 
 julia> helper(::A) = A()
 helper (generic function with 1 method)
 
-julia> Mooncake.@mooncake_overlay helper(::A) = B()
+julia> Mooncake.@mooncake_overlay helper(::A) = B();
 
 julia> indirect_primitive(x::A) = helper(x)
 indirect_primitive (generic function with 1 method)
