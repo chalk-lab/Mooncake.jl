@@ -524,17 +524,6 @@ function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
 end
 
 """
-    rdata_field_type(::Type{P}, n::Int) where {P}
-
-Returns the type of to the nth field of the rdata type associated to `P`. Will be a
-`PossiblyUninitTangent` if said field can be undefined.
-"""
-function rdata_field_type(::Type{P}, n::Int) where {P}
-    r = rdata_type(tangent_type(fieldtype(P, n)))
-    return is_always_initialised(P, n) ? r : PossiblyUninitTangent{r}
-end
-
-"""
     rdata(t)::rdata_type(typeof(t))
 
 Extract the reverse data from tangent `t`.

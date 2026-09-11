@@ -1798,6 +1798,7 @@ struct UnsupportedOutputError <: UnsupportedError
     msg::String
 end
 
+# Keep diagnostics local so Nfwd can load without Mooncake.
 @inline function _nfwd_boxed_message_width(io::IO, prefix::AbstractString)
     cols = get(io, :displaysize, displaysize(io))[2]
     return max(20, cols - textwidth(prefix))
