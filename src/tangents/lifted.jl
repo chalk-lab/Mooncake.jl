@@ -93,33 +93,12 @@ struct NoDual end
     return Lifted{P,N,V}(primal, rep)
 end
 
-# Sharpen `P` when constructing with a `Type{X}` primal. WHY sharpen: the type-constructor frules
-# (`_new_`, `Complex`, `TwicePrecision`) dispatch on the *type slot* — `::Lifted{Type{Complex{P}}, N}`,
-# `::Lifted{Type{P}, N}`, etc. — to know which struct to build. A `Type{X}`-valued primal whose runtime
-# metatype is plain `DataType`/`UnionAll` would otherwise land in the wide `Lifted{DataType, N}` slot,
-# which carries the value but is opaque to that dispatch (`Lifted{DataType} ⊄ Lifted{Type{P}}`, `Lifted`
-# invariant), so the rule misses. This is the single chokepoint: the interpreter and rule bodies build
-# such slots in many places (const-lifted constants, `_new_` type args, rules that *return* a type),
-# not just the seed factories — so a centralized ctor is needed rather than per-site sharpening.
-#
-# Reverse mode solves the identical problem with `CoDual(x::Type{P}, dx)` (see `src/tangents/codual.jl`),
-# which sharpens to `CoDual{Type{P}}` so the `_new_` *rrule* can dispatch. Reverse needs only a SINGLE
-# param `P` there because its outer ctor is `CoDual(x, dx)` — the caller never type-applies a slot, so
-# there is no wide annotation to reconcile. Forward must take the slot (`Lifted{·,N}`) because the width
-# `N` lives in the type application, which is exactly what forces the wide `P_wide` below. If `N` were
-# carried out-of-band (e.g. a `lifted(Val(N), x, v)` outer ctor computing the type like `CoDual`), the
-# forward slot could collapse to one param and forward/reverse sharpening could share one mechanism —
-# a worthwhile future unification, out of scope here.
-#
-# The two type params name the SAME type from two angles, so neither can be dropped:
-#   • `P_wide`  — the wide slot the *caller* type-applied, `Lifted{P_wide,N}(...)`. From a type-valued
-#                 primal this is the broad metatype (`DataType`/`UnionAll`), since callers compute it as
-#                 `typeof(x)`. It is the thing we are *correcting*, so the body ignores it.
-#   • `P_sharp` — the sharp identity, dispatch-bound from `primal::Type{P_sharp}` (e.g. `ComplexF64`).
-# They are redundant at runtime (`P_wide === typeof(P_sharp)` always), but a single param can't serve
-# both jobs: `Lifted{P,N}(primal::Type{P})` would require `ComplexF64 isa Type{DataType}` (false), so the
-# wide-slot call wouldn't dispatch here at all. We thus take the wide `P_wide` for matching and rebuild
-# the slot from the sharp `P_sharp`.
+# Sharpen `P` when constructing from a `Type{X}` primal: the type-constructor frules (`_new_`,
+# `Complex`, `TwicePrecision`) dispatch on the type slot, and `Lifted` is invariant, so a type-valued
+# primal left in the wide `Lifted{DataType,N}` slot carries the value but misses the rule. Centralized
+# because the interpreter and rule bodies build such slots in many places, not just the seed factories.
+# Two params because neither alone serves: `P_wide` is the slot the caller type-applied (broad, since
+# callers compute `typeof(x)`) and is ignored by the body; `P_sharp` is the identity dispatch binds.
 @inline function Lifted{P_wide,N}(primal::Type{P_sharp}, rep::V) where {P_wide,P_sharp,N,V}
     # Fall back to the broad `typeof(primal)` when `P_sharp` can't bind — a phantom `TypeVar` (e.g. an
     # over-sharpened `UnionAll`), where touching `Type{P_sharp}` throws `UndefVarError`. Identical to the
@@ -680,18 +659,8 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `MutableDualTangentView{SD, P}` — per-lane proxy view for mutable struct
-# slots (an immutable view that delegates `setproperty!` to the parent
-# `MutableDual`). The view is an immutable struct with three fields:
-#
-#   _parent::SD  — the underlying `MutableDual` (writeback target).
-#   _primal::P   — back-reference to the slot's primal struct.
-#   _lane::Int   — which lane this view refers to.
-#
-# `getproperty` reads from the parent's NamedTuple and extracts the lane;
-# `setproperty!` writes the lane back to the parent via `setfield!`. This
-# enables `view.field = x` to mutate the slot's V from within a forward-mode
-# rule body.
+# `MutableDualTangentView{SD, P}` — an immutable per-lane proxy over a mutable struct slot, so
+# `view.field = x` from a rule body writes the lane back into the parent `MutableDual`.
 #
 # Scalar, complex and array field Vs are supported. A nested `MutableDual` or a
 # `PossiblyUninitTangent` field has no lane tangent — its would-be tangent is another view, which
@@ -1011,24 +980,13 @@ end
     end
 end
 
-# Recursive structural lift for concrete struct primals — the @generated
-# fallback. The two terminal answers mirror reverse-mode `tangent_type`'s two
-# distinct answers, and the distinction matters:
-#  - non-concrete `P` widens to `Any` — "the derivative could be anything"
-#    (`tangent_type` returns `Any` here too). This is an upper bound, not a
-#    claim of no-derivative; abstract slot primals are sharpened to concrete V
-#    at runtime via `lifted_type`'s UnionAll, and an abstract *field* of a
-#    concrete struct keeps its derivative because a concrete runtime V is a
-#    subtype of the `Any`-typed backing slot.
-#  - `tangent_type(P) === NoTangent` (non-differentiable concrete types: `Int`,
-#    `Symbol`, recursive Core internals like `CodeInstance`, …) maps to the
-#    `NoDual` sentinel — the forward analogue of `NoTangent`, a specific
-#    "no derivative here", which also terminates the field recursion.
-# Fields are lifted uniformly via `dual_type(Val(N), fieldtype)`: concrete
-# differentiable fields recurse, abstract fields hit the `Any` rule, and
-# non-differentiable fields hit the `NoDual` rule. The seed factories below
-# coerce field storage into the declared backing NamedTuple so a differentiable
-# value flowing into an `Any`-typed field still yields `V === dual_type(Val(N), P)`.
+# Recursive structural lift for concrete struct primals — the `@generated` fallback. Two terminal
+# answers, mirroring reverse: a non-concrete `P` widens to `Any` (an upper bound, not a claim of
+# no-derivative — abstract slot primals sharpen to a concrete V at runtime, and a concrete V is a
+# subtype of the `Any`-typed backing slot), and `tangent_type(P) === NoTangent` maps to `NoDual`,
+# which also terminates the field recursion. Fields lift uniformly through
+# `dual_type(Val(N), fieldtype)`; the seed factories below coerce field storage into the declared
+# backing NamedTuple, so a differentiable value in an `Any`-typed field still gives the canonical V.
 @foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
     # Deliberately does NOT distribute over `Union` the way reverse-mode `tangent_type`
     # union-splits: a non-concrete `P` (including any `Union`) widens to `Any`. `Lifted` is
@@ -1804,18 +1762,11 @@ end
 
 # ── Cache-aware seed construction (cycle/alias-aware) ───────────────────────
 #
-# The `zero_dual` / `uninit_dual` / `randn_dual` factories above are cache-free
-# type-recursion — fine for flat/packable seeds, but they neither dedup aliased
-# array fields (two struct fields pointing at one array would get two independent
-# `NDualArray`s) nor terminate on cyclic mutable structs. The `*_internal`
-# functions thread a `MaybeCache` (mirroring reverse `zero_tangent_internal` and
-# the cyclic `lift`): arrays register by primal identity so aliased fields share
-# one V, and a mutable struct registers a `MutableDual` shell BEFORE recursing
-# its fields so a cycle reaching `x` again returns the shell. Leaf / non-struct
-# types delegate to the cache-free factory. `zero_lifted` / `uninit_lifted` /
-# `randn_lifted` enter through these, so the public forward gradient/derivative
-# seeds (which may hold structs, aliasing, or cycles) are correct; the cache-free
-# factories remain the fast path for direct callers and packable chunk seeds.
+# The cache-free `zero_dual`/`uninit_dual`/`randn_dual` factories above are plain type recursion:
+# they neither dedup aliased array fields nor terminate on a cyclic mutable struct. The `*_internal`
+# functions thread a `MaybeCache` instead — arrays register by primal identity, and a mutable struct
+# registers its `MutableDual` shell before recursing — so `zero_lifted`/`uninit_lifted`/`randn_lifted`
+# are correct for the public seeds. The cache-free factories stay the fast path for direct callers.
 #
 # The two entry points must agree: a non-standard V needs BOTH the cache-free factory and the
 # cache-threading one, or whichever is left unoverridden silently yields a non-canonical V.

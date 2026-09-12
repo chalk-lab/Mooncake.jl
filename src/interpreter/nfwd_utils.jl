@@ -742,17 +742,13 @@ function _nfwd_body_safe(
 end
 
 # Principle: nfwd fires only when every differentiable leaf is
-# `NDualEltype = Union{IEEEFloat, Complex{<:IEEEFloat}}` — represented as `NDual` (scalar),
-# `NDualArray` (array), or `NDualMemoryRef` (memory). Anything else (e.g. `BFloat16`, whose
-# `dual_type` is the generic `NTuple{N,·}`) is not projectable, so it routes to the frule transform.
-# This gate enforces that per argument; NDual op coverage is completed only for IEEEFloat/Complex.
-#
-# The nfwd path handles inner-dual scalars/arrays only: an argument is admissible iff it is
-# non-differentiable (dual `NoDual` → passed as its primal) or dual-lifts to a projectable inner
-# dual (`NDual`/`Complex{NDual}`/`NDualArray`/`NDualMemoryRef`, or a tuple/named-tuple of those →
-# passed as its dual). An argument that dual-lifts to a struct wrapper (`ImmutableDual`/
-# `MutableDual`) is not dispatch-compatible with the primal function, so the call is rejected and
-# falls back to the frule transform.
+# `NDualEltype = Union{IEEEFloat, Complex{<:IEEEFloat}}`, represented as `NDual` (scalar),
+# `NDualArray` (array) or `NDualMemoryRef` (memory) — NDual op coverage is completed only for those.
+# So an argument is admissible iff it is non-differentiable (dual `NoDual` → passed as its primal)
+# or dual-lifts to one of those, or to a tuple/named-tuple of them (→ passed as its dual). Anything
+# else — `BFloat16`, whose `dual_type` is the generic `NTuple{N,·}`, or a struct wrapper
+# (`ImmutableDual`/`MutableDual`) that is not dispatch-compatible with the primal function — routes
+# to the frule transform instead.
 #
 # The verdict is a property of `(sig_types, width)`, NOT of the function: the same function can be
 # admitted at one chunk width and rejected at another. Rejection keys on callee identity, and
