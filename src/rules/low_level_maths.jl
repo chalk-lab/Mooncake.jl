@@ -1193,16 +1193,16 @@ function rrule!!(
 end
 
 # ---- 2-tuple-output rules (sincos family) ----
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.sincos),P} where {P<:IEEEFloat}
+@is_primitive MinimalCtx Tuple{typeof(sincos),P} where {P<:IEEEFloat}
 function frule!!(
-    ::Lifted{typeof(Base.FastMath.sincos),N}, x::Lifted{P,N,NDual{P,N}}
+    ::Lifted{typeof(sincos),N}, x::Lifted{P,N,NDual{P,N}}
 ) where {N,P<:IEEEFloat}
-    tv = Base.FastMath.sincos(tangent(x))
+    tv = sincos(tangent(x))
     return Lifted{Tuple{P,P},N}(map(d -> d.value, tv), tv)
 end
-function rrule!!(::CoDual{typeof(Base.FastMath.sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
+function rrule!!(::CoDual{typeof(sincos)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
-    s, c = Base.FastMath.sincos(v)
+    s, c = sincos(v)
     sincos_pb(ȳ) = (NoRData(), _rvs_guarded_scale(ȳ[1], c) + _rvs_guarded_scale(ȳ[2], -s))
     return zero_fcodual((s, c)), sincos_pb
 end
@@ -1328,7 +1328,7 @@ end
 
 # Registered test cases for the whole `:low_level_maths` group, at the end of the file after every
 # rule definition. The scalar-math primitives that route through the `Nfwd` NDual forward overloads
-# (tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf) live here too — no other group covers them.
+# (tanpi/pow_fast/clamp/sincosd/sincospi/modf) live here too — no other group covers them.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
@@ -1382,6 +1382,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (acsch, P(0.32)),
                 (acoth, P(1.05)),
                 (sinc, P(0.36)),
+                (sincos, P(3.0)),
                 (deg2rad, P(185.4)),
                 (rad2deg, P(0.45)),
                 (mod2pi, P(0.1)),
@@ -1433,7 +1434,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             # inside the crossed region, where the function is locally smooth in all three
             # arguments, so FD is well behaved here.
             (false, :none, nothing, clamp, 0.5, 1.0, 0.0),
-            (false, :stability_and_allocs, nothing, sincos, 1.0),
             (false, :stability_and_allocs, nothing, sincosd, 30.0),
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
             (false, :stability_and_allocs, nothing, modf, 1.7),

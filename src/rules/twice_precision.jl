@@ -47,8 +47,6 @@ fdata_type(::Type{<:TWP}) = NoFData
 
 rdata_type(P::Type{<:TWP}) = P
 
-__verify_fdata_value(::IdDict{Any,Nothing}, ::P, ::P) where {P<:TWP} = nothing
-
 _verify_rdata_value(::P, ::P) where {P<:TWP} = nothing
 
 @foldable tangent_type(::Type{NoFData}, T::Type{<:TWP}) = T
@@ -141,7 +139,8 @@ end
 # Rules. These are required for a lot of functionality in this case.
 #
 
-@is_primitive MinimalCtx Tuple{typeof(_new_),<:TWP,IEEEFloat,IEEEFloat}
+# `_new_` is already a primitive via the generic `Tuple{typeof(_new_),Vararg}` declaration in
+# `new.jl`; these rules only refine the `TwicePrecision` construction.
 function frule!!(
     ::Lifted{typeof(_new_),N},
     ::Lifted{Type{TWP{P}},N},

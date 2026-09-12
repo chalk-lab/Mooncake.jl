@@ -34,7 +34,6 @@ set_to_zero_internal!!(::SetToZeroCache, p::CF) = zero(p)
 
 randn_tangent_internal(rng::AbstractRNG, p::CF, ::MaybeCache) = randn(rng, typeof(p))
 
-__verify_fdata_value(::IdDict{Any,Nothing}, ::P, ::P) where {P<:CF} = nothing
 _verify_rdata_value(::P, ::P) where {P<:CF} = nothing
 
 increment_internal!!(::IncCache, t::T, s::T) where {T<:CF} = t + s
@@ -64,39 +63,9 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-# `lgetfield(::Complex, ::Val)` forward mode is handled by the generic `lgetfield` frule in
-# `misc.jl` via the `_get_lifted_field(::Complex, name)` dispatch entry (which refines the
-# forward V to the field's `NDual`), so no Complex-specific frule is needed here.
-function rrule!!(
-    ::CoDual{typeof(lgetfield)},
-    obj_cd::CoDual{<:CF,<:CF},
-    field_name_cd::CoDual{Val{FieldName}},
-) where {FieldName}
-    a = primal(obj_cd)
-    a_tangent = tangent(obj_cd)
-
-    value_primal = getfield(a, FieldName)
-    actual_field_tangent_value = if FieldName === :re
-        a_tangent.re
-    elseif FieldName === :im
-        a_tangent.im
-    else
-        throw(ArgumentError(lazy"lgetfield: Unknown field '$FieldName' for type $(typeof(a))."))
-    end
-
-    value_output_fdata = fdata(actual_field_tangent_value)
-    y_cd = CoDual(value_primal, value_output_fdata)
-
-    function lgetfield_Complex_pullback(Δy_rdata)
-        if FieldName === :re
-            Δx = complex(Δy_rdata, zero(Δy_rdata))
-        elseif FieldName === :im
-            Δx = complex(zero(Δy_rdata), Δy_rdata)
-        end
-        return NoRData(), Δx, NoRData()
-    end
-    return y_cd, lgetfield_Complex_pullback
-end
+# `lgetfield(::Complex, ::Val)` takes the generic `misc.jl` rules in both modes: forward via the
+# `_get_lifted_field(::Complex, name)` entry, reverse routing its rdata through `increment_field!!`
+# above. A Complex-specific `rrule!!` could never fire — `fdata_type(::Type{<:CF})` is `NoFData`.
 
 # `_new_(Type{Complex{P}}, re, im)` is already a primitive via the generic `Tuple{typeof(_new_),Vararg}`
 # declaration in `new.jl`; this Complex-specific frule only refines the forward construction, so it
