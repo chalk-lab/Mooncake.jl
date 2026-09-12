@@ -446,7 +446,13 @@ function _nfwd_scan_body!(work::Vector{Any}, consts::Vector{Any}, ci, @nospecial
         _nfwd_record_stmt_consts!(consts, st)
         st isa Expr || continue
         if st.head === :foreigncall
-            fn = st.args[1]  # foreigncall target: a `QuoteNode`/`Symbol` name, or a dynamic ccall
+            # Foreigncall target: a bare name (`QuoteNode`/`Symbol`), or an `(name[, library])`
+            # tuple — 1.13 spells `objectid` that way where 1.12 used a bare `QuoteNode`. Missing
+            # the tuple form empties `_NFWD_SAFE_FOREIGN`, costing coverage rather than correctness.
+            fn = st.args[1]
+            if fn isa Expr && fn.head === :tuple && !isempty(fn.args)
+                fn = fn.args[1]
+            end
             name = if fn isa QuoteNode
                 fn.value
             elseif fn isa Symbol
