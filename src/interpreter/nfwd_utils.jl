@@ -221,6 +221,11 @@ const _NFWD_SAFE_BUILTINS = Set{Symbol}([
     :isdefinedglobal,
     :get_binding_type,
     :set_binding_type!,
+    # 1.13 lowers `const x = v` / `global x` to these. `declare_const` stores its third argument
+    # into the binding unchanged, exactly as `setglobal!` does, so a dual passes through intact;
+    # `declare_global` carries no value at all.
+    :declare_const,
+    :declare_global,
     # typed memory / array element access (structural — returns/stores the element type). Julia
     # ≥1.11 lowers to `memoryref*`; 1.10 uses the `array*` builtins. Listing both keeps the
     # classifier version-robust — a name absent on a given version simply never matches.
@@ -262,6 +267,9 @@ const _NFWD_SAFE_BUILTINS = Set{Symbol}([
     :_compute_sparams,
     :_expr,
     :apply_type,
+    # 1.13 lowers `using`/`import` to these; they take modules and symbols, never a value.
+    :_using,
+    :_import,
 ])
 
 # Builtins whose result depends on how a value is REPRESENTED rather than on the value it stands
