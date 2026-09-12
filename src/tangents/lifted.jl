@@ -902,7 +902,13 @@ end
     # with abstract elements — recurses finitely and builds a per-element V (each element's own
     # `dual_type` collapses non-diff elements to `NoDual`, which conses fine as a head element).
     Base.isvatuple(P) && return Any
-    return _dual_tuple_v(Val(N), P)
+    V = _dual_tuple_v(Val(N), P)
+    # A tuple with abstract elements has wholly non-differentiable concretisations, which collapse
+    # to `NoDual` at the gate above, so the declared type must admit `NoDual` too: otherwise
+    # storing one into a container typed by the abstract tuple — a `Vector{Tuple{NoPullback}}` of
+    # reverse pullbacks under forward-over-reverse — is a `TypeError`. `tangent_type` unions here
+    # for the same reason.
+    return Tuple{Vararg{NoDual,fieldcount(P)}} <: V ? Union{V,NoDual} : V
 end
 # Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
 # `Tuple`. Fixed-length (non-`Vararg`) tails only; the top `dual_type(Tuple)` rejects `Vararg`
