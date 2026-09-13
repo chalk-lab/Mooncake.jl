@@ -961,7 +961,7 @@ counting". If `c` is a `NoCache`, assume no aliasing or circular referencing.
 """
 increment_internal!!(::IncCache, ::NoTangent, ::NoTangent) = NoTangent()
 increment_internal!!(::IncCache, x::T, y::T) where {T<:IEEEFloat} = x + y
-function increment_internal!!(::IncCache, x::Ptr{T}, y::Ptr{T}) where {T}
+function increment_internal!!(::IncCache, x::Ptr, y::Ptr)
     return x === y ? x : throw(error("Incrementing pointers is not supported!"))
 end
 # Same rule for an erased tangent pointer: two tangents for one primal must be one address.
@@ -1158,8 +1158,10 @@ _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
 
 # A `Ptr` tangent is the `uninit_*` placeholder: type-correct, addressing tangent storage, but
 # carrying no derivative of its own and never to be dereferenced as one. So every tangent-arithmetic
-# operation treats it as INERT — a scaled placeholder is the placeholder, its inner product is zero,
-# and adding it to a primal leaves the primal alone. Without these the operations are partial, and
+# operation here treats it as INERT — a scaled placeholder is the placeholder, its inner product is
+# zero, and adding it to a primal leaves the primal alone. `increment!!` is the exception and lives
+# with the other increments above: two tangents of one primal must be the same address, so it
+# accepts an egal pair and throws on any other. Without these the operations are partial, and
 # any `Ptr` reaching a gradient (a bare argument, or a struct with a `Ptr` field, ordinary in code
 # wrapping a C library) failed with a raw `MethodError` naming an internal instead of
 # differentiating the fields that do carry derivatives.
@@ -1180,7 +1182,6 @@ set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
 _scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
 _dot_internal(::MaybeCache, ::Ptr, ::Ptr) = 0.0
 _add_to_primal_internal(::MaybeCache, x::Ptr, ::Ptr, ::Bool) = x
-increment_internal!!(::IncCache, x::Ptr, ::Ptr) = x
 set_to_zero_internal!!(::SetToZeroCache, t::VoidPtrTangent) = t
 _scale_internal(::MaybeCache, ::Float64, t::VoidPtrTangent) = t
 _dot_internal(::MaybeCache, ::VoidPtrTangent, ::VoidPtrTangent) = 0.0

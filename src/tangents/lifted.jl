@@ -377,12 +377,9 @@ end
 @inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple,NDualRef,AbstractArray}}) where {P} = (
     primal(x), _unlift_seed(x, IdDict{Any,Any}())
 )
-# Block-backed and all-`NoDual` arrays ARE leaves, so they keep the accessor and skip the cache:
-# routing them through the seed path costs an `IdDict` (measured +320 B) on every boundary call.
+# A block-backed array IS a leaf, so it keeps the accessor and skips the cache: routing it through
+# the seed path costs an `IdDict` (measured +320 B) on every boundary call.
 @inline unlift(x::Lifted{P,1,<:NDualArray}) where {P} = (primal(x), tangent(x, 1))
-@inline unlift(x::Lifted{P,1,<:AbstractArray{NoDual}}) where {P} = (
-    primal(x), _unlift_seed(x, IdDict{Any,Any}())
-)
 # A `Ptr` lane is a raw address, which equals the reverse tangent only where
 # `tangent_type(Ptr{T})` is itself a `Ptr{T}`. `Ptr{Nothing}`'s is a `VoidPtrTangent`, and a
 # non-differentiable-element `Ptr` has V `NoDual` but tangent `Ptr{NoTangent}`, so both rebuild
