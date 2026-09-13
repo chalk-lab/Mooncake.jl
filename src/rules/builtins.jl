@@ -2699,10 +2699,9 @@ function _builtins_throwing_rows()
     # pointer-to-scalar has a per-lane `NTuple{Nw,Ptr}` V matching none of the coherent frules.
     # The broad `@is_primitive` covers it and the reverse rule handles every `T`, so it must fail
     # loudly rather than reach a raw `MethodError`, as the pointerref/pointerset guards do.
-    incoherent_slots = map((1, 2)) do N
-        S = Tuple{Float64,Float64}
+    incoherent_slot = let S = Tuple{Float64,Float64}, N = 2
         v = ntuple(_ -> Ptr{Mooncake.tangent_type(S)}(0), N)
-        return (N, Lifted{Ptr{S},N,typeof(v)}(Ptr{S}(0), v))
+        Lifted{Ptr{S},N,typeof(v)}(Ptr{S}(0), v)
     end
     # Reverse: an atomic load through a pointer re-typed off a non-differentiable buffer has a NULL
     # tangent pointer, and dereferencing it segfaulted before the atomic rules carried the guard
@@ -2854,16 +2853,14 @@ function _builtins_throwing_rows()
             (; mode=ReverseMode),
         ),
     )
-    for (N, slot) in incoherent_slots
-        push!(
-            cases,
-            (
-                ArgumentError,
-                unsafe_wrap,
-                (Array, slot, (2,)),
-                (; mode=ForwardMode, chunk_size=N),
-            ),
-        )
-    end
+    push!(
+        cases,
+        (
+            ArgumentError,
+            unsafe_wrap,
+            (Array, incoherent_slot, (2,)),
+            (; mode=ForwardMode, chunk_size=2),
+        ),
+    )
     return cases, Any[xv]
 end

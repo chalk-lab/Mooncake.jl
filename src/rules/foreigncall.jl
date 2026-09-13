@@ -178,7 +178,6 @@ end
 # tangent has no payload at all.
 @inline function _objref_tangent_elt(::Type{P}) where {P}
     T = tangent_type(P)
-    T <: MutableTangent || return NoTangent
     return sizeof(fieldtype(T, :fields)) === 0 ? NoTangent : Nothing
 end
 
@@ -245,24 +244,20 @@ end
 # fresh partials buffer holding the same values is correct (the JVP through identity is identity).
 # The V's `Ptr{<:NDualEltype}` element distinguishes a `Ref`-pointer from the generic objref tag
 # (`Ptr{tangent_type(Nothing)}`, handled above), and is the only such V — arrays are not round-tripped
-# this way. The scalar element type is read at runtime (`eltype`) rather than bound as a type
-# parameter, since `P` in `NTuple{Nw,Ptr{P}}` would be unbound at the degenerate `Nw == 0`.
+# this way.
 function frule!!(
     ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
-    x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
-) where {Nw}
+    x::Lifted{<:Ptr,Nw,NTuple{Nw,Ptr{P}}},
+) where {Nw,P<:NDualEltype}
     ref = unsafe_pointer_to_objref(primal(x))
-    P = eltype(eltype(tangent(x)))
     # Recover the ORIGINAL partials object rather than snapshotting its values into a fresh one:
     # lane 1 IS that object's address (the `pointer_from_objref` rule sets lane `k` to
     # `base + (k-1)*sizeof(P)`, so lane 1 is `base`). A fresh buffer holds the same values but is
     # separate storage, so a write through the recovered `Ref` never reaches the original slot's
-    # partials and the derivative loses it. At `Nw == 0` there is no lane to recover from.
-    partials = if Nw == 0
-        Base.RefValue{NTuple{Nw,P}}(ntuple(k -> unsafe_load(tangent(x)[k]), Val(Nw)))
-    else
-        unsafe_pointer_to_objref(Ptr{Nothing}(UInt(tangent(x)[1])))::Base.RefValue{NTuple{Nw,P}}
-    end
+    # partials and the derivative loses it.
+    partials = unsafe_pointer_to_objref(
+        Ptr{Nothing}(UInt(tangent(x)[1]))
+    )::Base.RefValue{NTuple{Nw,P}}
     return Lifted{typeof(ref),Nw}(ref, NDualRef{P,Nw}(partials))
 end
 # The tangent of a `Ptr{Nothing}` carries its address alongside the erased element width; every other
