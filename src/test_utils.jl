@@ -678,8 +678,9 @@ function test_frule_correctness(
     end
     # A case with a supplied reference skips the sweep: finite differences are inapplicable
     # by definition there, and perturbing a NaN or infinite operand is what it cannot survive.
-    fd_results = Vector{Any}(undef, isnothing(oracle) ? length(ε_list) : 0)
-    for (n, ε) in (isnothing(oracle) ? collect(enumerate(ε_list)) : ())
+    isnothing(oracle) || empty!(ε_list)
+    fd_results = Vector{Any}(undef, length(ε_list))
+    for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
         y′_l = x′_l[1](x′_l[2:end]...)
         x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
@@ -1300,8 +1301,9 @@ function test_rrule_correctness(
         )
     end
     # Skipped when a reference is supplied: see the forward counterpart.
-    fd_results = Vector{Any}(undef, isnothing(oracle) ? length(ε_list) : 0)
-    for (n, ε) in (isnothing(oracle) ? collect(enumerate(ε_list)) : ())
+    isnothing(oracle) || empty!(ε_list)
+    fd_results = Vector{Any}(undef, length(ε_list))
+    for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
         y′_l = x′_l[1](x′_l[2:end]...)
         x′_r = _add_to_primal(x, _scale(-ε, ẋ), unsafe_perturb)
@@ -2205,20 +2207,6 @@ function _test_throws(thunk, err, msg)
     return nothing
 end
 
-function run_hand_written_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode})
-    test_cases, memory = test_hook(Mooncake.hand_written_rule_test_cases, rng_ctor, v) do
-        Mooncake.hand_written_rule_test_cases(rng_ctor, v)
-    end
-    # GC.@preserve keeps backing objects alive for tests involving pointer-backed
-    # types: without it, the GC may collect them mid-test.
-    GC.@preserve memory @testset "$f, $(_typeof(x))" for (
-        interface_only, perf_flag, _, f, x...
-    ) in test_cases
-
-        test_rule(rng_ctor(123), f, x...; interface_only, perf_flag, mode)
-    end
-end
-
 # One driver for both case kinds: hand-written cases test the registered `frule!!`/`rrule!!`
 # directly (`is_primitive=true`); derived cases run the full AD transform over a plain Julia
 # function (`is_primitive=false`). Either kind may opt out of a mode via `skip_forward` or
@@ -2377,34 +2365,6 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
     return nothing
 end
 
-"""
-    test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free=true)
-
-Forward-mode analogue of [`test_tangent`](@ref): the de-facto definition of the forward
-representation interface. If this runs without a failing test for a value `p`, then `p`'s
-forward (`Lifted` / `NDual`) representation is well-formed. It is purely representation-level
-— no rule is involved — and is the forward counterpart of `test_tangent` (`test_rule` covers
-rule correctness / finite-difference agreement separately).
-
-For each width `N ∈ widths` it checks, via [`test_lifted_type`](@ref) plus value-level
-assertions on the seed factories (`zero_lifted` / `uninit_lifted` / `randn_lifted`):
-
-- primal aliasing — `primal(slot) === p` (the slot's primal is the user's storage, not a copy);
-- the slot has the coherent type `lifted_type(Val(N), typeof(p))`;
-- the **inner-value invariant** — every inner dual's `.value` tracks the primal it shadows, at
-  every width (`_chunked_v_invariant`). This is the check with no reverse analogue and the one
-  `test_rule` misses: it builds only width-1 seeds and checks the outer slot, not inner `.value`,
-  so a rule (or seed) that lets a scalar `.value` drift to e.g. `grad * x` passes `test_rule`
-  but fails here;
-- each per-lane accessor `tangent(slot, lane)` runs for `lane ∈ 1:N`;
-- the reverse↔forward bridge (width-1 only, the forward-over-reverse / HVP path): a reverse
-  tangent round-trips, `unlift(lift(p, ẋ)) == (p, ẋ)`.
-
-Self-referential primals are supported: both cyclic *mutable structs* and cycles through a plain
-`Array` (the array seed path is cycle-aware). `circular_vector` and the cyclic-struct entry in
-`tangent_test_cases()` exercise the two paths. Pass `cache_free=false` for those: only the
-cache-threading factories can seed a cycle, so the cache-free assertions do not apply.
-"""
 # Dual wrappers that carry a primal beside their partials. Matched by TYPE rather than by name:
 # a name test would also catch an unrelated user type spelled the same way.
 const _DUAL_WRAPPERS = @static if VERSION >= v"1.11-rc4"
@@ -2510,8 +2470,10 @@ At each width it checks that
   new aggregate that fails to thread its aliasing cache fails here rather than silently
   computing an independent JVP per alias.
 
-`cache_free=false` skips the cache-free seed factories for types whose slots are only reachable
-through the cached path.
+`cache_free=false` skips the cache-free seed factories: only the cache-threading ones can seed a
+self-referential primal — a cyclic mutable struct, or a cycle through a plain `Array` — so those
+assertions do not apply. `circular_vector` and the cyclic-struct entry in `tangent_test_cases()`
+exercise the two paths.
 
 See [`test_lifted_type`](@ref) for the type-level half of the same contract.
 """
