@@ -644,14 +644,6 @@ end
     throw(ArgumentError("Arguments with sig $Tfx do not subtype rule signature, $sig"))
 end
 
-@inline function _nfwd_check_config(config)
-    config.friendly_tangents &&
-        throw(ArgumentError("nfwd does not currently support `friendly_tangents=true`."))
-    config.debug_mode &&
-        throw(ArgumentError("nfwd does not currently support `debug_mode=true`."))
-    return nothing
-end
-
 #
 # Reverse accumulation utilities
 #

@@ -7,30 +7,6 @@ Central definition of typeof, which is specific to the use-required in this pack
 @unstable _typeof(x::Tuple) = Tuple{tuple_map(_typeof, x)...}
 @unstable _typeof(x::NamedTuple{names}) where {names} = NamedTuple{names,_typeof(Tuple(x))}
 
-function _print_boxed_message(io::IO, level::AbstractString, lines; footer=nothing)
-    first_item = iterate(lines)
-    isnothing(first_item) && return nothing
-    line, state = first_item
-    first_prefix = "┌ " * level * ": "
-    rest_prefix = "│ "
-    first_width = _boxed_message_width(io, first_prefix)
-    rest_width = _boxed_message_width(io, rest_prefix)
-    first_wrapped = _wrap_boxed_line(line, first_width)
-    println(io, first_prefix, first(first_wrapped))
-    for wrapped_line in Base.tail(first_wrapped)
-        println(io, rest_prefix, wrapped_line)
-    end
-    while true
-        item = iterate(lines, state)
-        isnothing(item) && break
-        line, state = item
-        for wrapped_line in _wrap_boxed_line(line, rest_width)
-            println(io, rest_prefix, wrapped_line)
-        end
-    end
-    return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
-end
-
 function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=nothing)
     first_item = iterate(lines)
     isnothing(first_item) && return nothing
@@ -90,10 +66,6 @@ end
 
 function _print_boxed_error(io::IO, lines; footer=nothing)
     _print_boxed_block(io, "", lines; footer)
-end
-
-function _print_boxed_info(io::IO, lines; footer=nothing)
-    _print_boxed_message(io, "Info", lines; footer)
 end
 
 """

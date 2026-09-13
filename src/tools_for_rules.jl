@@ -53,7 +53,7 @@ where Mooncake.jl fails to differentiate `bar` for some reason.
 If you have access to another function `baz`, which does the same thing as `bar`, but does
     so in a way which Mooncake.jl can differentiate, you can simply write:
 ```jldoctest overlay
-julia> Mooncake.@mooncake_overlay foo(x::Float64) = baz(x)
+julia> Mooncake.@mooncake_overlay foo(x::Float64) = baz(x);
 
 ```
 When looking up the code for `foo(::Float64)`, Mooncake.jl will see this method, rather than
@@ -79,7 +79,7 @@ julia> Mooncake.value_and_gradient!!(rule, scale, 5.0)
 
 We can use `@mooncake_overlay` to change the definition which Mooncake.jl sees:
 ```jldoctest overlay-doctest; setup = :(using Mooncake)
-julia> Mooncake.@mooncake_overlay scale(x) = 3x
+julia> Mooncake.@mooncake_overlay scale(x) = 3x;
 
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 
@@ -93,7 +93,7 @@ Additionally, it is possible to use the usual multi-line syntax to declare an ov
 ```jldoctest overlay-doctest; setup = :(using Mooncake)
 julia> Mooncake.@mooncake_overlay function scale(x)
            return 4x
-       end
+       end;
 
 julia> rule = Mooncake.build_rrule(Tuple{typeof(scale), Float64});
 
