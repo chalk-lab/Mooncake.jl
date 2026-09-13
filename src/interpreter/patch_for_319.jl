@@ -25,25 +25,19 @@ CC.InferenceParams(ip::BugPatchInterpreter) = CC.InferenceParams(ip.interp)
 CC.OptimizationParams(ip::BugPatchInterpreter) = CC.OptimizationParams(ip.interp)
 CC.get_inference_cache(ip::BugPatchInterpreter) = CC.get_inference_cache(ip.interp)
 CC.code_cache(ip::BugPatchInterpreter) = CC.code_cache(ip.interp)
-@static if isdefined(CC, :WorldView)
-    function CC.get(
-        wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance, default
-    )
-        return get(wvc.cache.dict, mi, default)
-    end
-    function CC.getindex(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
-        return getindex(wvc.cache.dict, mi)
-    end
-    function CC.haskey(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
-        return haskey(wvc.cache.dict, mi)
-    end
-    function CC.setindex!(
-        wvc::CC.WorldView{BugPatchInterpreter},
-        ci::Core.CodeInstance,
-        mi::Core.MethodInstance,
-    )
-        return setindex!(wvc.cache.dict, ci, mi)
-    end
+function CC.get(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance, default)
+    return get(wvc.cache.dict, mi, default)
+end
+function CC.getindex(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+    return getindex(wvc.cache.dict, mi)
+end
+function CC.haskey(wvc::CC.WorldView{BugPatchInterpreter}, mi::Core.MethodInstance)
+    return haskey(wvc.cache.dict, mi)
+end
+function CC.setindex!(
+    wvc::CC.WorldView{BugPatchInterpreter}, ci::Core.CodeInstance, mi::Core.MethodInstance
+)
+    return setindex!(wvc.cache.dict, ci, mi)
 end
 CC.method_table(ip::BugPatchInterpreter) = CC.method_table(ip.interp)
 
@@ -245,13 +239,7 @@ end
 
         @static if VERSION ≥ v"1.12-"
             if irsv.frameid != 0
-                # Julia 1.14 (JuliaLang/julia#61714) parametrised the callstack on the
-                # interpreter type, so it is no longer a `Vector{CC.AbsIntState}`.
-                @static if VERSION >= v"1.14-"
-                    callstack = irsv.callstack
-                else
-                    callstack = irsv.callstack::Vector{CC.AbsIntState}
-                end
+                callstack = irsv.callstack::Vector{CC.AbsIntState}
                 @assert callstack[end] === irsv && length(callstack) == irsv.frameid
                 pop!(callstack)
             end

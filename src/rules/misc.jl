@@ -356,12 +356,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         ),
         (false, :allocs, nothing, Threads.nthreads),
         (false, :none, nothing, Base.eltype, randn(1)),
-        # `Base.padding` was removed by JuliaLang/julia#62771 (1.14-DEV)
-        (isdefined(Base, :padding) ?
-            Any[
-                (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}),
-                (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}, 1),
-            ] : Any[])...,
 
         # Literal replacement for setfield!.
         (
@@ -477,6 +471,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
     test_cases = vcat(
         specific_test_cases, all_lgetfield_test_cases..., general_lsetfield_test_cases...
     )
+    @static if isdefined(Base, :padding)
+        push!(
+            test_cases,
+            (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}),
+            (false, :none, nothing, Base.padding, @NamedTuple{a::Float64}, 1),
+        )
+    end
     return test_cases, memory
 end
 

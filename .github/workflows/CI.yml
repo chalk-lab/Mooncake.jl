@@ -22,6 +22,8 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    # Preparatory coverage, not an official support commitment.
+    continue-on-error: ${{ matrix.version == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
@@ -58,6 +60,12 @@ jobs:
         arch:
           - x64
         include:
+          - test_group: 'basic'
+            version: 'nightly'
+            arch: x64
+          - test_group: 'rules/misc'
+            version: 'nightly'
+            arch: x64
           - test_group: 'basic'
             version: 'lts'
             arch: x86

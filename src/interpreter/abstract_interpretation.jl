@@ -22,20 +22,11 @@ end
 MooncakeCache() = MooncakeCache(IdDict{Core.MethodInstance,Core.CodeInstance}())
 Base.empty!(c::MooncakeCache) = (empty!(c.dict); c)
 
-# Julia 1.14 reworked how external `AbstractInterpreter`s hold their caches:
-# - JuliaLang/julia#59413 removed `CC.WorldView` (caches now carry their own world range)
-#   and added `CC.OverlayCodeCache`, the replacement wrapper for interpreters like ours
-#   which keep a separate global code cache alongside the local inference cache.
-# - JuliaLang/julia#60795 replaced the `Vector{CC.InferenceResult}` inference cache with
-#   `CC.InferenceCache`.
+# JuliaLang/julia#60795 replaced the inference-result vector with an indexed cache.
 @static if isdefined(CC, :InferenceCache)
     const InferenceCacheType = CC.InferenceCache
-    new_inference_cache() = CC.InferenceCache()
-    empty_inference_cache!(c::CC.InferenceCache) = (empty!(c.results); empty!(c.index); c)
 else
     const InferenceCacheType = Vector{CC.InferenceResult}
-    new_inference_cache() = CC.InferenceResult[]
-    empty_inference_cache!(c::Vector{CC.InferenceResult}) = empty!(c)
 end
 
 # The method table used by `Mooncake.@mooncake_overlay`.
@@ -56,7 +47,7 @@ struct MooncakeInterpreter{C,M<:Mode} <: CC.AbstractInterpreter
         world::UInt=Base.get_world_counter(),
         inf_params::CC.InferenceParams=CC.InferenceParams(),
         opt_params::CC.OptimizationParams=CC.OptimizationParams(),
-        inf_cache::InferenceCacheType=new_inference_cache(),
+        inf_cache::InferenceCacheType=InferenceCacheType(),
         code_cache::MooncakeCache=MooncakeCache(),
         oc_cache::Dict{ClosureCacheKey,Any}=Dict{ClosureCacheKey,Any}(),
     ) where {C,M<:Mode}
@@ -119,10 +110,10 @@ CC.get_inference_cache(interp::MooncakeInterpreter) = interp.inf_cache
         return setindex!(wvc.cache.dict, ci, mi)
     end
 else
-    # Julia 1.14+: the cache is accessed directly rather than through a `WorldView`, and
-    # `OverlayCodeCache` pairs our global code cache with the local inference cache.
+    # Julia 1.14 accesses the cache directly. Like Compiler's @newinterp ephemeral cache,
+    # this cache belongs to one interpreter world; get_interpreter replaces it on changes.
     function CC.code_cache(interp::MooncakeInterpreter)
-        return CC.OverlayCodeCache(interp.code_cache, interp.inf_cache)
+        return interp.code_cache
     end
     function CC.get(cache::MooncakeCache, mi::Core.MethodInstance, default)
         return get(cache.dict, mi, default)
@@ -166,7 +157,38 @@ CC.getresult_impl(info::NoInlineCallInfo, idx::Int) = CC.getresult(info.info, id
     )
 end
 
-function Core.Compiler.abstract_call_gf_by_type(
+@static if VERSION >= v"1.14-"
+    function CC.abstract_call_gf_by_type(
+        interp::MooncakeInterpreter,
+        @nospecialize(f),
+        arginfo::CC.ArgInfo,
+        si::CC.StmtInfo,
+        @nospecialize(atype),
+        vtypes::Union{CC.VarTable,Nothing},
+        sv::CC.AbsIntState,
+        max_methods::Int,
+    )
+        return abstract_call_gf_by_type(
+            interp, f, arginfo, si, atype, sv, max_methods, vtypes
+        )
+    end
+else
+    function CC.abstract_call_gf_by_type(
+        interp::MooncakeInterpreter,
+        @nospecialize(f),
+        arginfo::CC.ArgInfo,
+        si::CC.StmtInfo,
+        @nospecialize(atype),
+        sv::CC.AbsIntState,
+        max_methods::Int,
+    )
+        return abstract_call_gf_by_type(
+            interp, f, arginfo, si, atype, sv, max_methods, nothing
+        )
+    end
+end
+
+function abstract_call_gf_by_type(
     interp::MooncakeInterpreter{C,M},
     @nospecialize(f),
     arginfo::CC.ArgInfo,
@@ -174,6 +196,7 @@ function Core.Compiler.abstract_call_gf_by_type(
     @nospecialize(atype),
     sv::CC.AbsIntState,
     max_methods::Int,
+    vtypes,
 ) where {C,M}
     argtypes = arginfo.argtypes
     # Look up applicable methods for this call site without recursing into their bodies.
@@ -200,8 +223,8 @@ function Core.Compiler.abstract_call_gf_by_type(
             # to inspect its body when differentiating. The only thing we need here is the
             # ordinary `CallMeta` for the call site, especially the inferred return type.
             #
-            # We therefore ask `NativeInterpreter` for the `CallMeta`. This avoids recursing
-            # through the callee IR using Mooncake's primitive-search logic:
+            # Before Julia 1.14, we ask `NativeInterpreter` for the `CallMeta`. This avoids
+            # recursing through the callee IR using Mooncake's primitive-search logic:
             # `MooncakeInterpreter` would walk nested calls in that body, check them for
             # primitives, and continue that search down the callee tree. That extra work is
             # unnecessary for a primitive with a hand-written rule.
@@ -209,10 +232,25 @@ function Core.Compiler.abstract_call_gf_by_type(
             # `noinline_callmeta` below then blocks inlining/const-folding so the primitive
             # call stays in the caller IR and Mooncake can dispatch its `rrule!!` at runtime.
             # See PR #1115 for more discussion.
-            native_interp = CC.NativeInterpreter(interp.world)
-            ret = CC.abstract_call_gf_by_type(
-                native_interp, f, arginfo, si, atype, sv, max_methods
-            )
+            @static if VERSION >= v"1.14-"
+                # Inference frames now share a stack parameterised by interpreter type.
+                # Switching to NativeInterpreter here would mix incompatible frame types.
+                ret = @invoke CC.abstract_call_gf_by_type(
+                    interp::CC.AbstractInterpreter,
+                    f::Any,
+                    arginfo::CC.ArgInfo,
+                    si::CC.StmtInfo,
+                    atype::Any,
+                    vtypes::Union{CC.VarTable,Nothing},
+                    sv::CC.AbsIntState,
+                    max_methods::Int,
+                )
+            else
+                native_interp = CC.NativeInterpreter(interp.world)
+                ret = CC.abstract_call_gf_by_type(
+                    native_interp, f, arginfo, si, atype, sv, max_methods
+                )
+            end
             @static if VERSION < v"1.12-"
                 call = ret::CC.CallMeta
                 # Keep primitives in caller IR by blocking const-folding and inlining
@@ -229,6 +267,18 @@ function Core.Compiler.abstract_call_gf_by_type(
         end
     end
 
+    @static if VERSION >= v"1.14-"
+        return @invoke CC.abstract_call_gf_by_type(
+            interp::CC.AbstractInterpreter,
+            f::Any,
+            arginfo::CC.ArgInfo,
+            si::CC.StmtInfo,
+            atype::Any,
+            vtypes::Union{CC.VarTable,Nothing},
+            sv::CC.AbsIntState,
+            max_methods::Int,
+        )
+    end
     return @invoke CC.abstract_call_gf_by_type(
         interp::CC.AbstractInterpreter,
         f::Any,
@@ -421,7 +471,13 @@ function empty_mooncake_caches!()
     for interp in values(GLOBAL_INTERPRETERS)
         empty!(interp.oc_cache)
         empty!(interp.code_cache)
-        empty_inference_cache!(interp.inf_cache)
+        @static if isdefined(CC, :InferenceCache)
+            # InferenceCache has no empty! method; clear storage and its lookup index.
+            empty!(interp.inf_cache.results)
+            empty!(interp.inf_cache.index)
+        else
+            empty!(interp.inf_cache)
+        end
     end
     return nothing
 end
