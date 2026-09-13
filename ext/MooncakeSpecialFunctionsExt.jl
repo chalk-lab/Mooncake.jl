@@ -148,17 +148,15 @@ an unimplemented partial is mathematically required.
 
 # Wrap (y, per-lane dy values) into the canonical Lifted slot for a
 # scalar (real or complex) result.
-@inline function _lifted_scalar_result(
-    y::L, primal_eltype, dy_lanes::NTuple{Nw}
-) where {L<:IEEEFloat,Nw}
-    parts = ntuple(k -> primal_eltype(dy_lanes[k]), Val(Nw))
+@inline function _lifted_scalar_result(y::L, dy_lanes::NTuple{Nw}) where {L<:IEEEFloat,Nw}
+    parts = ntuple(k -> L(dy_lanes[k]), Val(Nw))
     return Lifted{L,Nw}(y, NDual{L,Nw}(y, parts))
 end
 @inline function _lifted_scalar_result(
-    y::Complex{L}, primal_eltype, dy_lanes::NTuple{Nw}
+    y::Complex{L}, dy_lanes::NTuple{Nw}
 ) where {L<:IEEEFloat,Nw}
-    re_parts = ntuple(k -> primal_eltype(real(dy_lanes[k])), Val(Nw))
-    im_parts = ntuple(k -> primal_eltype(imag(dy_lanes[k])), Val(Nw))
+    re_parts = ntuple(k -> L(real(dy_lanes[k])), Val(Nw))
+    im_parts = ntuple(k -> L(imag(dy_lanes[k])), Val(Nw))
     re_nd = NDual{L,Nw}(real(y), re_parts)
     im_nd = NDual{L,Nw}(imag(y), im_parts)
     return Lifted{Complex{L},Nw}(y, Complex{NDual{L,Nw}}(re_nd, im_nd))
@@ -213,12 +211,11 @@ for (f, ∂x_expr) in (
             a = primal(_a)
             x = primal(_x)
             y = $f(a, x)
-            primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(tangent(_a, k)) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
+            return _lifted_scalar_result(y, dy_lanes)
         end
     end
 end
@@ -244,13 +241,12 @@ for (f, ∂x_expr) in (
             v = primal(_v)
             x = primal(_x)
             y = $f(v, x)
-            primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
             v_parts = tangent(_v).partials
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
+            return _lifted_scalar_result(y, dy_lanes)
         end
     end
 end
@@ -269,7 +265,6 @@ function frule!!(
     v = primal(_v)
     x = primal(_x)
     y = besselix(v, x)
-    primal_eltype = eltype(y isa Complex ? y.re : y)
     ∂x_1 = (besselix(v - 1, x) + besselix(v + 1, x)) / 2
     ∂x_2 = -sign(real(x)) * y
     v_parts = tangent(_v).partials
@@ -277,7 +272,7 @@ function frule!!(
         dx_k = tangent(_x, k)
         notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * real(dx_k)
     end
-    return _lifted_scalar_result(y, primal_eltype, dy_lanes)
+    return _lifted_scalar_result(y, dy_lanes)
 end
 
 # `besseljx`/`besselyx` share an identical two-term `∂x` body (imaginary-axis `sign`/`imag`
@@ -293,7 +288,6 @@ for f in (:besseljx, :besselyx)
             v = primal(_v)
             x = primal(_x)
             y = $f(v, x)
-            primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x_1 = ($f(v - 1, x) - $f(v + 1, x)) / 2
             ∂x_2 = -sign(imag(x)) * y
             v_parts = tangent(_v).partials
@@ -301,7 +295,7 @@ for f in (:besseljx, :besselyx)
                 dx_k = tangent(_x, k)
                 notimplemented_tangent_guard(v_parts[k]) + ∂x_1 * dx_k + ∂x_2 * imag(dx_k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
+            return _lifted_scalar_result(y, dy_lanes)
         end
     end
 end
@@ -324,13 +318,12 @@ for (f, ∂x_expr) in (
             v = primal(_v)
             x = primal(_x)
             y = $f(v, x)
-            primal_eltype = eltype(y isa Complex ? y.re : y)
             ∂x = $∂x_expr
             v_parts = tangent(_v).partials
             dy_lanes = ntuple(Val(Nw)) do k
                 notimplemented_tangent_guard(v_parts[k]) + ∂x * tangent(_x, k)
             end
-            return _lifted_scalar_result(y, primal_eltype, dy_lanes)
+            return _lifted_scalar_result(y, dy_lanes)
         end
     end
 end
