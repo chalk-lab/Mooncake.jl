@@ -1071,20 +1071,17 @@ end
     return hypot(hypot(a, b), c, xs...)
 end
 
+# True to take `a`. `isequal` against the already-computed result, never an ordering test:
+# `min(-0.0, 0.0)` is `-0.0` while `-0.0 < 0.0` is false and `-0.0 == 0.0` is true. The two differ
+# only on a tie, where `max` keeps `b` and `min` keeps `a`.
 @inline function _ndual_pick_max(a, b)
     v = max(a, b)
-    a_matches = isequal(v, a)
-    b_matches = isequal(v, b)
-    return ifelse(
-        a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, false)
-    )
+    return isequal(v, a) & !isequal(v, b)
 end
 
 @inline function _ndual_pick_min(a, b)
     v = min(a, b)
-    a_matches = isequal(v, a)
-    b_matches = isequal(v, b)
-    return ifelse(a_matches & !b_matches, true, ifelse(b_matches & !a_matches, false, true))
+    return isequal(v, a) | !isequal(v, b)
 end
 
 # min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the

@@ -2557,10 +2557,10 @@ end
 # hot entries) is unsafe for in-place `f`.
 @inline _leaves_dof(::Tuple{}) = 0
 @inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
-@inline _zero_partials!(::Tuple{}, W) = nothing
-@inline function _zero_partials!(ls::Tuple, W)
+@inline _zero_partials!(::Tuple{}) = nothing
+@inline function _zero_partials!(ls::Tuple)
     Nfwd._zero_seed!(first(ls)[1])
-    return _zero_partials!(Base.tail(ls), W)
+    return _zero_partials!(Base.tail(ls))
 end
 @inline _seed_chunk!(::Tuple{}, s, W, off) = off
 @inline function _seed_chunk!(ls::Tuple, s, W, off)
@@ -2621,7 +2621,7 @@ function _structured_gradient!!(
         # into the cache's own objects, so an unchanged call rebuilds nothing.
         arg_seeds = _refresh_nondiff_all(arg_seeds, xs)
         _refresh_all!(arg_seeds, xs)
-        _zero_partials!(leaves, W)
+        _zero_partials!(leaves)
         _seed_chunk!(leaves, s, W, 0)
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
