@@ -813,14 +813,6 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     return y, copy_pullback!!
 end
 
-function _copy_dict_tangent(mt::MutableTangent)
-    t = mt.fields
-    new_fields = typeof(t)((
-        copy(t.slots), copy(t.keys), copy(t.vals), tuple_fill(NoTangent(), Val(5))...
-    ))
-    return MutableTangent(new_fields)
-end
-
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 # UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
 # update needed; mutate the primal and return the slot unchanged.

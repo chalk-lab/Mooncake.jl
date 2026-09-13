@@ -53,9 +53,8 @@ end
 @zero_derivative DefaultCtx Tuple{typeof(count),Any,Any}
 
 # Logging: String-related primitive rules.
-using Base: getindex, getproperty
 using Base.Threads: Atomic
-using Base.CoreLogging: LogLevel, handle_message, invokelatest
+using Base.CoreLogging: LogLevel
 import Base.CoreLogging as CoreLogging
 
 # Rule for accessing an Atomic{T}-wrapped Integer with Base.getindex, since deriving a rule
