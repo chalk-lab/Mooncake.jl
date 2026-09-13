@@ -464,10 +464,10 @@ function in `ir_normalisation.jl`. You probably do not want to use it.
 """
 function replace_uses_with!(stmt, def::Union{Argument,SSAValue}, val)
     if stmt isa Expr
-        stmt.args = Any[arg == def ? val : arg for arg in stmt.args]
+        stmt.args = Any[arg === def ? val : arg for arg in stmt.args]
         return stmt
     elseif stmt isa GotoIfNot
-        if stmt.cond == def
+        if stmt.cond === def
             @assert val isa Bool
             return GotoIfNot(val, stmt.dest)
         else

@@ -11,6 +11,11 @@ import Mooncake:
     @is_primitive,
     Lifted,
     NDual,
+    CoDual,
+    rrule!!,
+    zero_fcodual,
+    NoRData,
+    nan_tangent_guard,
     frule!!,
     primal,
     tangent,
@@ -141,8 +146,6 @@ an unimplemented partial is mathematically required.
     typeof(expintx),Union{IEEEFloat,<:Complex},Union{IEEEFloat,<:Complex}
 }
 
-@from_rrule DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
-
 # Per-lane partials come from the canonical `tangent(slot, k)` accessor (handles NDual and
 # Complex{NDual} scalar Vs).
 
@@ -162,8 +165,92 @@ end
     return Lifted{Complex{L},Nw}(y, Complex{NDual{L,Nw}}(re_nd, im_nd))
 end
 
-# 3-arg `gamma_inc` (first-argument gradient is `NotImplemented`)
-@is_primitive DefaultCtx ForwardMode Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
+# Both partials are supported for finite positive shapes and positive x. At a=0 or
+# x=0, use one-sided first derivatives; at x=Inf, both partials are zero. Infinite
+# shapes are unsupported. The series and continued fraction have a 100,000-iteration
+# limit, which very large shapes near x=a can reach. The separate gamma(a,x) and
+# loggamma(a,x) shape derivatives remain unimplemented.
+# Stan also changes numerical regimes for the shape derivative:
+# https://github.com/stan-dev/math/blob/develop/stan/math/prim/fun/grad_reg_lower_inc_gamma.hpp
+function gamma_inc_partials(a::T, x::T, y) where {T<:IEEEFloat}
+    (isnan(a) || isnan(x)) && return (T(NaN), T(NaN))
+    isfinite(a) || throw(DomainError(a, "gamma_inc derivatives require finite a"))
+    isinf(x) && return (zero(T), zero(T))
+    iszero(a) && return (-expint(x), zero(T))
+    iszero(x) && return zero(T), x^(a - 1) * exp(-loggamma(a))
+    tol = 4 * eps(T)
+    # Differentiate the lower series (DLMF 8.7.1) without subtracting two full sums.
+    if x < a + 1
+        t, s = one(T), one(T)
+        dt, ds = zero(T), zero(T)
+        for n in 1:100_000
+            r = x / (a + n)
+            dt = r * (dt - t / (a + n))
+            t *= r
+            s += t
+            ds += dt
+            if abs(t) <= tol * abs(s) && abs(dt) <= tol * abs(ds)
+                g = log(x) - digamma(a + 1) + ds / s
+                A = y[1] * g
+                if x < 1
+                    D = exp((a - 1) * log(x) + log(a) - loggamma(a + 1) - x)
+                    # Keep the x factor outside exp so underflow preserves its derivative.
+                    y[1] < floatmin(T) && (A = D * ((x / a) * (s * g)))
+                elseif y[1] < floatmin(T)
+                    # Recover representable derivatives when the primal ratio underflows.
+                    l = a * (log(x) - loggamma(a + 1) / a) - x
+                    A = -exp(l + log(s) + log(-g))
+                    D = exp(l + log(a) - log(x))
+                else
+                    D = (y[1] / x) * (a / s)
+                end
+                return A, D
+            end
+        end
+    else
+        # Differentiate the upper continued fraction (DLMF 8.9.2).
+        b = x + 1 - a
+        c, f = b, b
+        dc, df = -one(T), -one(T)
+        # ld stores d'/d; d' itself can underflow in the far upper tail.
+        d, ld = zero(T), zero(T)
+        for n in 1:100_000
+            an = n * (a - n)
+            b += 2
+            ld = 1 - n * d - an * d * ld
+            d = inv(b + an * d)
+            ld *= d
+            dc = -1 + n / c - (an / c) * (dc / c)
+            c = b + an / c
+            delta = c * d
+            ddelta = delta * (dc / c + ld)
+            df = df * delta + f * ddelta
+            f *= delta
+            # Integer shapes terminate the primal fraction before its derivative.
+            if abs(delta - 1) <= tol && abs(ddelta) <= tol * abs(df / f)
+                # Avoid the digamma pole at tiny positive shapes.
+                g = log(x) - digamma(a + 1) - df / f
+                A = -(y[2] * g + y[2] / a)
+                D = y[2] * (f / x)
+                if y[2] < floatmin(T)
+                    l = a * (log(x) - loggamma(a + 1) / a) - x
+                    A = -exp(l - log(f) + log1p(a * g))
+                    D = exp(l + log(a) - log(x))
+                end
+                return A, D
+            end
+        end
+    end
+    error("gamma_inc derivative did not converge")
+end
+
+# Keep working precision through seed multiplication to avoid premature overflow.
+function gamma_inc_partials(a::T, x::T, y) where {T<:Union{Float16,Float32}}
+    aw, xw = widen(a), widen(x)
+    return gamma_inc_partials(aw, xw, gamma_inc(aw, xw))
+end
+
+@is_primitive DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
     ::Lifted{typeof(gamma_inc),Nw},
@@ -175,17 +262,32 @@ function frule!!(
     x = primal(_x)
     IND = primal(_IND)
     y = gamma_inc(a, x, IND)
-    primal_eltype = eltype(y)
-    z = exp((a - 1) * log(x) - x - loggamma(a))
+    A, D = gamma_inc_partials(promote(a, x)..., iszero(IND) ? y : gamma_inc(a, x))
     a_parts = tangent(_a).partials
     x_parts = tangent(_x).partials
-    # `∂a` depends only on `a_parts[k]` (not on the sign of `z`), so compute it once per lane.
-    ∂a_lanes = ntuple(k -> notimplemented_tangent_guard(a_parts[k]), Val(Nw))
-    p_lanes = ntuple(k -> primal_eltype(∂a_lanes[k] + x_parts[k] * z), Val(Nw))
-    q_lanes = ntuple(k -> primal_eltype(∂a_lanes[k] + x_parts[k] * -z), Val(Nw))
-    p_nd = NDual{primal_eltype,Nw}(y[1], p_lanes)
-    q_nd = NDual{primal_eltype,Nw}(y[2], q_lanes)
+    L = eltype(y)
+    # `p + q == 1`, so `q`'s partial is `-p`'s in every lane.
+    p_lanes = ntuple(Val(Nw)) do k
+        dx = isfinite(D) ? D * x_parts[k] : nan_tangent_guard(x_parts[k], D * x_parts[k])
+        return L(A * a_parts[k] + dx)
+    end
+    p_nd = NDual{L,Nw}(y[1], p_lanes)
+    q_nd = NDual{L,Nw}(y[2], ntuple(k -> -p_lanes[k], Val(Nw)))
     return Lifted{typeof(y),Nw}(y, (p_nd, q_nd))
+end
+
+function rrule!!(
+    ::CoDual{typeof(gamma_inc)}, _a::CoDual{T}, _x::CoDual{S}, _ind::CoDual{I}
+) where {T<:IEEEFloat,S<:IEEEFloat,I<:Integer}
+    a, x, ind = primal(_a), primal(_x), primal(_ind)
+    y = gamma_inc(a, x, ind)
+    A, D = gamma_inc_partials(promote(a, x)..., iszero(ind) ? y : gamma_inc(a, x))
+    function gamma_inc_pb!!(dy)
+        d = typeof(A)(dy[1]) - typeof(A)(dy[2])
+        dx = isfinite(D) ? D * d : nan_tangent_guard(d, D * d)
+        return NoRData(), T(A * d), S(dx), NoRData()
+    end
+    return zero_fcodual(y), gamma_inc_pb!!
 end
 
 # 2-arg Gamma and exponential integrals (first-argument gradient is `NotImplemented`). The four share

@@ -19,11 +19,12 @@ import Mooncake:
     zero_fcodual,
     NoRData,
     extract,
+    nan_tangent_guard,
     arrayify,
     Lifted,
     ImmutableDual,
     NDualArray
-using Mooncake.Nfwd: NDual, _lane_views
+using Mooncake.Nfwd: NDual, _lane_views, _promote_matching_nduals
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
 # logistic(x::Real) = inv(exp(-x) + one(x)) produces a zero-partial NDual from
@@ -140,13 +141,80 @@ end
     return NDual(v * lv, ntuple(i -> x.partials[i] * d, Val(N)))
 end
 
-# Importing these rules provides improved numerical stability for `logistic`, and avoids
-# incorrect derivatives arising from a 'fast branch' in `logaddexp(x1, x2)` where x1 == x2
-# (similar to that for `logsumexp` below). The other chain rules for LogExpFunctions were
-# investigated and found to be no better than Mooncake's derived rules in terms of
-# performance or numerical stability, so are not imported here.
+# These rules avoid saturation in logistic and the equal-input branch in logaddexp.
 @from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
+
+# Preserve x/y at regular points, including x=0, to retain the mixed derivative.
+xlogy_partials(x, y, z) = (log(y), iszero(x) && iszero(y) ? zero(x / y) : x / y)
+xexpy_partials(x, y, z) = (exp(y), z)
+
+@inline scale_partial(p, d) = isfinite(p) ? p * d : nan_tangent_guard(d, p * d)
+
+# The zero-multiplier branches require rules; evaluate the original primal separately.
+for f in (:xlogy, :xexpy)
+    partials = Symbol(f, :_partials)
+    @eval begin
+        @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,Union{IEEEFloat,Integer}}
+        function frule!!(
+            ::Lifted{typeof($f),Nw},
+            _x::Lifted{T,Nw,NDual{T,Nw}},
+            _y::Lifted{S,Nw,NDual{S,Nw}},
+        ) where {T<:IEEEFloat,S<:IEEEFloat,Nw}
+            x, y = primal(_x), primal(_y)
+            z = $f(x, y)
+            a, b = $partials(x, y, z)
+            xp, yp = tangent(_x).partials, tangent(_y).partials
+            P = typeof(z)
+            dz = ntuple(k -> P(scale_partial(a, xp[k]) + scale_partial(b, yp[k])), Val(Nw))
+            return Lifted{P,Nw}(z, NDual{P,Nw}(z, dz))
+        end
+        # Integer `y` carries no derivative, so only the `x` partial contributes.
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, _x::Lifted{T,Nw,NDual{T,Nw}}, _y::Lifted{<:Integer}
+        ) where {T<:IEEEFloat,Nw}
+            x, y = primal(_x), primal(_y)
+            z = $f(x, y)
+            a, _ = $partials(x, y, z)
+            xp = tangent(_x).partials
+            P = typeof(z)
+            dz = ntuple(k -> P(scale_partial(a, xp[k])), Val(Nw))
+            return Lifted{P,Nw}(z, NDual{P,Nw}(z, dz))
+        end
+        function rrule!!(
+            ::CoDual{typeof($f)}, _x::CoDual{T}, _y::CoDual{S}
+        ) where {T<:IEEEFloat,S<:Union{IEEEFloat,Integer}}
+            x, y = primal(_x), primal(_y)
+            z = $f(x, y)
+            a, b = $partials(x, y, z)
+            function pb!!(dz)
+                dy = S <: Integer ? NoRData() : S(scale_partial(b, dz))
+                return NoRData(), T(scale_partial(a, dz)), dy
+            end
+            return zero_fcodual(z), pb!!
+        end
+        @inline function LogExpFunctions.$f(x::NDual{T,N}, y::NDual{S,M}) where {T,S,N,M}
+            xp, yp = _promote_matching_nduals($(QuoteNode(f)), x, y)
+            z = $f(x.value, y.value)
+            a, b = $partials(x.value, y.value, z)
+            dz = ntuple(
+                i -> scale_partial(a, xp.partials[i]) + scale_partial(b, yp.partials[i]),
+                Val(N),
+            )
+            return NDual(z, dz)
+        end
+        @inline function LogExpFunctions.$f(x::NDual{T,N}, y::Real) where {T,N}
+            z = $f(x.value, y)
+            a, _ = $partials(x.value, y, z)
+            return NDual(z, ntuple(i -> scale_partial(a, x.partials[i]), Val(N)))
+        end
+        @inline function LogExpFunctions.$f(x::Real, y::NDual{T,N}) where {T,N}
+            z = $f(x, y.value)
+            _, b = $partials(x, y.value, z)
+            return NDual(z, ntuple(i -> scale_partial(b, y.partials[i]), Val(N)))
+        end
+    end
+end
 
 # logsumexp and logsumexp! need a custom rule to avoid incorrect derivatives due to
 # branching in the primal implementation. (In principle, the forward-mode rule for logsumexp

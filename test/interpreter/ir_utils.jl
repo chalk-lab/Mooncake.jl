@@ -55,10 +55,15 @@ end
             Mooncake.UnhandledLanguageFeatureException, Mooncake.unhandled_feature("foo")
         )
     end
-    @testset "replace_uses_with!" begin
-        stmt = Expr(:call, sin, SSAValue(1))
-        Mooncake.replace_uses_with!(stmt, SSAValue(1), 5.0)
-        @test stmt.args[end] == 5.0
+    @testset "replace_uses_with! $T" for T in (Argument, SSAValue)
+        # Literal missing must survive IR reference substitution (issue #1308).
+        stmt = Expr(:call, ifelse, T(1), missing, T(2))
+        Mooncake.replace_uses_with!(stmt, T(1), true)
+        @test isequal(stmt, Expr(:call, ifelse, true, missing, T(2)))
+        stmt = GotoIfNot(T(1), 3)
+        @test Mooncake.replace_uses_with!(stmt, T(1), true).cond === true
+        stmt = GotoIfNot(T(2), 3)
+        @test Mooncake.replace_uses_with!(stmt, T(1), true) === stmt
     end
     @testset "characeterise_used_ssas" begin
         stmts = Any[

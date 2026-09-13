@@ -116,6 +116,100 @@ end
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 
+    @testset "gamma_inc" begin
+        for T in (Float32, Float64),
+            (a, x) in ((0.1, 0.1), (3, 2), (1, 2), (3, 50), (1000, 1000))
+
+            test_rule(
+                StableRNG(123), gamma_inc, T(a), T(x), 0; perf_flag=:stability_and_allocs
+            )
+        end
+        test_rule(StableRNG(123), gamma_inc, 3.0, 2.0; is_primitive=false)
+        for (T, S) in ((Float32, Float64), (Float64, Float32))
+            test_rule(
+                StableRNG(123), gamma_inc, T(3), S(2), 0; perf_flag=:stability_and_allocs
+            )
+        end
+        for T in (Float16, Float32, Float64),
+            (a, x, da, dx) in (
+                (3, 2, -0.2318486720439896, 0.2706705664732254),
+                (1, 2, -0.2208254262118595, 0.1353352832366127),
+                (1000, 2000, -4.756465407623239e-136, 3.430501706332743e-136),
+                (2, 1e-200, 0, 1e-200),
+                (3, 50, -7.552056917446367e-19, 2.410937309954897e-19),
+                (1000, 1000, -0.012616713994069625, 0.012614611348721499),
+                # `gamma_inc` underflows p to 0 here; the partials come from log space.
+                (170, 1, -2.620172596340683e-307, 8.617324446353426e-306),
+                (0, 2, -0.04890051070806112, 0),
+                (1, 0, 0, 1),
+                (2, 0, 0, 0),
+                (0.5, 0, 0, Inf),
+                (3, Inf, 0, 0),
+            ),
+            ind in (0, 1, 2)
+
+            a, x = T(a), T(x)
+            y, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, ind))...)
+            @test Mooncake.primal(y) == gamma_inc(a, x, ind)
+            for (dp, dq) in ((one(T), zero(T)), (zero(T), one(T)), (one(T), one(T)))
+                d = dp - dq
+                expected_a = iszero(d) ? zero(T) : T(d * da)
+                expected_x = iszero(d) ? zero(T) : T(d * dx)
+                grad = pb((dp, dq))
+                @test grad[2] ≈ expected_a rtol=max(4eps(T), 1e-12)
+                @test grad[3] ≈ expected_x rtol=max(4eps(T), 1e-12)
+            end
+            for (adot, xdot) in ((one(T), zero(T)), (zero(T), one(T)), (zero(T), zero(T)))
+                result = Mooncake.frule!!(
+                    Mooncake.zero_dual(gamma_inc),
+                    Mooncake.lift(a, adot),
+                    Mooncake.lift(x, xdot),
+                    Mooncake.zero_dual(ind),
+                )
+                expected =
+                    (iszero(adot) ? zero(T) : T(da)) + (iszero(xdot) ? zero(T) : T(dx))
+                dp, dq = Mooncake.tangent(result)
+                @test Mooncake.primal(result) == gamma_inc(a, x, ind)
+                @test only(dp.partials) ≈ expected rtol=max(4eps(T), 1e-12)
+                @test only(dq.partials) ≈ -expected rtol=max(4eps(T), 1e-12)
+            end
+        end
+
+        for T in (Float16, Float32, Float64)
+            a, x = nextfloat(zero(T)), T(2)
+            _, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, 0))...)
+            @test pb((one(T), zero(T)))[2] ≈ -expint(x) rtol=max(4eps(T), 1e-12)
+        end
+
+        for (a, x, seed, expected) in (
+            (Float16(0.05), nextfloat(Float16(0)), Float16(0.01), Float16(3752)),
+            (Float16(1), Float16(2), floatmax(Float16), Float16(8864)),
+            (0.05f0, nextfloat(0.0f0), 1.0f-5, 2.0961772f36),
+            (1e-10, 1e-310, 1.0, 9.9999992867763e299),
+            (3.0, 1e160, 1.0, 0.0),
+            (3.0, 1e308, 1.0, 0.0),
+        )
+            _, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (gamma_inc, a, x, 0))...)
+            @test pb((seed, zero(seed)))[3] ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
+            @test pb((seed, -seed))[3] ≈ 2expected rtol=max(4eps(typeof(a)), 1e-12)
+            result = Mooncake.frule!!(
+                Mooncake.zero_dual(gamma_inc),
+                Mooncake.lift(a, zero(a)),
+                Mooncake.lift(x, seed),
+                Mooncake.zero_dual(0),
+            )
+            dp = Mooncake.tangent(result)[1]
+            @test only(dp.partials) ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
+        end
+
+        @test_throws DomainError Mooncake.rrule!!(
+            map(Mooncake.zero_fcodual, (gamma_inc, Inf, 1.0, 0))...
+        )
+        @test_throws ErrorException Mooncake.rrule!!(
+            map(Mooncake.zero_fcodual, (gamma_inc, 1e12, 1e12, 0))...
+        )
+    end
+
     @testset "Primitive SpecialFunctions with `NotImplemented` gradients" begin
         first_arg_types = [Float64, Float32]
         second_arg_types = [Float64, Float32]
@@ -124,10 +218,6 @@ end
         @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
             map_prod(first_arg_types, second_arg_types) do (T, P)
                 return Any[
-                    # 3-arg gamma_inc (IND is 0/1; tangent(a) is 0 in AD, but approximated in FD)
-                    (:none, x -> gamma_inc(T(3), x, 0), P(2)),
-                    (:none, x -> gamma_inc(T(3), x, 1), P(2)),
-
                     # 2-arg standard Bessel/Hankel (1st arg gradient is `NotImplemented`)
                     (:none, x -> besselj(T(3), x), P(1.5)),
                     (:none, x -> besseli(T(3), x), P(1.5)),
