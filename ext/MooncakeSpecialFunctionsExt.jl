@@ -173,14 +173,7 @@ function gamma_inc_partials(a::T, x::T, y) where {T<:IEEEFloat}
     isfinite(a) || throw(DomainError(a, "gamma_inc derivatives require finite a"))
     isinf(x) && return (zero(T), zero(T))
     iszero(a) && return (-expint(x), zero(T))
-    if iszero(x)
-        D = if a == one(T)
-            exp(-x)
-        else
-            (a > one(T) ? x^(a - 1) * exp(-x - loggamma(a)) : T(Inf))
-        end
-        return zero(T), D
-    end
+    iszero(x) && return zero(T), x^(a - 1) * exp(-loggamma(a))
     tol = 4 * eps(T)
     # Differentiate the lower series (DLMF 8.7.1) without subtracting two full sums.
     if x < a + 1
