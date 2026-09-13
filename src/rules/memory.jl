@@ -1014,27 +1014,19 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
+    # `Core.memorynew(Memory{P}, n)` is the same allocation as `Memory{P}(undef, n)`, differently
+    # lowered, so both modes defer to that sibling. The deferral also routes through the sibling's
+    # own dispatch, which is what picks the `NDualEltype` parallel-arrays V over the element-wise
+    # one; the dummy slots carry `NoDual` and cost no allocation.
     function frule!!(
         ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
-    ) where {Nw,P<:NDualEltype}
-        _n = primal(n)
-        x = Core.memorynew(Memory{P}, _n)
-        # Zero the block: `Core.memorynew` returns uninitialized memory, which whole-buffer
-        # copies (`copy`/`unsafe_copyto!`) would propagate as spurious nonzero partials. Matches
-        # the `Memory{P}(undef, n)` sibling frule (this is the same allocation, differently
-        # lowered); the one-argument constructor allocates a zeroed block of the right layout.
-        return Lifted{Memory{P},Nw}(x, NDualArray{P,Nw,1,Memory{P}}(x))
+    ) where {Nw,P}
+        return frule!!(zero_lifted(Val(Nw), Memory{P}), zero_lifted(Val(Nw), undef), n)
     end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        # `Core.memorynew` returns UNINITIALISED memory, so allocating the tangent the same way
-        # hands back whatever the block last held — measured non-zero in 20 of 20 runs once the
-        # heap is dirtied. A fresh tangent must be zero; the `Memory{P}(undef, n)` sibling (the
-        # same allocation, differently lowered) and this rule's own `frule!!` both already zero.
-        dx = zero_tangent_internal(x, NoCache())
-        return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
+        return rrule!!(zero_fcodual(Memory{P}), zero_fcodual(undef), n)
     end
 end
 
@@ -1050,6 +1042,9 @@ function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
     x = Memory{P}(undef, primal(n))
+    # The allocation is UNINITIALISED, so allocating the tangent the same way hands back whatever
+    # the block last held — measured non-zero in 20 of 20 runs once the heap is dirtied. A fresh
+    # tangent must be zero.
     dx = zero_tangent_internal(x, NoCache())
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
@@ -1088,31 +1083,6 @@ end
         return Lifted{Memory{$P},$Nw}(x, dv)
     end
 end
-@static if VERSION >= v"1.12-"
-    @generated function frule!!(
-        ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
-    ) where {Nw,P}
-        # Emit `dual_type(Val(Nw), Memory{P})` into the RETURNED expression, not the generator
-        # body — same world-age reason as the `Memory{P}(undef, n)` frule above. `isbitstype(P)`
-        # is structural (world-independent) and stays here.
-        fill_expr = if isbitstype(P)
-            :(@inbounds for i in eachindex(dv)
-                dv[i] = zero_dual(Val($Nw), x[i])
-            end)
-        else
-            nothing
-        end
-        return quote
-            x = Core.memorynew(Memory{$P}, primal(n))
-            MemV = dual_type(Val($Nw), Memory{$P})
-            MemV === NoDual && return Lifted{Memory{$P},$Nw}(x, NoDual())
-            dv = MemV(undef, primal(n))
-            $fill_expr
-            return Lifted{Memory{$P},$Nw}(x, dv)
-        end
-    end
-end
-
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{MemoryRef{P}}},
