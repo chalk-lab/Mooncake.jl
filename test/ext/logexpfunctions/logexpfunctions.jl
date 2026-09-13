@@ -4,6 +4,7 @@ Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
 using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
+using Mooncake.Nfwd: NDual
 
 sr(n::Int) = StableRNG(n)
 
@@ -12,10 +13,14 @@ sr(n::Int) = StableRNG(n)
         map([Float64, Float32]) do P
             cases = Any[
                 (:allocs, false, xlogx, P(1.1)),
-                (:allocs, false, xlogy, P(0.3), P(1.2)),
+                (:allocs, true, xlogy, P(0.3), P(1.2)),
+                (:allocs, true, xlogy, P(0), P(3)),
+                (:allocs, true, xlogy, P(0), 3),
                 (:allocs, false, xlog1py, P(0.3), -P(0.5)),
                 (:allocs, false, xexpx, -P(0.5)),
-                (:allocs, false, xexpy, P(1.0), -P(0.7)),
+                (:allocs, true, xexpy, P(1.0), -P(0.7)),
+                (:allocs, true, xexpy, P(0), P(2)),
+                (:allocs, true, xexpy, P(0), 2),
                 (:allocs, true, logistic, P(0.5)),
                 (:allocs, true, logistic, P(1000.0)),
                 (:allocs, false, logit, P(0.3)),
@@ -99,5 +104,54 @@ sr(n::Int) = StableRNG(n)
         end...,
     )
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
+    end
+
+    @testset "zero multipliers and inactive directions" begin
+        for T in (Float16, Float32, Float64),
+            (f, x, y, a, b) in (
+                (xlogy, 0, 3, log(T(3)), 0),
+                (xlogy, 0, 0, -Inf, 0),
+                (xlogy, 0, Inf, Inf, 0),
+                (xexpy, 0, 2, exp(T(2)), 0),
+                (xexpy, 0, 1000, Inf, 0),
+                (xexpy, 1, -Inf, 0, 0),
+            )
+
+            x, y, a, b = T(x), T(y), T(a), T(b)
+            z, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (f, x, y))...)
+            @test isequal(Mooncake.primal(z), f(x, y))
+            @test pb(one(T))[2:3] == (a, b)
+            @test pb(zero(T))[2:3] == (zero(T), zero(T))
+            for (dx, dy) in ((1, 0), (0, 1), (0, 0), (1, 1))
+                dx, dy = T(dx), T(dy)
+                expected = (iszero(dx) ? zero(T) : a) + (iszero(dy) ? zero(T) : b)
+                result = Mooncake.frule!!(
+                    Mooncake.zero_dual(f), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
+                )
+                @test isequal(Mooncake.primal(result), f(x, y))
+                @test Mooncake.tangent(result) == expected
+                result = f(NDual(x, (dx,)), NDual(y, (dy,)))
+                @test isequal(result.value, f(x, y))
+                @test only(result.partials) == expected
+            end
+            @test only(f(NDual(x, (one(T),)), y).partials) == a
+            @test only(f(x, NDual(y, (one(T),))).partials) == b
+        end
+        for f in (xlogy, xexpy)
+            test_rule(sr(123), f, 0.0f0, 2.0; is_primitive=true, perf_flag=:allocs)
+            for (x, y) in ((0.0f0, 2.0), (0.3, 1.2f0))
+                a = f === xlogy ? log(y) : exp(y)
+                b = f === xlogy ? x / y : f(x, y)
+                result = f(NDual(x, (one(x),)), NDual(y, (zero(y),)))
+                @test result.value === f(x, y)
+                @test only(result.partials) == a
+                result = f(NDual(x, (one(x),)), y)
+                @test result.value === f(x, y)
+                @test only(result.partials) == a
+                result = f(x, NDual(y, (one(y),)))
+                @test result.value === f(x, y)
+                @test only(result.partials) == b
+            end
+        end
     end
 end
