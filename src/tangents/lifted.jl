@@ -1044,31 +1044,6 @@ Shapes defined so far:
 @inline _is_metatype_kind(@nospecialize(T)) =
     T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom
 
-# A non-concrete `P <: IEEEFloat` (e.g. a type-unstable closure inferred to
-# `Union{Float32,Float64}`) must widen to a UnionAll: `Lifted` is invariant in `P`, so the
-# invariant `Lifted{Union{…},N,NDual{Union{…},N}}` would reject the concrete runtime
-# `Lifted{Float32,…}` at the OpaqueClosure arg typeassert (mirrors the Tuple/struct overloads).
-@foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:IEEEFloat}
-    return isconcretetype(P) ? Lifted{P,N,NDual{P,N}} : (Lifted{T,N,V} where {T<:P,V})
-end
-@foldable @inline function lifted_type(::Val{N}, ::Type{Complex{R}}) where {N,R<:IEEEFloat}
-    return Lifted{Complex{R},N,Complex{NDual{R,N}}}
-end
-@foldable @inline function lifted_type(
-    ::Val{N}, ::Type{Array{T,D}}
-) where {N,T<:IEEEFloat,D}
-    return Lifted{Array{T,D},N,Nfwd._ndual_array_V(Array{T,D}, Val(N))}
-end
-@foldable @inline function lifted_type(
-    ::Val{N}, ::Type{Base.RefValue{P}}
-) where {N,P<:NDualEltype}
-    return Lifted{Base.RefValue{P},N,NDualRef{P,N}}
-end
-@foldable @inline function lifted_type(
-    ::Val{N}, ::Type{Array{Complex{R},D}}
-) where {N,R<:IEEEFloat,D}
-    return Lifted{Array{Complex{R},D},N,Nfwd._ndual_array_V(Array{Complex{R},D}, Val(N))}
-end
 @foldable @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 # Abstract tuple/named-tuple `P` (e.g. a grouped-vararg `Tuple{Function,
 # Vararg{Any}}` in the forward IR) must widen to a UnionAll: `Lifted` is invariant
@@ -1086,31 +1061,6 @@ end
         Lifted{P,N,dual_type(Val(N), P)}
     else
         (Lifted{T,N,V} where {T<:P,V})
-    end
-end
-@foldable @inline function lifted_type(
-    ::Val{N}, ::Type{P}
-) where {N,names,T<:Tuple,P<:NamedTuple{names,T}}
-    return if isconcretetype(P)
-        Lifted{P,N,dual_type(Val(N), P)}
-    else
-        (Lifted{S,N,V} where {S<:P,V})
-    end
-end
-@foldable @inline function lifted_type(::Val{N}, ::Type{Ptr{T}}) where {N,T<:NDualEltype}
-    return Lifted{Ptr{T},N,NTuple{N,Ptr{T}}}
-end
-# MemoryRef + Memory canonical lifts (Julia 1.11+).
-@static if VERSION >= v"1.11-rc4"
-    @foldable @inline function lifted_type(
-        ::Val{N}, ::Type{MemoryRef{T}}
-    ) where {N,T<:IEEEFloat}
-        return Lifted{MemoryRef{T},N,NDualMemoryRef{T,N,Memory{T}}}
-    end
-    @foldable @inline function lifted_type(
-        ::Val{N}, ::Type{Memory{T}}
-    ) where {N,T<:IEEEFloat}
-        return Lifted{Memory{T},N,NDualArray{T,N,1,Memory{T},NDual{T,N},NDualBlock{T,2}}}
     end
 end
 # True when every member of `U` is non-differentiable (`tangent_type === NoTangent`), so its
