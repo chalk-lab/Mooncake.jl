@@ -244,12 +244,17 @@ end
 # fresh partials buffer holding the same values is correct (the JVP through identity is identity).
 # The V's `Ptr{<:NDualEltype}` element distinguishes a `Ref`-pointer from the generic objref tag
 # (`Ptr{tangent_type(Nothing)}`, handled above), and is the only such V — arrays are not round-tripped
-# this way.
+# this way. The scalar element type is read at runtime rather than bound as a type parameter: at
+# `Nw == 0`, `NTuple{Nw,Ptr{P}}` is `Tuple{}` and `P` appears nowhere in the signature, which Aqua's
+# unbound-type-parameter check rejects. That width is itself unreachable — `_nfwd_check_chunk_size`
+# refuses a non-positive `chunk_size`, and 0 is the internal sentinel for auto — so the `eltype`
+# below needs no degenerate case of its own.
 function frule!!(
     ::Lifted{typeof(Base.unsafe_pointer_to_objref),Nw},
-    x::Lifted{<:Ptr,Nw,NTuple{Nw,Ptr{P}}},
-) where {Nw,P<:NDualEltype}
+    x::Lifted{<:Ptr,Nw,<:NTuple{Nw,Ptr{<:NDualEltype}}},
+) where {Nw}
     ref = unsafe_pointer_to_objref(primal(x))
+    P = eltype(eltype(tangent(x)))
     # Recover the ORIGINAL partials object rather than snapshotting its values into a fresh one:
     # lane 1 IS that object's address (the `pointer_from_objref` rule sets lane `k` to
     # `base + (k-1)*sizeof(P)`, so lane 1 is `base`). A fresh buffer holds the same values but is
