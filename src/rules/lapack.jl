@@ -1025,14 +1025,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
         # getrf!
         map_prod(Ps) do (P,)
             As = blas_matrices(rng, P, 5, 5)
-            ipiv = Vector{Int}(undef, 5)
             return map(As) do A
                 (false, :stability, nothing, getrf!, A)
             end
         end...,
         map_prod(bools, complexPs) do (check, P)
             As = blas_matrices(rng, P, 5, 5)
-            ipiv = Vector{Int}(undef, 5)
             return map(As) do A
                 (false, :stability, nothing, Core.kwcall, (; check), getrf!, A)
             end

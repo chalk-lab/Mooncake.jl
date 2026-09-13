@@ -2,13 +2,6 @@ function blas_name(name::Symbol)
     return (BLAS.USE_BLAS64 ? Symbol(name, "64_") : name, Symbol(BLAS.libblastrampoline))
 end
 
-function _trans(flag, mat)
-    flag === 'T' && return transpose(mat)
-    flag === 'C' && return adjoint(mat)
-    flag === 'N' && return mat
-    throw(error("Unrecognised flag $flag"))
-end
-
 function tri!(A, u::Char, d::Char)
     return u == 'L' ? tril!(A, d == 'U' ? -1 : 0) : triu!(A, d == 'U' ? 1 : 0)
 end
@@ -3404,14 +3397,11 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ) do (side, ul, tA, dA, M, N, dα)
                 P <: BlasRealFloat && imag(dα) != 0 && return []
 
-                t = tA == 'N'
                 R = side == 'L' ? M : N
                 As = blas_matrices(rng, P, R, R)
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
                     α_dα = CoDual(randn(rng, P), P(dα))
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (
                         false, perf_flag, nothing, BLAS.trmm!, side, ul, tA, dA, α_dα, A, B
                     )
@@ -3431,7 +3421,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         rng = rng_ctor(123456)
         A = blas_matrices(rng, P, 3, 3)[1]
         B = blas_matrices(rng, P, 3, 2)[1]
-        perf_flag = VERSION < v"1.11-" ? :none : :stability
         push!(
             test_cases,
             (
@@ -3458,7 +3447,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             map_prod(
                 ['L', 'R'], uplos, t_flags, dAs, [1, 3], [1, 2]
             ) do (side, ul, tA, dA, M, N)
-                t = tA == 'N'
                 R = side == 'L' ? M : N
                 a = randn(rng, P)
                 As = map(blas_matrices(rng, P, R, R)) do A
@@ -3467,8 +3455,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 end
                 Bs = blas_matrices(rng, P, M, N)
                 return map(As, Bs) do A, B
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (false, perf_flag, nothing, BLAS.trsm!, side, ul, tA, dA, a, A, B)
                 end
             end
@@ -3536,8 +3522,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 return map(As, Bs, Cs) do A, B, C
                     α_dα = CoDual(randn(rng, P), P(dα))
                     β_dβ = CoDual(randn(rng, P), randn(rng, P))
-                    # 1.10 fails to infer part of a matmat product in the pullback
-                    perf_flag = VERSION < v"1.11-" ? :none : :stability
                     (false, perf_flag, nothing, f, side, ul, α_dα, A, B, β_dβ, C)
                 end
             end
