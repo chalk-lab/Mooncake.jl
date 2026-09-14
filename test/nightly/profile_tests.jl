@@ -2,6 +2,18 @@
     @test isnothing(Base.get_extension(Mooncake, :MooncakeJETExt))
     @test isnothing(Base.get_extension(Mooncake, :MooncakeAllocCheckExt))
 
+    # Open type values need the Julia 1.14 wrapper fallback.
+    open_type = AbstractArray{TypeVar(:T),1}
+    d = Dual(open_type, NoTangent())
+    @test primal(d) === open_type
+    @test d isa dual_type(Type{open_type})
+    for (data, wrapper_type) in
+        ((NoTangent(), codual_type), (NoFData(), Mooncake.fcodual_type))
+        d = CoDual(open_type, data)
+        @test primal(d) === open_type
+        @test d isa wrapper_type(Type{open_type})
+    end
+
     x = [2.0]
     skipped = @testset "unavailable static analysis" begin
         TestUtils.test_opt(sin, (Float64,))

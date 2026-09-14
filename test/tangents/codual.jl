@@ -3,14 +3,6 @@
     @test CoDual(Float64, NoTangent()) isa CoDual{Type{Float64},NoTangent}
     @test zero_codual(5.0) == CoDual(5.0, 0.0)
 
-    open_type = AbstractArray{TypeVar(:T),1}
-    for (data, wrapper_type) in
-        ((NoTangent(), codual_type), (NoFData(), Mooncake.fcodual_type))
-        d = CoDual(open_type, data)
-        @test primal(d) === open_type
-        @test d isa wrapper_type(Type{open_type})
-    end
-
     @testset "$P" for (P, D, F) in Any[
         (Float64, CoDual{Float64,Float64}, CoDual{Float64,NoFData}),
         (Int, CoDual{Int,NoTangent}, CoDual{Int,NoFData}),

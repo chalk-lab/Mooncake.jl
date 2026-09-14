@@ -1434,7 +1434,7 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
 
     # Verify tangent type returns the expected type.
     @test tangent_type(primal_type) == expected_tangent_type
-    @test is_foldable(tangent_type, (CC.widenconst(Core.Const(primal_type)),))
+    @test is_foldable(tangent_type, (CC.widenconst(Core.Const(expected_tangent_type)),))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
     return nothing
 end

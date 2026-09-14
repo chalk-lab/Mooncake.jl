@@ -55,7 +55,9 @@ randn_dual(rng::AbstractRNG, x) = Dual(x, randn_tangent(rng, x))
 end
 
 function dual_type(p::Type{Type{P}}) where {P}
-    Base.has_free_typevars(p) && return Dual
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(p) && return Dual
+    end
     return @isdefined(P) ? Dual{Type{P},NoTangent} : Dual{_typeof(p),NoTangent}
 end
 
@@ -87,6 +89,8 @@ end
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function Dual(x::Type{P}, dx::NoTangent) where {P}
-    Base.has_free_typevars(x) && return Dual{typeof(x),NoTangent}(x, dx)
+    @static if VERSION >= v"1.14-"
+        Base.has_free_typevars(x) && return Dual{typeof(x),NoTangent}(x, dx)
+    end
     return Dual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(x, dx)
 end
