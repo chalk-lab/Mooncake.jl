@@ -3230,8 +3230,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     # BLAS LEVEL 3
     #
 
+    # `α` with `β`, and `dα` with `dβ`, are PAIRED rather than crossed. Both rules branch on the
+    # scalars in only four ways each: the `α == 1 && β == 0` fast path, `α == 0` (where the
+    # reference spec lets `gemm!` skip `A`, so the primal has to come from the routine), and
+    # otherwise whether `β` is zero; in the tangents, only whether each of `dα`, `dβ` is zero.
+    # Crossing the four axes costs 81 rows per flag combination to reach 16 distinct branches.
+    # The complex entries carry a nonzero imaginary part, without which a dropped `conj` passes.
+    αβs = if P <: BlasComplexFloat
+        [(1.0, 0.0), (0.0, 0.33), (0.46 + 0.32im, 0.0), (0.46 + 0.32im, 0.39 + 0.27im)]
+    else
+        [(1.0, 0.0), (0.0, 0.33), (-0.25, 0.0), (-0.25, 0.33)]
+    end
+    dαβs = if P <: BlasComplexFloat
+        [(0.0, 0.0), (0.44, 0.0), (0.0, -0.11), (-0.20 + 0.38im, 0.86 + 0.44im)]
+    else
+        [(0.0, 0.0), (0.44, 0.0), (0.0, -0.11), (0.44, -0.11)]
+    end
     dαs = [0.0, 0.44, -0.20 + 0.38im]
-    dβs = [0.0, -0.11, 0.86 + 0.44im]
 
     # 1.10 fails to infer part of a matmat product in the pullback
     perf_flag = VERSION < v"1.11-" ? :none : :stability
@@ -3244,10 +3259,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123456)
-            map_prod(t_flags, t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
-
+            map_prod(t_flags, t_flags, αβs, dαβs) do (tA, tB, (α, β), (dα, dβ))
                 As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
                 Bs = blas_matrices(rng, P, tB == 'N' ? 4 : 5, tB == 'N' ? 5 : 4)
                 Cs = blas_matrices(rng, P, 3, 5)
@@ -3266,9 +3278,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123457)
-            map_prod(t_flags, αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(t_flags, αβs, dαβs) do (tA, (α, β), (dα, dβ))
                 P <: BlasRealFloat && tA == 'C' && return []
 
                 As = blas_matrices(rng, P, tA == 'N' ? 3 : 4, tA == 'N' ? 4 : 3)
@@ -3291,9 +3301,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123458)
-            map_prod(['T', 'C'], t_flags, αs, βs, dαs, dβs) do (tA, tB, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(['T', 'C'], t_flags, αβs, dαβs) do (tA, tB, (α, β), (dα, dβ))
                 P <: BlasRealFloat && (tA == 'C' || tB == 'C') && return []
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
@@ -3314,9 +3322,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123459)
-            map_prod(['T', 'C'], αs, βs, dαs, dβs) do (tA, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(['T', 'C'], αβs, dαβs) do (tA, (α, β), (dα, dβ))
                 P <: BlasRealFloat && tA == 'C' && return []
 
                 As = blas_vectors(rng, P, 3; only_contiguous=true)
@@ -3341,9 +3347,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123460)
-            map_prod(uplos, syrk_herk_trans, αs, βs, dαs, dβs) do (ul, t, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(uplos, syrk_herk_trans, αβs, dαβs) do (ul, t, (α, β), (dα, dβ))
                 f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
                 # herk! requires real-valued α, β (relty = real(P) for complex P)
                 ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
@@ -3367,9 +3371,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         test_cases,
         let
             rng = rng_ctor(123461)
-            map_prod(uplos, αs, βs, dαs, dβs) do (ul, α, β, dα, dβ)
-                P <: BlasRealFloat && (imag(α) != 0 || imag(β) != 0) && return []
-                P <: BlasRealFloat && (imag(dα) != 0 || imag(dβ) != 0) && return []
+            map_prod(uplos, αβs, dαβs) do (ul, (α, β), (dα, dβ))
                 f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
                 ra = P <: BlasComplexFloat ? real(P)(real(α)) : P(α)
                 rb = P <: BlasComplexFloat ? real(P)(real(β)) : P(β)
