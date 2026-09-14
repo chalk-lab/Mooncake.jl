@@ -1434,7 +1434,7 @@ function test_tangent_type(primal_type::Type, expected_tangent_type::Type)
 
     # Verify tangent type returns the expected type.
     @test tangent_type(primal_type) == expected_tangent_type
-    @test is_foldable(tangent_type, (Type{expected_tangent_type},))
+    @test is_foldable(tangent_type, (CC.widenconst(Core.Const(primal_type)),))
     test_opt(tangent_type, Tuple{_typeof(primal_type)})
     return nothing
 end
@@ -1892,7 +1892,7 @@ function _test_tangent_splitting_internal(
 
     # Compute the tangent type associated to `F` and `R`, and check it is equal to `T`.
     @test tangent_type(F, R) == T
-    @test is_foldable(tangent_type, (Type{F}, Type{R}))
+    @test is_foldable(tangent_type, map(CC.widenconst ∘ Core.Const, (F, R)))
 
     # Check that combining f and r yields a tangent of the correct type and value.
     t_combined = Mooncake.tangent(f, r)

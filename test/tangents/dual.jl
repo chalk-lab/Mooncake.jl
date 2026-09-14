@@ -3,6 +3,11 @@
     @test Dual(Float64, NoTangent()) isa Dual{Type{Float64},NoTangent}
     @test zero_dual(5.0) == Dual(5.0, 0.0)
 
+    open_type = AbstractArray{TypeVar(:T),1}
+    d = Dual(open_type, NoTangent())
+    @test primal(d) === open_type
+    @test d isa dual_type(Type{open_type})
+
     @testset "$P" for (P, D) in Any[
         (Float64, Dual{Float64,Float64}),
         (Int, Dual{Int,NoTangent}),

@@ -22,8 +22,9 @@ Check that you're running a version of Julia that Mooncake.jl supports.
 See the [`SUPPORT_POLICY.md`](https://github.com/chalk-lab/Mooncake.jl/blob/main/SUPPORT_POLICY.md) for more info.
 
 Julia 1.10 (LTS) and 1.13 (stable) are officially supported. Julia 1.14 nightly
-compatibility is experimental, with non-blocking core CI only; it is not a guarantee
-that every nightly build or package extension will work.
+compatibility is experimental, with non-blocking core correctness CI that skips JET and
+AllocCheck static analysis. It is not a guarantee that every nightly build or package
+extension will work, or that nightly inference/performance matches supported Julia versions.
 
 The main entry point to `Mooncake.jl` is its API, using `Mooncake.prepare_gradient_cache` and `Mooncake.value_and_gradient!!`.
 For example, use it as follows to compute the gradient of a function mapping a `Vector{Float64}` to `Float64`.

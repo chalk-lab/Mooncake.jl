@@ -5,10 +5,12 @@ end
 
 # Always sharpen the first thing if it's a type so static dispatch remains possible.
 function CoDual(x::Type{P}, dx::NoFData) where {P}
+    Base.has_free_typevars(x) && return CoDual{typeof(x),NoFData}(x, dx)
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoFData}(P, dx)
 end
 
 function CoDual(x::Type{P}, dx::NoTangent) where {P}
+    Base.has_free_typevars(x) && return CoDual{typeof(x),NoTangent}(x, dx)
     return CoDual{@isdefined(P) ? Type{P} : typeof(x),NoTangent}(P, dx)
 end
 
@@ -84,6 +86,7 @@ The type of the `CoDual` which contains instances of `P` and associated tangents
 end
 
 @unstable function codual_type(p::Type{Type{P}}) where {P}
+    Base.has_free_typevars(p) && return CoDual
     return @isdefined(P) ? CoDual{Type{P},NoTangent} : CoDual{_typeof(p),NoTangent}
 end
 
@@ -98,6 +101,7 @@ The type of the `CoDual` which contains instances of `P` and its fdata.
 end
 
 @unstable function fcodual_type(p::Type{Type{P}}) where {P}
+    Base.has_free_typevars(p) && return CoDual
     return @isdefined(P) ? CoDual{Type{P},NoFData} : CoDual{_typeof(p),NoFData}
 end
 

@@ -80,7 +80,14 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
+        if: matrix.version != 'nightly'
       - uses: julia-actions/julia-runtest@v1
+        if: matrix.version != 'nightly'
+        env:
+          TEST_GROUP: ${{ matrix.test_group }}
+      - name: Nightly correctness (JET and AllocCheck analysis skipped)
+        if: matrix.version == 'nightly'
+        run: julia --check-bounds=yes --code-coverage=user --project=test/nightly test/nightly/runtests.jl
         env:
           TEST_GROUP: ${{ matrix.test_group }}
       - uses: julia-actions/julia-processcoverage@v1
