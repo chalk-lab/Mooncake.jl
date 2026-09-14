@@ -9,6 +9,25 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## Numerical workarounds and singularities
+
+Numerical workarounds can preserve function values while producing incorrect
+derivatives under automatic differentiation. For example,
+`LogExpFunctions.xlogy` implements:
+
+```julia
+function xlogy(x::Number, y::Number)
+    result = x * log(y)
+    return iszero(x) && !isnan(y) ? zero(result) : result
+end
+```
+
+At `(0, 2)`, differentiating the selected branch gives zero, but the partial
+derivative with respect to `x` is `log(2)`. Special functions with
+parameter-specific formulas or termination conditions can present similar
+problems. These limitations are not specific to Mooncake. Custom differentiation
+rules may be needed; see [Defining Rules](@ref).
+
 ## `try`/`catch`/`finally` Blocks
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
