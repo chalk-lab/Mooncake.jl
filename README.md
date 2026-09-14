@@ -13,23 +13,17 @@
 
 </div>
 
-`Mooncake.jl` is an automatic differentiation (AD) package written entirely in
-Julia. Support for mutation allows it to differentiate most numerical Julia code
-without hand-written rules. Unsupported operations generally fail explicitly; the
-[known limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/)
-describe exceptions and validity boundaries.
-
-See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for a fuller
-introduction.
+The goal of the `Mooncake.jl` project is to produce an automatic differentiation (AD)
+package written entirely in Julia that improves on `ForwardDiff.jl`, `ReverseDiff.jl`,
+and `Zygote.jl` in several ways.
+Applying AD to Julia's type-inferred, optimised intermediate representation helps
+produce efficient derivative code.
+Support for mutation allows Mooncake to differentiate a wide range of numerical Julia code
+without hand-written rules.
+See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
 
 > [!NOTE]
-> **Performance varies by workload.** On one system, [Flux
-> benchmarks](test/integration_testing/flux/README.md) found that cached Mooncake
-> gradient evaluations were 2.03 times faster than Zygote on CPU across 19 models and
-> comparable on GPU. First evaluations were substantially slower.
-> [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md)
-> covered all 147 PosteriorDB posteriors; Mooncake's geometric-mean runtime was 1.32
-> times Stan's. See the reports for the methods and complete results.
+> **Performance varies by workload.** On one system, [Flux benchmarks](test/integration_testing/flux/README.md) found Mooncake gradient evaluations after warm-up were 2.03 times as fast as Zygote on CPU across 19 models, with comparable GPU performance. First evaluations were substantially slower. See also the [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md).
 
 ## Getting started
 
@@ -63,16 +57,15 @@ error. See the
 for a walkthrough and the
 [interface](https://chalk-lab.github.io/Mooncake.jl/stable/interface/) for details.
 
-## Project scope
+## Contributing
 
-Mooncake is maintained as research software, taking long-lived projects such as R and
-TeX as models. It prioritises correctness and stability over broad feature coverage.
+The `Mooncake.jl` team has limited capacity for triage and review. In the spirit of
+long-lived projects such as R and TeX, we favour correctness, stability,
+and tightly scoped fixes over open-ended expansion.
 
-Reproducible cases of incorrect results or unexpected failures within the documented
-scope guide further work. Rules for operations outside Julia Base, broad redesigns,
-general debugging support, and the documented [known
-limitations](https://chalk-lab.github.io/Mooncake.jl/stable/known_limitations/) are not
-part of the current programme of work.
+Contributions are most welcome when they concern reproducible defects:
+incorrect results, unexpected failures, or behaviour at odds with the
+documented scope. See the [support policy](SUPPORT_POLICY.md) for details.
 
 ## Licensing
 
