@@ -22,8 +22,9 @@ Support for mutation allows Mooncake to differentiate a wide range of numerical 
 without hand-written rules.
 See the [documentation](https://chalk-lab.github.io/Mooncake.jl/stable) for details.
 
-> [!NOTE]
-> **Performance varies by workload.** On one system, [Flux benchmarks](test/integration_testing/flux/README.md) found Mooncake gradient evaluations after warm-up were 2.03 times as fast as Zygote on CPU across 19 models, with comparable GPU performance. First evaluations were substantially slower. See also the [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md).
+## Performance
+
+On one system, [Flux benchmarks](test/integration_testing/flux/README.md) found Mooncake gradient evaluations after warm-up were 2.03 times as fast as Zygote on CPU across 19 models, with comparable GPU performance. First evaluations were substantially slower. See also the [DynamicPPL benchmarks](https://github.com/TuringLang/DynamicPPL.jl/blob/ca32f3a05f8f866f51ee35dd1bc81ecd75876033/benchmarks/posteriordb.md). **Performance varies by workload.** 
 
 ## Getting started
 
