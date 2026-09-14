@@ -444,26 +444,19 @@ function frule!!(
     _, info = LAPACK.potrf!(uplo, A)
     N = size(A, 1)
     Abm = reshape(Ab, Nw, N, N)
-    # Scratches reused across lanes; the per-lane solves/products run in place via direct
-    # BLAS (LinearAlgebra's `lmul!`/`rdiv!` on triangulars allocate a temp on each call).
-    # Each lane's dA round-trips through the dense `Ascr` (a block lane is stride-Nw,
-    # which the BLAS calls and LAPACK-backed `Symmetric` copies reject); the triangle
-    # write-back moves whole contiguous lane columns of the block.
-    # Batched Cholesky pushforward. Every lane shares the factor `A`, so the per-lane `trsm!`/
-    # `trmm!` collapse into wide calls over the whole `(Nw,N,N)` block. The left- and right-oriented
-    # solves need opposite lane-stacking (column-block `S` vs row-block `T`), bridged by one permute.
-    # ~1.5x at small `N` (LAPACK-call-bound), fading to ~1x as `N` grows (FLOP-bound). Only the
-    # factor's own triangle is written back — `potrf!` leaves the other triangle of `A` untouched,
-    # so its partials must stay equal to the input `dA`'s (the block's other triangle, left as-is).
+    # Left and right solves stack lanes differently; at width 1 both layouts share storage.
+    # Write back only the factor's triangle, preserving the untouched triangle's partials.
     S = Array{P}(undef, N, Nw, N)
-    T = Array{P}(undef, Nw, N, N)
+    T = Nw == 1 ? reshape(S, Nw, N, N) : Array{P}(undef, Nw, N, N)
     if uplo == 'U'
         @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
             S[i, lane, j] = i <= j ? Abm[lane, i, j] : Abm[lane, j, i]
         end
         BLAS.trsm!('L', 'U', 'T', 'N', one(P), A, reshape(S, N, Nw * N))
-        @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
-            T[lane, i, j] = S[i, lane, j]
+        if Nw != 1
+            @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
+                T[lane, i, j] = S[i, lane, j]
+            end
         end
         Tf = reshape(T, Nw * N, N)
         BLAS.trsm!('R', 'U', 'N', 'N', one(P), A, Tf)
@@ -485,8 +478,10 @@ function frule!!(
         end
         Tf = reshape(T, Nw * N, N)
         BLAS.trsm!('R', 'L', 'T', 'N', one(P), A, Tf)
-        @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
-            S[i, lane, j] = T[lane, i, j]
+        if Nw != 1
+            @inbounds for j in 1:N, lane in 1:Nw, i in 1:N
+                S[i, lane, j] = T[lane, i, j]
+            end
         end
         Sf = reshape(S, N, Nw * N)
         BLAS.trsm!('L', 'L', 'N', 'N', one(P), A, Sf)

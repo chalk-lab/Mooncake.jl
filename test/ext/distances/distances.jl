@@ -22,6 +22,18 @@ using Mooncake.TestUtils: test_rule
         )
     end
 
+    # Unit-stride input views can bypass scratch; strided output views still require it.
+    @testset "views, $metric, step=$step" for metric in (SqEuclidean(), Euclidean()),
+        step in (1, 2)
+
+        X = view(randn(rng, 6, 7), 2:6, :)
+        Y = view(randn(rng, 6, 3), 2:6, :)
+        for (n, xs) in ((7, (X,)), (3, (X, Y)))
+            R = view(zeros(step * 7, n), 1:step:(step * 7), :)
+            test_rule(rng, Distances._pairwise!, metric, R, xs...; perf_flag=:stability)
+        end
+    end
+
     # `pairwise` and `pairwise!` reach those rules through their own `dims` handling, which
     # is all these add: element types are covered above.
     @testset "$f, $metric, dims=$dims" for f in (pairwise, pairwise!),
