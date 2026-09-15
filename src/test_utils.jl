@@ -2328,7 +2328,8 @@ type functions are well-formed for `primal_type` at chunk width `N`:
 - the forward non-differentiable sentinel `NoDual` is used exactly when the reverse tangent is
   `NoTangent` (`tangent_type(P) === NoTangent ⟺ dual_type === NoDual`) — catches a `NoTangent`
   leaking into a forward slot or vice versa;
-- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`;
+- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`,
+  or `Lifted{P, N, V} where V` where `dual_type` returns a widened (non-concrete) bound;
 - both functions are foldable and infer away — the foldability check is what surfaces a
   world-age trap in a `@generated` `dual_type`/`lifted_type` (a sub-call baked into the
   generator body instead of the returned expression).
@@ -2356,7 +2357,11 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
     # metatype / abstract primal deliberately kind-widens `lifted_type` to a `UnionAll`, which
     # is not const-foldable, so those are exercised for runnability (the assertions above) only.
     if isconcretetype(primal_type) && !(primal_type <: Type)
-        @test L === Lifted{primal_type,N,V}
+        # A widened `V` (`dual_type` returns an upper bound whenever an element's own dual type
+        # is non-concrete) makes the exact slot uninhabited, `Lifted` being invariant in `V`; the
+        # sound annotation there is the `where` bound.
+        exact = isconcretetype(V)
+        @test L === (exact ? Lifted{primal_type,N,V} : (Lifted{primal_type,N,W} where {W}))
         @test is_foldable(dual_type, (Val{N}, Type{primal_type}))
         @test is_foldable(lifted_type, (Val{N}, Type{primal_type}))
         test_opt(dual_type, Tuple{Val{N},Type{primal_type}})
@@ -2528,9 +2533,12 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
         # self-referential primals, which only the cache-threading path can seed.
         if cache_free
             V = dual_type(Val(N), P)
-            @test typeof(zero_dual(Val(N), p)) === V
-            @test typeof(uninit_dual(Val(N), p)) === V
-            @test typeof(randn_dual(Val(N), rng, p)) === V
+            # Exact match only where `V` is exact: `dual_type` returns a widened upper bound
+            # whenever a component's own dual type is non-concrete, same as the slot check above.
+            for x in
+                (zero_dual(Val(N), p), uninit_dual(Val(N), p), randn_dual(Val(N), rng, p))
+                isconcretetype(V) ? (@test typeof(x) === V) : (@test typeof(x) <: V)
+            end
         end
     end
 

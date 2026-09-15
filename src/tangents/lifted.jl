@@ -1044,6 +1044,15 @@ Shapes defined so far:
 @inline _is_metatype_kind(@nospecialize(T)) =
     T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom
 
+# The slot for a concrete `P`. `dual_type` may return a WIDENED upper bound rather than the
+# exact `V` (the `Tuple`/`NamedTuple` methods do so whenever an element's own dual type is
+# non-concrete), and `Lifted` is invariant in `V`, so `Lifted{P,N,Any}` would be an exact claim
+# that no runtime slot satisfies. Emit the sound `Lifted{P,N,V} where V` in that case.
+@inline function _concrete_lifted_type(::Val{N}, ::Type{P}) where {N,P}
+    V = dual_type(Val(N), P)
+    return isconcretetype(V) ? Lifted{P,N,V} : (Lifted{P,N,W} where {W})
+end
+
 @foldable @inline lifted_type(::Val{N}, ::Type{Union{}}) where {N} = Union{}
 # Abstract tuple/named-tuple `P` (e.g. a grouped-vararg `Tuple{Function,
 # Vararg{Any}}` in the forward IR) must widen to a UnionAll: `Lifted` is invariant
@@ -1058,7 +1067,7 @@ Shapes defined so far:
 @foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P<:Tuple}
     @isdefined(P) || return Lifted  # phantom free-TypeVar Tuple — broad `Lifted` slot, as the generic `lifted_type` guard below
     return if isconcretetype(P)
-        Lifted{P,N,dual_type(Val(N), P)}
+        _concrete_lifted_type(Val(N), P)
     else
         (Lifted{T,N,V} where {T<:P,V})
     end
@@ -1101,7 +1110,7 @@ end
         _all_nodual_union_members(P) &&
         return Union{lifted_type(Val(N), P.a),lifted_type(Val(N), P.b)}
     return if isconcretetype(P) && !_is_metatype_kind(P)
-        Lifted{P,N,dual_type(Val(N), P)}
+        _concrete_lifted_type(Val(N), P)
     elseif P <: Type
         # Metatype kind (e.g. `DataType`): a type-unstable type-valued result is inferred as `P`,
         # but the runtime value is sharpened to `Lifted{Type{X}}`. A *bounded* `Lifted{T<:P}` slot

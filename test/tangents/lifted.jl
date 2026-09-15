@@ -1020,5 +1020,15 @@ const NDAC_VecC64 = NDualArray{
         )
             test_lifted(Xoshiro(123456), p)
         end
+
+        # Primals whose `dual_type` widens to an upper bound instead of the exact V — one per
+        # `lifted_type` method that can widen (the `Tuple` overload and the generic one). The
+        # slot must stay inhabited: `Lifted` is invariant in V, so an exact `Lifted{P,N,Any}`
+        # annotation admits no runtime value at all.
+        @testset "test_lifted widened V $(typeof(p))" for p in (
+            convert(@NamedTuple{x::Any}, (x=3.0,)), (Ptr{UInt8}(pointer(ptr_backing)),)
+        )
+            test_lifted(Xoshiro(123456), p)
+        end
     end
 end
