@@ -2172,6 +2172,9 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         TestResources.StructNoFwds(5.0),
         TestResources.StructNoRvs([5.0]),
         TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0),
+        # An ARRAY of mutable structs: the element's lane read has to compose inside the array's
+        # reverse storage, which a write-through proxy cannot be stored in.
+        [TestResources.TypeStableMutableStruct{Float64}(5.0, 3.0)],
         # Complex scalar + array: a differentiable element type otherwise absent from this list,
         # so it is driven through both test_lifted (forward) and test_tangent (reverse).
         1.0 + 2.0im,

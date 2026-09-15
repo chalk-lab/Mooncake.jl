@@ -2407,7 +2407,7 @@ end
 # interleaved `NDual`, but the `N` per-lane scalar partials live in their own parallel `Ref`,
 # not interleaved with the value, so a raw pointer taken via `pointer_from_objref` lands them
 # at a parallel address (correct forward raw-pointer access). Being a *distinct* type (not a bare `RefValue`) stops the generic struct
-# recursion from re-lifting it — so the seed factories, `_unlift_seed`, `_new_`,
+# recursion from re-lifting it — so the seed factories, `_materialise_lane`, `_new_`,
 # `lgetfield`/`lsetfield!`, and raw-pointer frules each carry an explicit branch (as for
 # `NDualArray`). The slot's primal `Ref` lives in the enclosing `Lifted`, not here.
 # ──────────────────────────────────────────────────────────────────────────

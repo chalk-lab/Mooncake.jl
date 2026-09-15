@@ -82,27 +82,19 @@ function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict
 end
 
 # Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
-# DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged.
-@inline function tangent(
-    x::Lifted{P,N,MistyClosureTangent}, lane::Integer
-) where {P<:MistyClosure,N}
-    v = x.rep
-    return MistyClosureTangent(tangent(v.captures_tangent, lane), v.dual_callable)
-end
-
-# Unlift rebuilds a reverse tangent, so it must recurse into `captures_tangent` (itself a
-# forward `Lifted` captures slot) rather than take the lane accessor: for a mutable-struct
-# capture the accessor yields the `MutableDualTangentView` write proxy, which reverse-mode
-# tangent arithmetic has no method for. The cache keys on the captures identity, so a reverse
-# rule's shared `fwds_oc`/`pb_oc` captures unlift to one tangent.
-@inline unlift(x::Lifted{P,1,MistyClosureTangent}) where {P<:MistyClosure} = (
-    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+# DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged. The cache
+# keys on the captures identity, so a reverse rule's shared `fwds_oc`/`pb_oc` captures give one
+# tangent.
+@inline tangent(x::Lifted{P,N,MistyClosureTangent}, lane::Integer) where {P<:MistyClosure,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
 )
-function _unlift_seed(
-    x::Lifted{P,1,MistyClosureTangent}, cache::IdDict
-) where {P<:MistyClosure}
+function _materialise_lane(
+    x::Lifted{P,N,MistyClosureTangent}, lane::Integer, cache::IdDict
+) where {P<:MistyClosure,N}
     v = tangent(x)
-    return MistyClosureTangent(_unlift_seed(v.captures_tangent, cache), v.dual_callable)
+    return MistyClosureTangent(
+        _materialise_lane(v.captures_tangent, lane, cache), v.dual_callable
+    )
 end
 
 function zero_tangent_internal(p::MistyClosure, d::MaybeCache)
