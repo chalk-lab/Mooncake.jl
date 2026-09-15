@@ -362,7 +362,13 @@ function frule!!(
     y = range_start_step_length(primal(a), primal(st), primal(len))
     a_parts = tangent(a).partials
     st_parts = tangent(st).partials
-    ref_v = ntuple(k -> TWP{T}(a_parts[k], zero(T)), Val(N))
+    # `ref` is the range value at index `offset`, not at index 1: `ref == a + (offset-1)*step`.
+    # `floatrange`/`_linspace` place `offset` at the element nearest the zero crossing, so it is 1
+    # only for ranges that do not straddle zero. Without the `(offset-1)` term,
+    # `d(r[i]) == d(ref) + (i-offset)*d(step)` depends on that internal choice; with it the
+    # dependence cancels to the correct `d(a) + (i-1)*d(step)`.
+    o = y.offset - 1
+    ref_v = ntuple(k -> TWP{T}(a_parts[k] + o * st_parts[k], zero(T)), Val(N))
     step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
     nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
     return Lifted{typeof(y),N}(y, ImmutableDual(nt))
@@ -373,8 +379,14 @@ function rrule!!(
     st::CoDual{T},
     len::CoDual{<:Integer},
 ) where {T<:IEEEFloat}
-    pb(dz) = NoRData(), T(dz.data.ref), T(dz.data.step), NoRData()
-    return zero_fcodual(range_start_step_length(a.x, st.x, len.x)), pb
+    y = range_start_step_length(a.x, st.x, len.x)
+    # Adjoint of `ref == a + (offset-1)*step`; see the `frule!!` above for why `offset != 1`.
+    o = y.offset - 1
+    function pb(dz)
+        r̄ = T(dz.data.ref)
+        return NoRData(), r̄, o * r̄ + T(dz.data.step), NoRData()
+    end
+    return zero_fcodual(y), pb
 end
 
 using Base: unsafe_getindex
@@ -451,7 +463,9 @@ function frule!!(
     y = (:)(primal(start), primal(step), primal(stop))
     start_parts = tangent(start).partials
     step_parts = tangent(step).partials
-    ref_v = ntuple(k -> TWP{P}(start_parts[k], zero(P)), Val(N))
+    # `ref == start + (offset-1)*step`, and `offset` is 1 only when the range avoids zero.
+    o = y.offset - 1
+    ref_v = ntuple(k -> TWP{P}(start_parts[k] + o * step_parts[k], zero(P)), Val(N))
     step_v = ntuple(k -> TWP{P}(step_parts[k], zero(P)), Val(N))
     nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
     return Lifted{typeof(y),N}(y, ImmutableDual(nt))
@@ -459,8 +473,14 @@ end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
-    colon_pb(dy::RData) = NoRData(), P(dy.data.ref), P(dy.data.step), zero(P)
-    return zero_fcodual((:)(start.x, step.x, stop.x)), colon_pb
+    y = (:)(start.x, step.x, stop.x)
+    # Adjoint of `ref == start + (offset-1)*step`.
+    o = y.offset - 1
+    function colon_pb(dy::RData)
+        r̄ = P(dy.data.ref)
+        return NoRData(), r̄, o * r̄ + P(dy.data.step), zero(P)
+    end
+    return zero_fcodual(y), colon_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(sum),TWPStepRangeLen}
@@ -507,8 +527,12 @@ function frule!!(
     y = Base.range_start_stop_length(primal(start), primal(stop), _len)
     start_parts = tangent(start).partials
     stop_parts = tangent(stop).partials
-    ref_v = ntuple(k -> TWP{P}(start_parts[k], zero(P)), Val(N))
-    step_v = ntuple(k -> TWP{P}((stop_parts[k] - start_parts[k]) / l, zero(P)), Val(N))
+    # `ref == start + (offset-1)*step` with `step == (stop-start)/l`, and `offset` is 1 only when
+    # the range avoids zero.
+    o = y.offset - 1
+    d_step = ntuple(k -> (stop_parts[k] - start_parts[k]) / l, Val(N))
+    ref_v = ntuple(k -> TWP{P}(start_parts[k] + o * d_step[k], zero(P)), Val(N))
+    step_v = ntuple(k -> TWP{P}(d_step[k], zero(P)), Val(N))
     nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
     return Lifted{typeof(y),N}(y, ImmutableDual(nt))
 end
@@ -519,13 +543,17 @@ function rrule!!(
     length::CoDual{<:Integer},
 ) where {P<:IEEEFloat}
     l = (length.x - 1)
+    r = Base.range_start_stop_length(start.x, stop.x, length.x)
+    # Adjoint of `ref == start + (offset-1)*(stop-start)/l`.
+    o = r.offset - 1
     function range_start_stop_length_pb(dy::RData)
-        dstart = P(dy.data.ref) - P(dy.data.step) / l
-        dstop = P(dy.data.step) / l
+        r̄ = P(dy.data.ref)
+        s̄ = P(dy.data.step)
+        dstart = r̄ * (1 - o / l) - s̄ / l
+        dstop = r̄ * o / l + s̄ / l
         return NoRData(), dstart, dstop, NoRData()
     end
-    y = zero_fcodual(Base.range_start_stop_length(start.x, stop.x, length.x))
-    return y, range_start_stop_length_pb
+    return zero_fcodual(r), range_start_stop_length_pb
 end
 
 @static if VERSION >= v"1.11"
@@ -627,6 +655,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         (false, :stability_and_allocs, nothing, sum, range(-0.1, 9.9; length=51)),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, 11.7, 7),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, -11.7, 11),
+        # Straddles zero, so `offset == 3` and the `(offset-1)*step` term in `ref`'s derivative is
+        # live. Every other range row here has `offset == 1`, where that term vanishes and a rule
+        # that drops it still passes.
+        (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
     ]
     @static if VERSION >= v"1.11"
         extra_test_cases = Any[
@@ -705,6 +737,24 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # Functionality in base/range.jl
         (false, :allocs, nothing, range, 0.0, 5.6),
         (false, :allocs, nothing, (lb, ub) -> range(lb, ub; length=10), -0.45, 9.5),
+        # Ranges straddling zero, where `offset != 1` and `ref != start`. Consuming the range
+        # rather than testing the constructor directly: `ref` jumps discontinuously as `offset`
+        # switches, so a finite-difference oracle on the constructor's own output is unreliable,
+        # while a value read out of the range is smooth and offset-independent.
+        (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
+        # 1.11 boxes this forward OC for 2 allocations where 1.10, 1.12 and 1.13 are alloc-free;
+        # measured identical before and after the `offset` fix, so it is a property of the shape
+        # rather than of the derivative. `fwd_allocs_broken` keeps the zero-alloc assertion live
+        # on the other three versions.
+        (
+            false,
+            :allocs,
+            (fwd_allocs_broken=true,),
+            (a, st, b) -> sum((:)(a, st, b)),
+            -1.0,
+            0.3,
+            1.0,
+        ),
     ]
     @static if VERSION >= v"1.11"
         push!(test_cases, (false, :allocs, nothing, Base._logrange_extra, 1.1, 3.5, 5))
