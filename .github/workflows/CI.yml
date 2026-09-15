@@ -22,6 +22,8 @@ jobs:
     name: ${{ matrix.test_group }}-${{ matrix.version }}-${{ matrix.arch }}
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    # Preparatory coverage, not an official support commitment.
+    continue-on-error: ${{ matrix.version == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +61,12 @@ jobs:
           - x64
         include:
           - test_group: 'basic'
+            version: 'nightly'
+            arch: x64
+          - test_group: 'rules/misc'
+            version: 'nightly'
+            arch: x64
+          - test_group: 'basic'
             version: 'lts'
             arch: x86
           - test_group: 'rules/array_legacy'
@@ -72,7 +80,14 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
+        if: matrix.version != 'nightly'
       - uses: julia-actions/julia-runtest@v1
+        if: matrix.version != 'nightly'
+        env:
+          TEST_GROUP: ${{ matrix.test_group }}
+      - name: Nightly correctness (JET and AllocCheck analysis skipped)
+        if: matrix.version == 'nightly'
+        run: julia --check-bounds=yes --code-coverage=user --project=test/nightly test/nightly/runtests.jl
         env:
           TEST_GROUP: ${{ matrix.test_group }}
       - uses: julia-actions/julia-processcoverage@v1
