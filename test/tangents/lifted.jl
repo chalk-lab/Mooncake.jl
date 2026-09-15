@@ -1030,5 +1030,14 @@ const NDAC_VecC64 = NDualArray{
         )
             test_lifted(Xoshiro(123456), p)
         end
+
+        # A sparsely-occupied primal: a `Dict`'s `keys`/`vals` buffers lift to an isbits-eltype
+        # V that reports every slot assigned while the primal has `#undef` in its unused hash
+        # slots, so the inner-value invariant walk must guard both sides. It cannot go in
+        # `tangent_test_cases()` — reverse `primal_to_tangent_internal!!` raises `UndefRefError`
+        # on the same sparse buffer, an unrelated defect in `_map_if_assigned!`.
+        @testset "test_lifted Dict" begin
+            test_lifted(Xoshiro(123456), Dict(:a => randn(Xoshiro(1), 2)))
+        end
     end
 end

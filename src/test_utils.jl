@@ -1136,10 +1136,17 @@ end
 function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent, c::IdDict)
     return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v), c)
 end
+# Both slots are guarded: a V with an isbits eltype (the dual type of a non-differentiable
+# element buffer is one of `NoDual`) reports every slot assigned, while the primal it shadows may
+# be sparsely occupied — a `Dict`'s `keys`/`vals` are the common case. An undefined primal slot
+# has no value to check, as the struct method above already says with `!isdefined(p, n)`.
 function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
-    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+    return all(
+        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
+        eachindex(v),
+    )
 end
 # A `Core.SimpleVector` is not an `AbstractArray`, so the element-wise method above does not match
 # it, but its forward V is a plain `Vector{Any}` of per-element Vs. Closing the default is what
@@ -1148,7 +1155,10 @@ function _chunked_v_invariant(p::Core.SimpleVector, v::AbstractArray, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
     length(p) == length(v) || return false
-    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+    return all(
+        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
+        eachindex(v),
+    )
 end
 
 # Shapes with no inner value to check, named individually so the default can close. A `NoDual` and
