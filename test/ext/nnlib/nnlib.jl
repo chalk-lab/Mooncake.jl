@@ -14,11 +14,12 @@ dropout_tester_2(Trng, x, p) = dropout(Trng(1), x, p; dims=2)
 dropout_tester_3(Trng, x, p) = dropout(Trng(1), x, p; dims=(1, 2))
 
 @testset "batched_mul CPU rule" for batches in ((3, 3), (1, 3), (3, 1))
+    rng = StableRNG(123)
     test_rule(
-        StableRNG(123),
+        rng,
         batched_mul,
-        randn(3, 2, batches[1]),
-        randn(2, 5, batches[2]);
+        randn(rng, 3, 2, batches[1]),
+        randn(rng, 2, 5, batches[2]);
         is_primitive=true,
         unsafe_perturb=true,
     )
@@ -26,14 +27,16 @@ end
 
 @testset "affine normalization rule" for device in
                                          (CUDA.functional() ? (identity, cu) : (identity,))
+    rng = StableRNG(123)
     test_rule(
-        StableRNG(123),
+        rng,
         NNlib._affine_normalize,
-        device(randn(Float32, 2, 5)),
-        device(randn(Float32, 2, 1)),
-        device(rand(Float32, 2, 1)),
-        device(randn(Float32, 2, 1)),
-        device(randn(Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 5)),
+        device(randn(rng, Float32, 2, 1)),
+        # Keep variance + epsilon positive under finite-difference perturbations.
+        device(1.0f0 .+ rand(rng, Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 1)),
+        device(randn(rng, Float32, 2, 1)),
         1.0f-5;
         is_primitive=true,
         unsafe_perturb=true,
@@ -605,8 +608,8 @@ end
     rng = StableRNG(123)
     A2 = randn(rng, 3, 4)
     g2 = randn(rng, 3, 4)
-    A3 = randn(Float32, 3, 4, 2)
-    g3 = randn(Float32, 3, 4, 2)
+    A3 = randn(rng, Float32, 3, 4, 2)
+    g3 = randn(rng, Float32, 3, 4, 2)
 
     # Plain array
     xf = zeros(3, 4)
