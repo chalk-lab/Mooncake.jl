@@ -3037,18 +3037,17 @@ function rrule!!(
     return C, generic_matmatmul!_pb!!
 end
 
-# The 7-arg `generic_matmatmul!` is the CUDA.jl boundary through Julia 1.12; Julia 1.13
-# uses the equivalent public storage-type boundary `mul!(C, tA, tB, A, B, alpha, beta)`.
+# CUDA.jl implements this either as the 7-arg `generic_matmatmul!` or as the equivalent
+# public storage-type boundary `mul!(C, tA, tB, A, B, alpha, beta)`, depending on its
+# version and Julia's, and forwards the name it does not implement to the one it does. Cover
+# both names: a rule on only one of them lets the forwarding call fall through into cuBLAS,
+# which AD cannot follow (the device allocator uses `try`/`catch`).
 #
 # alpha / beta are differentiated.  They are usually `true`/`false` (from `MulAddMul`), which
 # carry no derivative and cost nothing here, but a caller may pass floats — `mul!(C, A, B, α,
 # β)` — and their derivatives are simple: ⟨op_A(A)·op_B(B), dC⟩ and ⟨C_old, dC⟩.
 
-const _MatMatMul = if VERSION >= v"1.13-"
-    Union{typeof(LinearAlgebra.generic_matmatmul!),typeof(mul!)}
-else
-    typeof(LinearAlgebra.generic_matmatmul!)
-end
+const _MatMatMul = Union{typeof(LinearAlgebra.generic_matmatmul!),typeof(mul!)}
 
 @is_primitive(
     MinimalCtx,
@@ -3284,11 +3283,7 @@ end
 #
 # Limitation: 'T' flag for complex arrays is rejected (same as generic_matmatmul!).
 
-const _MatVecMul = if VERSION >= v"1.13-"
-    Union{typeof(LinearAlgebra.generic_matvecmul!),typeof(mul!)}
-else
-    typeof(LinearAlgebra.generic_matvecmul!)
-end
+const _MatVecMul = Union{typeof(LinearAlgebra.generic_matvecmul!),typeof(mul!)}
 
 @is_primitive(
     MinimalCtx,
