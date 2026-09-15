@@ -224,6 +224,47 @@ const NDAC_VecC64 = NDualArray{
         end
     end
 
+    @static if VERSION >= v"1.11-"
+        @testset "a `Memory` and a ref into it share one partials store" begin
+            # A `Memory` and a `MemoryRef` into it are ONE storage, so a partial written through the
+            # array must be visible through the ref. Two methods broke that while their siblings did
+            # not: the `MemoryRef` seed branch registered in the aliasing cache but built its V with
+            # the cache-free factory, and the float `MemoryRef` lift copied `ẋ.mem` into a private
+            # block. The contribution reaching the value through the ref was written to a buffer
+            # nothing reads. Reverse mode was already correct on the same program.
+            fm(x) = (x[1][1] *= 2; x[2][])
+            mk() =
+                (m=Memory{Float64}(undef, 1); m[1]=1.0; (m, Core.memoryref(m, 1)))
+            cache = Mooncake.prepare_derivative_cache(fm, mk())
+            dm = Memory{Float64}(undef, 1)
+            dm[1] = 1.0
+            # The tangents must alias exactly as the primals do; `fm` over one buffer is `2*m[1]`, so
+            # the directional derivative is 2.0. Seeding this through `test_rule` instead would not
+            # catch it: the finite-difference oracle perturbs the primal through the same aliasing
+            # machinery the rule uses, so oracle and rule agree on the wrong answer.
+            @test Mooncake.value_and_derivative!!(
+                cache,
+                (fm, Mooncake.NoTangent()),
+                (mk(), (dm, Core.memoryref(dm, 1))),
+            ) == (2.0, 2.0)
+            # Storage identity, which no value check can see on its own: two buffers holding equal
+            # numbers give the right answer here and the wrong one after the next write.
+            v = Mooncake.tangent(Mooncake.zero_lifted(Val(1), mk()))
+            @test getfield(getfield(getfield(v[1], :partials_block), :parent), :ref).mem ===
+                getfield(v[2], :partials_ref).mem
+            # A top-level `lift` of a `Memory` holding one array twice must share too: it was the one
+            # aggregate lift that never upgraded `c === nothing` to a shared cache, so it threaded
+            # `nothing` into its elements and they seeded independently.
+            a = [1.0, 2.0]
+            mem = Memory{Vector{Float64}}(undef, 2)
+            mem[1] = a
+            mem[2] = a
+            lv = Mooncake.tangent(Mooncake.lift(mem, Mooncake.zero_tangent(mem)))
+            @test getfield(getfield(lv[1], :partials_block), :parent) ===
+                getfield(getfield(lv[2], :partials_block), :parent)
+        end
+    end
+
     @testset "one array reached twice through a `SimpleVector` lifts to one V" begin
         # Same defect as the `Ref` leaf above, one leaf over. `SimpleVector` had only a two-argument
         # `lift`, so the three-argument call fell to the generic passthrough, which DISCARDS the

@@ -1202,7 +1202,24 @@ end
     ) where {T<:IEEEFloat}
         c isa IdDict || return lift(x, ẋ)
         haskey(c, x) && return c[x]::Lifted{MemoryRef{T},1}
-        lifted = lift(x, ẋ)
+        # Window the backing `Memory`'s V rather than copying `ẋ.mem` into a private block: a
+        # `Memory` and a ref into it are one storage, so a private copy drops every contribution
+        # reaching the value through the other position. Guarded on `ẋ` mirroring the primal's
+        # geometry, as the float `Array` lift is, since that is what makes `ẋ.mem` the tangent for
+        # `x.mem` rather than a buffer of its own; the 2-argument copying form is the fallback.
+        lifted =
+            if length(ẋ.mem) == length(x.mem) &&
+                Core.memoryrefoffset(ẋ) == Core.memoryrefoffset(x)
+                memv = tangent(lift(x.mem, ẋ.mem, c))
+                Lifted{MemoryRef{T},1}(
+                    x,
+                    NDualMemoryRef{T,1,Memory{T}}(
+                        x, getfield(memv, :partials_block), Core.memoryrefoffset(x)
+                    ),
+                )
+            else
+                lift(x, ẋ)
+            end
         c[x] = lifted
         return lifted
     end
@@ -1231,13 +1248,17 @@ end
     # element-wise V `Memory{dual_type(elt)}`, mirroring the generic `Array` lift.
     @inline lift(x::Memory, ẋ::Memory) = lift(x, ẋ, nothing)
     @inline function lift(x::Memory, ẋ::Memory, c::Union{Nothing,IdDict})
-        # Register before filling — see the `Array` lift: shares one V across aliased `x`.
-        c isa IdDict && haskey(c, x) && return c[x]::Lifted{typeof(x),1}
+        # A top-level call arrives with `c === nothing`; upgrade it to a shared `IdDict` as every
+        # other aggregate lift does, or two elements holding one array get independent partials
+        # and the JVP is silently wrong. Register before filling — see the `Array` lift — so a
+        # cycle reaching `x` again returns the shell instead of recursing forever.
+        d = c === nothing ? IdDict() : c
+        haskey(d, x) && return d[x]::Lifted{typeof(x),1}
         v = similar(x, dual_type(Val(1), eltype(x)))
         lifted = Lifted{typeof(x),1,typeof(v)}(x, v)
-        c isa IdDict && (c[x] = lifted)
+        d[x] = lifted
         @inbounds for i in eachindex(x)
-            isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], c)))
+            isassigned(x, i) && (v[i] = tangent(lift(x[i], ẋ[i], d)))
         end
         return lifted
     end
@@ -1867,12 +1888,36 @@ for (factory, internal) in
         $internal(w::Val{N}, z::Complex, ::MaybeCache) where {N} = $factory(w, z)
     end
     @static if VERSION >= v"1.11-rc4"
-        # Register by identity, as the `Array` branches above do: two struct fields holding one
-        # `Memory` must share a block, or a mutation written through one is invisible through the
-        # other and `dof` counts the shared storage twice.
+        # A `Memory` and a ref into it are ONE storage, so the ref's V must window the `Memory`'s
+        # rather than own a block of its own — otherwise a partial written through the array is
+        # invisible through the ref and the JVP silently drops that contribution. Same derivation
+        # as the `Array` branch above (`_derived_array_dual`), and the two cases mirror the
+        # `Memory` branch below: a leaf element type windows the block, anything else takes a ref
+        # into the element-wise shell. Only with a cache: without one there is no other V to share
+        # with, so an owned block is both correct and cheaper.
+        @eval function $internal(
+            w::Val{N}, x::MemoryRef{E}, d::MaybeCache
+        ) where {N,E<:NDualEltype}
+            haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+            v = if d isa NoCache
+                $factory(w, x)
+            else
+                NDualMemoryRef{E,N,Memory{E}}(
+                    x,
+                    getfield($internal(w, x.mem, d), :partials_block),
+                    Core.memoryrefoffset(x),
+                )
+            end
+            d[x] = v
+            return v
+        end
         @eval function $internal(w::Val{N}, x::MemoryRef, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            v = $factory(w, x)
+            v = if d isa NoCache
+                $factory(w, x)
+            else
+                _memoryref_at($internal(w, x.mem, d), Core.memoryrefoffset(x))
+            end
             d[x] = v
             return v
         end
@@ -1984,11 +2029,34 @@ function _randn_dual_internal(
     randn_dual(w, rng, z)
 end
 @static if VERSION >= v"1.11-rc4"
+    # Same derivation as the zero/uninit factories: the ref's V windows the backing `Memory`'s
+    # rather than owning a block, or a partial written through the array is invisible through the
+    # ref.
+    function _randn_dual_internal(
+        w::Val{N}, rng::AbstractRNG, x::MemoryRef{E}, d::MaybeCache
+    ) where {N,E<:NDualEltype}
+        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
+        v = if d isa NoCache
+            randn_dual(w, rng, x)
+        else
+            NDualMemoryRef{E,N,Memory{E}}(
+                x,
+                getfield(_randn_dual_internal(w, rng, x.mem, d), :partials_block),
+                Core.memoryrefoffset(x),
+            )
+        end
+        d[x] = v
+        return v
+    end
     function _randn_dual_internal(
         w::Val{N}, rng::AbstractRNG, x::MemoryRef, d::MaybeCache
     ) where {N}
         haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-        v = randn_dual(w, rng, x)
+        v = if d isa NoCache
+            randn_dual(w, rng, x)
+        else
+            _memoryref_at(_randn_dual_internal(w, rng, x.mem, d), Core.memoryrefoffset(x))
+        end
         d[x] = v
         return v
     end
