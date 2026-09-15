@@ -38,6 +38,26 @@
 # (`0 * Inf` would be `NaN`). Mirrors the forward `_fwd_guarded_scale` guard, applied to the cotangent.
 @inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
 
+# `evalpoly` over a tuple of coefficients runs native today. This rule holds that once the
+# classifier goes: the transform costs 2.2x at width 1 and 3.1x at width 8 over eight `Float64`
+# coefficients. Horner on the dual coefficients rather than the primal ones, because the
+# coefficients carry their own partials whenever they are not constants, and reading them off the
+# primal would drop those silently. Forward only: reverse reaches `evalpoly` through its derived
+# path. Integer coefficients lift to `NoDual` and are deliberately outside this declaration, so
+# they keep that path.
+@is_primitive MinimalCtx ForwardMode Tuple{
+    typeof(evalpoly),P,Tuple{Vararg{P}}
+} where {P<:IEEEFloat}
+function frule!!(
+    ::Lifted{typeof(evalpoly),N},
+    x::Lifted{P,N,NDual{P,N}},
+    p::Lifted{<:Tuple{Vararg{P}},N,<:Tuple{Vararg{NDual{P,N}}}},
+) where {N,P<:IEEEFloat}
+    dy = evalpoly(tangent(x), tangent(p))
+    y = dy.value
+    return Lifted{_typeof(y),N}(y, dy)
+end
+
 # ---- unary scalar rules ----
 @is_primitive MinimalCtx Tuple{typeof(exp),P} where {P<:IEEEFloat}
 function frule!!(::Lifted{typeof(exp),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
@@ -1422,6 +1442,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (prevfloat, P(1.1)),
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
+        end...,
+        # `evalpoly` is a FORWARD-only primitive, so these pin `mode=ForwardMode`; reverse reaches
+        # it through its derived path. Coefficients are seeded like any other argument, so the
+        # rows cover the derivative with respect to them as well as to `x`. Degree 1 is the
+        # shortest Horner fold; degree 7 is the shape the routing benchmark used.
+        map([Float32, Float64]) do P
+            return [
+                (
+                    false,
+                    :stability_and_allocs,
+                    (mode=ForwardMode,),
+                    evalpoly,
+                    P(1.7),
+                    (P(0.3), P(-1.2)),
+                ),
+                (
+                    false,
+                    :stability_and_allocs,
+                    (mode=ForwardMode,),
+                    evalpoly,
+                    P(0.6),
+                    ntuple(i -> P(i) / 3, 8),
+                ),
+            ]
         end...,
         Any[
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
