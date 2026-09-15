@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "..", "ext", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "LogExpFunctions")
 
 using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
 using Mooncake.TestUtils: test_rule
@@ -126,10 +125,10 @@ sr(n::Int) = StableRNG(n)
                 dx, dy = T(dx), T(dy)
                 expected = (iszero(dx) ? zero(T) : a) + (iszero(dy) ? zero(T) : b)
                 result = Mooncake.frule!!(
-                    Mooncake.zero_dual(f), Mooncake.Dual(x, dx), Mooncake.Dual(y, dy)
+                    Mooncake.zero_dual(f), Mooncake.lift(x, dx), Mooncake.lift(y, dy)
                 )
                 @test isequal(Mooncake.primal(result), f(x, y))
-                @test Mooncake.tangent(result) == expected
+                @test only(Mooncake.tangent(result).partials) == expected
                 result = f(NDual(x, (dx,)), NDual(y, (dy,)))
                 @test isequal(result.value, f(x, y))
                 @test only(result.partials) == expected

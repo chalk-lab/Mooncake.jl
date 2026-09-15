@@ -359,9 +359,7 @@ _getter() = 5.0
                 CartesianIndices(1:2),
             ),
             (false, :none, copyto!, randn(sr(7), 3), 2, randn(sr(8), 2), 1, 2),
-            (false, :none, copyto!, randn(sr(1), ComplexF64, 3), 2, randn(sr(12), 2), 1, 2),
             (false, :none, copyto!, randn(sr(1), 3), randn(sr(2), 3)),
-            (false, :none, copyto!, randn(sr(4), ComplexF64, 1, 3), randn(sr(5), 1, 3)),
             (
                 false,
                 :none,
@@ -663,6 +661,26 @@ _getter() = 5.0
     @testset for (interface_only, perf_flag, f, x...) in test_cases
         @info Mooncake._typeof((f, x...))
         test_rule(sr(123456), f, x...; interface_only, is_primitive=false, perf_flag)
+    end
+
+    # A mixed-eltype `copyto!` (Float64 source into a ComplexF64 destination) reaches the legacy
+    # `jl_array_ptr` path on 1.10, whose deliberate refusal above chunk width 1 stands. 1.11+ route
+    # through `MemoryRef` and pass at every width, so the declaration is version-gated rather than
+    # unconditional -- an unconditional one would drop working coverage on two of three versions.
+    @testset for (interface_only, perf_flag, f, x...) in [
+        (false, :none, copyto!, randn(sr(1), ComplexF64, 3), 2, randn(sr(12), 2), 1, 2),
+        (false, :none, copyto!, randn(sr(4), ComplexF64, 1, 3), randn(sr(5), 1, 3)),
+    ]
+        @info Mooncake._typeof((f, x...))
+        test_rule(
+            sr(123456),
+            f,
+            x...;
+            interface_only,
+            is_primitive=false,
+            perf_flag,
+            skip_chunked=(VERSION < v"1.11-"),
+        )
     end
 
     # When the inner function of Base._growend! is reached,

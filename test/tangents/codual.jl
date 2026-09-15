@@ -1,3 +1,15 @@
+# A linked-list node: the recursion is inside a union, which is how it is usually spelled.
+mutable struct _RecursiveNode
+    v::Float64
+    next::Union{Nothing,_RecursiveNode}
+end
+
+# Wider than `_reaches_recursive_type`'s node budget, but not recursive: the walk cannot answer.
+struct _WideConst{T}
+    junk::T
+    v::Vector{Float64}
+end
+
 @testset "codual" begin
     @test CoDual(5.0, 4.0) isa CoDual{Float64,Float64}
     @test CoDual(Float64, NoTangent()) isa CoDual{Type{Float64},NoTangent}
@@ -80,10 +92,19 @@
         phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
         @test codual_type(phantom) === CoDual
         @test Mooncake.fcodual_type(phantom) === CoDual
-        @test dual_type(phantom) === Dual
+        # Forward `dual_type` is width-parameterised (`dual_type(::Val{N}, ::Type)`) on this branch;
+        # the legacy one-arg `Dual` mapping is gone. A phantom-TypeVar primal widens to `Any`.
+        @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        @test dual_type(phantom_tuple) === Dual
+        # A free-TypeVar `Tuple` (e.g. `Tuple{T,A}`) leaves the `P<:Tuple` static parameter
+        # unbound; the forward `dual_type`/`lifted_type` bodies guard with `@isdefined(P)` (the
+        # idiom the `CoDual` constructor uses) and widen to `Any` rather than referencing the
+        # undefined `P` and throwing `UndefVarError`.
+        @test dual_type(Val(1), phantom_tuple) === Any
+        # `lifted_type` returns a (broad) `Lifted` *slot* type, like the generic `lifted_type`
+        # phantom guard — not the inner-V `Any` that `dual_type` returns.
+        @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
     @testset "NoPullback" begin
@@ -97,5 +118,41 @@
         p = Ptr{Float64}()
         @test Mooncake.zero_codual(p) == Mooncake.uninit_codual(p)
         @test Mooncake.zero_fcodual(p) == Mooncake.uninit_fcodual(p)
+    end
+
+    @testset "_reaches_recursive_type" begin
+        # `record_const_alias!` must not ask `tangent_type` about a type it cannot answer for.
+        # `Base.ImmutableDict` holds a `parent` of its own type; `IOContext` holds such a dict and
+        # so is equally out of reach, which is why the question is reachability and not
+        # self-reference.
+        @test Mooncake._reaches_recursive_type(Base.ImmutableDict{Symbol,Any})
+        @test Mooncake._reaches_recursive_type(IOContext{IOStream})
+        # Constants that do own shareable derivative storage stay guarded.
+        @test !Mooncake._reaches_recursive_type(Vector{Float64})
+        @test !Mooncake._reaches_recursive_type(Diagonal{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(Tuple{Float64,Vector{Float64}})
+        @test !Mooncake._reaches_recursive_type(String)
+        # A union is how recursion is usually spelled, and `tangent_type` distributes over one,
+        # so the walk must: without this the guard reported a linked-list node as answerable and
+        # then overflowed asking for its tangent type.
+        @test Mooncake._reaches_recursive_type(_RecursiveNode)
+    end
+
+    @testset "record_const_alias! records what it cannot ask about" begin
+        # The guard exists to refuse, so an unknown resolves towards refusing. A struct wider than
+        # the walk's budget is not recursive at all, but the answer is unavailable: recording it
+        # yields a loud refusal where skipping yielded a gradient of [1.0, 1.0] against [2.0, 2.0].
+        wide = _WideConst(ntuple(i -> Val(i), 601), [1.0, 2.0])
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, wide)
+        @test length(consts) == 1
+        # A recursive type is recorded without asking `tangent_type`, which would not terminate.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, Base.ImmutableDict{Symbol,Any}(:a, 1))
+        @test length(consts) == 1
+        # Non-differentiable constants are still skipped, so `===` cannot match one spuriously.
+        consts = Any[]
+        Mooncake.record_const_alias!(consts, "abc")
+        @test isempty(consts)
     end
 end
