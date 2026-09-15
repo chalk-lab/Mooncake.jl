@@ -864,6 +864,26 @@ const NDAC_VecC64 = NDualArray{
             @test tangent_view(nt.a, 1) == [1.0, 0.0]
         end
 
+        # `a` and `reshape(a)` are distinct V objects over ONE partials store, so the second
+        # container to reach it must not clear it: it used to, wiping the hot lane the first had
+        # written, and the whole direction came back zero. Ownership is asserted as well as the
+        # values, because two stores holding equal numbers agree here and diverge on the next
+        # write. No registry expresses this — `test_lifted` checks the `lift`/seed factories, not a
+        # basis direction.
+        let a = [1.0, 2.0], b = bl((a, reshape(a, 1, 2)), (1,))
+            @test tangent(b, 1) == ([1.0, 0.0], [1.0 0.0])
+            ps = map(v -> getfield(getfield(v, :partials_block), :parent), tangent(b))
+            @test Base.dataids(ps[1]) == Base.dataids(ps[2])
+        end
+
+        # The control: unrelated stores must not be merged by the storage key, and a REUSED seed
+        # must be cleared on every reseed. A false merge would skip the clear and leave the
+        # previous chunk's hot lane behind.
+        let s = zero_lifted(Val(1), ([1.0, 2.0], [3.0, 4.0]))
+            @test tangent(basis_lifted!!(s, (1,)), 1) == ([1.0, 0.0], [0.0, 0.0])
+            @test tangent(basis_lifted!!(s, (4,)), 1) == ([0.0, 0.0], [0.0, 1.0])
+        end
+
         # Aliasing on the `lift` (reverse→forward) path, non-float-element array: the
         # element-wise array lift must register the shared array in the cache so both
         # fields get one V (matching reverse). Float-element fields are safe via
