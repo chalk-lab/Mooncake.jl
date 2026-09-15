@@ -202,10 +202,32 @@ end
 
 @inline _aliases_any_arg(@nospecialize(c), ::Tuple{}) = false
 @inline function _aliases_any_arg(@nospecialize(c), args::Tuple)
-    return c === primal(first(args)) || _aliases_any_arg(c, Base.tail(args))
+    return _alias_target(c) === primal(first(args)) || _aliases_any_arg(c, Base.tail(args))
+end
+
+"""
+    GlobalBinding(mod, name)
+
+A non-const global recorded in a [`ConstAliasSet`](@ref) by BINDING rather than by value.
+
+The forward transform reads such a global afresh on every call, so the object an argument could
+clash with is whichever one the binding holds at CALL time. Recording the build-time value instead
+leaves the guard hunting an object the caller no longer passes once the global is rebound, and the
+contribution through it is dropped silently. A `const` global cannot move, so it is still recorded
+directly.
+"""
+struct GlobalBinding
+    mod::Module
+    name::Symbol
+end
+
+@inline _alias_target(@nospecialize(c)) = c
+@inline function _alias_target(b::GlobalBinding)
+    return isdefined(b.mod, b.name) ? getglobal(b.mod, b.name) : nothing
 end
 
 @noinline function _throw_constant_alias_error(@nospecialize(c))
+    c = _alias_target(c)
     throw(
         ArgumentError(
             "An argument is the same object as a constant or global read inside the function " *
@@ -271,6 +293,12 @@ silent under-collection this function was just fixed to avoid, so the boundary s
 is a way to enumerate reachable derivative storage without walking arbitrary objects.
 """
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
+    record_const_alias!(consts, v, v)
+end
+
+# `stored` is what lands in the set: the value itself, or a `GlobalBinding` to resolve at call
+# time. `v` is always the value, since only it can answer whether there is storage to clash over.
+function record_const_alias!(consts::Vector{Any}, @nospecialize(v), @nospecialize(stored))
     # An isbits value has no fdata to share (`Ptr` aside, and a `Ptr` constant is embedded as an IR
     # literal rather than reaching here). Testing that first also keeps `tangent_type` off the
     # primitive types it deliberately refuses, which the constants of an arbitrary walked body
@@ -283,6 +311,6 @@ function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     if !_reaches_recursive_type(_typeof(v))
         fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
     end
-    any(c -> c === v, consts) || push!(consts, v)
+    any(c -> c === stored, consts) || push!(consts, stored)
     return nothing
 end

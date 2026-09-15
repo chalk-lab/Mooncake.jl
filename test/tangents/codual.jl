@@ -10,6 +10,10 @@ struct _WideConst{T}
     v::Vector{Float64}
 end
 
+# A non-const global, for the rebinding test below. Both modes re-read it on every call.
+global _GLOBAL_ALIAS_G::Vector{Float64} = [1.0, 2.0]
+_global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
+
 @testset "codual" begin
     @test CoDual(5.0, 4.0) isa CoDual{Float64,Float64}
     @test CoDual(Float64, NoTangent()) isa CoDual{Type{Float64},NoTangent}
@@ -136,6 +140,34 @@ end
         # so the walk must: without this the guard reported a linked-list node as answerable and
         # then overflowed asking for its tangent type.
         @test Mooncake._reaches_recursive_type(_RecursiveNode)
+    end
+
+    @testset "a rebound non-const global is matched by binding, not by build-time value" begin
+        # Both modes re-read a non-const global on every call, so the object an argument can clash
+        # with is whichever one is bound at CALL time. Recording the build-time value instead left
+        # the guard hunting an object the caller had stopped passing, and the derivative came back
+        # silently wrong: [1.0, 2.0] against [2.0, 4.0] in reverse, a JVP of 1.0 against 2.0
+        # through the forward transform. No registry row can express this -- the rebinding has to
+        # happen BETWEEN building the rule and calling it, and `test_rule` does both at once.
+        r = Mooncake.build_rrule(_global_alias_f, [1.0, 2.0])
+        x = [1.0, 2.0]                    # equal contents, DIFFERENT object
+        global _GLOBAL_ALIAS_G = x        # the argument is now the global
+        @test_throws ArgumentError Mooncake.value_and_gradient!!(r, _global_alias_f, x)
+
+        # A rebinding that does NOT alias an argument stays legal: the value is re-read, so only
+        # the aliasing question is affected.
+        global _GLOBAL_ALIAS_G = [1.0, 2.0]
+        _, g = Mooncake.value_and_gradient!!(r, _global_alias_f, [3.0, 4.0])
+        @test g[2] == [1.0, 2.0]
+
+        # Same for the forward transform, which records the binding at its own `GlobalRef` site.
+        fr = Mooncake.build_frule(_global_alias_f, [1.0, 2.0]; nfwd=false)
+        y = [1.0, 2.0]
+        global _GLOBAL_ALIAS_G = y
+        @test_throws ArgumentError fr(
+            Mooncake.zero_lifted(Val(1), _global_alias_f), Mooncake.lift(y, [1.0, 0.0])
+        )
+        global _GLOBAL_ALIAS_G = [1.0, 2.0]
     end
 
     @testset "record_const_alias! records what it cannot ask about" begin

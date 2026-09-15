@@ -959,6 +959,10 @@ struct ADInfo
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
     rvs_ret_type::Type
+    # Non-const globals read in the body, recorded by BINDING. `_aliasable_constants` sees only
+    # the finished shared data, where a global is indistinguishable from any other constant, yet
+    # its object is the one that can move between build and call.
+    global_bindings::Vector{GlobalBinding}
 end
 
 # The constructor that you should use for ADInfo if you don't have CFG blocks lying around.
@@ -992,6 +996,7 @@ function ADInfo(
         add_data!(shared_data_pairs, zero_lazy_rdata_ref),
         fwd_ret_type,
         rvs_ret_type,
+        GlobalBinding[],
     )
 end
 
@@ -1397,6 +1402,12 @@ end
 function make_ad_stmts!(stmt::GlobalRef, line::ID, info::ADInfo)
     isconst(stmt) && return const_ad_stmt(stmt, line, info)
 
+    # Record the binding, not the value: a non-const global is re-read on every call (the
+    # `uninit_fcodual(global_ref)` below), so the object an argument can clash with is whichever
+    # one is bound at CALL time. A build-time snapshot leaves `_check_constant_aliasing` hunting
+    # an object the caller stopped passing the moment the global was rebound, and the contribution
+    # through it is dropped silently.
+    push!(info.global_bindings, GlobalBinding(stmt.mod, stmt.name))
     const_id, globalref_id = ID(), ID()
     fwds = [
         (globalref_id, new_inst(stmt)),
@@ -1830,8 +1841,14 @@ nothing, so if the caller also passes one of these objects as an argument, the t
 into one buffer and the contribution through the constant is silently dropped, so `DerivedRule`
 refuses that call. `record_const_alias!` decides which primals qualify. Empty for most rules.
 """
-function _aliasable_constants(shared_data::Tuple)
+function _aliasable_constants(
+    shared_data::Tuple, bindings::Vector{GlobalBinding}=GlobalBinding[]
+)
     consts = Any[]
+    for b in bindings
+        isdefined(b.mod, b.name) || continue
+        record_const_alias!(consts, getglobal(b.mod, b.name), b)
+    end
     for d in shared_data
         d isa CoDual && record_const_alias!(consts, primal(d))
     end
@@ -2156,7 +2173,7 @@ function build_derived_rrule(
                 Ref(rvs_oc),
                 dri.isva,
                 Val(nargs),
-                _aliasable_constants(dri.shared_data),
+                _aliasable_constants(dri.shared_data, dri.info.global_bindings),
             )
             rule = debug_mode ? DebugRRule(raw_rule) : raw_rule
             interp.oc_cache[oc_cache_key] = rule

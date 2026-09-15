@@ -383,12 +383,20 @@ function modify_fwd_ad_stmts!(
         end
     else
         # A non-const global is read afresh on every call and zero-lifted there, so its forward
-        # value is no more shared with an argument's than a constant's is. Record the binding's
-        # current value so the guard covers it too; rebinding the global between build and call
-        # leaves that record stale, which is the same staleness reverse's `__verify_const` asserts
-        # against.
-        isdefined(stmt.mod, stmt.name) &&
-            record_const_alias!(info.consts, getglobal(stmt.mod, stmt.name))
+        # value is no more shared with an argument's than a constant's is, and the guard has to
+        # cover it too. Record the BINDING, not the value it holds now: reading afresh means the
+        # object an argument can clash with is whichever one is bound at call time, so a
+        # build-time snapshot leaves the guard hunting an object the caller stopped passing the
+        # moment the global was rebound. Reverse resolves the same staleness the other way --
+        # there the build-time storage is what the rule reuses, so `__verify_const` refuses the
+        # call instead.
+        if isdefined(stmt.mod, stmt.name)
+            record_const_alias!(
+                info.consts,
+                getglobal(stmt.mod, stmt.name),
+                Mooncake.GlobalBinding(stmt.mod, stmt.name),
+            )
+        end
         new_ssa = CC.insert_node!(dual_ir, ssa, new_inst(stmt), ATTACH_BEFORE)
         zero_lifted_call = Expr(:call, Mooncake.zero_lifted, Val(info.width), new_ssa)
         Mooncake.replace_call!(dual_ir, ssa, zero_lifted_call)
