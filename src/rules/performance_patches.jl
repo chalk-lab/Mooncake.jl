@@ -77,6 +77,25 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
+# The transform folds `max` over the array, building one `NDual` per element; scanning the plain
+# primal for the arg-extreme and taking a single `getindex` is ~18x faster at 1024 elements, at
+# both width 1 and width 8 (the fold's cost is in the per-element `NDual`s, not the lanes).
+# `Base.maximum(::NDualArray)` already performs exactly that select, with the tie handling this
+# needs, so the rule only wraps it.
+#
+# FORWARD ONLY. Reverse mode reaches `maximum` through its derived path and is not the bottleneck
+# here; a reverse primitive would need an `rrule!!` in lockstep with this declaration. `minimum`
+# is deliberately NOT given the same treatment: its `NDualArray` method selects with `argmin`,
+# which costs ~6us against ~0.3us for the `isequal` scan `maximum` uses, so wiring a rule to it as
+# it stands would be slower than the transform it replaces.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(maximum),Array{<:IEEEFloat}}
+function frule!!(
+    ::Lifted{typeof(maximum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
+) where {N,P<:IEEEFloat,D}
+    dy = maximum(tangent(x))
+    return Lifted{P,N}(dy.value, dy)
+end
+
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
 @is_primitive(DefaultCtx, Tuple{typeof(sum),ContiguousSubVector{<:IEEEFloat}})
 # Summed straight off the parent's lane over the view's own index range: `arrayify` is
@@ -535,6 +554,27 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
         map_prod(sum_sizes, precisions) do (sz, P)
             flags = (P == Float16 ? true : false, :stability_and_allocs, nothing)
             return (flags..., sum, randn(rng, P, sz...))
+        end,
+
+        # maximum(x). Forward-only primitive, so the rows pin `mode=ForwardMode`; reverse reaches
+        # `maximum` through its derived path. A vector with a repeated extreme covers the tie the
+        # arg-extreme select has to resolve the same way the `max` fold does.
+        map(precisions) do P
+            flags = (
+                P == Float16 ? true : false, :stability_and_allocs, (mode=ForwardMode,)
+            )
+            return (flags..., maximum, randn(rng, P, 11))
+        end,
+        # A tie, with the partials pinned rather than seeded so the expected derivative is a fixed
+        # number. Finite differences cannot check this row: `maximum` is not differentiable where
+        # two elements tie, so the `oracle` replaces that comparison. The maximal elements are at
+        # indices 2 and 4 and the `max` fold credits the LAST of them, so the derivative is 40;
+        # a select built on `argmax` would return 20 and fail here. `skip_chunked` because a
+        # pinned `Vector` tangent cannot be spread across lanes, and the tie is a width-1 claim.
+        map([Float64, Float32]) do P
+            opts = (mode=ForwardMode, oracle=(value=P(3), deriv=P(40)), skip_chunked=true)
+            x = CoDual(P[1.0, 3.0, 2.0, 3.0], P[10.0, 20.0, 30.0, 40.0])
+            return (false, :none, opts, maximum, x)
         end,
 
         # sum(view(x, a:b))
