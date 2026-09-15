@@ -233,8 +233,7 @@ const NDAC_VecC64 = NDualArray{
             # block. The contribution reaching the value through the ref was written to a buffer
             # nothing reads. Reverse mode was already correct on the same program.
             fm(x) = (x[1][1] *= 2; x[2][])
-            mk() =
-                (m=Memory{Float64}(undef, 1); m[1]=1.0; (m, Core.memoryref(m, 1)))
+            mk() = (m=Memory{Float64}(undef, 1); m[1]=1.0; (m, Core.memoryref(m, 1)))
             cache = Mooncake.prepare_derivative_cache(fm, mk())
             dm = Memory{Float64}(undef, 1)
             dm[1] = 1.0
@@ -243,9 +242,7 @@ const NDAC_VecC64 = NDualArray{
             # catch it: the finite-difference oracle perturbs the primal through the same aliasing
             # machinery the rule uses, so oracle and rule agree on the wrong answer.
             @test Mooncake.value_and_derivative!!(
-                cache,
-                (fm, Mooncake.NoTangent()),
-                (mk(), (dm, Core.memoryref(dm, 1))),
+                cache, (fm, Mooncake.NoTangent()), (mk(), (dm, Core.memoryref(dm, 1)))
             ) == (2.0, 2.0)
             # Storage identity, which no value check can see on its own: two buffers holding equal
             # numbers give the right answer here and the wrong one after the next write.
