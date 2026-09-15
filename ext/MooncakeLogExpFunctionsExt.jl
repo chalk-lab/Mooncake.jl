@@ -14,6 +14,8 @@ import Mooncake:
     tangent,
     tangent_view,
     @is_primitive,
+    MinimalCtx,
+    ForwardMode,
     densify_tangent,
     increment_densified_tangent!!,
     zero_fcodual,
@@ -150,6 +152,24 @@ xlogy_partials(x, y, z) = (log(y), iszero(x) && iszero(y) ? zero(x / y) : x / y)
 xexpy_partials(x, y, z) = (exp(y), z)
 
 @inline scale_partial(p, d) = isfinite(p) ? p * d : nan_tangent_guard(d, p * d)
+
+# Both run native today, so these rules hold that performance rather than improve on it: measured
+# against the transform, `log1psq` costs 1.66x at width 1 and 1.90x at width 8, `log2mexp` 1.52x
+# and 1.13x. The bodies run the audited `NDual` overloads, as the scalar rules elsewhere do.
+# `log1pexp`, `log1mexp` and `logexpm1` measured at parity (1.02x-1.12x) and deliberately get no
+# rule. Forward only: reverse reaches all of these through its derived path.
+for f in (:log1psq, :log2mexp)
+    @eval begin
+        @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),P} where {P<:IEEEFloat}
+        function frule!!(
+            ::Lifted{typeof($f),Nw}, x::Lifted{P,Nw,NDual{P,Nw}}
+        ) where {Nw,P<:IEEEFloat}
+            dy = $f(tangent(x))
+            y = dy.value
+            return Lifted{typeof(y),Nw}(y, dy)
+        end
+    end
+end
 
 # The zero-multiplier branches require rules; evaluate the original primal separately.
 for f in (:xlogy, :xexpy)
