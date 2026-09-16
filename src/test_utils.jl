@@ -2435,6 +2435,29 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
     return nothing
 end
 
+# Array-like objects reachable from `x`, by identity. Paired with `_count_storages` (which resolves
+# each to its backing buffer) this separates the two kinds of sharing: `_shares_backing_buffer` is
+# true exactly when `x` holds two distinct arrays over one buffer.
+function _count_array_objects(x, objs=Base.IdSet{Any}(), visited=Base.IdSet{Any}())
+    # `Type`/`Symbol` are skipped as in `_self_referential`: a `DataType`'s field graph reaches
+    # `Core.TypeName`s and modules, which the recursion cannot walk.
+    (isbits(x) || x isa Type || x isa Symbol || x in visited) && return objs
+    push!(visited, x)
+    if x isa DenseArray  # `Array`, and on 1.11+ `Memory`
+        push!(objs, x)
+        isbitstype(eltype(x)) && return objs
+        for i in eachindex(x)
+            isassigned(x, i) && _count_array_objects(x[i], objs, visited)
+        end
+        return objs
+    end
+    for i in 1:fieldcount(typeof(x))
+        isdefined(x, i) && _count_array_objects(getfield(x, i), objs, visited)
+    end
+    return objs
+end
+_shares_backing_buffer(x) = length(_count_array_objects(x)) > _count_storages(x)
+
 # Compare two per-lane reads. A read can be a strided lane view, which is not a value
 # `has_equal_data` accepts, so reduce those to values first.
 #
@@ -2566,6 +2589,15 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
     p2, ẋ2 = unlift(s)
     @test has_equal_data(p2, p)
     @test has_equal_data(ẋ2, ẋ)
+    # ... and the way OUT needs the same guarantee. `unlift` minting storage per position doubles
+    # the degrees of freedom while both `has_equal_data` checks above still pass, so a later
+    # accumulation lands in two buffers instead of the one the primal aliasing implies.
+    # Sharing that exists ONLY through a backing buffer — two `Array`s, or an `Array` and the
+    # `Memory` behind it — is a different question, and this traversal does not preserve it: it
+    # keys on object identity, so each view gets its own tangent where reverse ties them. Detect
+    # that rather than assert what the traversal cannot deliver (detected, as the `cache_free`
+    # cycle test is, so a new table entry needs no bookkeeping here).
+    _shares_backing_buffer(p) || @test _count_storages(ẋ2) <= _count_storages(ẋ)
     return nothing
 end
 

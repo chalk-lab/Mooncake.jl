@@ -2164,6 +2164,15 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     circular_vector = Any[5.0]
     circular_vector[1] = circular_vector
 
+    # A cycle that closes through an IMMUTABLE aggregate rather than array-to-array, which the
+    # element-wise traversals' own visited sets already cover.
+    tuple_cycle_vector = Any[]
+    push!(tuple_cycle_vector, (tuple_cycle_vector,))
+
+    # One array in two positions. Every traversal must keep the two on one storage; equality of
+    # values holds either way, so only the storage counts in `test_lifted` can tell.
+    aliased_array = randn(5)
+
     rel_test_cases = Any[
         TestResources.StructFoo(6.0, [1.0, 2.0]),
         TestResources.StructFoo(6.0),
@@ -2196,6 +2205,8 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (a=randn(10), b=randn(10)),
         (Base.TOML.ErrorType(1), NoTangent()), # Enum
         circular_vector,
+        tuple_cycle_vector,
+        (aliased_array, aliased_array),
         TestResources.make_circular_reference_struct(),
         TestResources.make_indirect_circular_reference_array(),
         # Regression tests to catch type inference failures, see https://github.com/chalk-lab/Mooncake.jl/pull/422
