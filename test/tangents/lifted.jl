@@ -1044,8 +1044,39 @@ const NDAC_VecC64 = NDualArray{
             pointer(ptr_backing),
             Ptr{Mooncake.NoTangent}(pointer(ptr_backing)),
             Ptr{Int}(pointer(ptr_backing)),
+            # The ubiquitous `(pointer(v), length(v))` idiom: a CONCRETE tuple whose elements are
+            # all `NoDual` while `tangent_type` is not `NoTangent`. Its declared V must not gain a
+            # `NoDual` member, or `Lifted`'s invariance in `V` leaves the slot uninhabitable.
+            (Ptr{UInt8}(pointer(ptr_backing)), 3),
         )
             test_lifted(Xoshiro(123456), p)
+        end
+
+        # `Task` and `IdDict` have their own V rather than a structural lift, so each needs BOTH
+        # seed entry points — the cache-threading `_*_dual_internal` and the cache-free
+        # `zero_dual`/`uninit_dual`/`randn_dual`. Driven here rather than from
+        # `tangent_test_cases()` for the same reason as the pointers above: that table also drives
+        # reverse `test_tangent`, whose `_add_to_primal`/`increment!!` contract neither satisfies.
+        @testset "test_lifted $nm" for (nm, p) in (
+            ("IdDict", IdDict(1 => randn(2))), ("Task", Task(() -> 1))
+        )
+            test_lifted(Xoshiro(123456), p)
+        end
+
+        @testset "cache-free `IdDict` seed shares one V per aliased value" begin
+            # `test_lifted`'s cache-free assertions pin the V's TYPE, not its storage identity, so
+            # they cannot state this. Two keys holding one array must reach one partials block, or
+            # a write through one key is invisible through the other and the JVP silently drops
+            # that contribution — what the cache-threading `zero_lifted` already guarantees.
+            a = randn(2)
+            v = Mooncake.zero_dual(Val(1), IdDict{Int,Vector{Float64}}(1 => a, 2 => a))
+            @test getfield(v[1], :partials_block) === getfield(v[2], :partials_block)
+            # Same cache, second job: a self-referential dict terminates on the registered shell
+            # instead of overflowing the stack.
+            d = IdDict{Any,Any}()
+            d[1] = d
+            dv = Mooncake.zero_dual(Val(1), d)
+            @test dv[1] === dv
         end
     end
 end

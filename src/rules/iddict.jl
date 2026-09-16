@@ -187,6 +187,21 @@ function _randn_dual_internal(
     end
     return out
 end
+# The cache-free factories are the second entry point — an `frule!!` returning a zero derivative
+# calls them directly — and need the override too, or an `IdDict` falls into the generic
+# `@generated` struct walker and dies on its `ht::Memory{Any}` field. Forward to the recursion
+# above with a fresh cache rather than duplicate it, and with a real `IdDict` rather than
+# `NoCache`: an `IdDict` primal is never `isbitstype`, which is the test `zero_lifted` and the
+# reverse factories already use to decide. Without it two keys holding one array get independent
+# partial stores, so a write through one is invisible through the other, and a self-referential
+# dict overflows the stack instead of terminating on the registered shell.
+for (f, internal) in
+    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
+    @eval @inline $f(w::Val{N}, x::IdDict) where {N} = $internal(w, x, IdDict{Any,Any}())
+end
+@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::IdDict) where {N}
+    return _randn_dual_internal(w, rng, x, IdDict{Any,Any}())
+end
 # Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
 @inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, nothing)
 # Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the

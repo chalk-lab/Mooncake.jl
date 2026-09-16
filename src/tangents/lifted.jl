@@ -827,11 +827,15 @@ end
     # `dual_type` collapses non-diff elements to `NoDual`, which conses fine as a head element).
     Base.isvatuple(P) && return Any
     V = _dual_tuple_v(Val(N), P)
-    # A tuple with abstract elements has wholly non-differentiable concretisations, which collapse
-    # to `NoDual` at the gate above, so the declared type must admit `NoDual` too: otherwise
-    # storing one into a container typed by the abstract tuple — a `Vector{Tuple{NoPullback}}` of
-    # reverse pullbacks under forward-over-reverse — is a `TypeError`. `tangent_type` unions here
-    # for the same reason.
+    # A NON-CONCRETE tuple has wholly non-differentiable concretisations, which collapse to
+    # `NoDual` at the gate above, so the declared type must admit `NoDual` too: otherwise storing
+    # one into a container typed by the abstract tuple — a `Vector{Tuple{NoPullback}}` of reverse
+    # pullbacks under forward-over-reverse — is a `TypeError`. `tangent_type` unions here for the
+    # same reason. A concrete tuple has exactly one concretisation, itself, and the gate above has
+    # already ruled out `NoDual` for it, so the extra member would just name a `Lifted{P,N,V}` slot
+    # type no runtime value inhabits (`Lifted` is invariant in `V`) — e.g. `Tuple{Ptr{UInt8},Int}`,
+    # whose elements are all `NoDual` while `tangent_type` is not `NoTangent`.
+    isconcretetype(P) && return V
     return Tuple{Vararg{NoDual,fieldcount(P)}} <: V ? Union{V,NoDual} : V
 end
 # Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
@@ -1653,9 +1657,15 @@ for (f, helper) in
             return _seed_field_expr(N, P, i, :($($f)(Val($N), getfield(x, $nm))))
         end
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        msg =
+            "$($f): $P declares a `dual_type` that is not the structural lift, so this fallback " *
+            "cannot seed it. A type with its own V needs BOTH seed entry points: define " *
+            "`zero_dual`/`uninit_dual`/`randn_dual` for it alongside its `_*_dual_internal` " *
+            "overloads (see `TwicePrecision`)."
         return quote
             V = dual_type(Val($N), typeof(x))
             V === NoDual && return NoDual()
+            V <: $wrapper || error($msg)
             $wrapper(fieldtype(V, 1)(($(seeds...),)))
         end
     end
@@ -1679,9 +1689,15 @@ end
         return _seed_field_expr(N, P, i, :(randn_dual(Val($N), rng, getfield(x, $nm))))
     end
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+    msg =
+        "randn_dual: $P declares a `dual_type` that is not the structural lift, so this " *
+        "fallback cannot seed it. A type with its own V needs BOTH seed entry points: define " *
+        "`zero_dual`/`uninit_dual`/`randn_dual` for it alongside its `_*_dual_internal` " *
+        "overloads (see `TwicePrecision`)."
     return quote
         V = dual_type(Val($N), typeof(x))
         V === NoDual && return NoDual()
+        V <: $wrapper || error($msg)
         $wrapper(fieldtype(V, 1)(($(seeds...),)))
     end
 end

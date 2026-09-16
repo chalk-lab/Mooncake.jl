@@ -98,6 +98,13 @@ for f in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval @inline $f(::Val{N}, ::Task, ::MaybeCache) where {N} = TaskTangent()
 end
 @inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
+# The cache-free factories are the second entry point — an `frule!!` returning a zero derivative
+# calls them directly — and need the override too, or a `Task` falls into the generic `@generated`
+# struct walker and dies on its 16 fields.
+for f in (:zero_dual, :uninit_dual)
+    @eval @inline $f(::Val{N}, ::Task) where {N} = TaskTangent()
+end
+@inline randn_dual(::Val{N}, ::AbstractRNG, ::Task) where {N} = TaskTangent()
 # Per-lane tangent accessor and the width-1 lift boundary for the singleton V.
 @inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
 @inline lift(x::Task, ẋ::TaskTangent) = Lifted{Task,1}(x, ẋ)
