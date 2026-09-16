@@ -194,6 +194,16 @@ end
 end
 
 @testset "native HVP interface (prepare_hvp_cache + value_and_hvp!!)" begin
+    @testset "TwicePrecision cotangent accumulation (#1328)" begin
+        f(x) = abs2(typeof(x)(TwicePrecision(x)))
+        for x in (0.5f0, 0.5)
+            cache = prepare_hvp_cache(f, x)
+            for v in (one(x), -one(x))
+                @test value_and_hvp!!(cache, f, v, x) == (abs2(x), 2x, 2v)
+            end
+        end
+    end
+
     @testset "captured constant with empty structural fdata" begin
         # The closure-captured variant follows a separate failing path tracked in #1286.
         f = _throw_empty_fdata_exception
