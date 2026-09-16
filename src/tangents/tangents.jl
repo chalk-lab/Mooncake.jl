@@ -1127,7 +1127,7 @@ function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:Union{Tangent,Mutabl
     haskey(c, key) && return c[key]::Float64
     c[key] = 0.0
     return sum(
-        _map((t, s) -> _dot_internal(c, t, s)::Float64, t.fields, s.fields); init=0.0
+        tuple_map((t, s) -> _dot_internal(c, t, s)::Float64, t.fields, s.fields); init=0.0
     )::Float64
 end
 
@@ -1209,10 +1209,10 @@ function _add_to_primal_internal(
     return x′
 end
 function _add_to_primal_internal(c::MaybeCache, x::Tuple, t::Tuple, unsafe::Bool)
-    return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
+    return tuple_map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
 end
 function _add_to_primal_internal(c::MaybeCache, x::NamedTuple, t::NamedTuple, unsafe::Bool)
-    return _map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
+    return tuple_map((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x, t)::typeof(x)
 end
 
 struct AddToPrimalException <: Exception
