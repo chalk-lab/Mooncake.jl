@@ -139,17 +139,24 @@ function build_primitive_frule(
     return __build_primitive_frule(sig)
 end
 
-# Forward-over-reverse seed for a reverse rule (or one of its closures). The
-# forward V must carry the forward dual-callables — which only `_dual_mc` /
-# `zero_tangent` can build — and its `fwds_oc` / `pb_oc` must share their comms
-# captures. Both fall out of lifting the reverse zero tangent: `zero_tangent`
-# already builds the dual-callables into its `MistyClosureTangent`s, and `lift`'s
-# aliasing cache shares the captures. The generic structural seed factory cannot
-# do either (it would try to construct the `Any`-typed `MistyClosureTangent`
-# backing from scratch), so route these types through `lift`.
-@inline function zero_dual(::Val{1}, x::Union{DerivedRule,MistyClosure})
-    return tangent(lift(x, zero_tangent(x), IdDict()))
+# Forward-over-reverse seed for a reverse rule (or one of its closures). The forward V must carry
+# the forward dual-callables — which only `_dual_mc` can build — and its `fwds_oc` / `pb_oc` must
+# share their comms captures, which the `MistyClosure` factory's captures-keyed cache arranges. The
+# generic structural factory alone cannot do either, so the cache-free entries seed a cache and
+# defer to the cache-threading ones rather than restating the construction. Leaving them
+# unoverridden let the generic struct walker try to build the `Any`-typed `MistyClosureTangent`
+# backing from scratch: `uninit_dual(Val(1), rule)` and `zero_dual(Val(8), rule)` both threw
+# `MethodError: no constructors have been defined for Any`. Same two-entry-point contract as
+# `IdDict`/`Task` above.
+for (f, internal) in
+    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
+    @eval @inline $f(w::Val{N}, x::Union{DerivedRule,MistyClosure}) where {N} = $internal(
+        w, x, IdDict{Any,Any}()
+    )
 end
+@inline randn_dual(w::Val{N}, rng::AbstractRNG, x::Union{DerivedRule,MistyClosure}) where {N} = _randn_dual_internal(
+    w, rng, x, IdDict{Any,Any}()
+)
 
 # A `MooncakeInterpreter` is compiler state used to *build* rules (its caches map
 # `MethodInstance`s to compiled code); no user derivative flows through it. Its

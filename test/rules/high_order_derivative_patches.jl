@@ -42,6 +42,19 @@ function _compute_hessian(f, x::Vector{Float64})
     return H
 end
 
+# The same two-entry-point contract `test_lifted` asserts for `IdDict`/`Task`, checked by hand
+# because `test_lifted` cannot run on these: its inner-value walker has no method for a
+# `MistyClosureTangent`, so it errors before reaching the cache-free block.
+@testset "cache-free seeds for a reverse rule" begin
+    rule = build_rrule(Tuple{typeof(_throw_empty_fdata_exception),Float64})
+    @testset "N=$N" for N in (1, 8), p in (rule, rule.fwds_oc)
+        V = Mooncake.dual_type(Val(N), typeof(p))
+        @test typeof(Mooncake.zero_dual(Val(N), p)) === V
+        @test typeof(Mooncake.uninit_dual(Val(N), p)) === V
+        @test typeof(Mooncake.randn_dual(Val(N), Xoshiro(123), p)) === V
+    end
+end
+
 @testset "hessian_scalar_functions" begin
     @testset "sum" begin
         g(x) = sum(x)
