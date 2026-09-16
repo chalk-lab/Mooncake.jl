@@ -590,9 +590,35 @@ end
     } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
 )
 
+# `axpy!`/`axpby!`'s short forms take ANY `Number` and convert it with `P(alpha)` before the ccall,
+# so the rules must serve that whole domain. Narrowing the declaration to `P` instead would leave
+# `axpy!(2, x, y)` with no rule at all: the primal hands `pointer(x)` to the long form, and the
+# raw-pointer call matches neither long-form rule. Conversion is linear, so a lane partial converts
+# with the value, and a scalar Mooncake gives no tangent (`Integer`, `Rational`, `Irrational`,
+# `Complex{Int}`) contributes nothing. A scalar whose tangent is neither -- `BigFloat`,
+# `TwicePrecision` -- still has no rule and raises a `MethodError` here.
+function _fwd_blas_alpha(::Type{P}, a::Lifted{<:Number,Nw,NoDual}) where {P<:BlasFloat,Nw}
+    v = P(primal(a))
+    return Lifted{P,Nw}(v, zero_dual(Val(Nw), v))
+end
+function _fwd_blas_alpha(::Type{P}, a::Lifted{<:Number,Nw}) where {P<:BlasFloat,Nw}
+    v = P(primal(a))
+    return Lifted{P,Nw}(v, dual_type(Val(Nw), P)(tangent(a)))
+end
+
+# Reverse needs no matching conversion on the way in -- a scalar carries no fdata, so the converted
+# operand is just `zero_fcodual(P(alpha))` -- only the returned rdata converting back.
+function _rvs_blas_alpha(::CoDual{A}, ∇::Number) where {A<:Number}
+    R = rdata_type(tangent_type(A))
+    R === NoRData && return NoRData()
+    # A real scalar scaling a complex array moves only along the real axis, so its cotangent is the
+    # real part of `dot(x, dy)`; `convert` alone raises `InexactError` on the imaginary component.
+    return R <: Real ? convert(R, real(∇)) : convert(R, ∇)
+end
+
 function frule!!(
     f::Lifted{typeof(BLAS.axpy!),Nw},
-    a_da::Lifted{P,Nw},
+    a_da::Lifted{<:Number,Nw},
     X_dX::Lifted{<:AbstractArray{P}},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
@@ -600,12 +626,12 @@ function frule!!(
     n = Lifted{Int,Nw}(length(x), NoDual())
     ix = Lifted{Int,Nw}(stride(x, 1), NoDual())
     iy = Lifted{Int,Nw}(stride(primal(Y_dY), 1), NoDual())
-    return frule!!(f, n, a_da, X_dX, ix, Y_dY, iy)
+    return frule!!(f, n, _fwd_blas_alpha(P, a_da), X_dX, ix, Y_dY, iy)
 end
 
 function rrule!!(
     f::CoDual{typeof(BLAS.axpy!)},
-    a_da::CoDual{P},
+    a_da::CoDual{<:Number},
     X_dX::CoDual{<:AbstractArray{P}},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasFloat}
@@ -613,7 +639,7 @@ function rrule!!(
     y, pb = rrule!!(
         f,
         zero_fcodual(length(x)),
-        a_da,
+        zero_fcodual(P(primal(a_da))),
         X_dX,
         zero_fcodual(stride(x, 1)),
         Y_dY,
@@ -622,7 +648,7 @@ function rrule!!(
     # Seven slots `(f, n, a, X, incx, Y, incy)` down to four `(f, a, X, Y)`.
     function axpy!_short_pb!!(dy)
         r = pb(dy)
-        return NoRData(), r[3], r[4], r[6]
+        return NoRData(), _rvs_blas_alpha(a_da, r[3]), r[4], r[6]
     end
     return y, axpy!_short_pb!!
 end
@@ -638,12 +664,13 @@ end
 
 function frule!!(
     ::Lifted{typeof(BLAS.axpby!),Nw},
-    a_da::Lifted{P,Nw},
+    _a::Lifted{<:Number,Nw},
     X_dX::Lifted{<:AbstractArray{P}},
-    b_db::Lifted{P,Nw},
+    _b::Lifted{<:Number,Nw},
     Y_dY::Lifted{<:AbstractArray{P}},
 ) where {Nw,P<:BlasFloat}
     x, y = primal(X_dX), primal(Y_dY)
+    a_da, b_db = _fwd_blas_alpha(P, _a), _fwd_blas_alpha(P, _b)
     a, b = primal(a_da), primal(b_db)
     for k in 1:Nw
         dx_k = _blas_lane_partial(X_dX, k)
@@ -669,20 +696,20 @@ end
 
 function rrule!!(
     ::CoDual{typeof(BLAS.axpby!)},
-    a_da::CoDual{P},
+    a_da::CoDual{<:Number},
     X_dX::CoDual{<:AbstractArray{P}},
-    b_db::CoDual{P},
+    b_db::CoDual{<:Number},
     Y_dY::CoDual{<:AbstractArray{P}},
 ) where {P<:BlasFloat}
-    a, b = primal(a_da), primal(b_db)
+    a, b = P(primal(a_da)), P(primal(b_db))
     x, dx = arrayify(X_dX)
     y, dy = arrayify(Y_dY)
     y_copy = copy(y)
     BLAS.axpby!(a, x, b, y)
     function axpby!_pb!!(::NoRData)
         copyto!(y, y_copy)
-        ∇a = _rvs_guarded_dot(x, dy)
-        ∇b = _rvs_guarded_dot(y_copy, dy)
+        ∇a = _rvs_blas_alpha(a_da, _rvs_guarded_dot(x, dy))
+        ∇b = _rvs_blas_alpha(b_db, _rvs_guarded_dot(y_copy, dy))
         dx .+= a' .* dy
         dy .*= b'
         return NoRData(), ∇a, NoRData(), ∇b, NoRData()
@@ -2984,6 +3011,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     uplos = ['L', 'U']
     dAs = ['N', 'U']
     rng = rng_ctor(123456)
+    # A float scalar of a DIFFERENT precision from `P`, for the short-form `axpy!` rows below.
+    Q = real(P) === Float64 ? Float32 : Float64
 
     test_cases = vcat(
 
@@ -3045,6 +3074,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 P(3),
                 view(randn(rng, P, 10), 1:2:10),
             ),
+            # The short forms' scalar slot is declared `Number`, because the primal converts it
+            # with `P(alpha)` and narrowing the declaration would leave the call with no rule at
+            # all. Both halves of that domain: an `Int`, whose tangent is `NoTangent`, and a float
+            # of a different precision, whose lane partials and gradient must convert.
+            (false, :none, nothing, BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
+            (false, :none, nothing, BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (false, :none, nothing, BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
         ]...,
 
         # The two-argument convenience forms, which reach the raw pointer without their own rules
