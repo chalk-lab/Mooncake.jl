@@ -1017,6 +1017,10 @@ const NDAC_VecC64 = NDualArray{
             pointer(ptr_backing),
             Ptr{Mooncake.NoTangent}(pointer(ptr_backing)),
             Ptr{Int}(pointer(ptr_backing)),
+            # The ubiquitous `(pointer(v), length(v))` idiom: a CONCRETE tuple whose elements are
+            # all `NoDual` while `tangent_type` is not `NoTangent`. Its declared V must not gain a
+            # `NoDual` member, or `Lifted`'s invariance in `V` leaves the slot uninhabitable.
+            (Ptr{UInt8}(pointer(ptr_backing)), 3),
         )
             test_lifted(Xoshiro(123456), p)
         end

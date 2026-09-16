@@ -869,11 +869,15 @@ end
     # `dual_type` collapses non-diff elements to `NoDual`, which conses fine as a head element).
     Base.isvatuple(P) && return Any
     V = _dual_tuple_v(Val(N), P)
-    # A tuple with abstract elements has wholly non-differentiable concretisations, which collapse
-    # to `NoDual` at the gate above, so the declared type must admit `NoDual` too: otherwise
-    # storing one into a container typed by the abstract tuple — a `Vector{Tuple{NoPullback}}` of
-    # reverse pullbacks under forward-over-reverse — is a `TypeError`. `tangent_type` unions here
-    # for the same reason.
+    # A NON-CONCRETE tuple has wholly non-differentiable concretisations, which collapse to
+    # `NoDual` at the gate above, so the declared type must admit `NoDual` too: otherwise storing
+    # one into a container typed by the abstract tuple — a `Vector{Tuple{NoPullback}}` of reverse
+    # pullbacks under forward-over-reverse — is a `TypeError`. `tangent_type` unions here for the
+    # same reason. A concrete tuple has exactly one concretisation, itself, and the gate above has
+    # already ruled out `NoDual` for it, so the extra member would just name a `Lifted{P,N,V}` slot
+    # type no runtime value inhabits (`Lifted` is invariant in `V`) — e.g. `Tuple{Ptr{UInt8},Int}`,
+    # whose elements are all `NoDual` while `tangent_type` is not `NoTangent`.
+    isconcretetype(P) && return V
     return Tuple{Vararg{NoDual,fieldcount(P)}} <: V ? Union{V,NoDual} : V
 end
 # Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
