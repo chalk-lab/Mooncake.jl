@@ -2197,26 +2197,29 @@ function _basis_seed!!(
     im = _basis_seed!!(imag(v), slots, cursor, dict)
     return Complex(re, im)
 end
+# The block storage's whole allocation: a windowed block's flat storage is a fresh `Array` header
+# over a shared `Memory`, so the `Memory` is what two windows have in common. Before 1.11, and for
+# storage that is not an `Array` (the CUDA extension's `CuArray` block), the storage is itself the
+# allocation.
+@inline _partials_allocation(store) = store
+@static if VERSION >= v"1.11-rc4"
+    @inline _partials_allocation(store::Array) = getfield(store, :ref).mem
+end
+
 # Two containers can own ONE partials store: `a` and `reshape(a, 1, 2)` window the same block, as
 # do an `Array` and its backing `Memory`. Clearing it is therefore not the second container's to
 # do — `dict` keyed on the V alone does not see the sharing, so the second walk zeroed the hot
-# lane the first had written and the whole direction came back zero. Claim it here, clear it only
-# on the claim, and let every later container write its own hot lanes into it. The key is the flat
-# storage's (address, length), not its identity, because a windowed block re-wraps a fresh header
-# over it on every call.
-#
-# Only an EXACT window match dedups, so NESTED windows still clear each other, as they did before:
-# for a `Vector` with capacity slack passed alongside its own backing `Memory`, the `Memory`'s
-# longer block takes a key of its own and its clear wipes the vector's hot lane. Clearing every
-# store in a first pass and lighting the hot lanes in a second would be right under any overlap
-# and needs no key at all, at the cost of a second traversal; that is the fix if the nested case
-# ever matters.
-@inline function _claim_partials_store!(dict, block)
-    store = Nfwd._block_storage(block)
-    key = (pointer(store), length(store))
-    haskey(dict, key) && return false
-    dict[key] = nothing
-    return true
+# lane the first had written and the whole direction came back zero. Claim the whole underlying
+# ALLOCATION here, zero all of it on the claim, and let every later container write its own hot
+# lanes into it. Keying the flat storage's (address, length) instead misses a NESTED window — a
+# `Vector` with capacity slack passed alongside its own backing `Memory` — whose longer clear then
+# takes a key of its own and wipes the shorter's hot lane.
+@inline function _clear_partials_store!(dict, block, z)
+    store = _partials_allocation(Nfwd._block_storage(block))
+    haskey(dict, store) && return nothing
+    dict[store] = nothing
+    fill!(store, z)
+    return nothing
 end
 
 function _basis_seed!!(
@@ -2224,8 +2227,7 @@ function _basis_seed!!(
 ) where {T<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    block = getfield(v, :partials_block)
-    _claim_partials_store!(dict, block) && fill!(block, zero(T))
+    _clear_partials_store!(dict, getfield(v, :partials_block), zero(T))
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2241,8 +2243,7 @@ function _basis_seed!!(
 ) where {R<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    block = getfield(v, :partials_block)
-    _claim_partials_store!(dict, block) && fill!(block, zero(Complex{R}))
+    _clear_partials_store!(dict, getfield(v, :partials_block), zero(Complex{R}))
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2369,7 +2370,7 @@ end
         haskey(dict, v) && return dict[v]
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
-        _claim_partials_store!(dict, block) && fill!(block, zero(T))
+        _clear_partials_store!(dict, block, zero(T))
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
@@ -2385,7 +2386,7 @@ end
         haskey(dict, v) && return dict[v]
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
-        _claim_partials_store!(dict, block) && fill!(block, zero(Complex{R}))
+        _clear_partials_store!(dict, block, zero(Complex{R}))
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]

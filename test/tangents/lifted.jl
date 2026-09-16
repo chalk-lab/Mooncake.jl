@@ -947,6 +947,19 @@ const NDAC_VecC64 = NDualArray{
             end
         end
 
+        # Nested windows over ONE partials allocation: a `Vector` with capacity slack and its own
+        # backing `Memory` hold windows of different lengths, so a per-window clear key gave the
+        # `Memory`'s longer clear a key of its own and it wiped the vector's hot lane.
+        @static if VERSION >= v"1.11-"
+            let v = Float64[]
+                sizehint!(v, 8)
+                append!(v, [1.0, 2.0])
+                @test length(getfield(v, :ref).mem) > length(v)  # the slack the case needs
+                s = bl((v, getfield(v, :ref).mem), (1,))
+                @test tangent_view(tangent(s)[1], 1) == [1.0, 0.0]
+            end
+        end
+
         # A differentiable-eltype `Ptr` field's V is `NTuple{N,Ptr}`, which dispatches through
         # the `::Tuple` basis-seed methods to a bare `Ptr`. That lane has no addressable tangent
         # (0 dof, like `NoDual`); previously it MethodError'd for lack of a terminal `Ptr` method.

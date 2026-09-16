@@ -448,8 +448,8 @@ function Mooncake._basis_seed!!(
     onehot = [one(T)]
     block = getfield(v, :partials_block)
     # Only the first container to claim this store may clear it; see
-    # `Mooncake._claim_partials_store!`.
-    Mooncake._claim_partials_store!(dict, block) && fill!(block, zero(T))
+    # `Mooncake._clear_partials_store!`.
+    Mooncake._clear_partials_store!(dict, block, zero(T))
     for k in 1:N
         hot = slots[k] - base
         1 <= hot <= n && copyto!(block, (k - 1) * n + hot, onehot, 1, 1)
@@ -466,7 +466,7 @@ function Mooncake._basis_seed!!(
     n = length(v.primal)
     base = cursor[]
     block = getfield(v, :partials_block)
-    Mooncake._claim_partials_store!(dict, block) && fill!(block, zero(Complex{R}))
+    Mooncake._clear_partials_store!(dict, block, zero(Complex{R}))
     for k in 1:N
         off = slots[k] - base
         if 1 <= off <= 2n
