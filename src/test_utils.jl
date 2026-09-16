@@ -1678,13 +1678,12 @@ function test_frule_performance(
         @static if VERSION >= v"1.11-"
             __forwards(rule, f_ḟ, x_ẋ...)
             n_fwd_allocs = count_allocs(__forwards, rule, f_ḟ, x_ẋ...)
-            # Julia 1.11 boxes a forward OC whose transform IR is type-stable and which is
-            # alloc-free again on 1.12: `large_tuple_inference` trips a 1.11 inference stack
-            # overflow on `NTuple{1000}`. Such a case sets `fwd_allocs_broken`; mark it
-            # `@test_broken` on 1.11 rather than weakening the zero-alloc contract elsewhere.
-            # Still live, measured: 12 allocations on 1.11 against 0 on 1.12. `@test_broken`
-            # reports an unexpected pass if 1.11 is ever fixed, so this needs no manual review --
-            # the whole `fwd_allocs_broken` mechanism goes when that fires or 1.11 support ends.
+            # Julia 1.11 boxes some forward OCs whose transform IR is type-stable and which
+            # are alloc-free again on 1.12; the range constructors in `twice_precision.jl` are
+            # the live case, measured at 2 allocations on 1.11 against 0 on 1.12. Such a case
+            # sets `fwd_allocs_broken`, so it is `@test_broken` on 1.11 rather than weakening
+            # the zero-alloc contract elsewhere. An unexpected pass means that case no longer
+            # boxes: drop its flag, and drop this branch once no case carries one.
             if fwd_allocs_broken && VERSION < v"1.12-"
                 @test_broken n_fwd_allocs == 0
             else

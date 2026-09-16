@@ -1031,7 +1031,7 @@ function generate_test_functions()
         (
             false,
             :allocs,
-            (lb=2, ub=1500, fwd_allocs_broken=true, skip_chunked=true),
+            (lb=2, ub=1500, skip_chunked=true),
             large_tuple_inference,
             Tuple(zeros(1_000)),
         ),
