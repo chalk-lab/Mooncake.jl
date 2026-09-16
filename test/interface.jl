@@ -2731,3 +2731,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test cache_grad.tangents[3] == -2y
             value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, true, false))
             @test cache_grad.tangents[2] == 2x
+            @test cache_grad.tangents[3] == -4y
+        end
+    end
+end
