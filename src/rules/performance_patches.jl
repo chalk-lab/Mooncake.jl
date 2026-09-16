@@ -85,9 +85,8 @@ end
 #
 # FORWARD ONLY. Reverse mode reaches `maximum` through its derived path and is not the bottleneck
 # here; a reverse primitive would need an `rrule!!` in lockstep with this declaration. `minimum`
-# is deliberately NOT given the same treatment: its `NDualArray` method selects with `argmin`,
-# which costs ~6us against ~0.3us for the `isequal` scan `maximum` uses, so wiring a rule to it as
-# it stands would be slower than the transform it replaces.
+# has no counterpart rule, so `Base.minimum(::NDualArray)` is reached only on 1.10, where the nfwd
+# classifier admits `minimum`; on 1.11+ it rejects it and the fold builds one `NDual` per element.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(maximum),Array{<:IEEEFloat}}
 function frule!!(
     ::Lifted{typeof(maximum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
