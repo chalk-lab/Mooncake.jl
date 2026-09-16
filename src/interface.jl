@@ -261,10 +261,12 @@ end
 function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
     li = i == 1 ? "`f`" : "`x$(i - 1)`"
     lj = j == 1 ? "`f`" : "`x$(j - 1)`"
+    # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
+    # `===` yet are one storage, and that pair is exactly what `_same_storage` added.
     what = if aliased_now
-        "are the same object now but were distinct"
+        "share one storage now but were separate"
     else
-        "are distinct now but were the same object"
+        "are separate now but shared one storage"
     end
     throw(
         PreparedCacheError(
@@ -302,6 +304,22 @@ end
 # `tangents[i][p1][p2]...` as an expression.
 _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
 
+# Do two positions name one accumulation buffer? Object identity answers it for every container
+# except an `Array` against its backing `Memory`, which are never `===` yet are one storage — and
+# reverse ties their tangents accordingly, so `===` reported "distinct" for a pair the cache had
+# merged. `f(a, a.ref.mem) = sum(a) + sum(m)` on a cache prepared with unrelated arguments then
+# returned `[1,1,1]` against a truth of `[2,2,2]`, silently. Asked of the primals and of the
+# tangents with the ONE predicate, so the two answers are comparable: `(b, reshape(b))` shares a
+# buffer on both sides and still passes.
+@inline _same_storage(@nospecialize(x), @nospecialize(y)) = x === y
+@static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
+    @inline _storage_of(x::Array) = getfield(x, :ref).mem
+    @inline _storage_of(x::Memory) = x
+    @inline function _same_storage(x::Union{Array,Memory}, y::Union{Array,Memory})
+        return _storage_of(x) === _storage_of(y)
+    end
+end
+
 # Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
 # prepared. If two arguments are the same object, their buffers must be too (the aliasing
 # invariant); if they are distinct, their buffers must be distinct or two gradients are summed
@@ -333,7 +351,9 @@ _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:
             push!(
                 checks.args,
                 quote
-                    let same_primal = $fi === $fj, same_tangent = $ti === $tj
+                    let same_primal = _same_storage($fi, $fj),
+                        same_tangent = _same_storage($ti, $tj)
+
                         same_primal == same_tangent ||
                             _throw_prepared_cache_aliasing_error($i, $j, same_primal)
                     end
@@ -468,12 +488,21 @@ end
 # `_validate_prepared_aliasing` for why that traversal is too expensive to run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
+#
+# By `_same_storage`, not `===`, so an `Array` and its backing `Memory` count: they are one storage
+# and so one dof range, and the per-argument sweep differentiates it once per position. This runs
+# per CALL, which is what makes it the verdict rather than the prepare-time `inputs_alias` flag —
+# a cache prepared with unrelated arguments and called with `(a, a.ref.mem)` otherwise returned
+# `[1,1,1]` at both positions against a truth of `[2,2,2]`, silently.
 @generated function _check_gradient_arg_aliasing(x::Tuple)
     checks = Expr(:block)
     n = length(x.parameters)
     for i in 1:n, j in (i + 1):n
         Base.ismutabletype(x.parameters[i]) || continue
-        push!(checks.args, :(x[$i] === x[$j] && _check_repeated_arg_dof(x[$i], $i, $j)))
+        push!(
+            checks.args,
+            :(_same_storage(x[$i], x[$j]) && _check_repeated_arg_dof(x[$i], $i, $j)),
+        )
     end
     return quote
         $checks
@@ -483,8 +512,10 @@ end
 
 # `ismutabletype` says the argument COULD alias, not that it carries a derivative: a repeated
 # argument with no differentiable dof has no gradient to assemble, and reverse mode accepts it.
-# Called from inside the `===` short-circuit so only an aliasing pair pays, and checked here rather
-# than in the generator so no `tangent_type` verdict is baked into callers' compiled IR.
+# That is also what keeps two EMPTY arrays out of it — they share Julia's one global empty `Memory`,
+# so `_same_storage` calls them aliased — and a `Vector{Int}` beside its buffer. Called from inside
+# the short-circuit so only an aliasing pair pays, and checked here rather than in the generator so
+# no `tangent_type` verdict is baked into callers' compiled IR.
 @inline function _check_repeated_arg_dof(x, i::Int, j::Int)
     dof(zero_tangent(x)) == 0 && return nothing
     return _throw_gradient_arg_alias_error(i, j)
@@ -493,11 +524,12 @@ end
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
     throw(
         ArgumentError(
-            "Forward-mode `value_and_gradient!!` does not support passing the same mutable " *
-            "object as both argument $i and argument $j: the gradient is assembled from one " *
-            "standard-basis dof range per argument, which cannot represent a repeated " *
-            "argument. Use `value_and_derivative!!` with one tangent shared across the " *
-            "repeated positions, or use reverse mode.",
+            "Forward-mode `value_and_gradient!!` does not support arguments $i and $j sharing " *
+            "one storage — the same mutable object, or an `Array` passed alongside its backing " *
+            "`Memory`: the gradient is assembled from one standard-basis dof range per " *
+            "argument, which cannot represent a storage that occupies two of them. Use " *
+            "`value_and_derivative!!` with one tangent shared across those positions, or use " *
+            "reverse mode.",
         ),
     )
 end

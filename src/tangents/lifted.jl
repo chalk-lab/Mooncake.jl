@@ -420,6 +420,52 @@ function _materialise_lane(
 ) where {P,N}
     _register_leaf(primal(x), tangent(x, lane), cache)
 end
+@static if VERSION >= v"1.11-rc4"
+    # ... except that reverse derives an `Array`'s tangent from its backing `Memory`'s
+    # (`zero_tangent_internal(::Array)` recurses through `.ref.mem`), so a primal holding both
+    # comes back over ONE buffer. Mirror that, or the pair round-trips through `unlift` into two
+    # independent tangents and a later accumulation lands in two buffers where the primal has one.
+    # The seed path already ties them this way (`_derived_array_dual`).
+    function _materialise_lane(
+        x::Lifted{P,N,<:NDualArray}, lane::Integer, cache::IdDict
+    ) where {P<:Array,N}
+        p = primal(x)
+        haskey(cache, p) && return cache[p]::tangent_type(P)
+        E = eltype(P)
+        r = getfield(p, :ref)
+        mem = r.mem
+        buf = getfield(getfield(getfield(tangent(x), :partials_block), :parent), :ref).mem
+        # A V holding a block of its OWN rather than a window into the `Memory`'s — a rule's
+        # freshly allocated array — shares no partial storage with it, so there is none to tie.
+        # `_window_block` makes a window's parent the `Memory` block's storage, scaled by `N`,
+        # which is what the length reads.
+        len = N * length(mem)
+        length(buf) == len || return _register_leaf(p, tangent(x, lane), cache)
+        block = Nfwd.NDualBlock{E,2}(
+            Base.wrap(Array, memoryref(buf), (len,))::Vector{E}, (N, length(mem))
+        )
+        memv = NDualArray{E,N,1,Memory{E}}(mem, block)
+        tmem = _materialise_lane(Lifted{Memory{E},N}(mem, memv), lane, cache)
+        t = Base.wrap(Array, construct_ref(r, tmem), size(p))::tangent_type(P)
+        cache[p] = t
+        return t
+    end
+
+    # The `MemoryRef` half of the same mirror: reverse's tangent is `construct_ref` over the
+    # `Memory`'s. The lane accessor already materialises a full-length `Memory`, so register that
+    # one and take the ref into it — but only where the V's block spans the whole `Memory`, which
+    # is what makes the partials it carries the `Memory`'s own rather than a projected array's.
+    function _materialise_lane(
+        x::Lifted{P,N,<:NDualMemoryRef}, lane::Integer, cache::IdDict
+    ) where {P<:MemoryRef,N}
+        p = primal(x)
+        v = tangent(x)
+        t = tangent(x, lane)
+        off = Core.memoryrefoffset(p)
+        (getfield(v, :ncols) == length(p.mem) && getfield(v, :col) == off) || return t
+        return _memoryref_at(_register_leaf(p.mem, t.mem, cache), off)
+    end
+end
 # An all-`NoDual` V is a leaf only when the ELEMENT's reverse tangent is `NoTangent` too. A `Ptr`
 # to a non-differentiable element breaks that: `dual_type(Vector{Ptr{Int}})` is `Vector{NoDual}`
 # while `tangent_type` is `Vector{Ptr{NoTangent}}`, so the accessor returns the wrong shape and

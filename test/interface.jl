@@ -2415,6 +2415,61 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test gnd[2][1] == [1.0, 1.0, 1.0]
                 @test gnd[3][1] == [2.0, 1.0, 1.0]
+
+                # An `Array` against its backing `Memory`. The two are never `===`, so the
+                # identity comparison above reported "distinct" for a pair reverse gives one
+                # cotangent buffer, and a cache prepared with unrelated arguments returned
+                # [1,1,1] at both positions against a truth of [2,2,2] — silently. The
+                # comparison is by backing buffer for exactly this pair.
+                @static if VERSION >= v"1.11-rc4"
+                    h(a, m) = sum(a) + sum(m)
+                    mem_pair() = (v=copy(x0); (v, getfield(v, :ref).mem))
+                    unrelated = prepare_gradient_cache(
+                        h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                        unrelated, h, mem_pair()...
+                    )
+                    ap, mp = mem_pair()
+                    buffer_cache = prepare_gradient_cache(h, ap, mp)
+                    @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                        buffer_cache, h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    # Matching aliasing gives the gradient of the one buffer at both positions.
+                    _, gb = Mooncake.value_and_gradient!!(buffer_cache, h, mem_pair()...)
+                    @test gb[2] == [2.0, 2.0, 2.0]
+                    @test gb[3] == [2.0, 2.0, 2.0]
+                    # ... and `reshape`, which shares a buffer on BOTH sides, is not a mismatch.
+                    b = copy(x0)
+                    reshaped = prepare_gradient_cache(h, b, reshape(b, 3, 1))
+                    _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
+                    @test gr[2] == [2.0, 2.0, 2.0]
+
+                    # The forward gradient assembles one dof range per argument, so it refuses the
+                    # pair outright — and the refusal has to be the per-CALL check, not the
+                    # prepare-time `inputs_alias` flag: on a cache prepared with unrelated
+                    # arguments that flag is false, and the sweep returned [1,1,1] at both
+                    # positions against the same truth of [2,2,2], silently.
+                    fwd = Mooncake.prepare_derivative_cache(
+                        h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        fwd, h, mem_pair()...
+                    )
+                    # Unrelated arguments, and two EMPTY arrays (which share Julia's one global
+                    # empty `Memory`), must still go through.
+                    u, w = randn(3), randn(3)
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, u, w), h, u, w
+                    )[2][2] == [1.0, 1.0, 1.0]
+                    ee = Float64[]
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, ee, Float64[]),
+                        h,
+                        ee,
+                        Float64[],
+                    )[2][2] == Float64[]
+                end
             end
 
             @testset "both modes refuse an input with no concrete representation" begin
@@ -2676,7 +2731,3 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test cache_grad.tangents[3] == -2y
             value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, true, false))
             @test cache_grad.tangents[2] == 2x
-            @test cache_grad.tangents[3] == -4y
-        end
-    end
-end
