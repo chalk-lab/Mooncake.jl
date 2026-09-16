@@ -55,7 +55,9 @@ Forward-mode slot wrapper for a primal value of type `P` and its canonical
 
 - `primal::P` — slot-level back-reference to the user's primal value. For
   mutable struct primals this aliases user storage; for immutable primals
-  it carries the same value.
+  it carries the same value. Where `rep` names the primal itself
+  (`NDualArray`, `NDualMemoryRef`) the constructor takes it from there, so the
+  two names cannot disagree.
 - `rep::V` — the canonical `N`-width forward representation. For
   concrete runtime wrappers `V === dual_type(Val(N), P)`.
 
@@ -69,6 +71,25 @@ mode. `Lifted` never nests inside another `Lifted`'s `V`.
 struct Lifted{P,N,V}
     primal::P
     rep::V
+    # Inner, so every construction path routes through `_slot_primal`.
+    function Lifted{P,N,V}(primal, rep) where {P,N,V}
+        return new{P,N,V}(_slot_primal(primal, rep), rep)
+    end
+end
+
+# An `NDualArray` / `NDualMemoryRef` already names the array it was built over — that field
+# aliases the user's storage and the partials block is indexed against it — so it, not the
+# separately supplied argument, is the slot's primal. Pairing array `a` with a representation
+# built over `b` is then unrepresentable rather than merely unlikely.
+#
+# NOT closed here: a wrapper primal (`SubArray`, `Diagonal`, …) lifts to an `ImmutableDual` whose
+# field V names the PARENT array, and the wrapper cannot be rebuilt from it — a `SubArray`'s
+# `indices`/`offset1`/`stride1` lift to `NoDual`, so only the primal has them. A slot pairing one
+# view with a representation over another remains constructible.
+@inline _slot_primal(primal, rep) = primal
+@inline _slot_primal(::Any, rep::NDualArray) = getfield(rep, :primal)
+@static if VERSION >= v"1.11-rc4"
+    @inline _slot_primal(::Any, rep::NDualMemoryRef) = getfield(rep, :primal)
 end
 
 """
