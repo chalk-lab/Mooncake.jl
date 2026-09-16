@@ -15,6 +15,35 @@ const LKJ_SAMPLE_RMAT = collect(rand(StableRNG(123456), LKJ(5, 1.1)))
 const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1.1)).L)
 
 @testset "distributions" begin
+    @testset "Student-t CDF shape derivative" begin
+        f(nu) = cdf(TDist(nu), 0.5)
+        for nu in (1.0, 2.0, 5.0)
+            test_rule(StableRNG(123), f, nu; is_primitive=false)
+        end
+    end
+
+    @testset "incomplete beta shape derivatives" begin
+        @testset "$name" for (name, f, x) in (
+            (:beta, a -> cdf(Beta(a, 2.0), 0.5), 1.0),
+            (:negative_binomial_one, r -> cdf(NegativeBinomial(r, 0.4), 3), 1.0),
+            (:negative_binomial_two, r -> cdf(NegativeBinomial(r, 0.4), 3), 2.0),
+            (:student_t, a -> cdf(TDist(a), 1.0), 2.0),
+            (:f_distribution, a -> cdf(FDist(a, 4.0), 2.0), 2.0),
+            (:truncated_beta, a -> logpdf(truncated(Beta(a, 2.0), 0.1, 0.5), 0.25), 1.0),
+        )
+            test_rule(StableRNG(123), f, x; is_primitive=false, atol=1e-10, rtol=1e-6)
+            test_rule(
+                StableRNG(123),
+                f,
+                x;
+                is_primitive=false,
+                atol=1e-10,
+                rtol=1e-6,
+                mode=Mooncake.ReverseMode,
+                rrule=Mooncake.NfwdMooncake.build_rrule(f, x; chunk_size=1),
+            )
+        end
+    end
     # A rule whose signature names a type parameter the loaded dependency does not have
     # unloads the whole extension with only a warning, taking every rule in it with it.
     @test Base.get_extension(Mooncake, :MooncakeDistributionsExt) !== nothing
@@ -606,7 +635,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
     #   • Erlang: integer shape k is non-differentiable; x-only differentiation.
     #   • PDMat-based covariances: NDual <: AbstractFloat so PDMat(Symmetric(NDual_matrix)) works.
     #   • product_distribution components: Distribution objects are not NDual-parameterised.
-    #   • truncated Beta shape params: ∂I_x/∂a, ∂I_x/∂b not implemented; bounds+x only for NfwdMooncake.
     #   • LKJCholesky observation: pass lower-triangular L as plain Matrix, reconstruct inside lambda.
     #   • Dirichlet with array α: NDual <: AbstractFloat so Vector{NDual} works; chunk_size=3.
     #   • MvLogitNormal with pre-built Symmetric/PDMat S arg: modes=(:forward, :reverse).
@@ -2056,14 +2084,28 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             (:forward, :reverse, :nfwd),
             :none,
         ),
+        (
+            "truncated Beta α+β",
+            (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
+            (0.1, 0.9, 1.1, 1.3, 0.4),
+            5,
+            (:forward, :reverse, :nfwd),
+            :allocs,
+        ),
+        (
+            "left-truncated Beta α+β",
+            (a, α, β, x) -> logpdf(truncated(Beta(α, β); lower=a), x),
+            (0.1, 1.1, 1.3, 0.4),
+            4,
+            (:forward, :reverse, :nfwd),
+            :none,
+        ),
 
         # ── Forward+Reverse only ───────────────────────────────────────────────────
         # NfwdMooncake not applicable for the following entries:
         #
         #   MvLogitNormal m+Σ (array)  — S is a pre-built Symmetric{PDMat}; NfwdMooncake.build_rrule
         #                                does not seed structured-matrix args with NDual partials
-        #   truncated Beta α+β         — ∂I_x/∂a and ∂I_x/∂b not implemented; can't differentiate
-        #   left-truncated Beta α+β      through the truncation normalisation w.r.t. shape params
         #   reshape / vec              — Distribution objects baked into lambda; no float params to seed
         #   LKJCholesky workaround     — regular-AD coverage only; NfwdMooncake covered by LKJCholesky L/η+L
 
@@ -2075,28 +2117,6 @@ const LKJ_CHOLESKY_SAMPLE_LMAT = Matrix(rand(StableRNG(123456), LKJCholesky(5, 1
             "MvLogitNormal m+Σ (array)",
             (m, S, x) -> logpdf(MvLogitNormal(m, S), vcat(x, 1 - sum(x))),
             ([0.4, 0.6], Symmetric(_pdmat([0.9 0.4; 0.5 1.1])), [0.27, 0.24]),
-            0,
-            (:forward, :reverse),
-            :none,
-        ),
-        # truncated Beta / left-truncated Beta with shape params (α, β) as differentiable
-        # args.  NfwdMooncake not supported: differentiating through the truncation normalisation
-        # constant requires ∂I_x/∂a and ∂I_x/∂b (partial derivatives of the regularised
-        # incomplete beta function w.r.t. shape params), which are not implemented.
-        # The NfwdMooncake entries "truncated Beta 1" / "truncated Beta lower 1" above cover
-        # NfwdMooncake for truncated Beta with α, β fixed.
-        (
-            "truncated Beta α+β",
-            (a, b, α, β, x) -> logpdf(truncated(Beta(α, β), a, b), x),
-            (0.1, 0.9, 1.1, 1.3, 0.4),
-            0,
-            (:forward, :reverse),
-            :allocs,
-        ),
-        (
-            "left-truncated Beta α+β",
-            (a, α, β, x) -> logpdf(truncated(Beta(α, β); lower=a), x),
-            (0.1, 1.1, 1.3, 0.4),
             0,
             (:forward, :reverse),
             :none,
