@@ -1699,9 +1699,15 @@ for (f, helper) in
             return _seed_field_expr(N, P, i, :($($f)(Val($N), getfield(x, $nm))))
         end
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+        msg =
+            "$($f): $P declares a `dual_type` that is not the structural lift, so this fallback " *
+            "cannot seed it. A type with its own V needs BOTH seed entry points: define " *
+            "`zero_dual`/`uninit_dual`/`randn_dual` for it alongside its `_*_dual_internal` " *
+            "overloads (see `TwicePrecision`)."
         return quote
             V = dual_type(Val($N), typeof(x))
             V === NoDual && return NoDual()
+            V <: $wrapper || error($msg)
             $wrapper(fieldtype(V, 1)(($(seeds...),)))
         end
     end
@@ -1725,9 +1731,15 @@ end
         return _seed_field_expr(N, P, i, :(randn_dual(Val($N), rng, getfield(x, $nm))))
     end
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
+    msg =
+        "randn_dual: $P declares a `dual_type` that is not the structural lift, so this " *
+        "fallback cannot seed it. A type with its own V needs BOTH seed entry points: define " *
+        "`zero_dual`/`uninit_dual`/`randn_dual` for it alongside its `_*_dual_internal` " *
+        "overloads (see `TwicePrecision`)."
     return quote
         V = dual_type(Val($N), typeof(x))
         V === NoDual && return NoDual()
+        V <: $wrapper || error($msg)
         $wrapper(fieldtype(V, 1)(($(seeds...),)))
     end
 end
