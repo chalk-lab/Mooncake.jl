@@ -57,6 +57,14 @@ tangent_type(::Type{<:MistyClosure}) = MistyClosureTangent
 # closure's own `oc`/`ir` fields.
 TestUtils.supports_field_access_interactions(::Type{<:MistyClosure}) = false
 
+# `dual_callable` is compiled dual IR rather than a tangent, so only `captures_tangent` has values
+# to check. It is itself a `Lifted` over the primal's captures, so recurse through that slot.
+function TestUtils._chunked_v_invariant(_p, v::MistyClosureTangent, c::IdDict)
+    return TestUtils._chunked_v_invariant(
+        primal(v.captures_tangent), tangent(v.captures_tangent), c
+    )
+end
+
 # Forward-mode V for a MistyClosure is its `MistyClosureTangent` — NOT the
 # generic structural lift of the closure's IR. In the *forward* slot the
 # `captures_tangent` field holds the already-lifted forward captures slot
