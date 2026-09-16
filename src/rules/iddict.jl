@@ -24,20 +24,20 @@ function randn_tangent_internal(rng::AbstractRNG, d::P, dict::MaybeCache) where 
     end
 end
 
-# Unlift rebuilds a reverse tangent, so each value must be unlifted rather than taken from the
-# lane accessor, which yields a `MutableDualTangentView` for a mutable-struct value type. An
-# `IdDict` is mutable, so register the shell before recursing.
-@inline unlift(x::Lifted{P,1,<:IdDict}) where {P<:IdDict} = (
-    primal(x), _unlift_seed(x, IdDict{Any,Any}())
+# An `IdDict` is mutable, so register the shell before recursing into the values.
+@inline tangent(x::Lifted{P,N,<:IdDict}, lane::Integer) where {P<:IdDict,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
 )
-function _unlift_seed(x::Lifted{P,1,<:IdDict}, cache::IdDict) where {P<:IdDict}
+function _materialise_lane(
+    x::Lifted{P,N,<:IdDict}, lane::Integer, cache::IdDict
+) where {P<:IdDict,N}
     p = primal(x)
     haskey(cache, p) && return cache[p]
     t = tangent_type(P)()
     cache[p] = t
     for (k, v) in tangent(x)
         pk = p[k]
-        t[k] = _unlift_seed(Lifted{typeof(pk),1}(pk, v), cache)
+        t[k] = _materialise_lane(Lifted{typeof(pk),N}(pk, v), lane, cache)
     end
     return t
 end
@@ -465,10 +465,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         # while every concrete-`V` case above passes because there the two agree.
         (false, :none, nothing, getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
         (false, :none, nothing, get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
-        # A MUTABLE-STRUCT value type: unlifting the dict argument has to rebuild a reverse
-        # tangent per value, since the lane accessor gives a `MutableDualTangentView` that
-        # `IdDict{Symbol,MutableTangent}` storage cannot hold. Array and scalar value types
-        # are both leaves and so miss this.
+        # A MUTABLE-STRUCT value type: the dict's lane has to materialise a reverse tangent
+        # per value, keyed on the dict so a cycle through it terminates. Array and scalar value
+        # types are both leaves and so miss this.
         (
             false,
             :none,

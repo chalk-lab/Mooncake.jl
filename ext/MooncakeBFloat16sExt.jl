@@ -90,11 +90,13 @@ end
     return Mooncake.Lifted{P,N,NTuple{N,P}}
 end
 # A BFloat16 is a single-number leaf, so its width-1 V `Tuple{BFloat16}` is a leaf, not a structural
-# tuple. Provide the `lift` boundary and override `_unlift_seed` to read the lane directly — the
-# generic `_unlift_seed` would treat the tuple as per-field and index the fieldless primal
+# tuple. Provide the `lift` boundary and override `_materialise_lane` to read the lane directly —
+# the generic one would treat the tuple as per-field and index the fieldless primal
 # (`BoundsError: access DataType at index [1]`). Mirrors the TwicePrecision NTuple-V pattern.
 @inline Mooncake.lift(x::P, ẋ::P) = Mooncake.Lifted{P,1}(x, (ẋ,))
-@inline Mooncake._unlift_seed(x::Mooncake.Lifted{P,1,Tuple{P}}, ::IdDict) = Mooncake.tangent(x, 1)
+@inline Mooncake._materialise_lane(
+    x::Mooncake.Lifted{P,1,Tuple{P}}, lane::Integer, ::IdDict
+) = Mooncake.tangent(x, lane)
 
 # `NTuple{N,P}` is a single-scalar leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
 # tuple. Without these terminals the gradient/Jacobian driver mis-counts the input's dofs (a bare

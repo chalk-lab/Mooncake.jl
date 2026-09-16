@@ -133,12 +133,11 @@ Helper that returns the `(primal(d), tangent(d))` tuple. Mirrors
 """
 extract(d::Lifted) = (primal(d), tangent(d))
 
-function Base.copy(d::Lifted{P,N,V}) where {P,N,V}
-    return Lifted{P,N,V}(copy(primal(d)), copy(tangent(d)))
-end
-
 # Lifted slots are safe to share by reference within a forward pass —
-# slot-local tangent storage rules out cross-slot aliasing hazards.
+# slot-local tangent storage rules out cross-slot aliasing hazards. This is the only copy the
+# pipeline takes: a `Base.copy(::Lifted)` cannot be right in general, because `Base.copy` is
+# undefined or wrong for several supported primals and for every aggregate V (copying an
+# `NDualArray` element-wise yields a `Vector{NDual}`, a shape `dual_type` never returns).
 _copy(d::Lifted) = d
 
 function Base.:(==)(a::Lifted, b::Lifted)
@@ -155,10 +154,8 @@ end
 @inline tangent(a::NDualArray) = Nfwd._lane_views(a)
 @inline unpack_ndual(a::NDualArray) = (a.primal, Nfwd._lane_views(a))
 
-# Per-lane native-tangent accessor. The `Lifted{MutS, N, <:MutableDual}` overload
-# at the bottom of this file returns a `MutableDualTangentView` proxy so rule
-# bodies can write through it; `unlift` has its own MutableDual path that
-# materialises a fresh `MutableTangent` instead.
+# Per-lane accessor: lane `lane`'s derivative MATERIALISED as a reverse tangent of type
+# `tangent_type(P)`, for every V shape. Writable per-lane access is `tangent_view(slot, lane)`.
 # Leaf V accessors key on the V shape and leave `P` free: the inner V uniquely
 # determines extraction, and an abstract slot (e.g. `Lifted{Real, N, NDual{Float64, N}}`,
 # where the static primal type is abstract but the runtime V is concrete) must
@@ -182,21 +179,11 @@ end
 @inline Nfwd.tangent_view(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N} = Nfwd.tangent_view(
     tangent(x), lane
 )
-@inline function tangent(
-    x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer
-) where {P<:NDualEltype,N}
-    # A `Ref` is a mutable struct, so its reverse tangent (and the width-1 `_unlift_seed` result) is a
-    # `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}`, NOT a bare scalar. Return that shape so
-    # this leaf accessor mirrors the reverse oracle and struct-recursion field extraction (which
-    # `convert`s each field into its declared reverse tangent type) works for a `Ref`-valued field.
-    p = primal(x)
-    Tt = tangent_type(typeof(p))
-    Ft = fieldtype(fieldtype(Tt, :fields), :x)
-    part = tangent(x).partials[][lane]
-    shell = Tt()
-    shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
-    return shell
-end
+# A `Ref` is a mutable struct, so its reverse tangent is a
+# `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}`, NOT a bare scalar.
+@inline tangent(x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer) where {P<:NDualEltype,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
+)
 # `NDualMemoryRef` / `MemoryRef` / `Core.memoryref` are 1.11+; gate to avoid an
 # `UndefVarError` at precompile on 1.10.
 @static if VERSION >= v"1.11-rc4"
@@ -242,7 +229,25 @@ end
     v = tangent(x)
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
-@inline tangent(::Lifted{P,N,NoDual}, ::Integer) where {P,N} = NoTangent()
+# The reverse value comes from the PRIMAL, not from the V, for the same reason as the array
+# sibling below: `NoDual` says only that there is no forward partial. `Ptr{T}` with a
+# non-differentiable `T` is the one primal family whose V is `NoDual` while `tangent_type` is not
+# `NoTangent` (it is `Ptr{NoTangent}`), so mapping `NoDual` to `NoTangent` returned a wrong-typed
+# value with no error at the site. Those two are the whole family: a `NoDual` over any other
+# differentiable primal is a malformed V, and minting it an uninit tangent would hide that.
+@inline function tangent(x::Lifted{P,N,NoDual}, ::Integer) where {P,N}
+    (tangent_type(P) === NoTangent || P <: Ptr) || _throw_differentiable_nodual(P)
+    return uninit_tangent(primal(x))
+end
+@noinline function _throw_differentiable_nodual(::Type{P}) where {P}
+    throw(
+        ArgumentError(
+            "a slot over the differentiable primal `$P` carries the forward value `NoDual`, " *
+            "whose reverse tangent would have to be `$(tangent_type(P))`. `NoDual` is valid only " *
+            "where `tangent_type` is `NoTangent`, or for a `Ptr` to a non-differentiable element.",
+        ),
+    )
+end
 # Element-wise non-differentiable array V (`Array{NoDual}`, e.g. `Vector{Int}`). The element comes
 # from the PRIMAL, not from the V: `NoDual` says only that there is no forward partial, and the
 # reverse element it stands for is whatever `tangent_type` gives that primal element. Mapping
@@ -260,165 +265,66 @@ end
 # tangent, mirroring reverse `tangent_type(Array{T}) === Array{tangent_type(T)}`. The
 # `NDualArray` (also `<:AbstractArray`) and the `AbstractArray{NoDual}` case have more
 # specific overloads above; undefined slots stay undefined (reverse-PUT semantics).
-@inline tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray} = _tangent_lane(
+@inline tangent(x::Lifted{P,N,V}, lane::Integer) where {P,N,V<:AbstractArray} = _materialise_lane(
     x, lane, IdDict{Any,Any}()
 )
-# `_tangent_lane` mirrors the `tangent(slot, lane)` dispatch hierarchy above, threading an aliasing
-# cache so an aliased / self-referential *element-wise* array terminates. The block-backed
-# `NDualArray` and the all-`NoDual` cases are terminal (they cannot reference back into the array),
-# so delegate to their specific `tangent(slot, lane)` methods rather than recursing element-wise.
-function _tangent_lane(x::Lifted{P,N,<:NDualArray}, lane::Integer, ::IdDict) where {P,N}
-    tangent(x, lane)
-end
-function _tangent_lane(
-    x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, ::IdDict
-) where {P,N}
-    tangent(x, lane)
-end
-# Element-wise array: register the result shell before filling, then recurse elements through
-# `_tangent_lane` (a nested element-wise array re-enters here, cycle-safe via `d`; any other element
-# shape terminates at the generic method below → the plain `tangent(slot, lane)`).
-function _tangent_lane(
-    x::Lifted{P,N,V}, lane::Integer, d::IdDict
-) where {P,N,V<:AbstractArray}
-    p = primal(x)
-    haskey(d, p) && return d[p]
-    v = tangent(x)
-    t = similar(p, tangent_type(eltype(P)))
-    d[p] = t
-    # Build each element's slot from the CONCRETE `typeof(pe)`, not the static
-    # `eltype(P)`: for an abstract-eltype array (e.g. `Vector{Distribution}` holding
-    # `Normal`s) the abstract type has no fields, so `eltype(P)` would make the
-    # struct-lift do `fieldtype(Distribution, :μ)` and throw.
-    _map_if_assigned!(
-        (pe, ve) -> _tangent_lane(Lifted{typeof(pe),N}(pe, ve), lane, d), t, p, v
-    )
-    return t
-end
-_tangent_lane(x::Lifted, lane::Integer, ::IdDict) = tangent(x, lane)
 @inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P,N}
     return tangent(x)[lane]
 end
-# A `PossiblyUninitTangent` backing field reproduces the reverse `Tangent`'s
-# PUT shape: an undefined primal field maps to an uninit reverse PUT.
-# The child slot is annotated with the field's CONCRETE type, as the element-wise array recursion
-# does (`Lifted{typeof(pe),N}`), not the declared `fieldtype(P, name)`. An abstract declared type
-# would otherwise give `Lifted{Any,N,...}`, and the lane/unlift methods dispatch on `P`: they then
-# evaluate `fieldtype(Any, name)` and throw, find no method at all for a NamedTuple V, or — for a
-# Tuple V, since `Any` is not `<:Tuple` — fall to the per-lane-`Ptr` method and silently return one
-# element's whole V. `Rt` keeps the DECLARED type: it is the reverse `PossiblyUninitTangent`'s
-# backing type, and the concrete result still fits inside it.
-@inline _field_lane_tangent(::Val{N}, ::Type{P}, p, name, vfield, lane) where {N,P} =
-    let pf = getfield(p, name)
-        tangent(Lifted{typeof(pf),N}(pf, vfield), lane)
-    end
-@inline function _field_lane_tangent(
-    ::Val{N}, ::Type{P}, p, name, vfield::PossiblyUninitTangent, lane
-) where {N,P}
-    Rt = tangent_type(fieldtype(P, name))
-    (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
-    pf = getfield(p, name)
-    return PossiblyUninitTangent{Rt}(tangent(Lifted{typeof(pf),N}(pf, val(vfield)), lane))
-end
-@inline function tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N}
-    nt = tangent(x).fields
-    p = primal(x)
-    names = keys(nt)
-    field_tangents = map(names) do name
-        return _field_lane_tangent(Val(N), P, p, name, getfield(nt, name), lane)
-    end
-    # Coerce into the declared reverse backing `tangent_type(P)`, so an abstract
-    # field is stored at its widened type (e.g. `a::Any`, not the concrete
-    # `a::Float64`) — matching what reverse mode produces.
-    backing = fieldtype(tangent_type(P), :fields)
-    return Tangent(_lane_backing(backing, NamedTuple{names}(field_tangents)))
-end
-# Coerce only when every field's lane read fits the declared reverse type. A MUTABLE field's lane
-# read is a live `MutableDualTangentView` over the parent, which has no reverse counterpart to
-# convert into, so coercing a struct containing one throws — keep the read types there. Decided
-# from types alone, so the branch folds away.
-@generated function _lane_backing(::Type{B}, nt::NT) where {B,NT}
-    fits =
-        fieldcount(B) == fieldcount(NT) &&
-        all(i -> fieldtype(NT, i) <: fieldtype(B, i), 1:fieldcount(NT))
-    return fits ? :(B(nt)) : :(nt)
-end
-# Tuple primal: V is a Tuple of per-element V; recurse element-wise.
-@inline function tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N}
-    p = primal(x)
-    v = tangent(x)
-    return ntuple(length(v)) do i
-        return tangent(Lifted{fieldtype(P, i),N}(p[i], v[i]), lane)
-    end
-end
-# NamedTuple primal: V is a NamedTuple of per-element V; recurse element-wise.
-@inline function tangent(x::Lifted{P,N,<:NamedTuple}, lane::Integer) where {P<:NamedTuple,N}
-    p = primal(x)
-    v = tangent(x)
-    names = keys(v)
-    field_tangents = map(names) do name
-        return tangent(Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(v, name)), lane)
-    end
-    return NamedTuple{names}(field_tangents)
-end
+# `Ptr{Nothing}`'s reverse tangent is a `VoidPtrTangent`, not the raw address the per-lane V holds,
+# so it is the second member of the `NoDual` family above: rebuild from the primal.
+@inline tangent(x::Lifted{Ptr{Nothing},N,<:Tuple}, ::Integer) where {N} = uninit_tangent(
+    primal(x)
+)
+@inline tangent(x::Lifted{P,N,<:ImmutableDual}, lane::Integer) where {P,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
+)
+@inline tangent(x::Lifted{P,N,<:Tuple}, lane::Integer) where {P<:Tuple,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
+)
+@inline tangent(x::Lifted{P,N,<:NamedTuple}, lane::Integer) where {P<:NamedTuple,N} = _materialise_lane(
+    x, lane, IdDict{Any,Any}()
+)
 
 # Public 2-tuple unpack at the slot boundary. Width-1 only — chunked slots
 # carry per-lane derivatives in their V and have no single native-tangent
 # unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
 @inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
-# Aggregate slots (struct / tuple / named-tuple) need a fresh reverse tangent (not the
-# `MutableDualTangentView` write proxy `tangent(x, 1)` returns for mutable structs), and
-# may be self-referential (`node.next === node`) or hold aliased mutables. `_unlift_seed`
-# threads an aliasing cache (keyed on the primal) and registers a `MutableTangent` shell
-# before recursing, so a cycle reaching the same primal returns the shell — mirroring
-# reverse `zero_tangent_internal`. Scalar and complex slots have no cycle and convert via the
-# lane accessor. An element-wise ARRAY needs the seed path too: its elements can be aggregates,
-# and it can alias or cycle through them.
-@inline unlift(x::Lifted{P,1,<:Union{MutableDual,ImmutableDual,Tuple,NamedTuple,NDualRef,AbstractArray}}) where {P} = (
-    primal(x), _unlift_seed(x, IdDict{Any,Any}())
-)
-# A block-backed array IS a leaf, so it keeps the accessor and skips the cache: routing it through
-# the seed path costs an `IdDict` (measured +320 B) on every boundary call.
-@inline unlift(x::Lifted{P,1,<:NDualArray}) where {P} = (primal(x), tangent(x, 1))
-# A `Ptr` lane is a raw address, which equals the reverse tangent only where
-# `tangent_type(Ptr{T})` is itself a `Ptr{T}`. `Ptr{Nothing}`'s is a `VoidPtrTangent`, and a
-# non-differentiable-element `Ptr` has V `NoDual` but tangent `Ptr{NoTangent}`, so both rebuild
-# the reverse placeholder instead of handing back the lane.
-@inline unlift(x::Lifted{Ptr{Nothing},1,<:Tuple}) = (primal(x), uninit_tangent(primal(x)))
-@inline unlift(x::Lifted{P,1,NoDual}) where {P<:Ptr} = (
-    primal(x), uninit_tangent(primal(x))
-)
+
+# ──────────────────────────────────────────────────────────────────────────
+# `_materialise_lane(slot, lane, cache)` — build lane `lane`'s REVERSE tangent, of type
+# `tangent_type(P)`. This is the one traversal behind both `tangent(slot, lane)` for aggregate V
+# and `unlift`; writable per-lane access is `tangent_view(slot, lane)`, never this.
+#
+# It threads an aliasing cache keyed on the primal and registers a mutable shell before recursing,
+# so a self-referential primal (`node.next === node`) terminates and aliased mutables share one
+# tangent — mirroring reverse `zero_tangent_internal`.
+# ──────────────────────────────────────────────────────────────────────────
 
 # Terminal: a LEAF V, whose lane tangent already is the reverse tangent. An aggregate V that
-# reaches here has no `_unlift_seed` of its own and silently gets the lane accessor -- for a
-# mutable-struct leaf a `MutableDualTangentView` write proxy, which reverse tangent arithmetic
-# has no method for and which fails several frames downstream. Check the shape here instead, so
-# the next custom aggregate V says what is missing at the boundary that produced it.
-@inline function _unlift_seed(x::Lifted{P,1}, ::IdDict) where {P}
-    t = tangent(x, 1)
-    t isa tangent_type(P) || _throw_unlift_not_a_leaf(P, t)
+# reaches here has no `_materialise_lane` of its own and silently gets the lane accessor, which
+# for a custom aggregate is some shape reverse tangent arithmetic has no method for and which
+# fails several frames downstream. Check the shape here instead, so the next custom aggregate V
+# says what is missing at the boundary that produced it.
+@inline function _materialise_lane(x::Lifted{P,N}, lane::Integer, ::IdDict) where {P,N}
+    t = tangent(x, lane)
+    t isa tangent_type(P) || _throw_not_a_leaf_v(P, t)
     return t
 end
-@noinline function _throw_unlift_not_a_leaf(::Type{P}, t) where {P}
+@noinline function _throw_not_a_leaf_v(::Type{P}, t) where {P}
     throw(
         ArgumentError(
-            "unlift has no method for the forward value of `$P`, so it fell back to the lane " *
-            "accessor, which gave a `$(typeof(t))` where the reverse tangent is " *
-            "`$(tangent_type(P))`. That fallback is right only for a leaf; an aggregate needs " *
-            "its own `_unlift_seed` rebuilding a reverse tangent from its components.",
+            "there is no method materialising a reverse tangent from the forward value of `$P`, " *
+            "so it fell back to the lane accessor, which gave a `$(typeof(t))` where the reverse " *
+            "tangent is `$(tangent_type(P))`. That fallback is right only for a leaf; an " *
+            "aggregate needs its own `_materialise_lane` rebuilding a reverse tangent from its " *
+            "components.",
         ),
     )
 end
-# The `unlift` overrides below rebuild the reverse `Ptr` placeholder rather than hand back the
-# lane, and a `Ptr` nested in an aggregate needs the same: its lane is a raw address, which
-# equals the reverse tangent only where `tangent_type(Ptr{T})` is itself a `Ptr{T}`.
-@inline _unlift_seed(x::Lifted{Ptr{Nothing},1,<:Tuple}, ::IdDict) = uninit_tangent(
-    primal(x)
-)
-@inline _unlift_seed(x::Lifted{P,1,NoDual}, ::IdDict) where {P<:Ptr} = uninit_tangent(
-    primal(x)
-)
-function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
+function _materialise_lane(
+    x::Lifted{P,N,<:MutableDual}, lane::Integer, cache::IdDict
+) where {P,N}
     p = primal(x)
     haskey(cache, p) && return cache[p]
     Tt = tangent_type(P)
@@ -426,57 +332,84 @@ function _unlift_seed(x::Lifted{P,1,<:MutableDual}, cache::IdDict) where {P}
     cache[p] = shell
     nt = tangent(x).fields
     field_tangents = map(keys(nt)) do name
-        return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
+        return _materialise_field_lane(Val(N), P, p, name, getfield(nt, name), lane, cache)
     end
     # Coerce into the declared reverse backing `tangent_type(P)` (an abstract field is
     # stored widened, e.g. `a::Any`, matching reverse mode).
     shell.fields = fieldtype(Tt, :fields)(field_tangents)
     return shell
 end
-function _unlift_seed(x::Lifted{P,1,<:ImmutableDual}, cache::IdDict) where {P}
+function _materialise_lane(
+    x::Lifted{P,N,<:ImmutableDual}, lane::Integer, cache::IdDict
+) where {P,N}
     nt = tangent(x).fields
     p = primal(x)
     field_tangents = map(keys(nt)) do name
-        return _field_unlift_seed(P, p, name, getfield(nt, name), cache)
+        return _materialise_field_lane(Val(N), P, p, name, getfield(nt, name), lane, cache)
     end
     return Tangent(fieldtype(tangent_type(P), :fields)(field_tangents))
 end
 # `P<:Tuple` only: a Tuple V is element-wise for a tuple primal, but per-LANE for `Ptr` and
 # `TwicePrecision`, whose V is `NTuple{N,·}` of parallel copies of one leaf. Those take the
-# generic `tangent(x, 1)` terminal above; recursing element-wise here would index the leaf
-# primal by lane and ask for `fieldtype(Ptr{Float64}, 1)`.
-function _unlift_seed(x::Lifted{P,1,<:Tuple}, cache::IdDict) where {P<:Tuple}
+# generic terminal above; recursing element-wise here would index the leaf primal by lane and ask
+# for `fieldtype(Ptr{Float64}, 1)`.
+function _materialise_lane(
+    x::Lifted{P,N,<:Tuple}, lane::Integer, cache::IdDict
+) where {P<:Tuple,N}
     p = primal(x)
     v = tangent(x)
     return ntuple(length(v)) do i
-        return _unlift_seed(Lifted{fieldtype(P, i),1}(p[i], v[i]), cache)
+        return _materialise_lane(Lifted{fieldtype(P, i),N}(p[i], v[i]), lane, cache)
     end
 end
-# Element-wise array, mirroring the `_tangent_lane` split above. A mutable-struct element's lane
-# accessor returns the `MutableDualTangentView` write proxy, which has no `convert` to the
-# `MutableTangent` that `tangent_type(eltype(P))` storage demands, so only the seed path can build
-# this shape.
-_unlift_seed(x::Lifted{P,1,<:NDualArray}, ::IdDict) where {P} = tangent(x, 1)
+function _materialise_lane(
+    x::Lifted{P,N,<:NamedTuple}, lane::Integer, cache::IdDict
+) where {P,N}
+    p = primal(x)
+    v = tangent(x)
+    names = keys(v)
+    return NamedTuple{names}(
+        map(names) do name
+            return _materialise_lane(
+                Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(v, name)),
+                lane,
+                cache,
+            )
+        end,
+    )
+end
+# A block-backed array IS a leaf: it cannot reference back into itself, so it skips the cache.
+function _materialise_lane(x::Lifted{P,N,<:NDualArray}, lane::Integer, ::IdDict) where {P,N}
+    tangent(x, lane)
+end
 # An all-`NoDual` V is a leaf only when the ELEMENT's reverse tangent is `NoTangent` too. A `Ptr`
 # to a non-differentiable element breaks that: `dual_type(Vector{Ptr{Int}})` is `Vector{NoDual}`
 # while `tangent_type` is `Vector{Ptr{NoTangent}}`, so the accessor returns the wrong shape and
 # only the element-wise path rebuilds it (through the scalar `Ptr`/`NoDual` method above).
-@inline function _unlift_seed(
-    x::Lifted{P,1,<:AbstractArray{NoDual}}, cache::IdDict
-) where {P}
-    tangent_type(eltype(P)) === NoTangent && return tangent(x, 1)
-    return _unlift_seed_elementwise(x, cache)
+@inline function _materialise_lane(
+    x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, cache::IdDict
+) where {P,N}
+    tangent_type(eltype(P)) === NoTangent && return tangent(x, lane)
+    return _materialise_lane_elementwise(x, lane, cache)
 end
-function _unlift_seed(x::Lifted{P,1,V}, cache::IdDict) where {P,V<:AbstractArray}
-    return _unlift_seed_elementwise(x, cache)
+function _materialise_lane(
+    x::Lifted{P,N,V}, lane::Integer, cache::IdDict
+) where {P,N,V<:AbstractArray}
+    return _materialise_lane_elementwise(x, lane, cache)
 end
-function _unlift_seed_elementwise(x::Lifted{P,1}, cache::IdDict) where {P}
+function _materialise_lane_elementwise(
+    x::Lifted{P,N}, lane::Integer, cache::IdDict
+) where {P,N}
     p = primal(x)
     haskey(cache, p) && return cache[p]
     t = similar(p, tangent_type(eltype(P)))
     cache[p] = t
-    _map_if_assigned!(  # concrete `typeof(pe)`, as the lane recursion does
-        (pe, ve) -> _unlift_seed(Lifted{typeof(pe),1}(pe, ve), cache),
+    # Build each element's slot from the CONCRETE `typeof(pe)`, not the static `eltype(P)`: for an
+    # abstract-eltype array (e.g. `Vector{Distribution}` holding `Normal`s) the abstract type has
+    # no fields, so `eltype(P)` would make the struct-lift do `fieldtype(Distribution, :μ)` and
+    # throw. Undefined slots stay undefined (reverse-PUT semantics).
+    _map_if_assigned!(
+        (pe, ve) -> _materialise_lane(Lifted{typeof(pe),N}(pe, ve), lane, cache),
         t,
         p,
         tangent(x),
@@ -486,44 +419,42 @@ end
 # `Ref{P<:NDualEltype}` (V `NDualRef`): build the reverse `MutableTangent` it would have in reverse
 # mode (a `Ref` is a mutable struct, registered in the alias cache before returning). Its `:x` field
 # is non-always-init, so reverse wraps it in `PossiblyUninitTangent`.
-function _unlift_seed(
-    x::Lifted{<:Base.RefValue{P},1,<:NDualRef}, cache::IdDict
-) where {P<:NDualEltype}
+function _materialise_lane(
+    x::Lifted{<:Base.RefValue{P},N,<:NDualRef}, lane::Integer, cache::IdDict
+) where {P<:NDualEltype,N}
     p = primal(x)
     haskey(cache, p) && return cache[p]
     Tt = tangent_type(typeof(p))
     shell = Tt()
     cache[p] = shell
     Ft = fieldtype(fieldtype(Tt, :fields), :x)
-    part = tangent(x).partials[][1]
+    part = tangent(x).partials[][lane]
     shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
     return shell
 end
-function _unlift_seed(x::Lifted{P,1,<:NamedTuple}, cache::IdDict) where {P}
-    p = primal(x)
-    v = tangent(x)
-    names = keys(v)
-    return NamedTuple{names}(
-        map(names) do name
-            return _unlift_seed(
-                Lifted{fieldtype(P, name),1}(getfield(p, name), getfield(v, name)), cache
-            )
-        end,
-    )
-end
-# Concrete child annotation, as in `_field_lane_tangent` above and for the same reason.
-@inline _field_unlift_seed(::Type{P}, p, name, vfield, cache::IdDict) where {P} =
+# A `PossiblyUninitTangent` backing field reproduces the reverse `Tangent`'s PUT shape: an
+# undefined primal field maps to an uninit reverse PUT.
+# The child slot is annotated with the field's CONCRETE type, as the element-wise array recursion
+# does (`Lifted{typeof(pe),N}`), not the declared `fieldtype(P, name)`. An abstract declared type
+# would otherwise give `Lifted{Any,N,...}`, and the lane methods dispatch on `P`: they then
+# evaluate `fieldtype(Any, name)` and throw, find no method at all for a NamedTuple V, or — for a
+# Tuple V, since `Any` is not `<:Tuple` — fall to the per-lane-`Ptr` method and silently return one
+# element's whole V. `Rt` keeps the DECLARED type: it is the reverse `PossiblyUninitTangent`'s
+# backing type, and the concrete result still fits inside it.
+@inline _materialise_field_lane(
+    ::Val{N}, ::Type{P}, p, name, vfield, lane, cache::IdDict
+) where {N,P} =
     let pf = getfield(p, name)
-        _unlift_seed(Lifted{typeof(pf),1}(pf, vfield), cache)
+        _materialise_lane(Lifted{typeof(pf),N}(pf, vfield), lane, cache)
     end
-@inline function _field_unlift_seed(
-    ::Type{P}, p, name, vfield::PossiblyUninitTangent, cache::IdDict
-) where {P}
+@inline function _materialise_field_lane(
+    ::Val{N}, ::Type{P}, p, name, vfield::PossiblyUninitTangent, lane, cache::IdDict
+) where {N,P}
     Rt = tangent_type(fieldtype(P, name))
     (is_init(vfield) && isdefined(p, name)) || return PossiblyUninitTangent{Rt}()
     pf = getfield(p, name)
     return PossiblyUninitTangent{Rt}(
-        _unlift_seed(Lifted{typeof(pf),1}(pf, val(vfield)), cache)
+        _materialise_lane(Lifted{typeof(pf),N}(pf, val(vfield)), lane, cache)
     )
 end
 @noinline function unlift(x::Lifted{P,N,V}) where {P,N,V}
@@ -656,12 +587,14 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `MutableDualTangentView{SD, P}` — an immutable per-lane proxy over a mutable struct slot, so
-# `view.field = x` from a rule body writes the lane back into the parent `MutableDual`.
+# `MutableDualTangentView{SD, P}` — an immutable per-lane proxy over a mutable struct slot,
+# returned by `tangent_view(slot, lane)`, so `view.field = x` from a rule body writes the lane
+# back into the parent `MutableDual`.
 #
-# Scalar, complex and array field Vs are supported. A nested `MutableDual` or a
-# `PossiblyUninitTangent` field has no lane tangent — its would-be tangent is another view, which
-# needs a primal `_lane_tangent` does not receive — and raises a clear error naming the shape.
+# Reads are total over the shapes `dual_type` produces; writes cover the leaf shapes reverse
+# `set_tangent_field!` accepts (scalar, complex, array, tuple, named-tuple and non-differentiable
+# fields). A nested `MutableDual` has no writable lane — its would-be V is another view — and
+# raises a clear error naming both the field's V and the value's type.
 # ──────────────────────────────────────────────────────────────────────────
 
 # Internal fields are underscore-prefixed so they cannot collide with a user struct field literally
@@ -676,11 +609,8 @@ struct MutableDualTangentView{N,SD<:MutableDual,P}
 end
 
 # Lane-extraction (read) and lane-replacement (write) for individual V_i shapes. A read has a
-# bespoke method only where it must differ from a plain lane read; everything else defers to
-# `_field_lane_tangent`, the same recursion the immutable path uses, which is total over the shapes
-# `dual_type` produces. Before that, a field whose V was anything but a scalar, complex or array
-# raised — including `NoDual` and a tuple of scalars, which need no primal and which reverse
-# answers with `NoTangent()` and `(0.0, 0.0)`.
+# bespoke method only where the field owns storage the write has to reach; everything else
+# materialises.
 @inline _lane_tangent(::Val, ::Type, _p, _name, v::NDual, lane::Int) = v.partials[lane]
 
 @inline function _replace_lane_tangent(v::NDual{T,N}, lane::Int, x::T) where {T,N}
@@ -714,19 +644,39 @@ end
     )
 end
 
-# Everything else defers to the immutable path's recursion, which is total over what `dual_type`
-# produces. It needs the field primal, which the view stores — so the earlier claim that a nested
-# `MutableDualTangentView` was out of reach because no primal was available did not hold, and
-# neither did refusing the shapes that need no primal at all: reverse answers a non-differentiable
-# field with `NoTangent()` and a tuple-of-scalars field with `(0.0, 0.0)`.
-@inline _lane_tangent(::Val{N}, ::Type{P}, p, name, v, lane::Int) where {N,P} = _field_lane_tangent(
-    Val(N), P, p, name, v, lane
+# A nested mutable field reads as a nested WRITE-THROUGH view, for the same reason an array
+# field does: it owns storage inside the parent block, so `view.next.w = x` from a rule body has
+# to land there rather than in a throwaway copy.
+@inline _lane_tangent(::Val{N}, ::Type{P}, p, name, v::MutableDual, lane::Int) where {N,P} =
+    let pf = getfield(p, name)
+        Nfwd.tangent_view(Lifted{typeof(pf),N}(pf, v), lane)
+    end
+
+# A field with no storage of its own reads as its materialised reverse tangent, which is total
+# over what `dual_type` produces and matches what reverse gives for the same field.
+@inline _lane_tangent(::Val{N}, ::Type{P}, p, name, v, lane::Int) where {N,P} = _materialise_field_lane(
+    Val(N), P, p, name, v, lane, IdDict{Any,Any}()
 )
 
-@inline function _replace_lane_tangent(v, lane::Int, @nospecialize(_x))
+# A non-differentiable field has nothing to write, exactly as reverse `set_tangent_field!` accepts
+# `NoTangent()` there. A tuple / named-tuple of leaf Vs recurses, so the write covers the shapes
+# the read returns.
+@inline _replace_lane_tangent(v::NoDual, ::Int, ::NoTangent) = v
+@inline _replace_lane_tangent(v::Tuple, lane::Int, x::Tuple) = map(
+    (vi, xi) -> _replace_lane_tangent(vi, lane, xi), v, x
+)
+@inline _replace_lane_tangent(v::NamedTuple{names}, lane::Int, x::NamedTuple{names}) where {names} = NamedTuple{
+    names
+}(
+    map((vi, xi) -> _replace_lane_tangent(vi, lane, xi), values(v), values(x))
+)
+
+# The message names the VALUE type too: the common miss is a supported scalar V written with a
+# number of another type (the repo does not promote implicitly), which is not a V-shape problem.
+@inline function _replace_lane_tangent(v, lane::Int, @nospecialize(x))
     msg =
-        "Writing lane $lane of a mutable struct field whose forward V is $(typeof(v)) is not " *
-        "supported: only scalar, complex and array field Vs have a lane tangent."
+        "Cannot write a `$(typeof(x))` into lane $lane of a mutable struct field whose forward " *
+        "V is $(typeof(v)): no lane write is defined for that combination."
     throw(ArgumentError(msg))
 end
 
@@ -753,10 +703,18 @@ function Base.setproperty!(v::MutableDualTangentView, name::Symbol, x)
     return x
 end
 
-# Per-lane tangent accessor on a `Lifted{MutS, N, <:MutableDual}` slot.
-@inline function tangent(d::Lifted{MutS,N,<:MutableDual}, lane::Integer) where {MutS,N}
+# Writable per-lane access on a `Lifted{MutS, N, <:MutableDual}` slot. `tangent(d, lane)`
+# materialises a reverse `MutableTangent` instead, as it does for every other V shape — a proxy
+# there is not of type `tangent_type(MutS)`, so any container composing per-field or per-element
+# lane reads (an immutable struct's backing, a `Vector{MutS}`'s storage) could not hold it.
+@inline function Nfwd.tangent_view(
+    d::Lifted{MutS,N,<:MutableDual}, lane::Integer
+) where {MutS,N}
     return MutableDualTangentView{N,typeof(d.rep),MutS}(d.rep, d.primal, Int(lane))
 end
+@inline tangent(d::Lifted{MutS,N,<:MutableDual}, lane::Integer) where {MutS,N} = _materialise_lane(
+    d, lane, IdDict{Any,Any}()
+)
 
 # ──────────────────────────────────────────────────────────────────────────
 # Width-N `dual_type` and `lifted_type` queries.

@@ -1566,14 +1566,16 @@ function lift(v::Core.SimpleVector, ẋ::Vector{Any}, c::Union{Nothing,IdDict})
         v, Any[tangent(lift(v[i], ẋ[i], d)) for i in 1:length(v)]
     )
 end
-function _unlift_seed(x::Lifted{Core.SimpleVector,1,Vector{Any}}, cache::IdDict)
+function _materialise_lane(
+    x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer, cache::IdDict
+) where {N}
     p = primal(x)
     v = tangent(x)
-    return Any[_unlift_seed(Lifted{typeof(p[i]),1}(p[i], v[i]), cache) for i in 1:length(p)]
+    return Any[
+        _materialise_lane(Lifted{typeof(p[i]),N}(p[i], v[i]), lane, cache) for
+        i in 1:length(p)
+    ]
 end
-@inline unlift(x::Lifted{Core.SimpleVector,1,Vector{Any}}) = (
-    primal(x), _unlift_seed(x, IdDict{Any,Any}())
-)
 
 function rrule!!(f::CoDual{typeof(svec)}, args::Vararg{Any,N}) where {N}
     primal_output = svec(map(primal, args)...)

@@ -60,7 +60,7 @@ For a concrete `P` it must always hold that `V === dual_type(Val(N), P)`.
 - tuples / named-tuples → element-wise recursion;
 - a non-differentiable `P` (integers, `Symbol`, `Module`, types, …) → [`Mooncake.NoDual`](@ref), the forwards-mode analogue of reverse-mode's `NoTangent`.
 
-Rules read and write slots through the accessors rather than touching the fields directly: `primal(slot)`, `tangent(slot)` (the whole `V`), and `tangent(slot, lane)` (the `lane`-th direction's partial). This keeps rule bodies independent of the inner-`V` shape — see [Hand-Written Rules](@ref).
+Rules read and write slots through the accessors rather than touching the fields directly: `primal(slot)`, `tangent(slot)` (the whole `V`), `tangent(slot, lane)` and `tangent_view(slot, lane)`. This keeps rule bodies independent of the inner-`V` shape — see [Hand-Written Rules](@ref). The last two differ in ownership, and the distinction matters for every aggregate `V`: `tangent(slot, lane)` *materialises* lane `lane`'s derivative as a reverse tangent of type `tangent_type(P)`, so it composes inside a container and can be handed to reverse-mode tangent arithmetic; `tangent_view(slot, lane)` gives *writable* access to the same lane's storage (a strided view into an array's block, a `MutableDualTangentView` proxy over a mutable struct's `MutableDual`), so a write lands in the slot.
 
 ### Block layout across backends, and performance
 

@@ -2421,8 +2421,8 @@ function _walk_storages!(seen::Base.IdSet{Any}, x, visited::Base.IdSet{Any})
     return nothing
 end
 
-# Compare two per-lane reads. A read can be a live view (a mutable struct's write proxy, or an
-# array lane view), which is not a value `has_equal_data` accepts, so reduce those to values first.
+# Compare two per-lane reads. A read can be a strided lane view, which is not a value
+# `has_equal_data` accepts, so reduce those to values first.
 #
 # `exact_floats`, because the answer replaces the argument's seed with a ZERO one: a false positive
 # hands the oracle a different problem from the one the width-N run solved. The default `√eps`
@@ -2460,7 +2460,8 @@ At each width it checks that
   coherent type `lifted_type(Val(N), typeof(p))` whose primal ALIASES `p`;
 - every inner dual's `.value` equals the primal it shadows — the inner-value invariant, which
   `test_rule` does not check;
-- the per-lane accessor `tangent(slot, lane)` runs for every lane;
+- the per-lane accessor `tangent(slot, lane)` materialises a reverse tangent of type
+  `tangent_type(typeof(p))` for every lane;
 - a reverse tangent round-trips through `unlift(lift(p, ẋ))`;
 - the lifted value holds no more distinct partial storages than the tangent it came from, so a
   new aggregate that fails to thread its aliasing cache fails here rather than silently
@@ -2509,9 +2510,13 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
         # two real defects through, one returning a wrong-typed value and one refusing shapes
         # reverse answers. Where the randn seed carries partials at all — which is exactly where
         # it differs from the zero seed — distinct lanes must read distinct values.
+        # The lane read MATERIALISES a reverse tangent, so its type is `tangent_type(P)` for
+        # every V shape. A proxy or a value derived from the V rather than the primal fails here
+        # rather than several frames downstream, inside reverse tangent arithmetic or a container
+        # that cannot store it.
         for lane in 1:N
-            @test (tangent(z, lane); true)
-            @test (tangent(r, lane); true)
+            @test tangent(z, lane) isa tangent_type(P)
+            @test tangent(r, lane) isa tangent_type(P)
         end
         if N > 1 && !_lane_reads_equal(tangent(r, 1), tangent(z, 1))
             @test !_lane_reads_equal(tangent(r, 1), tangent(r, 2))

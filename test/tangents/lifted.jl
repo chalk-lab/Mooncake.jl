@@ -297,7 +297,6 @@ const NDAC_VecC64 = NDualArray{
         @test tangent(slot) === inner
         @test extract(slot) === (3.0, inner)
         @test slot == sl(2, 3.0, inner)
-        @test copy(slot) == slot
     end
 
     # `dual_type(Val(N), P) === V` and `lifted_type(Val(N), P) === Lifted{P,N,V}` per shape.
@@ -372,8 +371,10 @@ const NDAC_VecC64 = NDualArray{
 
     @testset "the unlift terminal refuses a non-leaf" begin
         # The terminal hands back the lane accessor, which is the reverse tangent only for a leaf.
-        # An aggregate V with no `_unlift_seed` of its own silently took that path and failed
+        # An aggregate V with no `_materialise_lane` of its own silently took that path and failed
         # several frames later inside reverse tangent arithmetic; it now says so at the boundary.
+        # Here the malformed V is a `NoDual` over a differentiable primal, refused by the
+        # `NoDual` accessor before it can mint that primal an uninit tangent.
         s = TestResources.StructFoo(6.0, [1.0, 2.0])
         @test_throws ArgumentError unlift(
             Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
@@ -388,10 +389,11 @@ const NDAC_VecC64 = NDualArray{
         # A `Ptr` nested in an aggregate reaches the terminal too, and rebuilds the reverse
         # placeholder rather than handing back the raw lane address.
         x = [1.0]
-        @test Mooncake._unlift_seed(
+        @test Mooncake._materialise_lane(
             Lifted{Ptr{Nothing},1}(
                 Ptr{Nothing}(UInt(pointer(x))), (Ptr{Nothing}(UInt(pointer(x))),)
             ),
+            1,
             IdDict(),
         ) isa Mooncake.VoidPtrTangent
     end
@@ -670,7 +672,11 @@ const NDAC_VecC64 = NDualArray{
     @testset "MutableDualTangentView (NDual field)" begin
         r = LiftedTest_RefF(3.0)
         slot = zero_lifted(Val(2), r)
-        view = tangent(slot, 1)  # per-lane view
+        # The lane READ materialises a reverse tangent like every other V shape; writable access
+        # is `tangent_view`. A proxy from `tangent(slot, lane)` is not `tangent_type(P)`, so no
+        # container composing per-field or per-element lane reads could hold it.
+        @test tangent(slot, 1) isa tangent_type(LiftedTest_RefF)
+        view = tangent_view(slot, 1)
         @test view isa MutableDualTangentView
         @test getfield(view, :_parent) === slot.rep
         @test getfield(view, :_primal) === r
@@ -679,13 +685,15 @@ const NDAC_VecC64 = NDualArray{
         view.v = 5.0                  # write: routes back to parent.fields via setfield!
         @test view.v === 5.0
         @test slot.rep.fields.v.partials === (5.0, 0.0)
-        @test tangent(slot, 2).v === 0.0  # other lane unchanged
+        @test tangent_view(slot, 2).v === 0.0  # other lane unchanged
 
         # A user field must resolve to its lane tangent whatever it is called — including the
         # underscored names the view uses for its own fields, which `getproperty` used to
         # short-circuit on, returning the view's parent on a read while a write went to the
         # field.
-        pview = tangent(zero_lifted(Val(2), LiftedTest_ParentField(3.0, 4.0, 5.0, 6.0)), 1)
+        pview = tangent_view(
+            zero_lifted(Val(2), LiftedTest_ParentField(3.0, 4.0, 5.0, 6.0)), 1
+        )
         @testset "$name" for name in (:parent, :_parent, :_primal, :_lane)
             @test getproperty(pview, name) === 0.0
             setproperty!(pview, name, 7.0)
@@ -696,7 +704,7 @@ const NDAC_VecC64 = NDualArray{
         # whose backing NamedTuple is abstract (`@NamedTuple{x}`, x::Any). Writing a lane tangent
         # narrows the merged NamedTuple to a concrete element type, which is not `isa` the stored
         # abstract type — a bare `setfield!` throws `TypeError`. The view must `convert` back.
-        aview = tangent(zero_lifted(Val(2), LiftedTest_AbstractField(1.0)), 1)
+        aview = tangent_view(zero_lifted(Val(2), LiftedTest_AbstractField(1.0)), 1)
         @test aview.x === 0.0
         aview.x = 4.0
         @test aview.x === 4.0
@@ -722,46 +730,48 @@ const NDAC_VecC64 = NDualArray{
         # body lands in the block. `tangent(::Lifted, lane)` would hand back a dense copy instead,
         # making that assignment a silent no-op.
         av = zero_lifted(Val(2), LiftedTest_Aliased([1.0, 2.0], [3.0, 4.0]))
-        aview = tangent(av, 1)
+        aview = tangent_view(av, 1)
         @test collect(aview.a) == [0.0, 0.0]
         aview.a[2] = 9.0
-        @test collect(tangent(av, 1).a) == [0.0, 9.0]   # the write reached the block
-        @test collect(tangent(av, 2).a) == [0.0, 0.0]   # and only lane 1
+        @test collect(tangent_view(av, 1).a) == [0.0, 9.0]   # the write reached the block
+        @test collect(tangent_view(av, 2).a) == [0.0, 0.0]   # and only lane 1
         aview.a = [7.0, 8.0]
         @test collect(aview.a) == [7.0, 8.0]
-        @test collect(tangent(av, 2).a) == [0.0, 0.0]
+        @test collect(tangent_view(av, 2).a) == [0.0, 0.0]
 
         cv = zero_lifted(Val(2), LiftedTest_ComplexField(ComplexF64(1, 2)))
-        cview = tangent(cv, 1)
+        cview = tangent_view(cv, 1)
         @test cview.z === ComplexF64(0, 0)
         cview.z = ComplexF64(4, 5)
         @test cview.z === ComplexF64(4, 5)
-        @test tangent(cv, 2).z === ComplexF64(0, 0)
+        @test tangent_view(cv, 2).z === ComplexF64(0, 0)
 
-        # READING any field defers to the recursion the immutable path uses, which is total over
-        # the shapes `dual_type` produces. Both of these were refused before, on the ground that
-        # a nested view needs a primal the field's V does not carry — but the view stores that
-        # primal, and a tuple field needs none at all.
-        #
-        # A nested mutable field reads as a nested WRITE-THROUGH view, not as reverse's
-        # `MutableTangent`: the two share no supertype, so compare by property.
+        # A nested MUTABLE field reads as a nested WRITE-THROUGH view, like an array field and
+        # for the same reason: it owns storage in the parent block. It is not reverse's
+        # `MutableTangent`, with which it shares no supertype, so compare by property.
         cyc = LiftedTest_Cycle(LiftedTest_Cycle(nothing, 2.0), 1.0)
         cslot = zero_lifted(Val(2), cyc)
-        nv = tangent(cslot, 1)
+        nv = tangent_view(cslot, 1)
         @test nv.next.w == getfield(zero_tangent(cyc).fields, :next).fields.w
         nv.next.w = 7.0
-        @test tangent(cslot, 1).next.w == 7.0   # the write reached the block
-        @test tangent(cslot, 2).next.w == 0.0   # and only lane 1
+        @test tangent_view(cslot, 1).next.w == 7.0   # the write reached the block
+        @test tangent_view(cslot, 2).next.w == 0.0   # and only lane 1
+        # The materialising read gives the reverse shape for the same field.
+        @test tangent(cslot, 1).fields.next.fields.w == 7.0
 
-        # A tuple field is a value, so it reads as exactly what reverse gives.
+        # A tuple field is a value, so it reads as exactly what reverse gives — and WRITES back,
+        # matching the reverse `set_tangent_field!` oracle the reads were widened to.
         tup = LiftedTest_TupleField((1.0, 2.0))
-        tv = tangent(zero_lifted(Val(2), tup), 1)
+        tv = tangent_view(zero_lifted(Val(2), tup), 1)
         @test tv.t === getfield(zero_tangent(tup).fields, :t) === (0.0, 0.0)
+        tv.t = (1.0, 0.0)
+        @test tv.t === (1.0, 0.0)
 
-        # Replacing either field wholesale is still refused: a write has to address the parent's
-        # V, which a reverse-shaped value cannot. The read/write asymmetry is deliberate.
+        # A nested mutable field has no writable lane — its would-be V is another view — and the
+        # refusal names the VALUE type, since the common miss is a supported scalar V written
+        # with a number of another type.
         @test_throws ArgumentError (nv.next = 1.0)
-        @test_throws ArgumentError (tv.t = (1.0, 0.0))
+        @test_throws "Cannot write a `Float32`" (tangent_view(cslot, 1).w = Float32(1))
     end
 
     @testset "element-wise Vector with abstract eltype (concrete struct elements)" begin
