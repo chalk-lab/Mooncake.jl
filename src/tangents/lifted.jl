@@ -2193,17 +2193,41 @@ function _basis_seed!!(
     im = _basis_seed!!(imag(v), slots, cursor, dict)
     return Complex(re, im)
 end
+# Two containers can own ONE partials store: `a` and `reshape(a, 1, 2)` window the same block, as
+# do an `Array` and its backing `Memory`. Clearing it is therefore not the second container's to
+# do — `dict` keyed on the V alone does not see the sharing, so the second walk zeroed the hot
+# lane the first had written and the whole direction came back zero. Claim it here, clear it only
+# on the claim, and let every later container write its own hot lanes into it. The key is the flat
+# storage's (address, length), not its identity, because a windowed block re-wraps a fresh header
+# over it on every call.
+#
+# Only an EXACT window match dedups, so NESTED windows still clear each other, as they did before:
+# for a `Vector` with capacity slack passed alongside its own backing `Memory`, the `Memory`'s
+# longer block takes a key of its own and its clear wipes the vector's hot lane. Clearing every
+# store in a first pass and lighting the hot lanes in a second would be right under any overlap
+# and needs no key at all, at the cost of a second traversal; that is the fix if the nested case
+# ever matters.
+@inline function _claim_partials_store!(dict, block)
+    store = Nfwd._block_storage(block)
+    key = (pointer(store), length(store))
+    haskey(dict, key) && return false
+    dict[key] = nothing
+    return true
+end
+
 function _basis_seed!!(
     v::NDualArray{T,N}, slots::NTuple{N,Int}, cursor, dict
 ) where {T<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
+    block = getfield(v, :partials_block)
+    _claim_partials_store!(dict, block) && fill!(block, zero(T))
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
         c = cursor[]
         for k in 1:N
-            parts[k][idx] = c == slots[k] ? one(T) : zero(T)
+            c == slots[k] && (parts[k][idx] = one(T))
         end
     end
     return v
@@ -2213,6 +2237,8 @@ function _basis_seed!!(
 ) where {R<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
+    block = getfield(v, :partials_block)
+    _claim_partials_store!(dict, block) && fill!(block, zero(Complex{R}))
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2220,9 +2246,8 @@ function _basis_seed!!(
         cursor[] += 1
         ci = cursor[]
         for k in 1:N
-            parts[k][idx] = Complex(
-                cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
-            )
+            cr == slots[k] && (parts[k][idx] = Complex(one(R), zero(R)))
+            ci == slots[k] && (parts[k][idx] = Complex(zero(R), one(R)))
         end
     end
     return v
@@ -2325,6 +2350,14 @@ end
 # and write each lane there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it
 # has a `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex
 # `NDualMemoryRef` reaches here and needs the complex method below, mirroring `NDualArray`.
+#
+# KNOWN GAP, not fixed here: that cursor advance is unconditional, while `dof` reaches a
+# `MemoryRef` tangent through its `mem` field and so scores it 0 once the same `Memory` has been
+# counted. The walks then disagree and every dof AFTER the pair is misplaced: for
+# `(m, memoryref(m), b)`, `dof` is 4 while `b`'s dofs sit at seed slots 5 and 6, past the end of
+# the sweep, so `b`'s gradient is silently dropped. Skipping on a claimed store would not fix it
+# — an `Array` covering the whole `Memory` claims the same store and IS counted again by `dof` —
+# so the two walks have to become one, which is bigger than this change.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(
         v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
@@ -2332,11 +2365,12 @@ end
         haskey(dict, v) && return dict[v]
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
+        _claim_partials_store!(dict, block) && fill!(block, zero(T))
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
             for k in 1:N
-                block[k, idx] = c == slots[k] ? one(T) : zero(T)
+                c == slots[k] && (block[k, idx] = one(T))
             end
         end
         return v
@@ -2347,15 +2381,15 @@ end
         haskey(dict, v) && return dict[v]
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
+        _claim_partials_store!(dict, block) && fill!(block, zero(Complex{R}))
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]
             cursor[] += 1
             ci = cursor[]
             for k in 1:N
-                block[k, idx] = Complex(
-                    cr == slots[k] ? one(R) : zero(R), ci == slots[k] ? one(R) : zero(R)
-                )
+                cr == slots[k] && (block[k, idx] = Complex(one(R), zero(R)))
+                ci == slots[k] && (block[k, idx] = Complex(zero(R), one(R)))
             end
         end
         return v
