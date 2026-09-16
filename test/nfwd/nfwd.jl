@@ -51,6 +51,20 @@ using Mooncake.Nfwd
         @test promote_type(NDual{Float32,2}, NDual{Float64,2}) === NDual{Float64,2}
         @test promote_type(NDual{Float64,2}, NDual{Float32,2}) === NDual{Float64,2}
 
+        # Differing widths promote to `NDual{NDual}`. `max` and `vcat` are the discriminators:
+        # neither has a mixed-width method of its own, so each reaches the nested type only
+        # through `promote_type`, and without the guard there gets a bare `TypeError`.
+        w2 = NDual{Float64,2}(3.0, (1.0, 0.0))
+        nested = DimensionMismatch(
+            "NDual lane count mismatch in `promote_type`: left operand has 1 lanes, right " *
+            "operand has 2 lanes. Duals of different widths come from two forward passes, and " *
+            "`NDual` carries no perturbation tag, so it cannot nest. Mooncake supports " *
+            "forward-over-reverse for second-order derivatives.",
+        )
+        @test_throws nested promote_type(NDual{Float64,1}, NDual{Float64,2})
+        @test_throws nested max(d, w2)
+        @test_throws nested [d, w2]
+
         d32 = NDual{Float32,2}(2.0f0, (1.0f0, 0.0f0))
         d64 = convert(NDual{Float64,2}, d32)
         @test d64 isa NDual{Float64,2}

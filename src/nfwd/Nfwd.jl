@@ -368,6 +368,16 @@ Base.promote_rule(::Type{NDual{T,N}}, ::Type{NDual{T,N}}) where {T,N} = NDual{T,
 @inline function Base.promote_rule(::Type{NDual{T1,N}}, ::Type{NDual{T2,N}}) where {T1,T2,N}
     return NDual{promote_type(T1, T2),N}
 end
+# Differing widths mean two forward passes have met, and their promotion is `NDual{NDual}` — which
+# the `T<:IEEEFloat` bound refuses with a bare `TypeError` naming an internal type parameter. This
+# is where that type is formed, so every op reaching it through `promote_type` (`max`, `min`,
+# container promotion) inherits the diagnosis, not just those with a `_promote_matching_nduals`
+# check of their own.
+# Residue: `muladd`/`fma`/`clamp` promote to a well-formed `S` and rewrap it, so they still give the
+# raw `TypeError`; reaching them needs hand-built duals, which no Mooncake pass produces.
+function Base.promote_rule(::Type{NDual{T1,N1}}, ::Type{NDual{T2,N2}}) where {T1,T2,N1,N2}
+    _throw_ndual_lane_mismatch(:promote_type, N1, N2)
+end
 @inline function Base.convert(::Type{NDual{T,N}}, d::NDual{S,N}) where {T,N,S<:IEEEFloat}
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
@@ -394,7 +404,10 @@ end
 @noinline function _throw_ndual_lane_mismatch(op::Symbol, n1::Int, n2::Int)
     throw(
         DimensionMismatch(
-            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has $n2 lanes.",
+            "NDual lane count mismatch in `$op`: left operand has $n1 lanes, right operand has " *
+            "$n2 lanes. Duals of different widths come from two forward passes, and `NDual` " *
+            "carries no perturbation tag, so it cannot nest. Mooncake supports " *
+            "forward-over-reverse for second-order derivatives.",
         ),
     )
 end
