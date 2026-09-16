@@ -119,31 +119,45 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
     return NDual{T,N}(y_val, _nf_logsumexp_scale(grad, inv_sw))
 end
 
-# xlogx(x) = x == 0 ? zero(x*log(x)) : x*log(x).  The generic implementation computes
-# x*log(x) speculatively over the full NDual before the iszero branch can discard the
-# result.  Specialise to: (1) early-exit on x.value (scalar branch, no NDual work),
-# (2) compute log once at scalar level, (3) apply the chain rule d/dx[x log x] = log(x)+1
-# with a single scalar multiply per partial slot, saving one NDual multiply and one NDual log.
+# The zero-value branch preserves the primal limit, not its derivative.
+function xlogx_value_and_partial(x)
+    lx = log(x)
+    z = x * lx
+    return iszero(x) ? zero(z) : z, lx + one(x)
+end
+
 @inline function LogExpFunctions.xlogx(x::NDual{T,N}) where {T<:IEEEFloat,N}
-    v = x.value
-    iszero(v) && return zero(x)
-    lv = log(v)
-    d = lv + one(T)  # derivative: d/dx[x log x] = log(x) + 1
-    return NDual(v * lv, ntuple(i -> x.partials[i] * d, Val(N)))
+    z, d = xlogx_value_and_partial(x.value)
+    return NDual(z, ntuple(i -> scale_partial(d, x.partials[i]), Val(N)))
+end
+
+@is_primitive DefaultCtx Tuple{typeof(xlogx),IEEEFloat}
+function frule!!(::Dual{typeof(xlogx)}, x::Dual{<:IEEEFloat})
+    z, d = xlogx_value_and_partial(primal(x))
+    return Dual(z, scale_partial(d, tangent(x)))
+end
+function rrule!!(::CoDual{typeof(xlogx)}, x::CoDual{<:IEEEFloat})
+    z, d = xlogx_value_and_partial(primal(x))
+    xlogx_pb!!(dz) = (NoRData(), scale_partial(d, dz))
+    return zero_fcodual(z), xlogx_pb!!
 end
 
 # These rules avoid saturation in logistic and the equal-input branch in logaddexp.
 @from_chainrules DefaultCtx Tuple{typeof(logistic),IEEEFloat}
 @from_chainrules DefaultCtx Tuple{typeof(logaddexp),IEEEFloat,IEEEFloat}
 
-# Preserve x/y at regular points, including x=0, to retain the mixed derivative.
+# Preserve the quotients at regular points, including x=0, to retain mixed derivatives.
 xlogy_partials(x, y, z) = (log(y), iszero(x) && iszero(y) ? zero(x / y) : x / y)
+function xlog1py_partials(x, y, z)
+    v = one(y) + y
+    return log1p(y), iszero(x) && iszero(v) ? zero(x / v) : x / v
+end
 xexpy_partials(x, y, z) = (exp(y), z)
 
 @inline scale_partial(p, d) = isfinite(p) ? p * d : nan_tangent_guard(d, p * d)
 
 # The zero-multiplier branches require rules; evaluate the original primal separately.
-for f in (:xlogy, :xexpy)
+for f in (:xlogy, :xlog1py, :xexpy)
     partials = Symbol(f, :_partials)
     @eval begin
         @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,Union{IEEEFloat,Integer}}

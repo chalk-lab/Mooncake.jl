@@ -123,6 +123,129 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         test_rule(StableRNG(123456), f, x...; perf_flag, is_primitive=false)
     end
 
+    @testset "beta_inc" begin
+        for T in (Float32, Float64),
+            (a, b, x) in (
+                (1, 2, 0.5),
+                (2, 2, 0.5),
+                (2, 4, 0.4),
+                (0.5, 0.5, 0.1),
+                (1.3, 2.1, 0.8),
+                (100, 100, 0.5),
+            )
+
+            test_rule(
+                StableRNG(123), beta_inc, T(a), T(b), T(x); perf_flag=:stability_and_allocs
+            )
+        end
+        test_rule(
+            StableRNG(123), beta_inc, 1.0f0, 2.0, 0.5f0; perf_flag=:stability_and_allocs
+        )
+        for x in (0.25, 0.75)
+            test_rule(
+                StableRNG(123),
+                beta_inc,
+                2.0,
+                2.0,
+                x,
+                1-x;
+                interface_only=true,
+                perf_flag=:stability_and_allocs,
+            )
+            # Finite differences must preserve y = 1-x.
+            test_rule(
+                StableRNG(123),
+                (a, b, x) -> beta_inc(a, b, x, 1-x),
+                2.0,
+                2.0,
+                x;
+                is_primitive=false,
+                perf_flag=:allocs,
+            )
+        end
+
+        for T in (Float16, Float32, Float64),
+            (a, b, x, A, B, D) in (
+                (1, 2, 0.5, 1/4-3log(2)/4, log(2)/4, 1),
+                (2, 1, 0.5, -log(2)/4, 3log(2)/4-1/4, 1),
+                (2, 2, 0.5, 1/8-log(2)/2, log(2)/2-1/8, 1.5),
+                (0.1, 0.1, 0.5, -2.532522082864052, 2.532522082864052, 0.17663027797787373),
+                (
+                    1000,
+                    1000,
+                    0.5,
+                    -0.008922479336000142,
+                    0.008922479336000142,
+                    35.67802229170864,
+                ),
+                (1, 2, 0, 0, 0, 2),
+                (2, 1, 1, 0, 0, 2),
+                (2, 2, 0, 0, 0, 0),
+                (2, 2, 1, 0, 0, 0),
+                (1000, 1000, 0, 0, 0, 0),
+                (1000, 1000, 1, 0, 0, 0),
+                (0.5, 2, 0, 0, 0, Inf),
+                (2, 0.5, 1, 0, 0, Inf),
+            )
+
+            a, b, x = T.((a, b, x))
+            y, pb = Mooncake.rrule!!(map(Mooncake.zero_fcodual, (beta_inc, a, b, x))...)
+            @test Mooncake.primal(y) === beta_inc(a, b, x)
+            tol = max(16eps(T), 1e-11)
+            for (dp, dq) in ((one(T), zero(T)), (zero(T), one(T)), (one(T), one(T)))
+                d = dp-dq
+                g = pb((dp, dq))[2:end]
+                expected = iszero(d) ? (zero(T), zero(T), zero(T)) : T.(d .* (A, B, D))
+                @test all(isapprox.(g, expected; rtol=tol))
+            end
+            for i in 1:3
+                seeds = ntuple(k -> T(k==i), 3)
+                args = map(Mooncake.Dual, (a, b, x), seeds)
+                out = Mooncake.frule!!(Mooncake.zero_dual(beta_inc), args...)
+                @test Mooncake.tangent(out)[1] ≈ T((A, B, D)[i]) rtol=tol
+                @test Mooncake.tangent(out)[2] ≈ -T((A, B, D)[i]) rtol=tol
+            end
+            args = ntuple(i -> NDual{T,3}((a, b, x)[i], ntuple(k -> T(k==i), 3)), 3)
+            p, q = beta_inc(args...)
+            @test all(isapprox.(p.partials, T.((A, B, D)); rtol=tol))
+            @test q.partials == map(-, p.partials)
+        end
+
+        for args in ((1.0, 2.0, 0.5), (2.0, 3.0, 0.75)),
+            f in (
+                (a, b, x) -> beta_inc(a, 2.0, 0.5),
+                (a, b, x) -> beta_inc(1.0, b, 0.5),
+                (a, b, x) -> beta_inc(a, b, 0.5),
+                (a, b, x) -> beta_inc(1.0, 2.0, x),
+                (a, b, x) -> beta_inc(a, 2.0, x),
+                (a, b, x) -> beta_inc(1.0, b, x),
+                beta_inc,
+            )
+
+            test_rule(
+                StableRNG(123),
+                f,
+                args...;
+                is_primitive=false,
+                mode=ReverseMode,
+                rrule=Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=3),
+            )
+        end
+
+        y = NDual{Float64,1}(1e-20, (1.0,))
+        p, q = beta_inc(2.0, 1.0, 1-y, y)
+        @test q.value > 0
+        @test q.partials[1] ≈ 2.0
+        for (a, b) in ((0.0, 1.0), (1.0, 0.0), (Inf, 1.0))
+            @test_throws DomainError Mooncake.rrule!!(
+                map(Mooncake.zero_fcodual, (beta_inc, a, b, 0.5))...
+            )
+        end
+        f(a) = first(beta_inc(a, 2.0, 0.5))
+        cache = Mooncake.prepare_hvp_cache(f, 1.0)
+        @test Mooncake.value_and_hvp!!(cache, f, 1.0, 1.0)[3] ≈ 3log(2)^2/4-log(2)/2
+    end
+
     @testset "gamma_inc" begin
         for T in (Float32, Float64),
             (a, x) in ((0.1, 0.1), (3, 2), (1, 2), (3, 50), (1000, 1000))
@@ -283,11 +406,5 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
         ν_active = NDual{Float64,1}(3.0, (1.0,))
         x_active = NDual{Float64,1}(1.5, (1.0,))
         @test_throws ArgumentError besselj(ν_active, x_active)
-
-        a_active = NDual{Float64,1}(2.0, (1.0,))
-        b_zero = NDual{Float64,1}(3.0, (0.0,))
-        x_zero = NDual{Float64,1}(0.4, (0.0,))
-        @test_throws ArgumentError beta_inc(a_active, b_zero, x_zero)
-        @test_throws ArgumentError beta_inc(b_zero, a_active, x_zero)
     end
 end
