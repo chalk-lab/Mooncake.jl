@@ -2,7 +2,7 @@
 
 For many scalar and low-dimensional primitives, Mooncake uses a two-part strategy:
 
-1. define the local *forward* derivative behavior once on `NDual`, and expose it through `nfwd`, and
+1. define the local *forward* derivative behavior once on `NDual`, and call it from the `frule!!`, and
 1. give reverse mode a small, direct **native** analytic pullback.
 
 Forward mode reuses the `NDual` scalar semantics; reverse mode does **not** run `NDual` at all — it
@@ -78,8 +78,8 @@ The reverse rule is independent: it evaluates the primal directly, writes the cl
 factor inline, and applies it to the output cotangent through `_rvs_guarded_scale`. It never constructs
 an `NDual`, so reverse mode does not depend on the forward-mode `Nfwd` submodule.
 
-`nfwd` only supports scalar leaves it can lift to `NDual` directly, so the forward side of this pattern
-fits primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tuples of them, e.g.
+The `frule!!` lifts its arguments to `NDual` directly, so the forward side of this pattern fits
+primitives whose inputs and outputs are a few `IEEEFloat` scalars (or small tuples of them, e.g.
 `sincos`); the reverse factors are written by hand for the same signatures.
 
 ### The fused exception
@@ -124,8 +124,8 @@ This approach is a good fit when:
 
 - the primitive is scalar or low-dimensional,
 - the derivative behavior is local and numerical, and
-- the output is already something `nfwd` can lift and extract cleanly (forward), and has a simple
-  closed-form derivative (reverse).
+- the output is already something the `frule!!` can read back off the `NDual` cleanly (forward), and
+  has a simple closed-form derivative (reverse).
 
 Typical examples are unary scalar functions, binary scalar functions, small tuple-output functions, and a few carefully chosen low-arity vararg cases.
 

@@ -373,4 +373,4 @@ The split representation is not what makes mutation work.
 ForwardDiff.jl handles mutation perfectly well: a `similar(x)` buffer holds `ForwardDiff.Dual`s, and `ForwardDiff.jacobian(f!, y, x)` is an in-place API.
 Its constraint is element-type pinning — storage fixed to `Float64` (a preallocated cache, a concretely-typed struct field, a buffer passed to `ccall`) cannot hold a `Dual`, which is what `PreallocationTools.DiffCache` exists to work around.
 `NDualArray` separates `primal::A` from `partials_block` so that the primal keeps its original concrete type, letting BLAS, `ccall`, and type-pinned containers see a real `Array{Float64}`.
-This is not a rejection of substitution: the nfwd-native path runs the primal function directly on `NDual` numbers where that is faster, and a classifier chooses between the two.
+This is not a rejection of substitution: the scalar `frule!!`s in `low_level_maths.jl` evaluate `f(::NDual)` directly, and the CUDA extension runs the mapped function on `NDual`s inside the kernel. Substitution is how a *rule* computes its derivative; the split representation is how the *slot* stores it.
