@@ -2444,6 +2444,31 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     reshaped = prepare_gradient_cache(h, b, reshape(b, 3, 1))
                     _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
                     @test gr[2] == [2.0, 2.0, 2.0]
+
+                    # The forward gradient assembles one dof range per argument, so it refuses the
+                    # pair outright — and the refusal has to be the per-CALL check, not the
+                    # prepare-time `inputs_alias` flag: on a cache prepared with unrelated
+                    # arguments that flag is false, and the sweep returned [1,1,1] at both
+                    # positions against the same truth of [2,2,2], silently.
+                    fwd = Mooncake.prepare_derivative_cache(
+                        h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
+                    )
+                    @test_throws ArgumentError Mooncake.value_and_gradient!!(
+                        fwd, h, mem_pair()...
+                    )
+                    # Unrelated arguments, and two EMPTY arrays (which share Julia's one global
+                    # empty `Memory`), must still go through.
+                    u, w = randn(3), randn(3)
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, u, w), h, u, w
+                    )[2][2] == [1.0, 1.0, 1.0]
+                    ee = Float64[]
+                    @test Mooncake.value_and_gradient!!(
+                        Mooncake.prepare_derivative_cache(h, ee, Float64[]),
+                        h,
+                        ee,
+                        Float64[],
+                    )[2][2] == Float64[]
                 end
             end
 
@@ -2706,7 +2731,3 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test cache_grad.tangents[3] == -2y
             value_and_gradient!!(cache_grad, f, x, y; args_to_zero=(true, true, false))
             @test cache_grad.tangents[2] == 2x
-            @test cache_grad.tangents[3] == -4y
-        end
-    end
-end
