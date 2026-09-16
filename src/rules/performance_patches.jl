@@ -77,21 +77,28 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
-# The transform folds `max` over the array, building one `NDual` per element; scanning the plain
-# primal for the arg-extreme and taking a single `getindex` is ~18x faster at 1024 elements, at
-# both width 1 and width 8 (the fold's cost is in the per-element `NDual`s, not the lanes).
-# `Base.maximum(::NDualArray)` already performs exactly that select, with the tie handling this
-# needs, so the rule only wraps it.
+# The transform folds `max`/`min` over the array, building one `NDual` per element; scanning the
+# plain primal for the arg-extreme and taking a single `getindex` is several times faster at 1024
+# elements, at both width 1 and width 8, because the fold's cost is in the per-element `NDual`s
+# rather than the lanes. `Base.maximum(::NDualArray)` and `Base.minimum(::NDualArray)` already
+# perform exactly that select, with the tie handling this needs, so the rules only wrap them. The
+# two tie conventions differ, and the registry rows pin both: `max` credits the LAST maximal
+# element, `min` the FIRST minimal one.
 #
-# FORWARD ONLY. Reverse mode reaches `maximum` through its derived path and is not the bottleneck
-# here; a reverse primitive would need an `rrule!!` in lockstep with this declaration. `minimum`
-# has no counterpart rule, so `Base.minimum(::NDualArray)` is reached only on 1.10, where the nfwd
-# classifier admits `minimum`; on 1.11+ it rejects it and the fold builds one `NDual` per element.
+# FORWARD ONLY. Reverse mode reaches both through its derived path and is not the bottleneck here; a
+# reverse primitive would need an `rrule!!` in lockstep with these declarations.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(maximum),Array{<:IEEEFloat}}
 function frule!!(
     ::Lifted{typeof(maximum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
 ) where {N,P<:IEEEFloat,D}
     dy = maximum(tangent(x))
+    return Lifted{P,N}(dy.value, dy)
+end
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(minimum),Array{<:IEEEFloat}}
+function frule!!(
+    ::Lifted{typeof(minimum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
+) where {N,P<:IEEEFloat,D}
+    dy = minimum(tangent(x))
     return Lifted{P,N}(dy.value, dy)
 end
 
@@ -574,6 +581,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             opts = (mode=ForwardMode, oracle=(value=P(3), deriv=P(40)), skip_chunked=true)
             x = CoDual(P[1.0, 3.0, 2.0, 3.0], P[10.0, 20.0, 30.0, 40.0])
             return (false, :none, opts, maximum, x)
+        end,
+
+        # minimum(x), the mirror of the two `maximum` groups above.
+        map(precisions) do P
+            flags = (
+                P == Float16 ? true : false, :stability_and_allocs, (mode=ForwardMode,)
+            )
+            return (flags..., minimum, randn(rng, P, 11))
+        end,
+        # The tie convention is the OPPOSITE of `maximum`'s, which is the part most likely to
+        # regress: the minimal elements are at indices 2 and 4 and the `min` fold credits the
+        # FIRST, so the derivative is 20 where the `maximum` row above expects the last. A select
+        # that mirrored `findlast` would return 40 and fail here.
+        map([Float64, Float32]) do P
+            opts = (mode=ForwardMode, oracle=(value=P(1), deriv=P(20)), skip_chunked=true)
+            x = CoDual(P[3.0, 1.0, 2.0, 1.0], P[10.0, 20.0, 30.0, 40.0])
+            return (false, :none, opts, minimum, x)
         end,
 
         # sum(view(x, a:b))
