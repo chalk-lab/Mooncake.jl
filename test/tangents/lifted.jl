@@ -947,6 +947,23 @@ const NDAC_VecC64 = NDualArray{
             end
         end
 
+        # `dof` and the seed cursor must count the same dofs. `dof` reaches a `MemoryRef`
+        # tangent through its `mem` field, so it scores a `Memory` and a ref into it ONCE; the
+        # seed used to advance over the whole backing `Memory` a second time, pushing everything
+        # after the pair past the end of the sweep. `dof` reported 4 here while `b`'s dofs sat at
+        # slots 5 and 6, so `b`'s derivative came back zero. Not expressible in a registry: no
+        # rule is involved, and `test_lifted` checks the seed factories, not a basis direction.
+        @static if VERSION >= v"1.11-"
+            let m = Memory{Float64}(undef, 2), b = [3.0, 4.0]
+                m .= [1.0, 2.0]
+                x = (m, Core.memoryref(m), b)
+                @test Mooncake.dof(Mooncake.zero_tangent(x)) == 4
+                @test tangent_view(tangent(bl(x, (2,)))[1], 1) == [0.0, 1.0]
+                @test tangent_view(tangent(bl(x, (3,)))[3], 1) == [1.0, 0.0]
+                @test tangent_view(tangent(bl(x, (4,)))[3], 1) == [0.0, 1.0]
+            end
+        end
+
         # Nested windows over ONE partials allocation: a `Vector` with capacity slack and its own
         # backing `Memory` hold windows of different lengths, so a per-window clear key gave the
         # `Memory`'s longer clear a key of its own and it wiped the vector's hot lane.

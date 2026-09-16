@@ -2222,12 +2222,33 @@ end
     return nothing
 end
 
+# `dof` reaches a `MemoryRef` tangent through its `mem` field, so a `Memory` and any `MemoryRef`
+# into it contribute ONE set of scalar dofs. The V graph does not show that: `NDualMemoryRef` is
+# rebased flat onto the backing block instead of holding the `Memory`'s V, so the `haskey(dict, v)`
+# dedup cannot see the sharing (a `SubArray`, whose V does hold its parent's V, needs nothing
+# extra). Claim the backing `Memory` PRIMAL — the object whose tangent `dof` dedups on — so both
+# walks advance together. Without it `(m, memoryref(m), b)` counted 4 dofs while the seed put `b`
+# at slots 5 and 6, past the end of the sweep, and `b`'s derivative came back zero. The partials
+# allocation above cannot serve as the key: an `Array` and its backing `Memory` share ONE
+# allocation yet have independent reverse tangents, and `dof` counts both. Claimed AFTER the
+# clear, so a second container still zeroes its own block if it turns out not to share one.
+@inline _claim_memory_dofs!(_dict, _primal) = true
+@static if VERSION >= v"1.11-rc4"
+    @inline function _claim_memory_dofs!(dict, mem::Memory)
+        haskey(dict, mem) && return false
+        dict[mem] = nothing
+        return true
+    end
+    @inline _claim_memory_dofs!(dict, p::MemoryRef) = _claim_memory_dofs!(dict, p.mem)
+end
+
 function _basis_seed!!(
     v::NDualArray{T,N}, slots::NTuple{N,Int}, cursor, dict
 ) where {T<:IEEEFloat,N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
     _clear_partials_store!(dict, getfield(v, :partials_block), zero(T))
+    _claim_memory_dofs!(dict, v.primal) || return v
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2244,6 +2265,7 @@ function _basis_seed!!(
     haskey(dict, v) && return dict[v]
     dict[v] = v
     _clear_partials_store!(dict, getfield(v, :partials_block), zero(Complex{R}))
+    _claim_memory_dofs!(dict, v.primal) || return v
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2355,14 +2377,6 @@ end
 # and write each lane there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it
 # has a `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex
 # `NDualMemoryRef` reaches here and needs the complex method below, mirroring `NDualArray`.
-#
-# KNOWN GAP, not fixed here: that cursor advance is unconditional, while `dof` reaches a
-# `MemoryRef` tangent through its `mem` field and so scores it 0 once the same `Memory` has been
-# counted. The walks then disagree and every dof AFTER the pair is misplaced: for
-# `(m, memoryref(m), b)`, `dof` is 4 while `b`'s dofs sit at seed slots 5 and 6, past the end of
-# the sweep, so `b`'s gradient is silently dropped. Skipping on a claimed store would not fix it
-# — an `Array` covering the whole `Memory` claims the same store and IS counted again by `dof` —
-# so the two walks have to become one, which is bigger than this change.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(
         v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
@@ -2371,6 +2385,7 @@ end
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
         _clear_partials_store!(dict, block, zero(T))
+        _claim_memory_dofs!(dict, v.primal) || return v
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
@@ -2387,6 +2402,7 @@ end
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
         _clear_partials_store!(dict, block, zero(Complex{R}))
+        _claim_memory_dofs!(dict, v.primal) || return v
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]
