@@ -2207,6 +2207,7 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         circular_vector,
         tuple_cycle_vector,
         (aliased_array, aliased_array),
+        svec(aliased_array, aliased_array),
         TestResources.make_circular_reference_struct(),
         TestResources.make_indirect_circular_reference_array(),
         # Regression tests to catch type inference failures, see https://github.com/chalk-lab/Mooncake.jl/pull/422

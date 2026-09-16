@@ -1550,11 +1550,6 @@ end
 function randn_dual(::Val{N}, rng::AbstractRNG, v::Core.SimpleVector) where {N}
     return Any[randn_dual(Val(N), rng, v[i]) for i in 1:length(v)]
 end
-function tangent(x::Lifted{Core.SimpleVector,N,Vector{Any}}, lane::Integer) where {N}
-    p = primal(x)
-    v = tangent(x)
-    return Any[tangent(Lifted{typeof(p[i]),N}(p[i], v[i]), lane) for i in 1:length(p)]
-end
 lift(v::Core.SimpleVector, ẋ::Vector{Any}) = lift(v, ẋ, nothing)
 function lift(v::Core.SimpleVector, ẋ::Vector{Any}, c::Union{Nothing,IdDict})
     # Thread a shared cache through the elements, as the `Tuple` aggregate does, so two elements

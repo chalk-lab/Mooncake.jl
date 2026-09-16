@@ -4,6 +4,11 @@
         T = IdDict{Bool,Float64}
         TestUtils.test_tangent(sr(123456), p, T; interface_only=false, perf=false)
         TestUtils.test_tangent_splitting(sr(123456), p)
+        # An abstract value type: a lane traversal that types its result from the per-value
+        # reads narrows `IdDict{Symbol,Any}` to `IdDict{Symbol,Float64}`. It cannot join
+        # `tangent_test_cases()`, whose driver runs `test_tangent` with the allocation checks
+        # on, which no abstract-valued `IdDict` can pass.
+        TestUtils.test_lifted(sr(123456), IdDict{Symbol,Any}(:a => 5.0))
     end
     TestUtils.run_rule_test_cases(StableRNG, Val(:iddict))
 

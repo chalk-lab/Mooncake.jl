@@ -220,21 +220,6 @@ function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
     end
     return lifted
 end
-# Lane accessor: extract lane `l` from each value's V, producing the reverse `tangent_type` dict.
-@inline function tangent(
-    x::Lifted{IdDict{K,V},N,IdDict{K,DV}}, lane::Integer
-) where {K,V,N,DV}
-    p = primal(x)
-    v = tangent(x)
-    # Concrete `typeof(pe)`, not the declared `V`: an `IdDict{K,Any}` would otherwise build
-    # `Lifted{Any,N,...}` children, which the lane methods dispatch on and mishandle.
-    entries = [k => tangent(Lifted{typeof(pe),N}(pe, v[k]), lane) for (k, pe) in p]
-    # The value type comes from the reads, not from `tangent_type(V)`: a mutable value's lane
-    # tangent is a live write-through view rather than a materialised `MutableTangent`, so the
-    # reverse-shaped type does not hold it. Empty keeps the reverse shape, having nothing to read.
-    isempty(entries) && return IdDict{K,tangent_type(V)}()
-    return IdDict(entries)
-end
 
 function frule!!(
     ::Lifted{typeof(Base.rehash!),N}, d::Lifted{<:IdDict,N}, newsz::Lifted
