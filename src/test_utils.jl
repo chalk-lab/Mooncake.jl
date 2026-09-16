@@ -892,9 +892,9 @@ The width-parameterised forward-rule harness: one entry point covering every chu
 For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
 across calls), interface (types / aliasing), finite-difference correctness, and performance.
 
-For each `N > 1` (primitive rules only) it builds the frule at chunk size `N`, seeds each
-argument with `N` independent random lane directions, runs it, and checks invariants the
-width-1 battery cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
+For each `N > 1` it builds the frule at chunk size `N`, seeds each argument with `N`
+independent random lane directions, runs it, and checks invariants the width-1 battery
+cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
 in-place primal, lets an inner dual's `.value` drift from the primal, or computes a
 wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
 across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
@@ -908,10 +908,9 @@ at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-
 is honoured only at width 1.
 
 No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
-only for primitive rules (a derived rule's width-N execution is the composition of its
-primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-level width-N
-gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
-the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
+for derived rules as well as primitive ones — a derived rule runs the same width-N transform. A
+case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at the call site by
+passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
 """
 function test_frule(
     rng::AbstractRNG,
