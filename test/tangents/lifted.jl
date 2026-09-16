@@ -1074,7 +1074,9 @@ const NDAC_VecC64 = NDualArray{
         # seed entry points — the cache-threading `_*_dual_internal` and the cache-free
         # `zero_dual`/`uninit_dual`/`randn_dual`. Driven here rather than from
         # `tangent_test_cases()` for the same reason as the pointers above: that table also drives
-        # reverse `test_tangent`, whose `_add_to_primal`/`increment!!` contract neither satisfies.
+        # the reverse suites, which neither survives — an `IdDict` allocates under
+        # `test_tangent`'s perf check, and a `Task` trips `test_tangent_splitting`'s
+        # `tangent_type(F, R)` assertion.
         @testset "test_lifted $nm" for (nm, p) in (
             ("IdDict", IdDict(1 => randn(2))), ("Task", Task(() -> 1))
         )
