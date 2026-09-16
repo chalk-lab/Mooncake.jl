@@ -638,11 +638,11 @@ Base.@propagate_inbounds function frule!!(
     _inds = tuple_map(primal, inds)
     _inb = primal(inbounds)
     y = arrayref(_inb, primal(x), _inds...)
-    # Element `_inds`'s `Nw` lanes are the contiguous block column at linear offset `off`.
+    # Element `_inds`'s `Nw` lanes, read one at a time through the block's orientation seam.
     v = tangent(x)
     blk = getfield(v, :partials_block)
-    off = Nfwd._lane_offset(v, _inds...)
-    dy_partials = ntuple(k -> @inbounds(blk[off + k]), Val(Nw))
+    e = Nfwd._linear_elem(v, _inds...)
+    dy_partials = ntuple(k -> @inbounds(blk[Nfwd._lane_index(v, e, k)]), Val(Nw))
     return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
 # Element-wise V: read the element primal and its per-element V from the parallel arrays.
@@ -694,9 +694,9 @@ function frule!!(
     Core.arrayset(_inb, primal(A), primal(v), _inds...)
     dA = tangent(A)
     blk = getfield(dA, :partials_block)
-    off = Nfwd._lane_offset(dA, _inds...)
+    e = Nfwd._linear_elem(dA, _inds...)
     @inbounds for lane in 1:Nw
-        blk[off + lane] = tangent(v, lane)
+        blk[Nfwd._lane_index(dA, e, lane)] = tangent(v, lane)
     end
     return A
 end

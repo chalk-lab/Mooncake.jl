@@ -1063,6 +1063,16 @@ const NDAC_VecC64 = NDualArray{
             test_lifted(Xoshiro(123456), p)
         end
 
+        # Primals whose `dual_type` widens to an upper bound instead of the exact V — one per
+        # `lifted_type` method that can widen (the `Tuple` overload and the generic one). The
+        # slot must stay inhabited: `Lifted` is invariant in V, so an exact `Lifted{P,N,Any}`
+        # annotation admits no runtime value at all.
+        @testset "test_lifted widened V $(typeof(p))" for p in (
+            convert(@NamedTuple{x::Any}, (x=3.0,)), (Ptr{UInt8}(pointer(ptr_backing)),)
+        )
+            test_lifted(Xoshiro(123456), p)
+        end
+
         @testset "cache-free `IdDict` seed shares one V per aliased value" begin
             # `test_lifted`'s cache-free assertions pin the V's TYPE, not its storage identity, so
             # they cannot state this. Two keys holding one array must reach one partials block, or
@@ -1077,6 +1087,15 @@ const NDAC_VecC64 = NDualArray{
             d[1] = d
             dv = Mooncake.zero_dual(Val(1), d)
             @test dv[1] === dv
+        end
+
+        # A sparsely-occupied primal: a `Dict`'s `keys`/`vals` buffers lift to an isbits-eltype
+        # V that reports every slot assigned while the primal has `#undef` in its unused hash
+        # slots, so the inner-value invariant walk must guard both sides. It cannot go in
+        # `tangent_test_cases()` — reverse `primal_to_tangent_internal!!` raises `UndefRefError`
+        # on the same sparse buffer, an unrelated defect in `_map_if_assigned!`.
+        @testset "test_lifted Dict" begin
+            test_lifted(Xoshiro(123456), Dict(:a => randn(Xoshiro(1), 2)))
         end
     end
 end

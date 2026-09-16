@@ -892,9 +892,9 @@ The width-parameterised forward-rule harness: one entry point covering every chu
 For `N == 1` it runs the trusted width-1 battery against `frule` — reuse (no state corruption
 across calls), interface (types / aliasing), finite-difference correctness, and performance.
 
-For each `N > 1` (primitive rules only) it builds the frule at chunk size `N`, seeds each
-argument with `N` independent random lane directions, runs it, and checks invariants the
-width-1 battery cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
+For each `N > 1` it builds the frule at chunk size `N`, seeds each argument with `N`
+independent random lane directions, runs it, and checks invariants the width-1 battery
+cannot see: a width-N path that crashes, NaN-poisons partials, corrupts an
 in-place primal, lets an inner dual's `.value` drift from the primal, or computes a
 wrong-but-finite partial in some lane (the classic chunked-indexing bug: broadcasting lane 1
 across all lanes). Concretely: (1) the primal result is unchanged; (2) every inner dual's
@@ -908,10 +908,9 @@ at every width. Note the chunked path rebuilds the rule from `sig`, so a caller-
 is honoured only at width 1.
 
 No `try`/`catch`: a throw at any width is a real failure, not a skip. The `N > 1` widths run
-only for primitive rules (a derived rule's width-N execution is the composition of its
-primitives', and its inner OpaqueClosure / foreigncall paths carry interpreter-level width-N
-gaps); a primitive case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at
-the call site by passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
+for derived rules as well as primitive ones — a derived rule runs the same width-N transform. A
+case with no width-N forward seed (e.g. a raw `Ptr` arg) must opt out at the call site by
+passing `widths=(1,)` (`test_rule`'s `skip_chunked`).
 """
 function test_frule(
     rng::AbstractRNG,
@@ -1136,10 +1135,17 @@ end
 function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent, c::IdDict)
     return !Mooncake.is_init(v) || _chunked_v_invariant(p, Mooncake.val(v), c)
 end
+# Both slots are guarded: a V with an isbits eltype (the dual type of a non-differentiable
+# element buffer is one of `NoDual`) reports every slot assigned, while the primal it shadows may
+# be sparsely occupied — a `Dict`'s `keys`/`vals` are the common case. An undefined primal slot
+# has no value to check, as the struct method above already says with `!isdefined(p, n)`.
 function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
-    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+    return all(
+        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
+        eachindex(v),
+    )
 end
 # A `Core.SimpleVector` is not an `AbstractArray`, so the element-wise method above does not match
 # it, but its forward V is a plain `Vector{Any}` of per-element Vs. Closing the default is what
@@ -1148,7 +1154,10 @@ function _chunked_v_invariant(p::Core.SimpleVector, v::AbstractArray, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
     length(p) == length(v) || return false
-    return all(i -> !isassigned(v, i) || _chunked_v_invariant(p[i], v[i], c), eachindex(v))
+    return all(
+        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
+        eachindex(v),
+    )
 end
 
 # Shapes with no inner value to check, named individually so the default can close. A `NoDual` and
@@ -2324,7 +2333,8 @@ type functions are well-formed for `primal_type` at chunk width `N`:
 - the forward non-differentiable sentinel `NoDual` is used exactly when the reverse tangent is
   `NoTangent` (`tangent_type(P) === NoTangent ⟺ dual_type === NoDual`) — catches a `NoTangent`
   leaking into a forward slot or vice versa;
-- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`;
+- coherence: a concrete, non-metatype `P` has `lifted_type === Lifted{P, N, dual_type(...)}`,
+  or `Lifted{P, N, V} where V` where `dual_type` returns a widened (non-concrete) bound;
 - both functions are foldable and infer away — the foldability check is what surfaces a
   world-age trap in a `@generated` `dual_type`/`lifted_type` (a sub-call baked into the
   generator body instead of the returned expression).
@@ -2352,7 +2362,11 @@ function test_lifted_type(primal_type::Type, ::Val{N}) where {N}
     # metatype / abstract primal deliberately kind-widens `lifted_type` to a `UnionAll`, which
     # is not const-foldable, so those are exercised for runnability (the assertions above) only.
     if isconcretetype(primal_type) && !(primal_type <: Type)
-        @test L === Lifted{primal_type,N,V}
+        # A widened `V` (`dual_type` returns an upper bound whenever an element's own dual type
+        # is non-concrete) makes the exact slot uninhabited, `Lifted` being invariant in `V`; the
+        # sound annotation there is the `where` bound.
+        exact = isconcretetype(V)
+        @test L === (exact ? Lifted{primal_type,N,V} : (Lifted{primal_type,N,W} where {W}))
         @test is_foldable(dual_type, (Val{N}, Type{primal_type}))
         @test is_foldable(lifted_type, (Val{N}, Type{primal_type}))
         test_opt(dual_type, Tuple{Val{N},Type{primal_type}})
@@ -2529,9 +2543,12 @@ function test_lifted(rng::AbstractRNG, p; widths=(1, 8), cache_free::Bool=true)
         # self-referential primals, which only the cache-threading path can seed.
         if cache_free
             V = dual_type(Val(N), P)
-            @test typeof(zero_dual(Val(N), p)) === V
-            @test typeof(uninit_dual(Val(N), p)) === V
-            @test typeof(randn_dual(Val(N), rng, p)) === V
+            # Exact match only where `V` is exact: `dual_type` returns a widened upper bound
+            # whenever a component's own dual type is non-concrete, same as the slot check above.
+            for x in
+                (zero_dual(Val(N), p), uninit_dual(Val(N), p), randn_dual(Val(N), rng, p))
+                isconcretetype(V) ? (@test typeof(x) === V) : (@test typeof(x) <: V)
+            end
         end
     end
 
