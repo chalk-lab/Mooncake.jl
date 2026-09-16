@@ -926,7 +926,6 @@ function test_frule(
     rtol=1e-3,
     max_fd_step=nothing,
     debug_mode::Bool=false,
-    fwd_allocs_broken::Bool=false,
     oracle=nothing,
 ) where {P}
     @nospecialize rng x
@@ -944,7 +943,7 @@ function test_frule(
             )
             isnothing(oracle) || test_frule_oracle(x_ẋ...; frule, oracle)
         end
-        test_frule_performance(perf_flag, frule, x_ẋ...; fwd_allocs_broken)
+        test_frule_performance(perf_flag, frule, x_ẋ...)
     end
 
     # Chunked widths (N > 1). Gated on the case's own `skip_chunked`, which empties `widths` at
@@ -1627,11 +1626,7 @@ __forwards(frule::F, x_ẋ::Vararg{Any,N}) where {F,N} = frule(x_ẋ...)
 end
 
 function test_frule_performance(
-    performance_checks_flag::Symbol,
-    rule::R,
-    f_ḟ::F,
-    x_ẋ::Vararg{Any,N};
-    fwd_allocs_broken::Bool=false,
+    performance_checks_flag::Symbol, rule::R, f_ḟ::F, x_ẋ::Vararg{Any,N}
 ) where {R,F,N}
     x_ẋ = _deepcopy(x_ẋ)
 
@@ -1678,17 +1673,7 @@ function test_frule_performance(
         @static if VERSION >= v"1.11-"
             __forwards(rule, f_ḟ, x_ẋ...)
             n_fwd_allocs = count_allocs(__forwards, rule, f_ḟ, x_ẋ...)
-            # Julia 1.11 boxes some forward OCs whose transform IR is type-stable and which
-            # are alloc-free again on 1.12; the range constructors in `twice_precision.jl` are
-            # the live case, measured at 2 allocations on 1.11 against 0 on 1.12. Such a case
-            # sets `fwd_allocs_broken`, so it is `@test_broken` on 1.11 rather than weakening
-            # the zero-alloc contract elsewhere. An unexpected pass means that case no longer
-            # boxes: drop its flag, and drop this branch once no case carries one.
-            if fwd_allocs_broken && VERSION < v"1.12-"
-                @test_broken n_fwd_allocs == 0
-            else
-                @test n_fwd_allocs == 0
-            end
+            @test n_fwd_allocs == 0
         end
     end
 end
@@ -1917,8 +1902,6 @@ definition. See the keyword below.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
 - `chunk_size=nothing`: pin the forward chunk width instead of testing widths 1 and 8.
 - `print_results::Bool=false`: show the sub-testset output rather than discarding it.
-- `fwd_allocs_broken::Bool=false`: the forward allocation check is expected to fail. Prefer
-    narrowing it to the versions where it holds over setting it unconditionally.
 """
 function test_rule(
     rng::AbstractRNG,
@@ -1937,7 +1920,6 @@ function test_rule(
     rrule=nothing,
     max_fd_step::Union{Nothing,Real}=nothing,
     skip_chunked::Bool=false,
-    fwd_allocs_broken::Bool=false,
     oracle=nothing,
     throws=nothing,
     chunk_size::Union{Nothing,Int}=nothing,
@@ -2024,7 +2006,6 @@ function test_rule(
                         rtol,
                         max_fd_step,
                         debug_mode,
-                        fwd_allocs_broken,
                         oracle,
                     )
                 end
@@ -2095,11 +2076,6 @@ end
 function _case_skip_reverse(opts)
     opts isa NamedTuple || return false
     return get(opts, :skip_reverse, false) || _case_mode(opts) === ForwardMode
-end
-# `fwd_allocs_broken`: the width-1 forward zero-allocation check is `@test_broken` on Julia 1.11
-# (alloc-free again on 1.12) for the few cases whose type-stable forward OC 1.11's optimizer boxes.
-function _case_fwd_allocs_broken(opts)
-    opts isa NamedTuple ? get(opts, :fwd_allocs_broken, false) : false
 end
 # A case whose derivative finite differences cannot pin carries its reference in `oracle`
 # (see `test_frule_oracle`); a reverse `oracle` with a `deriv` also needs `output_tangent`.
@@ -2234,7 +2210,6 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
         mode === ForwardMode && _case_skip_forward(opts) && continue
         mode === ReverseMode && _case_skip_reverse(opts) && continue
         skip_chunked = _case_skip_chunked(opts)
-        fwd_allocs_broken = _case_fwd_allocs_broken(opts)
         test_rule(
             rng_ctor(123),
             f,
@@ -2244,7 +2219,6 @@ function run_rule_test_cases(rng_ctor, v::Val, mode::Type{<:Mode}, derived::Bool
             is_primitive=(!derived),
             mode,
             skip_chunked,
-            fwd_allocs_broken,
             oracle=_case_oracle(opts),
             output_tangent=_case_output_tangent(opts),
             throws=_case_throws(opts),

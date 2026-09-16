@@ -90,7 +90,6 @@ end
         rng = Xoshiro(123546)
         mode = ForwardMode
         skip_chunked = TestUtils._case_skip_chunked(opts)
-        fwd_allocs_broken = TestUtils._case_fwd_allocs_broken(opts)
         TestUtils.test_rule(
             rng,
             fx...;
@@ -99,7 +98,6 @@ end
             is_primitive=false,
             mode,
             skip_chunked,
-            fwd_allocs_broken,
         )
     end
 
