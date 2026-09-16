@@ -2124,9 +2124,8 @@ end
 # than silently landing a CPU block.
 #
 # `_block_dims` gives the block's `undef` dimensions as `(N, size(primal)...)`. Element access is
-# always linear (`_lane_offset`), so it is oblivious to the block's declared shape. A backend whose
-# block is oriented differently overrides `tangent_view`/`_lane_views` outright, as the CUDA
-# extension does — those are the orientation seam.
+# always linear, through `_lane_index`; a backend whose block is oriented differently overrides
+# that and `tangent_view`/`_lane_views`, as the CUDA extension does.
 # A `Memory{T}` primal blocks to a rank-2 block — `Memory` is 1-D only, so the block cannot
 # itself be a `Memory`.
 @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = NDualBlock{Element,D + 1}
@@ -2256,21 +2255,27 @@ end
     Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
 }
 
+# Linear index of element `elem`'s lane `lane` (both 1-based) in the partials block. This is the
+# block's ORIENTATION SEAM: element-major here, so an element's lanes are one contiguous column,
+# and a backend whose block is oriented differently (the CUDA extension's lane-major
+# `(dims..., N)`) overrides THIS and inherits every accessor below. Addressing the wrong axis is
+# silent — it reaches lane `((p-1) ÷ N)+1` of element `((p-1) mod N)+1` — so the formula must
+# live in exactly one place.
+@inline _lane_index(::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} =
+    (elem - 1) * N + lane
+
 # Seed manipulation, used by the interface.jl chunked-forward gradient/Jacobian: zero all
-# partials, and read/write element `elem`'s lane `lane` (both 1-based). Element-major block: the
-# lane sits at linear offset `(elem-1)*N + lane`. Inlined, so `getfield` hoists out of caller
+# partials, and read/write one element's lane. Inlined, so `getfield` hoists out of caller
 # loops — same cost as hand-hoisting the block.
 @inline function _zero_seed!(a::NDualArray{Element}) where {Element}
     fill!(getfield(a, :partials_block), zero(Element))
     return a
 end
-@inline _get_partial(a::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} = @inbounds _block_storage(
+@inline _get_partial(a::NDualArray, elem::Int, lane::Int) = @inbounds _block_storage(
     getfield(a, :partials_block)
-)[(elem - 1) * N + lane]
-@inline function _set_partial!(
-    a::NDualArray{Element,N}, elem::Int, lane::Int, v
-) where {Element,N}
-    @inbounds _block_storage(getfield(a, :partials_block))[(elem - 1) * N + lane] = v
+)[_lane_index(a, elem, lane)]
+@inline function _set_partial!(a::NDualArray, elem::Int, lane::Int, v)
+    @inbounds _block_storage(getfield(a, :partials_block))[_lane_index(a, elem, lane)] = v
     return a
 end
 
@@ -2292,7 +2297,7 @@ end
 )
 
 # AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
-# is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_offset`). Resize
+# is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_index`). Resize
 # mutates primal and block in place in lockstep (same `Vector` objects, grown), so the immutable
 # wrapper's stable field references always observe the current state.
 Base.size(a::NDualArray) = size(a.primal)
@@ -2300,13 +2305,10 @@ function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
     return IndexStyle(A)
 end
 
-# Element `i`'s per-lane partials are the contiguous block column at linear offset
-# `(li - 1) * N`, where `li` is the primal's linear index for `i` (the block's leading
-# dimension is the lane). `LinearIndices` accepts both the linear and the cartesian index
-# forms and bounds-checks them, so the block access itself can be `@inbounds`.
-@inline function _lane_offset(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
-    return (LinearIndices(getfield(a, :primal))[i...] - 1) * N
-end
+# The primal's linear index for `i`, which `_lane_index` turns into a block address.
+# `LinearIndices` accepts both the linear and the cartesian index forms and bounds-checks them,
+# so the block access itself can be `@inbounds`.
+@inline _linear_elem(a::NDualArray, i::Vararg{Int}) = LinearIndices(getfield(a, :primal))[i...]
 
 # Element-wise reduction over a flat block. Reading each element's lane column as one
 # `NTuple{N,Element}` load matters twice over: `getindex` would reload the block's parent pointer
@@ -2335,17 +2337,19 @@ end
 # argument type differs by eltype.
 @inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
     block = _block_storage(getfield(a, :partials_block))
-    off = _lane_offset(a, i...)
-    return _scalar_ndual(a.primal[i...], ntuple(k -> @inbounds(block[off + k]), Val(N)))
+    e = _linear_elem(a, i...)
+    return _scalar_ndual(
+        a.primal[i...], ntuple(k -> @inbounds(block[_lane_index(a, e, k)]), Val(N))
+    )
 end
 @inline function Base.setindex!(
     a::NDualArray{Element,N}, x::NDual{Element,N}, i::Vararg{Int}
 ) where {Element<:IEEEFloat,N}
     a.primal[i...] = x.value
     block = _block_storage(getfield(a, :partials_block))
-    off = _lane_offset(a, i...)
+    e = _linear_elem(a, i...)
     @inbounds for k in 1:N
-        block[off + k] = x.partials[k]
+        block[_lane_index(a, e, k)] = x.partials[k]
     end
     return a
 end
@@ -2356,9 +2360,9 @@ end
 ) where {T<:IEEEFloat,Element<:Complex{T},N}
     a.primal[i...] = Complex(x.re.value, x.im.value)
     block = _block_storage(getfield(a, :partials_block))
-    off = _lane_offset(a, i...)
+    e = _linear_elem(a, i...)
     @inbounds for k in 1:N
-        block[off + k] = Complex(x.re.partials[k], x.im.partials[k])
+        block[_lane_index(a, e, k)] = Complex(x.re.partials[k], x.im.partials[k])
     end
     return a
 end
@@ -2369,9 +2373,9 @@ end
 ) where {T<:IEEEFloat,Element<:Complex{T},N}
     a.primal[i...] = Complex(x.value)
     block = _block_storage(getfield(a, :partials_block))
-    off = _lane_offset(a, i...)
+    e = _linear_elem(a, i...)
     @inbounds for k in 1:N
-        block[off + k] = Complex(x.partials[k])
+        block[_lane_index(a, e, k)] = Complex(x.partials[k])
     end
     return a
 end

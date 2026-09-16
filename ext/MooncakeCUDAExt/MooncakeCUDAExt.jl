@@ -299,25 +299,17 @@ function Nfwd._pack_block(p::CuArray, ts::NTuple{Nw,<:AbstractArray}) where {Nw}
     _cu_pack_lane_major(p, ts, Nw)
 end
 
-# The last two block accessors address ONE element's lane. The host versions index the
-# element-major block at `(elem-1)*N + lane`; on the lane-major CuArray block that reaches lane
-# `((p-1) ÷ n)+1` of element `((p-1) mod n)+1` — the wrong axis, so the assembled gradient is
-# scrambled at every chunk width except `W == n`, where the two orderings coincide. Lane `lane`'s
-# element `elem` is at `(lane-1)*n + elem` here. Both remain scalar `CuArray` accesses, so the
-# seeding fast paths still need `CUDA.allowscalar(true)` and cost a launch per element per lane;
-# what changes is that they no longer return a wrong answer to callers who have enabled it.
-@inline function Nfwd._set_partial!(
-    a::NDualArray{E,N,D,A}, elem::Int, lane::Int, v
-) where {E,N,D,A<:CuArray}
-    @inbounds getfield(a, :partials_block)[(lane - 1) * length(getfield(a, :primal)) + elem] =
-        v
-    return a
-end
-@inline function Nfwd._get_partial(
+# Single-element lane addressing. The host seam indexes the element-major block at
+# `(elem-1)*N + lane`; on the lane-major CuArray block that reaches lane `((p-1) ÷ n)+1` of
+# element `((p-1) mod n)+1` — the wrong axis, silently, so the assembled gradient is scrambled at
+# every chunk width except `W == n`, where the two orderings coincide. Overriding the seam fixes
+# `_get_partial`/`_set_partial!` and the `NDualArray` `getindex`/`setindex!` (hence
+# `maximum`/`minimum`) together. These stay scalar `CuArray` accesses, so the seeding fast paths
+# still need `CUDA.allowscalar(true)` and cost a launch per element per lane; what changes is
+# that they no longer return a wrong answer to callers who have enabled it.
+@inline Nfwd._lane_index(
     a::NDualArray{E,N,D,A}, elem::Int, lane::Int
-) where {E,N,D,A<:CuArray}
-    return @inbounds getfield(a, :partials_block)[(lane - 1) * length(getfield(a, :primal)) + elem]
-end
+) where {E,N,D,A<:CuArray} = (lane - 1) * length(getfield(a, :primal)) + elem
 
 # Seed factories for CuArray (mirror the host `Array{T,D}` overloads in `src/lifted.jl`):
 # the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields

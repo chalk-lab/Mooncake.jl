@@ -3458,6 +3458,33 @@ end
                 @test Array(J) == Array(Bj)
             end
         end
+
+        @testset "NDualArray element accessors over a lane-major block" begin
+            # `getindex`/`setindex!` address the block through `Nfwd._lane_index`, the same
+            # orientation seam the seeding fast paths reach via `_set_partial!`/`_get_partial`.
+            # A host element-major formula against the lane-major CuArray block walks the wrong
+            # axis and silently returns another element's lane. `maximum`/`minimum` are written
+            # in terms of `getindex`, so they inherit it. Widths either side of `length(x)`,
+            # where the two orderings coincide. Scalar indexing is the only way to reach these,
+            # which is why nothing else here does.
+            xh = Float64[10, 20, 30]
+            Nfwd = Mooncake.Nfwd
+            CUDA.@allowscalar for W in 1:4
+                nda = Mooncake.zero_dual(Val(W), CuArray(xh))
+                for e in 1:3, k in 1:W
+                    Nfwd._set_partial!(nda, e, k, 100.0 * e + k)
+                end
+                for e in 1:3
+                    @test nda[e].value == xh[e]
+                    @test nda[e].partials == ntuple(k -> 100.0 * e + k, W)
+                end
+                @test maximum(nda).partials == nda[3].partials
+                @test minimum(nda).partials == nda[1].partials
+                # A write must land on the element it names, readable through the seam.
+                nda[2] = Nfwd.NDual{Float64,W}(20.0, ntuple(k -> -Float64(k), W))
+                @test [Nfwd._get_partial(nda, 2, k) for k in 1:W] == [-Float64(k) for k in 1:W]
+            end
+        end
     else
         println("Tests are skipped because no CUDA device was found.")
     end
