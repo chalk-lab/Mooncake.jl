@@ -224,17 +224,6 @@ function _map_if_assigned!(
 end
 
 """
-    _map(f, x...)
-
-Same as `map` but requires all elements of `x` to have equal length.
-The usual function `map` doesn't enforce this for `Array`s.
-"""
-@unstable @inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
-    @assert allequal(map(length, x))
-    return map(f, x...)
-end
-
-"""
     is_vararg_and_sparam_names(m::Method)
 
 Returns a 2-tuple. The first element is true if `m` is a vararg method, and false if not.

@@ -87,13 +87,6 @@
             @test z[2] == 1
         end
     end
-    @testset "_map" begin
-        x = randn(10)
-        y = randn(10)
-        @test Mooncake._map(*, x, y) == map(*, x, y)
-        @assert length(map(*, x, randn(11))) == 10
-        @test_throws AssertionError Mooncake._map(*, x, randn(11))
-    end
     @testset "is_always_initialised" begin
         @test Mooncake.is_always_initialised(TestResources.StructFoo, 1)
         @test !Mooncake.is_always_initialised(TestResources.StructFoo, 2)
