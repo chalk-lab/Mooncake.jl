@@ -221,8 +221,11 @@ struct GlobalBinding
     name::Symbol
 end
 
-@inline _alias_target(@nospecialize(c)) = c
-@inline function _alias_target(b::GlobalBinding)
+# `Any` by nature, and that is the point: the guard has to compare against whatever the binding
+# holds at call time, so the return type cannot be narrowed without defeating the check. Marked
+# `@unstable` for DispatchDoctor, which enforces stability over the rest of the module.
+@unstable @inline _alias_target(@nospecialize(c)) = c
+@unstable @inline function _alias_target(b::GlobalBinding)
     return isdefined(b.mod, b.name) ? getglobal(b.mod, b.name) : nothing
 end
 
