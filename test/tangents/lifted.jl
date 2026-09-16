@@ -1109,7 +1109,9 @@ const NDAC_VecC64 = NDualArray{
         # seed entry points — the cache-threading `_*_dual_internal` and the cache-free
         # `zero_dual`/`uninit_dual`/`randn_dual`. Driven here rather than from
         # `tangent_test_cases()` for the same reason as the pointers above: that table also drives
-        # reverse `test_tangent`, whose `_add_to_primal`/`increment!!` contract neither satisfies.
+        # the reverse suites, which neither survives — an `IdDict` allocates under
+        # `test_tangent`'s perf check, and a `Task` trips `test_tangent_splitting`'s
+        # `tangent_type(F, R)` assertion.
         @testset "test_lifted $nm" for (nm, p) in (
             ("IdDict", IdDict(1 => randn(2))), ("Task", Task(() -> 1))
         )
@@ -1121,7 +1123,11 @@ const NDAC_VecC64 = NDualArray{
         # slot must stay inhabited: `Lifted` is invariant in V, so an exact `Lifted{P,N,Any}`
         # annotation admits no runtime value at all.
         @testset "test_lifted widened V $(typeof(p))" for p in (
-            convert(@NamedTuple{x::Any}, (x=3.0,)), (Ptr{UInt8}(pointer(ptr_backing)),)
+            convert(@NamedTuple{x::Any}, (x=3.0,)),
+            # Same widening with a NON-differentiable value, whose V is a `NoDual`: the per-lane
+            # read must decide from the value, not from the widened `Any`.
+            convert(@NamedTuple{x::Any}, (x=nothing,)),
+            (Ptr{UInt8}(pointer(ptr_backing)),),
         )
             test_lifted(Xoshiro(123456), p)
         end
