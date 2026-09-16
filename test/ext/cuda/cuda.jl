@@ -1928,9 +1928,10 @@ end
             )
             @test Mooncake.primal(result) isa typeof(ref)
             @test Mooncake.primal(result) !== ref    # must be a new handle, not the same object
-            # DataRef is forward-mode non-differentiable (V === NoDual); the lane-1
-            # tangent is NoTangent regardless of what was passed in.
-            @test Mooncake.tangent(result, 1) isa Mooncake.NoTangent
+            # DataRef carries no forward derivative (V === NoDual), but its reverse
+            # tangent type is the handle itself, so the lane materialises a handle —
+            # `zero_tangent`'s `copy` — not a NoTangent.
+            @test Mooncake.tangent(result, 1) isa typeof(ref)
 
             out, pb = _MooncakeCUDAExt.rrule!!(
                 Mooncake.CoDual(copy, Mooncake.NoFData()), Mooncake.CoDual(ref, tref)

@@ -85,6 +85,15 @@ struct LiftedTest_ConcScalar <: LiftedTest_AbsScalar
     σ::Float64
 end
 
+# An opaque handle, the shape CUDA's `DataRef` has: no forward derivative (`dual_type` is
+# `NoDual`) while its reverse tangent is the handle itself, reused as shared cotangent storage.
+struct LiftedTest_Handle
+    id::Int
+end
+Mooncake.tangent_type(::Type{LiftedTest_Handle}) = LiftedTest_Handle
+Mooncake.dual_type(::Val{N}, ::Type{LiftedTest_Handle}) where {N} = Mooncake.NoDual
+Mooncake.zero_tangent_internal(x::LiftedTest_Handle, ::Mooncake.MaybeCache) = x
+
 using Mooncake:
     NDual,
     NDualArray,
@@ -396,6 +405,15 @@ const NDAC_VecC64 = NDualArray{
             1,
             IdDict(),
         ) isa Mooncake.VoidPtrTangent
+    end
+
+    @testset "a canonical NoDual over a non-`NoTangent` primal is not refused" begin
+        # What licenses a `NoDual` V is `dual_type` declaring it, not `tangent_type === NoTangent`:
+        # a forward-opaque primal can still have a real reverse placeholder, as CUDA's `DataRef`
+        # does. Keying off `tangent_type` refused the slot instead of materialising it, which is
+        # the `copy(::CuDataRef)` frule erroring in `test/ext/cuda`.
+        h = LiftedTest_Handle(7)
+        @test unlift(Lifted{LiftedTest_Handle,1,NoDual}(h, NoDual())) === (h, h)
     end
 
     @testset "metatype kinds get an unbounded slot" begin

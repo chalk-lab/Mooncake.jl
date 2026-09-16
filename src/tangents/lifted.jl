@@ -115,9 +115,10 @@ tangent(d::Lifted) = d.rep
 _primal(x) = x
 _primal(x::Lifted) = primal(x)
 
-# Forward-mode slot-type check used by the test framework: a well-formed `Lifted{P,N,V}` slot has
-# `V === dual_type(Val(N), P)` for concrete `P` (the coherence invariant). Abstract-`P` slots are
-# sharpened to a concrete subtype at runtime, so the static V cannot be asserted — accept those.
+# Forward-mode slot-type check, used by the test framework and by the `NoDual` lane accessor below:
+# a well-formed `Lifted{P,N,V}` slot has `V === dual_type(Val(N), P)` for concrete `P` (the
+# coherence invariant). Abstract-`P` slots are sharpened to a concrete subtype at runtime, so the
+# static V cannot be asserted — accept those.
 # `Ptr` primals are exempt too: they have no ownable derivative storage, so a non-differentiable
 # `Ptr` result legitimately carries `NoDual` rather than the per-lane `NTuple{N,Ptr}` (mirrors the
 # `Ptr` exemption in `DebugFRule`'s `verify_canonical_dual_type`; see the `pointerref`/`cglobal` rules).
@@ -230,21 +231,23 @@ end
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
 # The reverse value comes from the PRIMAL, not from the V, for the same reason as the array
-# sibling below: `NoDual` says only that there is no forward partial. `Ptr{T}` with a
-# non-differentiable `T` is the one primal family whose V is `NoDual` while `tangent_type` is not
-# `NoTangent` (it is `Ptr{NoTangent}`), so mapping `NoDual` to `NoTangent` returned a wrong-typed
-# value with no error at the site. Those two are the whole family: a `NoDual` over any other
-# differentiable primal is a malformed V, and minting it an uninit tangent would hide that.
+# sibling below: `NoDual` says there is no forward partial, not that the reverse tangent is
+# `NoTangent`. The two differ for a non-differentiable `Ptr` (reverse `Ptr{NoTangent}`) and for
+# CUDA's opaque `DataRef` (reverse: the handle itself, its shared cotangent storage), so mapping
+# `NoDual` to `NoTangent` returned a wrong-typed value with no error at the site. What licenses the
+# `NoDual` is `dual_type` declaring it — the canonicity `verify_lifted_type` checks, and the only
+# question an extension can answer — not `tangent_type`; a NON-canonical `NoDual` (over a primal
+# whose `dual_type` is an `NDualArray`, say) is malformed and must not be minted a tangent.
 @inline function tangent(x::Lifted{P,N,NoDual}, ::Integer) where {P,N}
-    (tangent_type(P) === NoTangent || P <: Ptr) || _throw_differentiable_nodual(P)
+    verify_lifted_type(x) || _throw_noncanonical_nodual(Val(N), P)
     return uninit_tangent(primal(x))
 end
-@noinline function _throw_differentiable_nodual(::Type{P}) where {P}
+@noinline function _throw_noncanonical_nodual(::Val{N}, ::Type{P}) where {N,P}
     throw(
         ArgumentError(
-            "a slot over the differentiable primal `$P` carries the forward value `NoDual`, " *
-            "whose reverse tangent would have to be `$(tangent_type(P))`. `NoDual` is valid only " *
-            "where `tangent_type` is `NoTangent`, or for a `Ptr` to a non-differentiable element.",
+            "a slot over the primal `$P` carries the forward value `NoDual`, but its canonical " *
+            "forward value is `$(dual_type(Val(N), P))` and its reverse tangent " *
+            "`$(tangent_type(P))`. `NoDual` is valid only where `dual_type` declares it.",
         ),
     )
 end
