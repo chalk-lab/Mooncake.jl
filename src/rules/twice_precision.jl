@@ -404,7 +404,8 @@ function frule!!(
     ref_v = tangent(r).fields.ref  # NTuple{N, TWP{T}}
     step_v = tangent(r).fields.step  # NTuple{N, TWP{T}}
     offset = _r.offset
-    dy_lanes = ntuple(k -> Eout(ref_v[k] + step_v[k] * (_i - offset)), Val(N))
+    # `oftype`, not `Eout(...)`: see the `sum` rule below.
+    dy_lanes = ntuple(k -> oftype(x, ref_v[k] + step_v[k] * (_i - offset)), Val(N))
     return Lifted{Eout,N}(x, NDual{Eout,N}(x, dy_lanes))
 end
 function rrule!!(
@@ -494,8 +495,11 @@ function frule!!(
     ref_v = tangent(x).fields.ref
     step_v = tangent(x).fields.step
     Yout = typeof(y)
+    # `oftype(y, ...)` rather than `Yout(...)`: a type-valued capture is widened to `DataType` in
+    # the lane closure, and the conversion then dispatches dynamically whenever the closure is
+    # not inlined. Capturing `y` keeps its element type static.
     dy_lanes = ntuple(
-        k -> Yout(ref_v[k] * l + step_v[k] * (0.5 * l * (l + 1) - l * offset)), Val(N)
+        k -> oftype(y, ref_v[k] * l + step_v[k] * (0.5 * l * (l + 1) - l * offset)), Val(N)
     )
     return Lifted{Yout,N}(y, NDual{Yout,N}(y, dy_lanes))
 end
