@@ -853,14 +853,15 @@ end
     isconcretetype(P) && return V
     return Tuple{Vararg{NoDual,fieldcount(P)}} <: V ? Union{V,NoDual} : V
 end
-# Element-wise tuple V via head/tail cons, WITHOUT the whole-tuple collapse gate so tails stay
-# `Tuple`. Fixed-length (non-`Vararg`) tails only; the top `dual_type(Tuple)` rejects `Vararg`
-# tuples before recursing here, so the head/tail cons always terminates.
-@foldable @inline _dual_tuple_v(::Val{N}, ::Type{Tuple{}}) where {N} = Tuple{}
-@foldable @inline function _dual_tuple_v(::Val{N}, ::Type{P}) where {N,P<:Tuple}
-    H = Base.tuple_type_head(P)
-    Tail = Base.tuple_type_tail(P)
-    return Base.tuple_type_cons(dual_type(Val(N), H), _dual_tuple_v(Val(N), Tail))
+# Element-wise tuple V, WITHOUT the whole-tuple collapse gate so tails stay `Tuple`. Generated
+# rather than head/tail recursive, for the same reason `tangent_type(::Type{<:Tuple})` is: each
+# recursive step costs an inference frame, so an `NTuple{1000}` overflows the compiler's stack,
+# and Julia does not reliably survive that overflow -- it can take a fatal SIGSEGV instead of
+# raising `StackOverflowError` (julia#17109). The top `dual_type(Tuple)` rejects `Vararg` tuples
+# before reaching here, so `fieldcount` is finite.
+@foldable @generated function _dual_tuple_v(::Val{N}, ::Type{P}) where {N,P<:Tuple}
+    Vs = map(i -> :(dual_type(Val(N), fieldtype(P, $i))), 1:fieldcount(P))
+    return :(Tuple{$(Vs...)})
 end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{NamedTuple{names,T}}
