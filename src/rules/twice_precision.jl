@@ -741,11 +741,20 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # rather than testing the constructor directly: `ref` jumps discontinuously as `offset`
         # switches, so a finite-difference oracle on the constructor's own output is unreliable,
         # while a value read out of the range is smooth and offset-independent.
-        (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
-        # 1.11 boxes this forward OC for 2 allocations where 1.10, 1.12 and 1.13 are alloc-free;
-        # measured identical before and after the `offset` fix, so it is a property of the shape
-        # rather than of the derivative. `fwd_allocs_broken` keeps the zero-alloc assertion live
-        # on the other three versions.
+        #
+        # Both rows box their forward OpaqueClosure on 1.11, for 2 allocations against 0 on 1.10,
+        # 1.12 and 1.13. Removing the nfwd-native classifier exposed it: these calls used to run
+        # natively on `NDual` numbers, with no OC to box, and now go through the `frule!!`
+        # transform. `fwd_allocs_broken` keeps the zero-alloc assertion live on the other three
+        # versions.
+        (
+            false,
+            :allocs,
+            (fwd_allocs_broken=true,),
+            (a, st) -> sum(range(a; step=st, length=4)),
+            -0.9,
+            0.5,
+        ),
         (
             false,
             :allocs,
