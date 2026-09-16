@@ -880,9 +880,17 @@ function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    F = bunchkaufman(S)
-    ld = logdet(F)
-    Sinv = inv(F)
+    # Forward-over-reverse differentiates this body, so nothing here may reach `bunchkaufman` and
+    # its `sytrf!` foreigncall, which has no `frule!!`; the `potrf!` rule keeps its `copy`
+    # un-inlined for the same reason. `logdet(S)` is this rule's own primitive, so the transform
+    # dispatches to the `frule!!` above instead of descending, and `inv(::Symmetric)` factorises
+    # with `lu`, which does have rules. Values are unchanged (`logdet` still factorises with
+    # Bunch-Kaufman internally), but the two calls no longer share a factorisation: measured
+    # 1.6-2.2x the linear algebra of the `F = bunchkaufman(S)` form this replaces, across
+    # n = 10, 50, 200. Recovering that needs the file's strategy 2 -- one primitive handing back
+    # `logdet(F)` and `inv(F)` from a single factorisation -- which no rule here has yet.
+    ld = logdet(S)
+    Sinv = Matrix(inv(S))
     function logdet_sym_pb!!(ȳ::P)
         _accum_sym_logdet!(ddata, Sinv, ȳ)
         return NoRData(), NoRData()
@@ -950,11 +958,13 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:_SymHerm{P}}) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    F = bunchkaufman(S; check=false)
-    d = det(F)
+    # `bunchkaufman`-free, as in `logdet`'s pullback above, so forward-over-reverse can
+    # differentiate this body. `det(S)` reaches the same factorisation and returns `0` rather than
+    # throwing at a singular `S`, matching the `check=false` it replaces.
+    d = det(S)
     # `S̄ += ȳ·adj(S)`, weighted for symmetric storage. Keep the cheap `d·S⁻¹` form off the
     # singular path, where it is `0·Inf`.
-    G, scale = iszero(d) ? (_sym_adjugate(S), one(P)) : (inv(F), d)
+    G, scale = iszero(d) ? (_sym_adjugate(S), one(P)) : (Matrix(inv(S)), d)
     function det_sym_pb!!(ȳ::P)
         _accum_sym_logdet!(ddata, G, ȳ * scale)
         return NoRData(), NoRData()
@@ -996,9 +1006,9 @@ function rrule!!(
     ::CoDual{typeof(logabsdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    F = bunchkaufman(S; check=false)
-    ld, s = logabsdet(F)
-    Sinv = iszero(s) ? nothing : inv(F)
+    # `bunchkaufman`-free, as in `logdet`'s pullback above.
+    ld, s = logabsdet(S)
+    Sinv = iszero(s) ? nothing : Matrix(inv(S))
     function logabsdet_sym_pb!!(ȳ::Tuple{P,P})
         isnothing(Sinv) && return NoRData(), NoRData()
         _accum_sym_logdet!(ddata, Sinv, ȳ[1])
