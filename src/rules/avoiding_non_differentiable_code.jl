@@ -11,7 +11,9 @@ function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
 ) where {Nw,P<:Ptr}
     yp = primal(y)
-    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x, lane) + yp, Val(Nw)))
+    # Read the V's lane pointer, not `tangent(x, lane)`: that accessor materialises lane `lane`'s
+    # REVERSE tangent, a `VoidPtrTangent` for `Ptr{Nothing}`, not the address the lane holds.
+    return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x)[lane] + yp, Val(Nw)))
 end
 # Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
 # reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
