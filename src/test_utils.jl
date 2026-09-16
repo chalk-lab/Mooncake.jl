@@ -974,8 +974,8 @@ function test_frule(
         # lifts to `Vector{NoDual}`, which has no `_chunk_lane_checkable` method, and one such
         # argument silenced the whole case. Relevance is MEASURED rather than predicted from the
         # V's type, because a type-level test has to know every shape carrying partials and is
-        # silent when it does not — `_nfwd_has_ndual`, the nfwd classifier's, answers `false` for
-        # `NDualRef` and would wave a `Ref` past the veto that correctly refuses it.
+        # silent when it does not: a type-level test that answers `false` for `NDualRef` waves a
+        # `Ref` past the veto that correctly refuses it.
         irrelevant = map(
             s -> N > 1 && _lane_reads_equal(tangent(s, 1), tangent(s, 2)), seeds
         )
@@ -2045,11 +2045,7 @@ function test_rule(
             @testset "Caching" begin
                 if test_fwd && !ismissing(fwd_interp)
                     C_fwd = Mooncake.context_type(fwd_interp)
-                    # A nfwd-safe function runs through a stateless `NfwdFRule` returned
-                    # before the OpaqueClosure cache is populated (it needs neither re-derivation
-                    # nor an independent copy), so only derived transform rules land in `oc_cache`.
-                    nfwd = !debug_mode && Mooncake._nfwd_safe(Any[sig.parameters...], 1)
-                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world) && !nfwd
+                    if !Mooncake.is_primitive(C_fwd, ForwardMode, sig, fwd_interp.world)
                         # `:forward` rules are keyed by chunk width too; `test_rule` builds
                         # the default width-1 rule.
                         cache_key = (sig, debug_mode, :forward, 1)

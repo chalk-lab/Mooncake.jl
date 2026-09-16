@@ -26,12 +26,10 @@ function _contains_bottom_type(T, seen::Base.IdSet{Any})
     end
 end
 
-function build_frule(
-    args...; debug_mode=false, silence_debug_messages=true, chunk_size=1, nfwd::Bool=true
-)
+function build_frule(args...; debug_mode=false, silence_debug_messages=true, chunk_size=1)
     sig = _typeof(TestUtils.__get_primals(args))
     interp = get_interpreter(ForwardMode)
-    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size, nfwd)
+    return build_frule(interp, sig; debug_mode, silence_debug_messages, chunk_size)
 end
 
 struct DualRuleInfo
@@ -64,7 +62,6 @@ function build_frule(
     silence_debug_messages=true,
     skip_world_age_check=false,
     chunk_size::Int=1,
-    nfwd::Bool=true,
 ) where {C}
     @nospecialize sig_or_mi
 
@@ -89,14 +86,6 @@ function build_frule(
     if is_primitive(C, ForwardMode, sig, interp.world)
         rule = build_primitive_frule(sig)
         return debug_mode ? DebugFRule(rule) : rule
-    end
-
-    # If the whole function is nfwd-safe, run it directly on the inner dual values (bypassing the
-    # per-op `Lifted`/frule transform envelope) rather than deriving a rule. This is the default;
-    # `nfwd=false` or `debug_mode` keeps the fully-checked transform path.
-    if nfwd && !debug_mode
-        nfwd_safe, nfwd_consts = _nfwd_verdict(Any[sig.parameters...], chunk_size)
-        nfwd_safe && return NfwdFRule{chunk_size}(nfwd_consts)
     end
 
     # We don't have a hand-coded rule, so derive one.
@@ -681,16 +670,12 @@ end
 # Not covered: the inference-complexity-widening case in #1209's headline MWE.
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
-    # `nfwd=false`: nfwd is a top-level whole-function decision. This is a sub-rule build, and its
-    # result type must match `Trule` (the transform-rule type `frule_type` predicted at
-    # construction); an `NfwdFRule` here would fail to `convert` into the `rule.rule` field.
     rule.rule = build_frule(
         interp,
         rule.mi;
         debug_mode=rule.debug_mode,
         chunk_size=rule.width,
         skip_world_age_check=true,
-        nfwd=false,
     )
     return __call_rule(rule.rule, args)
 end
@@ -745,15 +730,12 @@ function (dynamic_rule::DynamicFRule)(args::Vararg{Lifted,N}) where {N}
     if rule === nothing
         # Build at this rule's creation world, not the current one; see _build_rule! (#1218)
         interp = get_interpreter(ForwardMode, dynamic_rule.world)
-        # `nfwd=false`: nfwd is a top-level whole-function decision, not a sub-rule one (see
-        # `_build_rule!`).
         rule = build_frule(
             interp,
             sig;
             debug_mode=dynamic_rule.debug_mode,
             chunk_size=dynamic_rule.width,
             skip_world_age_check=true,
-            nfwd=false,
         )
         dynamic_rule.cache[sig] = rule
     end

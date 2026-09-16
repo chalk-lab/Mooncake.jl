@@ -161,7 +161,7 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
         @test g[2] == [1.0, 2.0]
 
         # Same for the forward transform, which records the binding at its own `GlobalRef` site.
-        fr = Mooncake.build_frule(_global_alias_f, [1.0, 2.0]; nfwd=false)
+        fr = Mooncake.build_frule(_global_alias_f, [1.0, 2.0])
         y = [1.0, 2.0]
         global _GLOBAL_ALIAS_G = y
         @test_throws ArgumentError fr(

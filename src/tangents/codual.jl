@@ -158,7 +158,7 @@ end
     ConstAliasSet(primals::Vector{Any} = Any[])
 
 The constant and global primals a rule built derivative storage for at rule-build time.
-`DerivedRule`, `DerivedFRule` and `NfwdFRule` each carry one, and refuse a call whose arguments
+`DerivedRule` and `DerivedFRule` each carry one, and refuse a call whose arguments
 include one of these objects: that storage is shared with nothing, so the contribution through the
 constant would be dropped.
 
