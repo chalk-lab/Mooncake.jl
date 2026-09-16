@@ -21,6 +21,10 @@ Breaking release: the forward-mode AD representation was rewritten.
   with an `ArgumentError` instead of a silently wrong gradient:
   `const G = [1.0, 2.0]; f(x) = sum(x .* G)` called at `x === G` gave `[1.0, 2.0]`, not
   `[2.0, 4.0]`. Pass a copy. A global no argument aliases is unaffected.
+- `Mooncake.set_tangent_field!` no longer converts implicitly, matching `setfield!` and
+  forward-mode's per-lane field writes. For a field whose tangent type is `Float64`,
+  `set_tangent_field!(t, :s, Float32(1))` stored `1.0`; it now throws an `ArgumentError`.
+  Convert at the call site: `set_tangent_field!(t, :s, Float64(1))`.
 - Forward-mode seed factories are width-parameterized: `zero_dual(Val(N), x)` / `uninit_dual` /
   `randn_dual` (and the `zero_lifted` / `uninit_lifted` / `randn_lifted` slot wrappers).
 

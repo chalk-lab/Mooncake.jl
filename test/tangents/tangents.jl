@@ -212,6 +212,22 @@ _void_ptr_mixed(m::VoidPtrMixed, x::Float64) = x * m.w
             end
         end
     end
+    @testset "set_tangent_field! does not convert implicitly" begin
+        # `setfield!`, whose semantics this mirrors, converts nothing; neither does forward's
+        # per-lane field write. A `Float32` written into a `Float64` field used to be widened
+        # silently by the backing `NamedTuple` constructor.
+        t = MutableTangent((a=5.0, b=NoTangent()))
+        @test Mooncake.set_tangent_field!(t, :a, 3.0) === 3.0
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+        # A non-differentiable field still takes `NoTangent()`: that is its tangent type, not a
+        # conversion.
+        @test Mooncake.set_tangent_field!(t, :b, NoTangent()) === NoTangent()
+        @test_throws ArgumentError Mooncake.set_tangent_field!(t, :a, Float32(3))
+        @test_throws "Cannot write a `Float32`" Mooncake.set_tangent_field!(
+            t, 1, Float32(3)
+        )
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+    end
     @testset "a `Ptr` tangent is inert in tangent arithmetic" begin
         # A `Ptr` tangent is the `uninit_*` placeholder: it carries no derivative, so every
         # arithmetic operation leaves it alone. Six of them had no `Ptr` method at all, so any `Ptr`
