@@ -261,10 +261,12 @@ end
 function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
     li = i == 1 ? "`f`" : "`x$(i - 1)`"
     lj = j == 1 ? "`f`" : "`x$(j - 1)`"
+    # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
+    # `===` yet are one storage, and that pair is exactly what `_same_storage` added.
     what = if aliased_now
-        "are the same object now but were distinct"
+        "share one storage now but were separate"
     else
-        "are distinct now but were the same object"
+        "are separate now but shared one storage"
     end
     throw(
         PreparedCacheError(
@@ -302,6 +304,22 @@ end
 # `tangents[i][p1][p2]...` as an expression.
 _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
 
+# Do two positions name one accumulation buffer? Object identity answers it for every container
+# except an `Array` against its backing `Memory`, which are never `===` yet are one storage — and
+# reverse ties their tangents accordingly, so `===` reported "distinct" for a pair the cache had
+# merged. `f(a, a.ref.mem) = sum(a) + sum(m)` on a cache prepared with unrelated arguments then
+# returned `[1,1,1]` against a truth of `[2,2,2]`, silently. Asked of the primals and of the
+# tangents with the ONE predicate, so the two answers are comparable: `(b, reshape(b))` shares a
+# buffer on both sides and still passes.
+@inline _same_storage(@nospecialize(x), @nospecialize(y)) = x === y
+@static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
+    @inline _storage_of(x::Array) = getfield(x, :ref).mem
+    @inline _storage_of(x::Memory) = x
+    @inline function _same_storage(x::Union{Array,Memory}, y::Union{Array,Memory})
+        return _storage_of(x) === _storage_of(y)
+    end
+end
+
 # Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
 # prepared. If two arguments are the same object, their buffers must be too (the aliasing
 # invariant); if they are distinct, their buffers must be distinct or two gradients are summed
@@ -333,7 +351,9 @@ _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:
             push!(
                 checks.args,
                 quote
-                    let same_primal = $fi === $fj, same_tangent = $ti === $tj
+                    let same_primal = _same_storage($fi, $fj),
+                        same_tangent = _same_storage($ti, $tj)
+
                         same_primal == same_tangent ||
                             _throw_prepared_cache_aliasing_error($i, $j, same_primal)
                     end

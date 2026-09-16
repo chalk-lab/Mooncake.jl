@@ -105,7 +105,8 @@ A prepared cache holds one derivative buffer per argument, so how the arguments 
 part of the shape it was prepared for. Calling it with a different aliasing pattern writes into the
 wrong buffers, and Mooncake rejects that with a `PreparedCacheError` rather than returning a wrong
 gradient. This is checked for mutable arguments and for mutables nested inside `Tuple`s and
-`NamedTuple`s, whose positions are known from the type.
+`NamedTuple`s, whose positions are known from the type. Sharing counts as sharing a *buffer*, not
+just being the same object, so an `Array` passed alongside its backing `Memory` is checked too.
 
 It is **not** checked when the container's arity is not in its type — a `Vector` of arrays, or a
 `Dict`. Finding the aliasing there would mean walking the whole argument on every call, which costs
