@@ -306,9 +306,20 @@ end
 # for a custom aggregate is some shape reverse tangent arithmetic has no method for and which
 # fails several frames downstream. Check the shape here instead, so the next custom aggregate V
 # says what is missing at the boundary that produced it.
-@inline function _materialise_lane(x::Lifted{P,N}, lane::Integer, ::IdDict) where {P,N}
+@inline function _materialise_lane(x::Lifted{P,N}, lane::Integer, cache::IdDict) where {P,N}
     t = tangent(x, lane)
     t isa tangent_type(P) || _throw_not_a_leaf_v(P, t)
+    return _register_leaf(primal(x), t, cache)
+end
+# A leaf mints its tangent fresh, so registering it is what keeps two aliased leaves under one slot
+# on one reverse tangent — the aggregate methods register their shells, and without this the leaves
+# they recurse into do not. An immutable primal has no identity to share. The value is built before
+# the lookup so the hit has a concrete type to assert: unasserted, `cache[p]` out of the
+# `IdDict{Any,Any}` widens a `Tuple{Vector{Float64},Vector{Float64}}` lane read to `Tuple{Any,Any}`.
+@inline function _register_leaf(p, t, cache::IdDict)
+    ismutable(p) || return t
+    haskey(cache, p) && return cache[p]::typeof(t)
+    cache[p] = t
     return t
 end
 @noinline function _throw_not_a_leaf_v(::Type{P}, t) where {P}
@@ -378,9 +389,12 @@ function _materialise_lane(
         end,
     )
 end
-# A block-backed array IS a leaf: it cannot reference back into itself, so it skips the cache.
-function _materialise_lane(x::Lifted{P,N,<:NDualArray}, lane::Integer, ::IdDict) where {P,N}
-    tangent(x, lane)
+# A block-backed array IS a leaf: it cannot reference back into itself, so it needs no shell — but
+# it does need registering, being storage two aliased positions must share.
+function _materialise_lane(
+    x::Lifted{P,N,<:NDualArray}, lane::Integer, cache::IdDict
+) where {P,N}
+    _register_leaf(primal(x), tangent(x, lane), cache)
 end
 # An all-`NoDual` V is a leaf only when the ELEMENT's reverse tangent is `NoTangent` too. A `Ptr`
 # to a non-differentiable element breaks that: `dual_type(Vector{Ptr{Int}})` is `Vector{NoDual}`
@@ -389,7 +403,8 @@ end
 @inline function _materialise_lane(
     x::Lifted{P,N,<:AbstractArray{NoDual}}, lane::Integer, cache::IdDict
 ) where {P,N}
-    tangent_type(eltype(P)) === NoTangent && return tangent(x, lane)
+    tangent_type(eltype(P)) === NoTangent &&
+        return _register_leaf(primal(x), tangent(x, lane), cache)
     return _materialise_lane_elementwise(x, lane, cache)
 end
 function _materialise_lane(
