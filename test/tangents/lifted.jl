@@ -306,6 +306,11 @@ const NDAC_VecC64 = NDualArray{
         @test tangent(slot) === inner
         @test extract(slot) === (3.0, inner)
         @test slot == sl(2, 3.0, inner)
+
+        # An `NDualArray` names the primal it was built over, so the slot takes its primal from
+        # there: pairing array `a` with a representation over `b` cannot name `a`.
+        a, b = [1.0, 2.0, 3.0], [10.0, 20.0, 30.0]
+        @test primal(Lifted{Vector{Float64},1}(a, tangent(zero_lifted(Val(1), b)))) === b
     end
 
     # `dual_type(Val(N), P) === V` and `lifted_type(Val(N), P) === Lifted{P,N,V}` per shape.
