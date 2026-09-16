@@ -248,6 +248,27 @@ end
         @test hvp ≈ (-1 ./ x .^ 2) .* v
     end
 
+    @testset "symmetric determinants" begin
+        # Sibling of the `cholesky` case above, for the `bunchkaufman`/`sytrf!` path. The three
+        # `Symmetric` determinant `rrule!!`s factorised inside their own bodies, so
+        # forward-over-reverse reached `sytrf!`, which has no `frule!!`, and every HVP raised
+        # `MissingForeigncallRuleError` while gradients and JVPs worked. `diagm(x)` is dense on
+        # purpose, so `Symmetric` wraps a `StridedMatrix` and reaches the rules.
+        x = [2.0, 3.0, 5.0]
+        v = [1.0, 0.0, 0.0]
+        for (f, grad, hvp) in [
+            (x -> logdet(Symmetric(diagm(x))), 1 ./ x, -v ./ x .^ 2),
+            (x -> logabsdet(Symmetric(diagm(x)))[1], 1 ./ x, -v ./ x .^ 2),
+            # `det = ∏x`, so `H[i,j] = ∏x/(xᵢxⱼ)` off the diagonal and `0` on it.
+            (x -> det(Symmetric(diagm(x))), prod(x) ./ x, [0.0, 5.0, 3.0]),
+        ]
+            value, g, h = value_and_hvp!!(prepare_hvp_cache(f, copy(x)), f, v, copy(x))
+            @test value ≈ f(x)
+            @test g ≈ grad
+            @test h ≈ hvp
+        end
+    end
+
     @testset "cache reuse across multiple HVP calls" begin
         # The `DerivedFoRRule`'s cached `Dual` is reused across calls without copying.
         f(x) = sum(x .* x)  # H = 2I
