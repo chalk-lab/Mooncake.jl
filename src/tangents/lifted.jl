@@ -1162,13 +1162,15 @@ end
 # placeholder convention, as the `Ptr{NoTangent}` method above does.
 @inline lift(x::Ptr{Nothing}, ::VoidPtrTangent) = Lifted{Ptr{Nothing},1}(x, (x,))
 @static if VERSION >= v"1.11-rc4"
-    # `MemoryRef{T}` (T<:IEEEFloat) reverse fdata is itself a `MemoryRef{T}` (the
-    # derivative storage); its forward V is the block-backed `NDualMemoryRef`. Reached in
+    # `MemoryRef{T}` (T<:NDualEltype) reverse fdata is itself a `MemoryRef{T}` (the
+    # derivative storage); its forward V is the block-backed `NDualMemoryRef`. The eltype bound
+    # must match the `Memory` lift below: where they disagree, a ref falls through to the generic
+    # element-wise lift, which builds a V that is not what `dual_type` declares. Reached in
     # forward-over-reverse, where a reverse rule's `dx::MemoryRef` field is lifted. The seed
     # values are PACKED into a fresh block (copy semantics, like the `Array` lift): `unlift`
     # reads the result back out of the block via the lane accessor, so the round-trip is
     # consistent even though `ẋ` itself is not aliased.
-    @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:IEEEFloat}
+    @inline function lift(x::MemoryRef{T}, ẋ::MemoryRef{T}) where {T<:NDualEltype}
         len = length(ẋ.mem)
         block = NDualBlock{T,2}(undef, 1, len)
         copyto!(getfield(block, :parent), 1, ẋ.mem, 1, len)
@@ -1185,7 +1187,7 @@ end
     # mutation through one is invisible through the other.
     @inline function lift(
         x::MemoryRef{T}, ẋ::MemoryRef{T}, c::Union{Nothing,IdDict}
-    ) where {T<:IEEEFloat}
+    ) where {T<:NDualEltype}
         c isa IdDict || return lift(x, ẋ)
         haskey(c, x) && return c[x]::Lifted{MemoryRef{T},1}
         # Window the backing `Memory`'s V rather than copying `ẋ.mem` into a private block: a

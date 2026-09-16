@@ -2221,6 +2221,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
     ]
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
     VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
+    # A complex `MemoryRef`: the `Memory` and `MemoryRef` lifts have to agree on which eltypes
+    # take the block-backed representation, and only the float half of that pair was covered.
+    VERSION >= v"1.11" &&
+        push!(rel_test_cases, memoryref(fill!(Memory{ComplexF64}(undef, 3), 1.0 + 2.0im)))
     return vcat(
         map(x -> (false, x...), abs_test_cases),
         map(x -> (false, x), rel_test_cases),
