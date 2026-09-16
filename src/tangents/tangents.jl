@@ -2203,6 +2203,10 @@ tangents, but they're unable to check that [`increment!!`](@ref) is correct in a
         (((((((((randn(33)...,),),),),), randn(5)...),),),),
         Base.OneTo{Int},
         TestResources.build_big_isbits_struct(),
+        # A `Dict`'s key store is sparsely occupied while its tangent is an isbits store
+        # reporting every slot assigned, so primal and tangent disagree over which slots are
+        # readable.
+        Dict(:a => 5.0, :b => 4.0),
     ]
     VERSION >= v"1.11" && push!(rel_test_cases, fill!(Memory{Float64}(undef, 3), 3.0))
     VERSION >= v"1.11" && push!(rel_test_cases, TestResources.make_array_and_its_buffer())
