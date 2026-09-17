@@ -1425,8 +1425,15 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # Width-dispatched `value_and_derivative!!` routes to `chunk_rule` (W > 1) or
     # `single_rule` (W == 1, no chunk rule).
     W = cache.gradient_chunk_size
-    f_seed = zero_lifted(Val(W), f)
-    x_seed = zero_lifted(Val(W), x)        # `NDualArray` partials reseeded in place per chunk
+    # Seeded through ONE aliasing cache and split, as the generic gradient sweep does. Two
+    # separate lifts give an array that `f` captures and `x` names independent partials blocks,
+    # so the basis direction seeded into `x` never reaches `f`'s view of the one storage: a
+    # closure doubling its capture before squaring `x` reported `diag(4, 8)` for `diag(8, 16)`.
+    # Sharing is the whole fix — `basis_lifted!!` below walks `x_seed` alone and reaches `f`'s
+    # leaf through it.
+    seed_vs = tangent(zero_lifted(Val(W), (f, x)))
+    f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
+    x_seed = Lifted{typeof(x),W}(x, seed_vs[2])  # partials reseeded in place per chunk
     cols(start_col) = ntuple(lane -> let slot = start_col + lane - 1
         slot <= total_dof ? slot : 0
     end, W)

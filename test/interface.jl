@@ -2068,6 +2068,20 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test Jf == Jr == [28.0 0.0; 1.0 1.0]
             end
+
+            # A callable whose captured array IS the input. Seeding the callable and the input
+            # separately gave the one storage two partials blocks, so the basis direction seeded
+            # into `x` never reached the callable's view of it and every column came back short:
+            # `diag(1, 2, 3)` for `x .= x .* x`, whose Jacobian is `diag(2x)`.
+            let
+                w_al = [1.0, 2.0, 3.0]
+                sc_al = FwdInPlaceScaler(w_al)
+                _, Jf_al = Mooncake.value_and_jacobian!!(
+                    Mooncake.prepare_derivative_cache(sc_al, w_al), sc_al, w_al
+                )
+                @test Jf_al == [2.0 0.0 0.0; 0.0 4.0 0.0; 0.0 0.0 6.0]
+                @test w_al == [1.0, 2.0, 3.0]
+            end
         end
 
         @testset "prepare_derivative_cache does not execute the function" begin
