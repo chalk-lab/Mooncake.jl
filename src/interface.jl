@@ -3487,6 +3487,30 @@ end
 
 # ── Cyclic family: threads the `IdDict` aliasing cache `c` ─────────────────────
 
+# Reaching one node twice means that graph shares it between two positions; the other graph must
+# share it at the same two positions, or the only way to finish the copy is to re-point one of them
+# — and for the input restore that is the CALLER's object graph. `Outer(p, q)` restored from a
+# snapshot prepared at `Outer(sh, sh)` came back with `p` at both fields, holding `q`'s contents,
+# and `q` detached. The prepared cache cannot represent this sharing, so refuse it. Both directions
+# are registered so the mismatch is caught while the inputs are being copied INTO the snapshot,
+# before the rule runs. Matching graphs (including cycles, where the repeat is the in-progress node
+# itself) cost one `===`.
+@inline function _same_destination(previous::P, dst::P) where {P}
+    previous === dst && return previous
+    return _throw_copy_sharing_error(P)
+end
+
+@noinline function _throw_copy_sharing_error(@nospecialize(P::Type))
+    throw(
+        PreparedCacheError(
+            "Prepared cache mismatch: a $P shared between two positions of the prepared storage " *
+            "is not shared between the corresponding positions of the value being copied (or the " *
+            "other way round). Aliasing inside an argument is part of the shape a cache is " *
+            "prepared for. Prepare a separate cache for this argument aliasing.",
+        ),
+    )
+end
+
 _copy_to_output!!(dst::Number, src::Number, ::IdDict) = src
 _copy_to_output!!(::Type, src::Type, ::IdDict) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict) = src
@@ -3497,8 +3521,10 @@ end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
     _check_copy_extent(dst, src)
     if !isbitstype(eltype(P))
-        haskey(c, src) && return c[src]::P
+        haskey(c, src) && return _same_destination(c[src]::P, dst)
+        haskey(c, dst) && _throw_copy_sharing_error(P)
         c[src] = dst
+        c[dst] = src
     end
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
@@ -3525,8 +3551,10 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
     nf = nfields(src)
     nf == 0 && return src
     if ismutable(src)
-        haskey(c, src) && return c[src]::P
+        haskey(c, src) && return _same_destination(c[src]::P, dst)
+        haskey(c, dst) && _throw_copy_sharing_error(P)
         c[src] = dst
+        c[dst] = src
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.

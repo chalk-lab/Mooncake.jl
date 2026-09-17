@@ -2600,6 +2600,40 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     fwd_many, (many, Mooncake.NoTangent()), (ms, dms)
                 )
             end
+
+            @testset "sharing a memoised node inside one argument" begin
+                # Sharing that `_mutable_tangent_paths` cannot see from the type — a mutable
+                # child reached through a reference-element array — is caught where the copy
+                # family memoises it. Without the guard the restore re-pointed the CALLER's
+                # graph to match the snapshot's: `[u, v]` prepared at `[w, w]` came back as
+                # `[u, u]` holding `v`'s contents, with `v` detached.
+                nested(x) = (x[1][1][1] += 1.0; sum(sum, x[1]) + sum(sum, x[2]))
+                seed_arg(x) = (x, Mooncake.zero_tangent(x))
+                w = [[1.0, 2.0]]
+                shared_cache = Mooncake.prepare_derivative_cache(nested, [w, w])
+                u, v = [[1.0, 2.0]], [[3.0, 4.0]]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    shared_cache, (nested, Mooncake.NoTangent()), seed_arg([u, v])
+                )
+                # Refused while the inputs were being copied into the snapshot, so they are
+                # untouched.
+                @test u == [[1.0, 2.0]]
+                @test v == [[3.0, 4.0]]
+                distinct_cache = Mooncake.prepare_derivative_cache(nested, [u, v])
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    distinct_cache, (nested, Mooncake.NoTangent()), seed_arg([w, w])
+                )
+                # Matching sharing goes through, leaves the argument's identities alone, and
+                # stays usable on the next call.
+                for _ in 1:2
+                    arg = [u, v]
+                    val, _ = Mooncake.value_and_derivative!!(
+                        distinct_cache, (nested, Mooncake.NoTangent()), seed_arg(arg)
+                    )
+                    @test val == 11.0
+                    @test arg[1] === u && arg[2] === v
+                    @test u == [[1.0, 2.0]] && v == [[3.0, 4.0]]
+                end
             end
 
             @testset "both modes refuse an input with no concrete representation" begin

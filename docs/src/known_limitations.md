@@ -142,6 +142,17 @@ arrays, or a `Dict` — nor for the fields of a struct. Finding the aliasing the
 the whole argument on every call, which costs 131 ms for a `Vector` of 100k arrays. Prepare a
 separate cache per aliasing pattern if your arguments are shaped that way.
 
+Some of what the type does not show is still caught while the arguments are copied into the cache's
+own storage, which does walk the graph: a mutable struct or a reference-element array shared
+between two positions of one graph and not of the other is refused there, before the rule runs.
+
+## Restoration of arguments a rule mutated
+
+Restoration puts back *contents*, not *bindings*. If `f` rebinds a field of a mutable argument
+(`s.v = 2 .* s.v` rather than `s.v .= 2 .* s.v`), the field is restored by copying the snapshot into
+the object `f` put there; the object that was in the field beforehand stays detached, holding
+whatever `f` did to it before the rebind.
+
 ## Mutable aliases involving `NoTangent` parents or globals
 
 Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
