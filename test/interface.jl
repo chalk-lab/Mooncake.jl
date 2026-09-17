@@ -1293,7 +1293,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
             @test CHUNK_ARRAY_EVAL_COUNT[] == 1
 
-            # Regression: _validate_prepared_cache must not allocate.
+            # Regression: _check_prepared_cache must not allocate.
             # length-5 vector: a single full-width (chunk_size=5) native chunk pass.
             x5 = collect(1.0:5.0)
             f5 = x -> sum(abs2, x)
@@ -1689,7 +1689,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test v491 ≈ sum(w491)
             @test g491[2].fields.w ≈ ones(4)
 
-            # A `SubArray`'s indices are non-differentiable too, and `_validate_prepared_cache`
+            # A `SubArray`'s indices are non-differentiable too, and `_check_prepared_cache`
             # cannot catch a change in them: both views have the same type and the same size.
             p491 = collect(1.0:6.0)
             fv491 = v -> sum(v)
@@ -1704,7 +1704,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # The refresh reads the CALL's non-differentiable state. A `NoDual` slot asserts the
             # position has no derivative, so a call-time value whose canonical dual DOES have one
             # must be refused here rather than reaching the dual IR's typeassert as a raw
-            # `TypeError`. `_validate_prepared_cache` cannot see it: both calls pass an `S`.
+            # `TypeError`. `_check_prepared_cache` cannot see it: both calls pass an `S`.
             s498 = Mooncake.prepare_derivative_cache(
                 fwd_abstract_field, FwdAbstractField(2, [1.0, 2.0, 3.0]); config=plain498
             )

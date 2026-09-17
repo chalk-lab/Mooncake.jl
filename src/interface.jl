@@ -215,7 +215,7 @@ function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
 end
 
 # Cache specs are compared again when a prepared cache is reused. The input type `T` is
-# encoded as a type parameter so that `_validate_prepared_cache` can read it at
+# encoded as a type parameter so that `_check_prepared_cache` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
 # a `DataType`-valued field would require.
 struct InputSpec{T,S}
@@ -397,7 +397,7 @@ end
 # prepared. If two arguments are the same object, their buffers must be too (the aliasing
 # invariant); if they are distinct, their buffers must be distinct or two gradients are summed
 # into one. Neither is detectable from types or sizes, so it is checked separately here.
-@generated function _validate_prepared_aliasing(tangents::Tuple, fx::Tuple)
+@generated function _check_prepared_aliasing(tangents::Tuple, fx::Tuple)
     return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
 
@@ -406,7 +406,7 @@ end
 # call with distinct primals writes each supplied tangent into it in turn, leaving both holding the
 # last. The opposite direction is CORRECT — distinct buffers each hold the caller's seed and the
 # aliased primal receives both — so the bidirectional check would refuse a valid forward call.
-@generated function _validate_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
+@generated function _check_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
     return Expr(:block, _alias_checks(tangents, false), :(return nothing))
 end
 
@@ -513,7 +513,7 @@ end
 # Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
 # repeated scalar is not aliasing. Sharing nested inside an immutable container is caught instead by
 # `_inputs_alias` at cache construction, where the traversal it needs is paid once; see
-# `_validate_prepared_aliasing` for why that traversal is too expensive to run per call.
+# `_check_prepared_aliasing` for why that traversal is too expensive to run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 #
@@ -572,7 +572,7 @@ end
 # catches sharing at any depth, and sharing with `f` — which that check never sees, as it is
 # passed the arguments alone. Cost is a full extra tangent set, so it runs once at cache
 # construction rather than per call; aliasing that appears only at call time is therefore not
-# caught, matching what `_validate_prepared_aliasing` accepts for reverse mode, for the same
+# caught, matching what `_check_prepared_aliasing` accepts for reverse mode, for the same
 # reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
 # held fixed, so one dof range covers every position and there is nothing to double-count.
 # Both counts read the SAME tangents: `shared_dof` is `dof(ts)`, one walk with one identity cache,
@@ -1120,12 +1120,12 @@ tangent values in `f` and `x`.
 # first method serves single directions and the second serves chunks.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     return __call_rule(cache.single_rule, fx)
 end
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     rule = cache.chunk_rule
     rule === nothing && throw(
         PreparedCacheError(
@@ -1183,9 +1183,9 @@ fields is not restored.
     cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     # Types and sizes match when only the aliasing differs, so the check above cannot see it.
-    _validate_prepared_forward_aliasing(cache.input_tangents, input_primals)
+    _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
     _check_repeated_arg_tangents(fx)
     input_friendly_tangents = tuple_map(last, fx)
     input_tangents = tuple_map(
@@ -1227,7 +1227,7 @@ end
     cache::FCache{R,Nothing,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
     # Only this method can answer the question: the friendly method converts INTO the prepared
@@ -1273,7 +1273,7 @@ end
     end
 end
 
-function _validate_jacobian_argument(x)
+function _check_jacobian_argument(x)
     x isa AbstractVector || throw(
         ArgumentError(
             "value_and_jacobian!! only supports AbstractVector inputs; got $(typeof(x))"
@@ -1294,7 +1294,7 @@ function _validate_jacobian_argument(x)
     return T
 end
 
-function _validate_jacobian_output(y, Tx)
+function _check_jacobian_output(y, Tx)
     y isa AbstractVector || throw(
         ArgumentError(
             "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
@@ -1363,7 +1363,7 @@ function _fcache_jacobian_packable!!(
             # cache-owned storage exactly as `J` does, and the next call on this cache overwrites
             # both. The docstring says so. Copying here costs the guarantee the allocation test pins.
             y = primal(output)
-            _validate_jacobian_output(y, T)
+            _check_jacobian_output(y, T)
             cached = Jref[]
             J = if cached === nothing || size(cached) != (length(y), total_dof)
                 Jref[] = zeros(T, length(y), total_dof)
@@ -1372,7 +1372,7 @@ function _fcache_jacobian_packable!!(
             end
         end
         # Read each lane's directional derivative straight out of the output's block, which
-        # `_validate_jacobian_output` has established is an `NDualArray`. Going through
+        # `_check_jacobian_output` has established is an `NDualArray`. Going through
         # `tangent(output, lane)` instead would materialize a fresh per-lane copy out of the
         # element-major block — an allocation per lane.
         ov = tangent(output)::NDualArray
@@ -1423,8 +1423,8 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
-    _validate_jacobian_argument(x)
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_jacobian_argument(x)
+    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
@@ -1484,7 +1484,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         # returns its mutated argument `y === x`, the restore would rewrite the value we return.
         # Same reason the `value_and_derivative!!` methods copy their output.
         y = _copy_output(primal(output))
-        Ty = _validate_jacobian_output(y, eltype(x))
+        Ty = _check_jacobian_output(y, eltype(x))
         J = zeros(Ty, length(y), total_dof)
         # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so
         # lanes past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
@@ -1513,13 +1513,13 @@ end
 @unstable @inline function value_and_jacobian!!(
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
-    _validate_jacobian_argument(x)
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_jacobian_argument(x)
+    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
     total_dof > 0 ||
         throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
     y_cache = cache.y_cache
-    Ty = _validate_jacobian_output(y_cache, eltype(x))
+    Ty = _check_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
     J = zeros(Ty, length(ȳ), total_dof)
     # Reverse mode restores any in-place mutation of `x` on the pullback, so — unlike the
@@ -1544,10 +1544,10 @@ end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f, x)
     # Reached only for inputs the methods above reject (`x` is not a dense
-    # `AbstractVector{<:IEEEFloat}`). `_validate_jacobian_argument` always throws
+    # `AbstractVector{<:IEEEFloat}`). `_check_jacobian_argument` always throws
     # a specific message here; the explicit throw documents that this fallback
     # never returns a value.
-    _validate_jacobian_argument(x)
+    _check_jacobian_argument(x)
     return throw(
         ArgumentError(
             "value_and_jacobian!! only supports dense AbstractVector{<:IEEEFloat} " *
@@ -1580,11 +1580,11 @@ end
 function value_and_derivative!!(
     cache::FCache{R,Nothing,FG,GW,CF,S}
 ) where {R,FG,GW,CF,S<:Tuple}
-    return _validate_prepared_cache(cache.input_specs, ())
+    return _check_prepared_cache(cache.input_specs, ())
 end
 
 function value_and_derivative!!(cache::FCache)
-    return _validate_prepared_cache(cache.input_specs, ())
+    return _check_prepared_cache(cache.input_specs, ())
 end
 
 #
@@ -1945,8 +1945,8 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _validate_prepared_cache(getfield(cache, :input_specs), fx)
-    _validate_prepared_aliasing(getfield(cache, :tangents), fx)
+    _check_prepared_cache(getfield(cache, :input_specs), fx)
+    _check_prepared_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2071,8 +2071,8 @@ value_and_gradient!!(cache, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _validate_prepared_cache(getfield(cache, :input_specs), fx)
-    _validate_prepared_aliasing(getfield(cache, :tangents), fx)
+    _check_prepared_cache(getfield(cache, :input_specs), fx)
+    _check_prepared_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2220,7 +2220,7 @@ end
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
     input_primals = (f, x...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
             workspace = _zero_tangents(input_primals)
@@ -2357,7 +2357,7 @@ end
     # too.
     tangent_type(F) === NoTangent ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
-    _validate_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     output = __call_rule(cache.single_rule, (lift(f, NoTangent()), lift(x, one(x))))
     y = primal(output)
     y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
@@ -2400,7 +2400,7 @@ function value_and_gradient!!(
     # Validate once, on the packable path only (the fallback validates in the generic
     # method).
     input_primals = (f, xs...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     f_seed_stored, arg_seeds, grad_bufs = seed
     # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
@@ -2471,7 +2471,7 @@ end
 # is all the per-call primal state the rule needs). Type-stable, allocation-free.
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
 function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
-    # `_validate_prepared_cache` only checks top-level sizes, so a structured input whose
+    # `_check_prepared_cache` only checks top-level sizes, so a structured input whose
     # NESTED array changed shape still reaches here. Check `size`, not just `length`: a
     # same-length reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the
     # stale cache-owned shape and run the rule on it — silently wrong for any f that depends
@@ -2514,7 +2514,7 @@ end
 # every non-differentiable part of a structured argument — a struct's `Int` field, a `SubArray`'s
 # indices — kept its prepare-time value for the life of the cache, and a cache prepared for
 # `sum(m.w[1:2])` answered THAT question when called with `k = 4`. Types and top-level sizes match,
-# so `_validate_prepared_cache` cannot see it. Rebuild the primal around the call's
+# so `_check_prepared_cache` cannot see it. Rebuild the primal around the call's
 # non-differentiable state instead, keeping the cache-owned differentiable buffers; every level
 # returns the object it was handed when nothing changed, so an unchanged call constructs nothing.
 # The V shapes mirror `_refresh_seed!`'s methods, and anything else `MethodError`s here rather than
@@ -2725,7 +2725,7 @@ function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
     input_primals = (f, xs...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
@@ -2809,7 +2809,7 @@ function _isbits_gradient!!(
     cache::FCache, f::F, xs::Tuple, gs::IsbitsGradSeed{W}
 ) where {F,W}
     input_primals = (f, xs...)
-    _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     total_dof = gs.total_dof
     templates = gs.templates
     native_gradients = _zero_tangents(input_primals)
@@ -2831,7 +2831,7 @@ end
 # Forward-over-reverse — Hessian-vector products (HVP)
 #
 
-@inline function _assert_matching_tangent_shape(primal, tangent)
+@inline function _check_matching_tangent_shape(primal, tangent)
     # Base's generic `axes(x) = map(oneto, size(x))` makes `applicable(axes, x)` true even
     # for a struct-shaped `Tangent` with no `size` method, so check `size` instead.
     if applicable(size, primal) && applicable(size, tangent)
@@ -3014,8 +3014,8 @@ true
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    _validate_prepared_cache(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
-    _assert_matching_tangent_shape(x1, v)
+    _check_prepared_cache(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
+    _check_matching_tangent_shape(x1, v)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
     )
@@ -3098,7 +3098,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
     x1 = only(x)
-    _validate_hessian_argument(x1)
+    _check_hessian_argument(x1)
     base = prepare_hvp_cache(f, x1; config)
     # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose
     # FoR rule's dual callables are width W, alongside the width-1 `base` used by
@@ -3138,7 +3138,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     )
 end
 
-function _validate_hessian_argument(x)
+function _check_hessian_argument(x)
     x isa AbstractVector || throw(
         ArgumentError(
             "Hessian computation only supports AbstractVector inputs; argument 1 has " *
@@ -3267,7 +3267,7 @@ H
     hb === nothing && _throw_not_hessian_cache()
     _check_hessian_input_aliasing(cache)
     buf, chunked = hb
-    T = _validate_hessian_argument(x1)
+    T = _check_hessian_argument(x1)
     H = buf.H
     g = buf.grad
     v = buf.v
@@ -3788,7 +3788,7 @@ end
 # The expected type T_i is extracted from the InputSpec{T_i,S_i} type parameter
 # at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
 # compile-time constant type — eliminating the runtime jl_types_equal call.
-@generated function _validate_prepared_cache(specs::Tuple, fx::Tuple)
+@generated function _check_prepared_cache(specs::Tuple, fx::Tuple)
     n = length(specs.parameters)
     m = length(fx.parameters)
     n == m || return :(_throw_prepared_cache_spec_error(:arity, 0, $n, $m))

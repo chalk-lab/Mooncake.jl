@@ -70,9 +70,9 @@ end
             @test tangent_type(fdata_type(tangent_type(P)), rdata_type(tangent_type(P))) ==
                 tangent_type(P)
         end
-        # _validate_union: primitive branch (Float64 is a primitive type).
+        # _check_union: primitive branch (Float64 is a primitive type).
         @test_throws InvalidFDataException tangent_type(Union{NoFData,Float64}, NoRData)
-        # _validate_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
+        # _check_union: non-FData with rdata_type != NoRData (Tangent carries rdata).
         @test_throws InvalidFDataException tangent_type(
             Union{NoFData,Tangent{@NamedTuple{x::Float64}}}, NoRData
         )
