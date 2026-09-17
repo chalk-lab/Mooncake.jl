@@ -1046,8 +1046,8 @@ function test_rrule(
     x_x̄ = let c = Mooncake._friendly_cache(x)
         Mooncake.tuple_map(x) do z
             z isa CoDual && return z
-            # `_zero_codual_cached` for every shape, `interface_only` included. It routes `Ptr`
-            # through `uninit_codual` itself, and `uninit_tangent` IS `zero_tangent` for
+            # `_zero_codual_cached` for every shape, `interface_only` included. It yields the
+            # `uninit` placeholder for `Ptr`, and `uninit_tangent` IS `zero_tangent` for
             # everything else -- so the old `interface_only` branch differed only in skipping the
             # cache, which handed two arguments over one primal independent fdata.
             return Mooncake._zero_codual_cached(z, c)

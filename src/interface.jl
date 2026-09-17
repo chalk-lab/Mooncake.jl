@@ -1785,10 +1785,10 @@ value_and_gradient!!(rule, f, x, y)
     return __value_and_gradient!!(rule, __create_coduals(fx)...)
 end
 
-# `zero_codual`'s own `Ptr` method is preserved: `zero_tangent(::Ptr)` throws, so the cached form
-# has to route pointers through `uninit_codual` exactly as the uncached one does.
+# `zero_tangent_internal(::Ptr)` already returns the bitcast placeholder `uninit_tangent` does, so
+# pointers need no method of their own here (the single-argument `zero_tangent(::Ptr)` throws, which
+# is why `zero_codual` does need one).
 @inline _zero_codual_cached(x, c::MaybeCache) = CoDual(x, zero_tangent_internal(x, c))
-@inline _zero_codual_cached(x::Ptr, ::MaybeCache) = uninit_codual(x)
 
 function __create_coduals(args)
     try
@@ -2405,7 +2405,6 @@ function value_and_gradient!!(
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
     # guaranteed by the packability gate, so this is a free isbits rewrap.
     f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
-    z = zero(T)
     total_dof = sum(length, xs)
     # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field
     # is the authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
@@ -2416,8 +2415,9 @@ function value_and_gradient!!(
     # pre-zeroing.
     local y
     if total_dof == 0
-        # Zero-DOF (empty) input: run the primal once so `y` is the true value, not a
-        # fabricated zero.
+        # Reachable: `sum(length, xs)` counts ELEMENTS while the seed is admitted on tangent
+        # dofs, and an `AbstractVector` subtype can carry a differentiable field besides its
+        # elements. Run the primal once so `y` is the true value rather than a fabricated zero.
         y = primal(value_and_derivative!!(cache, f_seed, arg_seeds...))
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
     end
