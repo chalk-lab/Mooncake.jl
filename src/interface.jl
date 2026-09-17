@@ -1067,7 +1067,9 @@ is shown by the cache.
         end
     end
     if config.friendly_tangents
-        input_tangents = _zero_tangents(fx)
+        # `input_ts` above is exactly this tuple, built for the dof count, and nothing has
+        # written to it since.
+        input_tangents = input_ts
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
         return FCache(
             rule,
