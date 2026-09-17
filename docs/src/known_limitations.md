@@ -116,6 +116,17 @@ compares a rule's constants against that rule's own arguments.
 Aliasing between *arguments* is a different matter and is supported: two arguments over one array
 share derivative storage, so both positions report the one accumulated gradient.
 
+### Conflicting forward tangents for one shared storage
+
+Positions that share one storage share one tangent, so supplying different tangents for them is
+ill-posed and only one direction can be carried. `value_and_derivative!!(cache, (f, df), (x, dx),
+…)` on a cache built with `friendly_tangents=false` refuses it with an `ArgumentError`. Two sibling
+entry points do not: with `friendly_tangents=true` the tangents are copied into prepared buffers
+that already share, so the last value written wins, and `value_and_derivative!!(rule, (f, df), (x,
+dx), …)` against a bare rule has no prepared tangent set to compare against. Both answer the
+ill-posed request silently, with the direction that happens to survive. Pass the same tangent object
+at every position the shared storage occupies, or use reverse mode, which accumulates into it.
+
 ### Reusing a prepared cache with different aliasing
 
 A prepared cache holds one derivative buffer per argument, so how the arguments alias each other is

@@ -50,11 +50,13 @@ struct FwdInPlaceScaler{V}
 end
 (h::FwdInPlaceScaler)(x) = (x.=(h.v .* x); x)
 
-# Two fields that may be the same array: aliasing inside ONE argument.
+# Two fields that may be the same array: aliasing inside ONE argument. Called, it is also a
+# callable each of whose fields can be one of the arguments — two shared leaves, not one.
 struct FwdAliasPair{A}
     p::A
     q::A
 end
+(h::FwdAliasPair)(a, b) = sum(h.p .* a) + sum(h.q .* b)
 
 # A differentiable array beside a non-differentiable `Int` that selects how much of it is read.
 # Passed as an ARGUMENT (a differentiable callable would leave the zero-allocation structured
@@ -1620,8 +1622,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # positions are different objects, so that scan passes, but they are one storage and
             # so one tangent. `zero_tangent` for the callable is the natural way to write "do not
             # perturb the function", and it silently returned 0.0 where the directional
-            # derivative is 2 * sum(d) * sum(cap) = 6.0. Only the non-friendly method needs the
-            # check; the friendly one converts into prepared buffers that already share.
+            # derivative is 2 * sum(d) * sum(cap) = 6.0. Only the non-friendly method can see it;
+            # see `_check_shared_input_tangents` for why the other two entry points cannot.
             mk_capturing(a) = y -> sum(y) * sum(a)
             cap_arr = [1.0, 2.0]
             d_cap = [1.0, 0.0]
@@ -1637,6 +1639,37 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 c_cap, (f_cap, Mooncake.Tangent((a=d_cap,))), (cap_arr, d_cap)
             )
             @test d_shared ≈ 2 * sum(d_cap) * sum(cap_arr)
+
+            # TWO shared leaves, one of them given matching tangents. The check tested only
+            # whether SOME sharing was present, so the matching leaf vouched for the conflicting
+            # one: `dq` reached the callable's copy and `[1.0]` the argument's, and the answer
+            # followed whichever the lift reached first — 2.0 at `dq = [0.0]` and 12.0 at
+            # `dq = [5.0]` for one well-posed direction of 4.0.
+            ap_a = [1.0]
+            ap_b = [1.0]
+            f_ap = FwdAliasPair(ap_a, ap_b)
+            c_ap = Mooncake.prepare_derivative_cache(
+                f_ap,
+                ap_a,
+                ap_b;
+                config=Mooncake.Config(; friendly_tangents=false, kwargs...),
+            )
+            for dq in ([0.0], [5.0])
+                dp = [1.0]  # `p` shared, exactly as the caller should
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    c_ap, (f_ap, Mooncake.Tangent((p=dp, q=dq))), (ap_a, dp), (ap_b, [1.0])
+                )
+            end
+            # Both leaves shared is well-posed and still answered.
+            dp_ap = [1.0]
+            dq_ap = [1.0]
+            _, d_ap = Mooncake.value_and_derivative!!(
+                c_ap,
+                (f_ap, Mooncake.Tangent((p=dp_ap, q=dq_ap))),
+                (ap_a, dp_ap),
+                (ap_b, dq_ap),
+            )
+            @test d_ap ≈ 2 * sum(dp_ap .* ap_a) + 2 * sum(dq_ap .* ap_b)
         end
 
         @testset "reused cache reads call-time non-differentiable state" begin

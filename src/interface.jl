@@ -449,13 +449,20 @@ end
     # before refusing. Both traversals sit behind the flag, so an ordinary call pays nothing.
     getfield(cache, :inputs_alias) || return nothing
     ts = _zero_tangents(input_primals)
-    _inputs_alias(dof(ts), ts, input_primals) || return nothing
-    # Two ways for the supplied tangents to mirror that sharing, and NEITHER test sees both.
-    # `_repeats_storage` finds one buffer under two array containers (`da` and `reshape(da)`) but
-    # cannot see through a struct field; the dof comparison finds a leaf reached twice through
-    # fields (a closure's capture) but does not dedupe a reshape on 1.10. Accept either.
-    _repeats_storage(input_tangents) && return nothing
+    shared_dof = dof(ts)
+    _inputs_alias(shared_dof, ts, input_primals) || return nothing
+    # `_zero_tangents` gives one tangent per shared storage, so `shared_dof` bounds how many dofs
+    # the supplied tangents may distinctly cover: any MORE and some shared leaf was given two
+    # tangent objects, of which the lift keeps whichever position it reaches first. Testing only
+    # that SOME sharing was present accepted that — a callable holding both arguments, with the
+    # first array's tangent shared and the second's conflicting, answered 2.0 or 12.0 by which
+    # direction the callable's copy carried, for a well-posed 4.0. FEWER dofs is one tangent
+    # reused across positions that do NOT share, which lifts to independent Vs and is correct.
     shared = dof(input_tangents, IdDict{Any,Any}())
+    shared > shared_dof && _throw_shared_input_tangent_error()
+    # One buffer under two array containers (`da` and `reshape(da)`, or an `Array` beside its
+    # backing `Memory`) leaves the counts equal, so `_repeats_storage` is what recognises it.
+    _repeats_storage(input_tangents) && return nothing
     summed = sum(t -> dof(t, IdDict{Any,Any}()), input_tangents; init=0)
     shared == summed && _throw_shared_input_tangent_error()
     return nothing
@@ -1200,8 +1207,12 @@ end
     _validate_prepared_cache(getfield(cache, :input_specs), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
-    # Only this method needs it: the friendly method converts INTO the prepared tangent buffers,
-    # which are built through one aliasing cache and so already share for aliased primals.
+    # Only this method can answer the question: the friendly method converts INTO the prepared
+    # tangent buffers, which are built through one aliasing cache, so two conflicting directions
+    # for one shared leaf are both written to the one buffer and the last wins — it never sees two
+    # tangent objects to compare. The rule-direct `(rule, (p, t)...)` method has no prepared tangent
+    # set to compare against either, and building one per call would cost a full extra tangent set
+    # on a path whose point is to skip the cache. Both gaps are in `known_limitations.md`.
     _check_shared_input_tangents(cache, input_primals, input_tangents)
 
     # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
