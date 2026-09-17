@@ -586,19 +586,20 @@ function _inputs_alias(shared_dof::Int, ts::Tuple, fx::Tuple)
     return @static VERSION >= v"1.11-rc4" ? _repeats_storage(ts) : _repeats_storage(fx)
 end
 
+# Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so the
+# same tangent at two positions is recognised as the case the aliasing cache already handles
+# correctly. `backing` is the STORAGE that has been claimed, so a different container over it is the
+# case `dof`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own tangent at
+# one position and the backing of an `Array` tangent at another.
+struct _StorageSeen
+    objs::IdDict{Any,Nothing}
+    backing::IdDict{Any,Nothing}
+end
+function _repeats_storage(x)
+    return _repeats_storage!(_StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x)
+end
+
 @static if VERSION >= v"1.11-rc4"
-    # Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so
-    # the same tangent at two positions is recognised as the case the aliasing cache already handles
-    # correctly. `backing` is the STORAGE that has been claimed, so a different container over it is
-    # the case `dof`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own
-    # tangent at one position and the backing of an `Array` tangent at another.
-    struct _StorageSeen
-        objs::IdDict{Any,Nothing}
-        backing::IdDict{Any,Nothing}
-    end
-    _repeats_storage(x) = _repeats_storage!(
-        _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
-    )
     _repeats_storage!(::_StorageSeen, ::Any) = false
 
     # Claim `store` for `x`. `true` if some other container already holds it.
@@ -658,13 +659,7 @@ else
     # different `_backing` for the one above — a reshaped array's TANGENT there does not alias its
     # parent's. Tangent-keyed detection would find nothing, so the sharing has to be read off the
     # PRIMALS, with the data address standing in for the `Memory` the version lacks.
-    struct _StorageSeen
-        objs::IdDict{Any,Nothing}
-        backing::IdDict{Any,Nothing}
-    end
-    _repeats_storage(x) = _repeats_storage!(
-        _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
-    )
+    #
     # Struct fields are reached BY TANGENT TYPE, not by walking every object's fields: this walk
     # covers the primals, which include `f`, and a closure capturing a module would otherwise drag
     # the whole module graph in. A differentiable struct is exactly one whose tangent is a
