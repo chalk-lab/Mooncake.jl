@@ -136,6 +136,29 @@ const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
 @testset "interface" begin
+    # Rule registries do not exercise prepared-cache conversion or seed admission.
+    @testset "complex friendly tangents" begin
+        z = 1.0 + 2.0im
+        dz = 0.3 - 0.7im
+        for x in (z, (z,))
+            f = x isa Tuple ? t -> abs2(t[1]) : abs2
+            cache = prepare_gradient_cache(
+                f, x; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            _, grad = value_and_gradient!!(cache, f, x)
+            @test grad[2] == (x isa Tuple ? (2z,) : 2z)
+        end
+        for f in (z -> z^2 + conj(z), z -> (z^2 + conj(z),))
+            cache = Mooncake.prepare_derivative_cache(
+                f, z; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            y, dy = Mooncake.value_and_derivative!!(cache, (f, NoTangent()), (z, dz))
+            expected = 2z * dz + conj(dz)
+            @test y == f(z)
+            @test (y isa Tuple ? only(dy) : dy) ≈ expected
+        end
+    end
+
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
         ([1.0, 1.0], x -> [sin(x), sin(2x)], 3.0),

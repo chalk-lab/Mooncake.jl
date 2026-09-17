@@ -53,6 +53,9 @@ end
 tangent_to_primal_internal!!(x::P, t::P, ::MaybeCache) where {P<:CF} = t
 primal_to_tangent_internal!!(t::P, x::P, ::MaybeCache) where {P<:CF} = x
 
+# Complex tangents are scalar values, not field-wise Tangent wrappers.
+friendly_tangent_cache(::CF) = FriendlyTangentCache{AsRaw}(nothing)
+
 _add_to_primal_internal(::MaybeCache, x::T, t::T, ::Bool) where {T<:CF} = x + t
 
 function _dot_internal(::MaybeCache, t::T, s::T) where {T<:CF}
