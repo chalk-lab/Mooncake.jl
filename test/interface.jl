@@ -2068,6 +2068,31 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             @test xd == x_mut0
 
+            # An `f` that mutates and THEN raises must leave the inputs restored too: the
+            # exception otherwise reaches the caller alongside a half-updated argument, and a
+            # retry (a shortened line search step, say) runs on it. Reverse mode is excluded by
+            # construction — it restores mutations on the pullback, which an exception in the
+            # forward sweep never reaches; see `known_limitations.md`.
+            x_throw = [10.0, 2.0, 3.0]
+            f_throw(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : sum(x .^ 2))
+            for friendly in (true, false)
+                tc = Mooncake.prepare_derivative_cache(
+                    f_throw,
+                    copy(x_mut0);
+                    config=Mooncake.Config(; friendly_tangents=friendly),
+                )
+                xt = copy(x_throw)
+                @test_throws DomainError Mooncake.value_and_derivative!!(
+                    tc, (f_throw, Mooncake.NoTangent()), (xt, [1.0, 0.0, 0.0])
+                )
+                @test xt == x_throw
+            end
+            f_throw_vec(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : x .^ 2)
+            jt = Mooncake.prepare_derivative_cache(f_throw_vec, copy(x_mut0))
+            xjt = copy(x_throw)
+            @test_throws DomainError Mooncake.value_and_jacobian!!(jt, f_throw_vec, xjt)
+            @test xjt == x_throw
+
             x_jac_parent = [x, y, 0.0]
             x_jac_view = @view x_jac_parent[1:2]
             f_view_jac = x -> [x[1]^2, x[1] + x[2]]

@@ -1166,9 +1166,10 @@ accommodate the case where internal Mooncake tangent types do not coincide with 
 provided by the user (in which case we translate between "friendly tangents" and internal
 tangents using cache storage).
 
-The arguments in `x` are returned to their original state: if `f` mutates them in place,
-they are restored from a cache-owned snapshot, so the inputs are not mutated. `f` itself is
-not snapshotted — a callable that mutates its own fields is not restored.
+The arguments in `x` are returned to their original state, whether the rule returns or
+raises: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the
+inputs are not mutated. `f` itself is not snapshotted — a callable that mutates its own
+fields is not restored.
 
 !!! info
     `cache` must be the output of [`prepare_derivative_cache`](@ref), and (fields of) `f`
@@ -1197,28 +1198,34 @@ not snapshotted — a callable that mutates its own fields is not restored.
     )
 
     # Snapshot the inputs into the cache buffer and restore from it after the rule runs, so
-    # an in-place-mutating `f` does not mutate the user's inputs.
+    # an in-place-mutating `f` does not mutate the user's inputs. The restore is in a
+    # `finally`: an `f` that mutates and then raises (a domain error inside a line search,
+    # say) otherwise hands the caller a half-updated argument along with the exception.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}` method.
-    c = IdDict()
-    output = __call_rule(
-        cache.single_rule, tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
-    )
-    output_primal = primal(output)
-    _, output_internal_tangent = unlift(output)
-    output_friendly_tangent = tangent_to_friendly!!(
-        friendly_tangent_cache(output_primal),
-        output_primal,
-        output_internal_tangent,
-        _friendly_cache((output_primal,)),
-    )
-    # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated
-    # arg); copy it out before the input restore below, or the restore overwrites the
-    # returned value with the original input. Free for scalar/immutable outputs; a copy only
-    # for mutable ones.
-    returned_primal = _copy_output(output_primal)
-    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-    return returned_primal, output_friendly_tangent
+    try
+        # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}`
+        # method.
+        c = IdDict()
+        output = __call_rule(
+            cache.single_rule,
+            tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents),
+        )
+        output_primal = primal(output)
+        _, output_internal_tangent = unlift(output)
+        output_friendly_tangent = tangent_to_friendly!!(
+            friendly_tangent_cache(output_primal),
+            output_primal,
+            output_internal_tangent,
+            _friendly_cache((output_primal,)),
+        )
+        # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated
+        # arg); copy it out before the `finally` restore, or the restore overwrites the
+        # returned value with the original input. Free for scalar/immutable outputs; a copy
+        # only for mutable ones.
+        return _copy_output(output_primal), output_friendly_tangent
+    finally
+        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+    end
 end
 
 @inline function value_and_derivative!!(
@@ -1258,14 +1265,17 @@ end
     # that shared mutable state must be shared too (see `lift(::MistyClosure)`).
     c = IdDict()
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
-    # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs.
+    # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs,
+    # on the throwing path as well; see the friendly method above.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    output = __call_rule(cache.single_rule, input_lifted)
-    # Copy the output primal out before the input restore: it may alias an in-place-mutated
-    # input, and the restore would otherwise overwrite the returned value with the original.
-    result = (_copy_output(primal(output)), last(unlift(output)))
-    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-    return result
+    try
+        output = __call_rule(cache.single_rule, input_lifted)
+        # Copy the output primal out before the restore: it may alias an in-place-mutated
+        # input, which the restore would otherwise overwrite with the original.
+        return _copy_output(primal(output)), last(unlift(output))
+    finally
+        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+    end
 end
 
 function _validate_jacobian_argument(x)
@@ -1473,33 +1483,36 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
     # compound) and once at the end, leaving `x` unchanged.
     x_snapshot = _copy_to_output!!(cache.input_snapshot[1], x)
-    output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
-    # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that returns
-    # its mutated argument `y === x`, and the final `_copy_to_output!!` would rewrite the value we
-    # return. Same reason the `value_and_derivative!!` methods copy their output.
-    y = _copy_output(primal(output))
-    Ty = _validate_jacobian_output(y, eltype(x))
-    J = zeros(Ty, length(y), total_dof)
-    # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so
-    # lanes past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
-    @inbounds for lane in 1:W
-        lane <= total_dof || break
-        J[:, lane] .= tangent(output, lane)
-    end
-    for start_col in (W + 1):W:total_dof
-        _copy_to_output!!(x, x_snapshot)
-        output = value_and_derivative!!(
-            cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
-        )
+    try
+        output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
+        # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that
+        # returns its mutated argument `y === x`, the restore would rewrite the value we return.
+        # Same reason the `value_and_derivative!!` methods copy their output.
+        y = _copy_output(primal(output))
+        Ty = _validate_jacobian_output(y, eltype(x))
+        J = zeros(Ty, length(y), total_dof)
+        # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so
+        # lanes past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
         @inbounds for lane in 1:W
-            col = start_col + lane - 1
-            col <= total_dof || break
-            J[:, col] .= tangent(output, lane)
+            lane <= total_dof || break
+            J[:, lane] .= tangent(output, lane)
         end
+        for start_col in (W + 1):W:total_dof
+            _copy_to_output!!(x, x_snapshot)
+            output = value_and_derivative!!(
+                cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
+            )
+            @inbounds for lane in 1:W
+                col = start_col + lane - 1
+                col <= total_dof || break
+                J[:, col] .= tangent(output, lane)
+            end
+        end
+        return y, J
+    finally
+        # Leave `x` unchanged whether or not a chunk threw (each chunk ran on the original).
+        _copy_to_output!!(x, x_snapshot)
     end
-    # Final restore so the input is left unchanged (each chunk ran on the original).
-    _copy_to_output!!(x, x_snapshot)
-    return y, J
 end
 
 @unstable @inline function value_and_jacobian!!(
@@ -2226,12 +2239,17 @@ end
         # storage, so an in-place `f` over a zero-dof input (e.g. `Vector{Int}`) would
         # otherwise mutate it.
         _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-        output = __call_rule(
-            cache.single_rule, tuple_map(lift, input_primals, native_gradients)
-        )
-        y = primal(output)
+        # `_finalize_gradient` reads the input primals, so it runs after the restore.
+        y = try
+            primal(
+                __call_rule(
+                    cache.single_rule, tuple_map(lift, input_primals, native_gradients)
+                ),
+            )
+        finally
+            _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+        end
         y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
         return _finalize_gradient(cache, y, native_gradients, input_primals)
     end
 
@@ -2262,38 +2280,46 @@ end
     # above), so the first iteration always runs and assigns `y`; its leading input restore
     # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
-    for start_slot in 1:W:total_dof
-        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
-        slots = ntuple(lane -> start_slot + lane - 1, W)
-        lanes = ntuple(
-            lane -> last(
-                unlift(basis_lifted!!(zero_lifted(Val(1), input_primals), (slots[lane],))),
-            ),
-            W,
-        )
-        vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
-        lifted = ntuple(i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields)
-        output = value_and_derivative!!(cache, lifted...)
-        if start_slot == 1
-            y = primal(output)
-            y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-        end
-        for lane in 1:W
-            slot = start_slot + lane - 1
-            slot <= total_dof || break
-            coeff = Float64(tangent(output, lane))
-            # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane,
-            # parallel to `native_gradients`; scatter each field's contribution directly (no
-            # input-major transpose).
-            native_gradients = tuple_map(
-                (g, lt) -> lt isa NoTangent ? g : increment!!(g, _scale(coeff, lt)),
-                native_gradients,
-                lanes[lane],
+    try
+        for start_slot in 1:W:total_dof
+            _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+            slots = ntuple(lane -> start_slot + lane - 1, W)
+            lanes = ntuple(
+                lane -> last(
+                    unlift(
+                        basis_lifted!!(zero_lifted(Val(1), input_primals), (slots[lane],)),
+                    ),
+                ),
+                W,
             )
+            vs = tangent(basis_lifted!!(zero_lifted(Val(W), input_primals), slots))
+            lifted = ntuple(
+                i -> Lifted{fieldtype(P, i),W}(input_primals[i], vs[i]), nfields
+            )
+            output = value_and_derivative!!(cache, lifted...)
+            if start_slot == 1
+                y = primal(output)
+                y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+            end
+            for lane in 1:W
+                slot = start_slot + lane - 1
+                slot <= total_dof || break
+                coeff = Float64(tangent(output, lane))
+                # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane,
+                # parallel to `native_gradients`; scatter each field's contribution directly (no
+                # input-major transpose).
+                native_gradients = tuple_map(
+                    (g, lt) -> lt isa NoTangent ? g : increment!!(g, _scale(coeff, lt)),
+                    native_gradients,
+                    lanes[lane],
+                )
+            end
         end
+    finally
+        # Leave the inputs unchanged whether or not a chunk threw (each chunk ran on the
+        # original).
+        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
     end
-    # Final restore so the inputs are left unchanged (each chunk ran on the original).
-    _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end

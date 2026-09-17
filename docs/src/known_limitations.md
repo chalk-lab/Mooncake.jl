@@ -153,6 +153,13 @@ Restoration puts back *contents*, not *bindings*. If `f` rebinds a field of a mu
 the object `f` put there; the object that was in the field beforehand stays detached, holding
 whatever `f` did to it before the rebind.
 
+The forward entry points (`value_and_derivative!!`, `value_and_jacobian!!` and the forward
+`value_and_gradient!!`) snapshot the arguments and restore them afterwards, including when the rule
+raises, so a failed call does not hand back a half-updated argument. Reverse mode restores mutations
+on the pullback instead, so an exception during the forward sweep leaves them in place: the
+arguments of a `value_and_pullback!!` or `value_and_gradient!!` call that threw are whatever the
+rule left behind. Copy them if you intend to retry.
+
 ## Mutable aliases involving `NoTangent` parents or globals
 
 Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
