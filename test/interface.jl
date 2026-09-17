@@ -13,6 +13,12 @@ using Mooncake:
     build_rrule,
     tangent_type
 
+# A first-order tangent need not support differentiation of itself.
+struct FirstOrderTangent
+    x::Float64
+end
+Mooncake.tangent_type(::Type{FirstOrderTangent}) = Mooncake.NoTangent
+
 struct SimplePair
     x1::Float64
     x2::Float64
@@ -2233,6 +2239,79 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test_throws ArgumentError value_and_hvp!!(
                     cache, sum, ([1.0, 0.0], [1.0]), x, y
                 )
+            end
+
+            @testset "shared storage admission" begin
+                # Rule registry rows call rules directly; this checks prepared-cache admission instead.
+                makers = (
+                    a -> (x -> x[1] * a[1] + x[2] * a[2]),
+                    a -> (x -> x[1]^2 * a[1] + x[2]^2 * a[2]),
+                )
+                for make_f in makers
+                    a = [1.0, 2.0]
+                    v = [0.3, -0.7]
+                    captures = @static VERSION >= v"1.11-rc4" ? (a, a.ref.mem) : (a,)
+                    for captured in captures
+                        f = make_f(captured)
+                        cache = prepare_hvp_cache(f, a)
+                        TestUtils._test_throws(
+                            ArgumentError, "supplied tangents do not share"
+                        ) do
+                            value_and_hvp!!(cache, f, v, a)
+                        end
+                    end
+                end
+                @static if VERSION >= v"1.11-rc4"
+                    a = [1.0, 2.0]
+                    b = [3.0, 4.0]
+                    f = let m = a.ref.mem, b = b, r = reshape(b, 2, 1)
+                        x -> x[1] * m[1] + x[2] * m[2] + sum(b) + sum(r)
+                    end
+                    cache = Mooncake.prepare_derivative_cache(f, a)
+                    TestUtils._test_throws(
+                        ArgumentError, "supplied tangents do not share"
+                    ) do
+                        Mooncake.value_and_derivative!!(
+                            cache, (f, Mooncake.zero_tangent(f)), (a, [0.3, -0.7])
+                        )
+                    end
+                    # Coherent sharing within a single input must remain usable.
+                    for (f, expected) in (
+                        (t -> t[1][1] * t[2][1] + t[1][2] * t[2][2], [0.6, -1.4]),
+                        (t -> t[1][1]^2 * t[2][1] + t[1][2]^2 * t[2][2], [1.8, -8.4]),
+                    )
+                        v = [0.3, -0.7]
+                        x, dx = (a, a.ref.mem), (v, v.ref.mem)
+                        _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, dx, x)
+                        @test hv[1] ≈ expected
+                        @test hv[2] ≈ expected
+                    end
+                end
+            end
+
+            @testset "storage admission uses first-order dofs" begin
+                x = [FirstOrderTangent(0.0)]
+                @test Mooncake.dof(x) == 1
+                TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
+                    Mooncake._check_tangent_storage!(IdDict(), (x, x), (copy(x), copy(x)))
+                end
+            end
+
+            @testset "shared wrapper with no differentiable storage" begin
+                a = [1.0, 2.0]
+                b = Ref([1, 2])
+                x = (a, b, b)
+                f = let a = a
+                    t -> sum(a) + sum(t[1]) + length(t[2][]) + length(t[3][])
+                end
+                df = Mooncake.zero_tangent(f)
+                v = first(df.fields)
+                v .= [0.3, -0.7]
+                dx = (v, Mooncake.zero_tangent(b), Mooncake.zero_tangent(b))
+                cache = Mooncake.prepare_derivative_cache(f, x)
+                y, dy = Mooncake.value_and_derivative!!(cache, (f, df), (x, dx))
+                @test y == 10.0
+                @test dy ≈ -0.8
             end
 
             @testset "HVP validates tangent shapes" begin

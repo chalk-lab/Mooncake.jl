@@ -456,11 +456,8 @@ end
 # it reaches first. `zero_tangent(f)` is the natural way to hit it, and it silently zeroes the
 # direction the caller asked about.
 #
-# Detected by dof count rather than by walking storage: `_repeats_storage` does not see through a
-# closure field (it reports no sharing even for the primals here), whereas seeding the tangents
-# through ONE cache counts a shared leaf once and summing them counts it per position. Runs only
-# when `inputs_alias` — computed once at cache construction — says the primals really do share, so
-# an ordinary call pays nothing.
+# Compare supplied storage against tangents seeded through ONE cache. Runs only when
+# `inputs_alias`, computed at cache construction, flags sharing, so an ordinary call pays nothing.
 @inline function _check_shared_input_tangents(
     cache, input_primals::Tuple, input_tangents::Tuple
 )
@@ -472,6 +469,12 @@ end
     ts = _zero_tangents(input_primals)
     shared_dof = dof(ts)
     _inputs_alias(shared_dof, ts, input_primals) || return nothing
+    @static if VERSION >= v"1.11-rc4"
+        # Canonical tangents share the primals' backing Memory. Compare the actual mapping:
+        # equal dof counts and unrelated sharing in reverse scratch cannot certify it.
+        # Coherent shared seeds remain supported; constructing them for HVP is separate work.
+        return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
+    end
     # `_zero_tangents` gives one tangent per shared storage, so `shared_dof` bounds how many dofs
     # the supplied tangents may distinctly cover: any MORE and some shared leaf was given two
     # tangent objects, of which the lift keeps whichever position it reaches first. Testing only
@@ -486,6 +489,44 @@ end
     _repeats_storage(input_tangents) && return nothing
     summed = sum(t -> dof(t, IdDict{Any,Any}()), input_tangents; init=0)
     shared == summed && _throw_shared_input_tangent_error()
+    return nothing
+end
+
+# Compare canonical and supplied tangent storage, not scalar values. This is one-directional:
+# distinct primals may use the same direction, but a shared primal cannot carry two directions.
+# Julia 1.10 keeps the count check above because its reshape tangents do not share backing storage.
+function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
+    isbitstype(T) && return nothing
+    if expected isa MistyClosureTangent
+        # The compiled dual callable is code, not derivative storage (as in `dof`).
+        return _check_tangent_storage!(
+            seen, expected.captures_tangent, supplied.captures_tangent
+        )
+    end
+    if expected isa AbstractArray
+        (isempty(expected) || eltype(expected) === NoTangent) && return nothing
+    end
+    if ismutable(expected)
+        key, value = _alias_key(expected), _alias_key(supplied)
+        if haskey(seen, key)
+            # A wrapper of integer or empty arrays can be mutable yet carry no dofs.
+            seen[key] === value || dof(expected) == 0 || _throw_shared_input_tangent_error()
+            return nothing
+        end
+        seen[key] = value
+    end
+    if expected isa AbstractArray
+        isbitstype(eltype(expected)) && return nothing
+        for i in eachindex(expected)
+            isassigned(expected, i) &&
+                _check_tangent_storage!(seen, expected[i], supplied[i])
+        end
+    else
+        for i in 1:fieldcount(T)
+            isdefined(expected, i) &&
+                _check_tangent_storage!(seen, getfield(expected, i), getfield(supplied, i))
+        end
+    end
     return nothing
 end
 
