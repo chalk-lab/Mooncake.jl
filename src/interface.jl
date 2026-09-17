@@ -6,13 +6,18 @@ struct ValueAndGradientReturnTypeError <: Exception
     msg::String
 end
 
-function throw_val_and_grad_ret_type_error(y)
+@noinline function throw_val_and_grad_ret_type_error(y; api::Symbol, eltypes::Type)
     throw(
         ValueAndGradientReturnTypeError(
-            "Computing a gradient requires the primal `f(x...)` to return a subtype of " *
-            "IEEEFloat. Instead, found a value of type $(typeof(y)).",
+            "$api requires the primal `f(x...)` to return a subtype of " *
+            "$eltypes. Instead, found a value of type $(typeof(y)).",
         ),
     )
+end
+
+@inline function _check_scalar_output(y; api::Symbol, eltypes::Type=IEEEFloat)
+    y isa eltypes || throw_val_and_grad_ret_type_error(y; api, eltypes)
+    return nothing
 end
 
 struct ValueAndPullbackReturnTypeError <: Exception
@@ -1316,31 +1321,53 @@ end
     end
 end
 
-function _check_jacobian_argument(x)
-    x isa AbstractVector || throw(
-        ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector inputs; got $(typeof(x))"
-        ),
-    )
+function _check_vector_argument(
+    x; api::Symbol, eltypes::Type=IEEEFloat, dense::Bool=false, allow_empty::Bool=false
+)
+    x isa AbstractVector ||
+        throw(ArgumentError("$api only supports AbstractVector inputs; got $(typeof(x))"))
     T = eltype(x)
-    T <: IEEEFloat || throw(
+    T <: eltypes || throw(
         ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector inputs with IEEEFloat " *
+            "$api only supports AbstractVector inputs with $eltypes " *
             "element types; got eltype $T",
         ),
     )
-    x isa DenseVector || throw(
+    !dense ||
+        x isa DenseVector ||
+        throw(ArgumentError("$api only supports dense vector inputs; got $(typeof(x))"))
+    allow_empty ||
+        !isempty(x) ||
+        throw(ArgumentError("$api requires a non-empty input vector"))
+    return T
+end
+
+function _check_vector_output(y; api::Symbol, eltypes::Type)
+    y isa AbstractVector ||
+        throw(ArgumentError("$api only supports AbstractVector outputs; got $(typeof(y))"))
+    T = eltype(y)
+    T <: eltypes || throw(
         ArgumentError(
-            "value_and_jacobian!! only supports dense vector inputs; got $(typeof(x))"
+            if isconcretetype(eltypes)
+                "$api requires input and output AbstractVector element types " *
+                "to match; got input eltype $eltypes and output eltype $T"
+            else
+                "$api only supports AbstractVector outputs with $eltypes " *
+                "element types; got eltype $T"
+            end,
         ),
     )
     return T
 end
 
 function _check_jacobian_output(y, Tx)
-    y isa AbstractVector || throw(
+    _check_vector_output(y; api=:value_and_jacobian!!, eltypes=IEEEFloat)
+    Ty = _check_vector_output(y; api=:value_and_jacobian!!, eltypes=Tx)
+    # An input can have a union eltype, for which a subtype bound also accepts narrower outputs.
+    Ty == Tx || throw(
         ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector outputs; got $(typeof(y))",
+            "value_and_jacobian!! requires input and output AbstractVector element types " *
+            "to match; got input eltype $Tx and output eltype $Ty",
         ),
     )
     # A `view`, a range, or any other wrapper vector has a struct lift over its parent as its
@@ -1359,19 +1386,6 @@ function _check_jacobian_output(y, Tx)
             "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
             "representation is a struct lift over the parent rather than a flat array. " *
             "Materialise the output first (e.g. `collect`).",
-        ),
-    )
-    Ty = eltype(y)
-    Ty <: IEEEFloat || throw(
-        ArgumentError(
-            "value_and_jacobian!! only supports AbstractVector outputs with IEEEFloat " *
-            "element types; got eltype $Ty",
-        ),
-    )
-    Ty == Tx || throw(
-        ArgumentError(
-            "value_and_jacobian!! requires input and output AbstractVector element types " *
-            "to match; got input eltype $Tx and output eltype $Ty",
         ),
     )
     return Ty
@@ -1466,11 +1480,9 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
 @unstable @inline function value_and_jacobian!!(
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
-    _check_jacobian_argument(x)
+    _check_vector_argument(x; api=:value_and_jacobian!!, dense=true)
     _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
-    total_dof > 0 ||
-        throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
     # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer
     # preallocated at prepare time (single same-eltype float vector in, float vector out).
     # Mirrors the zero-alloc `value_and_gradient!!`: seed standard-basis columns into the
@@ -1556,11 +1568,9 @@ end
 @unstable @inline function value_and_jacobian!!(
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
-    _check_jacobian_argument(x)
+    _check_vector_argument(x; api=:value_and_jacobian!!, dense=true)
     _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     total_dof = length(x)
-    total_dof > 0 ||
-        throw(ArgumentError("value_and_jacobian!! requires a non-empty input vector"))
     y_cache = cache.y_cache
     Ty = _check_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
@@ -1587,10 +1597,10 @@ end
 
 @unstable function value_and_jacobian!!(cache::Union{Cache,FCache}, f, x)
     # Reached only for inputs the methods above reject (`x` is not a dense
-    # `AbstractVector{<:IEEEFloat}`). `_check_jacobian_argument` always throws
+    # `AbstractVector{<:IEEEFloat}`). `_check_vector_argument` always throws
     # a specific message here; the explicit throw documents that this fallback
     # never returns a value.
-    _check_jacobian_argument(x)
+    _check_vector_argument(x; api=:value_and_jacobian!!, dense=true)
     return throw(
         ArgumentError(
             "value_and_jacobian!! only supports dense AbstractVector{<:IEEEFloat} " *
@@ -1717,7 +1727,7 @@ function __value_and_gradient!!(rule::R, fx::Vararg{CoDual,N}) where {R,N}
     __verify_sig(rule, fx_fwds)
     out, pb!! = __call_rule(rule, fx_fwds)
     y = primal(out)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    _check_scalar_output(y; api=:value_and_gradient!!)
     return y, tuple_map((f, r) -> tangent(fdata(tangent(f)), r), fx, pb!!(one(y)))
 end
 
@@ -2024,7 +2034,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
-    primal(y) isa IEEEFloat || throw_val_and_grad_ret_type_error(primal(y))
+    _check_scalar_output(primal(y); api=:prepare_gradient_cache)
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
     input_specs = map(_input_spec, fx)
     output_spec = _input_spec(primal(y))
@@ -2293,7 +2303,7 @@ end
         finally
             _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
         end
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        _check_scalar_output(y; api=:value_and_gradient!!)
         return _finalize_gradient(cache, y, native_gradients, input_primals)
     end
 
@@ -2343,7 +2353,7 @@ end
             output = value_and_derivative!!(cache, lifted...)
             if start_slot == 1
                 y = primal(output)
-                y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+                _check_scalar_output(y; api=:value_and_gradient!!)
             end
             for lane in 1:W
                 slot = start_slot + lane - 1
@@ -2403,7 +2413,7 @@ end
     _check_prepared_cache(getfield(cache, :input_specs), (f, x))
     output = __call_rule(cache.single_rule, (lift(f, NoTangent()), lift(x, one(x))))
     y = primal(output)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    _check_scalar_output(y; api=:value_and_gradient!!)
     native_gradients = (NoTangent(), last(unlift(output)))
     return _finalize_gradient(cache, y, native_gradients, (f, x))
 end
@@ -2481,7 +2491,7 @@ function value_and_gradient!!(
         end
         output = value_and_derivative!!(cache, f_seed, arg_seeds...)
         yv = primal(output)
-        yv isa IEEEFloat || throw_val_and_grad_ret_type_error(yv)
+        _check_scalar_output(yv; api=:value_and_gradient!!)
         y = yv
         off = 0
         @inbounds for i in 1:N
@@ -2788,7 +2798,7 @@ function _structured_gradient!!(
         _seed_chunk!(leaves, s, W, 0)
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+        _check_scalar_output(y; api=:value_and_gradient!!)
         _scatter_chunk!(leaves, out, s, W, 0)
         s += W
     end
@@ -2852,7 +2862,7 @@ function _isbits_gradient!!(
     # Peel the first (always full-width) chunk to keep the scalar `y` concretely typed.
     first_out = _isbits_chunk(cache, input_primals, templates, Val(W), 1)
     y = primal(first_out)
-    y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
+    _check_scalar_output(y; api=:value_and_gradient!!)
     native_gradients = _isbits_scatter(native_gradients, first_out, Val(W), 1)
     s = 1 + W
     while s <= total_dof
@@ -3134,7 +3144,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     N == 0 && throw(ArgumentError("prepare_hessian_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hessian_cache", N)
     x1 = only(x)
-    _check_hessian_argument(x1)
+    _check_vector_argument(x1; api=:prepare_hessian_cache, allow_empty=true)
     base = prepare_hvp_cache(f, x1; config)
     # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose
     # FoR rule's dual callables are width W, alongside the width-1 `base` used by
@@ -3172,23 +3182,6 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.output_spec,
         (_make_hessian_buffers(x1), chunked),
     )
-end
-
-function _check_hessian_argument(x)
-    x isa AbstractVector || throw(
-        ArgumentError(
-            "Hessian computation only supports AbstractVector inputs; argument 1 has " *
-            "type $(typeof(x))",
-        ),
-    )
-    T = eltype(x)
-    T <: IEEEFloat || throw(
-        ArgumentError(
-            "Hessian computation only supports AbstractVector inputs with IEEEFloat " *
-            "element types; argument 1 has eltype $T",
-        ),
-    )
-    return T
 end
 
 # Chunked forward-over-reverse Hessian sweep (single-arg). The Hessian is the Jacobian of
@@ -3303,7 +3296,7 @@ H
     hb === nothing && _throw_not_hessian_cache()
     _check_hessian_input_aliasing(cache)
     buf, chunked = hb
-    T = _check_hessian_argument(x1)
+    T = _check_vector_argument(x1; api=:value_gradient_and_hessian!!, allow_empty=true)
     H = buf.H
     g = buf.grad
     v = buf.v

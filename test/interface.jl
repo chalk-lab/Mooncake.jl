@@ -168,6 +168,33 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
+    # These validate API contracts, not differentiation rules, so the rule registry does not
+    # exercise them.
+    @testset "value checks" begin
+        api = :value_and_jacobian!!
+        @test Mooncake._check_vector_argument([1.0]; api) === Float64
+        @test Mooncake._check_vector_argument(Float64[]; api, allow_empty=true) === Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(Float64[]; api)
+        @test_throws ArgumentError Mooncake._check_vector_argument([1]; api)
+        @test_throws ArgumentError Mooncake._check_vector_argument(ones(2, 2); api)
+        v = view([1.0, 2.0], :)
+        @test Mooncake._check_vector_argument(v; api) === Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(v; api, dense=true)
+        @test Mooncake._check_scalar_output(1.0; api=:value_and_gradient!!) === nothing
+        @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake._check_scalar_output(
+            [1.0]; api=:value_and_gradient!!
+        )
+        @test Mooncake._check_vector_output([1.0]; api, eltypes=Float64) === Float64
+        @test_throws "to match" Mooncake._check_jacobian_output(
+            [1.0], Union{Float32,Float64}
+        )
+        @test_throws "to match" Mooncake._check_vector_output(
+            Float32[1]; api, eltypes=Float64
+        )
+        @test_throws "element types" Mooncake._check_vector_output(
+            [1]; api, eltypes=IEEEFloat
+        )
+    end
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
         ([1.0, 1.0], x -> [sin(x), sin(2x)], 3.0),
