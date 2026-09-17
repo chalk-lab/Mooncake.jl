@@ -110,6 +110,10 @@ mutable struct MaybeInitBox
     MaybeInitBox(x::Float64) = new(x)
 end
 
+mutable struct RebindBox{V}
+    w::V
+end
+
 const CHUNK_SCALAR_EVAL_COUNT = Ref(0)
 struct CountedChunkScalarCall end
 (::CountedChunkScalarCall)(x, y) = (CHUNK_SCALAR_EVAL_COUNT[] += 1; x * y + cos(x))
@@ -1355,6 +1359,27 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test TestUtils.count_allocs(Mooncake.value_and_gradient!!, cA, fA, Ax) == 0
             _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
             @test gA[2] ≈ 2 .* Ax
+
+            # An `f` that rebinds a field leaves the seed holding a V the prepare-time leaf
+            # table never saw, so only a width below the dof count exposes it: at width >=
+            # dof there is a single chunk and nothing later reads the orphan. Reusing one
+            # cache checks that the restore holds across calls too.
+            fr = b -> (b.w=2 .* b.w; sum(abs2, b.w))
+            w0 = [1.0, 2.0, 3.0]
+            for W in (1, 2, 3, 4)
+                cr_b = Mooncake.prepare_derivative_cache(
+                    fr,
+                    RebindBox(copy(w0));
+                    config=Mooncake.Config(;
+                        friendly_tangents=false, chunk_size=W, kwargs...
+                    ),
+                )
+                @test getfield(cr_b, :gradient_seed) isa Mooncake.StructuredGradSeed
+                for _ in 1:2
+                    _, gr_b = Mooncake.value_and_gradient!!(cr_b, fr, RebindBox(copy(w0)))
+                    @test gr_b[2].fields.w ≈ 8 .* w0
+                end
+            end
 
             # Primal refresh: prepare at one point, evaluate at another.
             cr = Mooncake.prepare_derivative_cache(

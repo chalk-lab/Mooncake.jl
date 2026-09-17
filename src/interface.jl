@@ -754,11 +754,13 @@ end
 # gradient leaf — no per-chunk allocation. Only differentiable dofs backed by real float
 # arrays qualify; any scalar/complex/ abstract dof makes the gather return `nothing` and the
 # input falls back to the generic path.
-struct StructuredGradSeed{Ff,As,Gs,Ls}
+struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
     f_seed::Ff
     arg_seeds::As
     grad_bufs::Gs
     leaves::Ls
+    # `(MutableDual, prepare-time fields)` pairs; see `_gather_resets`.
+    resets::Rs
 end
 
 # For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars):
@@ -1011,7 +1013,11 @@ is shown by the cache.
         _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
         if _leaves !== nothing
             gradient_seed = StructuredGradSeed(
-                zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves
+                zero_lifted(Val(W), fx[1]),
+                _arg_seeds,
+                _grad_bufs,
+                _leaves,
+                _cat_leaves(map(s -> _gather_resets(tangent(s)), _arg_seeds)),
             )
         elseif isbitstype(typeof(fx)) &&
             _only_real_scalar_dofs(typeof(tangent(zero_lifted(Val(W), fx))))
@@ -2070,6 +2076,27 @@ function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
 end
 _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/complex/abstract/uninit/mismatch
 
+# A `MutableDual` holds its per-field Vs in one rebindable `fields` NamedTuple, so an `f` that
+# REBINDS a field (`b.w = 2 .* b.w`) rather than mutating it in place leaves the seed holding a
+# V the prepare-time `leaves` never saw, and from chunk 2 onwards `_seed_chunk!` perturbs the
+# orphan. Snapshot the prepare-time `fields` and rebind before every chunk; re-gathering
+# `leaves` per chunk would instead cost this path its zero-allocation guarantee. Termination
+# needs no cycle guard: this walks exactly the nodes `_grad_leaves` did, which bails to the
+# generic path on any `MutableDual` it reaches twice, so a cycle never gets here.
+_gather_resets(::Nfwd.NDualArray) = ()
+_gather_resets(::NoDual) = ()
+_gather_resets(v::ImmutableDual) = _gather_resets(v.fields)
+_gather_resets(v::MutableDual) = ((v, v.fields), _gather_resets(v.fields)...)
+_gather_resets(v::Tuple) = _cat_leaves(map(_gather_resets, v))
+_gather_resets(v::NamedTuple) = _gather_resets(values(v))
+
+@inline _restore_resets!(::Tuple{}) = nothing
+@inline function _restore_resets!(rs::Tuple)
+    md, fields = first(rs)
+    setfield!(md, :fields, fields)
+    return _restore_resets!(Base.tail(rs))
+end
+
 function _gather_arg_leaves(arg_seeds::Tuple, grad_bufs::Tuple)
     dict = IdDict{Any,Any}()
     return _cat_leaves(
@@ -2646,6 +2673,8 @@ function _structured_gradient!!(
     local y
     s = 1
     while s <= total_dof
+        # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
+        _restore_resets!(seed.resets)
         # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
         # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
         # callable) — and an `f` that mutates a non-differentiable argument would otherwise carry
