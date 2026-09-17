@@ -575,14 +575,12 @@ end
 # caught, matching what `_validate_prepared_aliasing` accepts for reverse mode, for the same
 # reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
 # held fixed, so one dof range covers every position and there is nothing to double-count.
-# Per-position tangents come from `zero_tangent_internal`, as `_zero_tangents` uses for the shared
-# count this is compared against. The single-argument `zero_tangent` is a different contract — it
-# throws for a `Ptr` rather than returning the documented placeholder — so using it here refused an
-# input the rest of the pipeline supports.
+# Both counts read the SAME tangents: `shared_dof` is `dof(ts)`, one walk with one identity cache,
+# while `dof` per element starts a fresh cache and so counts a shared leaf once per position.
+# Rebuilding a tangent set per argument gives the same two numbers and allocated 1.6 MB on a pair of
+# 100k-element vectors.
 function _inputs_alias(shared_dof::Int, ts::Tuple, fx::Tuple)
-    shared_dof !=
-    sum(x -> dof(zero_tangent_internal(x, _friendly_cache((x,)))), fx; init=0) &&
-        return true
+    shared_dof != sum(dof, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
     # they do not, so that version reads it off the primals instead; see `_repeats_storage!`.
     return @static VERSION >= v"1.11-rc4" ? _repeats_storage(ts) : _repeats_storage(fx)
