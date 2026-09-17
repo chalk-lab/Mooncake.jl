@@ -41,3 +41,16 @@ Consequently, this policy represents a decision to tradeoff support for a range 
 In the JuliaGaussianProcesses ecosystem, we had a loosely-defined policy of keeping support for an older version until we ran into a large problem which could not be fixed easily, at which point we would drop support.
 While this sounds appealing, in practice it makes it hard to know exactly when to drop support for a particular version of Julia, increases the burden for maintainers, and makes it hard for users to know exactly what to expect.
 Allowing installation on a best-effort basis does not extend this official support commitment.
+
+# Scope of differentiation rules
+
+Requests for differentiation rules beyond Julia Base are outside the official scope of `Mooncake.jl`.
+For historical reasons, we still maintain some package extensions within `Mooncake.jl`.
+We accept only bug fixes for their rules and will move these extensions out of the package in the future.
+
+New rules can be provided as package extensions in third-party libraries, allowing the target functions and their rules to be maintained together.
+These third-party extensions are separate from `Mooncake.jl`, and we do not support them.
+
+Support for mutation allows `Mooncake.jl` to differentiate most numerical Julia code without hand-written rules.
+Unsupported operations generally fail explicitly.
+The [known limitations](docs/src/known_limitations.md) describe exceptions and the boundaries of supported behaviour.

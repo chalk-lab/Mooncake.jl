@@ -2,6 +2,7 @@ module MooncakeChainRulesExt
 
 using ChainRules, LinearAlgebra, Mooncake
 using Base: IEEEFloat
+using LinearAlgebra: BlasFloat, BlasReal
 
 import Mooncake:
     @from_rrule,
@@ -13,7 +14,10 @@ import Mooncake:
     NDualArray,
     MinimalCtx,
     NoRData,
+    ReverseMode,
+    arrayify,
     frule!!,
+    increment_densified_tangent!!,
     primal,
     rrule!!,
     tangent,
@@ -71,5 +75,26 @@ function rrule!!(::CoDual{typeof(exp)}, X::CoDual{Matrix{P}}) where {P<:IEEEFloa
 end
 
 @from_rrule DefaultCtx Tuple{typeof(svd),AbstractMatrix{<:IEEEFloat}}
+
+# These spectral rules cover first-order reverse mode without keyword arguments.
+@from_rrule DefaultCtx Tuple{typeof(svdvals),Matrix{<:BlasFloat}}
+
+# ChainRules' dense eigvals rule folds independent triangle cotangents at symmetric inputs.
+@is_primitive DefaultCtx ReverseMode Tuple{
+    typeof(eigvals),Symmetric{<:BlasReal,<:StridedMatrix}
+}
+
+function rrule!!(
+    ::CoDual{typeof(eigvals)}, A::CoDual{<:Symmetric{<:BlasReal,<:StridedMatrix}}
+)
+    y, back = ChainRules.rrule(eigvals, primal(A))
+    _, dA = arrayify(A)
+    dy = zero(y)
+    function eigvals_pullback(::NoRData)
+        increment_densified_tangent!!(dA, back(dy)[2])
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy), eigvals_pullback
+end
 
 end

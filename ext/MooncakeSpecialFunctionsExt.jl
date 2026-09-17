@@ -250,6 +250,185 @@ function gamma_inc_partials(a::T, x::T, y) where {T<:Union{Float16,Float32}}
     return gamma_inc_partials(aw, xw, gamma_inc(aw, xw))
 end
 
+# NIST Digital Library of Mathematical Functions, incomplete beta expansions:
+# https://dlmf.nist.gov/8.17.E7 (series), https://dlmf.nist.gov/8.17.E22
+# and https://dlmf.nist.gov/8.17.E23 (continued fraction and coefficients).
+# Shapes must be finite and positive; endpoints use one-sided first derivatives.
+# The fourth argument remains 1-x under differentiation; nonconvergence throws.
+function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:IEEEFloat}
+    any(isnan, (a, b, x, y)) && return (T(NaN), T(NaN), T(NaN))
+    (isfinite(a) && isfinite(b) && a > 0 && b > 0) ||
+        throw(DomainError((a, b), "beta_inc derivatives require finite positive shapes"))
+    if iszero(x)
+        D = if a == 1
+            b
+        elseif a < 1
+            T(Inf)
+        else
+            zero(T)
+        end
+        return zero(T), zero(T), D
+    elseif iszero(y)
+        D = if b == 1
+            a
+        elseif b < 1
+            T(Inf)
+        else
+            zero(T)
+        end
+        return zero(T), zero(T), D
+    end
+    # Choose the faster continued fraction (DLMF 8.17(v)).
+    reflect = x > (a+1)/(a+b+2)
+    if reflect
+        a, b, x, y = b, a, y, x
+    end
+    lx, ly = x < y ? (log(x), log1p(-x)) : (log1p(-y), log(y))
+    lb = logbeta(a, b)
+    D = exp((a-1)*lx + (b-1)*ly - lb)
+    tol = 8eps(T)
+    converged = false
+    local ga, gb, lh
+    # Factor out a in the power series so small shape partials do not cancel.
+    if a <= 1 && x <= 0.5 && b*x <= 1
+        u, ub = one(T), zero(T)
+        s, sa, sb = zero(T), zero(T), zero(T)
+        for n in 1:100_000
+            ub = ((n-b)*ub-u)*x/n
+            u *= (n-b)*x/n
+            t, ta, tb = u/(a+n), (n/(a+n))*(u/(a+n)), ub/(a+n)
+            s += t
+            sa += ta
+            sb += tb
+            if abs(t) <= tol*abs(s) && abs(ta) <= tol*abs(sa) && abs(tb) <= tol*abs(sb)
+                h = 1+a*s
+                ga = lx + digamma(a+b+1)-digamma(a+1)+sa/h
+                # A midpoint expansion avoids cancellation in the digamma difference.
+                db = if a < sqrt(sqrt(eps(T)))*(b+1)
+                    mid = b+1+a/2
+                    a*(trigamma(mid)+a^2*polygamma(3, mid)/24)
+                else
+                    digamma(a+b+1)-digamma(b+1)
+                end
+                gb = db+a*sb/h
+                lh = log1p(a*s) - b*ly
+                converged = true
+                break
+            end
+        end
+    else
+        c = one(T)
+        d = inv(1 - (a+b)*x/(a+1))
+        h = d
+        ca, cb = zero(T), zero(T)
+        da, db = d*x*(1-b)/(a+1)^2, d*x/(a+1)
+        ha, hb = da, db
+        for n in 2:100_000
+            m = n ÷ 2
+            if iseven(n)
+                r = (m/(a+2m))*((b-m)/(a+2m-1))*x
+                ra = -r*(inv(a+2m-1)+inv(a+2m))
+                rb = (m/(a+2m))*x/(a+2m-1)
+            else
+                r = -((a+m)/(a+2m))*((a+b+m)/(a+2m+1))*x
+                ra = r*(inv(a+m)+inv(a+b+m)-inv(a+2m)-inv(a+2m+1))
+                rb = -((a+m)/(a+2m))*x/(a+2m+1)
+            end
+            dn = inv(1+r*d)
+            da, db = -dn*d*(ra+r*da), -dn*d*(rb+r*db)
+            d = dn
+            cn = 1+r/c
+            ca, cb = (ra-r*ca)/(c*cn), (rb-r*cb)/(c*cn)
+            c = cn
+            delta = c*d
+            dha, dhb = ca+da, cb+db
+            ha += dha
+            hb += dhb
+            h *= delta
+            # Integer shapes can terminate the fraction before its derivatives.
+            if abs(delta-1) <= tol && abs(dha) <= tol*abs(ha) && abs(dhb) <= tol*abs(hb)
+                ga = lx + digamma(a+b+1) - digamma(a+1) + ha
+                gb = ly + digamma(a+b+1) - digamma(b+1) + hb
+                lh = log(h)
+                converged = true
+                break
+            end
+        end
+    end
+    converged || error("beta_inc derivatives did not converge")
+    p = reflect ? pq[2] : pq[1]
+    # Shift digamma away from zero and combine reciprocal terms before scaling.
+    A, B = p*ga - p/(a+b), p*gb + (p*(a/(a+b)))/b
+    if p < floatmin(T)
+        lp = a*lx+b*ly-lb+lh-log(a)
+        A = copysign(exp(lp+log(abs(ga))), ga) - exp(lp-log(a+b))
+        B = copysign(exp(lp+log(abs(gb))), gb) + exp(lp+log(a/(a+b))-log(b))
+    end
+    return reflect ? (-B, -A, D) : (A, B, D)
+end
+
+function beta_inc_partials(a::T, b::T, x::T, pq) where {T<:IEEEFloat}
+    return beta_inc_partials(a, b, x, 1-x, pq)
+end
+
+function beta_inc_partials(a::T, b::T, x::T, pq) where {T<:Union{Float16,Float32}}
+    values = widen.((a, b, x))
+    return beta_inc_partials(values..., beta_inc(values...))
+end
+
+function beta_inc_partials(a::T, b::T, x::T, y::T, pq) where {T<:Union{Float16,Float32}}
+    values = widen.((a, b, x, y))
+    return beta_inc_partials(values..., beta_inc(values...))
+end
+
+for f in (beta_inc, SpecialFunctions._beta_inc)
+    @eval @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,IEEEFloat,IEEEFloat}
+    @eval @is_primitive DefaultCtx Tuple{typeof($f),IEEEFloat,IEEEFloat,IEEEFloat,IEEEFloat}
+end
+
+function frule!!(
+    _f::Lifted{F,Nw},
+    _a::Lifted{T,Nw},
+    _b::Lifted{S,Nw},
+    _x::Lifted{U,Nw},
+    _y::Vararg{Lifted{<:IEEEFloat,Nw},N},
+) where {
+    F<:Union{typeof(beta_inc),typeof(SpecialFunctions._beta_inc)},
+    Nw,
+    T<:IEEEFloat,
+    S<:IEEEFloat,
+    U<:IEEEFloat,
+    N,
+}
+    dy = primal(_f)(promote(tangent(_a), tangent(_b), tangent(_x), map(tangent, _y)...)...)
+    y = map(d -> d.value, dy)
+    return Lifted{typeof(y),Nw}(y, dy)
+end
+
+function rrule!!(
+    _f::CoDual{<:Union{typeof(beta_inc),typeof(SpecialFunctions._beta_inc)}},
+    _a::CoDual{T},
+    _b::CoDual{S},
+    _x::CoDual{U},
+    _y::Vararg{CoDual{<:IEEEFloat},N},
+) where {T<:IEEEFloat,S<:IEEEFloat,U<:IEEEFloat,N}
+    a, b, x = primal(_a), primal(_b), primal(_x)
+    y = isempty(_y) ? 1-x : primal(only(_y))
+    pq = primal(_f)(a, b, x, map(primal, _y)...)
+    A, B, D = beta_inc_partials(promote(a, b, x, map(primal, _y)...)..., pq)
+    function beta_inc_pb!!(dpq)
+        d = typeof(A)(dpq[1]) - typeof(A)(dpq[2])
+        da = T(nan_tangent_guard(d, A*d))
+        db = S(nan_tangent_guard(d, B*d))
+        dx = nan_tangent_guard(d, D*d)
+        isempty(_y) && return NoRData(), da, db, U(dx)
+        return NoRData(),
+        da, db, x <= y ? U(dx) : zero(U),
+        typeof(y)(x <= y ? zero(dx) : -dx)
+    end
+    return zero_fcodual(pq), beta_inc_pb!!
+end
+
 @is_primitive DefaultCtx Tuple{typeof(gamma_inc),IEEEFloat,IEEEFloat,Integer}
 
 function frule!!(
@@ -660,42 +839,24 @@ end
     )
 end
 
-# beta_inc(a, b, x) = (I_x(a,b), 1 - I_x(a,b)) — regularized incomplete beta function.
-# Implements the x-partial: ∂I_x(a,b)/∂x = x^(a-1)·(1-x)^(b-1) / B(a,b)  (the Beta PDF).
-# Derivatives w.r.t. the shape parameters a, b are not implemented; callers that promote
-# Float64 shape params to NDual (zero partials) get the correct result, but differentiating
-# w.r.t. a or b directly will give wrong answers.
-
-# Case: a and b are plain Reals (not NDual), only x varies.
-function SpecialFunctions.beta_inc(a::Real, b::Real, x::NDual{T,N}) where {T<:IEEEFloat,N}
-    av, bv, xv = T(a), T(b), x.value
-    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
-    d_dx = exp(
-        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
-    )
-    return (
-        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
-        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
-    )
-end
-
-# Case: all three args are NDual (e.g. when StatsFuns promotes Float64 shape params).
-# Only the x-partial is computed; zero-partial promoted shape parameters are supported,
-# but active shape-parameter tangents must fail loudly rather than being ignored.
-function SpecialFunctions.beta_inc(
-    a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}
-) where {T<:IEEEFloat,N}
-    _ndual_partials_are_zero(a.partials) || _throw_ndual_notimplemented(:beta_inc, :a)
-    _ndual_partials_are_zero(b.partials) || _throw_ndual_notimplemented(:beta_inc, :b)
-    av, bv, xv = a.value, b.value, x.value
-    Iv, Qv = SpecialFunctions.beta_inc(av, bv, xv)
-    d_dx = exp(
-        (av - 1) * log(xv) + (bv - 1) * log(1 - xv) - SpecialFunctions.logbeta(av, bv)
-    )
-    return (
-        NDual{T,N}(Iv, ntuple(k -> d_dx * x.partials[k], Val(N))),
-        NDual{T,N}(Qv, ntuple(k -> -d_dx * x.partials[k], Val(N))),
-    )
+function SpecialFunctions._beta_inc(
+    a::NDual{T,N}, b::NDual{T,N}, x::NDual{T,N}, _y::Vararg{NDual{T,N},M}
+) where {T<:IEEEFloat,N,M}
+    y = isempty(_y) ? 1-x : only(_y)
+    av, bv, xv, yv = a.value, b.value, x.value, y.value
+    values = (av, bv, xv, map(t -> t.value, _y)...)
+    pq = beta_inc(values...)
+    A, B, D = beta_inc_partials(values..., pq)
+    dp = ntuple(Val(N)) do k
+        adot, bdot = a.partials[k], b.partials[k]
+        seed = xv <= yv ? x.partials[k] : -y.partials[k]
+        T(
+            nan_tangent_guard(adot, A*adot) +
+            nan_tangent_guard(bdot, B*bdot) +
+            nan_tangent_guard(seed, D*seed),
+        )
+    end
+    return NDual{T,N}(pq[1], dp), NDual{T,N}(pq[2], map(-, dp))
 end
 
 end

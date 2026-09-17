@@ -189,15 +189,17 @@ function benchmark_rules!!(
         function run_case(n, args)
             @info "$n / $(length(test_cases))", _typeof(args)
             suite = Dict()
+            coduals = map(x -> x isa CoDual ? x : zero_codual(x), args)
 
             # Benchmark primal.
             @info "Primal"
             primals = map(x -> x isa CoDual ? primal(x) : x, args)
             include_other_frameworks && GC.gc(true)
             suite["primal"] = Chairmarks.benchmark(
-                () -> primals,
-                primals -> (primals[1], _deepcopy(primals[2:end])),
-                (a -> a[1]((a[2]...))),
+                # CoDual preserves type-valued arguments for static dispatch.
+                () -> coduals,
+                xs -> (xs[1], _deepcopy(xs[2:end])),
+                a -> primal(a[1])(map(primal, a[2])...),
                 # With evals=1 and seconds=1, Chairmarks collects thousands of samples.
                 # Some benchmarks (e.g. gp_lml) allocate hundreds of KiB per call, so
                 # without GC intervention, garbage accumulates across samples until the GC
@@ -214,7 +216,6 @@ function benchmark_rules!!(
             # Benchmark AD via Mooncake.
             @info "Mooncake"
             rule = Mooncake.build_rrule(args...)
-            coduals = map(x -> x isa CoDual ? x : zero_codual(x), args)
             copy_coduals(x, xs...) = (x, _deepcopy(xs)...)
             to_benchmark(rule, copy_coduals(coduals...)...)
             include_other_frameworks && GC.gc(true)

@@ -11,11 +11,13 @@ sr(n::Int) = StableRNG(n)
     @testset for (perf_flag, is_primitive, f, x...) in vcat(
         map([Float64, Float32]) do P
             cases = Any[
-                (:allocs, false, xlogx, P(1.1)),
+                (:allocs, true, xlogx, P(1.1)),
                 (:allocs, true, xlogy, P(0.3), P(1.2)),
                 (:allocs, true, xlogy, P(0), P(3)),
                 (:allocs, true, xlogy, P(0), 3),
-                (:allocs, false, xlog1py, P(0.3), -P(0.5)),
+                (:allocs, true, xlog1py, P(0.3), -P(0.5)),
+                (:allocs, true, xlog1py, P(0), -P(0.5)),
+                (:allocs, true, xlog1py, P(0), 3),
                 (:allocs, false, xexpx, -P(0.5)),
                 (:allocs, true, xexpy, P(1.0), -P(0.7)),
                 (:allocs, true, xexpy, P(0), P(2)),
@@ -123,11 +125,33 @@ sr(n::Int) = StableRNG(n)
     end
 
     @testset "zero multipliers and inactive directions" begin
+        # Finite differences cannot check the infinite boundary slope or inactive lanes.
+        for T in (Float16, Float32, Float64), x in (zero(T), -zero(T), nextfloat(zero(T)))
+            d = log(x) + one(T)
+            z, pb = Mooncake.rrule!!(Mooncake.zero_fcodual(xlogx), Mooncake.zero_fcodual(x))
+            @test isequal(Mooncake.primal(z), xlogx(x))
+            @test pb(one(T))[2] == d
+            @test pb(zero(T))[2] == zero(T)
+            for dx in (one(T), -one(T), zero(T))
+                expected = iszero(dx) ? zero(T) : d * dx
+                result = Mooncake.frule!!(Mooncake.zero_dual(xlogx), Mooncake.lift(x, dx))
+                @test isequal(Mooncake.primal(result), xlogx(x))
+                @test only(Mooncake.tangent(result).partials) == expected
+                for N in (1, 8)
+                    result = xlogx(NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)))
+                    @test isequal(result.value, xlogx(x))
+                    @test result.partials == ntuple(k -> isodd(k) ? expected : zero(T), N)
+                end
+            end
+        end
         for T in (Float16, Float32, Float64),
             (f, x, y, a, b) in (
                 (xlogy, 0, 3, log(T(3)), 0),
                 (xlogy, 0, 0, -Inf, 0),
                 (xlogy, 0, Inf, Inf, 0),
+                (xlog1py, 0, -0.5, log1p(T(-0.5)), 0),
+                (xlog1py, 0, -1, -Inf, 0),
+                (xlog1py, 0, Inf, Inf, 0),
                 (xexpy, 0, 2, exp(T(2)), 0),
                 (xexpy, 0, 1000, Inf, 0),
                 (xexpy, 1, -Inf, 0, 0),
@@ -146,18 +170,28 @@ sr(n::Int) = StableRNG(n)
                 )
                 @test isequal(Mooncake.primal(result), f(x, y))
                 @test only(Mooncake.tangent(result).partials) == expected
-                result = f(NDual(x, (dx,)), NDual(y, (dy,)))
-                @test isequal(result.value, f(x, y))
-                @test only(result.partials) == expected
+                for N in (1, 8)
+                    result = f(
+                        NDual(x, ntuple(k -> isodd(k) ? dx : zero(T), N)),
+                        NDual(y, ntuple(k -> isodd(k) ? dy : zero(T), N)),
+                    )
+                    @test isequal(result.value, f(x, y))
+                    @test result.partials == ntuple(k -> isodd(k) ? expected : zero(T), N)
+                end
             end
             @test only(f(NDual(x, (one(T),)), y).partials) == a
             @test only(f(x, NDual(y, (one(T),))).partials) == b
         end
-        for f in (xlogy, xexpy)
+        for f in (xlogy, xlog1py, xexpy)
             test_rule(sr(123), f, 0.0f0, 2.0; is_primitive=true, perf_flag=:allocs)
             for (x, y) in ((0.0f0, 2.0), (0.3, 1.2f0))
-                a = f === xlogy ? log(y) : exp(y)
-                b = f === xlogy ? x / y : f(x, y)
+                a, b = if f === xlogy
+                    log(y), x / y
+                elseif f === xlog1py
+                    log1p(y), x / (one(y) + y)
+                else
+                    exp(y), f(x, y)
+                end
                 result = f(NDual(x, (one(x),)), NDual(y, (zero(y),)))
                 @test result.value === f(x, y)
                 @test only(result.partials) == a
@@ -168,6 +202,24 @@ sr(n::Int) = StableRNG(n)
                 @test result.value === f(x, y)
                 @test only(result.partials) == b
             end
+        end
+    end
+
+    @testset "mixed derivative at a zero multiplier" begin
+        # A first-order rule check cannot detect a lost derivative of the zero y-partial.
+        function dy(x)
+            _, pb = Mooncake.rrule!!(
+                Mooncake.zero_fcodual(xlog1py),
+                Mooncake.zero_fcodual(x),
+                Mooncake.zero_fcodual(oftype(x, -0.5)),
+            )
+            return pb(one(x))[3]
+        end
+        for T in (Float32, Float64)
+            rule = Mooncake.build_frule(dy, zero(T))
+            @test Mooncake.value_and_derivative!!(
+                rule, (dy, Mooncake.NoTangent()), (zero(T), one(T))
+            ) == (zero(T), T(2))
         end
     end
 end
