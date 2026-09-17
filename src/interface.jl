@@ -258,9 +258,7 @@ function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
     throw(PreparedCacheError(msg))
 end
 
-function _throw_prepared_cache_aliasing_error(i::Int, j::Int, aliased_now::Bool)
-    li = i == 1 ? "`f`" : "`x$(i - 1)`"
-    lj = j == 1 ? "`f`" : "`x$(j - 1)`"
+function _throw_prepared_cache_aliasing_error(li::String, lj::String, aliased_now::Bool)
     # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
     # `===` yet are one storage, and that pair is exactly what `_same_storage` added.
     what = if aliased_now
@@ -284,25 +282,25 @@ end
 Field paths from a tangent of type `T` to the mutable objects reachable through immutable
 fixed-arity containers, as tuples of field indices (`()` when `T` is itself mutable). Only `Tuple`
 and `NamedTuple` are walked, because their tangents mirror the primal element-wise, so one path
-indexes both. Depth and breadth are bounded so a pathological signature cannot make the generator
-emit a quadratic pile of comparisons.
+indexes both. The walk is complete: a truncated one silently accepts calls whose aliasing differs
+from the prepared shape past the cut, which is a wrong gradient rather than a missed diagnostic.
 """
-function _mutable_tangent_paths(
-    @nospecialize(T::Type), path=(), out=Vector{Any}(), depth::Int=0
-)
-    length(out) >= 8 && return out
+function _mutable_tangent_paths(@nospecialize(T::Type), path=(), out=Vector{Any}())
     if Base.ismutabletype(T)
         push!(out, path)
-    elseif depth < 3 && (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
+    elseif (T <: Tuple || T <: NamedTuple) && isconcretetype(T)
         for (k, FT) in enumerate(fieldtypes(T))
-            _mutable_tangent_paths(FT, (path..., k), out, depth + 1)
+            _mutable_tangent_paths(FT, (path..., k), out)
         end
     end
     return out
 end
 
-# `tangents[i][p1][p2]...` as an expression.
+# `tangents[i][p1][p2]...` as an expression, and the same position as a label for the error.
 _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:($base[$i]))
+function _alias_label(i::Int, path)
+    return (i == 1 ? "`f" : "`x$(i - 1)") * prod(k -> "[$k]", path; init="") * "`"
+end
 
 # Do two positions name one accumulation buffer? Object identity answers it for every container
 # except an `Array` against its backing `Memory`, which are never `===` yet are one storage — and
@@ -311,13 +309,88 @@ _path_expr(base::Symbol, i::Int, path) = foldl((e, k) -> :($e[$k]), path; init=:
 # returned `[1,1,1]` against a truth of `[2,2,2]`, silently. Asked of the primals and of the
 # tangents with the ONE predicate, so the two answers are comparable: `(b, reshape(b))` shares a
 # buffer on both sides and still passes.
-@inline _same_storage(@nospecialize(x), @nospecialize(y)) = x === y
+@inline _alias_key(@nospecialize(x)) = x
 @static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
-    @inline _storage_of(x::Array) = getfield(x, :ref).mem
-    @inline _storage_of(x::Memory) = x
-    @inline function _same_storage(x::Union{Array,Memory}, y::Union{Array,Memory})
-        return _storage_of(x) === _storage_of(y)
+    @inline _alias_key(x::Array) = getfield(x, :ref).mem
+    @inline _alias_key(x::Memory) = x
+end
+@inline _same_storage(@nospecialize(x), @nospecialize(y)) = _alias_key(x) === _alias_key(y)
+
+# Only MUTABLE tangents are comparable this way. `===` on an immutable is value equality, so two
+# zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever the primals are —
+# checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at `(3.0, 4.0)`. An
+# immutable tangent also holds no shared storage to accumulate into.
+#
+# A mutable nested inside an immutable container (a tuple-wrapped array, say) needs comparing too,
+# and `_mutable_tangent_paths` finds those positions from the TYPE. Doing that here rather than at
+# run time is what keeps this affordable: the generator walks the structure once per signature,
+# instead of collecting the mutable objects reachable from each argument on every call — measured
+# at 131ms and 12.6MB for a `Vector` of 100k arrays. Containers whose arity is not in the type (a
+# `Vector` of arrays, a `Dict`) and the fields of a struct tangent still cannot be unrolled and
+# remain unchecked; see `known_limitations.md`.
+#
+# `bidirectional` selects the reverse contract (the two answers must agree) or the forward one
+# (only tangents sharing where primals do not is refused).
+function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
+    # Every mutable tangent leaf in the signature, as `(argument index, path)`, flattened across
+    # the whole signature and compared pairwise rather than argument against argument: two leaves
+    # of ONE argument alias exactly as two arguments do (`f(t)` prepared at `t = (a, b)` and called
+    # at `(a, a)` gave half the gradient at both positions, silently), and the cache holds one
+    # buffer per leaf either way.
+    leaves = Tuple{Int,Any}[]
+    for (i, T) in enumerate(tangents.parameters), path in _mutable_tangent_paths(T)
+        push!(leaves, (i, path))
     end
+    n = length(leaves)
+    # The unrolled form is quadratic in the leaf count, and past a few hundred pairs that is paid
+    # in compile time: 128 leaves took 19s to expand and compile, against 0.6s for 32 and 0.05s for
+    # 8. The cut is therefore at 256 pairs — 23 leaves, around a quarter of a second of codegen —
+    # beyond which the same contract runs as one linear pass at run time. That pass allocates two
+    # `IdDict`s, which is why it is not used throughout: the entry points this guards are
+    # allocation-free.
+    if n * (n - 1) ÷ 2 > 256
+        ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
+        fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
+        labels = Expr(:tuple, (_alias_label(i, p) for (i, p) in leaves)...)
+        return :(_check_alias_partition($ts, $fs, $labels, $bidirectional))
+    end
+    bad = bidirectional ? :(same_primal != same_tangent) : :(same_tangent && !same_primal)
+    checks = Expr(:block)
+    for a in 1:n, b in (a + 1):n
+        (i, pi), (j, pj) = leaves[a], leaves[b]
+        ti, tj = _path_expr(:tangents, i, pi), _path_expr(:tangents, j, pj)
+        fi, fj = _path_expr(:fx, i, pi), _path_expr(:fx, j, pj)
+        li, lj = _alias_label(i, pi), _alias_label(j, pj)
+        push!(
+            checks.args,
+            quote
+                let same_primal = _same_storage($fi, $fj),
+                    same_tangent = _same_storage($ti, $tj)
+
+                    $bad && _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
+                end
+            end,
+        )
+    end
+    return checks
+end
+
+# Runtime form of the same check for signatures too wide to unroll. Two positions share a buffer
+# exactly when they share an `_alias_key`, so comparing, for each leaf, the FIRST leaf it shares a
+# primal with against the first it shares a tangent with decides the whole partition in one pass.
+@noinline function _check_alias_partition(
+    tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
+)
+    first_tangent = IdDict{Any,Int}()
+    first_primal = IdDict{Any,Int}()
+    for k in eachindex(tangents)
+        t = get!(first_tangent, _alias_key(tangents[k]), k)
+        f = get!(first_primal, _alias_key(primals[k]), k)
+        t == f && continue
+        bidirectional || t < f || continue
+        _throw_prepared_cache_aliasing_error(labels[min(t, f)], labels[k], f < t)
+    end
+    return nothing
 end
 
 # Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
@@ -325,68 +398,16 @@ end
 # invariant); if they are distinct, their buffers must be distinct or two gradients are summed
 # into one. Neither is detectable from types or sizes, so it is checked separately here.
 @generated function _validate_prepared_aliasing(tangents::Tuple, fx::Tuple)
-    n = length(fx.parameters)
-    checks = Expr(:block)
-    for i in 1:n, j in (i + 1):n
-        # Only MUTABLE tangents are comparable this way. `===` on an immutable is value equality,
-        # so two zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever
-        # the primals are — checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at
-        # `(3.0, 4.0)`. An immutable tangent also holds no shared storage to accumulate into.
-        #
-        # A mutable nested inside an immutable container (a tuple-wrapped array, say) needs
-        # comparing too, and `_mutable_tangent_paths` finds those positions from the TYPE. Doing
-        # that here rather than at run time is what keeps this affordable: the generator walks the
-        # structure once per signature and emits a fixed handful of `===` comparisons, instead of
-        # collecting the mutable objects reachable from each argument on every call — measured at
-        # 131ms and 12.6MB for a `Vector` of 100k arrays. Containers whose arity is not in the type
-        # (a `Vector` of arrays, a `Dict`) still cannot be unrolled and remain unchecked; see
-        # `known_limitations.md`.
-        for pi in _mutable_tangent_paths(tangents.parameters[i]),
-            pj in _mutable_tangent_paths(tangents.parameters[j])
-
-            ti = _path_expr(:tangents, i, pi)
-            tj = _path_expr(:tangents, j, pj)
-            fi = _path_expr(:fx, i, pi)
-            fj = _path_expr(:fx, j, pj)
-            push!(
-                checks.args,
-                quote
-                    let same_primal = _same_storage($fi, $fj),
-                        same_tangent = _same_storage($ti, $tj)
-
-                        same_primal == same_tangent ||
-                            _throw_prepared_cache_aliasing_error($i, $j, same_primal)
-                    end
-                end,
-            )
-        end
-    end
-    return quote
-        $checks
-        return nothing
-    end
+    return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
 
-# Forward twin of `_validate_prepared_aliasing`, one-directional. A friendly forward cache holds one
-# tangent buffer per argument, built through one aliasing cache, so prepare-time arguments that
-# alias share ONE buffer and a call with distinct arguments writes each supplied tangent into it in
-# turn, leaving both holding the last. The opposite direction is CORRECT — distinct buffers each
-# hold the caller's seed and the aliased primal receives both — so the bidirectional check above
-# would refuse a valid forward call. Same mutable-tangent filter, for the reason given there.
+# Forward twin, one-directional. A friendly forward cache holds one tangent buffer per argument,
+# built through one aliasing cache, so prepare-time positions that alias share ONE buffer and a
+# call with distinct primals writes each supplied tangent into it in turn, leaving both holding the
+# last. The opposite direction is CORRECT — distinct buffers each hold the caller's seed and the
+# aliased primal receives both — so the bidirectional check would refuse a valid forward call.
 @generated function _validate_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
-    n = length(fx.parameters)
-    checks = Expr(:block)
-    for i in 1:n, j in (i + 1):n
-        Base.ismutabletype(tangents.parameters[i]) &&
-        Base.ismutabletype(tangents.parameters[j]) || continue
-        push!(checks.args, quote
-            if tangents[$i] === tangents[$j] && fx[$i] !== fx[$j]
-                _throw_prepared_cache_aliasing_error($i, $j, false)
-            end
-        end)
-    end
-    push!(checks.args, :(return nothing))
-    return checks
+    return Expr(:block, _alias_checks(tangents, false), :(return nothing))
 end
 
 # A repeated top-level MUTABLE primal has one storage, so its tangent has one too — the seeds for

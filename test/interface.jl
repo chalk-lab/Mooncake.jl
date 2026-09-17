@@ -2542,6 +2542,64 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                         Float64[],
                     )[2][2] == Float64[]
                 end
+
+                # Aliasing WITHIN one argument is the same mismatch: one buffer per leaf either
+                # way. Comparing only argument against argument saw nothing here, and a cache
+                # prepared at `(a, b)` called at `(a, a)` returned [1,2,3] at both slots against a
+                # truth of [2,4,6], silently.
+                one_arg(t) = sum(t[1] .* t[2])
+                a1, b1 = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
+                intra_distinct = prepare_gradient_cache(one_arg, (a1, b1))
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    intra_distinct, one_arg, (a1, a1)
+                )
+                intra_aliased = prepare_gradient_cache(one_arg, (a1, a1))
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    intra_aliased, one_arg, (a1, b1)
+                )
+                _, g_intra = Mooncake.value_and_gradient!!(intra_aliased, one_arg, (a1, a1))
+                @test g_intra[2] == (2 .* a1, 2 .* a1)
+                @test Mooncake.value_and_gradient!!(intra_distinct, one_arg, (a1, b1))[2][2] ==
+                    (b1, a1)
+
+                # Past the eighth leaf and the third level of nesting the walk used to stop, so
+                # the same mismatch beyond either bound went unchecked.
+                wide(t, y) = sum(t[10] .* y)
+                ws = ntuple(i -> Float64[i, i + 1], 10)
+                wide_cache = prepare_gradient_cache(wide, ws, [1.0, 1.0])
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    wide_cache, wide, ws, ws[10]
+                )
+                deep(t, y) = sum(t[1][1][1][1] .* y)
+                deep_cache = prepare_gradient_cache(deep, ((((a1,),),),), b1)
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    deep_cache, deep, ((((a1,),),),), a1
+                )
+
+                # Wide enough that the comparisons are not unrolled (the emitted code is
+                # quadratic in the leaf count), so the same contract runs as one pass over the
+                # leaves.
+                many(t) = sum(t[1] .* t[24])
+                ms = ntuple(i -> Float64[i, i + 1], 24)
+                many_cache = prepare_gradient_cache(many, ms)
+                many_aliased = (ms[1], Base.tail(Base.front(ms))..., ms[1])
+                @test Mooncake.value_and_gradient!!(many_cache, many, ms)[2][2][1] == ms[24]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    many_cache, many, many_aliased
+                )
+                # ... and forward, which refuses only the one direction: a shared prepared buffer
+                # cannot carry the two directions a call with distinct primals supplies.
+                fwd_many = Mooncake.prepare_derivative_cache(
+                    many, many_aliased; config=Mooncake.Config(; friendly_tangents=true)
+                )
+                dms = ntuple(i -> [1.0, 0.0], 24)
+                @test Mooncake.value_and_derivative!!(
+                    fwd_many, (many, Mooncake.NoTangent()), (many_aliased, dms)
+                )[2] == 2.0
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                    fwd_many, (many, Mooncake.NoTangent()), (ms, dms)
+                )
+            end
             end
 
             @testset "both modes refuse an input with no concrete representation" begin
