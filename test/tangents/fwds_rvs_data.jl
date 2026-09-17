@@ -120,6 +120,20 @@ end
         )
         @test !can_produce_zero_rdata_from_type(Tuple)
         @test zero_rdata_from_type(Tuple) == CannotProduceZeroRDataFromType()
+        # `IEEEFloat` IS `Union{Float16,Float32,Float64}`, so a `<:IEEEFloat` method also matches
+        # every PROPER SUB-UNION, which inference produces from an ordinary branch over precisions.
+        # `can_produce` used to answer `true` for those while `zero_rdata_from_type` threw on
+        # `P(0)`, taking reverse mode out with a `MethodError` on code forward mode handled.
+        @testset "float sub-unions produce no zero rdata: $T" for T in (
+            Union{Float32,Float64}, Union{Float16,Float64}, Union{Float16,Float32,Float64}
+        )
+            @test !can_produce_zero_rdata_from_type(T)
+            @test zero_rdata_from_type(T) == CannotProduceZeroRDataFromType()
+        end
+        @testset "concrete floats still do: $P" for P in (Float16, Float32, Float64)
+            @test can_produce_zero_rdata_from_type(P)
+            @test zero_rdata_from_type(P) === zero(P)
+        end
         @test !can_produce_zero_rdata_from_type(Union{Tuple{Float64},Tuple{Int}})
         @test ==(
             zero_rdata_from_type(Union{Tuple{Float64},Tuple{Int}}),

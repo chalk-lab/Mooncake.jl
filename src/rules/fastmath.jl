@@ -1,16 +1,17 @@
 function hand_written_rule_test_cases(rng_ctor, ::Val{:fastmath})
-    # The nfwd-backed scalar fastmath rules live in `rules_via_nfwd.jl`; this
+    # The nfwd-backed scalar fastmath rules live in `low_level_maths.jl`; this
     # test set only keeps the remaining fastmath-specific cases local.
     test_cases = reduce(
         vcat,
         map([Float64, Float32]) do P
             return Any[
-                (false, :stability_and_allocs, nothing, cosh, P(0.3)),
-                (false, :stability_and_allocs, nothing, sinh, P(0.3)),
+                (false, :allocs, nothing, Base.FastMath.angle_fast, P(0.5)),
+                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4)),
+                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4), P(3.2)),
+                (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), Int32(2)),
                 (false, :stability_and_allocs, nothing, Base.FastMath.exp10_fast, P(0.5)),
                 (false, :stability_and_allocs, nothing, Base.FastMath.exp2_fast, P(0.5)),
                 (false, :stability_and_allocs, nothing, Base.FastMath.exp_fast, P(5.0)),
-                (false, :stability_and_allocs, nothing, Base.FastMath.sincos, P(3.0)),
             ]
         end,
     )
@@ -29,11 +30,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.acos_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.acosh_fast, P(1.2)),
                 (false, :allocs, nothing, Base.FastMath.add_fast, P(1.0), P(2.0)),
-                (false, :allocs, nothing, Base.FastMath.angle_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.asin_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.asinh_fast, P(1.3)),
-                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4)),
-                (false, :allocs, nothing, Base.FastMath.atan_fast, P(5.4), P(3.2)),
                 (false, :allocs, nothing, Base.FastMath.atanh_fast, P(0.5)),
                 (false, :allocs, nothing, Base.FastMath.cbrt_fast, P(0.4)),
                 (false, :allocs, nothing, Base.FastMath.cis_fast, P(0.5)),
@@ -90,8 +88,6 @@ function derived_rule_test_cases(rng_ctor, ::Val{:fastmath})
                 (false, :allocs, nothing, Base.FastMath.mul_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.ne_fast, P(5.0), P(4.0)),
                 (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), P(2.0)),
-                (false, :allocs, nothing, Base.FastMath.pow_fast, P(5.0), Int32(2)),
-                # (:allocs, Base.FastMath.rem_fast, P(5.0), P(2.0)), # error -- NEEDS RULE! 
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(5.0)),
                 (false, :allocs, nothing, Base.FastMath.sign_fast, P(-5.0)),
                 (false, :allocs, nothing, Base.FastMath.sin_fast, P(5.0)),

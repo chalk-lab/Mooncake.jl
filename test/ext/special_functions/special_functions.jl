@@ -1,6 +1,5 @@
-using Pkg
-Pkg.activate(@__DIR__)
-Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
+include(joinpath(@__DIR__, "..", "pin_develop_or_skip.jl"))
+pin_develop_or_skip(@__DIR__, "SpecialFunctions")
 
 using AllocCheck, JET, Mooncake, SpecialFunctions, StableRNGs, Test
 using Mooncake.Nfwd: NDual
@@ -31,12 +30,6 @@ function _sf_nonprimitive_perf_flag(name::Symbol, default::Symbol)
     return default
 end
 
-# Helper methods to enable mixed Float32/Float64 operations. 
-# Required for compatibility with Julia 1.12+.
-Union{Float32,Float64}(x) = Float64(x)
-Mooncake.increment!!(x::Float32, y::Float64) = Float32(x + y)
-Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
-
 # Rules in this file are only lightly tested, because they are all just @from_rrule rules.
 @testset "special_functions" begin
     @testset "$perf_flag, $(typeof((f, x...)))" for (perf_flag, f, x...) in vcat(
@@ -51,7 +44,7 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 (:stability_and_allocs, besselj0, P(0.1)),
                 (:stability_and_allocs, besselj1, P(0.1)),
                 (:stability_and_allocs, bessely0, P(0.1)),
-                (VERSION >= v"1.11" ? :stability_and_allocs : :none, bessely1, P(0.1)),
+                (:stability_and_allocs, bessely1, P(0.1)),
                 (:stability_and_allocs, dawson, P(0.1)),
                 (_sf_perf_flag(P, :digamma, :stability_and_allocs), digamma, P(0.1)),
                 (:stability_and_allocs, erf, P(0.1)),
@@ -200,10 +193,10 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
             end
             for i in 1:3
                 seeds = ntuple(k -> T(k==i), 3)
-                args = map(Mooncake.Dual, (a, b, x), seeds)
+                args = map(Mooncake.lift, (a, b, x), seeds)
                 out = Mooncake.frule!!(Mooncake.zero_dual(beta_inc), args...)
-                @test Mooncake.tangent(out)[1] ≈ T((A, B, D)[i]) rtol=tol
-                @test Mooncake.tangent(out)[2] ≈ -T((A, B, D)[i]) rtol=tol
+                @test only(Mooncake.tangent(out)[1].partials) ≈ T((A, B, D)[i]) rtol=tol
+                @test only(Mooncake.tangent(out)[2].partials) ≈ -T((A, B, D)[i]) rtol=tol
             end
             args = ntuple(i -> NDual{T,3}((a, b, x)[i], ntuple(k -> T(k==i), 3)), 3)
             p, q = beta_inc(args...)
@@ -222,14 +215,7 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 beta_inc,
             )
 
-            test_rule(
-                StableRNG(123),
-                f,
-                args...;
-                is_primitive=false,
-                mode=ReverseMode,
-                rrule=Mooncake.NfwdMooncake.build_rrule(f, args...; chunk_size=3),
-            )
+            test_rule(StableRNG(123), f, args...; is_primitive=false, mode=ReverseMode)
         end
 
         y = NDual{Float64,1}(1e-20, (1.0,))
@@ -290,18 +276,18 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
                 @test grad[3] ≈ expected_x rtol=max(4eps(T), 1e-12)
             end
             for (adot, xdot) in ((one(T), zero(T)), (zero(T), one(T)), (zero(T), zero(T)))
-                args = (
-                    Mooncake.Dual(gamma_inc, Mooncake.NoTangent()),
-                    Mooncake.Dual(a, adot),
-                    Mooncake.Dual(x, xdot),
-                    Mooncake.Dual(ind, Mooncake.NoTangent()),
+                result = Mooncake.frule!!(
+                    Mooncake.zero_dual(gamma_inc),
+                    Mooncake.lift(a, adot),
+                    Mooncake.lift(x, xdot),
+                    Mooncake.zero_dual(ind),
                 )
-                result = Mooncake.frule!!(args...)
                 expected =
                     (iszero(adot) ? zero(T) : T(da)) + (iszero(xdot) ? zero(T) : T(dx))
+                dp, dq = Mooncake.tangent(result)
                 @test Mooncake.primal(result) == gamma_inc(a, x, ind)
-                @test Mooncake.tangent(result)[1] ≈ expected rtol=max(4eps(T), 1e-12)
-                @test Mooncake.tangent(result)[2] ≈ -expected rtol=max(4eps(T), 1e-12)
+                @test only(dp.partials) ≈ expected rtol=max(4eps(T), 1e-12)
+                @test only(dq.partials) ≈ -expected rtol=max(4eps(T), 1e-12)
             end
         end
 
@@ -324,11 +310,12 @@ Mooncake.increment!!(x::Float64, y::Float32) = Float64(x + y)
             @test pb((seed, -seed))[3] ≈ 2expected rtol=max(4eps(typeof(a)), 1e-12)
             result = Mooncake.frule!!(
                 Mooncake.zero_dual(gamma_inc),
-                Mooncake.Dual(a, zero(a)),
-                Mooncake.Dual(x, seed),
+                Mooncake.lift(a, zero(a)),
+                Mooncake.lift(x, seed),
                 Mooncake.zero_dual(0),
             )
-            @test Mooncake.tangent(result)[1] ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
+            dp = Mooncake.tangent(result)[1]
+            @test only(dp.partials) ≈ expected rtol=max(4eps(typeof(a)), 1e-12)
         end
 
         @test_throws DomainError Mooncake.rrule!!(

@@ -199,35 +199,28 @@ function _map_if_assigned!(f::F, y::DenseArray, x::DenseArray{P}) where {F,P}
 end
 
 """
-    _map_if_assigned!(f::F, y::DenseArray, x1::DenseArray{P}, x2::DenseArray)
+    _map_if_assigned!(f::F, y::DenseArray, x1::DenseArray{P1}, x2::DenseArray{P2})
 
-Similar to the other method of `_map_if_assigned!` -- for all `n`, if `x1[n]` is assigned,
-writes `f(x1[n], x2[n])` to `y[n]`, otherwise leaves `y[n]` unchanged.
+Similar to the other method of `_map_if_assigned!` -- for all `n`, if `x1[n]` and `x2[n]` are
+both assigned, writes `f(x1[n], x2[n])` to `y[n]`, otherwise leaves `y[n]` unchanged.
+
+Both operands must be guarded: a primal and its tangent need not agree on which slots are
+occupied. `tangent_type(Symbol) === NoTangent`, so a sparse `Memory{Symbol}` (a `Dict`'s
+`keys`) pairs with an isbits `Memory{NoTangent}` whose every slot reports assigned.
 
 Requires that `y`, `x1`, and `x2` have the same size.
 """
 function _map_if_assigned!(
-    f::F, y::DenseArray, x1::DenseArray{P}, x2::DenseArray
-) where {F,P}
+    f::F, y::DenseArray, x1::DenseArray{P1}, x2::DenseArray{P2}
+) where {F,P1,P2}
     @assert size(y) == size(x1)
     @assert size(y) == size(x2)
     @inbounds for n in eachindex(y)
-        if isbitstype(P) || isassigned(x1, n)
+        if (isbitstype(P1) || isassigned(x1, n)) && (isbitstype(P2) || isassigned(x2, n))
             y[n] = f(x1[n], x2[n])
         end
     end
     return y
-end
-
-"""
-    _map(f, x...)
-
-Same as `map` but requires all elements of `x` to have equal length.
-The usual function `map` doesn't enforce this for `Array`s.
-"""
-@unstable @inline function _map(f::F, x::Vararg{Any,N}) where {F,N}
-    @assert allequal(map(length, x))
-    return map(f, x...)
 end
 
 """
@@ -572,17 +565,23 @@ _copy(x::Type) = x
 # test_utils.jl) once https://github.com/JuliaLang/julia/issues/61368 is fixed and
 # Julia 1.10 support is dropped.
 #
-# Julia 1.10 codegen bug (julia#61368 / #51016): jl_compile_workqueue crashes in
-# emit_specsig_oc_call when compiling an OC body that transitively calls another OC
-# type whose CodeInstance has been invalidated (null specfun) by a world-counter advance
-# (e.g. from loading DispatchDoctor or defining new methods).
+# Julia 1.10 codegen bug (julia#51016 / #61368): the code generator crashes in
+# emit_specsig_oc_call when emitting a specsig OpaqueClosure call that either has a dead /
+# `Union{}`-typed argument position (#51016) or targets a nested OC whose CodeInstance has been
+# invalidated (null specfun) by a world-counter advance — e.g. loading DispatchDoctor or
+# defining new methods (#61368). Both are fixed upstream by #51017 (Julia 1.11+).
 #
-# Fix: __call_rule type-erases rule via Base.inferencebarrier on Julia 1.10 so the
-# compiled code calls through jl_apply_generic (which never invokes emit_specsig_oc_call).
-# The @noinline wrapper ensures this erased call is a separate compilation unit. On Julia
-# 1.11+ the bug is absent and __call_rule is a direct call. The type-erasure causes
-# isbits argument boxing at each nested rule callsite (jl_apply_generic requires boxed
-# args), so zero-allocation performance checks are skipped on Julia < 1.11 in test_utils.
+# Fix: __call_rule forces generic dispatch on Julia 1.10, so the compiled code calls via
+# jl_apply_generic, which never reaches emit_specsig_oc_call. Three controls make this
+# deterministic — where a bare `Base.inferencebarrier` hint does NOT (it only blocked
+# inference, leaving the method free to re-specialise on the concrete callee and recover the
+# specsig call): `@nospecialize` compiles a single `rule::Any` method (no per-callee
+# specialisation); the explicit `(rule::Any)` cast forbids codegen from emitting a specsig call
+# against an abstract callee; `@noinline` stops the cast being inlined into a site where the
+# concrete type is visible again. The OpaqueClosure method additionally guards `args isa A` so a
+# runtime argument mismatch throws a clean TypeError rather than segfaulting. On Julia 1.11+ the
+# bug is absent and __call_rule is a direct call. Generic dispatch boxes isbits arguments at each
+# nested rule callsite, so zero-allocation performance checks are skipped on Julia < 1.11.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
 #   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params
@@ -605,8 +604,11 @@ _copy(x::Type) = x
 #   Base.Experimental.@opaque (x::Float64) -> w(x)  # crash: workqueue compiles
 #                                 # Wrapper::call, reaches typeof(inner) with null specfun
 @static if VERSION < v"1.11-"
-    @noinline __call_rule_erased!(rule, args) = rule(args...)
-    @inline __call_rule(rule, args) = __call_rule_erased!(Base.inferencebarrier(rule), args)
+    @noinline __call_rule(@nospecialize(rule), args) = (rule::Any)(args...)
+    @noinline function __call_rule(oc::Core.OpaqueClosure{A}, args::Tuple) where {A}
+        args isa A || throw(TypeError(:opaque_closure, "", A, Tuple{map(typeof, args)...}))
+        return (oc::Any)(args...)
+    end
 else
     @inline __call_rule(rule, args) = rule(args...)
 end
