@@ -1208,6 +1208,8 @@ Tuples are used as inputs and outputs instead of a combined value/tangent wrappe
 accommodate the case where internal Mooncake tangent types do not coincide with tangents
 provided by the user (in which case we translate between "friendly tangents" and internal
 tangents using cache storage).
+With `friendly_tangents=false`, each direction must have the internal tangent type for its
+primal and matching axes (or length for sized collections without axes).
 
 The arguments in `x` are returned to their original state, whether the rule returns or
 raises: if `f` mutates them in place, they are restored from a cache-owned snapshot, so the
@@ -1286,22 +1288,7 @@ end
     # on a path whose point is to skip the cache. Both gaps are in `known_limitations.md`.
     _check_shared_input_tangents(cache, input_primals, input_tangents)
 
-    # An unfriendly cache (`friendly_tangents=false`) does not translate friendly,
-    # primal-shaped tangents, so each supplied tangent must already be the internal tangent
-    # for its primal; otherwise `lift` below would fail with an opaque `MethodError`. The
-    # `typeof(t) <: tangent_type(typeof(p))` check folds away when it holds.
-    tuple_map(input_primals, input_tangents) do p, t
-        typeof(t) <: tangent_type(typeof(p)) || throw(
-            ArgumentError(
-                "Tangent types do not match primal types: tangent $(typeof(t)) is not a " *
-                "$(tangent_type(typeof(p))) for primal $(typeof(p)). With " *
-                "`friendly_tangents=false`, supply internal tangents (e.g. " *
-                "`Mooncake.zero_tangent(x)`) or rebuild the cache with " *
-                "`friendly_tangents=true`.",
-            ),
-        )
-        nothing
-    end
+    tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
 
     # One aliasing cache scoped to this input lift: a reverse rule captured in
     # `grad_f` shares its `fwds_oc`/`pb_oc` captures, so the forward tangent of
@@ -2877,20 +2864,27 @@ end
 # Forward-over-reverse — Hessian-vector products (HVP)
 #
 
-@inline function _check_matching_tangent_shape(primal, tangent)
+@inline function _check_tangent_for_primal(primal, tangent)
+    typeof(tangent) <: tangent_type(typeof(primal)) || throw(
+        ArgumentError(
+            "Tangent types do not match primal types: tangent $(typeof(tangent)) is not a " *
+            "$(tangent_type(typeof(primal))) for primal $(typeof(primal)). " *
+            "Supply an internal tangent (e.g. `Mooncake.zero_tangent(x)`).",
+        ),
+    )
     # Base's generic `axes(x) = map(oneto, size(x))` makes `applicable(axes, x)` true even
     # for a struct-shaped `Tangent` with no `size` method, so check `size` instead.
     if applicable(size, primal) && applicable(size, tangent)
         axes(primal) == axes(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument 1 must match the primal axes; got axes " *
+                "Tangent direction must match the primal axes; got axes " *
                 "$(axes(tangent)) for tangent vs $(axes(primal)) for primal",
             ),
         )
     elseif applicable(length, primal) && applicable(length, tangent)
         length(primal) == length(tangent) || throw(
             ArgumentError(
-                "Tangent direction for argument 1 must match the primal length; got " *
+                "Tangent direction must match the primal length; got " *
                 "length $(length(tangent)) for tangent vs $(length(primal)) for primal",
             ),
         )
@@ -3023,7 +3017,8 @@ end
     value_and_hvp!!(cache::HVPCache, f, v, x)
 
 Given a cache prepared by [`prepare_hvp_cache`](@ref), compute the gradient of `f` at `x`
-and the Hessian-vector product `H v`. `v` is the tangent direction; returns `(f(x), ∇f(x),
+and the Hessian-vector product `H v`. `v` must have the internal tangent type for `x` and
+matching axes (or length for sized collections without axes); returns `(f(x), ∇f(x),
 H(x)v)`. For `f: Rⁿ → R` with `x::Vector{Float64}`, the gradient and HVP are
 `Vector{Float64}`. Like [`value_and_jacobian!!`](@ref), only a single `AbstractVector` input
 is supported; concatenate the inputs of a multi-argument function into one vector.
@@ -3061,7 +3056,7 @@ true
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
     _check_prepared_cache(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
-    _check_matching_tangent_shape(x1, v)
+    _check_tangent_for_primal(x1, v)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
     )

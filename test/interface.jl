@@ -852,6 +852,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test last(z_and_dz_int) == Mooncake.NoTangent()
         end
 
+        # Rule registries seed matching tangents; malformed directions need API tests.
+        @testset "Unfriendly tangent shapes" begin
+            xs = [1.0, 2.0]
+            cache = Mooncake.prepare_derivative_cache(
+                sum, xs; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
+            )
+            run(v) = Mooncake.value_and_derivative!!(cache, (sum, NoTangent()), (xs, v))
+            @test run([3.0, 4.0]) == (3.0, 7.0)
+            @test_throws "must match the primal axes" run([3.0, 4.0, 5.0])
+        end
+
         @testset "Structured types" begin
             cache_sp_friendly = Mooncake.prepare_derivative_cache(
                 fx_sp...; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
@@ -2364,10 +2375,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
             end
 
-            @testset "HVP validates tangent shapes" begin
+            @testset "HVP validates tangent types and shapes" begin
                 x = [1.0, 2.0]
                 cache1 = prepare_hvp_cache(sum, x)
                 @test_throws ArgumentError value_and_hvp!!(cache1, sum, [1.0], x)
+                @test_throws "Tangent types do not match primal types:" value_and_hvp!!(
+                    cache1, sum, Float32[3, 4], x
+                )
+                @test value_and_hvp!!(cache1, sum, [3.0, 4.0], x) ==
+                    (3.0, ones(2), zeros(2))
             end
 
             @testset "HVP cache mismatch errors" begin
