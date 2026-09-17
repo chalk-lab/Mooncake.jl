@@ -13,6 +13,9 @@ using Mooncake:
     build_rrule,
     tangent_type
 
+const HVP_ALIAS_GLOBAL = [1.0, 2.0]
+hvp_alias_global(x) = x[1] * HVP_ALIAS_GLOBAL[1] + x[2] * HVP_ALIAS_GLOBAL[2]
+
 # A first-order tangent need not support differentiation of itself.
 struct FirstOrderTangent
     x::Float64
@@ -2312,6 +2315,26 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 y, dy = Mooncake.value_and_derivative!!(cache, (f, df), (x, dx))
                 @test y == 10.0
                 @test dy ≈ -0.8
+            end
+
+            @testset "FoR retains constant alias guards" begin
+                x = copy(HVP_ALIAS_GLOBAL)
+                v = [0.3, -0.7]
+                cache = prepare_hvp_cache(hvp_alias_global, x)
+                @test value_and_hvp!!(cache, hvp_alias_global, v, x)[3] == zeros(2)
+                TestUtils._test_throws(ArgumentError, "constant") do
+                    value_and_hvp!!(cache, hvp_alias_global, v, HVP_ALIAS_GLOBAL)
+                end
+                for width in (1, 2)
+                    cache = Mooncake.prepare_hessian_cache(
+                        hvp_alias_global, x; config=Mooncake.Config(; chunk_size=width)
+                    )
+                    TestUtils._test_throws(ArgumentError, "constant") do
+                        Mooncake.value_gradient_and_hessian!!(
+                            cache, hvp_alias_global, HVP_ALIAS_GLOBAL
+                        )
+                    end
+                end
             end
 
             @testset "HVP validates tangent shapes" begin

@@ -270,7 +270,14 @@ function _compile_for_rule(
         rvs_oc = misty_closure(dri.rvs_ret_type, optimized_rvs_ir, dri.shared_data...)
         nargs = num_args(dri.info)
         sig_flat = flatten_va_sig(sig, dri.isva, nargs)
-        DerivedRule(sig_flat, fwd_oc, Ref(rvs_oc), dri.isva, Val(nargs))
+        DerivedRule(
+            sig_flat,
+            fwd_oc,
+            Ref(rvs_oc),
+            dri.isva,
+            Val(nargs),
+            _aliasable_constants(dri.shared_data, dri.info.global_bindings),
+        )
     end
 
     # Build forward-mode dual callables for the fwd and rvs passes.
