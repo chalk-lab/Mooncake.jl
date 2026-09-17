@@ -1808,8 +1808,8 @@ end
     prepare_pullback_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_pullback!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and the requirement that no
-two of `(f, x...)` alias the same mutable storage.
+including the `config.friendly_tangents` output-tangent contract and how arguments sharing
+one storage are handled.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -1899,10 +1899,13 @@ will return both to their original state as part of the process of computing the
     copy (using `copy` or `deepcopy`) of them before calling again.
 
 !!! warning
-    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable
-    storage. Each argument slot is given an independent cotangent buffer, so passing the
-    same array in two positions (e.g. `dot(X, X)`) accumulates into separate buffers and
-    yields the wrong result, as with the rule-direct `value_and_pullback!!`.
+    Arguments that share one storage — the same array in two positions (`dot(X, X)`), or an
+    `Array` alongside its backing `Memory` — share one cotangent buffer, so each of those
+    positions reports the whole accumulated cotangent rather than its own share of it. Do
+    not add them together. Which arguments share a storage is part of the shape the cache
+    was prepared for: where Mooncake can see the sharing (top-level arguments, and mutables
+    nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
+    a `PreparedCacheError`.
 
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
 should be reset to zero before differentiation. It contains one boolean for each element of
@@ -1961,8 +1964,8 @@ end
     prepare_gradient_cache(f, x...; config=Mooncake.Config())
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
-including the `config.friendly_tangents` output-tangent contract and the requirement that no
-two of `(f, x...)` alias the same mutable storage.
+including the `config.friendly_tangents` output-tangent contract and how arguments sharing
+one storage are handled.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -2023,10 +2026,13 @@ will return both to their original state as part of the process of computing the
     copy (using `copy` or `deepcopy`) of them before calling again.
 
 !!! warning
-    It is your responsibility to ensure no two of `(f, x...)` alias the same mutable
-    storage. Each argument slot is given an independent cotangent buffer, so passing the
-    same array in two positions (e.g. `dot(X, X)`) accumulates into separate buffers and
-    yields the wrong result, as with the rule-direct `value_and_pullback!!`.
+    Arguments that share one storage — the same array in two positions (`dot(X, X)`), or an
+    `Array` alongside its backing `Memory` — share one cotangent buffer, so each of those
+    positions reports the whole accumulated cotangent rather than its own share of it. Do
+    not add them together. Which arguments share a storage is part of the shape the cache
+    was prepared for: where Mooncake can see the sharing (top-level arguments, and mutables
+    nested in `Tuple`s and `NamedTuple`s), reusing the cache with a different pattern raises
+    a `PreparedCacheError`.
 
 The keyword argument `args_to_zero` is a tuple of boolean values specifying which cotangents
 should be reset to zero before differentiation. It contains one boolean for each element of
