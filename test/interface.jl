@@ -27,6 +27,14 @@ struct ScalarBox
     x::Float64
 end
 
+struct WeightedVector <: AbstractVector{Float64}
+    data::Vector{Float64}
+    weight::Float64
+end
+Base.size(x::WeightedVector) = size(x.data)
+Base.getindex(x::WeightedVector, i::Int) = x.weight * x.data[i]
+Base.similar(x::WeightedVector) = WeightedVector(similar(x.data), x.weight)
+
 mutable struct IntScaler
     a::Int
 end
@@ -1184,6 +1192,27 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test view_val == sum(abs2, view_x)
             @test Mooncake.get_tangent_field(view_grad[2], :parent) ==
                 vcat(2 .* collect(1.0:3.0), zeros(3))
+
+            # Rule registries bypass prepared-cache admission; check the sweep here.
+            @testset "vector with extra tangent dofs" for data in (Float64[], [2.0, 4.0]),
+                W in (1, 8)
+
+                weighted_f = v -> v.weight
+                weighted_cache = Mooncake.prepare_derivative_cache(
+                    weighted_f,
+                    WeightedVector(data, 3.0);
+                    config=Mooncake.Config(; chunk_size=W, kwargs...),
+                )
+                for weight in (3.0, 5.0)
+                    value, grad = Mooncake.value_and_gradient!!(
+                        weighted_cache, weighted_f, WeightedVector(copy(data), weight)
+                    )
+                    @test value == weight
+                    @test TestUtils.has_equal_data(
+                        grad[2], Mooncake.Tangent((; data=zeros(length(data)), weight=1.0))
+                    )
+                end
+            end
 
             # A structured input whose NESTED array is reused at the same length but a different
             # shape must be rejected (size, not just length, is validated) instead of silently

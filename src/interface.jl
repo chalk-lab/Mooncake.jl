@@ -1000,6 +1000,8 @@ is shown by the cache.
             !isempty(args) &&
             first(args) isa AbstractVector{<:IEEEFloat} &&
             all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
+            # The flat sweep counts elements; extra differentiable fields need the generic path.
+            all(i -> dof(input_ts[i + 1]) == length(args[i]), eachindex(args)) &&
             all(a -> typeof(similar(a)) == typeof(a), args)
             W = gradient_chunk_size
             (
@@ -2415,13 +2417,6 @@ function value_and_gradient!!(
     # writes every gradient position exactly once per sweep, so `grad_bufs` needs no
     # pre-zeroing.
     local y
-    if total_dof == 0
-        # Reachable: `sum(length, xs)` counts ELEMENTS while the seed is admitted on tangent
-        # dofs, and an `AbstractVector` subtype can carry a differentiable field besides its
-        # elements. Run the primal once so `y` is the true value rather than a fabricated zero.
-        y = primal(value_and_derivative!!(cache, f_seed, arg_seeds...))
-        y isa IEEEFloat || throw_val_and_grad_ret_type_error(y)
-    end
     s = 1
     while s <= total_dof
         # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales
