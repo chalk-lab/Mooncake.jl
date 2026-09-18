@@ -1702,15 +1702,16 @@ function make_ad_stmts!(stmt::Expr, line::ID, info::ADInfo)
         # At the time of writing, I am unclear why this is not possible.
         return ad_stmt_info(line, nothing, nothing, nothing)
 
-    elseif stmt.head in [
-        :enter,
-        :gc_preserve_begin,
-        :gc_preserve_end,
-        :leave,
-        :pop_exception,
-        :throw_undef_if_not,
-        :meta,
-    ]
+    elseif stmt.head == :throw_undef_if_not
+        cond = ID()
+        fwds = [
+            (cond, new_inst(Expr(:call, primal, inc_or_const(stmt.args[2], info)))),
+            (line, new_inst(Expr(:throw_undef_if_not, stmt.args[1], cond))),
+        ]
+        return ad_stmt_info(line, nothing, fwds, nothing)
+
+    elseif stmt.head in
+        [:enter, :gc_preserve_begin, :gc_preserve_end, :leave, :pop_exception, :meta]
         # Expressions which do not require any special treatment.
         return ad_stmt_info(line, nothing, stmt, nothing)
 

@@ -158,7 +158,9 @@ end
                 FwdsRvsDataTestResources.SV{Tuple{1},Float64,1},Float64,Float64
             },
         ]
-            @test TestUtils.is_foldable(can_produce_zero_rdata_from_type, Tuple{Type{P}})
+            @test TestUtils.is_foldable(
+                can_produce_zero_rdata_from_type, Tuple{CC.widenconst(Core.Const(P))}
+            )
         end
     end
     @testset "lazy construction checks" begin

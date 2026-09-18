@@ -238,9 +238,18 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
         propagate_inbounds = true
         spec_info = CC.SpecInfo(nargs, isva, propagate_inbounds, nothing)
         max_world = min_world = world = get_inference_world(interp)
-        irsv = CC.IRInterpretationState(
-            interp, spec_info, ir, mi, ir.argtypes, world, min_world, max_world
-        )
+        # Julia 1.14 (JuliaLang/julia#61714) dropped the redundant `world` argument -- it is
+        # now always taken from `get_inference_world(interp)`, which is what we were
+        # passing anyway.
+        @static if VERSION >= v"1.14-"
+            irsv = CC.IRInterpretationState(
+                interp, spec_info, ir, mi, ir.argtypes, min_world, max_world
+            )
+        else
+            irsv = CC.IRInterpretationState(
+                interp, spec_info, ir, mi, ir.argtypes, world, min_world, max_world
+            )
+        end
         rt = CC.ir_abstract_constant_propagation(interp, irsv)
     else
         method_info = CC.MethodInfo(true, nothing)#=propagate_inbounds=#

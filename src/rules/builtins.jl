@@ -364,7 +364,9 @@ named `Mooncake.IntrinsicsWrappers.__cglobal`, rather than
 If you examine the code associated with `Mooncake.intrinsic_to_function`, you will see that
 special handling of `cglobal` is used.
 """
-__cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N} = cglobal(s, x...)
+@generated function __cglobal(::Val{s}, x::Vararg{Any,N}) where {s,N}
+    return Expr(:call, :cglobal, QuoteNode(s), [:(x[$i]) for i in 1:N]...)
+end
 
 translate(::Val{Intrinsics.cglobal}) = __cglobal
 function Mooncake._is_primitive(
