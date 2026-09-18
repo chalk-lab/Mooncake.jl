@@ -171,29 +171,77 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
     # These validate API contracts, not differentiation rules, so the rule registry does not
     # exercise them.
     @testset "value checks" begin
-        api = :value_and_jacobian!!
-        @test Mooncake._check_vector_argument([1.0]; api) === Float64
-        @test Mooncake._check_vector_argument(Float64[]; api, allow_empty=true) === Float64
-        @test_throws ArgumentError Mooncake._check_vector_argument(Float64[]; api)
-        @test_throws ArgumentError Mooncake._check_vector_argument([1]; api)
-        @test_throws ArgumentError Mooncake._check_vector_argument(ones(2, 2); api)
+        @test Mooncake._check_vector_argument([1.0]; caller=(value_and_jacobian!!)) ===
+            Float64
+        # Empty input is supported by every caller; there is no `allow_empty` opt-in.
+        @test Mooncake._check_vector_argument(Float64[]; caller=(value_and_jacobian!!)) ===
+            Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            [1]; caller=(value_and_jacobian!!)
+        )
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            ones(2, 2); caller=(value_and_jacobian!!)
+        )
         v = view([1.0, 2.0], :)
-        @test Mooncake._check_vector_argument(v; api) === Float64
-        @test_throws ArgumentError Mooncake._check_vector_argument(v; api, dense=true)
-        @test Mooncake._check_scalar_output(1.0; api=:value_and_gradient!!) === nothing
+        @test Mooncake._check_vector_argument(v; caller=(value_and_jacobian!!)) === Float64
+        @test_throws ArgumentError Mooncake._check_vector_argument(
+            v; caller=(value_and_jacobian!!), dense=true
+        )
+        @test Mooncake._check_scalar_output(1.0; caller=(value_and_gradient!!)) === nothing
         @test_throws Mooncake.ValueAndGradientReturnTypeError Mooncake._check_scalar_output(
-            [1.0]; api=:value_and_gradient!!
+            [1.0]; caller=(value_and_gradient!!)
         )
-        @test Mooncake._check_vector_output([1.0]; api, eltypes=Float64) === Float64
-        @test_throws "to match" Mooncake._check_jacobian_output(
-            [1.0], Union{Float32,Float64}
-        )
+        @test Mooncake._check_vector_output(
+            [1.0]; caller=(value_and_jacobian!!), eltypes=Float64
+        ) === Float64
         @test_throws "to match" Mooncake._check_vector_output(
-            Float32[1]; api, eltypes=Float64
+            Float32[1]; caller=(value_and_jacobian!!), eltypes=Float64
         )
         @test_throws "element types" Mooncake._check_vector_output(
-            [1]; api, eltypes=IEEEFloat
+            [1]; caller=(value_and_jacobian!!), eltypes=IEEEFloat
         )
+        # The message names the API, and the mode when a cache says which.
+        @test_throws "forward-mode value_and_gradient!!" Mooncake._check_scalar_output(
+            [1.0]; caller=(value_and_gradient!!), cache=prepare_derivative_cache(sum, [1.0])
+        )
+        @test_throws "this function" Mooncake._check_vector_argument([1];)
+    end
+
+    # Prepared-cache admission, not a rule: the registry seeds well-formed inputs and never
+    # reaches these paths.
+    @testset "vector API admission" begin
+        # Empty input is supported everywhere: a zero-dof sweep has nothing to run, but the
+        # value and the `n x 0` Jacobian are still well defined.
+        e = Float64[]
+        for mk in (Mooncake.prepare_derivative_cache, Mooncake.prepare_pullback_cache)
+            y, J = Mooncake.value_and_jacobian!!(mk(identity, e), identity, e)
+            @test y == e
+            @test size(J) == (0, 0)
+        end
+        hc = Mooncake.prepare_hessian_cache(sum, e)
+        @test Mooncake.value_gradient_and_hessian!!(hc, sum, e) == (0.0, e, zeros(0, 0))
+
+        # Forward stores partials per element, so an `NDualArray` element type must be concrete.
+        # Reverse builds a plain array and is unaffected — refusing there would remove working
+        # behaviour.
+        u = Union{Float32,Float64}[1.0, 2.0]
+        @test_throws ArgumentError Mooncake.prepare_derivative_cache(sum, u)
+        _, gu = Mooncake.value_and_gradient!!(
+            Mooncake.prepare_gradient_cache(sum, u), sum, u
+        )
+        @test gu[2] == [1.0, 1.0]
+        # Element types that map to another representation are unaffected in forward.
+        for v in (Any[1.0, 2.0], Union{Nothing,Float64}[1.0, 2.0], Real[1.0, 2.0])
+            @test Mooncake.prepare_derivative_cache(sum, v) isa Any
+        end
+
+        # A wrapper OUTPUT has no flat array to read Jacobian columns from.
+        for wrapper_f in (x -> view(x, 1:2), x -> 1.0:2.0)
+            wrapper_cache = Mooncake.prepare_derivative_cache(wrapper_f, [1.0, 2.0])
+            @test_throws "dense vector outputs" Mooncake.value_and_jacobian!!(
+                wrapper_cache, wrapper_f, [1.0, 2.0]
+            )
+        end
     end
     @testset "$(typeof((f, x...)))" for (ȳ, f, x...) in Any[
         (1.0, (x, y) -> x * y + sin(x) * cos(y), 5.0, 4.0),
@@ -2072,7 +2120,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 x_jac;
                 config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
             )
-            @test_throws "value_and_jacobian!! does not support a" Mooncake.value_and_jacobian!!(
+            @test_throws "only supports dense vector outputs" Mooncake.value_and_jacobian!!(
                 wrapper_out_cache, f_wrapper_out, x_jac
             )
 
