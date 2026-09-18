@@ -1716,6 +1716,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (aa, dd),
                 )
                 @test (v, d) == (20.0, 8.0)
+                # The other direction: two DIFFERENT tangents for one storage is ill-posed, and
+                # the rule-level method used to answer it with whichever the lift reached first
+                # (2.0 here, for a request that has no single answer). The cache methods already
+                # refused it; this one now does too.
+                @test_throws ArgumentError Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, ones(4)),
+                    (aa, zeros(4)),
+                )
+                @test_throws "same mutable object" Mooncake.value_and_derivative!!(
+                    Mooncake.build_frule(fmut, a, a),
+                    (fmut, Mooncake.NoTangent()),
+                    (aa, ones(4)),
+                    (aa, zeros(4)),
+                )
             end
         end
 

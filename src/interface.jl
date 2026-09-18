@@ -434,10 +434,10 @@ end
 
 # A repeated top-level MUTABLE primal has one storage, so its tangent has one too — the seeds for
 # the two positions are the same object. Two DIFFERENT supplied tangents therefore cannot both be
-# carried, and the two tuple methods resolved that differently and silently: the unfriendly path
-# lifts through one aliasing cache and keeps the first, the friendly path writes both into the one
-# prepared buffer and keeps the last. For `h(x, y) = sum(x .* y)` at `a = [1.0, 2.0]` with
-# `dx1 = [1, 0]` and `dx2 = [0, 1]` those are 2.0 and 4.0.
+# carried, and the three tuple methods resolved that differently and silently: the unfriendly cache
+# path and the bare-rule one lift through an aliasing cache and keep the first, the friendly path
+# writes both into the one prepared buffer and keeps the last. For `h(x, y) = sum(x .* y)` at
+# `a = [1.0, 2.0]` with `dx1 = [1, 0]` and `dx2 = [0, 1]` those are 2.0 and 4.0.
 #
 # Neither is a defect in the arithmetic: 2.0 and 4.0 are the JVPs along `dx1` and `dx2`, and since
 # `x` and `y` are ONE array those are the only directions there are. The request itself is the
@@ -833,13 +833,15 @@ end
 function _throw_gradient_input_alias_error()
     throw(
         ArgumentError(
-            "Forward-mode `value_and_gradient!!` does not support inputs that share " *
-            "differentiable storage across positions — `f` holding the same array that is " *
-            "also passed as an argument, say. The gradient is assembled from one " *
-            "standard-basis dof range per input, so a shared leaf is differentiated once " *
-            "for every position it occupies and its gradient comes back scaled by that " *
-            "count. Use `value_and_derivative!!` with one tangent shared across those " *
-            "positions, or use reverse mode.",
+            "Forward-mode `value_and_gradient!!` does not support two arguments over one " *
+            "storage — `f` holding the same array that is also passed as an argument, say. " *
+            "Each argument carries its own tangent storage, so the sweep gives the shared " *
+            "leaf one standard-basis dof range per position and its gradient comes back " *
+            "scaled by that count. Repeated leaves within a single argument are supported " *
+            "and agree with reverse mode; sharing that is not object identity (a `reshape`, " *
+            "a `view`, an `Array` beside its backing `Memory`) is not, wherever it appears. " *
+            "Use `value_and_derivative!!` with one tangent shared across the positions, or " *
+            "reverse mode, which accumulates into the shared storage.",
         ),
     )
 end
@@ -973,6 +975,13 @@ The tuple interface lifts each input to a width-1 slot and returns `(y, dy)` for
 directional derivative. The `Lifted` interface returns the rule output (a `Lifted`) directly
 and computes one derivative per lane of the supplied `Lifted` width — width-1 unless the
 caller built wider (chunked) slots.
+
+Positions holding the same object share one tangent, so the tuple interface refuses two
+different tangents for them: only one direction can be carried and choosing silently is worse
+than refusing. Passing the same tangent object at every such position is well-posed and
+supported. The `Lifted` interface does not check — there the caller has already built the
+slots, and two slots over one primal carrying independent directions is a deliberate part of
+the forward representation.
 """
 @inline function value_and_derivative!!(rule::R) where {R}
     throw(
@@ -988,6 +997,7 @@ end
 end
 
 @inline function value_and_derivative!!(rule::R, fx::Vararg{Tuple{Any,Any},N}) where {R,N}
+    _check_repeated_arg_tangents(fx)
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
     # One aliasing cache across the argument tuple, as the `FCache{R,Nothing,…}` method below
@@ -2314,6 +2324,15 @@ float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. (A
 complex, mixed/abstract element types, possibly-uninitialised fields, or a differentiable
 `f` — is differentiated correctly via the generic chunked path, which allocates a fresh seed
 per chunk.
+
+Arguments that share one storage are refused. Forward mode gives each argument its own
+tangent storage, so two arguments over one array are two independent directions rather than
+one shared derivative, and the standard-basis sweep cannot represent that. Repeated leaves
+*within* one argument are fine — `f((a, a))` lifts through a single aliasing cache and gives
+the same gradient reverse mode does — but sharing that is not object identity (a `reshape`, a
+`view`, an `Array` beside its backing `Memory`) is refused wherever it appears, because the
+lift keys on the object. For those, use [`value_and_derivative!!`](@ref) with one tangent
+covering every position the storage occupies, or reverse mode, which accumulates into it.
 
 The arguments in `x` are left unchanged: an in-place `f` mutates only cache-owned buffers
 (the zero-allocation paths copy `x` into them each chunk) or a cache-owned snapshot that is

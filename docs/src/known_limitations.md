@@ -119,13 +119,31 @@ share derivative storage, so both positions report the one accumulated gradient.
 ### Conflicting forward tangents for one shared storage
 
 Positions that share one storage share one tangent, so supplying different tangents for them is
-ill-posed and only one direction can be carried. `value_and_derivative!!(cache, (f, df), (x, dx),
-…)` on a cache built with `friendly_tangents=false` refuses it with an `ArgumentError`. Two sibling
-entry points do not: with `friendly_tangents=true` the tangents are copied into prepared buffers
-that already share, so the last value written wins, and `value_and_derivative!!(rule, (f, df), (x,
-dx), …)` against a bare rule has no prepared tangent set to compare against. Both answer the
-ill-posed request silently, with the direction that happens to survive. Pass the same tangent object
-at every position the shared storage occupies, or use reverse mode, which accumulates into it.
+ill-posed: only one direction can be carried. `value_and_derivative!!` refuses it with an
+`ArgumentError` — through a prepared cache under either `friendly_tangents` setting, and against a
+bare rule. Pass the same tangent object at every position the shared storage occupies.
+
+The refusal is by object identity, so it does not see sharing that identity cannot express: a
+`reshape` or a `view` of an argument, or an `Array` beside its backing `Memory`. Those still answer
+silently, carrying whichever tangent the lift reached first. `f(a, b) = sum(a) + sum(b)` run at
+`(a, da)` and `(reshape(a, 3, 1), db)` reports `sum(da)` twice rather than `sum(da) + sum(db)`.
+
+### Forward gradients of arguments that share one storage
+
+Forward mode gives each argument its own tangent storage, so two arguments over one array are two
+independent directions rather than one shared derivative, and `value_and_gradient!!` — whose
+gradient is assembled from one standard-basis dof range per input — cannot represent that. It
+refuses with an `ArgumentError` rather than returning a gradient scaled by the number of positions
+the storage occupies. Repeated leaves *within* one argument are supported and agree with reverse
+mode: `f(t) = sum(t[1]) + sum(t[2])` at `t = (a, a)` gives `([2, 2, 2], [2, 2, 2])` in both modes,
+because one `lift` threads a single aliasing cache through the argument's leaves. Sharing that is
+not object identity — a `reshape`, a `view`, an `Array` beside its backing `Memory` — is refused
+wherever it appears, including within one argument.
+
+Reverse mode has no such restriction: aliased arguments share one cotangent buffer, so every
+position reports the one accumulated gradient. The forward Jacobian is also unaffected — it
+differentiates a single argument with `f` held fixed, so one dof range covers every position, and
+an aliased capture (`f = x -> x .* sum(q)` called at `x === q`) gives the full Jacobian.
 
 ### Reusing a prepared cache with different aliasing
 
