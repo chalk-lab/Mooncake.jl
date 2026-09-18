@@ -1348,12 +1348,13 @@ end
     _check_prepared_cache(getfield(cache, :input_specs), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
-    # Only this method can answer the question: the friendly method converts INTO the prepared
-    # tangent buffers, which are built through one aliasing cache, so two conflicting directions
-    # for one shared leaf are both written to the one buffer and the last wins — it never sees two
-    # tangent objects to compare. The rule-direct `(rule, (p, t)...)` method has no prepared tangent
-    # set to compare against either, and building one per call would cost a full extra tangent set
-    # on a path whose point is to skip the cache. Both gaps are in `known_limitations.md`.
+    # Sharing the `===` scan above cannot see — `f` capturing an array also passed as an
+    # argument — is only answerable here. The friendly method converts INTO the prepared tangent
+    # buffers, which are built through one aliasing cache, so two conflicting directions for one
+    # shared leaf both land in the one buffer and the last wins; it has no second tangent object
+    # left to compare. The rule-direct `(rule, (p, t)...)` method has no prepared tangent set at
+    # all, and building one per call would cost a full extra tangent set on a path whose point is
+    # to skip the cache. That residual is in `known_limitations.md`.
     _check_shared_input_tangents(cache, input_primals, input_tangents)
 
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
