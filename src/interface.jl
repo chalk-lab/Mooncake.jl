@@ -324,6 +324,23 @@ end
 end
 @inline _same_storage(@nospecialize(x), @nospecialize(y)) = _alias_key(x) === _alias_key(y)
 
+# The positions both aliasing emitters compare, as `(argument index, path)`. `leafwise` walks into
+# immutable containers for the tangent check; the primal check takes top-level mutables only.
+# Shared so the two cannot drift apart in what they enumerate.
+function _alias_pairs(@nospecialize(T::Type), leafwise::Bool)
+    leaves = Tuple{Int,Any}[]
+    for (i, P) in enumerate(T.parameters)
+        if leafwise
+            for path in _mutable_tangent_paths(P)
+                push!(leaves, (i, path))
+            end
+        elseif Base.ismutabletype(P)
+            push!(leaves, (i, ()))
+        end
+    end
+    return leaves
+end
+
 # Only MUTABLE tangents are comparable this way. `===` on an immutable is value equality, so two
 # zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever the primals are —
 # checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at `(3.0, 4.0)`. An
@@ -345,10 +362,7 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
     # of ONE argument alias exactly as two arguments do (`f(t)` prepared at `t = (a, b)` and called
     # at `(a, a)` gave half the gradient at both positions, silently), and the cache holds one
     # buffer per leaf either way.
-    leaves = Tuple{Int,Any}[]
-    for (i, T) in enumerate(tangents.parameters), path in _mutable_tangent_paths(T)
-        push!(leaves, (i, path))
-    end
+    leaves = _alias_pairs(tangents, true)
     n = length(leaves)
     # The unrolled form is quadratic in the leaf count, and past a few hundred pairs that is paid
     # in compile time: 128 leaves took 19s to expand and compile, against 0.6s for 32 and 0.05s for
@@ -405,7 +419,7 @@ end
 # prepared. If two arguments are the same object, their buffers must be too (the aliasing
 # invariant); if they are distinct, their buffers must be distinct or two gradients are summed
 # into one. Neither is detectable from types or sizes, so it is checked separately here.
-@generated function _check_prepared_aliasing(tangents::Tuple, fx::Tuple)
+@generated function _check_tangent_aliasing(tangents::Tuple, fx::Tuple)
     return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
 
@@ -562,7 +576,7 @@ end
 # Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
 # repeated scalar is not aliasing. Sharing nested inside an immutable container is caught instead by
 # `_inputs_alias` at cache construction, where the traversal it needs is paid once; see
-# `_check_prepared_aliasing` for why that traversal is too expensive to run per call.
+# `_check_tangent_aliasing` for why that traversal is too expensive to run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 #
@@ -571,14 +585,18 @@ end
 # per CALL, which is what makes it the verdict rather than the prepare-time `inputs_alias` flag —
 # a cache prepared with unrelated arguments and called with `(a, a.ref.mem)` otherwise returned
 # `[1,1,1]` at both positions against a truth of `[2,2,2]`, silently.
-@generated function _check_gradient_arg_aliasing(x::Tuple)
+@generated function _check_primal_aliasing(x::Tuple)
     checks = Expr(:block)
-    n = length(x.parameters)
-    for i in 1:n, j in (i + 1):n
-        Base.ismutabletype(x.parameters[i]) || continue
+    leaves = _alias_pairs(x, false)
+    for a in eachindex(leaves), b in (a + 1):length(leaves)
+        i, j = leaves[a][1], leaves[b][1]
         push!(
             checks.args,
-            :(_same_storage(x[$i], x[$j]) && _check_repeated_arg_dof(x[$i], $i, $j)),
+            :(
+                _same_storage(x[$i], x[$j]) &&
+                _holds_derivatives(x[$i]) &&
+                _throw_gradient_arg_alias_error($i, $j)
+            ),
         )
     end
     return quote
@@ -593,10 +611,11 @@ end
 # so `_same_storage` calls them aliased — and a `Vector{Int}` beside its buffer. Called from inside
 # the short-circuit so only an aliasing pair pays, and checked here rather than in the generator so
 # no `tangent_type` verdict is baked into callers' compiled IR.
-@inline function _check_repeated_arg_dof(x, i::Int, j::Int)
-    dof(zero_tangent(x)) == 0 && return nothing
-    return _throw_gradient_arg_alias_error(i, j)
-end
+# `ismutabletype` says a position COULD alias, not that it carries a derivative. Two positions
+# alias, for this purpose, only if they share storage AND that storage has dofs — which is what
+# keeps two EMPTY arrays out of it (they share Julia's one global empty `Memory`) and a
+# `Vector{Int}` beside its buffer. Runtime, not type-level: emptiness is not in the type.
+@inline _holds_derivatives(x) = dof(zero_tangent(x)) != 0
 
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
     throw(
@@ -617,11 +636,11 @@ end
 # WITHIN one argument leaves both counts equal (both share it), and `===` on an immutable is
 # value equality, so equal scalars (`f(2.0, 2.0)`) cannot make them differ either.
 #
-# `_check_gradient_arg_aliasing` catches only a repeated top-level MUTABLE argument. This
+# `_check_primal_aliasing` catches only a repeated top-level MUTABLE argument. This
 # catches sharing at any depth, and sharing with `f` — which that check never sees, as it is
 # passed the arguments alone. Cost is a full extra tangent set, so it runs once at cache
 # construction rather than per call; aliasing that appears only at call time is therefore not
-# caught, matching what `_check_prepared_aliasing` accepts for reverse mode, for the same
+# caught, matching what `_check_tangent_aliasing` accepts for reverse mode, for the same
 # reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
 # held fixed, so one dof range covers every position and there is nothing to double-count.
 # Both counts read the SAME tangents: `shared_dof` is `dof(ts)`, one walk with one identity cache,
@@ -2062,7 +2081,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _check_prepared_cache(getfield(cache, :input_specs), fx)
-    _check_prepared_aliasing(getfield(cache, :tangents), fx)
+    _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2188,7 +2207,7 @@ value_and_gradient!!(cache, f, x, y)
 ) where {F,N}
     fx = (f, x...)
     _check_prepared_cache(getfield(cache, :input_specs), fx)
-    _check_prepared_aliasing(getfield(cache, :tangents), fx)
+    _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
     if isnothing(cache.dests)
@@ -2330,7 +2349,7 @@ end
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
-    _check_gradient_arg_aliasing(x)
+    _check_primal_aliasing(x)
     _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
@@ -2501,7 +2520,7 @@ function value_and_gradient!!(
     # the body below unchanged.
     xs = (x1, xs_rest...)
     N = Nm1 + 1
-    _check_gradient_arg_aliasing(xs)
+    _check_primal_aliasing(xs)
     _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
     # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is

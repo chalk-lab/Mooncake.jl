@@ -3073,7 +3073,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "forward gradient refuses inputs sharing storage across positions" begin
-                # `_check_gradient_arg_aliasing` sees only a repeated top-level MUTABLE argument,
+                # `_check_primal_aliasing` sees only a repeated top-level MUTABLE argument,
                 # and only the arguments — never `f`. A callable holding an array also passed as
                 # an argument shares storage at depth, so the shared leaf was differentiated once
                 # per position and came back scaled by that count: [4,8,12] for a gradient that is
