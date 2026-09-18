@@ -453,6 +453,81 @@ function rrule!!(
     return X_dX, scal_adjoint
 end
 
+# Without this, differentiating `axpy!` traces into its ccall, for which there is no
+# `frule!!` -- reverse mode has a generic ccall fallback that gets away without one, but
+# forward mode does not. Surfaced via SciMLSensitivity.jl#1648 (GaussAdjoint's HVP forward-
+# differentiates its own reverse pass, which calls `axpy!` directly).
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(BLAS.axpy!),Integer,P,X,Integer,X,Integer
+    } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
+)
+function frule!!(
+    ::Dual{typeof(BLAS.axpy!)},
+    _n::Dual{<:Integer},
+    a_da::Dual{P},
+    X_dX::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::Dual{<:Integer},
+    Y_dY::Dual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::Dual{<:Integer},
+) where {P<:BlasFloat}
+
+    # Extract params.
+    n = primal(_n)
+    incx = primal(_incx)
+    incy = primal(_incy)
+    a, da = extract(a_da)
+    X, dX = arrayify(X_dX)
+    Y, dY = arrayify(Y_dY)
+
+    # Fréchet derivative of Y_new = a*X + Y: dY_new = da*X + a*dX + dY.
+    BLAS.axpy!(n, da, X, incx, dY, incy)
+    BLAS.axpy!(n, a, dX, incx, dY, incy)
+
+    # Perform primal computation.
+    BLAS.axpy!(n, a, X, incx, Y, incy)
+    return Y_dY
+end
+function rrule!!(
+    ::CoDual{typeof(BLAS.axpy!)},
+    _n::CoDual{<:Integer},
+    a_da::CoDual{P},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incx::CoDual{<:Integer},
+    Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
+    _incy::CoDual{<:Integer},
+) where {P<:BlasFloat}
+
+    # Extract params.
+    n = primal(_n)
+    incx = primal(_incx)
+    incy = primal(_incy)
+    a = primal(a_da)
+    X, dX = viewify(n, X_dX, incx)
+    Y, dY = viewify(n, Y_dY, incy)
+
+    # Take a copy of previous state in order to recover it on the reverse pass.
+    Y_copy = copy(Y)
+
+    # Run primal computation.
+    BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
+
+    function axpy_adjoint(::NoRData)
+
+        # Set primal to previous state.
+        Y .= Y_copy
+
+        # Compute gradient w.r.t. the scaling and w.r.t. DX; DY's own cotangent is already
+        # `dY`, unchanged, since `Y_new` aliases it and the identity term needs no action.
+        ∇a = dot(X, dY)
+        dX .+= a' .* dY
+
+        return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
+    end
+    return Y_dY, axpy_adjoint
+end
+
 #
 # LEVEL 2
 #
@@ -1601,6 +1676,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         map_prod([1, 3, 11], [1, 2, 11]) do (n, incx)
             flags = (false, :stability, nothing)
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
+        end,
+
+        # axpy!(n, a, x, incx, y, incy)
+        map_prod([1, 3, 11], [1, 2], [1, 2]) do (n, incx, incy)
+            flags = (false, :stability, nothing)
+            return (
+                flags...,
+                BLAS.axpy!,
+                n,
+                randn(rng, P),
+                randn(rng, P, n * incx),
+                incx,
+                randn(rng, P, n * incy),
+                incy,
+            )
         end,
 
         #
