@@ -98,13 +98,13 @@ end
     x::Mooncake.Lifted{P,1,Tuple{P}}, lane::Integer, ::IdDict
 ) = Mooncake.tangent(x, lane)
 
-# `NTuple{N,P}` is a single-scalar leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
-# tuple. Without these terminals the gradient/Jacobian driver mis-counts the input's dofs (a bare
-# BFloat16 tangent hits the fieldless-struct fallback → 0 dof → silent zero gradient) and the
+# `NTuple{N,P}` is a single-scalar leaf (ONE dimension, N lanes), like `NDual{T,N}` — not a structural
+# tuple. Without these terminals the gradient/Jacobian driver mis-counts the input's dimensions (a bare
+# BFloat16 tangent hits the fieldless-struct fallback → 0 dimension → silent zero gradient) and the
 # standard-basis seed walk MethodErrors when a BFloat16 leaf is nested in a larger V (the generic
-# `::Tuple` recursion has no bare-BFloat16 terminal). Mirror the `NDual` terminals: one dof, and a
+# `::Tuple` recursion has no bare-BFloat16 terminal). Mirror the `NDual` terminals: one dimension, and a
 # lane is hot iff its slot matches the cursor.
-@inline Mooncake.dof(::P, ::IdDict{Any,Any}) = 1
+@inline Mooncake.tangent_dim(::P, ::IdDict{Any,Any}) = 1
 @inline function Mooncake._basis_seed_isbits(
     ::NTuple{N,P}, slots::NTuple{N,Int}, c::Int
 ) where {N}

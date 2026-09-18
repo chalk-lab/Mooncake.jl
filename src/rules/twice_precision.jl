@@ -107,12 +107,12 @@ end
     return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
 end
 @inline lift(x::TWP{F}, ẋ::TWP{F}) where {F} = Lifted{TWP{F},1}(x, (ẋ,))
-# `NTuple{N,TWP}` is a single-number leaf (ONE dof, N lanes), like `NDual{T,N}` — not a structural
-# tuple. Without these terminals the gradient/Jacobian driver mis-counts a TWP input's dofs (the
-# generic struct `dof` recurses `hi`/`lo` → 2, but a TWP is one number) and the standard-basis seed
+# `NTuple{N,TWP}` is a single-number leaf (ONE dimension, N lanes), like `NDual{T,N}` — not a structural
+# tuple. Without these terminals the gradient/Jacobian driver mis-counts a TWP input's dimensions (the
+# generic struct `tangent_dim` recurses `hi`/`lo` → 2, but a TWP is one number) and the standard-basis seed
 # walk MethodErrors on the bare-TWP element of the `NTuple` leaf. Mirror the `NDual` terminals; a
 # unit tangent direction is `TWP(1, 0)`.
-@inline dof(::TWP, ::IdDict{Any,Any}) = 1
+@inline tangent_dim(::TWP, ::IdDict{Any,Any}) = 1
 # The V-tuple arg is spelled `Tuple{TWP{F},Vararg{TWP{F}}}` (at least one element) rather than
 # `NTuple{N,TWP{F}}` so `F` is always bound: an empty `NTuple{0,TWP{F}}` leaves `F` free (Aqua
 # `unbound_args`). A basis-seed leaf always has `N >= 1` lanes, so this excludes only an unreachable

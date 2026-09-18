@@ -60,7 +60,7 @@ struct FwdAliasHolder{V}
 end
 (h::FwdAliasHolder)(x) = sum(h.v .* x)
 
-# A callable holding an array that returns its mutated argument. Its own dofs put the Jacobian
+# A callable holding an array that returns its mutated argument. Its own dimensions put the Jacobian
 # sweep on the non-packable path, where the returned value aliases the caller's input.
 struct FwdInPlaceScaler{V}
     v::V
@@ -210,7 +210,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
     # Prepared-cache admission, not a rule: the registry seeds well-formed inputs and never
     # reaches these paths.
     @testset "vector API admission" begin
-        # Empty input is supported everywhere: a zero-dof sweep has nothing to run, but the
+        # Empty input is supported everywhere: a zero-dimension sweep has nothing to run, but the
         # value and the `n x 0` Jacobian are still well defined.
         e = Float64[]
         for mk in (Mooncake.prepare_derivative_cache, Mooncake.prepare_pullback_cache)
@@ -350,7 +350,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test occursin("Mooncake.FCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
-            # A scalar input has 1 dof, so no width-`W` chunk rule is built.
+            # A scalar input has 1 dimension, so no width-`W` chunk rule is built.
             @test occursin("chunk=false", forward_show)
             @test occursin("chunk_size=1", forward_show)
 
@@ -372,7 +372,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ),
             )
             forward_chunk2_show = sprint(show, forward_cache_chunk2)
-            # 2 dof at chunk_size=2 builds a width-2 native chunk rule.
+            # 2 dimension at chunk_size=2 builds a width-2 native chunk rule.
             @test occursin("chunk=true", forward_chunk2_show)
             @test occursin("chunk_size=2", forward_chunk2_show)
 
@@ -974,7 +974,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # admits, and Julia 1.10 forward already handled (1.10 `Dict`s use `Vector`s).
             #
             # Distinct coefficients, so a gradient entry landing in the wrong slot cannot pass by
-            # symmetry: the seed walk must advance the dof cursor in the order `dof` counts, and a
+            # symmetry: the seed walk must advance the dimension cursor in the order `tangent_dim` counts, and a
             # mismatch there misplaces entries silently rather than erroring. `kwargs` comes from
             # the enclosing loop, so the four iterations cover the seed path with debug mode on and
             # off rather than repeating one configuration.
@@ -1030,8 +1030,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
             # An `IdDict` interleaves keys and values in one backing `ht`, so its V has no separate
             # non-differentiable field and it needed its own seed method. The per-key gradients are
-            # checked, not just `d/dv`: the seed walk has to advance the dof cursor in the order
-            # `dof` counts, and a mismatch misplaces entries silently rather than erroring.
+            # checked, not just `d/dv`: the seed walk has to advance the dimension cursor in the order
+            # `tangent_dim` counts, and a mismatch misplaces entries silently rather than erroring.
             fid(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
             mkid() = IdDict{Symbol,Float64}(:a => 2.0, :b => 3.0)
             vir, gir = Mooncake.value_and_gradient!!(
@@ -1075,8 +1075,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.value_and_gradient!!(tuple_cache_grad_fwd, f_tuple, tuple_x) ==
                 (x^2 + sin(y), (Mooncake.NoTangent(), (2 * x, cos(y))))
 
-            # A differentiable `Ref` within a multi-dof gradient input forces the chunked
-            # `basis_lifted!!` seeding path (2 dofs at chunk_size=2); `_basis_seed!!` had no
+            # A differentiable `Ref` within a multi-dimension gradient input forces the chunked
+            # `basis_lifted!!` seeding path (2 dimensions at chunk_size=2); `_basis_seed!!` had no
             # `NDualRef` method, so this threw a MethodError. Forward must match the reverse
             # oracle (the `Ref`'s cotangent is a `MutableTangent`).
             g_ref = t -> t[1][]^2 + sin(t[2])
@@ -1090,7 +1090,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test TestUtils.has_equal_data(gf_ref, gr_ref)
 
             # Complex `Ref` exercises the distinct complex `NDualRef` `_basis_seed!!` (two cursor
-            # steps per dof: real then imag).
+            # steps per dimension: real then imag).
             g_cref = t -> abs2(t[1][]) + sin(t[2])
             cref0 = ComplexF64(x, y)
             cref_fwd = Mooncake.prepare_derivative_cache(
@@ -1188,7 +1188,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # primals are restored from the user's arrays at the top of every chunk
             # (regression: y and the chunk-2 gradient slots were silently wrong).
             mut_f = v -> (s=sum(abs2, v); v .*= 2; s)
-            mut_x = collect(1.0:12.0)  # dof > default chunk width 8 → two chunks
+            mut_x = collect(1.0:12.0)  # tangent_dim > default chunk width 8 → two chunks
             mut_cache = Mooncake.prepare_derivative_cache(
                 mut_f, copy(mut_x); config=Mooncake.Config(; kwargs...)
             )
@@ -1197,7 +1197,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test mut_grad[2] == 2 .* mut_x
 
             # A differentiable closure `f` takes the generic path on a scalar input: the
-            # width-1 fast path cannot represent `f`'s own dofs (regression: it hard-coded
+            # width-1 fast path cannot represent `f`'s own dimensions (regression: it hard-coded
             # NoTangent for `f` and seeded uninitialised tangent storage).
             closure_f = let c = 3.0
                 v -> c * v
@@ -1212,7 +1212,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test closure_grad[2] == 3.0
             @test Mooncake.get_tangent_field(closure_grad[1], :c) == x
 
-            # Width-N Lifted inputs against a cache without a chunk rule (scalar dof → no
+            # Width-N Lifted inputs against a cache without a chunk rule (scalar dimension → no
             # chunk built), and against a chunk rule of a different width, must raise a
             # clear PreparedCacheError, not a MethodError/typeassert.
             sq = z -> z^2
@@ -1312,7 +1312,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 vcat(2 .* collect(1.0:3.0), zeros(3))
 
             # Rule registries bypass prepared-cache admission; check the sweep here.
-            @testset "vector with extra tangent dofs" for data in (Float64[], [2.0, 4.0]),
+            @testset "vector with extra tangent dimensions" for data in
+                                                                (Float64[], [2.0, 4.0]),
                 W in (1, 8)
 
                 weighted_f = v -> v.weight
@@ -1453,7 +1454,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.value_and_gradient!!, cache_5, f5, x5
             ) == 0
 
-            # length-10 vector: DOF > max chunk width (8), so two chunks (8 + 2).
+            # length-10 vector: dimension > max chunk width (8), so two chunks (8 + 2).
             x10 = collect(1.0:10.0)
             f10 = x -> sum(abs2, x)
             cache_10 = Mooncake.prepare_derivative_cache(
@@ -1468,7 +1469,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             ) == 0
 
             # Non-packable inputs (here a NamedTuple) also chunk through the generic
-            # chunked gradient path: multi-dof builds a native chunk rule and the
+            # chunked gradient path: multi-dimension builds a native chunk rule and the
             # gradient is correct. (Such inputs were previously pinned to width 1.)
             nt_x = (; a=1.3, b=2.1, c=0.7)
             f_nt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
@@ -1510,8 +1511,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gA[2] ≈ 2 .* Ax
 
             # An `f` that rebinds a field leaves the seed holding a V the prepare-time leaf
-            # table never saw, so only a width below the dof count exposes it: at width >=
-            # dof there is a single chunk and nothing later reads the orphan. Reusing one
+            # table never saw, so only a width below the dimension count exposes it: at width >=
+            # dimension there is a single chunk and nothing later reads the orphan. Reusing one
             # cache checks that the restore holds across calls too.
             fr = b -> (b.w=2 .* b.w; sum(abs2, b.w))
             w0 = [1.0, 2.0, 3.0]
@@ -1544,7 +1545,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             # In-place-mutating `f` whose array spans >1 chunk: the seed primal must be
             # restored (and partials re-zeroed) every chunk, else a later chunk runs on an
-            # earlier chunk's mutated primal. dof 10 > max chunk width forces two chunks.
+            # earlier chunk's mutated primal. dimension 10 > max chunk width forces two chunks.
             fip = t -> begin
                 t[1] .= t[1] .* 2.0
                 sum(abs2, t[1])
@@ -1573,7 +1574,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gsame[2][1] ≈ 8 .* [1.0, 2.0, 3.0]
             @test gsame[2][2] ≈ 2 .* [4.0, 5.0]
 
-            # Zero-dof input (no float dofs) with an in-place `f`: the total_dof==0 generic
+            # Zero-dimension input (no float dimensions) with an in-place `f`: the total_dim==0 generic
             # branch must also snapshot/restore the user's input.
             fz0 = x -> (x[1] += 1; 2.5)
             xz0 = [10, 20, 30]
@@ -1584,7 +1585,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test yz0 == 2.5
             @test xz0 == [10, 20, 30]                      # user input not mutated
 
-            # Mixed array + scalar input has a non-array dof, so the gather bails and the
+            # Mixed array + scalar input has a non-array dimension, so the gather bails and the
             # generic chunked path runs — still correct.
             fmix = nt -> sum(nt.v) + nt.s^2
             mx = (; v=[1.0, 2.0], s=3.0)
@@ -1628,7 +1629,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gsp[2].fields.x1 ≈ 2 * 3.0 * 4.0
             @test gsp[2].fields.x2 ≈ 3.0^2
 
-            # Multi-chunk scalar input (dof 10 > max chunk width): correct + zero-alloc.
+            # Multi-chunk scalar input (dimension 10 > max chunk width): correct + zero-alloc.
             nt10 = NamedTuple{Tuple(Symbol.("x", 1:10))}(ntuple(Float64, 10))
             f10 = nt -> sum(abs2, values(nt))
             c10 = Mooncake.prepare_derivative_cache(
@@ -1642,7 +1643,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.value_and_gradient!!, c10, f10, nt10
             ) == 0
 
-            # Complex scalar dofs have an isbits V but two dofs per element, which the isbits
+            # Complex scalar dimensions have an isbits V but two dimensions per element, which the isbits
             # barrier's scatter cannot handle — they must take the generic path, not crash.
             fz = z -> abs2(z)
             cz = Mooncake.prepare_derivative_cache(
@@ -1888,7 +1889,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             v500, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
             @test c500.n == 0                 # the caller's object is untouched
             @test g500[2] ≈ ones(16)
-            # 16 dof at chunk 8 is TWO chunks, and the refresh runs per chunk: without that,
+            # 16 dimension at chunk 8 is TWO chunks, and the refresh runs per chunk: without that,
             # chunk 1's mutation carried into chunk 2 and the value came from the last chunk
             # (138.0 for a truth of 137.0). One chunk was already right, so `n` must exceed the
             # chunk width for this to bite.
@@ -1920,7 +1921,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test g502[2] ≈ ones(16)
 
             # A `Ptr` argument: the aliasing check must use the same tangent entry point as the
-            # shared-dof count it is compared against, which returns the documented placeholder
+            # shared-dimension count it is compared against, which returns the documented placeholder
             # rather than throwing.
             p499 = [3.0]
             @test Mooncake.prepare_derivative_cache(
@@ -2014,7 +2015,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "native chunk cache" begin
-            # A multi-dof signature builds a native width-`W` chunk frule on the cache.
+            # A multi-dimension signature builds a native width-`W` chunk frule on the cache.
             cache_supported = Mooncake.prepare_derivative_cache(
                 (a, b) -> a * b + sin(a),
                 x,
@@ -2271,10 +2272,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
             end
 
-            # Differentiable `f` (captures a vector ⇒ dof(f) ≥ 1) with a short input and a vector
+            # Differentiable `f` (captures a vector ⇒ dimension(f) ≥ 1) with a short input and a vector
             # output takes the non-packable forward path, where the per-chunk width
-            # `W = gradient_chunk_size` includes `f`'s dofs, so `W > length(x)`. The first-chunk
-            # J-write loop must guard `lane <= total_dof`, else it writes past `J`'s `length(x)`
+            # `W = gradient_chunk_size` includes `f`'s dimensions, so `W > length(x)`. The first-chunk
+            # J-write loop must guard `lane <= total_dim`, else it writes past `J`'s `length(x)`
             # columns (BoundsError under --check-bounds=yes). Forward must match the reverse oracle.
             let
                 g_cap = let w = collect(1.0:7.0)
@@ -2282,7 +2283,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
                 z = [0.5, 0.5]
                 cf = Mooncake.prepare_derivative_cache(g_cap, z)
-                @test getfield(cf, :gradient_chunk_size) > length(z)  # W > total_dof
+                @test getfield(cf, :gradient_chunk_size) > length(z)  # W > total_dim
                 _, Jf = Mooncake.value_and_jacobian!!(cf, g_cap, z)
                 _, Jr = Mooncake.value_and_jacobian!!(
                     Mooncake.prepare_pullback_cache(g_cap, z), g_cap, z
@@ -2327,10 +2328,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
     @testset "value_and_hvp!!" begin
         TestUtils.test_hook(Val(:allow_unstable_hvp_interface_test)) do
-            @testset "fcache dof skips undefined builtin-array slots" begin
+            @testset "fcache tangent_dim skips undefined builtin-array slots" begin
                 x = Vector{Any}(undef, 2)
                 x[1] = 1.0
-                @test Mooncake.dof(x) == 1
+                @test Mooncake.tangent_dim(x) == 1
             end
 
             @testset "multi-argument HVP is rejected" begin
@@ -2394,9 +2395,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
             end
 
-            @testset "storage admission uses first-order dofs" begin
+            @testset "storage admission uses first-order dimensions" begin
                 x = [FirstOrderTangent(0.0)]
-                @test Mooncake.dof(x) == 1
+                @test Mooncake.tangent_dim(x) == 1
                 TestUtils._test_throws(ArgumentError, "supplied tangents do not share") do
                     Mooncake._check_tangent_storage!(IdDict(), (x, x), (copy(x), copy(x)))
                 end
@@ -2803,7 +2804,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
                     @test gr[2] == [2.0, 2.0, 2.0]
 
-                    # The forward gradient assembles one dof range per argument, so it refuses the
+                    # The forward gradient assembles one dimension range per argument, so it refuses the
                     # pair outright — and the refusal has to be the per-CALL check, not the
                     # prepare-time `inputs_alias` flag: on a cache prepared with unrelated
                     # arguments that flag is false, and the sweep returned [1,1,1] at both
@@ -2963,7 +2964,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     c_v, g_v, (a_v, reshape(a_v, 2, 3))
                 )
                 # The mirror image: positions sharing a NON-differentiable buffer contribute no
-                # dofs, so there is nothing to scale by a count and nothing to refuse. 1.11+ threw
+                # dimensions, so there is nothing to scale by a count and nothing to refuse. 1.11+ threw
                 # here, rejecting a gradient it computes correctly.
                 n_v = collect(1:6)
                 h_v = (x, m, r) -> sum(x) * (length(m) + length(r))
@@ -2988,10 +2989,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             @static if VERSION >= v"1.11-"
                 @testset "forward gradient refuses inputs sharing backing storage" begin
-                    # `a` and `reshape(a)` are DISTINCT objects over ONE `Memory`, which `dof`'s
-                    # identity-keyed de-duplication cannot see, so the dof comparison agrees with
+                    # `a` and `reshape(a)` are DISTINCT objects over ONE `Memory`, which `tangent_dim`'s
+                    # identity-keyed de-duplication cannot see, so the dimension comparison agrees with
                     # the per-position sum. The gradient buffers alias all the same and the sweep
-                    # writes each dof exactly once, so one position's contribution overwrote the
+                    # writes each dimension exactly once, so one position's contribution overwrote the
                     # other's: 2.0 where reverse gives 3.0 for `sum(t[1]) + 2*sum(t[2])`.
                     a_st = collect(1.0:6.0)
                     g_st = t -> sum(t[1]) + 2 * sum(t[2])
@@ -3049,7 +3050,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "forward gradient refuses a repeated mutable argument" begin
-                # The gradient is assembled from one standard-basis dof range per argument, which
+                # The gradient is assembled from one standard-basis dimension range per argument, which
                 # cannot represent a repeated argument: the seeds are per-argument, so the seeded
                 # primal stops aliasing and a mutating `f` reported the value for DISTINCT
                 # arguments (13.0 instead of 14.0). Sharing the seed slot instead double-counts.
@@ -3078,8 +3079,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 h(a, b) = a * b
                 ch = Mooncake.prepare_derivative_cache(h, 2.0, 3.0)
                 @test Mooncake.value_and_gradient!!(ch, h, 4.0, 4.0)[1] == 16.0
-                # A repeated MUTABLE argument with no differentiable dof is representable: it has
-                # no gradient to assemble, so the dof ranges still line up with the arguments.
+                # A repeated MUTABLE argument with no differentiable dimension is representable: it has
+                # no gradient to assemble, so the dimension ranges still line up with the arguments.
                 # `ismutabletype` alone refuses it, and reverse mode accepts it.
                 k(a, b, v) = (a.a + b.a) * sum(v)
                 ck = IntScaler(3)
@@ -3117,7 +3118,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 distinct = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), copy(w))
                 _, gd = Mooncake.value_and_gradient!!(distinct, FwdAliasHolder(w), copy(w))
                 @test gd[2] == w
-                # Sharing WITHIN one argument is representable (one dof range covers both
+                # Sharing WITHIN one argument is representable (one dimension range covers both
                 # occurrences) and must keep working.
                 intra(t) = sum(t.p .* t.q)
                 ci = Mooncake.prepare_derivative_cache(intra, FwdAliasPair(w, w))

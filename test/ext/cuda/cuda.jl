@@ -435,7 +435,7 @@ end
         # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
         # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
         # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
-        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-DOF partials.
+        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-dimension partials.
         _inplace_sin!(x, y) = (x.=sin.(y); sum(x))
         _inplace_add_alias!(x, y) = (x.=x .+ y; sum(x))
         _inplace_vec_to_mat!(x, y) = (x.=y; sum(x))
@@ -2090,7 +2090,7 @@ end
         # 1.12 a separate all-NoTangent collapse in tangent_type happens to hide the bug).
         #
         # Fix: _premat_nondiff_args walks the primal Broadcasted tree before flatten and
-        # replaces any sub-Broadcasted whose total Dual-slot count (_total_bcast_dof) is
+        # replaces any sub-Broadcasted whose total Dual-slot count (_total_bcast_dim) is
         # zero with its already-materialized plain CuArray value.  After that replacement
         # flatten only sees plain arrays as leaves, and its composed function is isbits.
         @testset "_premat_nondiff_args makes flat_bc.f isbits" begin
@@ -2102,7 +2102,7 @@ end
             inner = Base.Broadcast.broadcasted(Float64, bool_mask)
             outer = Base.Broadcast.broadcasted(*, x, inner)
 
-            # After _premat_nondiff_args: inner node (dof==0) replaced by plain CuArray.
+            # After _premat_nondiff_args: inner node (dimension==0) replaced by plain CuArray.
             fixed = _MooncakeCUDAExt._premat_nondiff_args(outer)
             @test !(fixed.args[2] isa Base.Broadcast.Broadcasted)
             flat_fixed = Base.Broadcast.flatten(fixed)
@@ -2146,7 +2146,7 @@ end
             @test Array(grads[2]) ≈ expected_grad
         end
 
-        @testset "zero-DOF nested broadcast scalar gradients reconstruct on reverse pass" begin
+        @testset "derivative-free nested broadcast scalar gradients reconstruct on reverse pass" begin
             x = CuArray(randn(rng, 4))
             c = 2.5
             b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
@@ -2163,7 +2163,7 @@ end
         @testset "all-scalar nested broadcast leaves keep scalar gradients" begin
             # Regression for the differentiable-scalar guard in _premat_nondiff_args:
             # (s .+ 1.0) is a nested Broadcasted with NoFData fdata (scalar gradients live
-            # in rdata) but one differentiable DOF; collapsing it to a constant dropped s
+            # in rdata) but one differentiable dimension; collapsing it to a constant dropped s
             # from flat_pargs, crashing the reverse pass with UndefRefError.
             x = CuArray(randn(rng, 4))
             s = 0.75
@@ -2174,7 +2174,7 @@ end
             @test grads[3] ≈ sum(Array(x))
         end
 
-        @testset "in-place zero-DOF nested broadcasts reconstruct scalar gradients" begin
+        @testset "in-place derivative-free nested broadcasts reconstruct scalar gradients" begin
             dest = CuArray(zeros(4))
             x = CuArray(randn(rng, 4))
             c = -1.25

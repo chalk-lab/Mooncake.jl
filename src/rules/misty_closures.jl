@@ -18,10 +18,12 @@ struct MistyClosureTangent
 end
 
 # Degree-of-freedom count (forward gradient/Jacobian seeding) of a MistyClosure tangent: only
-# the differentiable `captures_tangent` carries scalar DOFs. `dual_callable` is the compiled
+# the differentiable `captures_tangent` carries scalar dimensions. `dual_callable` is the compiled
 # dual rule (an OpaqueClosure/MistyClosure), not a tangent — walking it generically recurses
 # unboundedly into compiled IR (e.g. via the HVP `grad_f`), so it is skipped.
-@inline dof(t::MistyClosureTangent, seen::IdDict{Any,Any}) = dof(t.captures_tangent, seen)
+@inline tangent_dim(t::MistyClosureTangent, seen::IdDict{Any,Any}) = tangent_dim(
+    t.captures_tangent, seen
+)
 
 # Build a forward-mode rule for a MistyClosure using its original world age.
 #
@@ -90,7 +92,7 @@ function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict
 end
 
 # Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
-# DOFs, so recurse into it for lane `lane` and carry `dual_callable` through unchanged. The cache
+# dimensions, so recurse into it for lane `lane` and carry `dual_callable` through unchanged. The cache
 # keys on the captures identity, so a reverse rule's shared `fwds_oc`/`pb_oc` captures give one
 # tangent.
 @inline tangent(x::Lifted{P,N,MistyClosureTangent}, lane::Integer) where {P<:MistyClosure,N} = _materialise_lane(

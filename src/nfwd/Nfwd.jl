@@ -68,6 +68,8 @@ export NDual,
     ndual_value,
     ndual_partial,
     ndual_partials,
+    primal_dim,
+    static_primal_dim,
     UnsupportedError,
     UnsupportedInputError,
     UnsupportedOutputError,
@@ -75,13 +77,10 @@ export NDual,
     _nfwd_check_chunk_size,
     _nfwd_default_chunk_size,
     _nfwd_fold_slots,
-    _nfwd_input_dof,
     _nfwd_input_error,
     _nfwd_is_supported_primal,
     _nfwd_is_supported_scalar,
     _nfwd_output_error,
-    _nfwd_sig_dof,
-    _nfwd_type_dof,
     _nfwd_unfold_slots
 
 #
@@ -149,7 +148,7 @@ For a complex input type (e.g. a struct with several float fields), you must
 **flatten** it to its scalar leaves before wrapping:
 
 ```
-struct S; a::Float64; b::ComplexF64; end   # dof = 3 slots
+struct S; a::Float64; b::ComplexF64; end   # dimension = 3 slots
 
 S(a, b) → flatten → [a, re(b), im(b)]
              ↓ wrap each leaf as NDual{Float64,3}(x, eₖ)
@@ -1518,15 +1517,15 @@ end
 #
 # ── N vs D ───────────────────────────────────────────────────────────────────
 # With D differentiable input parameters, the total slot count is
-#   N = Σᵢ dof(inputᵢ),   dof = 1 (real),  dof = 2 (complex)
-# so N ≥ D in general.  For all-real inputs dof = 1 for every input and N = D
+#   N = Σᵢ dimension(inputᵢ),   dimension = 1 (real),  dimension = 2 (complex)
+# so N ≥ D in general.  For all-real inputs dimension = 1 for every input and N = D
 # exactly — this is a consequence of the slot definition, not a separate choice.
 # The tiling logic is uniform over N regardless; the real/complex distinction
 # only affects how N is computed from D (via _broadcast_elem_dof_type).
 #
 # ── Slot-tiled execution (reduce register pressure for large N) ───────────────
 #    Background: with D differentiable inputs, the total slot count is
-#    N = Σᵢ dof(inputᵢ) where dof = 1 (real) or 2 (complex).  Currently every
+#    N = Σᵢ dimension(inputᵢ) where dimension = 1 (real) or 2 (complex).  Currently every
 #    thread carries ONE NDual{T,N} whose N partials cover ALL D inputs at once.
 #
 #    Slot-tiling partitions those N slots across ceil(N/K) kernel launches:
@@ -1692,39 +1691,28 @@ const _NFWD_PREFERRED_CHUNK_SIZE = 8
 
 @inline function _nfwd_default_chunk_size(x::Tuple)
     # `init=0` so an empty args tuple (e.g. a zero-argument callable) yields chunk size 1 rather than
-    # throwing on an empty reduction — matching `_nfwd_input_dof(::Tuple)`, which also passes `init=0`.
-    return max(1, min(sum(_nfwd_input_dof, x; init=0), _NFWD_PREFERRED_CHUNK_SIZE))
+    # throwing on an empty reduction — matching `primal_dim(::Tuple)`, which also passes `init=0`.
+    return max(1, min(sum(primal_dim, x; init=0), _NFWD_PREFERRED_CHUNK_SIZE))
 end
 
-# Type-level DOF: returns the number of differentiable scalar components for a
+# Type-level dimension: returns the number of differentiable scalar components for a
 # concrete type, or `nothing` when the size cannot be determined from the type
 # alone (e.g. heap-allocated Array whose length is a runtime value).
-@inline _nfwd_type_dof(::Type{<:IEEEFloat}) = 1
-@inline _nfwd_type_dof(::Type{<:Complex{<:IEEEFloat}}) = 2
+@inline static_primal_dim(::Type{<:IEEEFloat}) = 1
+@inline static_primal_dim(::Type{<:Complex{<:IEEEFloat}}) = 2
 # Propagate `nothing` (not `0 + nothing`, which would throw) when any element's size is not
-# type-determinable — e.g. a tuple containing an Array — mirroring `_nfwd_sig_dof`.
-@inline function _nfwd_type_dof(T::Type{<:Tuple})
+# type-determinable — e.g. a tuple containing an Array.
+@inline function static_primal_dim(T::Type{<:Tuple})
     total = 0
     for P in T.parameters
-        d = _nfwd_type_dof(P)
+        d = static_primal_dim(P)
         d === nothing && return nothing
         total += d
     end
     return total
 end
-@inline _nfwd_type_dof(::Type{<:AbstractArray}) = nothing
-@inline _nfwd_type_dof(::Type) = 0
-
-@inline function _nfwd_sig_dof(::Type{sig}) where {sig<:Tuple}
-    params = sig.parameters
-    total = 0
-    for i in 2:length(params)
-        d = _nfwd_type_dof(params[i])
-        d === nothing && return nothing
-        total += d
-    end
-    return total
-end
+@inline static_primal_dim(::Type{<:AbstractArray}) = nothing
+@inline static_primal_dim(::Type) = 0
 
 @inline _nfwd_is_supported_scalar(::Type{<:IEEEFloat}) = true
 @inline _nfwd_is_supported_scalar(::Type{<:Complex{<:IEEEFloat}}) = true
@@ -1880,7 +1868,7 @@ end
 #   • Tuple of the above     → concatenation, left to right
 #
 # `_nfwd_fold_slots` and `_nfwd_unfold_slots` define this order exactly once.
-# All DOF counting, basis seeding, and gradient scatter must use these helpers so
+# All dimension counting, basis seeding, and gradient scatter must use these helpers so
 # that the slot order is guaranteed to agree everywhere.
 
 """
@@ -1947,7 +1935,7 @@ be threaded through `state` by the caller.
 
 `_nfwd_fold_slots` and `_nfwd_unfold_slots` agree on traversal order: tuples left to right,
 arrays in `eachindex` order.  Within each leaf, the number of slots consumed equals
-`_nfwd_input_dof(leaf)`.
+`primal_dim(leaf)`.
 """
 @inline function _nfwd_unfold_slots(
     f::F,
@@ -1969,13 +1957,13 @@ end
     return (head, tail...), state
 end
 
-# ── DOF counting ─────────────────────────────────────────────────────────────────
+# ── dimension counting ─────────────────────────────────────────────────────────────────
 
-@inline _nfwd_input_dof(x::IEEEFloat) = 1
-@inline _nfwd_input_dof(x::Complex{<:IEEEFloat}) = 2
-@inline _nfwd_input_dof(x::AbstractArray{<:IEEEFloat}) = length(x)
-@inline _nfwd_input_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
-@inline _nfwd_input_dof(x::Tuple) = sum(_nfwd_input_dof, x; init=0)
+@inline primal_dim(x::IEEEFloat) = 1
+@inline primal_dim(x::Complex{<:IEEEFloat}) = 2
+@inline primal_dim(x::AbstractArray{<:IEEEFloat}) = length(x)
+@inline primal_dim(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 2 * length(x)
+@inline primal_dim(x::Tuple) = sum(primal_dim, x; init=0)
 
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualArray{Element, N, D, A, Wrapped, B}` — element-major canonical V for arrays.

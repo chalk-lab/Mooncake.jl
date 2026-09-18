@@ -489,27 +489,27 @@ end
     # before refusing. Both traversals sit behind the flag, so an ordinary call pays nothing.
     getfield(cache, :inputs_alias) || return nothing
     ts = _zero_tangents(input_primals)
-    shared_dof = dof(ts)
-    _inputs_alias(shared_dof, ts, input_primals) || return nothing
+    shared_dim = tangent_dim(ts)
+    _inputs_alias(shared_dim, ts, input_primals) || return nothing
     @static if VERSION >= v"1.11-rc4"
         # Canonical tangents share the primals' backing Memory. Compare the actual mapping:
-        # equal dof counts and unrelated sharing in reverse scratch cannot certify it.
+        # equal dimension counts and unrelated sharing in reverse scratch cannot certify it.
         # Coherent shared seeds remain supported; constructing them for HVP is separate work.
         return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
     end
-    # `_zero_tangents` gives one tangent per shared storage, so `shared_dof` bounds how many dofs
+    # `_zero_tangents` gives one tangent per shared storage, so `shared_dim` bounds how many dimensions
     # the supplied tangents may distinctly cover: any MORE and some shared leaf was given two
     # tangent objects, of which the lift keeps whichever position it reaches first. Testing only
     # that SOME sharing was present accepted that — a callable holding both arguments, with the
     # first array's tangent shared and the second's conflicting, answered 2.0 or 12.0 by which
-    # direction the callable's copy carried, for a well-posed 4.0. FEWER dofs is one tangent
+    # direction the callable's copy carried, for a well-posed 4.0. FEWER dimensions is one tangent
     # reused across positions that do NOT share, which lifts to independent Vs and is correct.
-    shared = dof(input_tangents, IdDict{Any,Any}())
-    shared > shared_dof && _throw_shared_input_tangent_error()
+    shared = tangent_dim(input_tangents, IdDict{Any,Any}())
+    shared > shared_dim && _throw_shared_input_tangent_error()
     # One buffer under two array containers (`da` and `reshape(da)`, or an `Array` beside its
     # backing `Memory`) leaves the counts equal, so `_repeats_storage` is what recognises it.
     _repeats_storage(input_tangents) && return nothing
-    summed = sum(t -> dof(t, IdDict{Any,Any}()), input_tangents; init=0)
+    summed = sum(t -> tangent_dim(t, IdDict{Any,Any}()), input_tangents; init=0)
     shared == summed && _throw_shared_input_tangent_error()
     return nothing
 end
@@ -520,7 +520,7 @@ end
 function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     isbitstype(T) && return nothing
     if expected isa MistyClosureTangent
-        # The compiled dual callable is code, not derivative storage (as in `dof`).
+        # The compiled dual callable is code, not derivative storage (as in `tangent_dim`).
         return _check_tangent_storage!(
             seen, expected.captures_tangent, supplied.captures_tangent
         )
@@ -531,8 +531,10 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
     if ismutable(expected)
         key, value = _alias_key(expected), _alias_key(supplied)
         if haskey(seen, key)
-            # A wrapper of integer or empty arrays can be mutable yet carry no dofs.
-            seen[key] === value || dof(expected) == 0 || _throw_shared_input_tangent_error()
+            # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
+            seen[key] === value ||
+                tangent_dim(expected) == 0 ||
+                _throw_shared_input_tangent_error()
             return nothing
         end
         seen[key] = value
@@ -564,12 +566,12 @@ end
     )
 end
 
-# A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dof
+# A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dimension
 # range per argument. A repeated mutable argument breaks that accounting: the seeds are built per
 # argument, so the seeded primal stops aliasing and the sweep differentiates a different function
 # (a mutating `f` then reports the value for distinct arguments), and making the slots share a
 # primal is not enough either — the direction has to reach every position the argument occupies,
-# and the dof ranges then no longer correspond one-to-one with arguments. Refuse instead of
+# and the dimension ranges then no longer correspond one-to-one with arguments. Refuse instead of
 # returning a wrong gradient. `value_and_derivative!!` handles this correctly, because the caller
 # supplies the seeds and can share one tangent across the repeated positions.
 #
@@ -581,7 +583,7 @@ end
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 #
 # By `_same_storage`, not `===`, so an `Array` and its backing `Memory` count: they are one storage
-# and so one dof range, and the per-argument sweep differentiates it once per position. This runs
+# and so one dimension range, and the per-argument sweep differentiates it once per position. This runs
 # per CALL, which is what makes it the verdict rather than the prepare-time `inputs_alias` flag —
 # a cache prepared with unrelated arguments and called with `(a, a.ref.mem)` otherwise returned
 # `[1,1,1]` at both positions against a truth of `[2,2,2]`, silently.
@@ -605,24 +607,18 @@ end
     end
 end
 
-# `ismutabletype` says the argument COULD alias, not that it carries a derivative: a repeated
-# argument with no differentiable dof has no gradient to assemble, and reverse mode accepts it.
-# That is also what keeps two EMPTY arrays out of it — they share Julia's one global empty `Memory`,
-# so `_same_storage` calls them aliased — and a `Vector{Int}` beside its buffer. Called from inside
-# the short-circuit so only an aliasing pair pays, and checked here rather than in the generator so
-# no `tangent_type` verdict is baked into callers' compiled IR.
 # `ismutabletype` says a position COULD alias, not that it carries a derivative. Two positions
-# alias, for this purpose, only if they share storage AND that storage has dofs — which is what
+# alias, for this purpose, only if they share storage AND that storage has dimensions — which is what
 # keeps two EMPTY arrays out of it (they share Julia's one global empty `Memory`) and a
 # `Vector{Int}` beside its buffer. Runtime, not type-level: emptiness is not in the type.
-@inline _holds_derivatives(x) = dof(zero_tangent(x)) != 0
+@inline _holds_derivatives(x) = tangent_dim(zero_tangent(x)) != 0
 
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
     throw(
         ArgumentError(
             "Forward-mode `value_and_gradient!!` does not support arguments $i and $j sharing " *
             "one storage — the same mutable object, or an `Array` passed alongside its backing " *
-            "`Memory`: the gradient is assembled from one standard-basis dof range per " *
+            "`Memory`: the gradient is assembled from one standard-basis tangent_dim range per " *
             "argument, which cannot represent a storage that occupies two of them. Use " *
             "`value_and_derivative!!` with one tangent shared across those positions, or use " *
             "reverse mode.",
@@ -632,7 +628,7 @@ end
 
 # Whether the inputs share differentiable storage ACROSS positions, exactly. `_zero_tangents`
 # builds the tuple through one aliasing cache, so a shared leaf gets one tangent and counts its
-# dof once; summing per-argument tangents counts it once per position it occupies. Sharing
+# dimension once; summing per-argument tangents counts it once per position it occupies. Sharing
 # WITHIN one argument leaves both counts equal (both share it), and `===` on an immutable is
 # value equality, so equal scalars (`f(2.0, 2.0)`) cannot make them differ either.
 #
@@ -642,13 +638,13 @@ end
 # construction rather than per call; aliasing that appears only at call time is therefore not
 # caught, matching what `_check_tangent_aliasing` accepts for reverse mode, for the same
 # reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
-# held fixed, so one dof range covers every position and there is nothing to double-count.
-# Both counts read the SAME tangents: `shared_dof` is `dof(ts)`, one walk with one identity cache,
-# while `dof` per element starts a fresh cache and so counts a shared leaf once per position.
+# held fixed, so one dimension range covers every position and there is nothing to double-count.
+# Both counts read the SAME tangents: `shared_dim` is `tangent_dim(ts)`, one walk with one identity cache,
+# while `tangent_dim` per element starts a fresh cache and so counts a shared leaf once per position.
 # Rebuilding a tangent set per argument gives the same two numbers and allocated 1.6 MB on a pair of
 # 100k-element vectors.
-function _inputs_alias(shared_dof::Int, ts::Tuple, fx::Tuple)
-    shared_dof != sum(dof, ts; init=0) && return true
+function _inputs_alias(shared_dim::Int, ts::Tuple, fx::Tuple)
+    shared_dim != sum(tangent_dim, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
     # they do not, so that version reads it off the primals instead; see `_repeats_storage!`.
     return @static VERSION >= v"1.11-rc4" ? _repeats_storage(ts) : _repeats_storage(fx)
@@ -657,7 +653,7 @@ end
 # Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so the
 # same tangent at two positions is recognised as the case the aliasing cache already handles
 # correctly. `backing` is the STORAGE that has been claimed, so a different container over it is the
-# case `dof`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own tangent at
+# case `tangent_dim`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own tangent at
 # one position and the backing of an `Array` tangent at another.
 struct _StorageSeen
     objs::IdDict{Any,Nothing}
@@ -679,7 +675,7 @@ end
         return false
     end
 
-    # Nothing to double-count where there are no dofs: a `Vector{Int}` and its own reshape share a
+    # Nothing to double-count where there are no dimensions: a `Vector{Int}` and its own reshape share a
     # `Memory{NoTangent}`, and refusing that rejected a gradient the sweep computes correctly. The
     # refusal's own message is the test — a shared leaf "comes back scaled by that count", and a
     # `NoTangent` leaf has no count.
@@ -749,7 +745,7 @@ else
     end
 
     function _repeats_storage!(s::_StorageSeen, x::Array)
-        # Two `Vector{Int}`s over one buffer contribute no dofs, so sharing among them is not a
+        # Two `Vector{Int}`s over one buffer contribute no dimensions, so sharing among them is not a
         # reason to refuse anything.
         (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
         haskey(s.objs, x) && return false
@@ -836,7 +832,7 @@ function _throw_gradient_input_alias_error()
             "Forward-mode `value_and_gradient!!` does not support two arguments over one " *
             "storage — `f` holding the same array that is also passed as an argument, say. " *
             "Each argument carries its own tangent storage, so the sweep gives the shared " *
-            "leaf one standard-basis dof range per position and its gradient comes back " *
+            "leaf one standard-basis tangent_dim range per position and its gradient comes back " *
             "scaled by that count. Repeated leaves within a single argument are supported " *
             "and agree with reverse mode; sharing that is not object identity (a `reshape`, " *
             "a `view`, an `Array` beside its backing `Memory`) is not, wherever it appears. " *
@@ -862,10 +858,10 @@ end
 # Generalises the flat float-vector packable path to `NDualArray` leaves nested in
 # tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds
 # and per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray,
-# gradient Array)` leaf pairs in dof order. Per chunk the seed leaf partials are poked in
+# gradient Array)` leaf pairs in tangent_dim order. Per chunk the seed leaf partials are poked in
 # place and each lane's directional derivative is written straight into the matching
-# gradient leaf — no per-chunk allocation. Only differentiable dofs backed by real float
-# arrays qualify; any scalar/complex/ abstract dof makes the gather return `nothing` and the
+# gradient leaf — no per-chunk allocation. Only differentiable dimensions backed by real float
+# arrays qualify; any scalar/complex/ abstract dimension makes the gather return `nothing` and the
 # input falls back to the generic path.
 struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
     f_seed::Ff
@@ -883,10 +879,10 @@ end
 # Each chunk rebuilds the isbits seed on the stack (capturing the current primal) and
 # reconstructs the per-arg `Lifted`s through the stored templates' concrete types
 # (`typeof(tmpl)(primal, V)`, which folds where `Lifted{fieldtype(P,i),W}` does not).
-# `total_dof` is precomputed to avoid `dof`'s `IdDict`.
+# `total_dim` is precomputed to avoid `tangent_dim`'s `IdDict`.
 struct IsbitsGradSeed{W,Tmpls}
     templates::Tmpls
-    total_dof::Int
+    total_dim::Int
 end
 
 # `fwd_cache` is the derivative cache for `grad_f`. For non-primitive `f`, the compiled
@@ -1071,11 +1067,11 @@ is shown by the cache.
     # float arrays. Only the zero-allocation fast path below is shape-restricted (see
     # `gradient_seed`).
     input_ts = _zero_tangents(fx)
-    total_dof = dof(input_ts)
-    inputs_alias = _inputs_alias(total_dof, input_ts, fx)
+    total_dim = tangent_dim(input_ts)
+    inputs_alias = _inputs_alias(total_dim, input_ts, fx)
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
-        min(total_dof, requested)
+        min(total_dim, requested)
     end
     # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
     # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
@@ -1096,7 +1092,7 @@ is shown by the cache.
     # path.
     gradient_seed = let args = Base.tail(fx)
         # The zero-allocation seed needs a non-differentiable `f` (the path rewraps `f`
-        # without sweeping its dofs, assuming `V === NoDual`) and same-eltype float-vector
+        # without sweeping its dimensions, assuming `V === NoDual`) and same-eltype float-vector
         # args. The same-eltype requirement mirrors the seed method's dispatch
         # (`x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed
         # would be dead cache weight that dispatch can never reach.
@@ -1115,7 +1111,7 @@ is shown by the cache.
             first(args) isa AbstractVector{<:IEEEFloat} &&
             all(a -> a isa AbstractVector{eltype(first(args))}, args) &&
             # The flat sweep counts elements; extra differentiable fields need the generic path.
-            all(i -> dof(input_ts[i + 1]) == length(args[i]), eachindex(args)) &&
+            all(i -> tangent_dim(input_ts[i + 1]) == length(args[i]), eachindex(args)) &&
             all(a -> typeof(similar(a)) == typeof(a), args)
             W = gradient_chunk_size
             (
@@ -1131,7 +1127,7 @@ is shown by the cache.
     # tuples/NamedTuples/structs) that the flat-vector seed above does not cover:
     # preallocate per-arg seeds + gradient buffers and gather their leaf pairs for the
     # zero-allocation leaf-table path. `nothing` (so the generic chunked path runs) when any
-    # dof is not array-backed, or `f` is differentiable.
+    # dimension is not array-backed, or `f` is differentiable.
     if gradient_seed === nothing &&
         gradient_chunk_size >= 1 &&
         tangent_type(typeof(first(fx))) === NoTangent &&
@@ -1157,14 +1153,14 @@ is shown by the cache.
                 _cat_leaves(map(s -> _gather_resets(tangent(s)), _arg_seeds)),
             )
         elseif isbitstype(typeof(fx)) &&
-            _only_real_scalar_dofs(typeof(tangent(zero_lifted(Val(W), fx))))
-            # Scalar-only structured input with real-float dofs: the concrete-barrier path
+            _all_real_scalars(typeof(tangent(zero_lifted(Val(W), fx))))
+            # Scalar-only structured input with real-float dimensions: the concrete-barrier path
             # rebuilds the seed on the stack each chunk. The primal tuple must be isbits too
             # — otherwise the per-chunk `zero_lifted` would allocate (an `IdDict`); a
             # non-isbits `f` falls back to the generic path. Store per-input `Lifted`
-            # templates (for type-stable reconstruction) and the precomputed dof count.
+            # templates (for type-stable reconstruction) and the precomputed dimension count.
             templates = map(a -> zero_lifted(Val(W), a), fx)
-            gradient_seed = IsbitsGradSeed{W,typeof(templates)}(templates, total_dof)
+            gradient_seed = IsbitsGradSeed{W,typeof(templates)}(templates, total_dim)
         end
     end
     # Jacobian output buffer for the zero-allocation packable path: a single same-eltype
@@ -1178,7 +1174,7 @@ is shown by the cache.
         end
     end
     if config.friendly_tangents
-        # `input_ts` above is exactly this tuple, built for the dof count, and nothing has
+        # `input_ts` above is exactly this tuple, built for the dimension count, and nothing has
         # written to it since.
         input_tangents = input_ts
         gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
@@ -1480,13 +1476,13 @@ end
 # into the corresponding `J` column. `J` is sized from the first output and cached in `Jref`
 # (reused, overwritten next call).
 function _fcache_jacobian_packable!!(
-    cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dof::Int, x::AbstractVector{T}
+    cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dim::Int, x::AbstractVector{T}
 ) where {T}
     nda = arg_seed.rep
     z = zero(T)
     local y, J
     s = 1
-    while s <= total_dof
+    while s <= total_dim
         copyto!(nda.primal, x)
         # Zero every lane, then poke this chunk's standard-basis entries (element `slot`, lane
         # `lane`). Storage layout is version-specific (element-major block on 1.11+, per-lane
@@ -1494,7 +1490,7 @@ function _fcache_jacobian_packable!!(
         Nfwd._zero_seed!(nda)
         @inbounds for lane in 1:W
             slot = s + lane - 1
-            slot <= total_dof && Nfwd._set_partial!(nda, slot, lane, one(T))
+            slot <= total_dim && Nfwd._set_partial!(nda, slot, lane, one(T))
         end
         output = value_and_derivative!!(cache, f_seed, arg_seed)
         if s == 1
@@ -1504,8 +1500,8 @@ function _fcache_jacobian_packable!!(
             y = primal(output)
             _check_jacobian_output(y, T)
             cached = Jref[]
-            J = if cached === nothing || size(cached) != (length(y), total_dof)
-                Jref[] = zeros(T, length(y), total_dof)
+            J = if cached === nothing || size(cached) != (length(y), total_dim)
+                Jref[] = zeros(T, length(y), total_dim)
             else
                 fill!(cached, z)
             end
@@ -1517,7 +1513,7 @@ function _fcache_jacobian_packable!!(
         ov = tangent(output)::NDualArray
         @inbounds for lane in 1:W
             col = s + lane - 1
-            col <= total_dof || break
+            col <= total_dim || break
             for r in 1:length(getfield(ov, :primal))
                 J[r, col] = Nfwd._get_partial(ov, r, lane)
             end
@@ -1564,12 +1560,12 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
 ) where {F}
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_specs), (f, x))
-    total_dof = length(x)
-    # No input dofs: the chunk width resolves to zero, so there is no seed to sweep and no
+    total_dim = length(x)
+    # No input dimensions: the chunk width resolves to zero, so there is no seed to sweep and no
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
     # the value and the output length. `x` is empty, so the snapshot the sweep would take has
     # nothing to restore.
-    if total_dof == 0
+    if total_dim == 0
         y = _copy_output(f(x))
         Ty = _check_jacobian_output(y, eltype(x))
         return y, zeros(Ty, length(y), 0)
@@ -1596,15 +1592,15 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         # otherwise box the seed's per-lane partials each iteration).
         f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
         return _fcache_jacobian_packable!!(
-            cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dof, x
+            cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dim, x
         )
     end
     # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not
     # cover): seed each chunk's `W` standard-basis columns starting at `start_col` via
-    # `basis_lifted!!` (slots past `total_dof` map to `0`, an all-zero lane) and read one
-    # Jacobian column per lane. `W = gradient_chunk_size` is `min(dof((f, x...)),
-    # requested)`, which INCLUDES `f`'s own dofs, so for a differentiable `f` it can exceed
-    # `total_dof = length(x)`; every J-write loop must guard `lane <= total_dof`.
+    # `basis_lifted!!` (slots past `total_dim` map to `0`, an all-zero lane) and read one
+    # Jacobian column per lane. `W = gradient_chunk_size` is `min(tangent_dim((f, x...)),
+    # requested)`, which INCLUDES `f`'s own dimensions, so for a differentiable `f` it can exceed
+    # `total_dim = length(x)`; every J-write loop must guard `lane <= total_dim`.
     # Width-dispatched `value_and_derivative!!` routes to `chunk_rule` (W > 1) or
     # `single_rule` (W == 1, no chunk rule).
     W = cache.gradient_chunk_size
@@ -1618,7 +1614,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
     x_seed = Lifted{typeof(x),W}(x, seed_vs[2])  # partials reseeded in place per chunk
     cols(start_col) = ntuple(lane -> let slot = start_col + lane - 1
-        slot <= total_dof ? slot : 0
+        slot <= total_dim ? slot : 0
     end, W)
     # Snapshot `x` into the cache buffer (the args copy, so `x` is element 1) before any
     # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
@@ -1631,21 +1627,21 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         # Same reason the `value_and_derivative!!` methods copy their output.
         y = _copy_output(primal(output))
         Ty = _check_jacobian_output(y, eltype(x))
-        J = zeros(Ty, length(y), total_dof)
-        # Guard the first chunk too: `W` can exceed `total_dof` (it includes `f`'s dofs), so
-        # lanes past `total_dof` would write out of bounds of `J`'s `total_dof` columns.
+        J = zeros(Ty, length(y), total_dim)
+        # Guard the first chunk too: `W` can exceed `total_dim` (it includes `f`'s dimensions), so
+        # lanes past `total_dim` would write out of bounds of `J`'s `total_dim` columns.
         @inbounds for lane in 1:W
-            lane <= total_dof || break
+            lane <= total_dim || break
             J[:, lane] .= tangent(output, lane)
         end
-        for start_col in (W + 1):W:total_dof
+        for start_col in (W + 1):W:total_dim
             _copy_to_output!!(x, x_snapshot)
             output = value_and_derivative!!(
                 cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
             )
             @inbounds for lane in 1:W
                 col = start_col + lane - 1
-                col <= total_dof || break
+                col <= total_dim || break
                 J[:, col] .= tangent(output, lane)
             end
         end
@@ -1661,17 +1657,17 @@ end
 ) where {F}
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
     _check_prepared_cache(getfield(cache, :input_specs), (f, x))
-    total_dof = length(x)
+    total_dim = length(x)
     y_cache = cache.y_cache
     Ty = _check_jacobian_output(y_cache, eltype(x))
     ȳ = zeros(Ty, length(y_cache))
-    J = zeros(Ty, length(ȳ), total_dof)
+    J = zeros(Ty, length(ȳ), total_dim)
     # Reverse mode restores any in-place mutation of `x` on the pullback, so — unlike the
     # forward `(::FCache)` method above, which snapshots `x` explicitly — each
     # `value_and_pullback!!` call below leaves `x` unchanged with no snapshot here.
-    # Also covers an empty INPUT: `J` is already `length(y) x total_dof`, so a
-    # zero-dof input gives the `n x 0` Jacobian with no sweep to run.
-    if isempty(ȳ) || total_dof == 0
+    # Also covers an empty INPUT: `J` is already `length(y) x total_dim`, so a
+    # zero-dimension input gives the `n x 0` Jacobian with no sweep to run.
+    if isempty(ȳ) || total_dim == 0
         y, _ = value_and_pullback!!(cache, ȳ, f, x)
         return y, J
     end
@@ -1870,7 +1866,7 @@ end
 # other get ONE tangent. Reverse mode requires aliased primals to share fdata (accumulation must land
 # in one storage); `zero_tangent(x)` allocates a fresh cache per call, so a per-argument
 # `tuple_map(zero_tangent, fx)` severs that and yields the independent-slot chain rule instead of the
-# true gradient. It also makes `dof` count a repeated argument twice. Mirrors `_to_friendly` above,
+# true gradient. It also makes `tangent_dim` count a repeated argument twice. Mirrors `_to_friendly` above,
 # which already shares a cache across the tuple when converting the other way.
 @inline function _zero_tangents(fx::Tuple)
     c = _friendly_cache(fx)
@@ -2229,27 +2225,27 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-# Is forward V `T` built only from real-float scalar dofs (`NoDual`/`NDual{<:IEEEFloat}`
+# Is forward V `T` built only from real-float scalar dimensions (`NoDual`/`NDual{<:IEEEFloat}`
 # nested in tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters
-# via a one-dof-per -leaf cursor walk that only knows these shapes, so this is its admission
-# gate: complex dofs (two dofs per element), `PossiblyUninitTangent`, and any other isbits V
+# via a one-dimension-per -leaf cursor walk that only knows these shapes, so this is its admission
+# gate: complex dimensions (two dimensions per element), `PossiblyUninitTangent`, and any other isbits V
 # fall back to the generic path (which handles them) rather than hitting an opaque
 # `MethodError` in the scatter.
-_only_real_scalar_dofs(::Type{NoDual}) = true
-_only_real_scalar_dofs(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
-function _only_real_scalar_dofs(::Type{T}) where {T<:Tuple}
-    all(_only_real_scalar_dofs, fieldtypes(T))
+_all_real_scalars(::Type{NoDual}) = true
+_all_real_scalars(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
+function _all_real_scalars(::Type{T}) where {T<:Tuple}
+    all(_all_real_scalars, fieldtypes(T))
 end
-function _only_real_scalar_dofs(::Type{NamedTuple{names,T}}) where {names,T}
-    _only_real_scalar_dofs(T)
+function _all_real_scalars(::Type{NamedTuple{names,T}}) where {names,T}
+    _all_real_scalars(T)
 end
-_only_real_scalar_dofs(::Type{<:ImmutableDual{T}}) where {T} = _only_real_scalar_dofs(T)
-_only_real_scalar_dofs(::Type) = false
+_all_real_scalars(::Type{<:ImmutableDual{T}}) where {T} = _all_real_scalars(T)
+_all_real_scalars(::Type) = false
 
 # Gather `(NDualArray, Array)` leaf pairs from a forward V `v` and the parallel reverse
-# tangent `g`, in dof order. Returns a flat tuple of pairs, or `nothing` if any dof is not
+# tangent `g`, in dimension order. Returns a flat tuple of pairs, or `nothing` if any dimension is not
 # array-backed. `dict` guards against aliasing/cycles: a revisited array or mutable wrapper
-# means the flat leaf table would mis-order or double-count dofs (the generic path dedups
+# means the flat leaf table would mis-order or double-count dimensions (the generic path dedups
 # instead), so bail to `nothing` and let that path handle it.
 _grad_leaves(::NoDual, @nospecialize(g), dict) = ()
 function _grad_leaves(v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict) where {T<:IEEEFloat}
@@ -2316,7 +2312,7 @@ of the cache's resolved chunk width). This overload exists so callers can prepar
 cache once, then use it either for directional derivatives via
 [`value_and_derivative!!`](@ref) or for full gradients.
 
-All differentiable input shapes are chunked (a zero-dof input is evaluated once). Four shape
+All differentiable input shapes are chunked (a zero-dimension input is evaluated once). Four shape
 families take a zero-allocation path that reuses cache-owned seeds: (0) a single scalar
 `x::IEEEFloat`; and, with a non-differentiable isbits `f`, (1) one or more same-element-type
 dense float vectors; (2) tuples/NamedTuples/structs whose differentiable leaves are all real
@@ -2387,12 +2383,12 @@ end
             zeroed
         end
     end
-    # `dof` walks the tangent; reuse the freshly-built/zeroed workspace tangent.
-    total_dof = dof(native_gradients)
+    # `tangent_dim` walks the tangent; reuse the freshly-built/zeroed workspace tangent.
+    total_dim = tangent_dim(native_gradients)
 
-    if total_dof == 0
+    if total_dim == 0
         # Snapshot/restore like the chunked loop below: forward slots alias the user's
-        # storage, so an in-place `f` over a zero-dof input (e.g. `Vector{Int}`) would
+        # storage, so an in-place `f` over a zero-dimension input (e.g. `Vector{Int}`) would
         # otherwise mutate it.
         _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
         # `_finalize_gradient` reads the input primals, so it runs after the restore.
@@ -2411,19 +2407,19 @@ end
 
     # Per chunk of `W` standard-basis directions starting at `start_slot`:  - seed the
     # forward direction by basis-seeding the whole input tuple's `zero_lifted` V   
-    # (`basis_lifted!!` walks all inputs' dofs with one global cursor; slots past   
-    # `total_dof` give zero lanes), then split that tuple V into per-input width-`W` slots; 
+    # (`basis_lifted!!` walks all inputs' dimensions with one global cursor; slots past   
+    # `total_dim` give zero lanes), then split that tuple V into per-input width-`W` slots; 
     # - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single
     # rule    for `W == 1`) and read lane `k`'s directional derivative as `coeff =
     # tangent(out, k)`;  - scatter `coeff * reverse_tangent` into the gradient, where the
     # reverse basis tangent    per lane is the width-1 `basis_lifted!!` seed at that scalar
-    # dof, `unlift`ed back to a    reverse tangent (a scalar output makes each lane's
+    # dimension, `unlift`ed back to a    reverse tangent (a scalar output makes each lane's
     # derivative the coefficient for its    seeded basis direction). `W =
-    # gradient_chunk_size`. Each chunk guards `slot <= total_dof`: a lane past the last dof
-    # (a short final/only chunk, or `W > total_dof`) carries a zero seed direction
+    # gradient_chunk_size`. Each chunk guards `slot <= total_dim`: a lane past the last tangent_dim
+    # (a short final/only chunk, or `W > total_dim`) carries a zero seed direction
     # (`basis_lifted!!` maps out-of-range slots to none) that contributes nothing — keeping
     # the sweep correct and uniform with the Jacobian/Hessian sweeps rather than relying on
-    # `W <= total_dof` (the assumption whose absence in the Jacobian sweep caused an
+    # `W <= total_dim` (the assumption whose absence in the Jacobian sweep caused an
     # out-of-bounds write).
     W = cache.gradient_chunk_size
     nfields = Val(fieldcount(typeof(input_primals)))
@@ -2432,12 +2428,12 @@ end
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the
     # end.
     _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
-    # Single sweep over all chunks. `total_dof >= 1` here (the zero-dof case returned
+    # Single sweep over all chunks. `total_dim >= 1` here (the zero-dimension case returned
     # above), so the first iteration always runs and assigns `y`; its leading input restore
     # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
     try
-        for start_slot in 1:W:total_dof
+        for start_slot in 1:W:total_dim
             _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
             slots = ntuple(lane -> start_slot + lane - 1, W)
             lanes = ntuple(
@@ -2459,7 +2455,7 @@ end
             end
             for lane in 1:W
                 slot = start_slot + lane - 1
-                slot <= total_dof || break
+                slot <= total_dim || break
                 coeff = Float64(tangent(output, lane))
                 # `lanes[lane]` is the per-input-field reverse-tangent tuple for this lane,
                 # parallel to `native_gradients`; scatter each field's contribution directly (no
@@ -2508,7 +2504,7 @@ end
 @inline function value_and_gradient!!(cache::FCache, f::F, x::T) where {F,T<:IEEEFloat}
     # A differentiable `f` carries its own degrees of freedom: the width-1 single-seed run
     # below cannot represent them (and `lift(f, NoTangent())` would seed uninitialised
-    # tangent storage), so fall back to the generic chunked path, which sweeps `f`'s dofs
+    # tangent storage), so fall back to the generic chunked path, which sweeps `f`'s dimensions
     # too.
     tangent_type(F) === NoTangent ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
@@ -2561,7 +2557,7 @@ function value_and_gradient!!(
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
     # guaranteed by the packability gate, so this is a free isbits rewrap.
     f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
-    total_dof = sum(length, xs)
+    total_dim = sum(length, xs)
     # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field
     # is the authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
     W = cache.gradient_chunk_size
@@ -2571,7 +2567,7 @@ function value_and_gradient!!(
     # pre-zeroing.
     local y
     s = 1
-    while s <= total_dof
+    while s <= total_dim
         # Re-seed every chunk: an in-place `f` mutates the seed primals (and its rule scales
         # the partials) during the previous chunk's run, so restore the primals from the
         # user's arrays and zero the partials before setting this chunk's basis directions —
@@ -2586,7 +2582,7 @@ function value_and_gradient!!(
             Nfwd._zero_seed!(nda)
             for lane in 1:W
                 slot = s + lane - 1
-                (slot <= total_dof && off < slot <= off + len) &&
+                (slot <= total_dim && off < slot <= off + len) &&
                     Nfwd._set_partial!(nda, slot - off, lane, one(T))
             end
             off += len
@@ -2602,7 +2598,7 @@ function value_and_gradient!!(
             len = length(xs[i])
             for lane in 1:W
                 slot = s + lane - 1
-                if slot <= total_dof && off < slot <= off + len
+                if slot <= total_dim && off < slot <= off + len
                     gb[slot - off] = tangent(output, lane)
                 end
             end
@@ -2823,9 +2819,9 @@ end
 end
 
 # Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)`
-# leaf tuple, threading a running global-dof offset. Each chunk re-zeros all partials (an
+# leaf tuple, threading a running global-dimension offset. Each chunk re-zeros all partials (an
 # in-place `f` dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W`
-# standard-basis ones — so the seeding work is O(total_dof) per chunk, O(total_dof²) over a
+# standard-basis ones — so the seeding work is O(total_dim) per chunk, O(total_dof²) over a
 # full gradient (compute, not allocation); the alternative (clear only the previous chunk's
 # hot entries) is unsafe for in-place `f`.
 @inline _leaves_dof(::Tuple{}) = 0
@@ -2854,7 +2850,7 @@ end
     L = length(nda.primal)
     @inbounds for i in 1:L
         d = off + i
-        # `d` ranges 1..total_dof across all leaves, so a `min(·, total_dof)` upper clamp
+        # `d` ranges 1..total_dim across all leaves, so a `min(·, total_dim)` upper clamp
         # would be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's
         # empty lanes.
         s <= d <= s + W - 1 && (g[i] = tangent(out, d - s + 1))
@@ -2867,7 +2863,7 @@ end
 # current inputs and re-zero the partials (so an in-place `f` neither touches the user's
 # arrays nor compounds across chunks), poke the chunk's standard-basis partials in place,
 # run the width-dispatched `value_and_derivative!!`, and write each lane's directional
-# derivative straight into the matching preallocated gradient leaf (every dof is written
+# derivative straight into the matching preallocated gradient leaf (every dimension is written
 # exactly once, so `grad_bufs` needs no zeroing).
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
@@ -2883,10 +2879,10 @@ function _structured_gradient!!(
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
     W = cache.gradient_chunk_size
-    total_dof = _leaves_dof(leaves)
+    total_dim = _leaves_dof(leaves)
     local y
     s = 1
-    while s <= total_dof
+    while s <= total_dim
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
         _restore_resets!(seed.resets)
         # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
@@ -2920,8 +2916,8 @@ end
 end
 
 # Write the chunk's `W` directional derivatives into the gradient. `out`'s lane `k` is the
-# derivative w.r.t. dof `s + k - 1`; the gradient mirrors the input structure (recursive
-# coherence), so a single dof-ordered walk sets each leaf scalar directly. Pure isbits
+# derivative w.r.t. dimension `s + k - 1`; the gradient mirrors the input structure (recursive
+# coherence), so a single dimension-ordered walk sets each leaf scalar directly. Pure isbits
 # rebuild with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
 @inline function _isbits_scatter(ng, out, ::Val{W}, s) where {W}
     coeffs = ntuple(lane -> tangent(out, lane), Val(W))
@@ -2931,7 +2927,7 @@ end
 @inline _scatter_isbits(g::NoTangent, _coeffs, _s, c::Int) = (g, c)
 @inline function _scatter_isbits(g::T, coeffs::NTuple{W}, s, c::Int) where {T<:IEEEFloat,W}
     c += 1
-    # A scalar leaf consumes one dof; write the active lane's coefficient at this cursor
+    # A scalar leaf consumes one dimension; write the active lane's coefficient at this cursor
     # position when it falls in the current chunk `[s, s+W-1]` (matches the array path
     # `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
@@ -2958,7 +2954,7 @@ function _isbits_gradient!!(
 ) where {F,W}
     input_primals = (f, xs...)
     _check_prepared_cache(getfield(cache, :input_specs), input_primals)
-    total_dof = gs.total_dof
+    total_dim = gs.total_dim
     templates = gs.templates
     native_gradients = _zero_tangents(input_primals)
     # Peel the first (always full-width) chunk to keep the scalar `y` concretely typed.
@@ -2967,7 +2963,7 @@ function _isbits_gradient!!(
     _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
     native_gradients = _isbits_scatter(native_gradients, first_out, Val(W), 1)
     s = 1 + W
-    while s <= total_dof
+    while s <= total_dim
         out = _isbits_chunk(cache, input_primals, templates, Val(W), s)
         native_gradients = _isbits_scatter(native_gradients, out, Val(W), s)
         s += W
@@ -3058,9 +3054,9 @@ true
     # callables and `grad_f`'s forward chunk rule (kept in lockstep so they agree). Default
     # 1 (width-1): a standalone HVP is a single direction, so `value_and_hvp!!` must stay
     # width-1. `prepare_hessian_cache` passes `_chunk = N > 1` to build a width-N variant
-    # for its chunked Hessian sweep; cap at `dof(x)` (cannot batch more Hessian columns than
-    # input DOFs).
-    fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, dof(_zero_tangents(x)))
+    # for its chunked Hessian sweep; cap at `tangent_dim(x)` (cannot batch more Hessian columns than
+    # input dimensions).
+    fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, tangent_dim(_zero_tangents(x)))
     # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing
     # `config.chunk_size` through: at width 1 (standalone HVP) this builds no `chunk_rule`,
     # so the cache cannot bake an unusable width-K chunk rule over a width-1 for_rule (the
@@ -3227,7 +3223,7 @@ GPU-array inputs (e.g. `CuArray`) produce a device-resident gradient and Hessian
 
 Hessian computation uses forward-over-reverse AD over the reverse-mode gradient function.
 The Hessian is chunked: it sweeps `W = config.chunk_size` basis directions per forward pass
-(≈`ceil(n/W)` passes for `n` input DOFs). `chunk_size` defaults to automatic (up to an
+(≈`ceil(n/W)` passes for `n` input dimensions). `chunk_size` defaults to automatic (up to an
 internal maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it.
 
 !!! note
@@ -3235,7 +3231,7 @@ internal maximum, capped at `n`); pass `config=Config(; chunk_size=W)` to set it
     gradient closure. A chunked Hessian prepares two forward variants — width-1 (shared with
     [`value_and_hvp!!`](@ref)) and width-`W` for the column sweep — so `f` is evaluated and
     the forward-over-reverse rule compiled twice during preparation; the width-1 (scalar
-    1-DOF or `chunk_size=1`) case prepares a single variant.
+    1-dimension or `chunk_size=1`) case prepares a single variant.
 
 ```jldoctest; setup = :(using Mooncake)
 f(x) = sum(x .^ 2)
@@ -3258,16 +3254,16 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     base = prepare_hvp_cache(f, x1; config)
     # Chunked forward-over-reverse Hessian sweep: build a width-W variant of `grad_f` whose
     # FoR rule's dual callables are width W, alongside the width-1 `base` used by
-    # `value_and_hvp!!`. `chunked === nothing` keeps the width-1 column loop (scalar 1-DOF,
+    # `value_and_hvp!!`. `chunked === nothing` keeps the width-1 column loop (scalar 1-dimension,
     # or chunk_size 1). Auto (`chunk_size` nothing/0) chunks the full matrix.
-    dof_x = dof(zero_tangent(x1))
+    dim_x = tangent_dim(zero_tangent(x1))
     W = let c = getfield(config, :chunk_size)
         req = if (c === nothing || c == 0)
             _MAX_CHUNK_WIDTH
         else
             Nfwd._nfwd_check_chunk_size(c)
         end
-        min(req, dof_x)
+        min(req, dim_x)
     end
     # `empty_cache=false`: the `base` prepare above already honoured `config.empty_cache`;
     # re-clearing for the width-W variant would invalidate what `base` just compiled.
@@ -3425,7 +3421,7 @@ H
     end
     # Chunked forward-over-reverse: when `prepare_hessian_cache` built a width-W variant of
     # `grad_f` (its FoR dual callables are width W), sweep W Hessian columns per pass. Falls
-    # back to the width-1 column loop otherwise (scalar 1-DOF, or chunk_size 1).
+    # back to the width-1 column loop otherwise (scalar 1-dimension, or chunk_size 1).
     if chunked !== nothing
         grad_f_c, fwd_c, W = chunked
         value = _chunked_hessian_sweep!(grad_f_c, fwd_c, H, g, x1, n, Val(W))
@@ -3955,47 +3951,47 @@ end
     end
 end
 
-# `dof(t)` counts the differentiable scalar degrees of freedom of a TANGENT `t`, so the
+# `tangent_dim(t)` counts the differentiable scalar degrees of freedom of a TANGENT `t`, so the
 # canonical non-differentiable `NoTangent` is 0 directly. Walk with an identity cache so
 # aliased mutable tangents contribute once and cyclic tangents terminate locally. Dense leaf
-# counts reuse the nfwd engine's slot vocabulary (`_nfwd_input_dof`, the single source of
+# counts reuse the nfwd engine's slot vocabulary (`primal_dim`, the single source of
 # truth); the dedup wrapper around array/mutable nodes is the gradient-specific extension
 # (nfwd never dedups). IEEEFloat/Complex array tangents are isbits and always assigned, so
 # the count equals `length`/`2length`.
-@inline dof(t) = dof(t, IdDict{Any,Any}())
-@inline dof(::NoTangent, ::IdDict{Any,Any}) = 0
-@inline function dof(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
-    return Nfwd._nfwd_input_dof(t)
+@inline tangent_dim(t) = tangent_dim(t, IdDict{Any,Any}())
+@inline tangent_dim(::NoTangent, ::IdDict{Any,Any}) = 0
+@inline function tangent_dim(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
+    return Nfwd.primal_dim(t)
 end
 # `Union{}`-eltype arrays (e.g. an empty `Memory{Union{}}` reached while walking a closure
 # tangent like the HVP `grad_f`'s `MistyClosureTangent`) carry no differentiable content; 0.
 # More specific than the float/complex-array and generic-array methods, so no ambiguity.
-@inline dof(::AbstractArray{Union{}}, ::IdDict{Any,Any}) = 0
-@inline function dof(
+@inline tangent_dim(::AbstractArray{Union{}}, ::IdDict{Any,Any}) = 0
+@inline function tangent_dim(
     t::AbstractArray{<:Union{IEEEFloat,Complex{<:IEEEFloat}}}, seen::IdDict{Any,Any}
 )
     haskey(seen, t) && return 0
     seen[t] = nothing
-    return Nfwd._nfwd_input_dof(t)
+    return Nfwd.primal_dim(t)
 end
-@inline function dof(t::AbstractArray, seen::IdDict{Any,Any})
+@inline function tangent_dim(t::AbstractArray, seen::IdDict{Any,Any})
     haskey(seen, t) && return 0
     seen[t] = nothing
     total = 0
     if t isa _BuiltinArrays
         for i in eachindex(t)
             isassigned(t, i) || continue
-            total += dof(t[i], seen)
+            total += tangent_dim(t[i], seen)
         end
     else
         for ti in t
-            total += dof(ti, seen)
+            total += tangent_dim(ti, seen)
         end
     end
     return total
 end
-@inline function dof(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
-    return is_init(t) ? dof(val(t), seen) : 0
+@inline function tangent_dim(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
+    return is_init(t) ? tangent_dim(val(t), seen) : 0
 end
 # Generic fallback for tuples, named tuples, and any tangent struct —
 # `Tangent`/`MutableTangent` (whose single `fields` NamedTuple recurses), but also
@@ -4003,14 +3999,14 @@ end
 # its fields with mutable-node dedup so aliased and cyclic tangents are handled uniformly
 # (tuples/named-tuples are immutable and fully-initialised, so `fieldcount`/`getfield`
 # recursion matches element iteration).
-@inline function dof(t::P, seen::IdDict{Any,Any}) where {P}
+@inline function tangent_dim(t::P, seen::IdDict{Any,Any}) where {P}
     if Base.ismutabletype(P)
         haskey(seen, t) && return 0
         seen[t] = nothing
     end
     total = 0
     for n in 1:fieldcount(P)
-        isdefined(t, n) && (total += dof(getfield(t, n), seen))
+        isdefined(t, n) && (total += tangent_dim(getfield(t, n), seen))
     end
     return total
 end

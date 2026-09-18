@@ -276,7 +276,7 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
 end
 
 # De-duplicate on the BACKING STORAGE rather than the container: two positions can hold distinct
-# `Array`s over one `Memory` (`a` and `reshape(a)`), and that buffer's dofs must be counted once, as
+# `Array`s over one `Memory` (`a` and `reshape(a)`), and that buffer's dimensions must be counted once, as
 # they already are when one tangent OBJECT occupies both positions. `c` is an `IdDict`, so this
 # tuple compares its `Memory` by identity; a `Dict` would compare it by `==`, collapse two unrelated
 # zeroed buffers of equal length, and under-count -- which nothing downstream would refuse.

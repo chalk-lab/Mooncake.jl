@@ -132,7 +132,7 @@ silently, carrying whichever tangent the lift reached first. `f(a, b) = sum(a) +
 
 Forward mode gives each argument its own tangent storage, so two arguments over one array are two
 independent directions rather than one shared derivative, and `value_and_gradient!!` — whose
-gradient is assembled from one standard-basis dof range per input — cannot represent that. It
+gradient is assembled from one standard-basis dimension range per input — cannot represent that. It
 refuses with an `ArgumentError` rather than returning a gradient scaled by the number of positions
 the storage occupies. Repeated leaves *within* one argument are supported and agree with reverse
 mode: `f(t) = sum(t[1]) + sum(t[2])` at `t = (a, a)` gives `([2, 2, 2], [2, 2, 2])` in both modes,
@@ -142,7 +142,7 @@ wherever it appears, including within one argument.
 
 Reverse mode has no such restriction: aliased arguments share one cotangent buffer, so every
 position reports the one accumulated gradient. The forward Jacobian is also unaffected — it
-differentiates a single argument with `f` held fixed, so one dof range covers every position, and
+differentiates a single argument with `f` held fixed, so one dimension range covers every position, and
 an aliased capture (`f = x -> x .* sum(q)` called at `x === q`) gives the full Jacobian.
 
 ### Reusing a prepared cache with different aliasing

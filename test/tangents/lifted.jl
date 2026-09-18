@@ -569,7 +569,7 @@ const NDAC_VecC64 = NDualArray{
         @testset "aliased Memory shares one V, on both the seed and lift paths" begin
             # The V packs a fresh block per call, so without the aliasing cache two fields holding
             # one `Memory` get independent blocks: a mutation through one is invisible through the
-            # other and `dof` counts the shared storage twice. The float `Array` overloads honour the
+            # other and `tangent_dim` counts the shared storage twice. The float `Array` overloads honour the
             # cache; these two did not.
             mem = Memory{Float64}(undef, 1)
             mem[1] = 3.0
@@ -863,15 +863,15 @@ const NDAC_VecC64 = NDualArray{
 
     @testset "basis_lifted!!" begin
         # `basis_lifted!!(zero_lifted(...), slots)` sets lane k hot at the slots[k]-th
-        # scalar dof (counted in `dof`/`zero_tangent` order), mutating mutable V in place
+        # scalar dimension (counted in `tangent_dim`/`zero_tangent` order), mutating mutable V in place
         # and rebuilding immutable V.
         bl(x, slots) = basis_lifted!!(zero_lifted(Val(length(slots)), x), slots)
 
         @test tangent(bl(3.0, (1,)), 1) == 1.0
         @test tangent(bl([5.0, 6.0, 7.0], (2,)), 1) == [0.0, 1.0, 0.0]
-        @test tangent(bl(1.0 + 2.0im, (2,)), 1) == 0.0 + 1.0im  # imag dof
+        @test tangent(bl(1.0 + 2.0im, (2,)), 1) == 0.0 + 1.0im  # imag tangent_dim
         let t = tangent(bl(([1.0, 2.0], 9.0), (3,)), 1)
-            @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is dof 3
+            @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is tangent_dim 3
         end
 
         # The rebuilt V must keep the DECLARED backing NamedTuple. Re-deriving each field type from
@@ -890,7 +890,7 @@ const NDAC_VecC64 = NDualArray{
             @test tangent(b, 2) == [0.0, 0.0, 1.0]
         end
 
-        # Aliased fields: `dof` dedups the shared array, so both fields share one V.
+        # Aliased fields: `tangent_dim` dedups the shared array, so both fields share one V.
         shared = [10.0, 20.0]
         let nt = bl(LiftedTest_Aliased(shared, shared), (1,)).rep.fields
             @test nt.a === nt.b
@@ -932,7 +932,7 @@ const NDAC_VecC64 = NDualArray{
         c.next = c
         let b = bl(c, (1,))
             @test b.rep.fields.next === b.rep
-            @test b.rep.fields.w.partials[1] == 1.0  # `w` is the only dof
+            @test b.rep.fields.w.partials[1] == 1.0  # `w` is the only tangent_dim
         end
 
         # Uninit field stays uninit/zero; the defined field gets the basis.
@@ -941,7 +941,7 @@ const NDAC_VecC64 = NDualArray{
         end
 
         # Complex `MemoryRef` (Julia 1.11+): the complex `NDualMemoryRef` `_basis_seed!!`
-        # mirrors the complex `NDualArray` (two dofs per element — real then imag). Regression
+        # mirrors the complex `NDualArray` (two dimensions per element — real then imag). Regression
         # for the missing complex method, which previously `MethodError`d here.
         @static if VERSION >= v"1.11-"
             let m = Memory{ComplexF64}(undef, 2)
@@ -952,17 +952,17 @@ const NDAC_VecC64 = NDualArray{
             end
         end
 
-        # `dof` and the seed cursor must count the same dofs. `dof` reaches a `MemoryRef`
+        # `tangent_dim` and the seed cursor must count the same dimensions. `tangent_dim` reaches a `MemoryRef`
         # tangent through its `mem` field, so it scores a `Memory` and a ref into it ONCE; the
         # seed used to advance over the whole backing `Memory` a second time, pushing everything
-        # after the pair past the end of the sweep. `dof` reported 4 here while `b`'s dofs sat at
+        # after the pair past the end of the sweep. `tangent_dim` reported 4 here while `b`'s dimensions sat at
         # slots 5 and 6, so `b`'s derivative came back zero. Not expressible in a registry: no
         # rule is involved, and `test_lifted` checks the seed factories, not a basis direction.
         @static if VERSION >= v"1.11-"
             let m = Memory{Float64}(undef, 2), b = [3.0, 4.0]
                 m .= [1.0, 2.0]
                 x = (m, Core.memoryref(m), b)
-                @test Mooncake.dof(Mooncake.zero_tangent(x)) == 4
+                @test Mooncake.tangent_dim(Mooncake.zero_tangent(x)) == 4
                 @test tangent_view(tangent(bl(x, (2,)))[1], 1) == [0.0, 1.0]
                 @test tangent_view(tangent(bl(x, (3,)))[3], 1) == [1.0, 0.0]
                 @test tangent_view(tangent(bl(x, (4,)))[3], 1) == [0.0, 1.0]
@@ -984,8 +984,8 @@ const NDAC_VecC64 = NDualArray{
 
         # A differentiable-eltype `Ptr` field's V is `NTuple{N,Ptr}`, which dispatches through
         # the `::Tuple` basis-seed methods to a bare `Ptr`. That lane has no addressable tangent
-        # (0 dof, like `NoDual`); previously it MethodError'd for lack of a terminal `Ptr` method.
-        let b = bl((Ptr{Float64}(0), 2.0), (1,))  # only the Float64 field carries a dof
+        # (0 dimension, like `NoDual`); previously it MethodError'd for lack of a terminal `Ptr` method.
+        let b = bl((Ptr{Float64}(0), 2.0), (1,))  # only the Float64 field carries a tangent_dim
             @test tangent(b)[1] === (Ptr{Float64}(0),)  # Ptr lane left unchanged
             @test tangent(b)[2].partials[1] == 1.0      # Float64 lane seeded hot
         end

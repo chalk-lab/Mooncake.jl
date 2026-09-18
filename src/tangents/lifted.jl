@@ -2170,16 +2170,16 @@ end
 # ── Standard-basis seed (`basis_lifted!!`) ──────────────────────────────────
 #
 # `basis_lifted!!(seed, slots)` resets `seed` (built by `zero_lifted`) to the
-# standard-basis direction(s): lane `k` is hot at the `slots[k]`-th scalar dof of
-# the input, where dofs are counted in the same order as `dof` / `zero_tangent`
-# (a `Complex` element occupies two consecutive real dofs). It writes the partials
+# standard-basis direction(s): lane `k` is hot at the `slots[k]`-th scalar dimension of
+# the input, where dimensions are counted in the same order as `tangent_dim` / `zero_tangent`
+# (a `Complex` element occupies two consecutive real dimensions). It writes the partials
 # in place for an `NDualArray` (so a preallocated array seed can be reseeded per
 # chunk allocation-free) and rebuilds the immutable inner V otherwise (`NDual`,
 # tuples, `ImmutableDual`, and the `MutableDual` NamedTuple); the caller always
 # uses the return value (the `!!` convention). A `cursor` threads the global
-# scalar-dof index and an `IdDict`
+# scalar-dimension index and an `IdDict`
 # visits aliased arrays / cyclic mutable structs once, matching the dedup in
-# `dof` and the cycle/alias-aware `zero_lifted` the seed must come from.
+# `tangent_dim` and the cycle/alias-aware `zero_lifted` the seed must come from.
 @inline function basis_lifted!!(seed::Lifted{P,N,V}, slots::NTuple{N,Int}) where {P,N,V}
     # An isbits V has no arrays or mutable wrappers, so there is nothing to mutate in place and
     # nothing to dedup: thread a plain `Int` cursor and rebuild on the stack, skipping the
@@ -2194,17 +2194,17 @@ end
 end
 
 # Pure-functional isbits reseed: returns `(rebuilt V, advanced cursor)`, threading the global
-# scalar-dof cursor by value. Mirrors `_basis_seed!!` for the isbits (array-free) shapes only.
+# scalar-dimension cursor by value. Mirrors `_basis_seed!!` for the isbits (array-free) shapes only.
 #
-# Both must advance the cursor in exactly the order `dof` counts — one step per real element,
+# Both must advance the cursor in exactly the order `tangent_dim` counts — one step per real element,
 # real-then-imag for a complex one. A mismatch misplaces gradient entries and never errors.
 @inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
     NoDual(), c
 )
 # A `Ptr` lane carries no addressable tangent (its per-lane `NTuple{N,Ptr}` V is a bitcast
-# placeholder), so it is 0-dof like `NoDual`: leave it unchanged and don't advance the cursor.
-# Matches the `Ptr` exemption in `verify_lifted_type` and keeps the dof / seed walks in step
-# (the reverse tangent of a `Ptr` also contributes 0 dof). Reached when the `NTuple{N,Ptr}` V
+# placeholder), so it is 0-dimension like `NoDual`: leave it unchanged and don't advance the cursor.
+# Matches the `Ptr` exemption in `verify_lifted_type` and keeps the dimension / seed walks in step
+# (the reverse tangent of a `Ptr` also contributes 0 dimension). Reached when the `NTuple{N,Ptr}` V
 # dispatches through the `::Tuple` methods to each `Ptr` element.
 @inline _basis_seed_isbits(v::Ptr, _slots::NTuple{N,Int}, c::Int) where {N} = (v, c)
 @inline function _basis_seed_isbits(v::NDual{T,N}, slots::NTuple{N,Int}, c::Int) where {T,N}
@@ -2249,7 +2249,7 @@ end
 end
 
 _basis_seed!!(::NoDual, _slots, _cursor, _dict) = NoDual()
-# `Ptr` lane: 0-dof placeholder (see the isbits terminal above) — return it unchanged and
+# `Ptr` lane: 0-dimension placeholder (see the isbits terminal above) — return it unchanged and
 # do not advance the cursor.
 _basis_seed!!(v::Ptr, _slots, _cursor, _dict) = v
 function _basis_seed!!(v::NDual{T,N}, slots::NTuple{N,Int}, cursor, _dict) where {T,N}
@@ -2289,24 +2289,25 @@ end
     return nothing
 end
 
-# `dof` reaches a `MemoryRef` tangent through its `mem` field, so a `Memory` and any `MemoryRef`
-# into it contribute ONE set of scalar dofs. The V graph does not show that: `NDualMemoryRef` is
+# `tangent_dim` reaches a `MemoryRef` tangent through its `mem` field, so a `Memory` and any `MemoryRef`
+# into it contribute ONE set of scalar dimensions. The V graph does not show that: `NDualMemoryRef` is
 # rebased flat onto the backing block instead of holding the `Memory`'s V, so the `haskey(dict, v)`
 # dedup cannot see the sharing (a `SubArray`, whose V does hold its parent's V, needs nothing
-# extra). Claim the backing `Memory` PRIMAL — the object whose tangent `dof` dedups on — so both
-# walks advance together. Without it `(m, memoryref(m), b)` counted 4 dofs while the seed put `b`
+# extra). Claim the backing `Memory` PRIMAL — the object whose tangent `tangent_dim` dedups on — so both
+# walks advance together. Without it `(m, memoryref(m), b)` counted 4 dimensions while the seed put `b`
 # at slots 5 and 6, past the end of the sweep, and `b`'s derivative came back zero. The partials
 # allocation above cannot serve as the key: an `Array` and its backing `Memory` share ONE
-# allocation yet have independent reverse tangents, and `dof` counts both. Claimed AFTER the
-# clear, so a second container still zeroes its own block if it turns out not to share one.
-@inline _claim_memory_dofs!(_dict, _primal) = true
+# allocation yet have independent reverse tangents, and `tangent_dim` counts both. Recorded
+# AFTER the clear, so a second container still zeroes its own block if it turns out not to share
+# one. Reports whether the storage had ALREADY been recorded, so a caller skips on `true`.
+@inline _memory_seen!(_dict, _primal) = false
 @static if VERSION >= v"1.11-rc4"
-    @inline function _claim_memory_dofs!(dict, mem::Memory)
-        haskey(dict, mem) && return false
+    @inline function _memory_seen!(dict, mem::Memory)
+        haskey(dict, mem) && return true
         dict[mem] = nothing
-        return true
+        return false
     end
-    @inline _claim_memory_dofs!(dict, p::MemoryRef) = _claim_memory_dofs!(dict, p.mem)
+    @inline _memory_seen!(dict, p::MemoryRef) = _memory_seen!(dict, p.mem)
 end
 
 function _basis_seed!!(
@@ -2315,7 +2316,7 @@ function _basis_seed!!(
     haskey(dict, v) && return dict[v]
     dict[v] = v
     _clear_partials_store!(dict, getfield(v, :partials_block), zero(T))
-    _claim_memory_dofs!(dict, v.primal) || return v
+    _memory_seen!(dict, v.primal) && return v
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2332,7 +2333,7 @@ function _basis_seed!!(
     haskey(dict, v) && return dict[v]
     dict[v] = v
     _clear_partials_store!(dict, getfield(v, :partials_block), zero(Complex{R}))
-    _claim_memory_dofs!(dict, v.primal) || return v
+    _memory_seen!(dict, v.primal) && return v
     parts = Nfwd._lane_views(v)
     @inbounds for idx in eachindex(v.primal)
         cursor[] += 1
@@ -2356,7 +2357,7 @@ function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     end
     return v
 end
-# An `IdDict` V is an `IdDict` of inner duals. Walk its BACKING FIELD rather than its keys: `dof`
+# An `IdDict` V is an `IdDict` of inner duals. Walk its BACKING FIELD rather than its keys: `tangent_dim`
 # reaches an `IdDict` tangent through its generic struct fallback, which walks `fieldcount` fields
 # and so traverses `ht` in slot order, and the two walks must advance the cursor in the same order
 # or gradient entries are misplaced silently. Iterating `keys(v)` would follow hash order instead.
@@ -2365,8 +2366,8 @@ end
 function _basis_seed!!(v::IdDict, slots::NTuple{N,Int}, cursor, dict) where {N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
-    # Values only: the keys share the backing `ht` with them but carry no derivative, and `dof`
-    # scores them 0. `IdDict` iteration walks `ht` in slot order, which is the order `dof` counts,
+    # Values only: the keys share the backing `ht` with them but carry no derivative, and `tangent_dim`
+    # scores them 0. `IdDict` iteration walks `ht` in slot order, which is the order `tangent_dim` counts,
     # so the cursor advances in step. Keys collected first — the loop assigns into `v`.
     for k in collect(keys(v))
         v[k] = _basis_seed!!(v[k], slots, cursor, dict)
@@ -2400,7 +2401,7 @@ function _basis_seed!!(
     is_init(v) || return v
     return typeof(v)(_basis_seed!!(val(v), slots, cursor, dict))
 end
-# `Ref{P}` forward V: one scalar dof held in a mutable `Base.RefValue` partials shadow. Mirror the
+# `Ref{P}` forward V: one scalar dimension held in a mutable `Base.RefValue` partials shadow. Mirror the
 # `NDual` scalar method (real: one cursor step; complex: two, real then imag), and register in `dict`
 # so an aliased `Ref` seeds once — like `NDualArray`/`MutableDual`.
 function _basis_seed!!(
@@ -2439,7 +2440,7 @@ function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where
 end
 # `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the block column
 # pairs with the memory slot. Factory-built refs (the only ones seeded) cover the whole backing
-# `Memory` (column j ↔ mem slot j), and `dof` walks that whole `Memory`, so advance one cursor
+# `Memory` (column j ↔ mem slot j), and `tangent_dim` walks that whole `Memory`, so advance one cursor
 # step per block column (two for complex — real then imag, like the `NDualArray` complex method)
 # and write each lane there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it
 # has a `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex
@@ -2452,7 +2453,7 @@ end
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
         _clear_partials_store!(dict, block, zero(T))
-        _claim_memory_dofs!(dict, v.primal) || return v
+        _memory_seen!(dict, v.primal) && return v
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             c = cursor[]
@@ -2469,7 +2470,7 @@ end
         dict[v] = v
         block = Nfwd._reconstruct_block(v)
         _clear_partials_store!(dict, block, zero(Complex{R}))
-        _claim_memory_dofs!(dict, v.primal) || return v
+        _memory_seen!(dict, v.primal) && return v
         @inbounds for idx in 1:size(block, 2)
             cursor[] += 1
             cr = cursor[]

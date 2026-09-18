@@ -2791,7 +2791,7 @@ end
 # Rules for `sum(f, x)` on complex CuArrays — extends the real rule above to ℂ.
 #
 # Each complex element z = Re(z) + i·Im(z) is assigned two Dual slots (one per real
-# DOF), so a single GPU kernel pass gives both ∂f/∂Re(z) and ∂f/∂Im(z).  The
+# dimension), so a single GPU kernel pass gives both ∂f/∂Re(z) and ∂f/∂Im(z).  The
 # Euclidean complex gradient is then:
 #   grad[i] = ∂(Re·f + Im·f)/∂Re(zᵢ) + i · ∂(Re·f + Im·f)/∂Im(zᵢ)
 # which handles non-holomorphic f (e.g. abs2) correctly via Wirtinger calculus.
@@ -4270,7 +4270,7 @@ end
 # arithmetic and standard math ops propagates them exactly via the chain rule —
 # no source transformation required.
 #
-# We assign one slot per real DOF of each differentiable broadcast argument:
+# We assign one slot per real derivative dimension of each differentiable broadcast argument:
 #   real arg x_i  -> slot k,   Dual(x_i[j], one_hot(k, N))
 #   complex arg z_i -> slots k,k+1, Complex(Dual(Re(z_i[j]), e_k), Dual(Im(z_i[j]), e_{k+1}))
 #
@@ -4332,8 +4332,8 @@ end
 # Dual slot in the same kernel pass.  They have NoFData so can't use in-place
 # accumulation; instead their gradient (sum of the partial over all output elements)
 # is packed into the Broadcasted rdata via _gpu_fill_scalar_rdata.
-# Other scalar types (e.g. Int, Bool) have dof=0 and are not differentiated.
-# To support a new scalar type T: extend Nfwd's internal leaf-DOF helpers so it contributes
+# Other scalar types (e.g. Int, Bool) have zero derivative dimensions and are not differentiated.
+# To support a new scalar type T: extend Nfwd's internal leaf-dimension helpers so it contributes
 # the correct slot count, then handle it in _leaf_effective_tangent / materialize_pb!! /
 # _gpu_fill_args_rdata.
 
@@ -4353,8 +4353,8 @@ end
 #
 # The failure mode is a GPU kernel-compilation error at trace time, e.g.:
 #   "LLVM error: ... cannot select: ... NDual{Float32, 3}"
-# (N = total real DOFs across all broadcast inputs; 3 arises for BatchNorm as
-#  scale + input + bias each contribute one real DOF.)
+# (N = total real derivative dimensions across all broadcast inputs; 3 arises for BatchNorm as
+#  scale + input + bias each contribute one real derivative dimension.)
 #
 # Fix: add an explicit rrule!! for the cuDNN / NNlib primitive so Mooncake never tries
 # to trace through it with NDual inputs.  See the unsafe_copyto! and fill! rules above
@@ -4386,7 +4386,7 @@ end
     offsets = Int[]
     for ET in args
         push!(offsets, N)
-        N += Nfwd._nfwd_type_dof(ET)
+        N += Nfwd.static_primal_dim(ET)
     end
     N == 0 && return :(f(args...))
     body = Expr[]
@@ -4411,7 +4411,7 @@ end
 end
 
 # One fused GPU kernel: evaluates f and all partial derivatives simultaneously.
-# Real args use 1 Dual slot each; complex args use 2 (one per real DOF).
+# Real args use 1 Dual slot each; complex args use 2 (one per real derivative dimension).
 function _gpu_broadcast_dual(f::F, args...) where {F}
     return ((args...) -> _gpu_apply_with_duals(f, args...)).(args...)
 end
@@ -4436,7 +4436,7 @@ function rrule!!(::CoDual{typeof(_gpu_broadcast_dual)}, ::Vararg{CoDual})
 end
 
 # Map each broadcast leaf arg to a representative scalar element so that
-# _nfwd_input_dof counts per-broadcast-element DOFs.
+# `primal_dim` counts per-broadcast-element derivative dimensions.
 @inline _gpu_rep_element(x::CuFloatOrComplex) = x
 @inline _gpu_rep_element(x::AbstractArray{T}) where {T<:IEEEFloat} = zero(T)
 @inline _gpu_rep_element(x::AbstractArray{Complex{T}}) where {T<:IEEEFloat} = zero(
@@ -4445,8 +4445,10 @@ end
 @inline _gpu_rep_element(::Any) = ()
 
 @inline function _gpu_leaf_slot_meta(pa, offset)
-    dof = Nfwd._nfwd_input_dof(_gpu_rep_element(pa))
-    return (; dof, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex)
+    elem_dim = Nfwd.primal_dim(_gpu_rep_element(pa))
+    return (;
+        elem_dim, slot1=offset + 1, slot2=offset + 2, is_scalar=pa isa CuFloatOrComplex
+    )
 end
 
 @inline function _gpu_decode_ndual_output(
@@ -4493,7 +4495,7 @@ end
 # Replace any nested Broadcasted sub-expression whose tangent/fdata tree is
 # `NoTangent`/`NoFData`, or whose broadcast tree has zero effective differentiable
 # degrees of freedom and flattens to a non-isbits function, with its primal materialized
-# value. This catches zero-DOF subtrees such as `Float64.(b .> 0)`, where flattening the
+# value. This catches derivative-free subtrees such as `Float64.(b .> 0)`, where flattening the
 # nested broadcast embeds `Type{Float64}` in the composed function object and makes the
 # GPU kernel argument non-isbits.
 #
@@ -4540,23 +4542,23 @@ end
     first(bc.args), first(_fields(td).args)
 )
 
-@inline _gpu_bcast_arg_dof(x::IEEEFloat) = 1
-@inline _gpu_bcast_arg_dof(x::Complex{<:IEEEFloat}) = 2
-@inline _gpu_bcast_arg_dof(x::AbstractArray{<:IEEEFloat}) = 1
-@inline _gpu_bcast_arg_dof(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 1
-@inline _gpu_bcast_arg_dof(x::Base.Broadcast.Extruded) = _gpu_bcast_arg_dof(x.x)
-@inline _gpu_bcast_arg_dof(x::Adjoint{<:CuFloatOrComplex,<:AbstractArray}) = 1
-@inline _gpu_bcast_arg_dof(x::Transpose{<:CuFloatOrComplex,<:AbstractArray}) = 1
-@inline _gpu_bcast_arg_dof(x::Broadcasted) = _gpu_bcast_effective_dof(x)
-@inline _gpu_bcast_arg_dof(::Any) = 0
+@inline _gpu_bcast_arg_dim(x::IEEEFloat) = 1
+@inline _gpu_bcast_arg_dim(x::Complex{<:IEEEFloat}) = 2
+@inline _gpu_bcast_arg_dim(x::AbstractArray{<:IEEEFloat}) = 1
+@inline _gpu_bcast_arg_dim(x::AbstractArray{<:Complex{<:IEEEFloat}}) = 1
+@inline _gpu_bcast_arg_dim(x::Base.Broadcast.Extruded) = _gpu_bcast_arg_dim(x.x)
+@inline _gpu_bcast_arg_dim(x::Adjoint{<:CuFloatOrComplex,<:AbstractArray}) = 1
+@inline _gpu_bcast_arg_dim(x::Transpose{<:CuFloatOrComplex,<:AbstractArray}) = 1
+@inline _gpu_bcast_arg_dim(x::Broadcasted) = _gpu_bcast_effective_dim(x)
+@inline _gpu_bcast_arg_dim(::Any) = 0
 
-function _gpu_bcast_effective_dof(bc::Broadcasted)
+function _gpu_bcast_effective_dim(bc::Broadcasted)
     _gpu_bcast_has_nondiff_result(bc.f) && return 0
-    return any(!iszero, map(_gpu_bcast_arg_dof, bc.args)) ? 1 : 0
+    return any(!iszero, map(_gpu_bcast_arg_dim, bc.args)) ? 1 : 0
 end
 
 @inline _gpu_bcast_needs_premat(bc::Broadcasted) =
-    (_gpu_bcast_effective_dof(bc) == 0 || _gpu_is_simple_cast_broadcast(bc)) &&
+    (_gpu_bcast_effective_dim(bc) == 0 || _gpu_is_simple_cast_broadcast(bc)) &&
     !isbitstype(typeof(Base.Broadcast.flatten(bc).f))
 
 _premat_nondiff_args(bc::Broadcasted) = _premat_nondiff_args(bc, NoTangent())
@@ -4572,9 +4574,9 @@ function _premat_nondiff_args(bc::Broadcasted, td)
         ta = targs[i]
         if a isa Broadcasted
             # Scalars always report NoFData (their grad flows via RData), even when
-            # differentiable — so also require zero DOF before collapsing, or a
+            # differentiable — so also require zero derivative dimensions before collapsing, or a
             # differentiable scalar leaf here silently drops out of flat_pargs.
-            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dof(a) == 0
+            if ta isa Union{NoTangent,NoFData} && _gpu_bcast_effective_dim(a) == 0
                 Base.Broadcast.materialize(a)
             else
                 a_prepared = _premat_nondiff_args(a, ta)
@@ -4778,8 +4780,8 @@ end
         inner_ps, inner_ts = _gpu_bcast_leaves(a1_prepared, a1_primal, td1)
         return (inner_ps..., rest_ps...), (inner_ts..., rest_ts...)
     elseif a1_primal isa Broadcasted
-        # `_premat_nondiff_args` collapsed a zero-DOF nested Broadcasted subtree to a plain
-        # leaf. For zero-DOF subtrees the prepared leaf is constant; for simple numeric
+        # `_premat_nondiff_args` collapsed a derivative-free nested Broadcasted subtree to a plain
+        # leaf. For derivative-free subtrees the prepared leaf is constant; for simple numeric
         # casts like `Float64.(x32)` we keep the underlying leaf tangent/fdata and apply
         # the cast explicitly in the JVP/pullback.
         diff = if td1 isa Union{NoTangent,NoFData}
@@ -4929,7 +4931,7 @@ function _gpu_foreach_jvp_leaf(flat_pargs, flat_tangents, visit!)
         meta = _gpu_leaf_slot_meta(pa, offset)
         t_eff = _leaf_tangent(pa, t)
         t_eff === nothing || visit!(meta, t_eff)
-        offset += meta.dof
+        offset += meta.elem_dim
     end
     return nothing
 end
@@ -4942,9 +4944,9 @@ function _gpu_accumulate_jvp!(dy, flat_pargs, flat_tangents, dual_out)
             # Fuse the (lane-independent) partial extraction with the seed multiply and the
             # accumulate: a dot-call stays lazy, so `dy .+=` runs one in-place kernel with no
             # per-lane intermediate array (an eager `broadcast(f, dual_out)` would allocate one).
-            if meta.dof == 1
+            if meta.elem_dim == 1
                 dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot1) .* t_eff
-            elseif meta.dof == 2
+            elseif meta.elem_dim == 2
                 dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot1) .* real.(t_eff)
                 dy .+= Nfwd._nfwd_dual_partial.(dual_out, meta.slot2) .* imag.(t_eff)
             end
@@ -4961,14 +4963,14 @@ function _gpu_accumulate_reduced_jvp(out, flat_pargs, flat_tangents, y)
         (meta, t_eff) -> begin
             # Fuse map into the reduction: `mapreduce` over the two arrays computes and sums in one
             # pass, so no per-lane intermediate array materialises (an eager `broadcast` would).
-            if meta.dof == 1
+            if meta.elem_dim == 1
                 dy += mapreduce(
                     (o, tt) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * tt,
                     +,
                     out,
                     t_eff,
                 )
-            elseif meta.dof == 2
+            elseif meta.elem_dim == 2
                 dy += mapreduce(
                     (o, tt) ->
                         Nfwd._nfwd_dual_partial(o, meta.slot1) * real(tt) +
@@ -4987,13 +4989,13 @@ end
 # a dimensional `sum` can slice it. Single leaf, which is all a dimensional reduction admits.
 function _gpu_reduced_jvp(out, px, dx, y, dims)
     meta = _gpu_leaf_slot_meta(px, 0)
-    if meta.dof == 1
+    if meta.elem_dim == 1
         return sum(
             broadcast((o, t) -> Nfwd._nfwd_dual_partial(o, meta.slot1) * t, out, dx);
             dims,
             init=zero(eltype(y)),
         )
-    elseif meta.dof == 2
+    elseif meta.elem_dim == 2
         return sum(
             broadcast(
                 (o, t) ->
@@ -5037,7 +5039,7 @@ function _gpu_accum_pullback!(
     offset = 0
     for (pa, fd) in zip(flat_pargs, flat_fdatas)
         meta = _gpu_leaf_slot_meta(pa, offset)
-        if meta.dof == 1
+        if meta.elem_dim == 1
             contrib = Base.broadcasted(
                 (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
                 dual_out,
@@ -5054,7 +5056,7 @@ function _gpu_accum_pullback!(
                     _leaf_accum!(pa, fd, Base.Broadcast.materialize(contrib))
                 end
             end
-        elseif meta.dof == 2
+        elseif meta.elem_dim == 2
             contrib = Base.broadcasted(
                 (o, d) -> complex(
                     real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
@@ -5075,7 +5077,7 @@ function _gpu_accum_pullback!(
                 end
             end
         end
-        offset += meta.dof
+        offset += meta.elem_dim
     end
     return if isnothing(scalar_grads)
         zero_rdata(bc_primal)
@@ -5086,12 +5088,12 @@ end
 
 function _gpu_reduced_pullback!(px, dx, dual_out, dy)
     meta = _gpu_leaf_slot_meta(px, 0)
-    if meta.dof == 1
+    if meta.elem_dim == 1
         contrib = broadcast(
             (o, d) -> real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)), dual_out, dy
         )
         _leaf_accum!(px, dx, contrib)
-    elseif meta.dof == 2
+    elseif meta.elem_dim == 2
         contrib = broadcast(
             (o, d) -> complex(
                 real(conj(d) * Nfwd._nfwd_dual_partial(o, meta.slot1)),
