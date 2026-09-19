@@ -115,34 +115,11 @@ function _cache_print_io_summary(io::IO, input_specs::Tuple, output_summary)
     print(io, "\n  output: ", output_summary)
 end
 
-function Base.show(io::IO, cache::Cache)
-    print(
-        io,
-        "Mooncake.Cache(",
-        "mode=:reverse, ",
-        "friendly_tangents=",
-        !isnothing(getfield(cache, :dests)),
-        ", inputs=",
-        _cache_input_count(cache),
-        ")",
-    )
-end
-
-function Base.show(io::IO, ::MIME"text/plain", cache::Cache)
-    print(
-        io,
-        "Mooncake.Cache\n",
-        "  mode: reverse\n",
-        "  friendly_tangents: ",
-        !isnothing(getfield(cache, :dests)),
-        "\n",
-        "  inputs: ",
-        _cache_input_count(cache),
-    )
-    _cache_print_io_summary(
-        io,
-        Base.tail(getfield(cache, :input_specs)),
-        _cache_spec_summary(getfield(cache, :output_spec)),
+function _cache_show_fields(cache::Cache)
+    return (;
+        mode=:reverse,
+        friendly_tangents=(!isnothing(getfield(cache, :dests))),
+        inputs=_cache_input_count(cache),
     )
 end
 
@@ -181,44 +158,18 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     jacobian_buffer::JB
 end
 
-function Base.show(io::IO, cache::FCache)
+function _cache_show_fields(cache::FCache)
     chunk_size = getfield(cache, :gradient_chunk_size)
-    print(
-        io,
-        "Mooncake.FCache(",
-        "mode=:forward, ",
-        "friendly_tangents=",
-        !isnothing(getfield(cache, :input_tangents)),
-        ", chunk=",
-        !isnothing(getfield(cache, :chunk_rule)),
-        ", chunk_size=",
-        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
-        ", inputs=",
-        _cache_input_count(cache),
-        ")",
-    )
-end
-
-function Base.show(io::IO, ::MIME"text/plain", cache::FCache)
-    chunk_size = getfield(cache, :gradient_chunk_size)
-    print(
-        io,
-        "Mooncake.FCache\n",
-        "  mode: forward\n",
-        "  friendly_tangents: ",
-        !isnothing(getfield(cache, :input_tangents)),
-        "\n",
-        "  chunk: ",
-        !isnothing(getfield(cache, :chunk_rule)),
-        "\n",
-        "  chunk_size: ",
-        getfield(cache, :gradient_chunk_size_auto) ? "$(chunk_size) (auto)" : chunk_size,
-        "\n",
-        "  inputs: ",
-        _cache_input_count(cache),
-    )
-    _cache_print_io_summary(
-        io, Base.tail(getfield(cache, :input_specs)), _forward_cache_output_summary(cache)
+    return (;
+        mode=:forward,
+        friendly_tangents=(!isnothing(getfield(cache, :input_tangents))),
+        chunk=(!isnothing(getfield(cache, :chunk_rule))),
+        chunk_size=if getfield(cache, :gradient_chunk_size_auto)
+            "$(chunk_size) (auto)"
+        else
+            chunk_size
+        end,
+        inputs=_cache_input_count(cache),
     )
 end
 
@@ -933,36 +884,36 @@ _caller_label(caller, ::Cache) = "reverse-mode $caller"
 _caller_label(caller, ::FCache) = "forward-mode $caller"
 _caller_label(caller, ::HVPCache) = string(caller)
 
-function Base.show(io::IO, cache::HVPCache)
-    print(
-        io,
-        "Mooncake.HVPCache(",
-        "mode=:forward_over_reverse, ",
-        "chunk=",
-        !isnothing(getfield(getfield(cache, :fwd_cache), :chunk_rule)),
-        ", ",
-        "inputs=",
-        _cache_input_count(getfield(cache, :fwd_cache)),
-        ")",
+function _cache_show_fields(cache::HVPCache)
+    fwd_cache = getfield(cache, :fwd_cache)
+    return (;
+        mode=:forward_over_reverse,
+        chunk=(!isnothing(getfield(fwd_cache, :chunk_rule))),
+        inputs=_cache_input_count(fwd_cache),
     )
 end
 
-function Base.show(io::IO, ::MIME"text/plain", cache::HVPCache)
-    print(
-        io,
-        "Mooncake.HVPCache\n",
-        "  mode: forward_over_reverse\n",
-        "  chunk: ",
-        !isnothing(getfield(getfield(cache, :fwd_cache), :chunk_rule)),
-        "\n",
-        "  inputs: ",
-        _cache_input_count(getfield(cache, :fwd_cache)),
-    )
-    _cache_print_io_summary(
-        io,
-        Base.tail(getfield(getfield(cache, :fwd_cache), :input_specs)),
-        _cache_spec_summary(getfield(cache, :output_spec)),
-    )
+function Base.show(io::IO, cache::Union{Cache,FCache,HVPCache})
+    print(io, "Mooncake.", nameof(typeof(cache)), "(")
+    for (i, (name, value)) in enumerate(pairs(_cache_show_fields(cache)))
+        i == 1 || print(io, ", ")
+        print(io, name, "=", value isa Symbol ? ":" : "", value)
+    end
+    print(io, ")")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", cache::Union{Cache,FCache,HVPCache})
+    print(io, "Mooncake.", nameof(typeof(cache)))
+    for (name, value) in pairs(_cache_show_fields(cache))
+        print(io, "\n  ", name, ": ", value)
+    end
+    inputs = cache isa HVPCache ? getfield(cache, :fwd_cache) : cache
+    output = if cache isa FCache
+        _forward_cache_output_summary(cache)
+    else
+        _cache_spec_summary(getfield(cache, :output_spec))
+    end
+    _cache_print_io_summary(io, Base.tail(getfield(inputs, :input_specs)), output)
 end
 
 #
@@ -1181,34 +1132,24 @@ is shown by the cache.
             nothing
         end
     end
-    if config.friendly_tangents
-        # `input_ts` above is exactly this tuple, built for the dimension count, and nothing has
-        # written to it since.
-        input_tangents = input_ts
-        gradient_workspace = Ref{Union{Nothing,typeof(input_tangents)}}(nothing)
-        return FCache(
-            rule,
-            input_tangents,
-            _copy_output(fx),
-            gradient_workspace,
-            gradient_chunk_size,
-            gradient_chunk_size_auto,
-            chunk_rule,
-            input_specs,
-            _copy_output(Base.tail(fx)),
-            gradient_seed,
-            inputs_share_storage,
-            jacobian_buffer,
+    input_tangents, friendly_gradients, gradient_workspace = if config.friendly_tangents
+        # `input_ts` is already built for the dimension count and has not been written to.
+        (input_ts, _copy_output(fx), Ref{Union{Nothing,typeof(input_ts)}}(nothing))
+    else
+        # Keep the lazy workspace concretely typed without evaluating more tangents.
+        (
+            nothing,
+            nothing,
+            Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(
+                nothing
+            ),
         )
     end
     return FCache(
         rule,
-        nothing,
-        nothing,
-        # Lazy gradient workspace, kept concretely typed (not `Ref{Any}`, which would make
-        # cached forward gradients inference-opaque) without evaluating `zero_tangent` on
-        # the runtime inputs here.
-        Ref{Union{Nothing,Tuple{map(tangent_type, fieldtypes(typeof(fx)))...}}}(nothing),
+        input_tangents,
+        friendly_gradients,
+        gradient_workspace,
         gradient_chunk_size,
         gradient_chunk_size_auto,
         chunk_rule,
@@ -1937,8 +1878,7 @@ end
 
 function __create_coduals(args)
     try
-        c = _friendly_cache(args)
-        return tuple_map(x -> _zero_codual_cached(x, c), args)
+        return tuple_map(CoDual, args, _zero_tangents(args))
     catch e
         if e isa StackOverflowError
             error(
@@ -2002,14 +1942,9 @@ The API guarantees that tangents are initialized at zero before the first autodi
     rvs!!(zero_rdata(primal(y)))
 
     input_specs = map(_input_spec, fx)
-    if config.friendly_tangents
-        dests = map(friendly_tangent_cache, fx)
-        return Cache(
-            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
-        )
-    else
-        return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
-    end
+    dests = config.friendly_tangents ? map(friendly_tangent_cache, fx) : nothing
+    ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
+    return Cache(rule, y_cache, tangents, dests, ȳ_cache, input_specs, output_spec)
 end
 
 """
@@ -2140,18 +2075,13 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # scalar output — no `_copy_to_output!!` fill needed (and the gradient run path never
     # reads it anyway).
     y_cache = _copy_output(primal(y))
-    if config.friendly_tangents
-        dests = map(friendly_tangent_cache, fx)
-        # The output-tangent buffer comes with `dests`: a friendly pullback converts the
-        # caller's `ȳ` into it, so leaving it `nothing` made a friendly gradient cache throw
-        # `AssertionError: typeof(tangent) <: tangent_type(P)` the moment it was handed to
-        # `value_and_pullback!!`, while the unfriendly one worked.
-        return Cache(
-            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
-        )
-    else
-        return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
-    end
+    dests = config.friendly_tangents ? map(friendly_tangent_cache, fx) : nothing
+    # The output-tangent buffer comes with `dests`: a friendly pullback converts the
+    # caller's `ȳ` into it, so leaving it `nothing` made a friendly gradient cache throw
+    # `AssertionError: typeof(tangent) <: tangent_type(P)` the moment it was handed to
+    # `value_and_pullback!!`, while the unfriendly one worked.
+    ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
+    return Cache(rule, y_cache, tangents, dests, ȳ_cache, input_specs, output_spec)
 end
 
 """
@@ -2282,7 +2212,7 @@ function _grad_leaves(v::Tuple, g::Tuple, dict)
     end
 end
 function _grad_leaves(v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
-    return _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), values(v), values(g)))
+    return _grad_leaves(values(v), values(g), dict)
 end
 _grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.fields, g.fields, dict)
 function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
@@ -3372,27 +3302,30 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
         slot <= n ? slot : 0
     end, Val(W))
     x_snapshot = copy(x1)
-    output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
-    po = primal(output)
-    value = po[1]
-    g .= po[2]
-    @inbounds for lane in 1:W
-        lane <= n || break
-        H[:, lane] .= tangent(output, lane)[2]
-    end
-    for start_col in (W + 1):W:n
-        copyto!(x1, x_snapshot)
-        output = value_and_derivative!!(
-            fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
-        )
+    try
+        output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
+        po = primal(output)
+        value = po[1]
+        g .= po[2]
         @inbounds for lane in 1:W
-            col = start_col + lane - 1
-            col <= n || break
-            H[:, col] .= tangent(output, lane)[2]
+            lane <= n || break
+            H[:, lane] .= tangent(output, lane)[2]
         end
+        for start_col in (W + 1):W:n
+            copyto!(x1, x_snapshot)
+            output = value_and_derivative!!(
+                fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
+            )
+            @inbounds for lane in 1:W
+                col = start_col + lane - 1
+                col <= n || break
+                H[:, col] .= tangent(output, lane)[2]
+            end
+        end
+        return value
+    finally
+        copyto!(x1, x_snapshot)
     end
-    copyto!(x1, x_snapshot)
-    return value
 end
 
 # Checked at the entry point, not in the sweep: the width-1 sweep reaches
@@ -3422,6 +3355,8 @@ end
 
 Using a pre-built `cache` from [`prepare_hessian_cache`](@ref), compute and return `(f(x),
 ∇f(x), ∇²f(x))` — value, gradient vector, and Hessian matrix of `f`.
+
+The input `x` is restored to its original state even if a sweep throws.
 
 Uses forward-over-reverse AD; the Hessian is chunked, sweeping `config.chunk_size` basis
 directions per forward pass. Like [`value_and_jacobian!!`](@ref), only a single
