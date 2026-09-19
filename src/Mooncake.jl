@@ -161,6 +161,8 @@ include("stack.jl")
 # seed factories) before the interpreter — `interpreter/forward_mode.jl`
 # dispatches on `Lifted{P, N, V}` (any chunk width N).
 include(joinpath("nfwd", "Nfwd.jl"))
+using .Nfwd: _nfwd_boxed_message_width as _boxed_message_width,
+    _nfwd_wrap_boxed_line as _wrap_boxed_line
 using .Nfwd:
     NDual,
     NDualArray,

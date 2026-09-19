@@ -328,11 +328,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 sin, 1.0; config=Mooncake.Config(; debug_mode=false, friendly_tangents=true)
             )
             reverse_show = sprint(show, reverse_cache)
+            @test reverse_show ==
+                "Mooncake.Cache(mode=:reverse, friendly_tangents=true, inputs=1)"
             @test occursin("Mooncake.Cache(", reverse_show)
             @test occursin("mode=:reverse", reverse_show)
             @test occursin("friendly_tangents=true", reverse_show)
 
             reverse_plain = repr(MIME"text/plain"(), reverse_cache)
+            @test reverse_plain ==
+                "Mooncake.Cache\n  mode: reverse\n  friendly_tangents: true\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
             @test occursin("Mooncake.Cache", reverse_plain)
             @test occursin("mode: reverse", reverse_plain)
             @test occursin("friendly_tangents: true", reverse_plain)
@@ -347,6 +351,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ),
             )
             forward_show = sprint(show, forward_cache)
+            @test forward_show ==
+                "Mooncake.FCache(mode=:forward, friendly_tangents=true, chunk=false, chunk_size=1, inputs=1)"
             @test occursin("Mooncake.FCache(", forward_show)
             @test occursin("mode=:forward", forward_show)
             @test occursin("friendly_tangents=true", forward_show)
@@ -355,6 +361,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test occursin("chunk_size=1", forward_show)
 
             forward_plain = repr(MIME"text/plain"(), forward_cache)
+            @test forward_plain ==
+                "Mooncake.FCache\n  mode: forward\n  friendly_tangents: true\n  chunk: false\n  chunk_size: 1\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
             @test occursin("Mooncake.FCache", forward_plain)
             @test occursin("mode: forward", forward_plain)
             @test occursin("friendly_tangents: true", forward_plain)
@@ -381,11 +389,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             hvp_cache = Mooncake.prepare_hvp_cache(sin, 1.0)
             hvp_show = sprint(show, hvp_cache)
+            @test hvp_show ==
+                "Mooncake.HVPCache(mode=:forward_over_reverse, chunk=false, inputs=1)"
             @test occursin("Mooncake.HVPCache(", hvp_show)
             @test occursin("mode=:forward_over_reverse", hvp_show)
             @test occursin("chunk=false", hvp_show)
 
             hvp_plain = repr(MIME"text/plain"(), hvp_cache)
+            @test hvp_plain ==
+                "Mooncake.HVPCache\n  mode: forward_over_reverse\n  chunk: false\n  inputs: 1\n  input_1: Float64 (scalar)\n  output: Float64 (scalar)"
             @test occursin("Mooncake.HVPCache", hvp_plain)
             @test occursin("mode: forward_over_reverse", hvp_plain)
             @test occursin("chunk: false", hvp_plain)

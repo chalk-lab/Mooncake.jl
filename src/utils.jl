@@ -30,40 +30,6 @@ function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=
     return isnothing(footer) ? println(io, "└") : println(io, "└ ", footer)
 end
 
-@inline function _boxed_message_width(io::IO, prefix::AbstractString)
-    cols = get(io, :displaysize, displaysize(io))[2]
-    return max(20, cols - textwidth(prefix))
-end
-
-function _wrap_boxed_line(line, width::Int)
-    text = string(line)
-    isempty(text) && return (text,)
-    width < 1 && return (text,)
-    textwidth(text) <= width && return (text,)
-
-    wrapped = String[]
-    remaining = text
-    while textwidth(remaining) > width
-        split_idx = nothing
-        for idx in eachindex(remaining)
-            textwidth(SubString(remaining, 1, idx)) > width && break
-            remaining[idx] == ' ' && (split_idx = idx)
-        end
-        if isnothing(split_idx)
-            split_idx = firstindex(remaining)
-            for idx in eachindex(remaining)
-                textwidth(SubString(remaining, firstindex(remaining), idx)) > width && break
-                split_idx = idx
-            end
-        end
-        push!(wrapped, rstrip(SubString(remaining, firstindex(remaining), split_idx)))
-        remaining = lstrip(SubString(remaining, nextind(remaining, split_idx)))
-        isempty(remaining) && break
-    end
-    isempty(remaining) || push!(wrapped, remaining)
-    return Tuple(wrapped)
-end
-
 function _print_boxed_error(io::IO, lines; footer=nothing)
     _print_boxed_block(io, "", lines; footer)
 end
