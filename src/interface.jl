@@ -1139,11 +1139,11 @@ is shown by the cache.
         # directly would let an in-place `f` clobber the user's input (the per-chunk
         # `_refresh_all!` copies the call-time input into these cache-owned buffers, which
         # the rule may then mutate). `deepcopy` (not `_copy_output`) preserves any intra-arg
-        # aliasing, so the `_gather_arg_leaves` guard still detects aliased leaves and bails
+        # aliasing, so the `_tangent_layout` guard still detects aliased leaves and bails
         # to the generic path. Mirrors the flat path's `similar`.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = _zero_tangents(_args)
-        _leaves = _gather_arg_leaves(_arg_seeds, _grad_bufs)
+        _leaves = _tangent_layout(_arg_seeds, _grad_bufs)
         if _leaves !== nothing
             gradient_seed = StructuredGradSeed(
                 zero_lifted(Val(W), fx[1]),
@@ -2292,11 +2292,24 @@ _gather_resets(v::NamedTuple) = _gather_resets(values(v))
     return _restore_resets!(Base.tail(rs))
 end
 
-function _gather_arg_leaves(arg_seeds::Tuple, grad_bufs::Tuple)
+# One row per differentiable leaf: the cache-owned seed, the gradient buffer it fills, and the
+# range of derivative dimensions it owns. Assigning that range once is what lets the sweeps index
+# by it instead of threading a running offset through every walk, and makes the total a field read
+# rather than a second recursion over the same rows.
+function _tangent_layout(arg_seeds::Tuple, grad_bufs::Tuple)
     dict = IdDict{Any,Any}()
-    return _cat_leaves(
+    leaves = _cat_leaves(
         map((s, g) -> _grad_leaves(tangent(s), g, dict), arg_seeds, grad_bufs)
     )
+    return leaves === nothing ? nothing : _tangent_layout(leaves, 1)
+end
+
+@inline _tangent_layout(::Tuple{}, ::Int) = ()
+@inline function _tangent_layout(ls::Tuple, first_dim::Int)
+    v, g = first(ls)
+    n = length(v.primal)
+    dims = first_dim:(first_dim + n - 1)
+    return ((v, g, dims), _tangent_layout(Base.tail(ls), first_dim + n)...)
 end
 
 #
@@ -2818,44 +2831,40 @@ end
     end
 end
 
-# Recursive (unrolled, type-stable, allocation-free) sweeps over the `(NDualArray, Array)`
-# leaf tuple, threading a running global-dimension offset. Each chunk re-zeros all partials (an
-# in-place `f` dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W`
-# standard-basis ones — so the seeding work is O(total_dim) per chunk, O(total_dof²) over a
-# full gradient (compute, not allocation); the alternative (clear only the previous chunk's
-# hot entries) is unsafe for in-place `f`.
-@inline _leaves_dof(::Tuple{}) = 0
-@inline _leaves_dof(ls::Tuple) = length(first(ls)[1].primal) + _leaves_dof(Base.tail(ls))
-@inline _zero_partials!(::Tuple{}) = nothing
-@inline function _zero_partials!(ls::Tuple)
+# Recursive (unrolled, type-stable, allocation-free) sweeps over the layout rows, each of which
+# carries the range of dimensions it owns. Each chunk re-zeros all partials (an in-place `f`
+# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones
+# — so the seeding work is O(total_dim) per chunk, O(total_dim²) over a full gradient (compute,
+# not allocation); the alternative (clear only the previous chunk's hot entries) is unsafe for an
+# in-place `f`. `_zero_seeds!` stays a SEPARATE pass rather than folding into `_seed_chunk!`: per
+# row that becomes zero-then-seed, which wipes an earlier row's seed should two rows ever share a
+# partials block, and nothing here establishes that they cannot. It also clears EVERY row, not
+# just the chunk's, which is why it is not named for the chunk.
+@inline _zero_seeds!(::Tuple{}) = nothing
+@inline function _zero_seeds!(ls::Tuple)
     Nfwd._zero_seed!(first(ls)[1])
-    return _zero_partials!(Base.tail(ls))
+    return _zero_seeds!(Base.tail(ls))
 end
-@inline _seed_chunk!(::Tuple{}, s, W, off) = off
-@inline function _seed_chunk!(ls::Tuple, s, W, off)
-    nda = first(ls)[1]
+@inline _seed_chunk!(::Tuple{}, s, W) = nothing
+@inline function _seed_chunk!(ls::Tuple, s, W)
+    nda, _, dims = first(ls)
     o = one(eltype(nda.primal))
-    L = length(nda.primal)
     # Element i's lane k. Storage layout (element-major block on 1.11+, per-lane arrays on 1.10)
     # is hidden by `Nfwd._set_partial!`; rank-agnostic, so matrix leaves work too.
-    @inbounds for i in 1:L
-        d = off + i
+    @inbounds for (i, d) in enumerate(dims)
         s <= d <= s + W - 1 && Nfwd._set_partial!(nda, i, d - s + 1, o)
     end
-    return _seed_chunk!(Base.tail(ls), s, W, off + L)
+    return _seed_chunk!(Base.tail(ls), s, W)
 end
-@inline _scatter_chunk!(::Tuple{}, out, s, W, off) = off
-@inline function _scatter_chunk!(ls::Tuple, out, s, W, off)
-    nda, g = first(ls)
-    L = length(nda.primal)
-    @inbounds for i in 1:L
-        d = off + i
-        # `d` ranges 1..total_dim across all leaves, so a `min(·, total_dim)` upper clamp
-        # would be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's
-        # empty lanes.
+@inline _scatter_chunk!(::Tuple{}, out, s, W) = nothing
+@inline function _scatter_chunk!(ls::Tuple, out, s, W)
+    _, g, dims = first(ls)
+    @inbounds for (i, d) in enumerate(dims)
+        # `dims` covers 1..total_dim across all rows, so a `min(·, total_dim)` upper clamp would
+        # be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's empty lanes.
         s <= d <= s + W - 1 && (g[i] = tangent(out, d - s + 1))
     end
-    return _scatter_chunk!(Base.tail(ls), out, s, W, off + L)
+    return _scatter_chunk!(Base.tail(ls), out, s, W)
 end
 
 # Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`).
@@ -2879,7 +2888,7 @@ function _structured_gradient!!(
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
     W = cache.gradient_chunk_size
-    total_dim = _leaves_dof(leaves)
+    total_dim = isempty(leaves) ? 0 : last(leaves)[3].stop
     local y
     s = 1
     while s <= total_dim
@@ -2892,12 +2901,12 @@ function _structured_gradient!!(
         # into the cache's own objects, so an unchanged call rebuilds nothing.
         arg_seeds = _refresh_nondiff_all(arg_seeds, xs)
         _refresh_all!(arg_seeds, xs)
-        _zero_partials!(leaves)
-        _seed_chunk!(leaves, s, W, 0)
+        _zero_seeds!(leaves)
+        _seed_chunk!(leaves, s, W)
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
         y = primal(out)
         _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
-        _scatter_chunk!(leaves, out, s, W, 0)
+        _scatter_chunk!(leaves, out, s, W)
         s += W
     end
     native_gradients = (NoTangent(), grad_bufs...)
