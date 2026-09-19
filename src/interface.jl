@@ -2114,7 +2114,8 @@ end
 
 Returns a cache used with [`value_and_gradient!!`](@ref). See that function for more info,
 including the `config.friendly_tangents` output-tangent contract and how arguments sharing
-one storage are handled.
+one storage are handled. The same cache also serves [`value_and_pullback!!`](@ref) with a
+scalar output tangent.
 
 The API guarantees that tangents are initialized at zero before the first autodiff pass.
 
@@ -2141,7 +2142,13 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y_cache = _copy_output(primal(y))
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
-        return Cache(rule, y_cache, tangents, dests, nothing, input_specs, output_spec)
+        # The output-tangent buffer comes with `dests`: a friendly pullback converts the
+        # caller's `ȳ` into it, so leaving it `nothing` made a friendly gradient cache throw
+        # `AssertionError: typeof(tangent) <: tangent_type(P)` the moment it was handed to
+        # `value_and_pullback!!`, while the unfriendly one worked.
+        return Cache(
+            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
+        )
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
     end

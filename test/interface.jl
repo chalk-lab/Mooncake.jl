@@ -534,6 +534,24 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
         end
 
+        @testset "a gradient cache also serves value_and_pullback!!" begin
+            # A friendly pullback converts the caller's `ybar` into the cache's output-tangent
+            # buffer, so a friendly gradient cache that left it `nothing` threw on the first
+            # such call while the unfriendly one worked. Cross-API reuse of one cache is not
+            # expressible as a registry case.
+            fsq = x -> sum(abs2, x)
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                x = [1.0, 2.0]
+                cache = Mooncake.prepare_gradient_cache(
+                    fsq, x; config=Mooncake.Config(; friendly_tangents=fr)
+                )
+                @test Mooncake.value_and_pullback!!(cache, 1.0, fsq, x) ==
+                    (5.0, (Mooncake.NoTangent(), [2.0, 4.0]))
+                @test Mooncake.value_and_gradient!!(cache, fsq, x) ==
+                    (5.0, (Mooncake.NoTangent(), [2.0, 4.0]))
+            end
+        end
+
         @testset "pullback cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [1.0, 2.0]
