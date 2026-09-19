@@ -171,8 +171,8 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # tuples, complex, mixed eltypes, …), which uses the generic chunked gradient path.
     gradient_seed::GS
     # Whether the prepared inputs share differentiable storage across positions (`f.v === x`,
-    # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_alias`.
-    inputs_alias::Bool
+    # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_share_storage`.
+    inputs_share_storage::Bool
     # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a
     # single same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix,
     # sized and filled on the first call (the output shape is not known at construction).
@@ -268,7 +268,7 @@ end
 
 function _throw_prepared_cache_aliasing_error(li::String, lj::String, aliased_now::Bool)
     # "one storage" rather than "the same object": an `Array` and its backing `Memory` are never
-    # `===` yet are one storage, and that pair is exactly what `_same_storage` added.
+    # `===` yet are one storage, and that pair is exactly what `_shares_storage` added.
     what = if aliased_now
         "share one storage now but were separate"
     else
@@ -317,17 +317,18 @@ end
 # returned `[1,1,1]` against a truth of `[2,2,2]`, silently. Asked of the primals and of the
 # tangents with the ONE predicate, so the two answers are comparable: `(b, reshape(b))` shares a
 # buffer on both sides and still passes.
-@inline _alias_key(@nospecialize(x)) = x
+@inline _storage_id(@nospecialize(x)) = x
 @static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
-    @inline _alias_key(x::Array) = getfield(x, :ref).mem
-    @inline _alias_key(x::Memory) = x
+    @inline _storage_id(x::Array) = getfield(x, :ref).mem
+    @inline _storage_id(x::Memory) = x
 end
-@inline _same_storage(@nospecialize(x), @nospecialize(y)) = _alias_key(x) === _alias_key(y)
+@inline _shares_storage(@nospecialize(x), @nospecialize(y)) =
+    _storage_id(x) === _storage_id(y)
 
 # The positions both aliasing emitters compare, as `(argument index, path)`. `leafwise` walks into
 # immutable containers for the tangent check; the primal check takes top-level mutables only.
 # Shared so the two cannot drift apart in what they enumerate.
-function _alias_pairs(@nospecialize(T::Type), leafwise::Bool)
+function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
     leaves = Tuple{Int,Any}[]
     for (i, P) in enumerate(T.parameters)
         if leafwise
@@ -362,7 +363,7 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
     # of ONE argument alias exactly as two arguments do (`f(t)` prepared at `t = (a, b)` and called
     # at `(a, a)` gave half the gradient at both positions, silently), and the cache holds one
     # buffer per leaf either way.
-    leaves = _alias_pairs(tangents, true)
+    leaves = _aliasable_positions(tangents, true)
     n = length(leaves)
     # The unrolled form is quadratic in the leaf count, and past a few hundred pairs that is paid
     # in compile time: 128 leaves took 19s to expand and compile, against 0.6s for 32 and 0.05s for
@@ -386,8 +387,8 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
         push!(
             checks.args,
             quote
-                let same_primal = _same_storage($fi, $fj),
-                    same_tangent = _same_storage($ti, $tj)
+                let same_primal = _shares_storage($fi, $fj),
+                    same_tangent = _shares_storage($ti, $tj)
 
                     $bad && _throw_prepared_cache_aliasing_error($li, $lj, same_primal)
                 end
@@ -398,7 +399,7 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
 end
 
 # Runtime form of the same check for signatures too wide to unroll. Two positions share a buffer
-# exactly when they share an `_alias_key`, so comparing, for each leaf, the FIRST leaf it shares a
+# exactly when they share an `_storage_id`, so comparing, for each leaf, the FIRST leaf it shares a
 # primal with against the first it shares a tangent with decides the whole partition in one pass.
 @noinline function _check_alias_partition(
     tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
@@ -406,8 +407,8 @@ end
     first_tangent = IdDict{Any,Int}()
     first_primal = IdDict{Any,Int}()
     for k in eachindex(tangents)
-        t = get!(first_tangent, _alias_key(tangents[k]), k)
-        f = get!(first_primal, _alias_key(primals[k]), k)
+        t = get!(first_tangent, _storage_id(tangents[k]), k)
+        f = get!(first_primal, _storage_id(primals[k]), k)
         t == f && continue
         bidirectional || t < f || continue
         _throw_prepared_cache_aliasing_error(labels[min(t, f)], labels[k], f < t)
@@ -479,18 +480,18 @@ end
 # direction the caller asked about.
 #
 # Compare supplied storage against tangents seeded through ONE cache. Runs only when
-# `inputs_alias`, computed at cache construction, flags sharing, so an ordinary call pays nothing.
+# `inputs_share_storage`, computed at cache construction, flags sharing, so an ordinary call pays nothing.
 @inline function _check_shared_input_tangents(
     cache, input_primals::Tuple, input_tangents::Tuple
 )
-    # `inputs_alias` describes the PREPARED inputs, so it is a pre-filter and not the verdict: a
+    # `inputs_share_storage` describes the PREPARED inputs, so it is a pre-filter and not the verdict: a
     # cache prepared with aliased arguments may be called with distinct ones, which this method
     # supports (it lifts the caller's own tangents afresh). Confirm the CALL-TIME primals share
     # before refusing. Both traversals sit behind the flag, so an ordinary call pays nothing.
-    getfield(cache, :inputs_alias) || return nothing
+    getfield(cache, :inputs_share_storage) || return nothing
     ts = _zero_tangents(input_primals)
     shared_dim = tangent_dim(ts)
-    _inputs_alias(shared_dim, ts, input_primals) || return nothing
+    _inputs_share_storage(shared_dim, ts, input_primals) || return nothing
     @static if VERSION >= v"1.11-rc4"
         # Canonical tangents share the primals' backing Memory. Compare the actual mapping:
         # equal dimension counts and unrelated sharing in reverse scratch cannot certify it.
@@ -507,8 +508,8 @@ end
     shared = tangent_dim(input_tangents, IdDict{Any,Any}())
     shared > shared_dim && _throw_shared_input_tangent_error()
     # One buffer under two array containers (`da` and `reshape(da)`, or an `Array` beside its
-    # backing `Memory`) leaves the counts equal, so `_repeats_storage` is what recognises it.
-    _repeats_storage(input_tangents) && return nothing
+    # backing `Memory`) leaves the counts equal, so `_any_shared_storage` is what recognises it.
+    _any_shared_storage(input_tangents) && return nothing
     summed = sum(t -> tangent_dim(t, IdDict{Any,Any}()), input_tangents; init=0)
     shared == summed && _throw_shared_input_tangent_error()
     return nothing
@@ -529,7 +530,7 @@ function _check_tangent_storage!(seen::IdDict, expected::T, supplied) where {T}
         (isempty(expected) || eltype(expected) === NoTangent) && return nothing
     end
     if ismutable(expected)
-        key, value = _alias_key(expected), _alias_key(supplied)
+        key, value = _storage_id(expected), _storage_id(supplied)
         if haskey(seen, key)
             # A wrapper of integer or empty arrays can be mutable yet carry no dimensions.
             seen[key] === value ||
@@ -577,25 +578,25 @@ end
 #
 # Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
 # repeated scalar is not aliasing. Sharing nested inside an immutable container is caught instead by
-# `_inputs_alias` at cache construction, where the traversal it needs is paid once; see
+# `_inputs_share_storage` at cache construction, where the traversal it needs is paid once; see
 # `_check_tangent_aliasing` for why that traversal is too expensive to run per call.
 # `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
 # argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
 #
-# By `_same_storage`, not `===`, so an `Array` and its backing `Memory` count: they are one storage
+# By `_shares_storage`, not `===`, so an `Array` and its backing `Memory` count: they are one storage
 # and so one dimension range, and the per-argument sweep differentiates it once per position. This runs
-# per CALL, which is what makes it the verdict rather than the prepare-time `inputs_alias` flag —
+# per CALL, which is what makes it the verdict rather than the prepare-time `inputs_share_storage` flag —
 # a cache prepared with unrelated arguments and called with `(a, a.ref.mem)` otherwise returned
 # `[1,1,1]` at both positions against a truth of `[2,2,2]`, silently.
 @generated function _check_primal_aliasing(x::Tuple)
     checks = Expr(:block)
-    leaves = _alias_pairs(x, false)
+    leaves = _aliasable_positions(x, false)
     for a in eachindex(leaves), b in (a + 1):length(leaves)
         i, j = leaves[a][1], leaves[b][1]
         push!(
             checks.args,
             :(
-                _same_storage(x[$i], x[$j]) &&
+                _shares_storage(x[$i], x[$j]) &&
                 _holds_derivatives(x[$i]) &&
                 _throw_gradient_arg_alias_error($i, $j)
             ),
@@ -643,11 +644,15 @@ end
 # while `tangent_dim` per element starts a fresh cache and so counts a shared leaf once per position.
 # Rebuilding a tangent set per argument gives the same two numbers and allocated 1.6 MB on a pair of
 # 100k-element vectors.
-function _inputs_alias(shared_dim::Int, ts::Tuple, fx::Tuple)
+function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
     shared_dim != sum(tangent_dim, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
-    # they do not, so that version reads it off the primals instead; see `_repeats_storage!`.
-    return @static VERSION >= v"1.11-rc4" ? _repeats_storage(ts) : _repeats_storage(fx)
+    # they do not, so that version reads it off the primals instead; see `_any_shared_storage!`.
+    return @static if VERSION >= v"1.11-rc4"
+        _any_shared_storage(ts)
+    else
+        _any_shared_storage(fx)
+    end
 end
 
 # Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so the
@@ -659,12 +664,14 @@ struct _StorageSeen
     objs::IdDict{Any,Nothing}
     backing::IdDict{Any,Nothing}
 end
-function _repeats_storage(x)
-    return _repeats_storage!(_StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x)
+function _any_shared_storage(x)
+    return _any_shared_storage!(
+        _StorageSeen(IdDict{Any,Nothing}(), IdDict{Any,Nothing}()), x
+    )
 end
 
 @static if VERSION >= v"1.11-rc4"
-    _repeats_storage!(::_StorageSeen, ::Any) = false
+    _any_shared_storage!(::_StorageSeen, ::Any) = false
 
     # Claim `store` for `x`. `true` if some other container already holds it.
     @inline function _claim_storage!(s::_StorageSeen, x, store)
@@ -675,48 +682,47 @@ end
         return false
     end
 
-    # Nothing to double-count where there are no dimensions: a `Vector{Int}` and its own reshape share a
-    # `Memory{NoTangent}`, and refusing that rejected a gradient the sweep computes correctly. The
-    # refusal's own message is the test — a shared leaf "comes back scaled by that count", and a
-    # `NoTangent` leaf has no count.
-    @inline _claims_dofs(::Type{T}) where {T} = tangent_type(eltype(T)) !== NoTangent
-
-    # An EMPTY array or `Memory` is not evidence of sharing either: every empty `Array` points at
-    # Julia's one global empty `Memory`, so two unrelated ones look aliased.
-    function _repeats_storage!(s::_StorageSeen, x::Array)
-        (isempty(x) || !_claims_dofs(typeof(x))) && return false
+    # Two guards on the way in, both testing that there is something to double-count. An EMPTY
+    # array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's one
+    # global empty `Memory`, so two unrelated ones look aliased. Nor is a container whose elements
+    # have no derivative — a `Vector{Int}` and its own reshape share a `Memory{NoTangent}`, and
+    # refusing that rejected a gradient the sweep computes correctly. The refusal's own message is
+    # the test: a shared leaf "comes back scaled by that count", and a `NoTangent` leaf has no
+    # count.
+    function _any_shared_storage!(s::_StorageSeen, x::Array)
+        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
         haskey(s.objs, x) && return false
         _claim_storage!(s, x, getfield(x, :ref).mem) && return true
-        return _repeats_elements!(s, x)
+        return _any_shared_element!(s, x)
     end
-    function _repeats_storage!(s::_StorageSeen, x::Memory)
-        (isempty(x) || !_claims_dofs(typeof(x))) && return false
+    function _any_shared_storage!(s::_StorageSeen, x::Memory)
+        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
         haskey(s.objs, x) && return false
         _claim_storage!(s, x, x) && return true
-        return _repeats_elements!(s, x)
+        return _any_shared_element!(s, x)
     end
     # The elements are tangents too, and two of them can share storage while their containers do
     # not. Guarded on the visited check above, so an array holding itself terminates. A bits element
     # holds no storage of its own, which is also what keeps a large float array off this path.
-    function _repeats_elements!(s::_StorageSeen, x)
+    function _any_shared_element!(s::_StorageSeen, x)
         isbitstype(eltype(x)) && return false
         for i in eachindex(x)
-            isassigned(x, i) && _repeats_storage!(s, x[i]) && return true
+            isassigned(x, i) && _any_shared_storage!(s, x[i]) && return true
         end
         return false
     end
-    function _repeats_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
-        return is_init(x) && _repeats_storage!(s, val(x))
+    function _any_shared_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
+        return is_init(x) && _any_shared_storage!(s, val(x))
     end
-    function _repeats_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
-        return any(v -> _repeats_storage!(s, v), x)
+    function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
+        return any(v -> _any_shared_storage!(s, v), x)
     end
-    function _repeats_storage!(s::_StorageSeen, x::Union{Tangent,MutableTangent})
+    function _any_shared_storage!(s::_StorageSeen, x::Union{Tangent,MutableTangent})
         # Register before descending: a self-referential struct (`node.next === node`) otherwise
         # recurses forever, as the other tangent traversals guard against for the same reason.
         haskey(s.objs, x) && return false
         s.objs[x] = nothing
-        return _repeats_storage!(s, x.fields)
+        return _any_shared_storage!(s, x.fields)
     end
 else
     # Julia 1.10 has no `Memory`, and — the reason this is a separate implementation rather than a
@@ -729,9 +735,11 @@ else
     # the whole module graph in. A differentiable struct is exactly one whose tangent is a
     # `Tangent`/`MutableTangent`, which is also how the 1.11+ walk finds them — it sees the tangent
     # directly and dispatches on it.
-    _repeats_storage!(s::_StorageSeen, x) = _repeats_struct!(s, x, tangent_type(_typeof(x)))
-    _repeats_struct!(::_StorageSeen, @nospecialize(x), ::Type) = false
-    function _repeats_struct!(s::_StorageSeen, x, ::Type{<:Union{Tangent,MutableTangent}})
+    _any_shared_storage!(s::_StorageSeen, x) = _any_shared_field!(
+        s, x, tangent_type(_typeof(x))
+    )
+    _any_shared_field!(::_StorageSeen, @nospecialize(x), ::Type) = false
+    function _any_shared_field!(s::_StorageSeen, x, ::Type{<:Union{Tangent,MutableTangent}})
         # Only a mutable can be cyclic, and registering an immutable would key an `IdDict` on its
         # CONTENTS, so two distinct-but-equal structs would look visited and the second go unwalked.
         if ismutable(x)
@@ -739,12 +747,12 @@ else
             s.objs[x] = nothing
         end
         return any(
-            i -> isdefined(x, i) && _repeats_storage!(s, getfield(x, i)),
+            i -> isdefined(x, i) && _any_shared_storage!(s, getfield(x, i)),
             1:fieldcount(_typeof(x)),
         )
     end
 
-    function _repeats_storage!(s::_StorageSeen, x::Array)
+    function _any_shared_storage!(s::_StorageSeen, x::Array)
         # Two `Vector{Int}`s over one buffer contribute no dimensions, so sharing among them is not a
         # reason to refuse anything.
         (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
@@ -756,12 +764,12 @@ else
         haskey(s.backing, store) && return true
         s.backing[store] = nothing
         return any(
-            i -> isassigned(x, i) && _repeats_storage!(s, x[i]),
+            i -> isassigned(x, i) && _any_shared_storage!(s, x[i]),
             isbitstype(eltype(x)) ? (1:0) : eachindex(x),
         )
     end
-    function _repeats_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
-        return any(v -> _repeats_storage!(s, v), x)
+    function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
+        return any(v -> _any_shared_storage!(s, v), x)
     end
 end
 
@@ -822,7 +830,7 @@ end
 # and handles aliased inputs correctly: the caller supplies the seeds, so one tangent can cover
 # every position the shared leaf occupies.
 @inline function _check_gradient_input_aliasing(cache::FCache)
-    getfield(cache, :inputs_alias) && _throw_gradient_input_alias_error()
+    getfield(cache, :inputs_share_storage) && _throw_gradient_input_alias_error()
     return nothing
 end
 
@@ -1068,7 +1076,7 @@ is shown by the cache.
     # `gradient_seed`).
     input_ts = _zero_tangents(fx)
     total_dim = tangent_dim(input_ts)
-    inputs_alias = _inputs_alias(total_dim, input_ts, fx)
+    inputs_share_storage = _inputs_share_storage(total_dim, input_ts, fx)
     gradient_chunk_size = let
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dim, requested)
@@ -1189,7 +1197,7 @@ is shown by the cache.
             input_specs,
             _copy_output(Base.tail(fx)),
             gradient_seed,
-            inputs_alias,
+            inputs_share_storage,
             jacobian_buffer,
         )
     end
@@ -1207,7 +1215,7 @@ is shown by the cache.
         input_specs,
         _copy_output(Base.tail(fx)),
         gradient_seed,
-        inputs_alias,
+        inputs_share_storage,
         jacobian_buffer,
     )
 end
@@ -3341,7 +3349,7 @@ end
 # `_check_shared_input_tangents` through `value_and_hvp!!`, but `_chunked_hessian_sweep!` calls the
 # pre-lifted `value_and_derivative!!` method, which that guard never sees.
 @inline function _check_hessian_input_aliasing(cache::HVPCache)
-    getfield(getfield(cache, :fwd_cache), :inputs_alias) &&
+    getfield(getfield(cache, :fwd_cache), :inputs_share_storage) &&
         _throw_hessian_input_alias_error()
     return nothing
 end

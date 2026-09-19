@@ -2806,7 +2806,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
                     # The forward gradient assembles one dimension range per argument, so it refuses the
                     # pair outright — and the refusal has to be the per-CALL check, not the
-                    # prepare-time `inputs_alias` flag: on a cache prepared with unrelated
+                    # prepare-time `inputs_share_storage` flag: on a cache prepared with unrelated
                     # arguments that flag is false, and the sweep returned [1,1,1] at both
                     # positions against the same truth of [2,2,2], silently.
                     fwd = Mooncake.prepare_derivative_cache(
