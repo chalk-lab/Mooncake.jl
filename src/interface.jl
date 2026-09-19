@@ -349,9 +349,8 @@ function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
     return checks
 end
 
-# Runtime form of the same check for signatures too wide to unroll. Two positions share a buffer
-# exactly when they share an `_storage_id`, so comparing, for each leaf, the FIRST leaf it shares a
-# primal with against the first it shares a tangent with decides the whole partition in one pass.
+# Runtime form of the same pairwise contract for signatures too wide to unroll. Each
+# repeated tangent must still name its first primal; reverse mode also checks the inverse.
 @noinline function _check_alias_partition(
     tangents::Tuple, primals::Tuple, labels::Tuple, bidirectional::Bool
 )
@@ -359,10 +358,13 @@ end
     first_primal = IdDict{Any,Int}()
     for k in eachindex(tangents)
         t = get!(first_tangent, _storage_id(tangents[k]), k)
-        f = get!(first_primal, _storage_id(primals[k]), k)
-        t == f && continue
-        bidirectional || t < f || continue
-        _throw_prepared_cache_aliasing_error(labels[min(t, f)], labels[k], f < t)
+        _shares_storage(primals[t], primals[k]) ||
+            _throw_prepared_cache_aliasing_error(labels[t], labels[k], false)
+        if bidirectional
+            f = get!(first_primal, _storage_id(primals[k]), k)
+            _shares_storage(tangents[f], tangents[k]) ||
+                _throw_prepared_cache_aliasing_error(labels[f], labels[k], true)
+        end
     end
     return nothing
 end
@@ -1154,7 +1156,7 @@ is shown by the cache.
         gradient_chunk_size_auto,
         chunk_rule,
         input_specs,
-        _copy_output(Base.tail(fx)),
+        map(_copy_output, Base.tail(fx)),
         gradient_seed,
         inputs_share_storage,
         jacobian_buffer,
@@ -1259,7 +1261,9 @@ fields is not restored.
     # an in-place-mutating `f` does not mutate the user's inputs. The restore is in a
     # `finally`: an `f` that mutates and then raises (a domain error inside a line search,
     # say) otherwise hands the caller a half-updated argument along with the exception.
-    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot, restore_contexts = _snapshot_inputs!!(
+        cache.input_snapshot, Base.tail(input_primals)
+    )
     try
         # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}`
         # method.
@@ -1282,7 +1286,7 @@ fields is not restored.
         # only for mutable ones.
         return _copy_output(output_primal), output_friendly_tangent
     finally
-        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
+        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
     end
 end
 
@@ -1311,14 +1315,16 @@ end
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs,
     # on the throwing path as well; see the friendly method above.
-    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot, restore_contexts = _snapshot_inputs!!(
+        cache.input_snapshot, Base.tail(input_primals)
+    )
     try
         output = __call_rule(cache.single_rule, input_lifted)
         # Copy the output primal out before the restore: it may alias an in-place-mutated
         # input, which the restore would otherwise overwrite with the original.
         return _copy_output(primal(output)), last(unlift(output))
     finally
-        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
+        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
     end
 end
 
@@ -2354,7 +2360,9 @@ end
         # Snapshot/restore like the chunked loop below: forward slots alias the user's
         # storage, so an in-place `f` over a zero-dimension input (e.g. `Vector{Int}`) would
         # otherwise mutate it.
-        input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+        input_snapshot, restore_contexts = _snapshot_inputs!!(
+            cache.input_snapshot, Base.tail(input_primals)
+        )
         # `_finalize_gradient` reads the input primals, so it runs after the restore.
         y = try
             primal(
@@ -2363,7 +2371,7 @@ end
                 ),
             )
         finally
-            _copy_to_output!!(Base.tail(input_primals), input_snapshot)
+            _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
         end
         _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
         return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -2391,14 +2399,16 @@ end
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the
     # end.
-    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot, restore_contexts = _snapshot_inputs!!(
+        cache.input_snapshot, Base.tail(input_primals)
+    )
     # Single sweep over all chunks. `total_dim >= 1` here (the zero-dimension case returned
     # above), so the first iteration always runs and assigns `y`; its leading input restore
     # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
     try
         for start_slot in 1:W:total_dim
-            _copy_to_output_repoint!!(Base.tail(input_primals), input_snapshot)
+            _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
             slots = ntuple(lane -> start_slot + lane - 1, W)
             lanes = ntuple(
                 lane -> last(
@@ -2434,7 +2444,7 @@ end
     finally
         # Leave the inputs unchanged whether or not a chunk threw (each chunk ran on the
         # original).
-        _copy_to_output_repoint!!(Base.tail(input_primals), input_snapshot)
+        _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
     end
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -2867,6 +2877,7 @@ function _structured_gradient!!(
 ) where {F}
     input_primals = (f, xs...)
     _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_tangent_aliasing((NoTangent(), seed.grad_bufs...), input_primals)
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
     # NoDual` is guaranteed by the non-differentiable-`f` gate, so this is a free isbits
@@ -3527,140 +3538,29 @@ function __exclude_unsupported_output_internal!(y::T, address_set::Set{UInt}) wh
     return nothing
 end
 
-"""
-    _copy_to_output!!(dst::T, src::T)
-
-Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of
-`dst` and `src` must be the same. Required as Base.copy!() does not work for all supported
-primal types. For example, `Base.copy!` does not work for `Core.svec`. A defined source field
-initialises an undefined destination field. Retain the returned value: an immutable `dst` is
-rebuilt rather than updated. For types with custom copy semantics, overload this function
-(see `Core.SimpleVector` for an example).
-"""
-# The two-argument methods are the allocation-free hot path (input restore on every autodiff
-# pass); they recurse two-argument and stay byte-identical to the original acyclic
-# implementation. Only the mutable-struct method re-dispatches to the three-argument family
-# below (when `ismutable(src)`), which threads an `IdDict` aliasing cache: each mutable
-# `dst` — and each reference-element array — is registered (keyed by its `src`) before its
-# contents are restored, so a cycle returns the in-progress `dst` instead of recursing
-# forever. Mirrors reverse-mode's `MaybeCache`.
-_copy_to_output!!(dst::Number, src::Number) = src
-
-# Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
-# cannot be deep-copied; return src as-is.
-_copy_to_output!!(::Type, src::Type) = src
-_copy_to_output!!(::Core.TypeName, src::Core.TypeName) = src
-_copy_to_output!!(::Module, src::Module) = src
-
-# explicit copy for Core.svec
-function _copy_to_output!!(dst::SimpleVector, src::SimpleVector)
-    return Core.svec(map(_copy_to_output!!, dst, src)...)
+# Retain snapshot-node => original-call-object correspondence during population, before the
+# rule can rebind any fields. Each argument validates its own prepared partition; sharing across
+# arguments may change for a directional derivative. Restore visits are independent of this map.
+struct _RestoreContext
+    originals::IdDict{Any,Any}
+    seen::IdDict{Any,Any}
 end
 
-# copy for Array, Memory. Acyclic hot path: recurses two-argument with no aliasing cache.
-# Cycle handling (including a self-referential reference-element array) lives in the
-# three-argument array method below, which threads the cache.
-function _copy_to_output!!(dst::P, src::P) where {P<:_BuiltinArrays}
-    _check_copy_extent(dst, src)
-    # A reference element can be the array itself, and the cycle handling lives in the
-    # three-argument family, so route there rather than recursing two-argument forever. A bits
-    # element cannot cycle, so it keeps the cache-free path.
-    isbitstype(eltype(P)) || return _copy_to_output!!(dst, src, IdDict{Any,Any}())
-    @inbounds for i in eachindex(src)
-        if isassigned(src, i)
-            dst[i] = if isassigned(dst, i)
-                _copy_to_output!!(dst[i], src[i])
-            else
-                _copy_output(src[i])
-            end
-        end
+function _snapshot_inputs!!(dst::Tuple, src::Tuple)
+    pairs = map(dst, src) do d, s
+        c = IdDict{Any,Any}()
+        snapshot = _copy_to_output!!(d, s, c)
+        (snapshot, _RestoreContext(c, IdDict{Any,Any}()))
     end
-    return dst
+    return map(first, pairs), map(last, pairs)
 end
 
-# `dst` is cache-owned storage sized at preparation time and `src` is what the call produced, so a
-# mismatch means the cache cannot hold this value. The loops below index `dst` under `@inbounds`
-# while iterating `src`, and `isassigned(dst, i)` reports FALSE out of range rather than throwing,
-# so without this an overrun writes past the end: a segfault where `src` is longer, and a silently
-# truncated result handed back to the caller.
-@inline function _check_copy_extent(dst, src)
-    size(dst) == size(src) && return nothing
-    throw(
-        PreparedCacheError(
-            "Prepared cache mismatch: cached storage has size $(size(dst)), but the value to " *
-            "copy into it has size $(size(src)). Rebuild the cache for the new shape.",
-        ),
-    )
-end
-
-# Tuple, NamedTuple
-function _copy_to_output!!(dst::P, src::P) where {P<:Tuple}
-    isbitstype(P) && return src
-    return map(_copy_to_output!!, dst, src)
-end
-
-# Rebuild at the DECLARED type: `map` over a `NamedTuple` infers its own element types, so a
-# field whose copy widens (an abstract field, say) would otherwise change the tuple's type.
-function _copy_to_output!!(dst::P, src::P) where {P<:NamedTuple}
-    isbitstype(P) && return src
-    return P(map(_copy_to_output!!, values(dst), values(src)))
-end
-
-# Handling structs
-function _copy_to_output!!(dst::P, src::P) where {P}
-    isbitstype(P) && return src
-    # nfields(src) not nfields(P): the latter counts fields of the
-    # DataType object itself.
-    nf = nfields(src)
-
-    # No Julia-visible fields (e.g. Symbol, String): nothing to update.
-    # Overload _copy_to_output!! to customise.
-    nf == 0 && return src
-
-    # Mutable structs can be self-referential — handle them via the cyclic family.
-    ismutable(src) && return _copy_to_output!!(dst, src, IdDict{Any,Any}())
-
-    # this allocation is needed for handling undef fields in immutable structs.
-    flds = Vector{Any}(undef, nf)
-    for src_sub in 1:nf
-        if isdefined(src, src_sub)
-            flds[src_sub] = if isdefined(dst, src_sub)
-                _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub))
-            else
-                _copy_output(getfield(src, src_sub))
-            end
-        else
-            nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
-            break
-        end
+function _restore_inputs!!(dst::Tuple, src::Tuple, contexts::Tuple)
+    return map(dst, src, contexts) do d, s, c
+        empty!(c.seen)
+        _copy_to_output!!(d, s, c.seen, c)
     end
-
-    # when immutable struct object created by non initializing inner constructor.
-    # (Base.deepcopy misses this out)
-    !isassigned(flds, 1) && return src
-    return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, nf)::P
 end
-
-# fallback for invalid type combinations
-function _copy_to_output!!(dst::T, src::P) where {T,P}
-    throw(
-        ArgumentError(
-            "Mooncake.jl does not currently have a method `_copy_to_output!!` to handle " *
-            "this type combination: dst passed is of type $T, while src is a $P. This " *
-            "often happens when differentiating over non-differentiable types (e.g. " *
-            "integers or booleans).",
-        ),
-    )
-end
-
-# Restore walks may re-point a caller's mutable fields after the differentiated function rebound
-# one of them. The same cached walk is used; only repeated snapshot sources return the already
-# mapped caller object instead of rejecting the sharing mismatch.
-@inline function _copy_to_output_repoint!!(dst, src)
-    return _copy_to_output!!(dst, src, IdDict{Any,Any}(), Val(true))
-end
-
-# ── Cyclic family: threads the `IdDict` aliasing cache `c` ─────────────────────
 
 # Reaching one node twice means that graph shares it between two positions; the other graph must
 # share it at the same two positions, or the only way to finish the copy is to re-point one of them
@@ -3686,41 +3586,63 @@ end
     )
 end
 
-_copy_to_output!!(dst::Number, src::Number, ::IdDict) = src
-_copy_to_output!!(dst::Number, src::Number, ::IdDict, ::Val) = src
-_copy_to_output!!(::Type, src::Type, ::IdDict) = src
-_copy_to_output!!(::Type, src::Type, ::IdDict, ::Val) = src
-_copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict) = src
-_copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict, ::Val) = src
-_copy_to_output!!(::Module, src::Module, ::IdDict) = src
-_copy_to_output!!(::Module, src::Module, ::IdDict, ::Val) = src
-function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict)
-    return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c), dst, src)...)
-end
-function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict, r::Val)
-    return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)...)
-end
-function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
-    return _copy_to_output!!(dst, src, c, Val(false))
-end
-function _copy_to_output!!(
-    dst::P, src::P, c::IdDict, ::Val{Repoint}
-) where {P<:_BuiltinArrays,Repoint}
-    _check_copy_extent(dst, src)
-    if haskey(c, src)
-        return Repoint ? c[src]::P : _same_destination(c[src]::P, dst)
-    end
-    if haskey(c, dst)
-        _throw_copy_sharing_error(P)
-    end
-    begin
-        c[src] = dst
+# Register mutable nodes and opaque custom leaves before descent, returning repeats immediately.
+@inline function _copy_context_destination!!(dst, src::P, c::IdDict, r) where {P}
+    if r isa _RestoreContext
+        dst = get(r.originals, src, dst)
+        haskey(c, src) && return c[src]::P, true
+    else
+        haskey(c, src) && return _same_destination(c[src]::P, dst), true
+        haskey(c, dst) && _throw_copy_sharing_error(P)
         c[dst] = src
     end
+    c[src] = dst
+    return dst::P, false
+end
+
+# `dst` is cache-owned storage sized at preparation time and `src` is what the call produced, so a
+# mismatch means the cache cannot hold this value. The loops below index `dst` under `@inbounds`
+# while iterating `src`, and `isassigned(dst, i)` reports FALSE out of range rather than throwing,
+# so without this an overrun writes past the end: a segfault where `src` is longer, and a silently
+# truncated result handed back to the caller.
+@inline function _check_copy_extent(dst, src)
+    size(dst) == size(src) && return nothing
+    throw(
+        PreparedCacheError(
+            "Prepared cache mismatch: cached storage has size $(size(dst)), but the value to " *
+            "copy into it has size $(size(src)). Rebuild the cache for the new shape.",
+        ),
+    )
+end
+
+"""
+    _copy_to_output!!(dst::T, src::T)
+
+Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of
+`dst` and `src` must be the same. Required as Base.copy!() does not work for all supported
+primal types. For example, `Base.copy!` does not work for `Core.svec`. A defined source field
+initialises an undefined destination field. Retain the returned value: an immutable `dst` is
+rebuilt rather than updated. For types with custom copy semantics, overload this function
+(see `Core.SimpleVector` for an example).
+"""
+_copy_to_output!!(dst::Number, src::Number, c=nothing, r=nothing) = src
+_copy_to_output!!(::Type, src::Type, c=nothing, r=nothing) = src
+_copy_to_output!!(::Core.TypeName, src::Core.TypeName, c=nothing, r=nothing) = src
+_copy_to_output!!(::Module, src::Module, c=nothing, r=nothing) = src
+function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c=nothing, r=nothing)
+    return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)...)
+end
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:_BuiltinArrays}
+    c === nothing && !isbitstype(eltype(P)) && (c = IdDict{Any,Any}())
+    if c !== nothing
+        dst, seen = _copy_context_destination!!(dst, src, c, r)
+        seen && return dst
+    end
+    _check_copy_extent(dst, src)
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
             dst[i] = if isassigned(dst, i)
-                _copy_to_output!!(dst[i], src[i], c, Val(Repoint))
+                _copy_to_output!!(dst[i], src[i], c, r)
             else
                 _copy_output(src[i], c)
             end
@@ -3728,43 +3650,34 @@ function _copy_to_output!!(
     end
     return dst
 end
-function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:Tuple}
-    return _copy_to_output!!(dst, src, c, Val(false))
-end
-function _copy_to_output!!(
-    dst::P, src::P, c::IdDict, ::Val{Repoint}
-) where {P<:Tuple,Repoint}
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:Tuple}
     isbitstype(P) && return src
-    return map((d, s) -> _copy_to_output!!(d, s, c, Val(Repoint)), dst, src)
+    return map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)
 end
 
-function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:NamedTuple}
-    return _copy_to_output!!(dst, src, c, Val(false))
-end
-function _copy_to_output!!(
-    dst::P, src::P, c::IdDict, ::Val{Repoint}
-) where {P<:NamedTuple,Repoint}
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:NamedTuple}
     isbitstype(P) && return src
-    return P(
-        map((d, s) -> _copy_to_output!!(d, s, c, Val(Repoint)), values(dst), values(src))
-    )
+    return P(map((d, s) -> _copy_to_output!!(d, s, c, r), values(dst), values(src)))
 end
-function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
-    return _copy_to_output!!(dst, src, c, Val(false))
-end
-function _copy_to_output!!(dst::P, src::P, c::IdDict, ::Val{Repoint}) where {P,Repoint}
+function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P}
+    # Only the generic struct fallback needs to detect an opaque two-argument extension:
+    # all specialised bodies dispatch above, so no list of built-in types is required.
+    custom =
+        which(_copy_to_output!!, Tuple{P,P}) !==
+        which(_copy_to_output!!, Tuple{Base.RefValue{Nothing},Base.RefValue{Nothing}})
+    if custom
+        c === nothing && return _copy_to_output!!(dst, src)
+        dst, seen = _copy_context_destination!!(dst, src, c, r)
+        return seen ? dst : _copy_to_output!!(dst, src)
+    end
     isbitstype(P) && return src
     nf = nfields(src)
     nf == 0 && return src
     if ismutable(src)
-        haskey(c, src) && return Repoint ? c[src]::P : _same_destination(c[src]::P, dst)
-        if haskey(c, dst)
-            _throw_copy_sharing_error(P)
-        end
-        c[src] = dst
-        c[dst] = src
-        field_order = Repoint ? (nf:-1:1) : (1:nf)
-        for src_sub in field_order
+        c === nothing && (c = IdDict{Any,Any}())
+        dst, seen = _copy_context_destination!!(dst, src, c, r)
+        seen && return dst
+        for src_sub in 1:nf
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.
                 ccall(
@@ -3775,7 +3688,7 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict, ::Val{Repoint}) where {P,R
                     src_sub - 1,
                     if isdefined(dst, src_sub)
                         _copy_to_output!!(
-                            getfield(dst, src_sub), getfield(src, src_sub), c, Val(Repoint)
+                            getfield(dst, src_sub), getfield(src, src_sub), c, r
                         )
                     else
                         _copy_output(getfield(src, src_sub), c)
@@ -3789,9 +3702,7 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict, ::Val{Repoint}) where {P,R
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 flds[src_sub] = if isdefined(dst, src_sub)
-                    _copy_to_output!!(
-                        getfield(dst, src_sub), getfield(src, src_sub), c, Val(Repoint)
-                    )
+                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c, r)
                 else
                     _copy_output(getfield(src, src_sub), c)
                 end
@@ -3805,6 +3716,21 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict, ::Val{Repoint}) where {P,R
     end
 end
 
+# fallback for invalid type combinations
+function _copy_to_output!!(dst::T, src::P, c=nothing, r=nothing) where {T,P}
+    if r isa _RestoreContext && haskey(r.originals, src)
+        return _copy_to_output!!(r.originals[src], src, c, r)
+    end
+    throw(
+        ArgumentError(
+            "Mooncake.jl does not currently have a method `_copy_to_output!!` to handle " *
+            "this type combination: dst passed is of type $T, while src is a $P. This " *
+            "often happens when differentiating over non-differentiable types (e.g. " *
+            "integers or booleans).",
+        ),
+    )
+end
+
 """
     _copy_output(x::T)
 
@@ -3813,15 +3739,9 @@ Base.copy() does not work for all supported primal types. For example, `Base.cop
 work for `Core.svec`. For types with custom copy semantics, overload this function (see
 `Core.SimpleVector` for an example).
 """
-# The optional aliasing cache `c::C` supports self-referential and aliased inputs:
-# each cycle-capable node is registered before its fields are copied, so a cycle
-# returns the in-progress copy rather than recursing forever. The cache is
-# allocated lazily — only on first reaching a mutable struct or reference-element
-# array, by re-dispatching with a fresh `IdDict`. `C` is a concrete type parameter
-# (`Nothing` or `IdDict`) per call rather than a `Union`, which would force dynamic
-# dispatch. Unlike the in-place `_copy_to_output!!` restore, `_copy_output` always
-# allocates fresh copies and runs only at cache preparation, so it does not need
-# `_copy_to_output!!`'s allocation-free two-family split. Mirrors `MaybeCache`.
+# Every aggregate shares one cache across its children. Mutable nodes are registered before
+# descent for cycles and repeated references, including arrays with isbits elements. A lone
+# isbits-element array can keep the cache-free allocation path.
 
 # Type values (DataType, UnionAll, Union), Core.TypeName, and Modules
 # cannot be deep-copied; return x as-is.
@@ -3838,13 +3758,13 @@ _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict
 _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
 function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    c === nothing && (c = IdDict{Any,Any}())
     # Copy each element via its own `_copy_output` dispatch (arrays, structs, type values,
     # …); the sibling `_copy_to_output!!(::SimpleVector)` copies element-wise the same way.
     return Core.svec([_copy_output(x_sub, c) for x_sub in x]...)
 end
 
-# Array, Memory. Only reference-element arrays can participate in a cycle, so the
-# isbits-element case skips the cache entirely.
+# Array and Memory identities matter even when their elements cannot participate in a cycle.
 function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Nothing,IdDict}}
     Tx = eltype(P)
     if c === nothing && isbitstype(Tx)
@@ -3858,6 +3778,7 @@ function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Noth
     haskey(c, x) && return c[x]::P
     temp = similar(x)
     c[x] = temp
+    c[temp] = x
     @inbounds for i in eachindex(temp)
         if isassigned(x, i)
             temp[i] = _copy_output(x[i], c)::Tx
@@ -3868,16 +3789,27 @@ end
 
 # Tuple, NamedTuple
 function _copy_output(x::Tuple, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    isbitstype(typeof(x)) && return x
+    c === nothing && (c = IdDict{Any,Any}())
     return map(s -> _copy_output(s, c), x)::typeof(x)
 end
 
 function _copy_output(x::NamedTuple, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+    isbitstype(typeof(x)) && return x
+    c === nothing && (c = IdDict{Any,Any}())
     return typeof(x)(map(s -> _copy_output(s, c), values(x)))
 end
 
 # Generic fallback: bitstypes, zero-field opaque types (e.g. Symbol/String), and mutable or
 # immutable non-bits structs.
 function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
+    if c !== nothing && which(_copy_output, Tuple{P}) !== which(_copy_output, Tuple{Any})
+        haskey(c, x) && return c[x]::P
+        temp = _copy_output(x)
+        c[x] = temp
+        c[temp] = x
+        return temp
+    end
     isbitstype(P) && return x
     # nfields(x) not nfields(P): the latter counts fields of the
     # DataType object itself.
@@ -3892,6 +3824,8 @@ function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
         haskey(c, x) && return c[x]::P
         _copy_output_mutable_cartesian(x, Val(nf), c)
     else
+        # Immutable fields share one cache; every cycle crosses a memoized mutable node.
+        c === nothing && return _copy_output(x, IdDict{Any,Any}())
         _copy_output_immutable_cartesian(x, Val(nf), c)
     end
 end
@@ -3901,6 +3835,7 @@ end
         temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)::P
         # Register before copying fields so a self-reference resolves to `temp`.
         c[x] = temp
+        c[temp] = x
         Base.Cartesian.@nexprs(
             $nf,
             i -> if isdefined(x, i)

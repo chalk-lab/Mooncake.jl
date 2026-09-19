@@ -147,6 +147,19 @@ mutable struct RebindBox{V}
     w::V
 end
 
+# An opaque leaf with only the documented copy overloads. Its field must never be walked.
+mutable struct CustomSnapshotLeaf
+    data::Vector{Float64}
+end
+const CUSTOM_SNAPSHOT_HITS = Ref(0)
+const CUSTOM_RESTORE_HITS = Ref(0)
+function Mooncake._copy_output(x::CustomSnapshotLeaf)
+    (CUSTOM_SNAPSHOT_HITS[] += 1; CustomSnapshotLeaf(copy(x.data)))
+end
+function Mooncake._copy_to_output!!(d::CustomSnapshotLeaf, s::CustomSnapshotLeaf)
+    (CUSTOM_RESTORE_HITS[] += 1; copyto!(d.data, s.data); d)
+end
+
 const CHUNK_SCALAR_EVAL_COUNT = Ref(0)
 struct CountedChunkScalarCall end
 (::CountedChunkScalarCall)(x, y) = (CHUNK_SCALAR_EVAL_COUNT[] += 1; x * y + cos(x))
@@ -159,26 +172,151 @@ const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
 @testset "interface" begin
-    # An `f` that REBINDS a field severs the sharing mid-sweep; the restore between chunks
-    # copies contents but must also re-point, or every chunk after the first sees two arrays
-    # where the caller passed one. No registry case can reuse a cache across a rebinding `f`.
+    # These API checks require cache reuse, original object identities, and different
+    # prepare/call partitions, which a rule registry case cannot express.
     @testset "chunked restore re-points rebound aliases" begin
         rebound(p) = (p.a=2 .* p.a; sum(abs2, p.a) + sum(abs2, p.b))
+        rebound_b(p) = (p.b=2 .* p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        rebound_both(p) = (p.a=2 .* p.a; p.b=3 .* p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        merge(p) = (p.a=p.b; sum(abs2, p.a) + sum(abs2, p.b))
+        outer(o) = (o.u.a=2 .* o.u.a; sum(abs2, o.u.a) + sum(abs2, o.u.b) + sum(abs2, o.v))
         a = [1.0, 2.0, 3.0]
         @testset "chunk_size=$w" for w in (1, 2, 8)
+            for (f, coefficient) in ((rebound, 10), (rebound_b, 10), (rebound_both, 26))
+                cache = Mooncake.prepare_derivative_cache(
+                    f, AliasedPair(a, a); config=Mooncake.Config(; chunk_size=w)
+                )
+                shared = copy(a)
+                arg = AliasedPair(shared, shared)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(cache, f, arg)
+                    @test y == coefficient * sum(abs2, a) / 2
+                    @test Mooncake.get_tangent_field(g[2], :a) == coefficient * a
+                    @test Mooncake.get_tangent_field(g[2], :b) == coefficient * a
+                    @test arg.a === arg.b === shared
+                    @test shared == a
+                end
+            end
+            shared = copy(a)
+            arg = StructuredPair(AliasedPair(shared, shared), shared)
             cache = Mooncake.prepare_derivative_cache(
-                rebound, AliasedPair(a, a); config=Mooncake.Config(; chunk_size=w)
+                outer, arg; config=Mooncake.Config(; chunk_size=w)
             )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, outer, arg)
+                @test y == 84.0
+                @test Mooncake.get_tangent_field(g[2], :v) == 12a
+                @test arg.u.a === arg.u.b === shared
+                @test shared == a
+            end
+            # A merge must restore two distinct original arrays as well.
+            left, right = copy(a), 2a
+            arg = AliasedPair(left, right)
+            cache = Mooncake.prepare_derivative_cache(
+                merge, arg; config=Mooncake.Config(; chunk_size=w)
+            )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, merge, arg)
+                @test y == 112.0
+                @test Mooncake.get_tangent_field(g[2], :a) == zero(a)
+                @test Mooncake.get_tangent_field(g[2], :b) == 8a
+                @test arg.a === left
+                @test arg.b === right
+                @test left == a
+                @test right == 2a
+            end
+        end
+        for friendly in (false, true)
             shared = copy(a)
             arg = AliasedPair(shared, shared)
-            y, g = Mooncake.value_and_gradient!!(cache, rebound, arg)
-            @test y == 70.0
-            @test Mooncake.get_tangent_field(g[2], :a) == 10a
-            @test Mooncake.get_tangent_field(g[2], :b) == 10a
-            # The restore puts the caller's object graph back, not just its contents.
-            @test arg.a === arg.b
-            @test arg.a == a
+            direction =
+                friendly ? AliasedPair(ones(3), ones(3)) : Mooncake.zero_tangent(arg)
+            if !friendly
+                fill!(Mooncake.get_tangent_field(direction, :a), 1.0)
+            end
+            cache = Mooncake.prepare_derivative_cache(
+                rebound, arg; config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (rebound, Mooncake.NoTangent()), (arg, direction)
+                )
+                @test (y, dy) == (70.0, 60.0)
+                @test arg.a === arg.b === shared
+                @test shared == a
+            end
         end
+    end
+
+    @testset "aggregate snapshots preserve repeated leaves" begin
+        for constructor in (a -> (a, a), a -> (; p=a, q=a), a -> Core.svec(a, a))
+            a = [1.0, 2.0, 3.0]
+            src = constructor(a)
+            snapshot = Mooncake._copy_output(src)
+            @test snapshot[1] === snapshot[2]
+            @test snapshot[1] !== a
+            @test Mooncake._copy_to_output!!(snapshot, src)[1] === snapshot[1]
+        end
+        for constructor in (a -> (a, a), a -> (; p=a, q=a)), w in (1, 2, 8)
+            a = [1.0, 2.0, 3.0]
+            x = constructor(a)
+            f(t) = sum(abs2, t[1]) + sum(abs2, t[2])
+            cache = Mooncake.prepare_derivative_cache(
+                f, x; config=Mooncake.Config(; chunk_size=w)
+            )
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, f, x)
+                @test y == 28.0
+                @test g[2][1] == g[2][2] == 4a
+                @test x[1] === x[2] === a
+            end
+        end
+    end
+
+    @testset "forward cache rejects changed leaf partitions" begin
+        for constructor in (tuple, (a, b) -> (; a, b)), w in (1, 2)
+            a = [1.0, 2.0, 3.0]
+            f(t) = (t[1] .*= 2; sum(abs2, t[2]))
+            cache = Mooncake.prepare_derivative_cache(
+                f, constructor(copy(a), copy(a)); config=Mooncake.Config(; chunk_size=w)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                cache, f, constructor(a, a)
+            )
+            @test a == [1.0, 2.0, 3.0]
+        end
+        for n in (3, 24)
+            f(xs...) = sum(xs[2]) + 10sum(xs[3])
+            arrays = ntuple(i -> [Float64(i)], n)
+            prepared = (arrays[1], arrays[2], arrays[2], arrays[4:end]...)
+            called = (arrays[1], arrays[2], arrays[1], arrays[4:end]...)
+            directions = ntuple(i -> [1.0], n)
+            directions = (directions[1], [2.0], directions[1], directions[4:end]...)
+            cache = Mooncake.prepare_derivative_cache(
+                f, prepared...; config=Mooncake.Config(; friendly_tangents=true)
+            )
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_derivative!!(
+                cache, (f, Mooncake.NoTangent()), map(tuple, called, directions)...
+            )
+        end
+    end
+
+    @testset "custom snapshot leaves" begin
+        leaf = CustomSnapshotLeaf([1.0, 2.0])
+        arg = StructuredPair(RebindBox(leaf), leaf)
+        CUSTOM_SNAPSHOT_HITS[] = 0
+        snapshot = Mooncake._copy_output(arg)
+        @test CUSTOM_SNAPSHOT_HITS[] == 1
+        @test snapshot.u.w === snapshot.v
+        CUSTOM_RESTORE_HITS[] = 0
+        snapshots, contexts = Mooncake._snapshot_inputs!!((snapshot,), (arg,))
+        @test CUSTOM_RESTORE_HITS[] == 1
+        arg.u.w = CustomSnapshotLeaf([8.0, 9.0])
+        leaf.data .= 0
+        Mooncake._restore_inputs!!((arg,), snapshots, contexts)
+        @test CUSTOM_RESTORE_HITS[] == 2
+        @test arg.u.w === arg.v === leaf
+        @test leaf.data == [1.0, 2.0]
     end
 
     # Registries seed one primal shape; these checks need different source/destination
