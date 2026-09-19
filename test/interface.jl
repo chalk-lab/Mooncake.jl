@@ -2806,6 +2806,19 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test g2[2] !== g2[3]
                 @test g2[2] == [1.0, 1.0, 1.0]
                 @test g2[3] == [2.0, 1.0, 1.0]
+
+                # The rule registry seeds CoDuals itself; exercise the public seed path too.
+                rule = build_rrule(f, xp, xp)
+                for shared in (false, true), friendly in (false, true)
+                    a = [1.0, 2.0, 3.0]
+                    b = shared ? a : copy(a)
+                    _, direct = value_and_gradient!!(
+                        rule, f, a, b; friendly_tangents=friendly
+                    )
+                    @test direct[2] == (shared ? [4.0, 2.0, 2.0] : [1.0, 1.0, 1.0])
+                    @test direct[3] == (shared ? [4.0, 2.0, 2.0] : [2.0, 1.0, 1.0])
+                    @test (direct[2] === direct[3]) == shared
+                end
             end
 
             @testset "aliasing mismatch between preparation and call" begin

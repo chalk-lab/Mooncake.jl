@@ -1878,8 +1878,7 @@ end
 
 function __create_coduals(args)
     try
-        c = _friendly_cache(args)
-        return tuple_map(x -> _zero_codual_cached(x, c), args)
+        return tuple_map(CoDual, args, _zero_tangents(args))
     catch e
         if e isa StackOverflowError
             error(
@@ -2213,7 +2212,7 @@ function _grad_leaves(v::Tuple, g::Tuple, dict)
     end
 end
 function _grad_leaves(v::NamedTuple{ns}, g::NamedTuple{ns}, dict) where {ns}
-    return _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), values(v), values(g)))
+    return _grad_leaves(values(v), values(g), dict)
 end
 _grad_leaves(v::ImmutableDual, g::Tangent, dict) = _grad_leaves(v.fields, g.fields, dict)
 function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
