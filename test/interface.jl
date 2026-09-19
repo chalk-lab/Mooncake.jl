@@ -129,6 +129,20 @@ mutable struct MaybeInitBox
     MaybeInitBox(x::Float64) = new(x)
 end
 
+mutable struct PartialInput
+    a::Vector{Float64}
+    b::Vector{Float64}
+    PartialInput(a) = new(a)
+    PartialInput(a, b) = new(a, b)
+end
+
+struct ImmutablePartialInput
+    a::Vector{Float64}
+    b::Vector{Float64}
+    ImmutablePartialInput(a) = new(a)
+    ImmutablePartialInput(a, b) = new(a, b)
+end
+
 mutable struct RebindBox{V}
     w::V
 end
@@ -145,6 +159,46 @@ const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
 @testset "interface" begin
+    # Registries seed one primal shape; these checks need different source/destination
+    # definedness and reuse a cache prepared with an undefined field.
+    @testset "defined source into undefined destination" for T in (
+        PartialInput, ImmutablePartialInput
+    )
+        for cached in (false, true)
+            src = T([2.0], [3.0])
+            dst = T([1.0])
+            args = cached ? (IdDict{Any,Any}(),) : ()
+            out = Mooncake._copy_to_output!!(dst, src, args...)
+            @test out.a == [2.0]
+            @test out.b == [3.0]
+            @test out.a === dst.a
+            @test out.b !== src.b
+        end
+        f = p -> begin
+            y = sum(abs2, p.a) + (isdefined(p, :b) ? sum(abs2, p.b) : 0.0)
+            isdefined(p, :b) && (p.b .*= 2)
+            y
+        end
+        for friendly in (false, true)
+            cache = Mooncake.prepare_derivative_cache(
+                f, T([1.0]); config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                p = T([2.0], [3.0])
+                y, g = Mooncake.value_and_gradient!!(cache, f, p)
+                @test y == 13.0
+                @test p.a == [2.0]
+                @test p.b == [3.0]
+                expected = friendly ? T([4.0], [6.0]) : Mooncake.zero_tangent(p)
+                if !friendly
+                    Mooncake.get_tangent_field(expected, :a) .= 4.0
+                    Mooncake.get_tangent_field(expected, :b) .= 6.0
+                end
+                @test TestUtils.has_equal_data(g[2], expected)
+            end
+        end
+    end
+
     # Rule registries do not exercise prepared-cache conversion or seed admission.
     @testset "complex friendly tangents" begin
         z = 1.0 + 2.0im

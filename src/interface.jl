@@ -1318,7 +1318,7 @@ fields is not restored.
     # an in-place-mutating `f` does not mutate the user's inputs. The restore is in a
     # `finally`: an `f` that mutates and then raises (a domain error inside a line search,
     # say) otherwise hands the caller a half-updated argument along with the exception.
-    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     try
         # Shared aliasing cache across the argument tuple; see the `FCache{R,Nothing,…}`
         # method.
@@ -1341,7 +1341,7 @@ fields is not restored.
         # only for mutable ones.
         return _copy_output(output_primal), output_friendly_tangent
     finally
-        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
     end
 end
 
@@ -1370,14 +1370,14 @@ end
     input_lifted = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     # Snapshot/restore around the rule so an in-place `f` does not mutate the user's inputs,
     # on the throwing path as well; see the friendly method above.
-    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     try
         output = __call_rule(cache.single_rule, input_lifted)
         # Copy the output primal out before the restore: it may alias an in-place-mutated
         # input, which the restore would otherwise overwrite with the original.
         return _copy_output(primal(output)), last(unlift(output))
     finally
-        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
     end
 end
 
@@ -2424,7 +2424,7 @@ end
         # Snapshot/restore like the chunked loop below: forward slots alias the user's
         # storage, so an in-place `f` over a zero-dimension input (e.g. `Vector{Int}`) would
         # otherwise mutate it.
-        _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+        input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
         # `_finalize_gradient` reads the input primals, so it runs after the restore.
         y = try
             primal(
@@ -2433,7 +2433,7 @@ end
                 ),
             )
         finally
-            _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+            _copy_to_output!!(Base.tail(input_primals), input_snapshot)
         end
         _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
         return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -2461,14 +2461,14 @@ end
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
     # before each subsequent chunk (so an in-place `f` does not compound) and once at the
     # end.
-    _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
+    input_snapshot = _copy_to_output!!(cache.input_snapshot, Base.tail(input_primals))
     # Single sweep over all chunks. `total_dim >= 1` here (the zero-dimension case returned
     # above), so the first iteration always runs and assigns `y`; its leading input restore
     # is a no-op (the snapshot was just taken with no intervening `f`).
     local y
     try
         for start_slot in 1:W:total_dim
-            _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+            _copy_to_output!!(Base.tail(input_primals), input_snapshot)
             slots = ntuple(lane -> start_slot + lane - 1, W)
             lanes = ntuple(
                 lane -> last(
@@ -2504,7 +2504,7 @@ end
     finally
         # Leave the inputs unchanged whether or not a chunk threw (each chunk ran on the
         # original).
-        _copy_to_output!!(Base.tail(input_primals), cache.input_snapshot)
+        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
     end
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -3597,8 +3597,10 @@ end
 
 Copy the contents of `src` to `dst`, with zero or minimal new memory allocation. The type of
 `dst` and `src` must be the same. Required as Base.copy!() does not work for all supported
-primal types. For example, `Base.copy!` does not work for `Core.svec`. For types with custom
-copy semantics, overload this function (see `Core.SimpleVector` for an example).
+primal types. For example, `Base.copy!` does not work for `Core.svec`. A defined source field
+initialises an undefined destination field. Retain the returned value: an immutable `dst` is
+rebuilt rather than updated. For types with custom copy semantics, overload this function
+(see `Core.SimpleVector` for an example).
 """
 # The two-argument methods are the allocation-free hot path (input restore on every autodiff
 # pass); they recurse two-argument and stay byte-identical to the original acyclic
@@ -3687,9 +3689,11 @@ function _copy_to_output!!(dst::P, src::P) where {P}
     flds = Vector{Any}(undef, nf)
     for src_sub in 1:nf
         if isdefined(src, src_sub)
-            flds[src_sub] = _copy_to_output!!(
-                getfield(dst, src_sub), getfield(src, src_sub)
-            )
+            flds[src_sub] = if isdefined(dst, src_sub)
+                _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub))
+            else
+                _copy_output(getfield(src, src_sub))
+            end
         else
             nf = src_sub - 1  # Assumes if a undefined field is found, all subsequent fields are undefined.
             break
@@ -3793,7 +3797,13 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
                     (Any, Csize_t, Any),
                     dst,
                     src_sub - 1,
-                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c),
+                    if isdefined(dst, src_sub)
+                        _copy_to_output!!(
+                            getfield(dst, src_sub), getfield(src, src_sub), c
+                        )
+                    else
+                        _copy_output(getfield(src, src_sub), c)
+                    end,
                 )
             end
         end
@@ -3802,9 +3812,11 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
         flds = Vector{Any}(undef, nf)
         for src_sub in 1:nf
             if isdefined(src, src_sub)
-                flds[src_sub] = _copy_to_output!!(
-                    getfield(dst, src_sub), getfield(src, src_sub), c
-                )
+                flds[src_sub] = if isdefined(dst, src_sub)
+                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c)
+                else
+                    _copy_output(getfield(src, src_sub), c)
+                end
             else
                 nf = src_sub - 1
                 break
