@@ -60,13 +60,17 @@ for a walkthrough and the
 
 ## Contributing
 
-The `Mooncake.jl` team has limited capacity for triage and review. In the spirit of
-long-lived projects such as R and TeX, we favour correctness, stability,
-and tightly scoped fixes over open-ended expansion.
+In the spirit of long-lived projects such as R and TeX, we take a conservative
+approach to development: correctness, stability, and tightly scoped fixes take
+precedence over expanding the package's scope.
 
-Contributions are most welcome when they concern reproducible defects:
-incorrect results, unexpected failures, or behaviour at odds with the
-documented scope. See the [support policy](SUPPORT_POLICY.md) for details.
+Contributions are most welcome when they address reproducible defects, such as
+incorrect results, unexpected failures, or behaviour inconsistent with the
+documented scope.
+
+If you wish to extend Mooncake's coverage, we encourage you to organise
+independently. See the [support policy](SUPPORT_POLICY.md#scope-of-differentiation-rules)
+for guidance and examples.
 
 ## Licensing
 
