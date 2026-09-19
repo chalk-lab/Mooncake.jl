@@ -2398,7 +2398,7 @@ end
     local y
     try
         for start_slot in 1:W:total_dim
-            _copy_to_output!!(Base.tail(input_primals), input_snapshot)
+            _copy_to_output_repoint!!(Base.tail(input_primals), input_snapshot)
             slots = ntuple(lane -> start_slot + lane - 1, W)
             lanes = ntuple(
                 lane -> last(
@@ -2434,7 +2434,7 @@ end
     finally
         # Leave the inputs unchanged whether or not a chunk threw (each chunk ran on the
         # original).
-        _copy_to_output!!(Base.tail(input_primals), input_snapshot)
+        _copy_to_output_repoint!!(Base.tail(input_primals), input_snapshot)
     end
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
@@ -3653,6 +3653,13 @@ function _copy_to_output!!(dst::T, src::P) where {T,P}
     )
 end
 
+# Restore walks may re-point a caller's mutable fields after the differentiated function rebound
+# one of them. The same cached walk is used; only repeated snapshot sources return the already
+# mapped caller object instead of rejecting the sharing mismatch.
+@inline function _copy_to_output_repoint!!(dst, src)
+    return _copy_to_output!!(dst, src, IdDict{Any,Any}(), Val(true))
+end
+
 # ── Cyclic family: threads the `IdDict` aliasing cache `c` ─────────────────────
 
 # Reaching one node twice means that graph shares it between two positions; the other graph must
@@ -3680,24 +3687,40 @@ end
 end
 
 _copy_to_output!!(dst::Number, src::Number, ::IdDict) = src
+_copy_to_output!!(dst::Number, src::Number, ::IdDict, ::Val) = src
 _copy_to_output!!(::Type, src::Type, ::IdDict) = src
+_copy_to_output!!(::Type, src::Type, ::IdDict, ::Val) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict) = src
+_copy_to_output!!(::Core.TypeName, src::Core.TypeName, ::IdDict, ::Val) = src
 _copy_to_output!!(::Module, src::Module, ::IdDict) = src
+_copy_to_output!!(::Module, src::Module, ::IdDict, ::Val) = src
 function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict)
     return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c), dst, src)...)
 end
+function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c::IdDict, r::Val)
+    return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)...)
+end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
+    return _copy_to_output!!(dst, src, c, Val(false))
+end
+function _copy_to_output!!(
+    dst::P, src::P, c::IdDict, ::Val{Repoint}
+) where {P<:_BuiltinArrays,Repoint}
     _check_copy_extent(dst, src)
-    if !isbitstype(eltype(P))
-        haskey(c, src) && return _same_destination(c[src]::P, dst)
-        haskey(c, dst) && _throw_copy_sharing_error(P)
+    if haskey(c, src)
+        return Repoint ? c[src]::P : _same_destination(c[src]::P, dst)
+    end
+    if haskey(c, dst)
+        _throw_copy_sharing_error(P)
+    end
+    begin
         c[src] = dst
         c[dst] = src
     end
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
             dst[i] = if isassigned(dst, i)
-                _copy_to_output!!(dst[i], src[i], c)
+                _copy_to_output!!(dst[i], src[i], c, Val(Repoint))
             else
                 _copy_output(src[i], c)
             end
@@ -3706,24 +3729,42 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:_BuiltinArrays}
     return dst
 end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:Tuple}
+    return _copy_to_output!!(dst, src, c, Val(false))
+end
+function _copy_to_output!!(
+    dst::P, src::P, c::IdDict, ::Val{Repoint}
+) where {P<:Tuple,Repoint}
     isbitstype(P) && return src
-    return map((d, s) -> _copy_to_output!!(d, s, c), dst, src)
+    return map((d, s) -> _copy_to_output!!(d, s, c, Val(Repoint)), dst, src)
 end
 
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P<:NamedTuple}
+    return _copy_to_output!!(dst, src, c, Val(false))
+end
+function _copy_to_output!!(
+    dst::P, src::P, c::IdDict, ::Val{Repoint}
+) where {P<:NamedTuple,Repoint}
     isbitstype(P) && return src
-    return P(map((d, s) -> _copy_to_output!!(d, s, c), values(dst), values(src)))
+    return P(
+        map((d, s) -> _copy_to_output!!(d, s, c, Val(Repoint)), values(dst), values(src))
+    )
 end
 function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
+    return _copy_to_output!!(dst, src, c, Val(false))
+end
+function _copy_to_output!!(dst::P, src::P, c::IdDict, ::Val{Repoint}) where {P,Repoint}
     isbitstype(P) && return src
     nf = nfields(src)
     nf == 0 && return src
     if ismutable(src)
-        haskey(c, src) && return _same_destination(c[src]::P, dst)
-        haskey(c, dst) && _throw_copy_sharing_error(P)
+        haskey(c, src) && return Repoint ? c[src]::P : _same_destination(c[src]::P, dst)
+        if haskey(c, dst)
+            _throw_copy_sharing_error(P)
+        end
         c[src] = dst
         c[dst] = src
-        for src_sub in 1:nf
+        field_order = Repoint ? (nf:-1:1) : (1:nf)
+        for src_sub in field_order
             if isdefined(src, src_sub)
                 # using ccall as setfield! fails for const fields of a mutable struct.
                 ccall(
@@ -3734,7 +3775,7 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
                     src_sub - 1,
                     if isdefined(dst, src_sub)
                         _copy_to_output!!(
-                            getfield(dst, src_sub), getfield(src, src_sub), c
+                            getfield(dst, src_sub), getfield(src, src_sub), c, Val(Repoint)
                         )
                     else
                         _copy_output(getfield(src, src_sub), c)
@@ -3748,7 +3789,9 @@ function _copy_to_output!!(dst::P, src::P, c::IdDict) where {P}
         for src_sub in 1:nf
             if isdefined(src, src_sub)
                 flds[src_sub] = if isdefined(dst, src_sub)
-                    _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c)
+                    _copy_to_output!!(
+                        getfield(dst, src_sub), getfield(src, src_sub), c, Val(Repoint)
+                    )
                 else
                     _copy_output(getfield(src, src_sub), c)
                 end
@@ -3804,12 +3847,17 @@ end
 # isbits-element case skips the cache entirely.
 function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Nothing,IdDict}}
     Tx = eltype(P)
-    if !isbitstype(Tx)
-        c === nothing && return _copy_output(x, IdDict{Any,Any}())
-        haskey(c, x) && return c[x]::P
+    if c === nothing && isbitstype(Tx)
+        temp = similar(x)
+        @inbounds for i in eachindex(temp)
+            isassigned(x, i) && (temp[i] = _copy_output(x[i])::Tx)
+        end
+        return temp::P
     end
+    c === nothing && (c = IdDict{Any,Any}())
+    haskey(c, x) && return c[x]::P
     temp = similar(x)
-    isbitstype(Tx) || (c[x] = temp)
+    c[x] = temp
     @inbounds for i in eachindex(temp)
         if isassigned(x, i)
             temp[i] = _copy_output(x[i], c)::Tx

@@ -159,6 +159,28 @@ const NFWD_PREPARE_COUNTER = Ref(0)
 _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
 @testset "interface" begin
+    # An `f` that REBINDS a field severs the sharing mid-sweep; the restore between chunks
+    # copies contents but must also re-point, or every chunk after the first sees two arrays
+    # where the caller passed one. No registry case can reuse a cache across a rebinding `f`.
+    @testset "chunked restore re-points rebound aliases" begin
+        rebound(p) = (p.a=2 .* p.a; sum(abs2, p.a) + sum(abs2, p.b))
+        a = [1.0, 2.0, 3.0]
+        @testset "chunk_size=$w" for w in (1, 2, 8)
+            cache = Mooncake.prepare_derivative_cache(
+                rebound, AliasedPair(a, a); config=Mooncake.Config(; chunk_size=w)
+            )
+            shared = copy(a)
+            arg = AliasedPair(shared, shared)
+            y, g = Mooncake.value_and_gradient!!(cache, rebound, arg)
+            @test y == 70.0
+            @test Mooncake.get_tangent_field(g[2], :a) == 10a
+            @test Mooncake.get_tangent_field(g[2], :b) == 10a
+            # The restore puts the caller's object graph back, not just its contents.
+            @test arg.a === arg.b
+            @test arg.a == a
+        end
+    end
+
     # Registries seed one primal shape; these checks need different source/destination
     # definedness and reuse a cache prepared with an undefined field.
     @testset "defined source into undefined destination" for T in (
