@@ -505,6 +505,35 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
         end
 
+        @testset "output aliasing an input the rule grew" begin
+            # The pullback restores mutations `f` made to its inputs, so an output that ALIASES
+            # a grown input reads back at its pre-growth size once the reverse pass has run.
+            # Snapshotting after it recorded size (2,) for a live (3,), and every later call
+            # then failed against that cache. No registry case can assert on the prepared
+            # output buffer or on cache reuse.
+            grow(x) = (push!(x, 2 * x[1]); x)
+            @testset "friendly_tangents=$fr" for fr in (false, true)
+                x = [1.0, 2.0]
+                cache = Mooncake.prepare_pullback_cache(
+                    grow, x; config=Mooncake.Config(; friendly_tangents=fr)
+                )
+                @test x == [1.0, 2.0]
+                @test occursin(
+                    "output: Vector{Float64} (size (3,))", repr(MIME"text/plain"(), cache)
+                )
+                for x2 in ([1.0, 2.0], [3.0, 4.0])
+                    original = copy(x2)
+                    value, (_, dx) = Mooncake.value_and_pullback!!(
+                        cache, [2.0, 3.0, 4.0], grow, x2
+                    )
+                    # y = [x1, x2, 2x1], so dx = [2*1 + 4*2, 3] for ybar = [2, 3, 4].
+                    @test value == [original; 2 * original[1]]
+                    @test dx == [10.0, 3.0]
+                    @test x2 == original
+                end
+            end
+        end
+
         @testset "pullback cache mismatch errors" begin
             f_arr = x -> sum(abs2, x)
             x_arr = [1.0, 2.0]

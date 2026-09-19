@@ -1989,24 +1989,23 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
+    # Snapshot the output BEFORE the reverse pass, and take the spec and the output-tangent
+    # buffer from that snapshot. The pullback restores mutations `f` made to its inputs, so for an
+    # `f` whose output ALIASES an input it grew, reading the output afterwards sees the restored
+    # value: `grow(x) = (push!(x, 2 * x[1]); x)` prepared at `[1.0, 2.0]` recorded an output of
+    # size (2,) for a live output of size (3,), and every later call failed against that cache.
+    y_cache = _copy_output(primal(y))
+    y_cache = _copy_to_output!!(y_cache, primal(y))
+    output_spec = _input_spec(y_cache)
+
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
 
-    # Construct cache for output. Check that `_copy_to_output!!`ing appears to work.
-    y_cache = _copy_output(primal(y))
-    y_cache = _copy_to_output!!(y_cache, primal(y))
     input_specs = map(_input_spec, fx)
-    output_spec = _input_spec(primal(y))
     if config.friendly_tangents
         dests = map(friendly_tangent_cache, fx)
         return Cache(
-            rule,
-            y_cache,
-            tangents,
-            dests,
-            zero_tangent(primal(y)),
-            input_specs,
-            output_spec,
+            rule, y_cache, tangents, dests, zero_tangent(y_cache), input_specs, output_spec
         )
     else
         return Cache(rule, y_cache, tangents, nothing, nothing, input_specs, output_spec)
