@@ -2256,11 +2256,18 @@ _all_real_scalars(::Type) = false
 # means the flat leaf table would mis-order or double-count dimensions (the generic path dedups
 # instead), so bail to `nothing` and let that path handle it.
 _grad_leaves(::NoDual, @nospecialize(g), dict) = ()
-function _grad_leaves(v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict) where {T<:IEEEFloat}
+function _grad_leaves(
+    v::Nfwd.NDualArray{T}, g::AbstractArray{T}, dict
+) where {T<:Nfwd.NDualEltype}
     haskey(dict, v) && return nothing
     dict[v] = nothing
     return ((v, g),)
 end
+
+# A complex element owns TWO consecutive dimensions, the real direction then the imaginary one,
+# matching the order `tangent_dim` counts them and `basis_lifted!!` seeds them.
+@inline _leaf_dims(v::Nfwd.NDualArray{<:IEEEFloat}) = length(v.primal)
+@inline _leaf_dims(v::Nfwd.NDualArray{<:Complex{<:IEEEFloat}}) = 2 * length(v.primal)
 function _grad_leaves(v::Tuple, g::Tuple, dict)
     return if length(v) == length(g)
         _cat_leaves(map((a, b) -> _grad_leaves(a, b, dict), v, g))
@@ -2315,7 +2322,7 @@ end
 @inline _tangent_layout(::Tuple{}, ::Int) = ()
 @inline function _tangent_layout(ls::Tuple, first_dim::Int)
     v, g = first(ls)
-    n = length(v.primal)
+    n = _leaf_dims(v)
     dims = first_dim:(first_dim + n - 1)
     return ((v, g, dims), _tangent_layout(Base.tail(ls), first_dim + n)...)
 end
@@ -2635,7 +2642,7 @@ end
 # (a parallel walk of the forward V and the primal; the inner duals read `.primal`, so this
 # is all the per-call primal state the rule needs). Type-stable, allocation-free.
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
-function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:IEEEFloat}
+function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:Nfwd.NDualEltype}
     # `_check_prepared_cache` only checks top-level sizes, so a structured input whose
     # NESTED array changed shape still reaches here. Check `size`, not just `length`: a
     # same-length reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the
@@ -2856,23 +2863,60 @@ end
 @inline _seed_chunk!(::Tuple{}, s, W) = nothing
 @inline function _seed_chunk!(ls::Tuple, s, W)
     nda, _, dims = first(ls)
-    o = one(eltype(nda.primal))
-    # Element i's lane k. Storage layout (element-major block on 1.11+, per-lane arrays on 1.10)
-    # is hidden by `Nfwd._set_partial!`; rank-agnostic, so matrix leaves work too.
+    _seed_leaf!(nda, dims, s, W)
+    return _seed_chunk!(Base.tail(ls), s, W)
+end
+
+# Element i's lane k. Storage layout (element-major block on 1.11+, per-lane arrays on 1.10) is
+# hidden by `Nfwd._set_partial!`; rank-agnostic, so matrix leaves work too.
+@inline function _seed_leaf!(nda::Nfwd.NDualArray{T}, dims, s, W) where {T<:IEEEFloat}
+    o = one(T)
     @inbounds for (i, d) in enumerate(dims)
         s <= d <= s + W - 1 && Nfwd._set_partial!(nda, i, d - s + 1, o)
     end
-    return _seed_chunk!(Base.tail(ls), s, W)
+    return nothing
 end
+# The two dimensions of one complex element can fall in DIFFERENT chunks, so each is tested on
+# its own rather than seeding both when the element is in range.
+@inline function _seed_leaf!(
+    nda::Nfwd.NDualArray{Complex{R}}, dims, s, W
+) where {R<:IEEEFloat}
+    re, im = Complex(one(R), zero(R)), Complex(zero(R), one(R))
+    @inbounds for i in eachindex(nda.primal)
+        dr, di = dims[2i - 1], dims[2i]
+        s <= dr <= s + W - 1 && Nfwd._set_partial!(nda, i, dr - s + 1, re)
+        s <= di <= s + W - 1 && Nfwd._set_partial!(nda, i, di - s + 1, im)
+    end
+    return nothing
+end
+
 @inline _scatter_chunk!(::Tuple{}, out, s, W) = nothing
 @inline function _scatter_chunk!(ls::Tuple, out, s, W)
     _, g, dims = first(ls)
+    _scatter_leaf!(g, dims, out, s, W)
+    return _scatter_chunk!(Base.tail(ls), out, s, W)
+end
+
+# `dims` covers 1..total_dim across all rows, so a `min(·, total_dim)` upper clamp would be a
+# no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's empty lanes.
+@inline function _scatter_leaf!(g::AbstractArray{T}, dims, out, s, W) where {T<:IEEEFloat}
     @inbounds for (i, d) in enumerate(dims)
-        # `dims` covers 1..total_dim across all rows, so a `min(·, total_dim)` upper clamp would
-        # be a no-op; the `d <= s + W - 1` bound alone excludes a short final chunk's empty lanes.
         s <= d <= s + W - 1 && (g[i] = tangent(out, d - s + 1))
     end
-    return _scatter_chunk!(Base.tail(ls), out, s, W)
+    return nothing
+end
+# The real direction lands in `real(g[i])` and the imaginary one in `imag(g[i])`. Each half is
+# written exactly once per call but possibly in different chunks, so each write preserves the
+# other half rather than assuming both are in hand.
+@inline function _scatter_leaf!(
+    g::AbstractArray{Complex{R}}, dims, out, s, W
+) where {R<:IEEEFloat}
+    @inbounds for i in eachindex(g)
+        dr, di = dims[2i - 1], dims[2i]
+        s <= dr <= s + W - 1 && (g[i] = Complex(tangent(out, dr - s + 1), imag(g[i])))
+        s <= di <= s + W - 1 && (g[i] = Complex(real(g[i]), tangent(out, di - s + 1)))
+    end
+    return nothing
 end
 
 # Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`).

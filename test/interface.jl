@@ -1597,6 +1597,23 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gmix[2].v ≈ ones(2)
             @test gmix[2].s ≈ 2 * mx.s
 
+            # Complex leaves take the same layout path as real ones. Each complex element owns
+            # TWO consecutive dimensions, so a width that splits one across chunks is the case
+            # the range arithmetic has to get right; reverse mode is the oracle. No registry
+            # case can express "which internal path did this take", which is the point here.
+            @testset "complex leaves take the layout path, chunk width $W" for W in
+                                                                               (1, 3, 8)
+                fcx = nt -> sum(abs2, nt.p) + 2 * sum(abs2, nt.q)
+                cx = (p=ComplexF64[1 + 2im, 3 + 4im], q=ComplexF64[5 + 6im])
+                ccx = Mooncake.prepare_derivative_cache(
+                    fcx, cx; config=Mooncake.Config(; chunk_size=W, kwargs...)
+                )
+                @test getfield(ccx, :gradient_seed) isa Mooncake.StructuredGradSeed
+                _, gcx = Mooncake.value_and_gradient!!(ccx, fcx, cx)
+                @test gcx[2].p ≈ 2 .* cx.p
+                @test gcx[2].q ≈ 4 .* cx.q
+            end
+
             # Scalar-only structured inputs (isbits V) take the concrete-barrier path
             # (IsbitsGradSeed): tuple/NamedTuple/immutable-struct of scalars — correct +
             # zero-alloc. (Previously the generic chunked path, ~52 allocations.)
