@@ -2658,6 +2658,17 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test hv ≈ H1[:, 1] rtol = 1e-10
             end
 
+            # The rule registry cannot check a public sweep's input restoration on failure.
+            @testset "throwing Hessian restores input" for W in (1, 2)
+                f(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : sum(abs2, x))
+                cache = prepare_hessian_cache(
+                    f, [1.0, 2.0, 3.0]; config=Mooncake.Config(; chunk_size=W)
+                )
+                x = [10.0, 2.0, 3.0]
+                @test_throws DomainError value_gradient_and_hessian!!(cache, f, x)
+                @test x == [10.0, 2.0, 3.0]
+            end
+
             @testset "cache reuse with different x" begin
                 f(x) = sum(x .^ 2)
                 x1 = [1.0, 0.0]

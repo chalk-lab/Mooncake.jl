@@ -3303,27 +3303,30 @@ function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where 
         slot <= n ? slot : 0
     end, Val(W))
     x_snapshot = copy(x1)
-    output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
-    po = primal(output)
-    value = po[1]
-    g .= po[2]
-    @inbounds for lane in 1:W
-        lane <= n || break
-        H[:, lane] .= tangent(output, lane)[2]
-    end
-    for start_col in (W + 1):W:n
-        copyto!(x1, x_snapshot)
-        output = value_and_derivative!!(
-            fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
-        )
+    try
+        output = value_and_derivative!!(fwd, f_seed, basis_lifted!!(x_seed, cols(1)))
+        po = primal(output)
+        value = po[1]
+        g .= po[2]
         @inbounds for lane in 1:W
-            col = start_col + lane - 1
-            col <= n || break
-            H[:, col] .= tangent(output, lane)[2]
+            lane <= n || break
+            H[:, lane] .= tangent(output, lane)[2]
         end
+        for start_col in (W + 1):W:n
+            copyto!(x1, x_snapshot)
+            output = value_and_derivative!!(
+                fwd, f_seed, basis_lifted!!(x_seed, cols(start_col))
+            )
+            @inbounds for lane in 1:W
+                col = start_col + lane - 1
+                col <= n || break
+                H[:, col] .= tangent(output, lane)[2]
+            end
+        end
+        return value
+    finally
+        copyto!(x1, x_snapshot)
     end
-    copyto!(x1, x_snapshot)
-    return value
 end
 
 # Checked at the entry point, not in the sweep: the width-1 sweep reaches
@@ -3353,6 +3356,8 @@ end
 
 Using a pre-built `cache` from [`prepare_hessian_cache`](@ref), compute and return `(f(x),
 ∇f(x), ∇²f(x))` — value, gradient vector, and Hessian matrix of `f`.
+
+The input `x` is restored to its original state even if a sweep throws.
 
 Uses forward-over-reverse AD; the Hessian is chunked, sweeping `config.chunk_size` basis
 directions per forward pass. Like [`value_and_jacobian!!`](@ref), only a single
