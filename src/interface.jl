@@ -3665,6 +3665,13 @@ _copy_to_output!!(dst::Number, src::Number, c=nothing, r=nothing) = src
 _copy_to_output!!(::Type, src::Type, c=nothing, r=nothing) = src
 _copy_to_output!!(::Core.TypeName, src::Core.TypeName, c=nothing, r=nothing) = src
 _copy_to_output!!(::Module, src::Module, c=nothing, r=nothing) = src
+@static if VERSION >= v"1.11.0-rc4"
+    function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:MemoryRef}
+        mem = _copy_to_output!!(dst.mem, src.mem, c, r)
+        return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(src), false)
+    end
+end
+
 function _copy_to_output!!(dst::SimpleVector, src::SimpleVector, c=nothing, r=nothing)
     return Core.svec(map((d, s) -> _copy_to_output!!(d, s, c, r), dst, src)...)
 end
@@ -3839,6 +3846,13 @@ _copy_output(x::Module, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 # compiled rule without overflowing.
 _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
+
+@static if VERSION >= v"1.11.0-rc4"
+    function _copy_output(x::MemoryRef, c::C=nothing) where {C<:Union{Nothing,IdDict}}
+        mem = _copy_output(x.mem, c)
+        return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(x), false)
+    end
+end
 
 function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdDict}}
     c === nothing && (c = IdDict{Any,Any}())

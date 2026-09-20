@@ -510,6 +510,52 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
+    # Copy ownership and post-restore output lifetime are interface contracts; rule
+    # registries do not copy returned refs or reuse prepared output storage.
+    @static if VERSION >= v"1.11.0-rc4"
+        @testset "MemoryRef copies" begin
+            for i in (1, 3), T in (Float64, Any)
+                x=T[1.0, 2.0, 3.0]
+                r=Core.memoryrefnew(x.ref, i, true)
+                copied=Mooncake._copy_output((r, r.mem))
+                @test copied[1].mem === copied[2]
+                @test Core.memoryrefoffset(copied[1]) == i
+                x[i]=9.0
+                @test Core.memoryrefget(copied[1], :not_atomic, true) == Float64(i)
+                @test copied[1].mem[i] == Float64(i)
+                dst=Mooncake._copy_output(r)
+                x[i]=Float64(i)
+                out=Mooncake._copy_to_output!!(dst, r)
+                x[i]=17.0
+                @test Core.memoryrefget(out, :not_atomic, true) == Float64(i)
+                @test Core.memoryrefoffset(out) == i
+            end
+            f=r->begin
+                v=Core.memoryrefget(r, :not_atomic, true)
+                Core.memoryrefset!(r, 2v, :not_atomic, true)
+                r
+            end
+            for i in (1, 3)
+                x=[1.0, 2.0, 3.0];
+                r=Core.memoryrefnew(x.ref, i, true)
+                restore_cache=Mooncake.prepare_derivative_cache(f, r)
+                dr=Mooncake.zero_tangent(r);
+                fill!(dr.mem, 1.0)
+                for _ in 1:2
+                    y, dy=Mooncake.value_and_derivative!!(
+                        restore_cache, (f, Mooncake.NoTangent()), (r, dr)
+                    )
+                    @test Core.memoryrefget(y, :not_atomic, true) == 2i
+                    @test y.mem[i] == 2i
+                    @test x == [1.0, 2.0, 3.0]
+                    x[i]=17.0
+                    @test Core.memoryrefget(y, :not_atomic, true) == 2i
+                    x[i]=Float64(i)
+                end
+            end
+        end
+    end
+
     # Rule registries do not exercise prepared-cache conversion or seed admission.
     @testset "complex friendly tangents" begin
         z = 1.0 + 2.0im
