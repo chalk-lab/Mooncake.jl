@@ -3915,6 +3915,21 @@ function _copy_output(x::SimpleVector, c::C=nothing) where {C<:Union{Nothing,IdD
     return Core.svec([_copy_output(x_sub, c) for x_sub in x]...)
 end
 
+@static if VERSION >= v"1.11.0-rc4"
+    function _copy_output(x::P, c::C=nothing) where {P<:Array,C<:Union{Nothing,IdDict}}
+        c === nothing && isbitstype(eltype(P)) && return copy(x)
+        c === nothing && (c = IdDict{Any,Any}())
+        haskey(c, x) && return c[x]::P
+        # Register the header before its owner: an Any Memory may refer back to this array.
+        temp = P(undef, ntuple(_ -> 0, ndims(x)))
+        c[x] = temp
+        c[temp] = x
+        setfield!(temp, :ref, _copy_output(x.ref, c))
+        setfield!(temp, :size, size(x))
+        return temp
+    end
+end
+
 # Array and Memory identities matter even when their elements cannot participate in a cycle.
 function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Nothing,IdDict}}
     Tx = eltype(P)
@@ -3927,6 +3942,27 @@ function _copy_output(x::P, c::C=nothing) where {P<:_BuiltinArrays,C<:Union{Noth
     end
     c === nothing && (c = IdDict{Any,Any}())
     haskey(c, x) && return c[x]::P
+    @static if VERSION < v"1.11.0-rc4"
+        # Julia 1.10's jl_array_t places flags after data and length. Only how == 3
+        # has an owner slot; calling jl_array_data_owner for another how is invalid.
+        flags = GC.@preserve x unsafe_load(
+            Ptr{UInt16}(pointer_from_objref(x) + 2sizeof(Int))
+        )
+        if flags & 3 == 3
+            owner = ccall(:jl_array_data_owner, Any, (Any,), x)
+            if owner isa Array{Tx}
+                copied = _copy_output(owner, c)
+                # Copying the owner may already have reached x through an element cycle.
+                haskey(c, x) && return c[x]::P
+                # A same-shape reshape returns its input; use a different header first.
+                header = ndims(copied) == 1 ? reshape(copied, 1, :) : vec(copied)
+                temp = reshape(header, size(x))::P
+                c[x] = temp
+                c[temp] = x
+                return temp
+            end
+        end
+    end
     temp = similar(x)
     c[x] = temp
     c[temp] = x

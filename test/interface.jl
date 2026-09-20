@@ -259,6 +259,87 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
     end
 
+    # Rule tests cannot check copied output sharing after the public call restores its inputs.
+    @testset "output backing storage" begin
+        for T in (Float64, Any), reverse_order in (false, true)
+            a = T[1.0, 2.0, 3.0]
+            b = reshape(a, 1, :)
+            src = reverse_order ? (b, a) : (a, b)
+            copied = Mooncake._copy_output(src)
+            @test typeof(copied) === typeof(src)
+            copied[1][1] = 17.0
+            @test copied[2][1] == 17.0
+            @test a[1] == 1.0
+        end
+        a = [1.0, 2.0, 3.0]
+        b = reshape(reshape(a, 1, :), :)
+        copied = Mooncake._copy_output((a, b))
+        @test (copied[1] === copied[2]) == (a === b)
+        copied[1][1] = 17.0
+        @test copied[2][1] == 17.0
+        a = Any[nothing]
+        b = reshape(a, 1, :)
+        a[1] = b
+        copied = Mooncake._copy_output((b, a))
+        @test copied[1][1] === copied[1]
+        @test copied[2][1] === copied[1]
+        for make in (a -> reshape(a, 1, :), a -> view(a, 1:2))
+            f = let make = make
+                x -> (x .*= 2; (x, make(x)))
+            end
+            a = [1.0, 2.0, 3.0]
+            cache = Mooncake.prepare_derivative_cache(f, a)
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (a, ones(3))
+                )
+                @test y[1] == 2a
+                @test dy[1] == fill(2.0, 3)
+                @test a == [1.0, 2.0, 3.0]
+                y[1][1] = 17.0
+                @test y[2][1] == 17.0
+            end
+        end
+        @static if VERSION >= v"1.11.0-rc4"
+            for T in (Float64, Any), offset in (1, 3), reverse_order in (false, true)
+                mem = Memory{T}(undef, 6)
+                a = Vector{T}(undef, 0)
+                setfield!(a, :ref, Core.memoryrefnew(Core.memoryrefnew(mem), offset, true))
+                setfield!(a, :size, (2,))
+                a[1] = 1.0
+                src = reverse_order ? (mem, a, a.ref) : (a, mem, a.ref)
+                copied = Mooncake._copy_output(src)
+                ca, cm = reverse_order ? (copied[2], copied[1]) : (copied[1], copied[2])
+                @test ca.ref.mem === cm === copied[3].mem
+                @test Core.memoryrefoffset(ca.ref) == offset
+                ca[1] = 17.0
+                @test cm[offset] == 17.0
+                @test Core.memoryrefget(copied[3], :not_atomic, true) == 17.0
+                @test a[1] == 1.0
+                T === Any && @test !isassigned(ca, 2)
+            end
+            a = Any[nothing]
+            a[1] = a
+            copied = Mooncake._copy_output((a.ref.mem, a))
+            @test copied[2][1] === copied[2]
+            @test copied[2].ref.mem === copied[1]
+            f = x -> (x .*= 2; (x, x.ref))
+            a = [1.0, 2.0, 3.0]
+            cache = Mooncake.prepare_derivative_cache(f, a)
+            for _ in 1:2
+                y, dy = Mooncake.value_and_derivative!!(
+                    cache, (f, Mooncake.zero_tangent(f)), (a, ones(3))
+                )
+                @test y[1].ref.mem === y[2].mem
+                @test y[1] == 2a
+                @test dy[1] == fill(2.0, 3)
+                @test a == [1.0, 2.0, 3.0]
+                y[1][1] = 17.0
+                @test Core.memoryrefget(y[2], :not_atomic, true) == 17.0
+            end
+        end
+    end
+
     @testset "aggregate snapshots preserve repeated leaves" begin
         for constructor in (a -> (a, a), a -> (; p=a, q=a), a -> Core.svec(a, a))
             a = [1.0, 2.0, 3.0]
