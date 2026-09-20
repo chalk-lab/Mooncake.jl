@@ -466,7 +466,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         u = RestorePartialInput([1.0])
         restore_cache = Mooncake.prepare_derivative_cache(undef_throw, u)
         for _ in 1:2
-            @test_throws "undefined failed" Mooncake.value_and_gradient!!(restore_cache, undef_throw, u)
+            @test_throws "undefined failed" Mooncake.value_and_gradient!!(
+                restore_cache, undef_throw, u
+            )
             @test !isdefined(u, :b)
         end
         for friendly in (false, true), throwing in (false, true)
@@ -478,9 +480,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             for _ in 1:2
                 args = ((f, NoTangent()), (x, ones(3)))
                 if throwing
-                    @test_throws "grow failed" Mooncake.value_and_derivative!!(restore_cache, args...)
+                    @test_throws "grow failed" Mooncake.value_and_derivative!!(
+                        restore_cache, args...
+                    )
                 else
-                    @test Mooncake.value_and_derivative!!(restore_cache, args...) == (18.0, 20.0)
+                    @test Mooncake.value_and_derivative!!(restore_cache, args...) ==
+                        (18.0, 20.0)
                 end
                 @test x == [1.0, 2.0, 3.0]
             end
@@ -501,9 +506,12 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             restore_cache = Mooncake.prepare_derivative_cache(f, x)
             for _ in 1:2
                 if throwing
-                    @test_throws "empty failed" Mooncake.value_and_jacobian!!(restore_cache, f, x)
+                    @test_throws "empty failed" Mooncake.value_and_jacobian!!(
+                        restore_cache, f, x
+                    )
                 else
-                    @test Mooncake.value_and_jacobian!!(restore_cache, f, x) == ([1.0], zeros(1, 0))
+                    @test Mooncake.value_and_jacobian!!(restore_cache, f, x) ==
+                        ([1.0], zeros(1, 0))
                 end
                 @test isempty(x)
             end
@@ -553,6 +561,22 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     x[i]=Float64(i)
                 end
             end
+        end
+    end
+
+    # The rule's JVP is already correct; only the public gradient assembly scatters
+    # an infinite coefficient across a basis tangent, so a rule registry cannot expose it.
+    @testset "singular generic scatter" begin
+        for W in (1, 2, 8), complex in (false, true)
+            t = complex ? (Ref(0.0), 2.0+3.0im) : (Ref(0.0), 2.0)
+            f = complex ? t->sqrt(t[1][])+real(t[2])+2imag(t[2]) : t->sqrt(t[1][])+t[2]
+            scatter_cache=Mooncake.prepare_derivative_cache(
+                f, t; config=Mooncake.Config(chunk_size=W)
+            )
+            y, g=Mooncake.value_and_gradient!!(scatter_cache, f, t)
+            @test y == (complex ? 8.0 : 2.0)
+            @test Mooncake.val(g[2][1].fields.x) == Inf
+            @test g[2][2] == (complex ? 1.0+2.0im : 1.0)
         end
     end
 

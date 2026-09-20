@@ -2451,7 +2451,11 @@ end
                 # parallel to `native_gradients`; scatter each field's contribution directly (no
                 # input-major transpose).
                 native_gradients = tuple_map(
-                    (g, lt) -> lt isa NoTangent ? g : increment!!(g, _scale(coeff, lt)),
+                    (g, lt) -> if lt isa NoTangent
+                        g
+                    else
+                        increment!!(g, _scale_gradient_basis(coeff, lt))
+                    end,
                     native_gradients,
                     lanes[lane],
                 )
@@ -2464,6 +2468,56 @@ end
     end
 
     return _finalize_gradient(cache, y, native_gradients, input_primals)
+end
+
+# This assembly scales a standard-basis tangent, so zero entries are inactive
+# coordinates, even when the active derivative is infinite. Keep this policy local:
+# ordinary tangent scaling must still implement IEEE multiplication.
+_scale_gradient_basis(a, t) = _scale_gradient_basis(a, t, IdDict{Any,Any}())
+_scale_gradient_basis(a, t, c) = _scale_internal(c, a, t)
+_scale_gradient_basis(a, t::IEEEFloat, c) = iszero(t) ? t : oftype(t, a * t)
+function _scale_gradient_basis(a, t::Complex{<:IEEEFloat}, c)
+    return complex(
+        _scale_gradient_basis(a, real(t), c), _scale_gradient_basis(a, imag(t), c)
+    )
+end
+function _scale_gradient_basis(a, t::Union{Tuple,NamedTuple}, c)
+    return map(x -> _scale_gradient_basis(a, x, c), t)
+end
+function _scale_gradient_basis(a, t::T, c) where {T<:PossiblyUninitTangent}
+    return is_init(t) ? T(_scale_gradient_basis(a, val(t), c)) : T()
+end
+_scale_gradient_basis(a, t::Tangent, c) = typeof(t)(_scale_gradient_basis(a, t.fields, c))
+function _scale_gradient_basis(a, t::MutableTangent, c)
+    haskey(c, t) && return c[t]
+    out = typeof(t)()
+    c[t] = out
+    out.fields = _scale_gradient_basis(a, t.fields, c)
+    return out
+end
+function _scale_gradient_basis(a, t::_BuiltinArrays, c)
+    haskey(c, t) && return c[t]
+    out = similar(t)
+    c[t] = out
+    for i in eachindex(t)
+        isassigned(t, i) && (out[i] = _scale_gradient_basis(a, t[i], c))
+    end
+    return out
+end
+@static if VERSION >= v"1.11.0-rc4"
+    function _scale_gradient_basis(a, t::MemoryRef, c)
+        mem = _scale_gradient_basis(a, t.mem, c)
+        return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(t), false)
+    end
+end
+function _scale_gradient_basis(a, t::IdDict, c)
+    haskey(c, t) && return c[t]
+    out = empty(t)
+    c[t] = out
+    for (k, v) in t
+        out[k] = _scale_gradient_basis(a, v, c)
+    end
+    return out
 end
 
 #
