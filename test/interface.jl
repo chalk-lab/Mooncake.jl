@@ -2901,7 +2901,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             x_mut0 = [1.0, 2.0, 3.0]
             g_mut(x) = sum((x .*= 2; x .^ 2))   # true grad 8x
             for cs in (1, 2, 3)
-                gc = Mooncake.prepare_gradient_cache(
+                gc = Mooncake.prepare_derivative_cache(
                     g_mut, copy(x_mut0); config=Mooncake.Config(; chunk_size=cs)
                 )
                 xg = copy(x_mut0)

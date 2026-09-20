@@ -140,12 +140,10 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # `_copy_to_output!!`) around every call, so the inputs are never mutated even though
     # the forward rule aliases (and an in-place `f` mutates) the user's storage.
     input_snapshot::IS
-    # Preallocated seeds for the zero-allocation packable gradient over one or more
-    # same-eltype float vectors: `(f_seed, arg_seeds, grad_bufs)` — a
-    # `gradient_chunk_size`-wide width-`W` `Lifted` per arg (over a cache-owned primal
-    # buffer whose partials are mutated in place per chunk) plus a preallocated per-arg
-    # gradient buffer. `nothing` for every other input shape (differentiable `f`, structs,
-    # tuples, complex, mixed eltypes, …), which uses the generic chunked gradient path.
+    # Cache-owned gradient seeds: a tuple for same-eltype float vectors,
+    # StructuredGradSeed for array-backed leaves, or IsbitsGradSeed for real scalars.
+    # `nothing` selects the generic chunked sweep; structured seeds admit real/complex
+    # arrays and require nondifferentiable leaves to be isbits.
     gradient_seed::GS
     # Whether the prepared inputs share differentiable storage across positions (`f.v === x`,
     # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_share_storage`.
@@ -821,9 +819,9 @@ end
 # and per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray,
 # gradient Array)` leaf pairs in tangent_dim order. Per chunk the seed leaf partials are poked in
 # place and each lane's directional derivative is written straight into the matching
-# gradient leaf — no per-chunk allocation. Only differentiable dimensions backed by real float
-# arrays qualify; any scalar/complex/ abstract dimension makes the gather return `nothing` and the
-# input falls back to the generic path.
+# gradient leaf — no per-chunk allocation. Real and complex IEEEFloat array leaves qualify,
+# including mixed leaf eltypes. Scalar dimensions, unsupported dual shapes, repeated leaves,
+# or non-isbits NoDual state select the generic snapshot/restore path.
 struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
     f_seed::Ff
     arg_seeds::As
@@ -1171,11 +1169,9 @@ Returns a `Lifted` containing the result of applying forward-mode AD to compute 
 (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the
 tangent values in `f` and `x`.
 """
-# Derivative dispatch summary for `value_and_derivative!!(cache, ...)`. Both compute a
-# single directional derivative (one tangent per input); chunking is internal to
-# `value_and_gradient!!` / `value_and_jacobian!!`.
+# Derivative dispatch summary for `value_and_derivative!!(cache, ...)`:
 # - `value_and_derivative!!(cache, lifteds...)`: native/internal tangent interface;
-#   calls the cached `frule` directly
+#   accepts width 1 or the cache's resolved width W and calls the matching cached rule
 # - `value_and_derivative!!(cache, (f, df), (x, dx), ...)`: tuple interface; lifts each
 #   width-1 tangent and runs the cached `frule`
 # Width dispatch on the `Lifted{P,N,V}` width parameter: all-width-1 slots are a single
@@ -1799,14 +1795,14 @@ recommend using `value_and_gradient!!` where possible.
 *Note:* If calling `value_and_pullback!!` multiple times for various values of `x`, you
 should use the same instance of `rule` each time.
 
-*Note:* It is your responsibility to ensure that there is no aliasing in `f` and `x`. For
-example,
+Aliased inputs share tangent storage through one seeding cache. Each aliased position
+reports the accumulated pullback for that storage. For example,
 ```julia
 X = randn(5, 5)
 rule = build_rrule(dot, X, X)
 value_and_pullback!!(rule, 1.0, dot, X, X)
 ```
-will yield the wrong result.
+returns `2X` at both input positions.
 
 *Note:* This method of `value_and_pullback!!` has to first call `zero_codual` on all of its
 arguments. This may cause some additional allocations. If this is a problem in your
@@ -2304,12 +2300,12 @@ cache once, then use it either for directional derivatives via
 All differentiable input shapes are chunked (a zero-dimension input is evaluated once). Four shape
 families take a zero-allocation path that reuses cache-owned seeds: (0) a single scalar
 `x::IEEEFloat`; and, with a non-differentiable isbits `f`, (1) one or more same-element-type
-dense float vectors; (2) tuples/NamedTuples/structs whose differentiable leaves are all real
-float arrays; (3) tuples/NamedTuples/immutable structs of real float scalars. (A non-isbits
-`f` on paths 1–2 costs one `Lifted` allocation per call, not per chunk.) Everything else —
-complex, mixed/abstract element types, possibly-uninitialised fields, or a differentiable
-`f` — is differentiated correctly via the generic chunked path, which allocates a fresh seed
-per chunk.
+dense float vectors; (2) array-backed tuples/NamedTuples/structs with real or complex
+IEEEFloat array leaves, including mixed leaf eltypes, and isbits nondifferentiable state;
+(3) tuples/NamedTuples/immutable structs of real float scalars. (A non-isbits `f` on paths
+1–2 costs one `Lifted` allocation per call, not per chunk.) Unsupported leaf shapes,
+possibly-uninitialised fields, non-isbits NoDual state, or a differentiable `f` use the
+generic chunked path, which allocates a fresh seed per chunk.
 
 Arguments that share one storage are refused. Forward mode gives each argument its own
 tangent storage, so two arguments over one array are two independent directions rather than
@@ -2536,11 +2532,11 @@ end
 # `f` except the scalar path):
 # - `x::IEEEFloat`: scalar width-1 path
 # - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
-# - tuples/NamedTuples/structs of real float arrays: zero-alloc `StructuredGradSeed`
+# - real/complex IEEEFloat array-backed inputs with isbits NoDual state: `StructuredGradSeed`
 #   leaf-table
 # - tuples/NamedTuples/immutable structs of real float scalars: zero-alloc `IsbitsGradSeed`
 #   barrier
-# - otherwise (differentiable `f`, complex, mixed/abstract eltypes, aliased/cyclic): generic
+# - otherwise (differentiable `f`, unsupported leaves, non-isbits NoDual, aliases/cycles): generic
 #   chunked
 #   path, which per chunk seeds `gradient_chunk_size` standard-basis directions and runs the
 #   width-dispatched `value_and_derivative!!`

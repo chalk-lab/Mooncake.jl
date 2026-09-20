@@ -75,9 +75,11 @@ width-`W` `frule!!` that evaluates `W` directional derivatives per pass, and the
 sweep runs `ceil(tangent_dim / W)` passes. Leaving `chunk_size=nothing` keeps Mooncake's default
 heuristic (`min(tangent_dim, 8)`). Chunking applies to every input shape with more than one degree of
 freedom. What is shape-restricted is the *zero-allocation* fast path — a non-differentiable `f`
-whose arguments are all same-eltype `IEEEFloat` vectors (or array-backed / isbits-scalar
-structured inputs). Any other shape (mixed eltypes, complex elements, a differentiable `f`, …)
-still chunks at width `W`, but through the generic sweep, which allocates. Cache construction
+whose arguments are all same-eltype `IEEEFloat` vectors, array-backed structured inputs
+with real or complex `IEEEFloat` leaves (including mixed leaf eltypes), or isbits structures
+of real scalars. Structured seeds require isbits nondifferentiable state and distinct
+array leaves. Other shapes, including composite `NoDual` state and a differentiable `f`,
+still chunk at width `W` through the generic sweep, which allocates. Cache construction
 stays passive (it transforms IR but does not run the function). `show(cache)` / `repr(cache)`
 report the resolved `chunk_size` and whether a width-`W` chunk rule was built (`chunk=true`
 once `tangent_dim > 1`).
