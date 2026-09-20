@@ -143,6 +143,17 @@ struct ImmutablePartialInput
     ImmutablePartialInput(a, b) = new(a, b)
 end
 
+mutable struct RestoreAnyBox
+    a::Any
+    x::Vector{Float64}
+end
+
+mutable struct RestorePartialInput
+    a::Vector{Float64}
+    b::Vector{Int}
+    RestorePartialInput(a) = new(a)
+end
+
 mutable struct RebindBox{V}
     w::V
 end
@@ -355,6 +366,146 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     Mooncake.get_tangent_field(expected, :b) .= 6.0
                 end
                 @test TestUtils.has_equal_data(g[2], expected)
+            end
+        end
+    end
+
+    # Rule registries check one rule execution, not snapshot destination state, cache
+    # reuse across chunks, or restoration of caller identities after an exception.
+    @testset "restore changed slots and extents" begin
+        containers = Any[Vector{Any}]
+        @static if VERSION >= v"1.11.0-rc4"
+            push!(containers, Memory{Any})
+        end
+        for make in containers
+            a = make(undef, 2)
+            a[1] = 1.0
+            snapshots, contexts = Mooncake._snapshot_inputs!!(
+                (Mooncake._copy_output(a),), (a,)
+            )
+            a[2] = 2.0
+            Mooncake._restore_inputs!!((a,), snapshots, contexts)
+            @test !isassigned(a, 2)
+            dst = make(undef, 2)
+            dst[1] = dst[2] = 3.0
+            Mooncake._copy_to_output!!(dst, a)
+            @test !isassigned(dst, 2)
+        end
+        for T in (PartialInput, ImmutablePartialInput)
+            out = Mooncake._copy_to_output!!(T([1.0], [2.0]), T([3.0]))
+            @test out.a == [3.0]
+            @test !isdefined(out, :b)
+        end
+        undef_f = u -> begin
+            scale = isdefined(u, :b) ? 3.0 : 2.0
+            u.b = [1]
+            scale * sum(abs2, u.a)
+        end
+        grow = x -> (push!(x, 2x[1]); sum(abs2, x))
+        grow_struct = t -> (push!(t[1], 2t[1][1]); sum(abs2, t[1]))
+        change = p -> (p.a=nothing; sum(abs2, p.x))
+        for W in (1, 2, 8)
+            config = Mooncake.Config(; chunk_size=W)
+            u = RestorePartialInput([1.0, 2.0, 3.0])
+            restore_cache = Mooncake.prepare_derivative_cache(undef_f, u; config)
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(restore_cache, undef_f, u)
+                @test y == 28.0
+                @test g[2].fields.a == [4.0, 8.0, 12.0]
+                @test !isdefined(u, :b)
+            end
+            for (f, x) in ((grow, [1.0, 2.0, 3.0]), (grow_struct, ([1.0, 2.0, 3.0],)))
+                restore_cache = Mooncake.prepare_derivative_cache(f, x; config)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(restore_cache, f, x)
+                    @test y == 18.0
+                    @test (x isa Tuple ? g[2][1] : g[2]) == [10.0, 4.0, 6.0]
+                    @test (x isa Tuple ? x[1] : x) == [1.0, 2.0, 3.0]
+                end
+                bad = x isa Tuple ? ([1.0, 2.0],) : [1.0, 2.0]
+                @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                    restore_cache, f, bad
+                )
+            end
+            for capture in (false, true)
+                x = [1.0, 2.0, 3.0]
+                f = capture ? let a=x
+                    x -> (push!(a, 2a[1]); x)
+                end : x -> (push!(x, 2x[1]); x)
+                restore_cache = Mooncake.prepare_derivative_cache(f, x; config)
+                for _ in 1:2
+                    y, J = Mooncake.value_and_jacobian!!(restore_cache, f, x)
+                    @test y == [1.0, 2.0, 3.0, 2.0]
+                    @test J == [1.0 0 0; 0 1 0; 0 0 1; 2 0 0]
+                    @test x == [1.0, 2.0, 3.0]
+                end
+            end
+            for old in (2.0, (2.0, 3.0), ([2.0],))
+                p = RestoreAnyBox(old, [1.0, 2.0, 3.0])
+                restore_cache = Mooncake.prepare_derivative_cache(change, p; config)
+                for _ in 1:2
+                    y, g = Mooncake.value_and_gradient!!(restore_cache, change, p)
+                    @test y == 14.0
+                    @test g[2].fields.x == [2.0, 4.0, 6.0]
+                    @test p.a === old
+                end
+            end
+        end
+        node = RestoreAnyBox(nothing, [1.0])
+        outer = (node,)
+        node.a = outer
+        snapshots, contexts = Mooncake._snapshot_inputs!!(
+            (Mooncake._copy_output(node),), (node,)
+        )
+        node.a = nothing
+        node.x[1] = 9.0
+        Mooncake._restore_inputs!!((node,), snapshots, contexts)
+        @test node.a[1] === node
+        @test node.x == [1.0]
+        undef_throw = u -> (u.b=[1]; error("undefined failed"))
+        u = RestorePartialInput([1.0])
+        restore_cache = Mooncake.prepare_derivative_cache(undef_throw, u)
+        for _ in 1:2
+            @test_throws "undefined failed" Mooncake.value_and_gradient!!(restore_cache, undef_throw, u)
+            @test !isdefined(u, :b)
+        end
+        for friendly in (false, true), throwing in (false, true)
+            f = throwing ? x -> (push!(x, 2x[1]); error("grow failed")) : grow
+            x = [1.0, 2.0, 3.0]
+            restore_cache = Mooncake.prepare_derivative_cache(
+                f, x; config=Mooncake.Config(; friendly_tangents=friendly)
+            )
+            for _ in 1:2
+                args = ((f, NoTangent()), (x, ones(3)))
+                if throwing
+                    @test_throws "grow failed" Mooncake.value_and_derivative!!(restore_cache, args...)
+                else
+                    @test Mooncake.value_and_derivative!!(restore_cache, args...) == (18.0, 20.0)
+                end
+                @test x == [1.0, 2.0, 3.0]
+            end
+        end
+        for throwing in (false, true), capture in (false, true)
+            x = Float64[]
+            f = if capture
+                let a=x, throwing=throwing
+                    x -> (push!(a, 1.0); throwing && error("empty failed"); x)
+                end
+            else
+                if throwing
+                    x -> (push!(x, 1.0); error("empty failed"))
+                else
+                    x -> (push!(x, 1.0); x)
+                end
+            end
+            restore_cache = Mooncake.prepare_derivative_cache(f, x)
+            for _ in 1:2
+                if throwing
+                    @test_throws "empty failed" Mooncake.value_and_jacobian!!(restore_cache, f, x)
+                else
+                    @test Mooncake.value_and_jacobian!!(restore_cache, f, x) == ([1.0], zeros(1, 0))
+                end
+                @test isempty(x)
             end
         end
     end

@@ -829,7 +829,7 @@ struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
     arg_seeds::As
     grad_bufs::Gs
     leaves::Ls
-    # `(MutableDual, prepare-time fields)` pairs; see `_gather_resets`.
+    # Mutable primal/dual objects and their saved fields; see `_gather_resets`.
     resets::Rs
 end
 
@@ -1111,7 +1111,7 @@ is shown by the cache.
                 _arg_seeds,
                 _grad_bufs,
                 _leaves,
-                _cat_leaves(map(s -> _gather_resets(tangent(s)), _arg_seeds)),
+                _cat_leaves(map(s -> _gather_resets(tangent(s), primal(s)), _arg_seeds)),
             )
         elseif isbitstype(typeof(fx)) &&
             _all_real_scalars(typeof(tangent(zero_lifted(Val(W), fx))))
@@ -1438,6 +1438,7 @@ function _fcache_jacobian_packable!!(
     local y, J
     s = 1
     while s <= total_dim
+        _reset_seed_extent!(nda, total_dim)
         copyto!(nda.primal, x)
         # Zero every lane, then poke this chunk's standard-basis entries (element `slot`, lane
         # `lane`). Storage layout is version-specific (element-major block on 1.11+, per-lane
@@ -1518,12 +1519,16 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     total_dim = length(x)
     # No input dimensions: the chunk width resolves to zero, so there is no seed to sweep and no
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
-    # the value and the output length. `x` is empty, so the snapshot the sweep would take has
-    # nothing to restore.
+    # the value and the output length. Even an empty vector can be grown by `f`.
     if total_dim == 0
-        y = _copy_output(f(x))
-        Ty = _check_jacobian_output(y, eltype(x))
-        return y, zeros(Ty, length(y), 0)
+        snapshots, contexts = _snapshot_inputs!!(cache.input_snapshot, (x,))
+        try
+            y = _copy_output(f(x))
+            Ty = _check_jacobian_output(y, eltype(x))
+            return y, zeros(Ty, length(y), 0)
+        finally
+            _restore_inputs!!((x,), snapshots, contexts)
+        end
     end
     # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer
     # preallocated at prepare time (single same-eltype float vector in, float vector out).
@@ -1574,7 +1579,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # Snapshot `x` into the cache buffer (the args copy, so `x` is element 1) before any
     # chunk runs `f`; restore before each subsequent chunk (so an in-place `f` does not
     # compound) and once at the end, leaving `x` unchanged.
-    x_snapshot = _copy_to_output!!(cache.input_snapshot[1], x)
+    snapshots, contexts = _snapshot_inputs!!(cache.input_snapshot, (x,))
     try
         output = value_and_derivative!!(cache, f_seed, basis_lifted!!(x_seed, cols(1)))
         # Copy before the restores below: `x_seed` aliases the caller's `x`, so for an `f` that
@@ -1590,7 +1595,10 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             J[:, lane] .= tangent(output, lane)
         end
         for start_col in (W + 1):W:total_dim
-            _copy_to_output!!(x, x_snapshot)
+            _restore_inputs!!((x,), snapshots, contexts)
+            seed_vs = tangent(zero_lifted(Val(W), (f, x)))
+            f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
+            x_seed = Lifted{typeof(x),W}(x, seed_vs[2])
             output = value_and_derivative!!(
                 cache, f_seed, basis_lifted!!(x_seed, cols(start_col))
             )
@@ -1603,7 +1611,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         return y, J
     finally
         # Leave `x` unchanged whether or not a chunk threw (each chunk ran on the original).
-        _copy_to_output!!(x, x_snapshot)
+        _restore_inputs!!((x,), snapshots, contexts)
     end
 end
 
@@ -2231,21 +2239,29 @@ _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/compl
 # A `MutableDual` holds its per-field Vs in one rebindable `fields` NamedTuple, so an `f` that
 # REBINDS a field (`b.w = 2 .* b.w`) rather than mutating it in place leaves the seed holding a
 # V the prepare-time `leaves` never saw, and from chunk 2 onwards `_seed_chunk!` perturbs the
-# orphan. Snapshot the prepare-time `fields` and rebind before every chunk; re-gathering
+# orphan. Save both primal and dual field bindings and rebind before every chunk; re-gathering
 # `leaves` per chunk would instead cost this path its zero-allocation guarantee. Termination
 # needs no cycle guard: this walks exactly the nodes `_grad_leaves` did, which bails to the
 # generic path on any `MutableDual` it reaches twice, so a cycle never gets here.
-_gather_resets(::Nfwd.NDualArray) = ()
-_gather_resets(::NoDual) = ()
-_gather_resets(v::ImmutableDual) = _gather_resets(v.fields)
-_gather_resets(v::MutableDual) = ((v, v.fields), _gather_resets(v.fields)...)
-_gather_resets(v::Tuple) = _cat_leaves(map(_gather_resets, v))
-_gather_resets(v::NamedTuple) = _gather_resets(values(v))
+_gather_resets(::Nfwd.NDualArray, p) = ()
+_gather_resets(::NoDual, p) = ()
+_gather_resets(v::ImmutableDual, p) = _gather_resets(v.fields, p)
+function _gather_resets(v::MutableDual, p)
+    fields = ntuple(i -> getfield(p, i), fieldcount(typeof(p)))
+    return ((v, (v.fields,)), (p, fields), _gather_resets(v.fields, p)...)
+end
+_gather_resets(v::Tuple, p) = _cat_leaves(map(_gather_resets, v, p))
+function _gather_resets(v::NamedTuple{ns}, p) where {ns}
+    return _cat_leaves(map(n -> _gather_resets(getfield(v, n), getfield(p, n)), ns))
+end
 
 @inline _restore_resets!(::Tuple{}) = nothing
 @inline function _restore_resets!(rs::Tuple)
-    md, fields = first(rs)
-    setfield!(md, :fields, fields)
+    obj, fields = first(rs)
+    for i in eachindex(fields)
+        getfield(obj, i) === fields[i] ||
+            ccall(:jl_set_nth_field, Cvoid, (Any, Csize_t, Any), obj, i - 1, fields[i])
+    end
     return _restore_resets!(Base.tail(rs))
 end
 
@@ -2551,6 +2567,7 @@ function value_and_gradient!!(
             nda = arg_seeds[i].rep
             # Single-leaf inline of the structured path's `_refresh_seed!` (restore seed
             # primal).
+            _reset_seed_extent!(nda, length(grad_bufs[i]))
             copyto!(nda.primal, xs[i])
             len = length(xs[i])
             Nfwd._zero_seed!(nda)
@@ -2582,6 +2599,17 @@ function value_and_gradient!!(
     end
     native_gradients = (NoTangent(), grad_bufs...)
     return _finalize_gradient(cache, y, native_gradients, input_primals)
+end
+
+# Reset cache-owned vector storage to the prepared extent BEFORE strict input refresh.
+# The gradient buffer/leaf table retains that extent even when a rule resizes its seed.
+_reset_seed_extent!(v, len) = nothing
+function _reset_seed_extent!(v::Nfwd.NDualArray{T,N,1,<:Vector}, len) where {T,N}
+    length(v.primal) == len || resize!(v.primal, len)
+    block = getfield(v, :partials_block)
+    storage = getfield(block, :parent)
+    length(storage) == N * len || resize!(storage, N * len)
+    return nothing
 end
 
 # Refresh a preallocated seed's `NDualArray.primal` leaves from the current call's input `x`
@@ -2893,6 +2921,7 @@ function _structured_gradient!!(
     while s <= total_dim
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
         _restore_resets!(seed.resets)
+        foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
         # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
         # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
         # callable) — and an `f` that mutates a non-differentiable argument would otherwise carry
@@ -3544,13 +3573,20 @@ end
 struct _RestoreContext
     originals::IdDict{Any,Any}
     seen::IdDict{Any,Any}
+    vector_refs::IdDict{Any,Any}
 end
 
 function _snapshot_inputs!!(dst::Tuple, src::Tuple)
     pairs = map(dst, src) do d, s
         c = IdDict{Any,Any}()
         snapshot = _copy_to_output!!(d, s, c)
-        (snapshot, _RestoreContext(c, IdDict{Any,Any}()))
+        refs = IdDict{Any,Any}()
+        @static if VERSION >= v"1.11.0-rc4"
+            for obj in keys(c)
+                obj isa Vector && (refs[obj] = obj.ref)
+            end
+        end
+        (snapshot, _RestoreContext(c, IdDict{Any,Any}(), refs))
     end
     return map(first, pairs), map(last, pairs)
 end
@@ -3638,14 +3674,30 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:_Buil
         dst, seen = _copy_context_destination!!(dst, src, c, r)
         seen && return dst
     end
+    if r isa _RestoreContext && dst isa Vector
+        @static if VERSION >= v"1.11.0-rc4"
+            # Growth may replace the backing Memory. Restore the original owner as well
+            # as the length, preserving refs/views and the next call's seed coverage.
+            if haskey(r.vector_refs, dst)
+                setfield!(dst, :ref, r.vector_refs[dst])
+                setfield!(dst, :size, size(src))
+            else
+                resize!(dst, length(src))
+            end
+        else
+            resize!(dst, length(src))
+        end
+    end
     _check_copy_extent(dst, src)
     @inbounds for i in eachindex(src)
         if isassigned(src, i)
             dst[i] = if isassigned(dst, i)
                 _copy_to_output!!(dst[i], src[i], c, r)
             else
-                _copy_output(src[i], c)
+                _copy_missing(src[i], c, r)
             end
+        elseif isassigned(dst, i)
+            Base._unsetindex!(dst, i)
         end
     end
     return dst
@@ -3691,9 +3743,11 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P}
                             getfield(dst, src_sub), getfield(src, src_sub), c, r
                         )
                     else
-                        _copy_output(getfield(src, src_sub), c)
+                        _copy_missing(getfield(src, src_sub), c, r)
                     end,
                 )
+            elseif isdefined(dst, src_sub)
+                _unset_copy_field!(dst, src_sub)
             end
         end
         return dst
@@ -3704,7 +3758,7 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P}
                 flds[src_sub] = if isdefined(dst, src_sub)
                     _copy_to_output!!(getfield(dst, src_sub), getfield(src, src_sub), c, r)
                 else
-                    _copy_output(getfield(src, src_sub), c)
+                    _copy_missing(getfield(src, src_sub), c, r)
                 end
             else
                 nf = src_sub - 1
@@ -3716,10 +3770,39 @@ function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P}
     end
 end
 
+# A missing destination during restore must recover original mutable descendants, not
+# install snapshot-owned storage. Walking an immutable snapshot against itself rebuilds
+# its fields through the same restore context, including cycles through mutable nodes.
+function _copy_missing(src, c, r)
+    if r isa _RestoreContext
+        _copy_to_output!!(get(r.originals, src, src), src, c, r)
+    else
+        _copy_output(src, c)
+    end
+end
+
+# Julia has no unsetfield! counterpart to Base._unsetindex!. Clear the field's storage,
+# including inline reference-bearing immutable fields. jl_set_nth_field with NULL is a
+# no-op. This runs only for a field that is undefined in the saved object; bits fields
+# cannot have that state. Clearing references needs no GC write barrier.
+function _unset_copy_field!(dst::P, i::Int) where {P}
+    offset = fieldoffset(P, i)
+    stop = i == fieldcount(P) ? sizeof(P) : fieldoffset(P, i + 1)
+    GC.@preserve dst ccall(
+        :memset,
+        Ptr{Cvoid},
+        (Ptr{Cvoid}, Cint, Csize_t),
+        pointer_from_objref(dst) + offset,
+        0,
+        stop - offset,
+    )
+    return dst
+end
+
 # fallback for invalid type combinations
 function _copy_to_output!!(dst::T, src::P, c=nothing, r=nothing) where {T,P}
-    if r isa _RestoreContext && haskey(r.originals, src)
-        return _copy_to_output!!(r.originals[src], src, c, r)
+    if r isa _RestoreContext
+        return _copy_to_output!!(get(r.originals, src, src), src, c, r)
     end
     throw(
         ArgumentError(
