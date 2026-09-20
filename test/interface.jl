@@ -300,7 +300,15 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test y[2][1] == 17.0
             end
         end
+        empty_array = Float64[]
+        empty_copy = Mooncake._copy_output((empty_array, reshape(empty_array, 0, 1)))
+        @test size(empty_copy[1]) == (0,)
+        @test size(empty_copy[2]) == (0, 1)
         @static if VERSION >= v"1.11.0-rc4"
+            @test empty_copy[1].ref.mem === empty_copy[2].ref.mem
+            empty_ref = Mooncake._copy_output(empty_array.ref)
+            @test isempty(empty_ref.mem)
+            @test isempty(Mooncake._copy_to_output!!(empty_ref, empty_array.ref).mem)
             for T in (Float64, Any), offset in (1, 3), reverse_order in (false, true)
                 mem = Memory{T}(undef, 6)
                 a = Vector{T}(undef, 0)

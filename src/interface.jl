@@ -3722,7 +3722,9 @@ _copy_to_output!!(::Module, src::Module, c=nothing, r=nothing) = src
 @static if VERSION >= v"1.11.0-rc4"
     function _copy_to_output!!(dst::P, src::P, c=nothing, r=nothing) where {P<:MemoryRef}
         mem = _copy_to_output!!(dst.mem, src.mem, c, r)
-        return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(src), false)
+        ref = Core.memoryrefnew(mem)
+        offset = Core.memoryrefoffset(src)
+        return offset == 1 ? ref : Core.memoryrefnew(ref, offset, false)
     end
 end
 
@@ -3904,7 +3906,9 @@ _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 @static if VERSION >= v"1.11.0-rc4"
     function _copy_output(x::MemoryRef, c::C=nothing) where {C<:Union{Nothing,IdDict}}
         mem = _copy_output(x.mem, c)
-        return Core.memoryrefnew(Core.memoryrefnew(mem), Core.memoryrefoffset(x), false)
+        ref = Core.memoryrefnew(mem)
+        offset = Core.memoryrefoffset(x)
+        return offset == 1 ? ref : Core.memoryrefnew(ref, offset, false)
     end
 end
 
