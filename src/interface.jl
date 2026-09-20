@@ -1105,13 +1105,14 @@ is shown by the cache.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = _zero_tangents(_args)
         _leaves = _tangent_layout(_arg_seeds, _grad_bufs)
-        if _leaves !== nothing
+        _resets = if _leaves === nothing
+            nothing
+        else
+            _cat_leaves(map(s -> _gather_resets(tangent(s), primal(s)), _arg_seeds))
+        end
+        if _leaves !== nothing && _resets !== nothing
             gradient_seed = StructuredGradSeed(
-                zero_lifted(Val(W), fx[1]),
-                _arg_seeds,
-                _grad_bufs,
-                _leaves,
-                _cat_leaves(map(s -> _gather_resets(tangent(s), primal(s)), _arg_seeds)),
+                zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves, _resets
             )
         elseif isbitstype(typeof(fx)) &&
             _all_real_scalars(typeof(tangent(zero_lifted(Val(W), fx))))
@@ -2244,11 +2245,13 @@ _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/compl
 # needs no cycle guard: this walks exactly the nodes `_grad_leaves` did, which bails to the
 # generic path on any `MutableDual` it reaches twice, so a cycle never gets here.
 _gather_resets(::Nfwd.NDualArray, p) = ()
-_gather_resets(::NoDual, p) = ()
+# Composite NoDual leaves can own mutable descendants outside the dual leaf table.
+# Use generic snapshot/restore for these inputs, including changed extents and bindings.
+_gather_resets(::NoDual, p) = isbitstype(typeof(p)) ? () : nothing
 _gather_resets(v::ImmutableDual, p) = _gather_resets(v.fields, p)
 function _gather_resets(v::MutableDual, p)
     fields = ntuple(i -> getfield(p, i), fieldcount(typeof(p)))
-    return ((v, (v.fields,)), (p, fields), _gather_resets(v.fields, p)...)
+    return _cat_leaves((((v, (v.fields,)), (p, fields)), _gather_resets(v.fields, p)))
 end
 _gather_resets(v::Tuple, p) = _cat_leaves(map(_gather_resets, v, p))
 function _gather_resets(v::NamedTuple{ns}, p) where {ns}

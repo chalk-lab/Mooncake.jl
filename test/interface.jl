@@ -143,6 +143,36 @@ struct ImmutablePartialInput
     ImmutablePartialInput(a, b) = new(a, b)
 end
 
+mutable struct OpaqueIntegerState
+    values::Vector{Int}
+end
+Mooncake.tangent_type(::Type{OpaqueIntegerState}) = Mooncake.NoTangent
+struct OpaqueStateWrapper
+    state::OpaqueIntegerState
+end
+Mooncake.tangent_type(::Type{OpaqueStateWrapper}) = Mooncake.NoTangent
+mutable struct WithOpaqueState{S}
+    weights::Vector{Float64}
+    state::S
+end
+opaque_state(s::OpaqueIntegerState) = s
+opaque_state(s::OpaqueStateWrapper) = s.state
+function opaque_grow(p)
+    s = opaque_state(p.state)
+    push!(s.values, 1)
+    return length(s.values) * sum(abs2, p.weights)
+end
+function opaque_rebind(p)
+    s = opaque_state(p.state)
+    push!(s.values, 1)
+    s.values = [1, 2, 3, 4]
+    return length(s.values) * sum(abs2, p.weights)
+end
+function opaque_throw(p)
+    push!(opaque_state(p.state).values, 1)
+    error("opaque mutation")
+end
+
 mutable struct RestoreAnyBox
     a::Any
     x::Vector{Float64}
@@ -649,6 +679,60 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     @test Core.memoryrefget(y, :not_atomic, true) == 2i
                     x[i]=Float64(i)
                 end
+            end
+        end
+    end
+
+    # Cache extent restoration and reuse require the public interface, not a rule registry.
+    @testset "opaque state restoration" begin
+        for wrap in (identity, OpaqueStateWrapper),
+            W in (1, 2, 8),
+            f in (opaque_grow, opaque_rebind)
+
+            ints = [1, 2]
+            state = OpaqueIntegerState(ints)
+            p = WithOpaqueState([1.0, 2.0, 3.0], wrap(state))
+            weights = p.weights
+            coefficient = f === opaque_grow ? 3 : 4
+            cache = Mooncake.prepare_derivative_cache(
+                f, p; config=Mooncake.Config(chunk_size=W)
+            )
+            @test cache.gradient_seed === nothing
+            for _ in 1:2
+                y, g = Mooncake.value_and_gradient!!(cache, f, p)
+                @test y == 14coefficient
+                @test g[2].fields.weights == 2coefficient * weights
+                @test p.weights === weights
+                @test opaque_state(p.state) === state
+                @test state.values === ints
+                @test ints == [1, 2]
+            end
+            if f === opaque_grow
+                reverse_cache = Mooncake.prepare_gradient_cache(f, p)
+                y, g = Mooncake.value_and_gradient!!(reverse_cache, f, p)
+                @test y == 14coefficient
+                @test g[2].fields.weights == 2coefficient * weights
+                @test state.values === ints
+                @test ints == [1, 2]
+            end
+            push!(ints, 3)
+            @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
+                cache, f, p
+            )
+            @test ints == [1, 2, 3]
+        end
+        for W in (1, 2, 8)
+            ints = [1, 2]
+            p = WithOpaqueState([1.0, 2.0, 3.0], OpaqueIntegerState(ints))
+            cache = Mooncake.prepare_derivative_cache(
+                opaque_throw, p; config=Mooncake.Config(chunk_size=W)
+            )
+            for _ in 1:2
+                @test_throws r"opaque mutation" Mooncake.value_and_gradient!!(
+                    cache, opaque_throw, p
+                )
+                @test p.state.values === ints
+                @test ints == [1, 2]
             end
         end
     end
