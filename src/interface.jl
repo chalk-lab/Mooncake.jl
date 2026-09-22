@@ -2688,18 +2688,14 @@ function _refresh_nondiff(::NoDual, p, x)
     # Immutable values cannot be written through, so the call's value passes straight out. A MUTABLE
     # one would let an in-place `f` write to the user's argument, so the call's state is copied into
     # the cache's own object instead; `_refresh_seed!` restores only differentiable leaves, so the
-    # mutation would otherwise compound across the chunk sweep.
-    return _adopt_nondiff(p, x)
-end
-
-@inline _adopt_nondiff(_p, x) = x
-# `_copy_to_output!!` is the copy: it recurses through fields, arrays and `Memory` rather than
-# stopping at the top level, threads an `IdDict` so cycles and shared sub-objects survive, and
-# writes `const` fields through `jl_set_nth_field`, which `setfield!` refuses. A bits type owns no
-# mutable storage for `f` to write through, so it passes out untouched.
-@inline function _adopt_nondiff(p::P, x::P) where {P}
-    isbitstype(P) && return x
-    return _copy_to_output!!(p, x)
+    # mutation would otherwise compound across the chunk sweep. `_copy_to_output!!` is the copy: it
+    # recurses through fields, arrays and `Memory` rather than stopping at the top level, threads an
+    # `IdDict` so cycles and shared sub-objects survive, and writes `const` fields through
+    # `jl_set_nth_field`, which `setfield!` refuses. A bits type owns no mutable storage for `f` to
+    # write through, so it passes out untouched, as does a value of a different type from the
+    # prepared one (the caller rebuilds the primal around it).
+    P = typeof(x)
+    return typeof(p) === P && !isbitstype(P) ? _copy_to_output!!(p, x) : x
 end
 
 # An ARRAY has no fields to copy, so it needs its own method for the same rule: the call's contents
