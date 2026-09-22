@@ -771,6 +771,18 @@ const NDAC_VecC64 = NDualArray{
         end
     end
 
+    @testset "MutableDualTangentView (non-always-initialised field)" begin
+        # Bespoke: no registry drives lane writes through a view. Reverse `get_tangent_field`
+        # unwraps the `PossiblyUninitTangent` and `set_tangent_field!` writes through it; the view
+        # must agree on both rather than hand back the wrapper and refuse the write.
+        slot = zero_lifted(Val(2), LiftedTest_MaybeInit(3.0))
+        mview = tangent_view(slot, 2)
+        @test mview.y === 0.0
+        mview.y = 2.0
+        @test mview.y === 2.0
+        @test tangent_view(slot, 1).y === 0.0
+    end
+
     @testset "MutableDualTangentView (array, complex and nested fields)" begin
         # An ARRAY field reads as the write-through lane view, so `view.field[i] = x` from a rule
         # body lands in the block. `tangent(::Lifted, lane)` would hand back a dense copy instead,

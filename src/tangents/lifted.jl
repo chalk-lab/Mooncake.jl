@@ -739,6 +739,16 @@ end
         Nfwd.tangent_view(Lifted{typeof(pf),N}(pf, v), lane)
     end
 
+# A non-always-initialised field's V is `PossiblyUninitTangent`-wrapped, as reverse's backing is;
+# read and write through the wrapper as `get_tangent_field`/`set_tangent_field!` do. `val` throws
+# on an uninitialised one: the primal field is undefined, so no lane has a value to read or shadow.
+@inline _lane_tangent(w::Val{N}, ::Type{P}, p, name, v::PossiblyUninitTangent, lane::Int) where {N,P} = _lane_tangent(
+    w, P, p, name, val(v), lane
+)
+@inline _replace_lane_tangent(v::T, lane::Int, x) where {T<:PossiblyUninitTangent} = T(
+    _replace_lane_tangent(val(v), lane, x)
+)
+
 # A field with no storage of its own reads as its materialised reverse tangent, which is total
 # over what `dual_type` produces and matches what reverse gives for the same field.
 @inline _lane_tangent(::Val{N}, ::Type{P}, p, name, v, lane::Int) where {N,P} = _materialise_field_lane(
