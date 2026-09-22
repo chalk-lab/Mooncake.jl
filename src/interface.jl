@@ -125,13 +125,17 @@ end
 
 const _BuiltinArrays = @static VERSION >= v"1.11" ? Union{Array,Memory} : Array
 
+struct GradientChunkSize
+    width::Int
+    auto::Bool
+end
+
 struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     single_rule::R
     input_tangents::IT
     friendly_gradients::FG
     gradient_workspace::GW
-    gradient_chunk_size::Int
-    gradient_chunk_size_auto::Bool
+    gradient_chunk_size::GradientChunkSize
     chunk_rule::CF
     input_specs::S
     # Reusable buffer holding a copy of the input args `x...` (not `f`, which is never
@@ -157,12 +161,13 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
 end
 
 function _cache_show_fields(cache::FCache)
-    chunk_size = getfield(cache, :gradient_chunk_size)
+    chunk = getfield(cache, :gradient_chunk_size)
+    chunk_size = chunk.width
     return (;
         mode=:forward,
         friendly_tangents=(!isnothing(getfield(cache, :input_tangents))),
         chunk=(!isnothing(getfield(cache, :chunk_rule))),
-        chunk_size=if getfield(cache, :gradient_chunk_size_auto)
+        chunk_size=if chunk.auto
             "$(chunk_size) (auto)"
         else
             chunk_size
@@ -1151,8 +1156,7 @@ is shown by the cache.
         input_tangents,
         friendly_gradients,
         gradient_workspace,
-        gradient_chunk_size,
-        gradient_chunk_size_auto,
+        GradientChunkSize(gradient_chunk_size, gradient_chunk_size_auto),
         chunk_rule,
         input_specs,
         map(_copy_output, Base.tail(fx)),
@@ -1191,10 +1195,10 @@ function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
         PreparedCacheError(
             "This cache holds no chunk rule: width-N Lifted inputs require the cache to " *
             "have been prepared with chunk_size > 1 (resolved chunk width " *
-            "$(getfield(cache, :gradient_chunk_size))).",
+            "$(getfield(cache, :gradient_chunk_size).width)).",
         ),
     )
-    W = getfield(cache, :gradient_chunk_size)
+    W = getfield(cache, :gradient_chunk_size).width
     # Every slot must share the cache's chunk width: the chunk rule's OpaqueClosure is built
     # at width `W` and would otherwise type-mismatch on a trailing slot opaquely. Checking
     # only `first(fx)` would let mixed-width inputs (e.g. width-W `f` with a width-W'
@@ -1549,7 +1553,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
         # otherwise box the seed's per-lane partials each iteration).
         f_seed = typeof(f_seed_stored)(f, tangent(f_seed_stored))
         return _fcache_jacobian_packable!!(
-            cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size, total_dim, x
+            cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size.width, total_dim, x
         )
     end
     # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not
@@ -1560,7 +1564,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     # `total_dim = length(x)`; every J-write loop must guard `lane <= total_dim`.
     # Width-dispatched `value_and_derivative!!` routes to `chunk_rule` (W > 1) or
     # `single_rule` (W == 1, no chunk rule).
-    W = cache.gradient_chunk_size
+    W = cache.gradient_chunk_size.width
     # Seeded through ONE aliasing cache and split, as the generic gradient sweep does. Two
     # separate lifts give an array that `f` captures and `x` names independent partials blocks,
     # so the basis direction seeded into `x` never reaches `f`'s view of the one storage: a
@@ -2408,7 +2412,7 @@ end
     # the sweep correct and uniform with the Jacobian/Hessian sweeps rather than relying on
     # `W <= total_dim` (the assumption whose absence in the Jacobian sweep caused an
     # out-of-bounds write).
-    W = cache.gradient_chunk_size
+    W = cache.gradient_chunk_size.width
     nfields = Val(fieldcount(typeof(input_primals)))
     P = typeof(input_primals)
     # Snapshot the inputs into the cache buffer before any chunk runs `f`; restore from it
@@ -2603,7 +2607,7 @@ function value_and_gradient!!(
     total_dim = sum(length, xs)
     # `prepare_derivative_cache` built the seeds at exactly this width, so the cache field
     # is the authoritative source (kept in lockstep with `_lifted_width(f_seed)`).
-    W = cache.gradient_chunk_size
+    W = cache.gradient_chunk_size.width
     # Bind `y` from the primal below (not a fabricated `zero(T)`), so the return type stays
     # concrete even when `f`'s output float type differs from the input eltype. The scatter
     # writes every gradient position exactly once per sweep, so `grad_bufs` needs no
@@ -2967,7 +2971,7 @@ function _structured_gradient!!(
     arg_seeds = seed.arg_seeds
     grad_bufs = seed.grad_bufs
     leaves = seed.leaves
-    W = cache.gradient_chunk_size
+    W = cache.gradient_chunk_size.width
     total_dim = isempty(leaves) ? 0 : last(leaves)[3].stop
     local y
     s = 1

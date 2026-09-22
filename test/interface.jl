@@ -2143,7 +2143,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             cache_nt = Mooncake.prepare_derivative_cache(
                 f_nt, nt_x; config=Mooncake.Config(; friendly_tangents=true, kwargs...)
             )
-            @test getfield(cache_nt, :gradient_chunk_size) > 1
+            @test getfield(cache_nt, :gradient_chunk_size).width > 1
             @test getfield(cache_nt, :chunk_rule) !== nothing
             y_nt, g_nt = Mooncake.value_and_gradient!!(cache_nt, f_nt, nt_x)
             @test y_nt == f_nt(nt_x)
@@ -2319,7 +2319,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             c10 = Mooncake.prepare_derivative_cache(
                 f10, nt10; config=Mooncake.Config(; friendly_tangents=false, kwargs...)
             )
-            @test getfield(c10, :gradient_chunk_size) < 10
+            @test getfield(c10, :gradient_chunk_size).width < 10
             _, g10 = Mooncake.value_and_gradient!!(c10, f10, nt10)
             @test g10[2].x1 ≈ 2.0
             @test g10[2].x10 ≈ 20.0
@@ -2967,7 +2967,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
                 z = [0.5, 0.5]
                 cf = Mooncake.prepare_derivative_cache(g_cap, z)
-                @test getfield(cf, :gradient_chunk_size) > length(z)  # W > total_dim
+                @test getfield(cf, :gradient_chunk_size).width > length(z)  # W > total_dim
                 _, Jf = Mooncake.value_and_jacobian!!(cf, g_cap, z)
                 _, Jr = Mooncake.value_and_jacobian!!(
                     Mooncake.prepare_pullback_cache(g_cap, z), g_cap, z
