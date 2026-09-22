@@ -2877,6 +2877,7 @@ end
     end
 end
 
+# `_seed_chunk!` and `_scatter_chunk!` mutate preallocated seed and gradient storage.
 # Recursive (unrolled, type-stable, allocation-free) sweeps over the layout rows, each of which
 # carries the range of dimensions it owns. Each chunk re-zeros all partials (an in-place `f`
 # dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones
@@ -2998,6 +2999,8 @@ function _structured_gradient!!(
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
+# `_isbits_chunk` and `_isbits_scatter` return fresh values behind a concrete-type barrier
+# that avoids an `IdDict` and keeps this path allocation-free.
 # One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current
 # primal), basis-seed it at the chunk's slots, reconstruct the per-arg `Lifted`s through the
 # stored templates' concrete types, and run the width-dispatched rule. All allocation-free
