@@ -827,13 +827,13 @@ end
 # gradient leaf — no per-chunk allocation. Real and complex IEEEFloat array leaves qualify,
 # including mixed leaf eltypes. Scalar dimensions, unsupported dual shapes, repeated leaves,
 # or non-isbits NoDual state select the generic snapshot/restore path.
-struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
+struct StructuredGradSeed{Ff,As,Gs,Ls,Bs}
     f_seed::Ff
     arg_seeds::As
     grad_bufs::Gs
     leaves::Ls
     # Mutable primal/dual objects and their saved fields; see `_save_seed_bindings`.
-    resets::Rs
+    bindings::Bs
 end
 
 # For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars):
@@ -1108,14 +1108,14 @@ is shown by the cache.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = _zero_tangents(_args)
         _leaves = _tangent_layout(_arg_seeds, _grad_bufs)
-        _resets = if _leaves === nothing
+        _bindings = if _leaves === nothing
             nothing
         else
             _cat_leaves(map(s -> _save_seed_bindings(tangent(s), primal(s)), _arg_seeds))
         end
-        if _leaves !== nothing && _resets !== nothing
+        if _leaves !== nothing && _bindings !== nothing
             gradient_seed = StructuredGradSeed(
-                zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves, _resets
+                zero_lifted(Val(W), fx[1]), _arg_seeds, _grad_bufs, _leaves, _bindings
             )
         elseif isbitstype(typeof(fx)) &&
             _all_real_scalars(typeof(tangent(zero_lifted(Val(W), fx))))
@@ -2978,7 +2978,7 @@ function _structured_gradient!!(
     s = 1
     while s <= total_dim
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
-        _restore_seed_bindings!(seed.resets)
+        _restore_seed_bindings!(seed.bindings)
         foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
         # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
         # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
