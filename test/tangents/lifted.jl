@@ -294,13 +294,15 @@ const NDAC_VecC64 = NDualArray{
         ) == (3.0, 3.0)
     end
 
-    @testset "scalar NDual _add_to_primal adds only the partials" begin
-        # Regression: an inner `NDual`'s `.value` is the primal it shadows (inner-value
-        # invariant), so `_add_to_primal` must add only the partials — adding `.value` too would
-        # double-count the primal (a zero-partials V would return `2x` instead of the identity `x`).
+    @testset "scalar NDual `_add_to_primal` and `_scale` touch only the partials" begin
+        # An inner `NDual`'s `.value` is the primal it shadows (inner-value invariant), so
+        # `_add_to_primal` must add only the partials — adding `.value` too would double-count
+        # the primal (a zero-partials V would return `2x` instead of the identity `x`) — and
+        # `_scale` must leave it fixed.
         x = 3.0
         @test Mooncake._add_to_primal(x, nd(x, 0.0, 0.0)) == x        # zero partials → identity
         @test Mooncake._add_to_primal(x, nd(x, 1.0, 2.0)) == x + 3.0  # adds sum(partials) = 3
+        @test _scale(0.5, nd(x, 1.0, 2.0)) === nd(x, 0.5, 1.0)
     end
 
     @testset "Lifted slot basics" begin
