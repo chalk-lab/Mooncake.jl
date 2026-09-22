@@ -461,9 +461,7 @@ end
     Tuple{
         typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
     } where {
-        P<:BlasFloat,
-        X<:Union{Ptr{P},AbstractArray{P}},
-        Y<:Union{Ptr{P},AbstractArray{P}},
+        P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}},Y<:Union{Ptr{P},AbstractArray{P}}
     }
 )
 function frule!!(
