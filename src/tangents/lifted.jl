@@ -388,13 +388,16 @@ end
 # `TwicePrecision`, whose V is `NTuple{N,·}` of parallel copies of one leaf. Those take the
 # generic terminal above; recursing element-wise here would index the leaf primal by lane and ask
 # for `fieldtype(Ptr{Float64}, 1)`.
+# Both container methods annotate the child with `typeof` of the held value, not the declared
+# `fieldtype(P, ·)`, for the reason given at `_materialise_field_lane`.
 function _materialise_lane(
     x::Lifted{P,N,<:Tuple}, lane::Integer, cache::IdDict
 ) where {P<:Tuple,N}
     p = primal(x)
     v = tangent(x)
     return ntuple(length(v)) do i
-        return _materialise_lane(Lifted{fieldtype(P, i),N}(p[i], v[i]), lane, cache)
+        pe = p[i]
+        return _materialise_lane(Lifted{typeof(pe),N}(pe, v[i]), lane, cache)
     end
 end
 function _materialise_lane(
@@ -405,10 +408,9 @@ function _materialise_lane(
     names = keys(v)
     return NamedTuple{names}(
         map(names) do name
+            pf = getfield(p, name)
             return _materialise_lane(
-                Lifted{fieldtype(P, name),N}(getfield(p, name), getfield(v, name)),
-                lane,
-                cache,
+                Lifted{typeof(pf),N}(pf, getfield(v, name)), lane, cache
             )
         end,
     )

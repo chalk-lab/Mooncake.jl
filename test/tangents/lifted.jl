@@ -371,6 +371,15 @@ const NDAC_VecC64 = NDualArray{
         # element's whole V and raised `BoundsError` past the arity, so this pins the Tuple branch.
         st = zero_lifted(Val(3), LiftedTest_AbstractHeld((1.0, 2.0)))
         @test length(tangent(st, 3).fields.x) == 2
+        # The `P<:Tuple` container branch is reached only through an abstract slot the IR
+        # annotates, which no seed factory builds, so annotate one by hand.
+        tp = (LiftedTest_Point(1.0, 2.0),)
+        @test tangent(Lifted{Tuple{Any},1}(tp, tangent(zero_lifted(Val(1), tp))), 1)[1] isa
+            Mooncake.Tangent
+        # ... and the silent half: a held tuple came back as one element's whole V.
+        tt = ((1.0, 2.0),)
+        @test tangent(Lifted{Tuple{Any},3}(tt, tangent(zero_lifted(Val(3), tt))), 2) ==
+            ((0.0, 0.0),)
     end
 
     @testset "a per-lane Tuple V unlifts to its lane, not element-wise" begin
@@ -1127,6 +1136,11 @@ const NDAC_VecC64 = NDualArray{
             # Same widening with a NON-differentiable value, whose V is a `NoDual`: the per-lane
             # read must decide from the value, not from the widened `Any`.
             convert(@NamedTuple{x::Any}, (x=nothing,)),
+            # An AGGREGATE in the widened field: the child slot must take the value's type, not
+            # the declared `Any`, or a struct throws from `fieldtype(Any, ·)` and a tuple takes
+            # the per-lane accessor, which the round trip catches as another value.
+            convert(@NamedTuple{x::Any}, (x=TestResources.StructFoo(6.0, [1.0, 2.0]),)),
+            convert(@NamedTuple{x::Any}, (x=(1.0, 2.0),)),
             (Ptr{UInt8}(pointer(ptr_backing)),),
         )
             test_lifted(Xoshiro(123456), p)
