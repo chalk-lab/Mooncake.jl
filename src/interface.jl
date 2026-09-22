@@ -3964,16 +3964,16 @@ function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
     if ismutable(x)
         c === nothing && return _copy_output(x, IdDict{Any,Any}())
         haskey(c, x) && return c[x]::P
-        _copy_output_mutable_cartesian(x, c)
+        _copy_output_mutable_struct(x, c)
     else
         # Immutable fields share one cache; every cycle crosses a memoized mutable node.
         c === nothing && return _copy_output(x, IdDict{Any,Any}())
-        _copy_output_immutable_cartesian(x, c)
+        _copy_output_immutable_struct(x, c)
     end
 end
 
 # Both struct copies unroll over the fields so each `getfield` has a literal index and infers.
-@generated function _copy_output_mutable_cartesian(x::P, c::IdDict) where {P}
+@generated function _copy_output_mutable_struct(x::P, c::IdDict) where {P}
     sets = [
         :(
             isdefined(x, $i) && ccall(
@@ -3999,7 +3999,7 @@ end
 # Copies the leading defined fields and rebuilds through `jl_new_structv`, so an object built by
 # a non-initialising inner constructor keeps its trailing undefined fields (`Base.deepcopy` misses
 # this). Assumes that once a field is undefined, all later ones are.
-@generated function _copy_output_immutable_cartesian(x::P, c::IdDict) where {P}
+@generated function _copy_output_immutable_struct(x::P, c::IdDict) where {P}
     nf = fieldcount(P)
     copies = [:(_copy_output(getfield(x, $i), c)) for i in 1:nf]
     upto(k) =
