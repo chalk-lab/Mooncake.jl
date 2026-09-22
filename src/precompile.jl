@@ -2,10 +2,6 @@ using PrecompileTools: @setup_workload, @compile_workload
 
 #! format: off
 
-# Skip precompilation on GitHub Actions for Julia versions earlier than 1.11.
-# On Julia LTS (1.10), precompilation can cause certain Mooncake allocation tests to fail.
-@static if !haskey(ENV, "GITHUB_ACTIONS") || VERSION ≥ v"1.11-"
-
 # Precompile the core AD machinery for the most common patterns so that the
 # time-to-first-gradient is reduced for users.  The workload exercises the full
 # `prepare_gradient_cache` → `value_and_gradient!!` and
@@ -71,8 +67,6 @@ using PrecompileTools: @setup_workload, @compile_workload
         )
     end
 end
-
-end # @static if
 
 # Everything the interpreters cached while this module was being precompiled is dead
 # weight after loading (`get_interpreter` rebuilds them at the new world age), and the
