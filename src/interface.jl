@@ -63,7 +63,8 @@ end
 # - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
 #   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
 # All seven parameters are load-bearing: they keep the prepared reverse cache concrete
-# across the cached rule, reusable primal/tangent buffers, and cached input/output specs.
+# across the cached rule, reusable primal/tangent buffers, and cached input/output types
+# and sizes.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     rule::Trule
     # Cache for function output; **primal** type for y.
@@ -77,16 +78,16 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     # Tangent type for y, i.e. this is a **tangent** type for y.
     ȳ_cache::Tȳ_cache
     # Top-level type/size signature for (f, x...), used to reject cache misuse early.
-    input_specs::TIS
+    input_types_and_sizes::TIS
     # Top-level type/size signature for y = f(x...).
-    output_spec::TOS
+    output_type_and_size::TOS
 end
 
-# `input_specs` leads with the spec for `f`; the displayed inputs are `x...`.
-_cache_input_specs(cache) = Base.tail(getfield(cache, :input_specs))
+# `input_types_and_sizes` leads with the entry for `f`; the displayed inputs are `x...`.
+_cache_input_types_and_sizes(cache) = Base.tail(getfield(cache, :input_types_and_sizes))
 
 # Human-readable `"T (kind)"` summary of a cached value's type, used only by `show`.
-# `sizestr` is spliced into the array branch: a concrete `TypeAndSizeSpec` knows the size, while
+# `sizestr` is spliced into the array branch: a concrete `TypeAndSize` knows the size, while
 # the type-only summary does not.
 function _cache_summary(::Type{T}, sizestr) where {T}
     T === Any && return "unknown"
@@ -112,7 +113,7 @@ function _cache_show_fields(cache::Cache)
     return (;
         mode=:reverse,
         friendly_tangents=(!isnothing(getfield(cache, :dests))),
-        inputs=length(_cache_input_specs(cache)),
+        inputs=length(_cache_input_types_and_sizes(cache)),
     )
 end
 
@@ -130,7 +131,7 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     gradient_workspace::GW
     gradient_chunk_size::GradientChunkSize
     chunk_rule::CF
-    input_specs::S
+    input_types_and_sizes::S
     # Reusable buffer holding a copy of the input args `x...` (not `f`, which is never
     # mutated and may be uncopyable, e.g. the HVP `grad_f` closure), allocated once at cache
     # construction. The public API snapshots into it and restores from it (in place, via
@@ -165,21 +166,23 @@ function _cache_show_fields(cache::FCache)
         else
             chunk_size
         end,
-        inputs=length(_cache_input_specs(cache)),
+        inputs=length(_cache_input_types_and_sizes(cache)),
     )
 end
 
-# Cache specs are compared again when a prepared cache is reused. The value's type `T` is
-# encoded as a type parameter so that `_check_prepared_cache` can read it at
+# Cached types and sizes are compared again when a prepared cache is reused. The value's
+# type `T` is encoded as a type parameter so that `_check_prepared_cache` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
 # a `DataType`-valued field would require.
-struct TypeAndSizeSpec{T,S}
+struct TypeAndSize{T,S}
     size::S
 end
 
-TypeAndSizeSpec(::Type{T}, s::S) where {T,S} = TypeAndSizeSpec{T,S}(s)
+TypeAndSize(::Type{T}, s::S) where {T,S} = TypeAndSize{T,S}(s)
 
-_cache_summary(spec::TypeAndSizeSpec{T}) where {T} = _cache_summary(T, "size $(spec.size)")
+function _cache_summary(type_and_size::TypeAndSize{T}) where {T}
+    _cache_summary(T, "size $(type_and_size.size)")
+end
 
 const _MAX_CHUNK_WIDTH = 8
 
@@ -191,7 +194,7 @@ function Base.showerror(io::IO, err::PreparedCacheError)
     _print_boxed_error(io, split("PreparedCacheError:\n$(err.msg)", '\n'))
 end
 
-function _throw_prepared_cache_spec_error(kind::Symbol, i::Int, expected, got)
+function _throw_prepared_cache_mismatch_error(kind::Symbol, i::Int, expected, got)
     label = i == 1 ? "`f`" : "`x$(i - 1)`"
     msg = if kind === :arity
         "Cached autodiff call expected $(expected) total arguments `(f, x...)`, got " *
@@ -820,7 +823,7 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
     # closure/capture structure that zero_tangent depends on.
     grad_tangent::Tgrad_tangent
     fwd_cache::Tfwd_cache
-    output_spec::TOS
+    output_type_and_size::TOS
     # Hessian-assembly buffers populated by `prepare_hessian_cache`, `nothing` for caches
     # built via `prepare_hvp_cache`. `value_gradient_and_hessian!!` writes into these.
     # Layout: `((; H::Matrix, grad::Vector, v::Vector), chunked)`.
@@ -846,7 +849,7 @@ function _cache_show_fields(cache::HVPCache)
     return (;
         mode=:forward_over_reverse,
         chunk=(!isnothing(getfield(fwd_cache, :chunk_rule))),
-        inputs=length(_cache_input_specs(fwd_cache)),
+        inputs=length(_cache_input_types_and_sizes(fwd_cache)),
     )
 end
 
@@ -865,8 +868,8 @@ function Base.show(io::IO, ::MIME"text/plain", cache::Union{Cache,FCache,HVPCach
         print(io, "\n  ", name, ": ", value)
     end
     inputs = cache isa HVPCache ? getfield(cache, :fwd_cache) : cache
-    for (i, spec) in enumerate(_cache_input_specs(inputs))
-        print(io, "\n  input_", i, ": ", _cache_summary(spec))
+    for (i, type_and_size) in enumerate(_cache_input_types_and_sizes(inputs))
+        print(io, "\n  input_", i, ": ", _cache_summary(type_and_size))
     end
     print(io, "\n  output: ", _cache_summary(cache))
 end
@@ -924,15 +927,17 @@ end
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{<:Lifted{Y}}) where {Y} = Y
 
-_cache_summary(cache::Union{Cache,HVPCache}) = _cache_summary(getfield(cache, :output_spec))
+function _cache_summary(cache::Union{Cache,HVPCache})
+    _cache_summary(getfield(cache, :output_type_and_size))
+end
 
 function _cache_summary(cache::FCache)
     # The forward output shape is unknown at prepare time, so it is always inferred from the
     # rule's return type.
     lifted_arg_types = Tuple{
         map(
-            spec -> lifted_type(Val(1), typeof(spec).parameters[1]),
-            getfield(cache, :input_specs),
+            type_and_size -> lifted_type(Val(1), typeof(type_and_size).parameters[1]),
+            getfield(cache, :input_types_and_sizes),
         )...,
     }
     output_type = Core.Compiler.return_type(getfield(cache, :single_rule), lifted_arg_types)
@@ -976,7 +981,7 @@ is shown by the cache.
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    input_specs = map(_type_and_size_spec, fx)
+    input_types_and_sizes = map(_type_and_size, fx)
     # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
     # type-generic, so structs, tuples, complex, and differentiable `f` batch `W`
     # directional derivatives per pass through the generic chunked gradient path just like
@@ -1014,9 +1019,9 @@ is shown by the cache.
         # would be dead cache weight that dispatch can never reach.
         #
         # `typeof(similar(a)) == typeof(a)`: the flat seed primals are `similar(a)`, but the
-        # rule and `input_specs` are built for `typeof(a)`. For an input whose `similar`
-        # does not round-trip its type (a `SubArray`/view, whose `similar` is a plain
-        # `Vector`), the seed primal type would mismatch both, so the inner
+        # rule and `input_types_and_sizes` are built for `typeof(a)`. For an input whose
+        # `similar` does not round-trip its type (a `SubArray`/view, whose `similar` is a
+        # plain `Vector`), the seed primal type would mismatch both, so the inner
         # `value_and_derivative!!` revalidation throws a PreparedCacheError (and the rule's
         # OpaqueClosure would type-mismatch anyway). Exclude those here so they fall through
         # to the structured path, whose `deepcopy`-built seeds DO round-trip the type and so
@@ -1110,7 +1115,7 @@ is shown by the cache.
         gradient_workspace,
         GradientChunkSize(gradient_chunk_size, gradient_chunk_size_auto),
         chunk_rule,
-        input_specs,
+        input_types_and_sizes,
         map(_copy_output, Base.tail(fx)),
         gradient_seed,
         inputs_share_storage,
@@ -1136,12 +1141,12 @@ tangent values in `f` and `x`.
 # first method serves single directions and the second serves chunks.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     return __call_rule(cache.single_rule, fx)
 end
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted,N}) where {N}
     input_primals = map(primal, fx)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     rule = cache.chunk_rule
     rule === nothing && throw(
         PreparedCacheError(
@@ -1201,7 +1206,7 @@ fields is not restored.
     cache::FCache{R,IT,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,IT<:Tuple,FG,GW,CF,S,M}
     input_primals = tuple_map(first, fx)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     # Types and sizes match when only the aliasing differs, so the check above cannot see it.
     _check_prepared_forward_aliasing(cache.input_tangents, input_primals)
     _check_repeated_arg_tangents(fx)
@@ -1247,7 +1252,7 @@ end
     cache::FCache{R,Nothing,FG,GW,CF,S}, fx::Vararg{Tuple{Any,Any},M}
 ) where {R,FG,GW,CF,S<:Tuple,M}
     input_primals = tuple_map(first, fx)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
     # Sharing the `===` scan above cannot see — `f` capturing an array also passed as an
@@ -1468,7 +1473,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
     cache::FCache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
-    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
     total_dim = length(x)
     # No input dimensions: the chunk width resolves to zero, so there is no seed to sweep and no
     # chunk rule to call. The Jacobian is `length(f(x)) x 0`; evaluate the primal directly for
@@ -1572,7 +1577,7 @@ end
     cache::Cache, f::F, x::AbstractVector{<:IEEEFloat}
 ) where {F}
     _check_vector_argument(x; caller=(value_and_jacobian!!), cache=cache, dense=true)
-    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
     total_dim = length(x)
     y_cache = cache.y_cache
     Ty = _check_jacobian_output(y_cache, eltype(x))
@@ -1633,16 +1638,16 @@ end
 
 # IT=Nothing specialisation: disambiguates against the Lifted-vararg and Tuple-vararg
 # zero-arg overloads (Aqua detects the ambiguity without this more-specific method). The
-# validate always throws an arity `PreparedCacheError` (`input_specs` has the `f` entry, no
-# args given).
+# validate always throws an arity `PreparedCacheError` (`input_types_and_sizes` has the `f`
+# entry, no args given).
 function value_and_derivative!!(
     cache::FCache{R,Nothing,FG,GW,CF,S}
 ) where {R,FG,GW,CF,S<:Tuple}
-    return _check_prepared_cache(cache.input_specs, ())
+    return _check_prepared_cache(cache.input_types_and_sizes, ())
 end
 
 function value_and_derivative!!(cache::FCache)
-    return _check_prepared_cache(cache.input_specs, ())
+    return _check_prepared_cache(cache.input_types_and_sizes, ())
 end
 
 #
@@ -1896,22 +1901,30 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
-    # Snapshot the output BEFORE the reverse pass, and take the spec and the output-tangent
+    # Snapshot the output BEFORE the reverse pass, and take the type and size and the output-tangent
     # buffer from that snapshot. The pullback restores mutations `f` made to its inputs, so for an
     # `f` whose output ALIASES an input it grew, reading the output afterwards sees the restored
     # value: `grow(x) = (push!(x, 2 * x[1]); x)` prepared at `[1.0, 2.0]` recorded an output of
     # size (2,) for a live output of size (3,), and every later call failed against that cache.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    output_spec = _type_and_size_spec(y_cache)
+    output_type_and_size = _type_and_size(y_cache)
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
 
-    input_specs = map(_type_and_size_spec, fx)
+    input_types_and_sizes = map(_type_and_size, fx)
     dests = config.friendly_tangents ? map(friendly_tangent_cache, fx) : nothing
     ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
-    return Cache(rule, y_cache, tangents, dests, ȳ_cache, input_specs, output_spec)
+    return Cache(
+        rule,
+        y_cache,
+        tangents,
+        dests,
+        ȳ_cache,
+        input_types_and_sizes,
+        output_type_and_size,
+    )
 end
 
 """
@@ -1996,7 +2009,7 @@ Mooncake.value_and_pullback!!(cache, 1.0, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _check_prepared_cache(getfield(cache, :input_specs), fx)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
     _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
@@ -2035,8 +2048,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     _check_scalar_output(primal(y); caller=prepare_gradient_cache)
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs = map(_type_and_size_spec, fx)
-    output_spec = _type_and_size_spec(primal(y))
+    input_types_and_sizes = map(_type_and_size, fx)
+    output_type_and_size = _type_and_size(primal(y))
     # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient
     # Cache is also a well-formed pullback Cache. `_copy_output` suffices for the isbits
     # scalar output — no `_copy_to_output!!` fill needed (and the gradient run path never
@@ -2048,7 +2061,15 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # `AssertionError: typeof(tangent) <: tangent_type(P)` the moment it was handed to
     # `value_and_pullback!!`, while the unfriendly one worked.
     ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
-    return Cache(rule, y_cache, tangents, dests, ȳ_cache, input_specs, output_spec)
+    return Cache(
+        rule,
+        y_cache,
+        tangents,
+        dests,
+        ȳ_cache,
+        input_types_and_sizes,
+        output_type_and_size,
+    )
 end
 
 """
@@ -2124,7 +2145,7 @@ value_and_gradient!!(cache, f, x, y)
     args_to_zero::NTuple=ntuple(Returns(true), Val(N + 1)),
 ) where {F,N}
     fx = (f, x...)
-    _check_prepared_cache(getfield(cache, :input_specs), fx)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), fx)
     _check_tangent_aliasing(getfield(cache, :tangents), fx)
     tangents = tuple_map(set_to_zero_maybe!!, getfield(cache, :tangents), args_to_zero)
     coduals = tuple_map(CoDual, fx, tangents)
@@ -2312,7 +2333,7 @@ end
     seed isa StructuredGradSeed && return _structured_gradient!!(cache, f, x, seed)
     seed isa IsbitsGradSeed && return _isbits_gradient!!(cache, f, x, seed)
     input_primals = (f, x...)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     native_gradients = let workspace = cache.gradient_workspace[]
         if isnothing(workspace)
             workspace = _zero_tangents(input_primals)
@@ -2507,7 +2528,7 @@ end
     # too.
     tangent_type(F) === NoTangent ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, x)
-    _check_prepared_cache(getfield(cache, :input_specs), (f, x))
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), (f, x))
     output = __call_rule(cache.single_rule, (lift(f, NoTangent()), lift(x, one(x))))
     y = primal(output)
     _check_scalar_output(y; caller=(value_and_gradient!!), cache=cache)
@@ -2550,7 +2571,7 @@ function value_and_gradient!!(
     # Validate once, on the packable path only (the fallback validates in the generic
     # method).
     input_primals = (f, xs...)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     f_seed_stored, arg_seeds, grad_bufs = seed
     # Re-wrap the CALL-time `f` (the stored seed holds the prepare-time instance, and a
     # non-differentiable callable can still carry primal-visible state). `V === NoDual` is
@@ -2908,7 +2929,7 @@ function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
     input_primals = (f, xs...)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     _check_tangent_aliasing((NoTangent(), seed.grad_bufs...), input_primals)
     f_stored = seed.f_seed
     # Rewrap the call-time `f` (the stored seed holds the prepare-time instance); `V ===
@@ -2999,7 +3020,7 @@ function _isbits_gradient!!(
     cache::FCache, f::F, xs::Tuple, gs::IsbitsGradSeed{W}
 ) where {F,W}
     input_primals = (f, xs...)
-    _check_prepared_cache(getfield(cache, :input_specs), input_primals)
+    _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     total_dim = gs.total_dim
     templates = gs.templates
     native_gradients = _zero_tangents(input_primals)
@@ -3086,7 +3107,7 @@ true
     N == 0 && throw(ArgumentError("prepare_hvp_cache requires at least one x argument"))
     N > 1 && _throw_hvp_multiarg("prepare_hvp_cache", N)
     # Validates that `f` returns an `IEEEFloat` (running `f` once), allocates the tangent
-    # buffers reused by `grad_f`, and supplies `output_spec`. The primitive
+    # buffers reused by `grad_f`, and supplies `output_type_and_size`. The primitive
     # (`DerivedFoRRule{Nothing}`) branches below also evaluate gradients through
     # `grad_cache.rule`.
     grad_cache = prepare_gradient_cache(f, x...; config)
@@ -3156,7 +3177,7 @@ true
         grad_f,
         zero_tangent(grad_f),
         fwd_cache,
-        getfield(grad_cache, :output_spec),
+        getfield(grad_cache, :output_type_and_size),
         nothing,
     )
 end
@@ -3212,7 +3233,9 @@ true
     cache.f === f || throw(
         ArgumentError("`f` must be the same function object used to construct `cache`")
     )
-    _check_prepared_cache(getfield(cache.fwd_cache, :input_specs), (cache.grad_f, x1))
+    _check_prepared_cache(
+        getfield(cache.fwd_cache, :input_types_and_sizes), (cache.grad_f, x1)
+    )
     _check_tangent_for_primal(x1, v)
     (f_val, grad), (_, hvp) = value_and_derivative!!(
         cache.fwd_cache, (cache.grad_f, cache.grad_tangent), (x1, v)
@@ -3331,7 +3354,7 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
         base.grad_f,
         base.grad_tangent,
         base.fwd_cache,
-        base.output_spec,
+        base.output_type_and_size,
         (_make_hessian_buffers(x1), chunked),
     )
 end
@@ -4053,36 +4076,37 @@ function __exclude_unsupported_output_internal!(y::Ptr, ::Set{UInt})
     return throw_ptr_in_output_error(y)
 end
 
-# Prepared-cache spec for one primal: array inputs record their size, everything else
-# records `()`.
-@inline _type_and_size_spec(x) =
+# Prepared-cache type and size for one primal: array inputs record their size, everything
+# else records `()`.
+@inline _type_and_size(x) =
     if x isa AbstractArray
-        TypeAndSizeSpec(typeof(x), size(x))
+        TypeAndSize(typeof(x), size(x))
     else
-        TypeAndSizeSpec(typeof(x), ())
+        TypeAndSize(typeof(x), ())
     end
 
 # Shared prepared-cache input validation for Cache, FCache, and HVPCache entry points.
-# The expected type T_i is extracted from the TypeAndSizeSpec{T_i,S_i} type parameter
+# The expected type T_i is extracted from the TypeAndSize{T_i,S_i} type parameter
 # at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
 # compile-time constant type — eliminating the runtime jl_types_equal call.
-@generated function _check_prepared_cache(specs::Tuple, fx::Tuple)
-    n = length(specs.parameters)
+@generated function _check_prepared_cache(types_and_sizes::Tuple, fx::Tuple)
+    n = length(types_and_sizes.parameters)
     m = length(fx.parameters)
-    n == m || return :(_throw_prepared_cache_spec_error(:arity, 0, $n, $m))
+    n == m || return :(_throw_prepared_cache_mismatch_error(:arity, 0, $n, $m))
     checks = Expr(:block)
     for i in 1:n
-        T_i = specs.parameters[i].parameters[1]
+        T_i = types_and_sizes.parameters[i].parameters[1]
         push!(
             checks.args,
             quote
                 let x_i = fx[$i]
                     typeof(x_i) == $T_i ||
-                        _throw_prepared_cache_spec_error(:type, $i, $T_i, typeof(x_i))
+                        _throw_prepared_cache_mismatch_error(:type, $i, $T_i, typeof(x_i))
                     if x_i isa AbstractArray
-                        size(x_i) == specs[$i].size || _throw_prepared_cache_spec_error(
-                            :size, $i, specs[$i].size, size(x_i)
-                        )
+                        size(x_i) == types_and_sizes[$i].size ||
+                            _throw_prepared_cache_mismatch_error(
+                                :size, $i, types_and_sizes[$i].size, size(x_i)
+                            )
                     end
                 end
             end,
