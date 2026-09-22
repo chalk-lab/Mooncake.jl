@@ -226,13 +226,16 @@ fdata_type(::Type{T}) where {T<:Ptr} = T
     end
 end
 
-function fdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if fdata_type(T) == NoFData
-        return NoFData
-    elseif isconcretetype(fdata_type(T))
-        return NamedTuple{names,fdata_type(T)}
-    else
-        return Any
+@generated function fdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
+    return quote
+        FT = fdata_type($T)
+        if FT == NoFData
+            return NoFData
+        elseif isconcretetype(FT)
+            return NamedTuple{$names,FT}
+        else
+            return Any
+        end
     end
 end
 
@@ -513,13 +516,16 @@ rdata_type(::Type{<:Ptr}) = NoRData
     end
 end
 
-function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
-    if rdata_type(T) == NoRData
-        return NoRData
-    elseif isconcretetype(rdata_type(T))
-        return NamedTuple{names,rdata_type(T)}
-    else
-        return Any
+@generated function rdata_type(::Type{NamedTuple{names,T}}) where {names,T<:Tuple}
+    return quote
+        RT = rdata_type($T)
+        if RT == NoRData
+            return NoRData
+        elseif isconcretetype(RT)
+            return NamedTuple{$names,RT}
+        else
+            return Any
+        end
     end
 end
 
@@ -742,10 +748,15 @@ end
     end
 end
 
-function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
-    can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
-    rdata_type(tangent_type(P)) == NoRData && return NoRData()
-    return NamedTuple{fieldnames(P)}(tuple_map(zero_rdata_from_type, fieldtypes(P)))
+@generated function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
+    fields = has_definite_fieldcount(P) ? fieldtypes(P) : ()
+    zero_exprs = map(T -> :(zero_rdata_from_type($T)), fields)
+    zeros = Expr(:call, :tuple, zero_exprs...)
+    return quote
+        can_produce_zero_rdata_from_type($P) || return CannotProduceZeroRDataFromType()
+        rdata_type(tangent_type($P)) == NoRData && return NoRData()
+        return NamedTuple{fieldnames($P)}($zeros)
+    end
 end
 
 zero_rdata_from_type(::Type{P}) where {P<:IEEEFloat} = zero(P)

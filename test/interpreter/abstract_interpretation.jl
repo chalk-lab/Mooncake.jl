@@ -145,5 +145,35 @@ end
         val, grad = Mooncake.value_and_gradient!!(cache, f, x)
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
+
+        # Clear populated caches in both modes, including the Julia 1.14 lookup index.
+        Mooncake.prepare_derivative_cache(f, x; config=Mooncake.Config(enable_nfwd=false))
+        for interp in values(Mooncake.GLOBAL_INTERPRETERS)
+            @static if isdefined(CC, :InferenceCache)
+                @test !isempty(interp.inf_cache)
+                @test !isempty(interp.inf_cache.index)
+            end
+        end
+        Mooncake.empty_mooncake_caches!()
+        for interp in values(Mooncake.GLOBAL_INTERPRETERS)
+            @test isempty(interp.oc_cache)
+            @test isempty(interp.code_cache.dict)
+            @test isempty(interp.inf_cache)
+            @static if isdefined(CC, :InferenceCache)
+                @test isempty(interp.inf_cache.index)
+            end
+        end
+
+        # Re-infer the same functions after clearing; a stale index must not be reused.
+        cache = Mooncake.prepare_gradient_cache(f, x)
+        @test last(Mooncake.value_and_gradient!!(cache, f, x))[2] ≈ [cos(x[1]), 2x[2]]
+        fcache = Mooncake.prepare_derivative_cache(
+            f, x; config=Mooncake.Config(enable_nfwd=false)
+        )
+        val, deriv = Mooncake.value_and_derivative!!(
+            fcache, (f, NoTangent()), (x, [3.0, -2.0])
+        )
+        @test val ≈ sin(x[1]) + x[2]^2
+        @test deriv ≈ 3cos(x[1]) - 4x[2]
     end
 end

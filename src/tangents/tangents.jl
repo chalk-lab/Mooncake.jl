@@ -375,6 +375,10 @@ tangent_type(::Type{<:IOStream}) = NoTangent
 
 tangent_type(::Type{<:Base.LibuvStream}) = NoTangent
 
+@static if isdefined(Base, :WaitEntry)
+    tangent_type(::Type{<:Base.WaitEntry}) = NoTangent
+end
+
 tangent_type(::Type{<:Base.CoreLogging.AbstractLogger}) = NoTangent
 
 tangent_type(::Type{Core.CodeInstance}) = NoTangent
@@ -459,12 +463,15 @@ isconcrete_or_union(p) = p isa Union || isconcretetype(p)
     end
 end
 
-@unstable @foldable function tangent_type(::Type{P}) where {N,P<:NamedTuple{N}}
-    P isa Union && return Union{tangent_type(P.a),tangent_type(P.b)}
-    !isconcretetype(P) && return Union{NoTangent,NamedTuple{N}}
-    TT = tangent_type(Tuple{fieldtypes(P)...})
-    TT == NoTangent && return NoTangent
-    return isconcretetype(TT) ? NamedTuple{N,TT} : Any
+@unstable @foldable @generated function tangent_type(::Type{P}) where {N,P<:NamedTuple{N}}
+    P isa Union && return :(Union{tangent_type($(P.a)),tangent_type($(P.b))})
+    !isconcretetype(P) && return :(Union{NoTangent,NamedTuple{$N}})
+    PT = Tuple{fieldtypes(P)...}
+    return quote
+        TT = tangent_type($PT)
+        TT == NoTangent && return NoTangent
+        return isconcretetype(TT) ? NamedTuple{$N,TT} : Any
+    end
 end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
