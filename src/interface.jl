@@ -82,13 +82,15 @@ struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     output_spec::TOS
 end
 
-@inline _cache_input_count(cache) = length(getfield(cache, :input_specs)) - 1
+# `input_specs` leads with the spec for `f`; the displayed inputs are `x...`.
+_cache_input_specs(cache) = Base.tail(getfield(cache, :input_specs))
 
-# Human-readable size/shape category for a cached argument's type, used only by `show`.
+# Human-readable `"T (kind)"` summary of a cached value's type, used only by `show`.
 # `sizestr` is spliced into the array branch: a concrete `InputSpec` knows the size, while
 # the type-only summary does not.
-@inline function _cache_size_summary(::Type{T}, sizestr) where {T}
-    return if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
+function _cache_summary(::Type{T}, sizestr) where {T}
+    T === Any && return "unknown"
+    kind = if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
         "scalar"
     elseif T <: AbstractArray
         sizestr
@@ -103,23 +105,14 @@ end
     else
         "value"
     end
-end
-
-@inline _cache_type_summary(::Type{T}) where {T} =
-    T === Any ? "unknown" : "$(T) ($(_cache_size_summary(T, "size unknown")))"
-
-function _cache_print_io_summary(io::IO, input_specs::Tuple, output_summary)
-    for (i, spec) in enumerate(input_specs)
-        print(io, "\n  input_", i, ": ", _cache_spec_summary(spec))
-    end
-    print(io, "\n  output: ", output_summary)
+    return "$(T) ($kind)"
 end
 
 function _cache_show_fields(cache::Cache)
     return (;
         mode=:reverse,
         friendly_tangents=(!isnothing(getfield(cache, :dests))),
-        inputs=_cache_input_count(cache),
+        inputs=length(_cache_input_specs(cache)),
     )
 end
 
@@ -172,7 +165,7 @@ function _cache_show_fields(cache::FCache)
         else
             chunk_size
         end,
-        inputs=_cache_input_count(cache),
+        inputs=length(_cache_input_specs(cache)),
     )
 end
 
@@ -186,9 +179,7 @@ end
 
 InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
 
-@inline function _cache_spec_summary(spec::InputSpec{T}) where {T}
-    return "$(T) ($(_cache_size_summary(T, "size $(spec.size)")))"
-end
+_cache_summary(spec::InputSpec{T}) where {T} = _cache_summary(T, "size $(spec.size)")
 
 const _MAX_CHUNK_WIDTH = 8
 
@@ -894,7 +885,7 @@ function _cache_show_fields(cache::HVPCache)
     return (;
         mode=:forward_over_reverse,
         chunk=(!isnothing(getfield(fwd_cache, :chunk_rule))),
-        inputs=_cache_input_count(fwd_cache),
+        inputs=length(_cache_input_specs(fwd_cache)),
     )
 end
 
@@ -913,12 +904,10 @@ function Base.show(io::IO, ::MIME"text/plain", cache::Union{Cache,FCache,HVPCach
         print(io, "\n  ", name, ": ", value)
     end
     inputs = cache isa HVPCache ? getfield(cache, :fwd_cache) : cache
-    output = if cache isa FCache
-        _forward_cache_output_summary(cache)
-    else
-        _cache_spec_summary(getfield(cache, :output_spec))
+    for (i, spec) in enumerate(_cache_input_specs(inputs))
+        print(io, "\n  input_", i, ": ", _cache_summary(spec))
     end
-    _cache_print_io_summary(io, Base.tail(getfield(inputs, :input_specs)), output)
+    print(io, "\n  output: ", _cache_summary(cache))
 end
 
 #
@@ -974,7 +963,9 @@ end
 @inline _dual_primal_type(::Type) = Any
 @inline _dual_primal_type(::Type{<:Lifted{Y}}) where {Y} = Y
 
-@inline function _forward_cache_output_summary(cache::FCache)
+_cache_summary(cache::Union{Cache,HVPCache}) = _cache_summary(getfield(cache, :output_spec))
+
+function _cache_summary(cache::FCache)
     # The forward output shape is unknown at prepare time, so it is always inferred from the
     # rule's return type.
     lifted_arg_types = Tuple{
@@ -984,7 +975,7 @@ end
         )...,
     }
     output_type = Core.Compiler.return_type(getfield(cache, :single_rule), lifted_arg_types)
-    return _cache_type_summary(_dual_primal_type(output_type))
+    return _cache_summary(_dual_primal_type(output_type), "size unknown")
 end
 
 """
