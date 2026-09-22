@@ -832,7 +832,7 @@ struct StructuredGradSeed{Ff,As,Gs,Ls,Rs}
     arg_seeds::As
     grad_bufs::Gs
     leaves::Ls
-    # Mutable primal/dual objects and their saved fields; see `_gather_resets`.
+    # Mutable primal/dual objects and their saved fields; see `_save_seed_bindings`.
     resets::Rs
 end
 
@@ -1111,7 +1111,7 @@ is shown by the cache.
         _resets = if _leaves === nothing
             nothing
         else
-            _cat_leaves(map(s -> _gather_resets(tangent(s), primal(s)), _arg_seeds))
+            _cat_leaves(map(s -> _save_seed_bindings(tangent(s), primal(s)), _arg_seeds))
         end
         if _leaves !== nothing && _resets !== nothing
             gradient_seed = StructuredGradSeed(
@@ -2244,28 +2244,28 @@ _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/compl
 # `leaves` per chunk would instead cost this path its zero-allocation guarantee. Termination
 # needs no cycle guard: this walks exactly the nodes `_grad_leaves` did, which bails to the
 # generic path on any `MutableDual` it reaches twice, so a cycle never gets here.
-_gather_resets(::Nfwd.NDualArray, p) = ()
+_save_seed_bindings(::Nfwd.NDualArray, p) = ()
 # Composite NoDual leaves can own mutable descendants outside the dual leaf table.
 # Use generic snapshot/restore for these inputs, including changed extents and bindings.
-_gather_resets(::NoDual, p) = isbitstype(typeof(p)) ? () : nothing
-_gather_resets(v::ImmutableDual, p) = _gather_resets(v.fields, p)
-function _gather_resets(v::MutableDual, p)
+_save_seed_bindings(::NoDual, p) = isbitstype(typeof(p)) ? () : nothing
+_save_seed_bindings(v::ImmutableDual, p) = _save_seed_bindings(v.fields, p)
+function _save_seed_bindings(v::MutableDual, p)
     fields = ntuple(i -> getfield(p, i), fieldcount(typeof(p)))
-    return _cat_leaves((((v, (v.fields,)), (p, fields)), _gather_resets(v.fields, p)))
+    return _cat_leaves((((v, (v.fields,)), (p, fields)), _save_seed_bindings(v.fields, p)))
 end
-_gather_resets(v::Tuple, p) = _cat_leaves(map(_gather_resets, v, p))
-function _gather_resets(v::NamedTuple{ns}, p) where {ns}
-    return _cat_leaves(map(n -> _gather_resets(getfield(v, n), getfield(p, n)), ns))
+_save_seed_bindings(v::Tuple, p) = _cat_leaves(map(_save_seed_bindings, v, p))
+function _save_seed_bindings(v::NamedTuple{ns}, p) where {ns}
+    return _cat_leaves(map(n -> _save_seed_bindings(getfield(v, n), getfield(p, n)), ns))
 end
 
-@inline _restore_resets!(::Tuple{}) = nothing
-@inline function _restore_resets!(rs::Tuple)
+@inline _restore_seed_bindings!(::Tuple{}) = nothing
+@inline function _restore_seed_bindings!(rs::Tuple)
     obj, fields = first(rs)
     for i in eachindex(fields)
         getfield(obj, i) === fields[i] ||
             ccall(:jl_set_nth_field, Cvoid, (Any, Csize_t, Any), obj, i - 1, fields[i])
     end
-    return _restore_resets!(Base.tail(rs))
+    return _restore_seed_bindings!(Base.tail(rs))
 end
 
 # One row per differentiable leaf: the cache-owned seed, the gradient buffer it fills, and the
@@ -2977,7 +2977,7 @@ function _structured_gradient!!(
     s = 1
     while s <= total_dim
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
-        _restore_resets!(seed.resets)
+        _restore_seed_bindings!(seed.resets)
         foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
         # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
         # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
