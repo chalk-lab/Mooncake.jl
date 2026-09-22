@@ -11,6 +11,18 @@ function foo(x)
     return y
 end
 
+# Like `foo`, but the value carried out of the block is computed, not an argument, so its
+# `UpsilonNode` captures the result of a rule call.
+function try_finally_computed(x)
+    y = x
+    try
+        y = y * 2
+    finally
+        y = y + 1
+    end
+    return y
+end
+
 # Helpers for the world-advance staleness test below (issue #1218; scope caveat at
 # `_build_rule!`). `stale_fwd_lazy` reaches the callee via LazyFRule, `stale_fwd_dyn` via DynamicFRule.
 stale_fwd_inner(x) = Float32(x) * 2.0f0
@@ -130,7 +142,8 @@ end
         end
     end
 
-    # Try try-catch statements.
+    # Try try-catch statements. Bespoke: reverse mode refuses the construct, so no
+    # `generate_test_functions` row can carry them.
     @testset "try-catch" begin
         rng = StableRNG(123)
         perf_flag = :none
@@ -138,6 +151,22 @@ end
         is_primitive = false
         mode = ForwardMode
         TestUtils.test_rule(rng, foo, 5.0; perf_flag, interface_only, is_primitive, mode)
+        # Julia 1.10's IR interpreter cannot re-type an `UpsilonNode` over a refined SSA value, so
+        # the build fails there with an empty error from `verify_ir`; see `known_limitations.md`.
+        # The pin flips when 1.10 support goes or the transform refuses the construct explicitly.
+        @static if VERSION < v"1.11"
+            @test_throws ErrorException Mooncake.build_frule(try_finally_computed, 5.0)
+        else
+            TestUtils.test_rule(
+                rng,
+                try_finally_computed,
+                5.0;
+                perf_flag,
+                interface_only,
+                is_primitive,
+                mode,
+            )
+        end
     end
 
     @testset "capture in ReturnNode regression test" begin

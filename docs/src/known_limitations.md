@@ -30,7 +30,12 @@ Custom differentiation rules may be needed; see [Defining Rules](@ref).
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
 in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
-with a message explaining the cause. Forward mode does support these constructs.
+with a message explaining the cause. Forward mode supports them on Julia 1.11 and later, with
+two exceptions. Binding the exception (`catch e`) is refused on every version. On Julia 1.10, a
+block that assigns a computed value to a variable read after the block, such as
+`try; y = y * 2; finally; y = y + 1; end`, fails at rule-build time with an empty error from
+Julia's IR verifier: the value is carried by an `UpsilonNode`, which Julia 1.10's IR interpreter
+cannot re-type. Assigning an argument (`y = x`) builds and differentiates correctly.
 
 **The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
 For example:
