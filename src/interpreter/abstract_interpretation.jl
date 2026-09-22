@@ -114,6 +114,24 @@ else
     get_inference_world(interp::CC.AbstractInterpreter) = CC.get_inference_world(interp)
 end
 
+@static if VERSION < v"1.12-"
+    # Until 1.12, `cache_result!` pushes every interpreter's `CodeInstance` onto
+    # `newly_inferred`, so a precompile workload would serialise Mooncake's inference
+    # results for Base methods into the pkgimage as if they were native ones. 1.12+
+    # pushes only from `InternalCodeCache`.
+    function CC.cache_result!(interp::MooncakeInterpreter, result::CC.InferenceResult)
+        tracked = CC.track_newly_inferred.x
+        CC.track_newly_inferred.x = false
+        try
+            @invoke CC.cache_result!(
+                interp::CC.AbstractInterpreter, result::CC.InferenceResult
+            )
+        finally
+            CC.track_newly_inferred.x = tracked
+        end
+    end
+end
+
 struct NoInlineCallInfo <: CC.CallInfo
     info::CC.CallInfo # wrapped call
     tt::Any # signature
@@ -368,7 +386,8 @@ end
 
 This is an internal function and not part of the public API. Called by `prepare_pullback_cache`,
 `prepare_gradient_cache`, and `prepare_derivative_cache` when `Config(empty_cache=true)`
-is passed.
+is passed, and at the end of the module definition so that no cache is serialised into the
+pkgimage.
 
 Empties all three per-interpreter caches for both `ForwardMode` and `ReverseMode`:
 - `oc_cache` : compiled `DerivedRule` / `OpaqueClosures`

@@ -74,4 +74,11 @@ end
 
 end # @static if
 
+# Everything the interpreters cached while this module was being precompiled is dead
+# weight after loading (`get_interpreter` rebuilds them at the new world age), and the
+# 1.10 pkgimage loader inserts every serialised `CodeInstance` into its `MethodInstance`'s
+# native cache, so leaving Mooncake's inference results for Base methods here would shadow
+# Base's own with source-less, code-less entries.
+empty_mooncake_caches!()
+
 #! format: on
