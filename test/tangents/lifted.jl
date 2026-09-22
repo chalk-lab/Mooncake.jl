@@ -93,6 +93,11 @@ end
 Mooncake.tangent_type(::Type{LiftedTest_Handle}) = LiftedTest_Handle
 Mooncake.dual_type(::Val{N}, ::Type{LiftedTest_Handle}) where {N} = Mooncake.NoDual
 Mooncake.zero_tangent_internal(x::LiftedTest_Handle, ::Mooncake.MaybeCache) = x
+# The same custom reverse tangent with NO `dual_type`: the structural lift must refuse it.
+struct LiftedTest_CustomTangent
+    id::Int
+end
+Mooncake.tangent_type(::Type{LiftedTest_CustomTangent}) = LiftedTest_CustomTangent
 
 using Mooncake:
     NDual,
@@ -456,6 +461,15 @@ const NDAC_VecC64 = NDualArray{
         @test zero_dual(Val(2), sv) isa Vector{Any}
         @test uninit_dual(Val(2), sv) isa Vector{Any}
         @test randn_dual(Val(2), StableRNG(1), sv) isa Vector{Any}
+    end
+
+    @testset "a custom reverse tangent without a `dual_type` is refused" begin
+        # Bespoke: `test_lifted` asserts a coherent V, and this is a refusal. Deferred to the
+        # call, so both the type query and the seed a rule would build name the missing method.
+        @test_throws "no `dual_type` method" dual_type(Val(2), LiftedTest_CustomTangent)
+        @test_throws "no `dual_type` method" zero_lifted(
+            Val(2), LiftedTest_CustomTangent(1)
+        )
     end
 
     @testset "seed factories" begin

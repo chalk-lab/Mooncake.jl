@@ -1065,7 +1065,25 @@ end
     end
     inner_nt_type = :(NamedTuple{$field_names,Tuple{$(field_dual_exprs...)}})
     wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-    return :(tangent_type($P) === NoTangent ? NoDual : $wrapper{$inner_nt_type})
+    # The structural lift mirrors a STRUCTURAL reverse tangent and nothing else. A `P` with a
+    # custom `tangent_type` (`=== P`, say) and no `dual_type` of its own would otherwise be
+    # lifted field-wise, seed and run, and fail only at the reverse bridge with
+    # `FieldError: type P has no field fields`. Refuse it here; the check stays in the returned
+    # expression so a later extension overload takes effect.
+    Tt = ismutabletype(P) ? :MutableTangent : :Tangent
+    msg =
+        "`$P` has a custom reverse tangent type but no `dual_type` method, and the structural " *
+        "forward lift applies only where the reverse tangent is a `$Tt`. Define " *
+        "`dual_type(::Val{N}, ::Type{$P})` together with its seed factories and `lift`."
+    return :(
+        if tangent_type($P) === NoTangent
+            NoDual
+        elseif tangent_type($P) <: $Tt
+            $wrapper{$inner_nt_type}
+        else
+            error($msg)
+        end
+    )
 end
 
 """
