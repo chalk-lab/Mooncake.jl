@@ -442,6 +442,21 @@ tangent_type(::Type{Core.Compiler.InferenceResult}) = NoTangent
     tangent_type(::Type{Core.Compiler.AnalysisResults}) = NoTangent
 end
 
+@static if isdefined(Base, :HAMT)
+    # `HAMT{K,V}` is recursive through `data::Vector{Union{Leaf{K,V},HAMT{K,V}}}`, so the
+    # structural fallback never terminates on it, nor on `PersistentDict` or `ScopedValues.Scope`
+    # (reached by any `ScopedValue` read), which hold one. `dual_type` asks `tangent_type` first,
+    # so this one method covers forward mode too.
+    function tangent_type(::Type{P}) where {P<:Base.HAMT.HAMT}
+        msg =
+            "Mooncake.jl cannot derive a tangent type for `$P`: `Base.HAMT.HAMT` is recursive " *
+            "through its `data::Vector{Union{Leaf,HAMT}}` field. `Base.PersistentDict` and " *
+            "`Base.ScopedValues.Scope` are built on it, so reading a `ScopedValue` inside " *
+            "differentiated code is not supported either."
+        return error(msg)
+    end
+end
+
 function split_union_tuple_type(tangent_types)
 
     # Create first split.
