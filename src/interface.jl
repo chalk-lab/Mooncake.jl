@@ -3964,61 +3964,57 @@ function _copy_output(x::P, c::C=nothing) where {P,C<:Union{Nothing,IdDict}}
     if ismutable(x)
         c === nothing && return _copy_output(x, IdDict{Any,Any}())
         haskey(c, x) && return c[x]::P
-        _copy_output_mutable_cartesian(x, Val(nf), c)
+        _copy_output_mutable_cartesian(x, c)
     else
         # Immutable fields share one cache; every cycle crosses a memoized mutable node.
         c === nothing && return _copy_output(x, IdDict{Any,Any}())
-        _copy_output_immutable_cartesian(x, Val(nf), c)
+        _copy_output_immutable_cartesian(x, c)
     end
 end
 
-@generated function _copy_output_mutable_cartesian(x::P, ::Val{nf}, c::IdDict) where {P,nf}
-    quote
+# Both struct copies unroll over the fields so each `getfield` has a literal index and infers.
+@generated function _copy_output_mutable_cartesian(x::P, c::IdDict) where {P}
+    sets = [
+        :(
+            isdefined(x, $i) && ccall(
+                :jl_set_nth_field,
+                Cvoid,
+                (Any, Csize_t, Any),
+                temp,
+                $(i - 1),
+                _copy_output(getfield(x, $i), c),
+            )
+        ) for i in 1:fieldcount(P)
+    ]
+    return quote
         temp = ccall(:jl_new_struct_uninit, Any, (Any,), P)::P
         # Register before copying fields so a self-reference resolves to `temp`.
         c[x] = temp
         c[temp] = x
-        Base.Cartesian.@nexprs(
-            $nf,
-            i -> if isdefined(x, i)
-                ccall(
-                    :jl_set_nth_field,
-                    Cvoid,
-                    (Any, Csize_t, Any),
-                    temp,
-                    i - 1,
-                    _copy_output(getfield(x, i), c),
-                )
-            end
-        )
+        $(sets...)
         return temp::P
     end
 end
 
-@generated function _copy_output_immutable_cartesian(
-    x::P, ::Val{nf}, c::C
-) where {P,nf,C<:Union{Nothing,IdDict}}
-    quote
-        Base.Cartesian.@nif(
-            $(nf + 1),
-            # Assumes if a undefined field is found, all subsequent fields are undefined.
-            i -> !isdefined(x, i),
-            i -> _copy_output_immutable_cartesian_upto(x, Val(i - 1), c),
-        )
+# Copies the leading defined fields and rebuilds through `jl_new_structv`, so an object built by
+# a non-initialising inner constructor keeps its trailing undefined fields (`Base.deepcopy` misses
+# this). Assumes that once a field is undefined, all later ones are.
+@generated function _copy_output_immutable_cartesian(x::P, c::IdDict) where {P}
+    nf = fieldcount(P)
+    copies = [:(_copy_output(getfield(x, $i), c)) for i in 1:nf]
+    upto(k) =
+        if k == 0
+            :x
+        else
+            :(ccall(
+                :jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, Any[$(copies[1:k]...)], $k
+            )::P)
+        end
+    ex = upto(nf)
+    for i in nf:-1:1
+        ex = :(isdefined(x, $i) ? $ex : $(upto(i - 1)))
     end
-end
-@generated function _copy_output_immutable_cartesian_upto(
-    x::P, ::Val{idx}, c::C
-) where {P,idx,C<:Union{Nothing,IdDict}}
-    idx == 0 && return :(x)
-    return quote
-        flds = collect(
-            Any, Base.Cartesian.@ntuple($idx, i -> _copy_output(getfield(x, i), c))
-        )
-        # when immutable struct object created by non initializing inner constructor.
-        # (Base.deepcopy misses this out)
-        return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), P, flds, $idx)::P
-    end
+    return ex
 end
 
 function __exclude_unsupported_output_internal!(
