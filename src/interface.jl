@@ -2963,29 +2963,33 @@ end
 # rebuild with a threaded `Int` cursor — no `basis_lifted!!`/`increment!!`, allocation-free.
 @inline function _isbits_scatter(ng, out, ::Val{W}, s) where {W}
     coeffs = ntuple(lane -> tangent(out, lane), Val(W))
-    g, _ = _scatter_isbits(ng, coeffs, s, 0)
+    g, _ = _scatter_isbits_leaves(ng, coeffs, s, 0)
     return g
 end
-@inline _scatter_isbits(g::NoTangent, _coeffs, _s, c::Int) = (g, c)
-@inline function _scatter_isbits(g::T, coeffs::NTuple{W}, s, c::Int) where {T<:IEEEFloat,W}
+@inline _scatter_isbits_leaves(g::NoTangent, _coeffs, _s, c::Int) = (g, c)
+@inline function _scatter_isbits_leaves(
+    g::T, coeffs::NTuple{W}, s, c::Int
+) where {T<:IEEEFloat,W}
     c += 1
     # A scalar leaf consumes one dimension; write the active lane's coefficient at this cursor
     # position when it falls in the current chunk `[s, s+W-1]` (matches the array path
     # `_scatter_chunk!`).
     return (s <= c <= s + W - 1 ? T(coeffs[c - s + 1]) : g, c)
 end
-@inline _scatter_isbits(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
-@inline function _scatter_isbits(g::Tuple, coeffs, s, c::Int)
-    h, c = _scatter_isbits(first(g), coeffs, s, c)
-    t, c = _scatter_isbits(Base.tail(g), coeffs, s, c)
+@inline _scatter_isbits_leaves(::Tuple{}, _coeffs, _s, c::Int) = ((), c)
+@inline function _scatter_isbits_leaves(g::Tuple, coeffs, s, c::Int)
+    h, c = _scatter_isbits_leaves(first(g), coeffs, s, c)
+    t, c = _scatter_isbits_leaves(Base.tail(g), coeffs, s, c)
     return ((h, t...), c)
 end
-@inline function _scatter_isbits(g::NamedTuple{names}, coeffs, s, c::Int) where {names}
-    t, c = _scatter_isbits(values(g), coeffs, s, c)
+@inline function _scatter_isbits_leaves(
+    g::NamedTuple{names}, coeffs, s, c::Int
+) where {names}
+    t, c = _scatter_isbits_leaves(values(g), coeffs, s, c)
     return (NamedTuple{names}(t), c)
 end
-@inline function _scatter_isbits(g::Tangent, coeffs, s, c::Int)
-    inner, c = _scatter_isbits(g.fields, coeffs, s, c)
+@inline function _scatter_isbits_leaves(g::Tangent, coeffs, s, c::Int)
+    inner, c = _scatter_isbits_leaves(g.fields, coeffs, s, c)
     return (typeof(g)(inner), c)
 end
 
@@ -4051,11 +4055,12 @@ end
 
 # Prepared-cache spec for one primal: array inputs record their size, everything else
 # records `()`.
-@inline _type_and_size_spec(x) = if x isa AbstractArray
-    TypeAndSizeSpec(typeof(x), size(x))
-else
-    TypeAndSizeSpec(typeof(x), ())
-end
+@inline _type_and_size_spec(x) =
+    if x isa AbstractArray
+        TypeAndSizeSpec(typeof(x), size(x))
+    else
+        TypeAndSizeSpec(typeof(x), ())
+    end
 
 # Shared prepared-cache input validation for Cache, FCache, and HVPCache entry points.
 # The expected type T_i is extracted from the TypeAndSizeSpec{T_i,S_i} type parameter
