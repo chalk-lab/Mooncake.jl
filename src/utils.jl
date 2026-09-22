@@ -16,7 +16,7 @@ function _print_boxed_block(io::IO, first_prefix::AbstractString, lines; footer=
     rest_width = _boxed_message_width(io, rest_prefix)
     first_wrapped = _wrap_boxed_line(line, first_width)
     println(io, first_prefix, first(first_wrapped))
-    for wrapped_line in Base.tail(first_wrapped)
+    for wrapped_line in @view first_wrapped[2:end]
         println(io, rest_prefix, wrapped_line)
     end
     while true

@@ -12,6 +12,9 @@
         # Printing has no differentiation-rule registry; pin both layouts and Unicode wrapping.
         lines = ("α"^21, "界"^11)
         context = :displaysize => (24, 20)
+        io = IOContext(IOBuffer(), context)
+        @test @inferred(Mooncake.Nfwd._nfwd_boxed_message_width(io, "│ ")) == 20
+        @test @inferred(Mooncake.Nfwd._nfwd_wrap_boxed_line("abc", 2)) == ["ab", "c"]
         @test sprint(Mooncake._print_boxed_error, lines; context) ==
             "$("α"^20)\n│ α\n│ $("界"^10)\n│ 界\n└\n"
         @test sprint(Mooncake.Nfwd._nfwd_print_boxed_error, lines; context) ==

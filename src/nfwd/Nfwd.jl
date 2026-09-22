@@ -1743,18 +1743,15 @@ end
 
 # Keep diagnostics local so Nfwd can load without Mooncake.
 @inline function _nfwd_boxed_message_width(io::IO, prefix::AbstractString)
-    cols = get(io, :displaysize, displaysize(io))[2]
-    return max(20, cols - textwidth(prefix))
+    return max(20, displaysize(io)[2] - textwidth(prefix))
 end
 
 function _nfwd_wrap_boxed_line(line, width::Int)
     text = string(line)
-    isempty(text) && return (text,)
-    width < 1 && return (text,)
-    textwidth(text) <= width && return (text,)
+    (isempty(text) || width < 1 || textwidth(text) <= width) && return [text]
 
     wrapped = String[]
-    remaining = text
+    remaining = SubString(text)
     while textwidth(remaining) > width
         split_idx = nothing
         for idx in eachindex(remaining)
@@ -1773,7 +1770,7 @@ function _nfwd_wrap_boxed_line(line, width::Int)
         isempty(remaining) && break
     end
     isempty(remaining) || push!(wrapped, remaining)
-    return Tuple(wrapped)
+    return wrapped
 end
 
 function _nfwd_print_boxed_error(io::IO, lines)
@@ -1785,7 +1782,7 @@ function _nfwd_print_boxed_error(io::IO, lines)
     rest_width = _nfwd_boxed_message_width(io, rest_prefix)
     first_wrapped = _nfwd_wrap_boxed_line(line, first_width)
     println(io, first(first_wrapped))
-    for wrapped_line in Base.tail(first_wrapped)
+    for wrapped_line in @view first_wrapped[2:end]
         println(io, rest_prefix, wrapped_line)
     end
     while true
