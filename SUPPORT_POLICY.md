@@ -44,13 +44,21 @@ Allowing installation on a best-effort basis does not extend this official suppo
 
 # Scope of differentiation rules
 
-Requests for differentiation rules beyond Julia Base are outside the official scope of `Mooncake.jl`.
-For historical reasons, we still maintain some package extensions within `Mooncake.jl`.
-We accept only bug fixes for their rules and will move these extensions out of the package in the future.
+Support for mutation allows `Mooncake.jl` to differentiate most numerical Julia
+code without hand-written rules. Unsupported operations generally fail
+explicitly. The [known limitations](docs/src/known_limitations.md) describe
+exceptions and the boundaries of supported behaviour.
 
-New rules can be provided as package extensions in third-party libraries, allowing the target functions and their rules to be maintained together.
-These third-party extensions are separate from `Mooncake.jl`, and we do not support them.
+Requests for differentiation rules beyond Julia Base are outside the official
+scope of `Mooncake.jl`. We still maintain some existing package extensions for
+historical reasons, but accept only bug fixes for their rules and plan to move
+them out of `Mooncake.jl`.
 
-Support for mutation allows `Mooncake.jl` to differentiate most numerical Julia code without hand-written rules.
-Unsupported operations generally fail explicitly.
-The [known limitations](docs/src/known_limitations.md) describe exceptions and the boundaries of supported behaviour.
+Community members may develop new rules independently in third-party package
+extensions, such as
+[NNlibMooncakeCUDAExt.jl](https://github.com/FluxML/NNlib.jl/blob/master/ext/NNlibMooncakeCUDAExt.jl),
+so that functions and their rules can be maintained together. Where extensions
+are not feasible, rules can be provided in separate packages, such as
+[MooncakeSparse.jl](https://github.com/JuliaSparse/MooncakeSparse.jl). These
+extensions and packages are maintained separately and are outside Mooncake's
+official support.
