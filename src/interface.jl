@@ -86,7 +86,7 @@ end
 _cache_input_specs(cache) = Base.tail(getfield(cache, :input_specs))
 
 # Human-readable `"T (kind)"` summary of a cached value's type, used only by `show`.
-# `sizestr` is spliced into the array branch: a concrete `InputSpec` knows the size, while
+# `sizestr` is spliced into the array branch: a concrete `TypeAndSizeSpec` knows the size, while
 # the type-only summary does not.
 function _cache_summary(::Type{T}, sizestr) where {T}
     T === Any && return "unknown"
@@ -169,17 +169,17 @@ function _cache_show_fields(cache::FCache)
     )
 end
 
-# Cache specs are compared again when a prepared cache is reused. The input type `T` is
+# Cache specs are compared again when a prepared cache is reused. The value's type `T` is
 # encoded as a type parameter so that `_check_prepared_cache` can read it at
 # @generated specialisation time — eliminating the runtime `jl_types_equal` call that
 # a `DataType`-valued field would require.
-struct InputSpec{T,S}
+struct TypeAndSizeSpec{T,S}
     size::S
 end
 
-InputSpec(::Type{T}, s::S) where {T,S} = InputSpec{T,S}(s)
+TypeAndSizeSpec(::Type{T}, s::S) where {T,S} = TypeAndSizeSpec{T,S}(s)
 
-_cache_summary(spec::InputSpec{T}) where {T} = _cache_summary(T, "size $(spec.size)")
+_cache_summary(spec::TypeAndSizeSpec{T}) where {T} = _cache_summary(T, "size $(spec.size)")
 
 const _MAX_CHUNK_WIDTH = 8
 
@@ -976,7 +976,7 @@ is shown by the cache.
     end
     gradient_chunk_size_auto = requested_chunk_size == 0
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
-    input_specs = map(_input_spec, fx)
+    input_specs = map(_type_and_size_spec, fx)
     # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
     # type-generic, so structs, tuples, complex, and differentiable `f` batch `W`
     # directional derivatives per pass through the generic chunked gradient path just like
@@ -1903,12 +1903,12 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # size (2,) for a live output of size (3,), and every later call failed against that cache.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
-    output_spec = _input_spec(y_cache)
+    output_spec = _type_and_size_spec(y_cache)
 
     # Run reverse-pass in order to reset stacks + state.
     rvs!!(zero_rdata(primal(y)))
 
-    input_specs = map(_input_spec, fx)
+    input_specs = map(_type_and_size_spec, fx)
     dests = config.friendly_tangents ? map(friendly_tangent_cache, fx) : nothing
     ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
     return Cache(rule, y_cache, tangents, dests, ȳ_cache, input_specs, output_spec)
@@ -2035,8 +2035,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
     _check_scalar_output(primal(y); caller=prepare_gradient_cache)
     rvs!!(zero_tangent(primal(y))) # run reverse-pass to reset stacks + state
-    input_specs = map(_input_spec, fx)
-    output_spec = _input_spec(primal(y))
+    input_specs = map(_type_and_size_spec, fx)
+    output_spec = _type_and_size_spec(primal(y))
     # Snapshot the (scalar) output into y_cache like prepare_pullback_cache, so a gradient
     # Cache is also a well-formed pullback Cache. `_copy_output` suffices for the isbits
     # scalar output — no `_copy_to_output!!` fill needed (and the gradient run path never
@@ -4051,11 +4051,14 @@ end
 
 # Prepared-cache spec for one primal: array inputs record their size, everything else
 # records `()`.
-@inline _input_spec(x) =
-    x isa AbstractArray ? InputSpec(typeof(x), size(x)) : InputSpec(typeof(x), ())
+@inline _type_and_size_spec(x) = if x isa AbstractArray
+    TypeAndSizeSpec(typeof(x), size(x))
+else
+    TypeAndSizeSpec(typeof(x), ())
+end
 
 # Shared prepared-cache input validation for Cache, FCache, and HVPCache entry points.
-# The expected type T_i is extracted from the InputSpec{T_i,S_i} type parameter
+# The expected type T_i is extracted from the TypeAndSizeSpec{T_i,S_i} type parameter
 # at @generated specialisation time, so the emitted `typeof(x_i) == T_i` comparison uses a
 # compile-time constant type — eliminating the runtime jl_types_equal call.
 @generated function _check_prepared_cache(specs::Tuple, fx::Tuple)
