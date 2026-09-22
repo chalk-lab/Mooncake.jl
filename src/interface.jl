@@ -2659,12 +2659,6 @@ end
         :(nothing),
     )
 end
-@inline _refresh_all!(::Tuple{}, ::Tuple{}) = nothing
-@inline function _refresh_all!(arg_seeds::Tuple, xs::Tuple)
-    _refresh_seed!(tangent(first(arg_seeds)), first(xs))
-    return _refresh_all!(Base.tail(arg_seeds), Base.tail(xs))
-end
-
 # `_refresh_seed!` above restores only the differentiable leaves of the prepare-time `deepcopy`, so
 # every non-differentiable part of a structured argument — a struct's `Int` field, a `SubArray`'s
 # indices — kept its prepare-time value for the life of the cache, and a cache prepared for
@@ -2693,7 +2687,7 @@ function _refresh_nondiff(::NoDual, p, x)
     end
     # Immutable values cannot be written through, so the call's value passes straight out. A MUTABLE
     # one would let an in-place `f` write to the user's argument, so the call's state is copied into
-    # the cache's own object instead; `_refresh_all!` restores only differentiable leaves, so the
+    # the cache's own object instead; `_refresh_seed!` restores only differentiable leaves, so the
     # mutation would otherwise compound across the chunk sweep.
     return _adopt_nondiff(p, x)
 end
@@ -2804,26 +2798,30 @@ end
     end
 end
 
-# Returns the STORED tuple, not a fresh one, when no argument needed rebuilding — the structured
-# gradient path is asserted allocation-free, and building a tuple of non-isbits `Lifted`s per call
-# would show up there.
-@generated function _refresh_nondiff_all(arg_seeds::Tuple, xs::Tuple)
+# Refresh every argument's seed from the call's inputs: `_refresh_nondiff` rebuilds the primal
+# around the call's non-differentiable state, then `_refresh_seed!` copies the differentiable
+# leaves into the cache-owned buffers. Returns the STORED tuple, not a fresh one, when no argument
+# needed rebuilding — the structured gradient path is asserted allocation-free, and building a
+# tuple of non-isbits `Lifted`s per call would show up there.
+@generated function _refresh_all!(arg_seeds::Tuple, xs::Tuple)
     n = length(arg_seeds.parameters)
     n == 0 && return :arg_seeds
     syms = [Symbol(:p_, i) for i in 1:n]
-    body = [
+    rebuild = [
         :(
             $(syms[i]) = _refresh_nondiff(
                 tangent(arg_seeds[$i]), primal(arg_seeds[$i]), xs[$i]
             )
         ) for i in 1:n
     ]
+    refresh = [:(_refresh_seed!(tangent(arg_seeds[$i]), xs[$i])) for i in 1:n]
     unchanged = foldl(
         (a, b) -> :($a && $b), [:($(syms[i]) === primal(arg_seeds[$i])) for i in 1:n]
     )
     rebuilt = [:(typeof(arg_seeds[$i])($(syms[i]), tangent(arg_seeds[$i]))) for i in 1:n]
     return quote
-        $(body...)
+        $(rebuild...)
+        $(refresh...)
         $unchanged && return arg_seeds
         return tuple($(rebuilt...))
     end
@@ -2937,8 +2935,7 @@ function _structured_gradient!!(
         # callable) — and an `f` that mutates a non-differentiable argument would otherwise carry
         # chunk 1's mutation into chunk 2, so the reported value came from the last chunk. Copies
         # into the cache's own objects, so an unchanged call rebuilds nothing.
-        arg_seeds = _refresh_nondiff_all(arg_seeds, xs)
-        _refresh_all!(arg_seeds, xs)
+        arg_seeds = _refresh_all!(arg_seeds, xs)
         _zero_seeds!(leaves)
         _seed_chunk!(leaves, s, W)
         out = value_and_derivative!!(cache, f_seed, arg_seeds...)
