@@ -1773,11 +1773,13 @@ function _nfwd_wrap_boxed_line(line, width::Int)
     return wrapped
 end
 
-function _nfwd_print_boxed_error(io::IO, lines)
+function _nfwd_print_boxed_error(
+    io::IO, lines; indent::AbstractString="  ", footer=nothing, newline::Bool=false
+)
     first_item = iterate(lines)
     isnothing(first_item) && return nothing
     line, state = first_item
-    rest_prefix = "  │ "
+    rest_prefix = indent * "│ "
     first_width = _nfwd_boxed_message_width(io, "")
     rest_width = _nfwd_boxed_message_width(io, rest_prefix)
     first_wrapped = _nfwd_wrap_boxed_line(line, first_width)
@@ -1793,7 +1795,10 @@ function _nfwd_print_boxed_error(io::IO, lines)
             println(io, rest_prefix, wrapped_line)
         end
     end
-    print(io, "  └")
+    print(io, indent, "└")
+    isnothing(footer) || print(io, ' ', footer)
+    newline && println(io)
+    return nothing
 end
 
 @inline function Base.showerror(
