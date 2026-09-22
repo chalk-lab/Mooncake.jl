@@ -1589,7 +1589,7 @@ end
     return NDualArray{E,N,D,A}(x)
 end
 @inline function uninit_dual(::Val{N}, x::A) where {N,E<:NDualEltype,D,A<:Array{E,D}}
-    return NDualArray{E,N,D,A}(x, ntuple(_ -> similar(x), Val(N)))
+    return NDualArray{E,N,D,A}(x, NDualBlock{E,D + 1}(undef, N, size(x)...))
 end
 
 # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` factories above): fresh
@@ -2557,7 +2557,7 @@ end
         return NDualArray{E,N,1,Memory{E}}(m)
     end
     @inline function uninit_dual(::Val{N}, m::Memory{E}) where {N,E<:NDualEltype}
-        return NDualArray{E,N,1,Memory{E}}(m, ntuple(_ -> similar(m), Val(N)))
+        return NDualArray{E,N,1,Memory{E}}(m, NDualBlock{E,2}(undef, N, length(m)))
     end
     @inline function randn_dual(
         ::Val{N}, rng::AbstractRNG, m::Memory{E}

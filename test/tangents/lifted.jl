@@ -551,6 +551,16 @@ const NDAC_VecC64 = NDualArray{
         @test vm.fields.v === nd(3.0, 0.0, 0.0)
     end
 
+    @testset "`uninit_dual` on a float array allocates the block only" begin
+        # Bespoke: `test_lifted` has no performance half. Per-lane `similar` copies packed into
+        # the block would cost `N` extra allocations on every `getfield` off a non-differentiable
+        # parent, for content that is garbage by definition.
+        x = randn(StableRNG(1), 100)
+        uninit_dual(Val(8), x)
+        zero_dual(Val(8), x)
+        @test (@allocated uninit_dual(Val(8), x)) <= (@allocated zero_dual(Val(8), x))
+    end
+
     @testset "NDualArray accessors + AbstractArray interface" begin
         x = [1.0, 2.0, 3.0]
         a = NDualArray{Float64,2,1,Vector{Float64}}(
