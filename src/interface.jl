@@ -617,52 +617,39 @@ function _any_shared_storage(x)
     )
 end
 
+# Two guards on the way in, both testing that there is something to double-count. An EMPTY
+# array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's one
+# global empty `Memory`, so two unrelated ones look aliased. Nor is a container whose elements
+# have no derivative — a `Vector{Int}` and its own reshape share a `Memory{NoTangent}`, and
+# refusing that rejected a gradient the sweep computes correctly. The refusal's own message is
+# the test: a shared leaf "comes back scaled by that count", and a `NoTangent` leaf has no
+# count.
+function _any_shared_storage!(s::_StorageSeen, x::_BuiltinArrays)
+    (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
+    haskey(s.objs, x) && return false
+    s.objs[x] = nothing
+    # Julia 1.10 has no `Memory`, so the data address stands in for it: stable while the array is
+    # live, which it is for the whole traversal, and equal for two arrays over one buffer.
+    store = @static VERSION >= v"1.11-rc4" ? _storage_id(x) : UInt(pointer(x))
+    haskey(s.backing, store) && return true
+    s.backing[store] = nothing
+    # The elements can share storage while their containers do not. Guarded on the visited check
+    # above, so an array holding itself terminates. A bits element holds no storage of its own,
+    # which is also what keeps a large float array off this path.
+    isbitstype(eltype(x)) && return false
+    for i in eachindex(x)
+        isassigned(x, i) && _any_shared_storage!(s, x[i]) && return true
+    end
+    return false
+end
+function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
+    return any(v -> _any_shared_storage!(s, v), x)
+end
+
 @static if VERSION >= v"1.11-rc4"
     _any_shared_storage!(::_StorageSeen, ::Any) = false
-
-    # Claim `store` for `x`. `true` if some other container already holds it.
-    @inline function _claim_storage!(s::_StorageSeen, x, store)
-        haskey(s.objs, x) && return false
-        s.objs[x] = nothing
-        haskey(s.backing, store) && return true
-        s.backing[store] = nothing
-        return false
-    end
-
-    # Two guards on the way in, both testing that there is something to double-count. An EMPTY
-    # array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's one
-    # global empty `Memory`, so two unrelated ones look aliased. Nor is a container whose elements
-    # have no derivative — a `Vector{Int}` and its own reshape share a `Memory{NoTangent}`, and
-    # refusing that rejected a gradient the sweep computes correctly. The refusal's own message is
-    # the test: a shared leaf "comes back scaled by that count", and a `NoTangent` leaf has no
-    # count.
-    function _any_shared_storage!(s::_StorageSeen, x::Array)
-        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
-        haskey(s.objs, x) && return false
-        _claim_storage!(s, x, getfield(x, :ref).mem) && return true
-        return _any_shared_element!(s, x)
-    end
-    function _any_shared_storage!(s::_StorageSeen, x::Memory)
-        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
-        haskey(s.objs, x) && return false
-        _claim_storage!(s, x, x) && return true
-        return _any_shared_element!(s, x)
-    end
-    # The elements are tangents too, and two of them can share storage while their containers do
-    # not. Guarded on the visited check above, so an array holding itself terminates. A bits element
-    # holds no storage of its own, which is also what keeps a large float array off this path.
-    function _any_shared_element!(s::_StorageSeen, x)
-        isbitstype(eltype(x)) && return false
-        for i in eachindex(x)
-            isassigned(x, i) && _any_shared_storage!(s, x[i]) && return true
-        end
-        return false
-    end
     function _any_shared_storage!(s::_StorageSeen, x::PossiblyUninitTangent)
         return is_init(x) && _any_shared_storage!(s, val(x))
-    end
-    function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
-        return any(v -> _any_shared_storage!(s, v), x)
     end
     function _any_shared_storage!(s::_StorageSeen, x::Union{Tangent,MutableTangent})
         # Register before descending: a self-referential struct (`node.next === node`) otherwise
@@ -672,21 +659,15 @@ end
         return _any_shared_storage!(s, x.fields)
     end
 else
-    # Julia 1.10 has no `Memory`, and — the reason this is a separate implementation rather than a
-    # different `_backing` for the one above — a reshaped array's TANGENT there does not alias its
-    # parent's. Tangent-keyed detection would find nothing, so the sharing has to be read off the
-    # PRIMALS, with the data address standing in for the `Memory` the version lacks.
+    # Julia 1.10 walks the PRIMALS, not the tangents: a reshaped array's tangent there does not
+    # alias its parent's, so tangent-keyed detection would find nothing.
     #
-    # Struct fields are reached BY TANGENT TYPE, not by walking every object's fields: this walk
-    # covers the primals, which include `f`, and a closure capturing a module would otherwise drag
-    # the whole module graph in. A differentiable struct is exactly one whose tangent is a
-    # `Tangent`/`MutableTangent`, which is also how the 1.11+ walk finds them — it sees the tangent
-    # directly and dispatches on it.
-    _any_shared_storage!(s::_StorageSeen, x) = _any_shared_field!(
-        s, x, tangent_type(_typeof(x))
-    )
-    _any_shared_field!(::_StorageSeen, @nospecialize(x), ::Type) = false
-    function _any_shared_field!(s::_StorageSeen, x, ::Type{<:Union{Tangent,MutableTangent}})
+    # Struct fields are reached BY TANGENT TYPE, not by walking every object's fields: the primals
+    # include `f`, and a closure capturing a module would otherwise drag the whole module graph in.
+    # A differentiable struct is exactly one whose tangent is a `Tangent`/`MutableTangent`, which
+    # is also how the 1.11+ walk finds them — it sees the tangent directly and dispatches on it.
+    function _any_shared_storage!(s::_StorageSeen, x)
+        tangent_type(_typeof(x)) <: Union{Tangent,MutableTangent} || return false
         # Only a mutable can be cyclic, and registering an immutable would key an `IdDict` on its
         # CONTENTS, so two distinct-but-equal structs would look visited and the second go unwalked.
         if ismutable(x)
@@ -697,26 +678,6 @@ else
             i -> isdefined(x, i) && _any_shared_storage!(s, getfield(x, i)),
             1:fieldcount(_typeof(x)),
         )
-    end
-
-    function _any_shared_storage!(s::_StorageSeen, x::Array)
-        # Two `Vector{Int}`s over one buffer contribute no dimensions, so sharing among them is not a
-        # reason to refuse anything.
-        (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
-        haskey(s.objs, x) && return false
-        s.objs[x] = nothing
-        # Stable while the array is live, which it is for the whole traversal, and equal for two
-        # arrays over one buffer.
-        store = UInt(pointer(x))
-        haskey(s.backing, store) && return true
-        s.backing[store] = nothing
-        return any(
-            i -> isassigned(x, i) && _any_shared_storage!(s, x[i]),
-            isbitstype(eltype(x)) ? (1:0) : eachindex(x),
-        )
-    end
-    function _any_shared_storage!(s::_StorageSeen, x::Union{Tuple,NamedTuple})
-        return any(v -> _any_shared_storage!(s, v), x)
     end
 end
 
