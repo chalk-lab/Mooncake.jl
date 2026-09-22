@@ -453,15 +453,18 @@ function rrule!!(
     return X_dX, scal_adjoint
 end
 
-# Without this, differentiating `axpy!` traces into its ccall, for which there is no
-# `frule!!` -- reverse mode has a generic ccall fallback that gets away without one, but
-# forward mode does not. Surfaced via SciMLSensitivity.jl#1648 (GaussAdjoint's HVP forward-
-# differentiates its own reverse pass, which calls `axpy!` directly).
+# `BLAS.axpy!` ends at a BLAS foreign call with no Mooncake derivative rule in either mode;
+# this wrapper supplies both, since forward-over-reverse HVP paths invoke `axpy!` directly
+# (e.g. GaussAdjoint's HVP forward-differentiating its own reverse pass, SciMLSensitivity.jl#1648).
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(BLAS.axpy!),Integer,P,X,Integer,X,Integer
-    } where {P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}}}
+        typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
+    } where {
+        P<:BlasFloat,
+        X<:Union{Ptr{P},AbstractArray{P}},
+        Y<:Union{Ptr{P},AbstractArray{P}},
+    }
 )
 function frule!!(
     ::Dual{typeof(BLAS.axpy!)},
@@ -481,9 +484,15 @@ function frule!!(
     X, dX = arrayify(X_dX)
     Y, dY = arrayify(Y_dY)
 
+    # `axpy!(n, a, x, incx, x, incy)` is a legal call with `X === Y`, in which case
+    # Mooncake's aliasing invariant guarantees `dX === dY`. Accumulating `da*X` into `dY`
+    # first would then corrupt the value the second call below reads as `dX`, so copy the
+    # source tangent first whenever that's the case.
+    dX_source = X === Y ? copy(dX) : dX
+
     # Fréchet derivative of Y_new = a*X + Y: dY_new = da*X + a*dX + dY.
     BLAS.axpy!(n, da, X, incx, dY, incy)
-    BLAS.axpy!(n, a, dX, incx, dY, incy)
+    BLAS.axpy!(n, a, dX_source, incx, dY, incy)
 
     # Perform primal computation.
     BLAS.axpy!(n, a, X, incx, Y, incy)
@@ -1691,6 +1700,26 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 randn(rng, P, n * incy),
                 incy,
             )
+        end,
+
+        # axpy!(n, a, x, 1, y, 1) with mismatched X/Y wrapper types (Vector, SubArray,
+        # ReshapedArray, ...) -- the sweep above always pairs same-type Vectors, which
+        # would miss a primitive registration that wrongly ties X and Y to one concrete
+        # type. `circshift` forces the mismatch: `blas_vectors` returns the same sequence
+        # of types every call, so zipping two calls by index would just pair each type with
+        # itself. `only_contiguous=true` since incx=incy=1 below isn't valid for
+        # `blas_vectors`' one non-contiguous entry.
+        let xs = blas_vectors(rng, P, 5; only_contiguous=true)
+            map(xs, circshift(xs, 1)) do x, y
+                (false, :stability, nothing, BLAS.axpy!, 5, randn(rng, P), x, 1, y, 1)
+            end
+        end...,
+
+        # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
+        map_prod([1, 3, 11], [1, 2]) do (n, incx)
+            flags = (false, :stability, nothing)
+            x = randn(rng, P, n * incx)
+            return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
         end,
 
         #
