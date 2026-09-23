@@ -9,6 +9,14 @@ While `Mooncake.jl` should now work on a very large subset of the language, ther
 1. Builtins which require rules. The vast majority of them have rules now, but some don't. You should get a sensible error if you encounter a primitive without a rule.
 1. Anything involving tasks / threading -- we have no thread safety guarantees and, at the time of writing, I'm not entirely sure what error you will find if you attempt to AD through code which uses Julia's task / thread system. The same applies to distributed computing. These limitations ought to be possible to resolve.
 
+## Overlapping complex BLAS operands
+
+Differentiating `BLAS.axpy!` with overlapping complex source and destination memory raises an
+`ArgumentError` in both modes. Some OpenBLAS kernels overwrite a real component before reading
+it for the imaginary update, so the aliased result depends on the backend. This includes passing
+the same array twice, overlapping views, and overlapping raw pointers. Copy the source or use
+an elementwise Julia update when this aliasing is intentional.
+
 ## Numerical Workarounds and Singularities
 
 Numerical workarounds can preserve function values while producing incorrect derivatives under automatic differentiation.

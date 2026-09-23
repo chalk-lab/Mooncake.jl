@@ -525,6 +525,32 @@ end
 # cotangent back. `∇a` and `∇b` contract with the strong zero on the cotangent, as the `gemv!`
 # family does: an entry the output does not depend on must not carry a `NaN` into the scalar
 # gradient.
+# Complex OpenBLAS kernels can read an overwritten real component when X and Y alias.
+# Compare raw walks, including views and pointers; disjoint strided walks remain valid.
+@inline function _axpy_overlaps(x, y, n::Integer, incx::Integer, incy::Integer)
+    n <= 0 && return false
+    px = UInt(x isa Ptr ? x : pointer(x))
+    py = UInt(y isa Ptr ? y : pointer(y))
+    px == py && return true
+    sx, sy = abs(incx) * sizeof(eltype(x)), abs(incy) * sizeof(eltype(y))
+    hx, hy = px + (n - 1) * sx, py + (n - 1) * sy
+    (hx < py || hy < px) && return false
+    sx == sy && return iszero((max(px, py) - min(px, py)) % sx)
+    for i in 0:(n - 1)
+        p = px + i * sx
+        py <= p <= hy && (iszero(sy) || iszero((p - py) % sy)) && return true
+    end
+    return false
+end
+@noinline function _throw_axpy_overlap()
+    throw(
+        ArgumentError(
+            "Mooncake cannot differentiate BLAS.axpy! with overlapping complex source and " *
+            "destination operands: OpenBLAS can overwrite a component before reading it. " *
+            "Pass a copy of the source or use an elementwise Julia update.",
+        ),
+    )
+end
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -545,6 +571,7 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
     x, y, a = primal(X_dX), primal(Y_dY), primal(a_da)
+    P <: Complex && _axpy_overlaps(x, y, n, incx, incy) && _throw_axpy_overlap()
     # `dy := a*dx + da*x + dy`, then the primal ONCE, after every lane has read the original `x`.
     # Broadcast rather than `BLAS.axpy!` on the lane partial: above width 1 a lane is a stride-`Nw`
     # view, which the pointer-based wrapper misreads -- it silently dropped the last element.
@@ -572,10 +599,13 @@ function rrule!!(
 ) where {P<:BlasFloat}
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
     a = primal(a_da)
+    P <: Complex &&
+        _axpy_overlaps(primal(X_dX), primal(Y_dY), n, incx, incy) &&
+        _throw_axpy_overlap()
     x, dx = viewify(n, X_dX, incx)
     y, dy = viewify(n, Y_dY, incy)
-    # Restore from a copy, not `y .-= a .* x`: `axpy!(n, a, x, incx, x, incx)` is legal, and there
-    # `x` is the updated `y`, so the subtraction would not recover the old value.
+    # Restore from a copy, not `y .-= a .* x`: the supported real X === Y case updates
+    # `x` too, so the subtraction would not recover the old value.
     y_copy = copy(y)
     BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
     function axpy!_pb!!(::NoRData)
@@ -3221,10 +3251,28 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
         # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
         map_prod([1, 3, 11], [1, 2]) do (n, incx)
-            flags = (false, :stability, nothing)
+            opts =
+                P <: Complex ? (throws=(ArgumentError, "overlapping complex"),) : nothing
+            flags = (false, :stability, opts)
             x = randn(rng, P, n * incx)
             return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
         end,
+        (
+            if P <: Complex
+                x = randn(rng, P, 4)
+                [(
+                    false,
+                    :none,
+                    (throws=(ArgumentError, "overlapping complex"),),
+                    BLAS.axpy!,
+                    P(2),
+                    view(x, 1:3),
+                    view(x, 2:4),
+                )]
+            else
+                []
+            end
+        )...,
 
         #
         # BLAS LEVEL 2
