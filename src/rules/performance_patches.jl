@@ -68,19 +68,16 @@ end
 # Selecting from the primal avoids a per-element NDual fold. The NDualArray methods
 # preserve the ties: maximum credits the last maximum, minimum the first minimum.
 # Forward only; reverse uses derived rules.
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(maximum),Array{<:IEEEFloat}}
-function frule!!(
-    ::Lifted{typeof(maximum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
-) where {N,P<:IEEEFloat,D}
-    dy = maximum(tangent(x))
-    return Lifted{P,N}(dy.value, dy)
-end
-@is_primitive MinimalCtx ForwardMode Tuple{typeof(minimum),Array{<:IEEEFloat}}
-function frule!!(
-    ::Lifted{typeof(minimum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
-) where {N,P<:IEEEFloat,D}
-    dy = minimum(tangent(x))
-    return Lifted{P,N}(dy.value, dy)
+for f in (maximum, minimum)
+    @eval begin
+        @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),Array{<:IEEEFloat}}
+        function frule!!(
+            ::Lifted{typeof($f),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
+        ) where {N,P<:IEEEFloat,D}
+            dy = $f(tangent(x))
+            return Lifted{P,N}(dy.value, dy)
+        end
+    end
 end
 
 # Performance issue: https://github.com/chalk-lab/Mooncake.jl/issues/156
@@ -447,12 +444,11 @@ end
 # Symmetric/Hermitian conversion uses LAPACK, which requires stride-1 columns.
 # Materialise the parent first: element-major lanes have stride N.
 @inline _kron_densify(z::AbstractMatrix) = convert(Matrix, z)
-@inline _kron_densify(z::Symmetric) = convert(
-    Matrix, Symmetric(Matrix(parent(z)), Symbol(z.uplo))
-)
-@inline _kron_densify(z::Hermitian) = convert(
-    Matrix, Hermitian(Matrix(parent(z)), Symbol(z.uplo))
-)
+for Wrapper in (Symmetric, Hermitian)
+    @eval @inline _kron_densify(z::$Wrapper) = convert(
+        Matrix, $Wrapper(Matrix(parent(z)), Symbol(z.uplo))
+    )
+end
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
     x1::Lifted{<:AbstractVecOrMat{T},N},
@@ -495,34 +491,27 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             return (flags..., sum, randn(rng, P, sz...))
         end,
 
-        # Forward-only primitive; repeated extrema below pin the tie conventions.
-        map(precisions) do P
-            flags = (
-                P == Float16 ? true : false, :stability_and_allocs, (mode=ForwardMode,)
+        # Forward-only primitives. Finite differences cannot resolve ties, so pinned
+        # width-1 tangents credit the LAST maximum and FIRST minimum (skip_chunked).
+        map((maximum, minimum)) do f
+            vcat(
+                map(precisions) do P
+                    flags = (P == Float16, :stability_and_allocs, (mode=ForwardMode,))
+                    return (flags..., f, randn(rng, P, 11))
+                end,
+                map([Float64, Float32]) do P
+                    value, deriv = f === maximum ? (3, 40) : (1, 20)
+                    opts = (
+                        mode=ForwardMode,
+                        oracle=(value=P(value), deriv=P(deriv)),
+                        skip_chunked=true,
+                    )
+                    values = f === maximum ? P[1, 3, 2, 3] : P[3, 1, 2, 1]
+                    x = CoDual(values, P[10, 20, 30, 40])
+                    return (false, :none, opts, f, x)
+                end,
             )
-            return (flags..., maximum, randn(rng, P, 11))
-        end,
-        # Finite differences cannot resolve ties; pinned partials credit the LAST maximum.
-        # The fixed Vector tangent is width 1 only (skip_chunked).
-        map([Float64, Float32]) do P
-            opts = (mode=ForwardMode, oracle=(value=P(3), deriv=P(40)), skip_chunked=true)
-            x = CoDual(P[1.0, 3.0, 2.0, 3.0], P[10.0, 20.0, 30.0, 40.0])
-            return (false, :none, opts, maximum, x)
-        end,
-
-        # minimum(x), the mirror of the two `maximum` groups above.
-        map(precisions) do P
-            flags = (
-                P == Float16 ? true : false, :stability_and_allocs, (mode=ForwardMode,)
-            )
-            return (flags..., minimum, randn(rng, P, 11))
-        end,
-        # Minimum credits the FIRST tied element, unlike maximum.
-        map([Float64, Float32]) do P
-            opts = (mode=ForwardMode, oracle=(value=P(1), deriv=P(20)), skip_chunked=true)
-            x = CoDual(P[3.0, 1.0, 2.0, 1.0], P[10.0, 20.0, 30.0, 40.0])
-            return (false, :none, opts, minimum, x)
-        end,
+        end...,
 
         # sum(view(x, a:b))
         map(precisions) do P
@@ -579,50 +568,25 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 UpperTriangular(randn(rng, P, 3, 3)),
             )
         end,
-        # Symmetric lanes need densification before LAPACK; reverse folds onto the stored
-        # triangle. One strided operand is required; both-Symmetric is tested as derived.
-        map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
-                kron,
-                Symmetric(randn(rng, P, 3, 3)),
-                randn(rng, P, 4, 2),
-            )
-        end,
-        map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
-                kron,
-                randn(rng, P, 3, 4),
-                Symmetric(randn(rng, P, 3, 3), :L),
-            )
-        end,
-
-        # A real `Hermitian` reaches the same two paths through its own `arrayify` overload.
-        map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
-                kron,
-                Hermitian(randn(rng, P, 3, 3)),
-                randn(rng, P, 4, 2),
-            )
-        end,
-        map([Float64, Float32]) do P
-            return (
-                false,
-                :none,
-                nothing,
-                kron,
-                randn(rng, P, 3, 4),
-                Hermitian(randn(rng, P, 3, 3), :L),
-            )
-        end,
+        # Symmetric/Hermitian lanes need densification before LAPACK; reverse folds
+        # onto the stored triangle. Both-Symmetric stays derived and is tested below.
+        map((
+            (Symmetric, (3, 3), identity, (4, 2)),
+            (identity, (3, 4), x -> Symmetric(x, :L), (3, 3)),
+            (Hermitian, (3, 3), identity, (4, 2)),
+            (identity, (3, 4), x -> Hermitian(x, :L), (3, 3)),
+        )) do (wrap1, sz1, wrap2, sz2)
+            map([Float64, Float32]) do P
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    kron,
+                    wrap1(randn(rng, P, sz1...)),
+                    wrap2(randn(rng, P, sz2...)),
+                )
+            end
+        end...,
 
         # permutedims(x)
         map([Float64, Float32]) do P
@@ -674,86 +638,27 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 )
             end
         end...,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                randn(rng, P, 5, 5),
-                UpperTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                randn(rng, P, 5, 5),
-                LowerTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                UpperTriangular(randn(rng, P, 5, 5)),
-                LowerTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                randn(rng, P, 5, 5),
-                UnitUpperTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                randn(rng, P, 5, 5),
-                UnitLowerTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                UnitUpperTriangular(randn(rng, P, 5, 5)),
-                UnitLowerTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                view(randn(rng, P, 5, 5), 1:5, 1:5),
-                LowerTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
-        map(precisions) do (P)
-            return (
-                false,
-                :none,
-                nothing,
-                LinearAlgebra.kron,
-                view(randn(rng, P, 5, 5), 1:5, 1:5),
-                UpperTriangular(randn(rng, P, 10, 10)),
-            )
-        end,
+        map((
+            (identity, UpperTriangular),
+            (identity, LowerTriangular),
+            (UpperTriangular, LowerTriangular),
+            (identity, UnitUpperTriangular),
+            (identity, UnitLowerTriangular),
+            (UnitUpperTriangular, UnitLowerTriangular),
+            (x -> view(x, 1:5, 1:5), LowerTriangular),
+            (x -> view(x, 1:5, 1:5), UpperTriangular),
+        )) do (wrap1, wrap2)
+            map(precisions) do P
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    LinearAlgebra.kron,
+                    wrap1(randn(rng, P, 5, 5)),
+                    wrap2(randn(rng, P, 10, 10)),
+                )
+            end
+        end...,
         # Diagonal operand: the reverse pullback must fold only the diagonal of the dense
         # gradient into the `Diagonal` fdata (off-diagonal are structural zeros, dropped).
         map(precisions) do (P)

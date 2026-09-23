@@ -29,12 +29,10 @@
     @testset "_kron! is_primitive is per-mode (complex derived, Float16 reverse kept)" begin
         W = Base.get_world_counter()
         ksig(T) = Tuple{typeof(LinearAlgebra._kron!),Matrix{T},Matrix{T},Matrix{T}}
-        # Complex: forward primitive (wrapped-BlasFloat frule), reverse derived (no complex rrule).
-        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ForwardMode, ksig(ComplexF64), W)
-        @test !Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, ksig(ComplexF64), W)
-        # Float16: primitive in both modes (dense forward frule; real reverse rrule via arrayify).
-        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ForwardMode, ksig(Float16), W)
-        @test Mooncake.is_primitive(DefaultCtx, Mooncake.ReverseMode, ksig(Float16), W)
+        for T in (ComplexF64, Float16), mode in (Mooncake.ForwardMode, Mooncake.ReverseMode)
+            @test Mooncake.is_primitive(DefaultCtx, mode, ksig(T), W) ==
+                (T === Float16 || mode === Mooncake.ForwardMode)
+        end
 
         # Complex reverse-mode kron must run (via derived mode), not `MethodError`.
         fc(A, B) = sum(abs2, kron(A, B))
