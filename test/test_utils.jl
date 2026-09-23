@@ -1,3 +1,20 @@
+# Capture harness assertion failures; registry `throws` cases assert rule exceptions instead.
+struct OracleTestSet <: Test.AbstractTestSet
+    results::Vector{Any}
+end
+OracleTestSet(description) = OracleTestSet(Any[])
+Test.record(ts::OracleTestSet, result) = push!(ts.results, result)
+function Test.finish(ts::OracleTestSet)
+    parent = Test.get_testset()
+    parent isa OracleTestSet && Test.record(parent, ts)
+    return ts
+end
+function oracle_result_count(ts, T)
+    sum(ts.results; init=0) do result
+        result isa Test.AbstractTestSet ? oracle_result_count(result, T) : result isa T
+    end
+end
+
 @testset "test_utils" begin
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
@@ -278,9 +295,33 @@
         @test_throws ArgumentError run((vlaue=6.0,))
         @test_throws ArgumentError run((value=6.0, extra=1))
         @test_throws ArgumentError run(6.0)
-        # A well-formed one is accepted, and the checks that are not the finite-difference
-        # comparison still run — its own assertions register in this testset.
+        # A value-only reference still validates derivatives by finite differences.
         run((value=6.0,))
+        bad_frule(args...) = Lifted{Float64,1}(
+            4.0, Mooncake.Nfwd.NDual{Float64,1}(4.0, (0.0,))
+        )
+        bad_rrule(args...) = (zero_fcodual(4.0), dy -> (NoRData(), 0.0 * dy))
+        for (mode, kwargs) in (
+            (ForwardMode, (; frule=bad_frule)),
+            (ReverseMode, (; rrule=bad_rrule, output_tangent=1.0)),
+        )
+            TestUtils._test_mode_filter() in (nothing, mode) || continue
+            captured = @testset OracleTestSet "partial oracle" begin
+                test_rule(
+                    Xoshiro(1),
+                    x -> x^2,
+                    2.0;
+                    mode,
+                    print_results=false,
+                    perf_flag=:none,
+                    is_primitive=false,
+                    oracle=(value=4.0,),
+                    kwargs...,
+                )
+            end
+            @test oracle_result_count(captured, Test.Fail) == 1
+            @test oracle_result_count(captured, Test.Error) == 0
+        end
     end
 
     @testset "forward chunk widths" begin

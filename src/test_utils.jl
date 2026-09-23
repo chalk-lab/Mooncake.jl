@@ -680,9 +680,10 @@ function test_frule_correctness(
             ),
         )
     end
-    # A case with a supplied reference skips the sweep: finite differences are inapplicable
-    # by definition there, and perturbing a NaN or infinite operand is what it cannot survive.
-    isnothing(oracle) || empty!(ε_list)
+    # Only a derivative reference replaces finite differences; a value-only oracle still
+    # needs the sweep to validate the derivative.
+    use_fd = isnothing(oracle) || !haskey(oracle, :deriv)
+    use_fd || empty!(ε_list)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -749,7 +750,7 @@ function test_frule_correctness(
             atol=atol,
         )
     end
-    if isnothing(oracle) && !any(isapprox_results)
+    if use_fd && !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ_fd, ẋ_fd = result
             (
@@ -761,7 +762,7 @@ function test_frule_correctness(
     end
     # The reference replaces the finite-difference comparison and nothing else: the input,
     # output-primal and aliasing checks above hold either way.
-    isnothing(oracle) && @test any(isapprox_results)
+    use_fd && @test any(isapprox_results)
     return nothing
 end
 
@@ -1320,8 +1321,9 @@ function test_rrule_correctness(
             ),
         )
     end
-    # Skipped when a reference is supplied: see the forward counterpart.
-    isnothing(oracle) || empty!(ε_list)
+    # Only a derivative reference replaces finite differences, as in the forward check.
+    use_fd = isnothing(oracle) || !haskey(oracle, :deriv)
+    use_fd || empty!(ε_list)
     fd_results = Vector{Any}(undef, length(ε_list))
     for (n, ε) in enumerate(ε_list)
         x′_l = _add_to_primal(x, _scale(ε, ẋ), unsafe_perturb)
@@ -1390,7 +1392,7 @@ function test_rrule_correctness(
             atol=atol,
         )
     end
-    if isnothing(oracle) && !any(isapprox_results)
+    if use_fd && !any(isapprox_results)
         vals = map(fd_results) do result
             ẏ, ẋ_post = result
             (_dot(ȳ_delta, ẏ) + _dot(x̄_delta, ẋ_post), _dot(x̄, ẋ))
@@ -1399,7 +1401,7 @@ function test_rrule_correctness(
         println()
     end
     # The reference replaces the finite-difference comparison and nothing else.
-    isnothing(oracle) && @test any(isapprox_results)
+    use_fd && @test any(isapprox_results)
 end
 
 get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
@@ -1905,10 +1907,11 @@ definition. See the keyword below.
 
 - `oracle=nothing`: a `NamedTuple` pinning the expected result where finite differences
     cannot — `value`, `deriv`, or both, and an optional `cmp` comparator (`isequal` by
-    default, which is what separates a NaN or a signed zero). It replaces the
-    finite-difference comparison alone; the input, output-primal and aliasing checks still
-    run. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent seed is random
-    and the reference is unpinned.
+    default, which is what separates a NaN or a signed zero). Only `deriv` replaces the
+    finite-difference comparison; a value-only oracle still checks the derivative with finite
+    differences. The input, output-primal and aliasing checks always run, including with a
+    derivative-only oracle. A reverse-mode `deriv` needs `output_tangent` too, or the cotangent
+    seed is random and the reference is unpinned.
 - `throws=nothing`: assert the rule fails loudly — an exception type, a message fragment, or
     a `(type, message)` tuple, which is what `@test_throws` alone cannot express.
 - `primal_throws=nothing`: as `throws`, but for a primal that itself raises.
