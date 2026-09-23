@@ -124,7 +124,7 @@ end
 @testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
     # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
     # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
-    # threw a MethodError. The NoDual fallback must wrap it and return a NoDual-V Lifted.
+    # threw a MethodError. The NoDual fallback must return the canonical array V.
     # Use a `Vector{UInt8}` (not `Memory`, which is Julia 1.11+) so this runs on the LTS too; `buf`
     # is kept alive for the duration of the testset, so `p` stays valid.
     buf = UInt8[1, 2, 3, 4]
@@ -136,7 +136,7 @@ end
             Mooncake.zero_lifted(Val(N), p),
             Mooncake.zero_lifted(Val(N), (4,)),
         )
-        @test Mooncake.tangent(out) isa Mooncake.NoDual
+        @test typeof(Mooncake.tangent(out)) === Mooncake.dual_type(Val(N), Vector{UInt8})
         @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
     end
 end

@@ -291,7 +291,7 @@ end
 
 # Non-differentiable pointer element: `dual_type(Ptr{T}) === NoDual` when `T` is non-differentiable
 # (e.g. `Ptr{UInt8}` from String/IO wrapping, `Ptr{Int}`), so the lifted pointer's V is `NoDual` and
-# the wrapped array's element type is non-differentiable too — its canonical V is `NoDual`. The broad
+# the wrapped array's canonical V is an array of `NoDual` elements. The broad
 # `@is_primitive` covers every `Ptr` and the reverse rule handles all `T`, so without this the forward
 # rule's method coverage is narrower than its `@is_primitive` (a MethodError at call time). Mirrors the
 # `NoDual` fallbacks on the sibling pointer rules (pointerref/pointerset/unsafe_copyto!).
@@ -314,7 +314,7 @@ function frule!!(
         ),
     )
     arr = unsafe_wrap(Array, primal(p), primal(dims))
-    return Lifted{typeof(arr),Nw}(arr, NoDual())
+    return Lifted{typeof(arr),Nw}(arr, zero_dual(Val(Nw), arr))
 end
 
 # `unsafe_wrap` guard: a differentiable pointer element that is neither a scalar float/complex
@@ -2416,6 +2416,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
             ),
             1,
         ),
+        (true, :stability, nothing, unsafe_wrap, Array, CoDual(q, dq), 3),
     ]
 
     if VERSION > v"1.12-"
@@ -2682,6 +2683,13 @@ function derived_rule_test_cases(rng_ctor, ::Val{:builtins})
         # is correct (see the explicit value_and_gradient!! testset in test/rules/builtins.jl).
         (true, :none, (skip_forward=true,), f_pointerset, CoDual(3.0, 1.0)),
         (true, :none, (skip_forward=true,), f_atomic_pointerset, CoDual(3.0, 1.0)),
+        (
+            false,
+            :none,
+            nothing,
+            x -> (GC.@preserve x Tuple(unsafe_wrap(Array, pointer(x), length(x)))),
+            [1, 2],
+        ),
         (false, :none, nothing, getindex, randn(5), [1, 1]),
         (false, :none, nothing, getindex, randn(5), [1, 2, 2]),
         (false, :none, nothing, setindex!, randn(5), [4.0, 5.0], [1, 1]),
