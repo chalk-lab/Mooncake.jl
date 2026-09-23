@@ -32,39 +32,15 @@
         @test grad_g[2] == 12.0
     end
 
-    # Check inner value coherence explicitly: scaling the whole dual corrupts V.value.
-    @testset "llvm.powi forward NDual.value coherence" begin
-        fc = Mooncake._foreigncall_
-        nm = Symbol("llvm.powi.f64.i32")
-        L(T, N, v) = Lifted{T,N}(v, Mooncake.NoDual())
-        xL(N, parts) = Lifted{Float64,N}(2.0, Mooncake.Nfwd.NDual{Float64,N}(2.0, parts))
-        @testset "width $N" for N in (1, 2, 3)
-            parts = ntuple(k -> Float64(k), N)
-            r = Mooncake.frule!!(
-                L(typeof(fc), N, fc),
-                L(Val{nm}, N, Val(nm)),
-                L(Val{Float64}, N, Val(Float64)),
-                L(Tuple{Val{Float64},Val{Int32}}, N, (Val(Float64), Val(Int32))),
-                L(Val{0}, N, Val(0)),
-                L(Val{:llvmcall}, N, Val(:llvmcall)),
-                xL(N, parts),
-                L(Int32, N, Int32(3)),
-                L(Int32, N, Int32(3)),
-                xL(N, parts),
-            )
-            iv = tangent(r)
-            @test iv.value == 2.0^3                                    # V.value === primal result
-            @test all(iv.partials .≈ ntuple(k -> 12.0 * parts[k], N))  # d/dx x^3 = 3x^2 = 12
-        end
-    end
-
-    # Inactive lanes must stay zero at infinite gradients, where 0 * Inf would be NaN.
-    @testset "llvm.powi inactive-lane guard at x=0 negative exponent" begin
+    # Check inner value coherence and inactive lanes at infinite gradients explicitly.
+    @testset "llvm.powi forward (x=$x, n=$n, width $N)" for (N, x, n) in (
+        (1, 2.0, Int32(3)), (2, 2.0, Int32(3)), (3, 2.0, Int32(3)), (2, 0.0, Int32(-2))
+    )
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")
         L(T, N, v) = Lifted{T,N}(v, Mooncake.NoDual())
         xL(N, x, parts) = Lifted{Float64,N}(x, Mooncake.Nfwd.NDual{Float64,N}(x, parts))
-        N = 2
+        parts = n == 3 ? ntuple(k -> Float64(k), N) : (1.0, 0.0)
         r = Mooncake.frule!!(
             L(typeof(fc), N, fc),
             L(Val{nm}, N, Val(nm)),
@@ -72,13 +48,18 @@
             L(Tuple{Val{Float64},Val{Int32}}, N, (Val(Float64), Val(Int32))),
             L(Val{0}, N, Val(0)),
             L(Val{:llvmcall}, N, Val(:llvmcall)),
-            xL(N, 0.0, (1.0, 0.0)),
-            L(Int32, N, Int32(-2)),
-            L(Int32, N, Int32(-2)),
-            xL(N, 0.0, (1.0, 0.0)),
+            xL(N, x, parts),
+            L(Int32, N, n),
+            L(Int32, N, n),
+            xL(N, x, parts),
         )
-        # Lane 2 (zero seed) must be exactly 0.0, not NaN, despite grad = ±Inf at the pole.
-        @test tangent(r).partials[2] == 0.0
+        iv = tangent(r)
+        if n == 3
+            @test iv.value == 2.0^3
+            @test all(iv.partials .≈ ntuple(k -> 12.0 * parts[k], N))
+        else
+            @test iv.partials[2] == 0.0
+        end
     end
 
     # Zero cotangents must stay zero at infinite gradients.

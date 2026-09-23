@@ -810,34 +810,19 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         # would require an objref tag outside the canonical NTuple{N,Ptr{T}} contract.
         # This conservative refusal is intentional until that representation changes.
         (
-            false,
-            :none,
-            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
-            x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
-            _x,
-        ),
-        (
-            false,
-            :none,
-            (lb=0.1, ub=150, mode=ReverseMode),
-            x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
-            _x,
-        ),
-        # Writes through the recovered alias must reach the original partials storage.
-        (
-            false,
-            :none,
-            (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
-            x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
-            _x,
-        ),
-        (
-            false,
-            :none,
-            (lb=0.1, ub=150, mode=ReverseMode),
-            x -> (r=unsafe_pointer_to_objref(pointer_from_objref(x)); r[]=r[] * 3.0; x[]),
-            _x,
-        ),
+            (false, :none, opts, f, _x) for f in (
+                x -> unsafe_pointer_to_objref(pointer_from_objref(x)),
+                # Writes through the recovered alias must reach the original partials storage.
+                x -> (
+                    r=unsafe_pointer_to_objref(pointer_from_objref(x));
+                    r[]=r[] * 3.0;
+                    x[]
+                ),
+            ) for opts in (
+                (throws=(ArgumentError, "invisible to the optimiser"), mode=ForwardMode),
+                (lb=0.1, ub=150, mode=ReverseMode),
+            )
+        )...,
         (false, :none, nothing, isassigned, randn(5), 4),
         (false, :none, nothing, copy, Dict{Any,Any}("A" => [5.0], [3.0] => 5.0)),
         (false, :none, nothing, x -> (Base._growbeg!(x, 2); x[1:2].=2.0), randn(5)),
