@@ -15,13 +15,9 @@
 #   improvement over what we currently have, and helps to prevent the addition of flakey
 #   rules which cause robustness or correctness problems.
 
-# Fold the `L` lane-tangents of a chunked `NDualArray` from its contiguous element-major partials
-# block (1.11+): each element's `L` lanes are one contiguous `NTuple{L,P}` column, so
-# `reinterpret`+tuple-add vectorises across lanes (packed `<L x double>`), 5–6× over the stride-`L`
-# per-lane `tangent_view` reductions. `s` stays a plain scalar — a 3-arg tuple `muladd` boxes, so
-# scale-then-add is kept split.
-# Bind only `L` (not the element type): `NTuple{L,P}` degenerates to `Tuple{}` at `L=0`, which
-# mentions no `P`, so a `where {L,P}` there trips Aqua's unbound-args check.
+# Contiguous NTuple lane loads vectorise across lanes. Keep scalar scale and tuple add
+# separate: three-argument tuple muladd boxes.
+# Bind only L: NTuple{L,P} becomes Tuple{} at L=0, leaving P unbound.
 @inline _tadd(a::NTuple{L}, b::NTuple{L}) where {L} = ntuple(i -> a[i] + b[i], Val(L))
 @inline _tscale(a::NTuple{L}, s) where {L} = ntuple(i -> a[i] * s, Val(L))
 
@@ -31,23 +27,15 @@ function frule!!(
     ::Lifted{typeof(sum),N},
     x::Lifted{Array{P,D},N,<:NDualArray{P,N,D,Array{P,D},NDual{P,N}}},
 ) where {N,P<:IEEEFloat,D}
-    # Lane-`k` derivative is `Σᵢ blockₖᵢ` (∂(Σx)/∂partialₖ): fold the contiguous element-major
-    # block across lanes. Reinterpreting the flat parent to `NTuple{N,P}` loads each element's
-    # lane column in one wide load; `N` separate scalar loads costs ~2x at width 8. Stack-only /
-    # 0-alloc, as the `:allocs` test requires.
+    # Wide tuple loads avoid N scalar loads per element and keep the fold allocation-free.
     nda = tangent(x)
     pv = sum(getfield(nda, :primal))
     blk = getfield(getfield(nda, :partials_block), :parent)
     lanes = if N == 1
-        # One lane makes the tuple fold a single serial accumulator chain, which cannot vectorise:
-        # ~0.45ns per element against the primal's ~0.05ns. At width 1 the block's flat parent IS
-        # that lane, so `sum` applies directly and brings its own pairwise SIMD reduction. Wider
-        # chunks already get instruction-level parallelism from their `N` independent lane chains.
+        # At width 1 the flat block is the lane; sum supplies a pairwise SIMD reduction.
         (sum(blk),)
     else
-        # Four accumulators, not one: a single chain gives the CPU only `N` independent adds to
-        # overlap, which is latency-bound at small widths (width 2 sat at ~5.5x the primal per
-        # lane). Unrolling by four gives it `4N`.
+        # Four accumulators provide 4N independent adds, avoiding small-width latency stalls.
         cols = reinterpret(NTuple{N,P}, blk)
         z = ntuple(_ -> zero(P), Val(N))
         a1, a2, a3, a4 = z, z, z, z
@@ -77,16 +65,9 @@ function rrule!!(::CoDual{typeof(sum)}, x::CoDual{<:Array{P}}) where {P<:IEEEFlo
     return zero_fcodual(sum(identity, x.x)), sum_pb!!
 end
 
-# The transform folds `max`/`min` over the array, building one `NDual` per element; scanning the
-# plain primal for the arg-extreme and taking a single `getindex` is several times faster at 1024
-# elements, at both width 1 and width 8, because the fold's cost is in the per-element `NDual`s
-# rather than the lanes. `Base.maximum(::NDualArray)` and `Base.minimum(::NDualArray)` already
-# perform exactly that select, with the tie handling this needs, so the rules only wrap them. The
-# two tie conventions differ, and the registry rows pin both: `max` credits the LAST maximal
-# element, `min` the FIRST minimal one.
-#
-# FORWARD ONLY. Reverse mode reaches both through its derived path and is not the bottleneck here; a
-# reverse primitive would need an `rrule!!` in lockstep with these declarations.
+# Selecting from the primal avoids a per-element NDual fold. The NDualArray methods
+# preserve the ties: maximum credits the last maximum, minimum the first minimum.
+# Forward only; reverse uses derived rules.
 @is_primitive MinimalCtx ForwardMode Tuple{typeof(maximum),Array{<:IEEEFloat}}
 function frule!!(
     ::Lifted{typeof(maximum),N}, x::Lifted{Array{P,D},N,<:NDualArray{P,N,D}}
@@ -246,12 +227,8 @@ function rrule!!(::CoDual{typeof(permutedims)}, x::CoDual{<:Matrix{P}}) where {P
     return CoDual(y, dy), permutedims_pb!!
 end
 
-# Both `kron` pullbacks contract `dy` against one factor to accumulate into the other. The
-# contraction is dense, so it goes through `densify_tangent` /
-# `increment_densified_tangent!!`. Read as `P x M x Q x N`, both contractions read the same
-# element of `dy`, so a single pass in memory order serves both. A `gemv` per `(q, n)` block
-# is slower at every shape measured: the blocks are small enough that BLAS call overhead
-# dominates.
+# Both pullbacks contract dy in one memory-order pass and fold dense cotangents onto
+# stored entries. Small blocks make per-(q,n) BLAS gemv calls slower than this loop.
 function _kron_pb!(dx1, dx2, dy, px1, px2)
     T = eltype(px1)
     M, N = size(px1)
@@ -275,23 +252,15 @@ function _kron_pb!(dx1, dx2, dy, px1, px2)
 end
 
 # https://github.com/chalk-lab/Mooncake.jl/issues/526
-# Forward mode is split by input shape. Dense inputs (all `Array{T,2}`) are a primitive for every
-# real `IEEEFloat`, including Float16: the dense frule below reads the `NDualArray` partials directly
-# and never touches `arrayify`. Wrapped inputs (Triangular/Symmetric/Adjoint/…) go through the
-# `arrayify` fallback, which only supports `BlasFloat`, so they are a primitive only for `BlasFloat`;
-# a Float16 wrapped input is left non-primitive and handled by derived forward mode rather than
-# crashing inside `arrayify`. Both are `ForwardMode`-only: the `BlasFloat` widening exists purely for
-# the forward wrapper frule and must not touch reverse, whose rrule is real (`IEEEFloat`) only —
-# marking complex `_kron!` a reverse primitive would route complex reverse to a `MethodError`.
+# Dense forward inputs support IEEEFloat; wrapped inputs need arrayify's BlasFloat.
+# Wrapped Float16 stays derived. Keep modes separate: reverse supports only real IEEEFloat.
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),Array{T,2},Array{T,2},Array{T,2}
 } where {T<:IEEEFloat}
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:BlasFloat}
-# Reverse mode: dense and wrapped, real `IEEEFloat` only. `_kron_pb!` accumulates densely and
-# folds the result onto each input's stored entries via `increment_densified_tangent!!`. Complex stays
-# derived.
+# Reverse folds dense cotangents onto stored entries; complex stays derived.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(LinearAlgebra._kron!),AbstractMatrix{T},AbstractMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -310,10 +279,7 @@ function _kron!_jvp_lane!(dout_l, px1, dx1_l, px2, dx2_l)
     return dout_l
 end
 
-# As `_kron!_jvp_lane!`, but writing lane `lane` straight into the element-major block instead of
-# into its own dense array. Element `m`'s lane sits at flat index `(m-1)*N + lane`, and the loop
-# walks output elements in the same order `_kron!` fills them, so the cursor just steps by `N`.
-# This is what keeps the allocating `kron` frule from paying an output-sized temporary per lane.
+# Write lane k at (m-1)*N+k in fill order, avoiding an output-sized temporary per lane.
 function _kron!_jvp_lane_into_block!(
     blk, lane::Int, ::Val{N}, px1, dx1_l, px2, dx2_l
 ) where {N}
@@ -329,11 +295,8 @@ function _kron!_jvp_lane_into_block!(
     return blk
 end
 
-# Block form of the per-lane JVP: writes all `N` lanes of each output element in one pass over
-# the contiguous element-major partials blocks, so the length-`N` lane write vectorises (packed
-# `<N x double>`). Blocks are `(N, size...)`; reinterpret their flat parents to `NTuple{N,T}`
-# columns, linear-indexed in the same column-major `(j,l,i,k)` order `_kron!` fills. ~6× the
-# stride-`N` per-lane loop.
+# Tuple columns of the (N, size...) blocks vectorise the contiguous lane writes;
+# linear indices follow _kron!'s column-major (j,l,i,k) fill order.
 function _kron!_jvp_block!(outb, px1, x1b, px2, x2b, ::Val{N}) where {N}
     outc = reinterpret(NTuple{N,eltype(outb)}, getfield(outb, :parent))
     d1c = reinterpret(NTuple{N,eltype(x1b)}, getfield(x1b, :parent))
@@ -352,9 +315,7 @@ function _kron!_jvp_block!(outb, px1, x1b, px2, x2b, ::Val{N}) where {N}
     return outb
 end
 
-# Dense fast path: read each lane's partials directly off the `NDualArray` V; the primal
-# `LinearAlgebra._kron!(pout, px1, px2)` runs once. Covers every real `IEEEFloat` (including
-# Float16, which `arrayify` does not support). Only the matrix (D=2) input shape is supported.
+# Direct block access supports Float16 without arrayify; the primal runs once.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{Aout,N,<:NDualArray{T,N,2,Aout}},
@@ -376,13 +337,7 @@ function Mooncake.frule!!(
     return out
 end
 
-# Wrapper fallback: the broad `@is_primitive` admits wrapped inputs (SubArray/Triangular/
-# Symmetric/Reshaped/…) whose forward V is the generic struct lift, not `NDualArray`, so the dense
-# method above does not match — without this they would `MethodError` at call time while the reverse
-# `_kron!` rrule handles them. `arrayify` canonicalises the primal and each lane's partial through
-# the wrapper (no copy), mirroring the reverse rrule and the forward `kron` frule. `BlasFloat` only
-# (what `arrayify` supports); the dense method is strictly more specific, so dense inputs still take
-# it, and dense `out` paired with a wrapped input routes here.
+# Struct-lift wrappers need arrayify (BlasFloat only); dense inputs take the method above.
 function Mooncake.frule!!(
     ::Lifted{typeof(LinearAlgebra._kron!),N},
     out::Lifted{<:AbstractMatrix{T},N},
@@ -427,14 +382,9 @@ end
 # Using the rule for `_kron!` above makes performance on `kron` better, but still not as
 # good as it _could_ be. To maximise performance we need a rule specifically for `kron`
 # itself. See https://github.com/chalk-lab/Mooncake.jl/pull/886
-# Primitive only when the output is a dense `Array` — i.e. at least one operand is strided.
-# `kron` preserves structure (returns `UpperTriangular`/`Diagonal`/… whose canonical tangent is a
-# wrapper, not the dense matrix this rule builds) exactly when BOTH operands are the same
-# structured wrapper; those cases route to the derived rule instead. The strided×strided
-# declaration is the intersection of the other two, so "≥1 strided operand" carries no
-# `_is_primitive` ambiguity. The derived forward path builds the canonical wrapper dual; the
-# reverse pullbacks accumulate densely and fold onto a structured fdata via
-# `increment_densified_tangent!!`, keeping only the wrapper's stored entries.
+# At least one strided operand guarantees dense output; matching structured wrappers
+# can return structured output and must stay derived. The strided×strided intersection
+# prevents primitive ambiguity. Reverse folds dense cotangents onto stored entries.
 @is_primitive DefaultCtx ReverseMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:IEEEFloat}
@@ -460,15 +410,8 @@ function Mooncake.rrule!!(
     return CoDual(y, dy), kron_pb!!
 end
 
-# Forward analogue of the `kron` rrule above: make `kron` a forward primitive too (mirrors the
-# reverse one declared for `ReverseMode`). `arrayify` canonicalises each lane's tangent through the
-# input wrapper (Matrix/SubArray/Triangular/…) to a dense partial, then the bilinear product rule
-# gives the JVP per lane: `d(kron(x1,x2))ₖ = kron(dx1ₖ, x2) + kron(x1, dx2ₖ)`. Restricted to real
-# `BlasFloat` (what `arrayify` and the real `NDualArray{…,NDual{T,N}}` packing support; the tested
-# precisions). Float16 / complex `kron` stay derived in forward mode.
-# Primitive only for dense `Array` output (≥1 strided operand); structure-preserving kron (both
-# the same structured wrapper) falls back to the derived rule, which builds the canonical
-# `ImmutableDual` this dense rule cannot. Strided×strided is the intersection — no ambiguity.
+# Forward needs real BlasFloat for arrayify and NDualArray packing; Float16/complex
+# stay derived. As in reverse, require dense output and declare the strided intersection.
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(kron),StridedMatrix{T},AbstractMatrix{T}
 } where {T<:Union{Float32,Float64}}
@@ -478,10 +421,8 @@ end
 @is_primitive DefaultCtx ForwardMode Tuple{
     typeof(kron),StridedMatrix{T},StridedMatrix{T}
 } where {T<:Union{Float32,Float64}}
-# Dense fast path. Both operands' partials blocks exist, so `_kron!_jvp_block!` can store all `N`
-# lanes of an output element in one contiguous write; the generic method below writes lane by lane
-# at stride `N`, which grows cache-unfriendly with width (12.3x the primal per lane at width 8
-# against 4.4x at width 1). A wrapped operand has no block of its own and keeps the generic path.
+# Dense operands have partials blocks, allowing contiguous writes across all lanes.
+# Wrapped operands keep the generic path because they have no block of their own.
 function Mooncake.frule!!(
     ::Lifted{typeof(kron),N},
     x1::Lifted{Matrix{T},N,<:NDualArray{T,N,2,Matrix{T}}},
@@ -503,11 +444,8 @@ function Mooncake.frule!!(
     return Lifted{A,N}(y, V)
 end
 
-# `convert(Matrix, ::Symmetric)` goes through `copytrito!` and LAPACK's `lacpy!`, which demands
-# stride-1 columns. A lane of the element-major block is a stride-`N` view, so that path threw for
-# every chunk width above 1 -- including the default 8, leaving only an explicit `chunk_size=1`
-# working. Densifying the parent first sidesteps LAPACK; measured over the wrappers `arrayify`
-# admits, `Symmetric` and `Hermitian` are the only two that cannot convert from a strided view.
+# Symmetric/Hermitian conversion uses LAPACK, which requires stride-1 columns.
+# Materialise the parent first: element-major lanes have stride N.
 @inline _kron_densify(z::AbstractMatrix) = convert(Matrix, z)
 @inline _kron_densify(z::Symmetric) = convert(
     Matrix, Symmetric(Matrix(parent(z)), Symbol(z.uplo))
@@ -522,17 +460,12 @@ function Mooncake.frule!!(
 ) where {N,T<:Union{Float32,Float64}}
     px1, dx1s = arrayify(x1)
     px2, dx2s = arrayify(x2)
-    # `_kron_densify` passes dense `Matrix` inputs through unchanged and materialises wrapped
-    # inputs (`view`/`UpperTriangular`/`Symmetric`) once, so the scalar `_kron!_jvp_lane!` loop
-    # below indexes plain arrays instead of paying a per-element wrapper branch.
+    # Materialise wrappers once to avoid per-element branches; dense matrices pass through.
     mx1 = _kron_densify(px1)
     mx2 = _kron_densify(px2)
     y = kron(mx1, mx2)
     A = typeof(y)
-    # Fuse the product rule `d(kron(x1,x2))ₖ = kron(dx1ₖ,x2) + kron(x1,dx2ₖ)` into one pass per
-    # lane, written straight into the result's block. Going via a per-lane array and then packing
-    # cost TWO output-sized allocations per lane, which at chunk width 8 was 87 MB against the
-    # 51 MB the block itself needs, and took the per-lane time from 5x the primal to 35x.
+    # Write the fused JVP into the block to avoid output-sized allocations per lane.
     blk = Nfwd._block_type(A)(undef, Nfwd._block_dims(N, y)...)
     bp = Nfwd._block_storage(blk)
     for k in 1:N
@@ -562,21 +495,15 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             return (flags..., sum, randn(rng, P, sz...))
         end,
 
-        # maximum(x). Forward-only primitive, so the rows pin `mode=ForwardMode`; reverse reaches
-        # `maximum` through its derived path. A vector with a repeated extreme covers the tie the
-        # arg-extreme select has to resolve the same way the `max` fold does.
+        # Forward-only primitive; repeated extrema below pin the tie conventions.
         map(precisions) do P
             flags = (
                 P == Float16 ? true : false, :stability_and_allocs, (mode=ForwardMode,)
             )
             return (flags..., maximum, randn(rng, P, 11))
         end,
-        # A tie, with the partials pinned rather than seeded so the expected derivative is a fixed
-        # number. Finite differences cannot check this row: `maximum` is not differentiable where
-        # two elements tie, so the `oracle` replaces that comparison. The maximal elements are at
-        # indices 2 and 4 and the `max` fold credits the LAST of them, so the derivative is 40;
-        # a select built on `argmax` would return 20 and fail here. `skip_chunked` because a
-        # pinned `Vector` tangent cannot be spread across lanes, and the tie is a width-1 claim.
+        # Finite differences cannot resolve ties; pinned partials credit the LAST maximum.
+        # The fixed Vector tangent is width 1 only (skip_chunked).
         map([Float64, Float32]) do P
             opts = (mode=ForwardMode, oracle=(value=P(3), deriv=P(40)), skip_chunked=true)
             x = CoDual(P[1.0, 3.0, 2.0, 3.0], P[10.0, 20.0, 30.0, 40.0])
@@ -590,10 +517,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
             return (flags..., minimum, randn(rng, P, 11))
         end,
-        # The tie convention is the OPPOSITE of `maximum`'s, which is the part most likely to
-        # regress: the minimal elements are at indices 2 and 4 and the `min` fold credits the
-        # FIRST, so the derivative is 20 where the `maximum` row above expects the last. A select
-        # that mirrored `findlast` would return 40 and fail here.
+        # Minimum credits the FIRST tied element, unlike maximum.
         map([Float64, Float32]) do P
             opts = (mode=ForwardMode, oracle=(value=P(1), deriv=P(20)), skip_chunked=true)
             x = CoDual(P[3.0, 1.0, 2.0, 1.0], P[10.0, 20.0, 30.0, 40.0])
@@ -626,10 +550,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
 
-        # _kron!(x, y) with a strided wrapper input (SubArray): exercises the `arrayify`
-        # fallback frule. The dense-only forward frule matched only `NDualArray` slots, so a
-        # wrapper input (forward V is the generic struct lift) that the broad `@is_primitive` and
-        # the reverse rrule admit would MethodError. `BlasFloat` only (what `arrayify` supports).
+        # SubArray exercises the arrayify fallback, restricted to BlasFloat.
         map([Float64, Float32]) do P
             return (
                 false,
@@ -642,15 +563,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
 
-        # The ALLOCATING `kron`, which the in-place cases above do not reach: it has its own frule
-        # that builds the result's block and writes each lane into it at stride `N`. Registered so
-        # `test_rule` drives it at widths 1 and 8 — the width > 1 path was previously untested, and an
-        # element the lane writer skipped would keep the `undef` the block is allocated with.
-        # `interface_only=false` unlike the `_kron!` cases above: the result here is freshly
-        # allocated, so finite differences are meaningful and the derivative itself is checked.
-        # With `true` these would assert only that the rule runs, which pins none of the above.
-        # `Float32`/`Float64` only: unlike the in-place `_kron!`, the allocating frule is bounded to
-        # those, so `Float16` has no forward primitive and builds a derived rule instead.
+        # Allocating kron has its own block writer: check derivatives at widths 1 and 8.
+        # Only Float32/Float64 are forward primitives; Float16 stays derived.
         map([Float64, Float32]) do P
             return (false, :none, nothing, kron, randn(rng, P, 5, 4), randn(rng, P, 3, 6))
         end,
@@ -665,10 +579,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:performance_patches})
                 UpperTriangular(randn(rng, P, 3, 3)),
             )
         end,
-        # `Symmetric` is the wrapper whose lane partial cannot be densified through LAPACK, so
-        # every width above 1 threw, and whose reverse cotangent needs folding onto the stored
-        # triangle. One operand each here because `@is_primitive` wants a `StridedMatrix` on one
-        # side; both-`Symmetric` is not primitive and is registered as a derived case instead.
+        # Symmetric lanes need densification before LAPACK; reverse folds onto the stored
+        # triangle. One strided operand is required; both-Symmetric is tested as derived.
         map([Float64, Float32]) do P
             return (
                 false,
@@ -734,14 +646,9 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
     rng = rng_ctor(123)
     precisions = [Float64, Float32]
     test_cases = vcat(
-        # Both operands `Symmetric`: not primitive (the declaration wants a `StridedMatrix` on one
-        # side), and previously untestable at all -- the result is a `Symmetric` whose unstored
-        # triangle Base leaves `undef`, which `has_equal_data` compared until it was taught to read
-        # through the wrapper. `Float32` is `interface_only`, as the `Float32` `det` cases in
-        # `lapack.jl` are: the finite-difference oracle cannot resolve this composite at that
-        # precision, though the rule is right -- its `Float32` gradient matches a `Float64`
-        # reference to 2.5e-7, and the `Float64` case below checks the same code path against
-        # finite differences.
+        # Both-Symmetric stays derived and leaves the unstored result triangle undef.
+        # Float32 needs interface_only: finite differences cannot resolve this composite;
+        # Float64 checks its derivative.
         map([Float64, Float32]) do P
             return (
                 P == Float32,
@@ -753,11 +660,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:performance_patches})
             )
         end,
 
-        # A COMPLEX `Hermitian`, where the two modes reach the answer differently: forward through
-        # the `_arrayify_lane` wrapper (`Hermitian(dA)` is the JVP), reverse through the derived
-        # path, since folding a complex cotangent onto the stored triangle needs a conjugation
-        # `increment_densified_tangent!!` does not apply. Both are checked here against finite
-        # differences.
+        # Complex Hermitian: forward wraps lanes, reverse stays derived because folding
+        # onto the stored triangle needs conjugation. Check both against finite differences.
         map([ComplexF64, ComplexF32]) do C
             return map([:U, :L]) do uplo
                 return (
