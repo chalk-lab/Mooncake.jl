@@ -332,7 +332,8 @@ Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.par
 # even when the scaled partial is finite.
 Base.exponent(a::NDual) = exponent(a.value)
 @inline function Base.significand(a::NDual{T,N}) where {T,N}
-    e = -exponent(a.value)
+    # At zero and non-finite values, use the same unit-scale convention as `frexp`.
+    e = (iszero(a.value) || !isfinite(a.value)) ? 0 : -exponent(a.value)
     return NDual{T,N}(significand(a.value), map(p -> ldexp(p, e), a.partials))
 end
 @inline function Base.frexp(a::NDual{T,N}) where {T,N}

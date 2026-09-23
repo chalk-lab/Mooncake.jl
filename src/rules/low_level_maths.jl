@@ -1274,7 +1274,8 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(significand)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
-    e = -exponent(_x)
+    # At zero and non-finite values, use the same unit-scale convention as `frexp`.
+    e = (iszero(_x) || !isfinite(_x)) ? 0 : -exponent(_x)
     significand_pb(ȳ::P) = (NoRData(), ldexp(ȳ, e))
     return zero_fcodual(significand(_x)), significand_pb
 end
@@ -1429,6 +1430,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             ]
             return map(case -> (false, :stability_and_allocs, nothing, case...), cases)
         end...,
+        vec(
+            map(Iterators.product([Float16, Float32, Float64], 1:5)) do (P, i)
+                x = (P(0), -P(0), P(Inf), -P(Inf), P(NaN))[i]
+                return (
+                    false,
+                    :none,
+                    (
+                        oracle=(
+                            value=significand(x), deriv=(fwd=P(1), rvs=(NoRData(), P(1)))
+                        ),
+                        output_tangent=P(1),
+                    ),
+                    significand,
+                    CoDual(x, P(1)),
+                )
+            end,
+        ),
         # `evalpoly` is a FORWARD-only primitive, so these pin `mode=ForwardMode`; reverse reaches
         # it through its derived path. Coefficients are seeded like any other argument, so the
         # rows cover the derivative with respect to them as well as to `x`. Degree 1 is the
