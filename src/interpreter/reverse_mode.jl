@@ -1244,7 +1244,7 @@ function inc_args(x::PhiCNode)
     end
     return PhiCNode(new_values)
 end
-inc_args(x::UpsilonNode) = UpsilonNode(__inc(x.val))
+inc_args(x::UpsilonNode) = isdefined(x, :val) ? UpsilonNode(__inc(x.val)) : x
 
 __inc(x::Argument) = Argument(x.n + 1)
 __inc(x) = x

@@ -453,7 +453,8 @@ end
 function modify_fwd_ad_stmts!(
     stmt::UpsilonNode, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
-    if !(stmt.val isa Union{Argument,SSAValue})
+    # `ϒ (#undef)` marks a variable that may be unassigned at the catch; it stays undefined.
+    if isdefined(stmt, :val) && !(stmt.val isa Union{Argument,SSAValue})
         stmt = UpsilonNode(const_lifted!(get_const_primal_value(stmt.val), info))
     end
     set_stmt!(dual_ir, ssa, inc_args(stmt))

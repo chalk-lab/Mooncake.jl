@@ -458,6 +458,18 @@ function try_finally_tester(x, v)
     return y
 end
 
+# `y` may be unassigned at the catch, so the block's entry carries an undefined `UpsilonNode`.
+function try_catch_undef_tester(x, b)
+    local y
+    try
+        b && (y = x * 2)
+        x > 0 && error("")
+    catch
+        y = (@isdefined y) ? y * 3 : 0.0
+    end
+    return y
+end
+
 Base.@nospecializeinfer arg_in_pi_node(@nospecialize(x)) = x isa Bool ? x : false
 
 function avoid_throwing_path_tester(x)
@@ -878,6 +890,9 @@ function generate_test_functions()
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, 1.5),
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, -1.5),
         (false, :none, (mode=Mooncake.ForwardMode,), try_finally_tester, 1.5, [2.0]),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, true),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, false),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, -1.5, true),
         (false, :allocs, nothing, test_multiple_phinode_block, 3.0, 3),
         (
             false,
