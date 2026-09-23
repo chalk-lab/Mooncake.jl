@@ -185,11 +185,6 @@ function rrule!!(::CoDual{typeof(abs_float)}, x)
 end
 
 @intrinsic add_float
-function frule!!(
-    ::Lifted{typeof(add_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(add_float(primal(a), primal(b)), tangent(a) + tangent(b))
-end
 function rrule!!(::CoDual{typeof(add_float)}, a, b)
     add_float_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float(primal(a), primal(b))
@@ -197,11 +192,6 @@ function rrule!!(::CoDual{typeof(add_float)}, a, b)
 end
 
 @intrinsic add_float_fast
-function frule!!(
-    ::Lifted{typeof(add_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(add_float_fast(primal(a), primal(b)), tangent(a) + tangent(b))
-end
 function rrule!!(::CoDual{typeof(add_float_fast)}, a, b)
     add_float_fast_pb!!(c̄) = NoRData(), c̄, c̄
     c = add_float_fast(primal(a), primal(b))
@@ -734,11 +724,6 @@ end
 @inactive_intrinsic cttz_int
 
 @intrinsic div_float
-function frule!!(
-    ::Lifted{typeof(div_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(div_float(primal(a), primal(b)), tangent(a) / tangent(b))
-end
 function rrule!!(::CoDual{typeof(div_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -750,11 +735,6 @@ function rrule!!(::CoDual{typeof(div_float)}, a, b)
 end
 
 @intrinsic div_float_fast
-function frule!!(
-    ::Lifted{typeof(div_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(div_float_fast(primal(a), primal(b)), tangent(a) / tangent(b))
-end
 function rrule!!(::CoDual{typeof(div_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -963,11 +943,6 @@ end
 end
 
 @intrinsic mul_float
-function frule!!(
-    ::Lifted{typeof(mul_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(mul_float(primal(a), primal(b)), tangent(a) * tangent(b))
-end
 function rrule!!(::CoDual{typeof(mul_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -976,11 +951,6 @@ function rrule!!(::CoDual{typeof(mul_float)}, a, b)
 end
 
 @intrinsic mul_float_fast
-function frule!!(
-    ::Lifted{typeof(mul_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(mul_float_fast(primal(a), primal(b)), tangent(a) * tangent(b))
-end
 function rrule!!(::CoDual{typeof(mul_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -1230,11 +1200,6 @@ end
 @inactive_intrinsic srem_int
 
 @intrinsic sub_float
-function frule!!(
-    ::Lifted{typeof(sub_float),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(sub_float(primal(a), primal(b)), tangent(a) - tangent(b))
-end
 function rrule!!(::CoDual{typeof(sub_float)}, a, b)
     _a = primal(a)
     _b = primal(b)
@@ -1243,16 +1208,28 @@ function rrule!!(::CoDual{typeof(sub_float)}, a, b)
 end
 
 @intrinsic sub_float_fast
-function frule!!(
-    ::Lifted{typeof(sub_float_fast),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
-) where {N,T<:IEEEFloat}
-    return Lifted{T,N}(sub_float_fast(primal(a), primal(b)), tangent(a) - tangent(b))
-end
 function rrule!!(::CoDual{typeof(sub_float_fast)}, a, b)
     _a = primal(a)
     _b = primal(b)
     sub_float_fast_pullback!!(dc) = NoRData(), dc, -dc
     return CoDual(sub_float_fast(_a, _b), NoFData()), sub_float_fast_pullback!!
+end
+
+for (f, op) in (
+    (:add_float, :+),
+    (:add_float_fast, :+),
+    (:sub_float, :-),
+    (:sub_float_fast, :-),
+    (:mul_float, :*),
+    (:mul_float_fast, :*),
+    (:div_float, :/),
+    (:div_float_fast, :/),
+)
+    @eval function frule!!(
+        ::Lifted{typeof($f),N}, a::Lifted{T,N,NDual{T,N}}, b::Lifted{T,N,NDual{T,N}}
+    ) where {N,T<:IEEEFloat}
+        return Lifted{T,N}($f(primal(a), primal(b)), $op(tangent(a), tangent(b)))
+    end
 end
 
 @inactive_intrinsic sub_int
@@ -2276,31 +2253,23 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
     @static if VERSION >= v"1.12.0-rc2"
         for (f, tie_deriv) in
             ((IntrinsicsWrappers.max_float, 1.0), (IntrinsicsWrappers.min_float, 3.0))
-            for (av, bv, want) in ((NaN, 1.0, 1.0), (1.0, NaN, 2.0))
+            for (av, bv, db, value, want) in (
+                (NaN, 1.0, 2.0, NaN, 1.0),
+                (1.0, NaN, 2.0, NaN, 2.0),
+                (2.0, 1.0, 3.0, f(2.0, 1.0), tie_deriv),
+            )
                 push!(
                     test_cases,
                     (
                         false,
                         :none,
-                        (oracle=(value=NaN, deriv=want), skip_reverse=true),
+                        (oracle=(value=value, deriv=want), skip_reverse=true),
                         f,
                         CoDual(av, 1.0),
-                        CoDual(bv, 2.0),
+                        CoDual(bv, db),
                     ),
                 )
             end
-            # Non-NaN: the value tracks the selected operand and its partial comes with it.
-            push!(
-                test_cases,
-                (
-                    false,
-                    :none,
-                    (oracle=(value=f(2.0, 1.0), deriv=tie_deriv), skip_reverse=true),
-                    f,
-                    CoDual(2.0, 1.0),
-                    CoDual(1.0, 3.0),
-                ),
-            )
         end
         # Reverse must credit the same NaN operand. Plain primals need only an output seed.
         for (f, want) in (
@@ -2534,58 +2503,9 @@ function _builtins_throwing_rows()
     # Equal byte widths also cannot justify re-typing reference slots as inline values.
     cases = Any[
         (
-            ArgumentError,
-            IntrinsicsWrappers.pointerref,
-            (ndslot, 1, 1),
-            (; mode=ForwardMode),
-        ),
-        (
             (ArgumentError, "cannot load from or store to"),
             unsafe_wrap,
             (Array{Float64,1}, phslot, 1),
-            (; mode=ForwardMode),
-        ),
-        (
-            ArgumentError,
-            IntrinsicsWrappers.atomic_pointerref,
-            (ndslot, :monotonic),
-            (; mode=ForwardMode),
-        ),
-        (
-            ArgumentError,
-            IntrinsicsWrappers.pointerset,
-            (ndslot, 2.0, 1, 1),
-            (; mode=ForwardMode),
-        ),
-        (
-            ArgumentError,
-            IntrinsicsWrappers.atomic_pointerset,
-            (ndslot, 2.0, :monotonic),
-            (; mode=ForwardMode),
-        ),
-        # The same four guards must reject non-NULL placeholders as well as NoDual.
-        (
-            (ArgumentError, "cannot load from or store to"),
-            IntrinsicsWrappers.pointerref,
-            (phslot, 1, 1),
-            (; mode=ForwardMode),
-        ),
-        (
-            (ArgumentError, "cannot load from or store to"),
-            IntrinsicsWrappers.atomic_pointerref,
-            (phslot, :monotonic),
-            (; mode=ForwardMode),
-        ),
-        (
-            (ArgumentError, "cannot load from or store to"),
-            IntrinsicsWrappers.pointerset,
-            (phslot, 2.0, 1, 1),
-            (; mode=ForwardMode),
-        ),
-        (
-            (ArgumentError, "cannot load from or store to"),
-            IntrinsicsWrappers.atomic_pointerset,
-            (phslot, 2.0, :monotonic),
             (; mode=ForwardMode),
         ),
         (
@@ -2613,6 +2533,20 @@ function _builtins_throwing_rows()
         (ArgumentError, IntrinsicsWrappers.bitcast, (Float64, 5), (;)),
         (ArgumentError, IntrinsicsWrappers.bitcast, (Ptr{Float64}, 5), (;)),
     ]
+    # NoDual and non-NULL placeholder slots must both fail at each raw load/store.
+    for (slot, err) in (
+            (ndslot, ArgumentError),
+            (phslot, (ArgumentError, "cannot load from or store to")),
+        ),
+        (f, args) in (
+            (IntrinsicsWrappers.pointerref, (1, 1)),
+            (IntrinsicsWrappers.atomic_pointerref, (:monotonic,)),
+            (IntrinsicsWrappers.pointerset, (2.0, 1, 1)),
+            (IntrinsicsWrappers.atomic_pointerset, (2.0, :monotonic)),
+        )
+
+        push!(cases, (err, f, (slot, args...), (; mode=ForwardMode)))
+    end
     # Refuse at re-typing on every version, including 1.10 where NoTangent storage
     # has a real address rather than the Memory NULL sentinel.
     push!(

@@ -107,15 +107,12 @@ end
         end
     end
 
-    cache_p = prepare_gradient_cache(f_pointerset, 3.0)
-    val_p, grad_p = value_and_gradient!!(cache_p, f_pointerset, 3.0)
-    @test val_p ≈ 6.0
-    @test grad_p[2] ≈ 2.0
-
-    cache_a = prepare_gradient_cache(f_atomic_pointerset, 3.0)
-    val_a, grad_a = value_and_gradient!!(cache_a, f_atomic_pointerset, 3.0)
-    @test val_a ≈ 6.0
-    @test grad_a[2] ≈ 2.0
+    for f in (f_pointerset, f_atomic_pointerset)
+        cache = prepare_gradient_cache(f, 3.0)
+        val, grad = value_and_gradient!!(cache, f, 3.0)
+        @test val ≈ 6.0
+        @test grad[2] ≈ 2.0
+    end
 end
 
 @testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
