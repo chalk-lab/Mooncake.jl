@@ -26,25 +26,14 @@
 # There were essentially no remaining advantages to using an @eval-loop to import rules
 # from DiffRules, so this file now defines the remaining scalar rules directly.
 
-# Many scalar smooth rules are defined further down this file: their forward `frule!!`s run the
-# `f(::NDual)` overloads from the `Nfwd` submodule, while their reverse `rrule!!`s are direct native
-# analytic pullbacks (no NDual/Nfwd/ChainRules dependency).
+# Forward rules use `Nfwd`'s NDual overloads; reverse uses native analytic pullbacks.
 @zero_derivative MinimalCtx Tuple{typeof(log),Int}
 
-# Forward (NDual) + native-reverse analytic rules for scalar/fixed-arity math primitives.
-
-# Reverse-mode removable-singularity guard, native (no forward-mode/NDual dependency): a zero
-# incoming cotangent must yield an exact zero contribution even where the local derivative is ±Inf
-# (`0 * Inf` would be `NaN`). Mirrors the forward `_fwd_guarded_scale` guard, applied to the cotangent.
+# Like `_fwd_guarded_scale`, keep inactive cotangents zero even at infinite derivatives.
 @inline _rvs_guarded_scale(ȳ::T, grad::T) where {T} = iszero(ȳ) ? zero(T) : ȳ * grad
 
-# `evalpoly` over a tuple of coefficients runs native today. This rule holds that once the
-# classifier goes: the transform costs 2.2x at width 1 and 3.1x at width 8 over eight `Float64`
-# coefficients. Horner on the dual coefficients rather than the primal ones, because the
-# coefficients carry their own partials whenever they are not constants, and reading them off the
-# primal would drop those silently. Forward only: reverse reaches `evalpoly` through its derived
-# path. Integer coefficients lift to `NoDual` and are deliberately outside this declaration, so
-# they keep that path.
+# Horner on dual coefficients preserves their partials and avoids transform overhead.
+# Reverse and integer coefficients (which lift to `NoDual`) keep the derived path.
 @is_primitive MinimalCtx ForwardMode Tuple{
     typeof(evalpoly),P,Tuple{Vararg{P}}
 } where {P<:IEEEFloat}
@@ -350,9 +339,7 @@ function rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = tanh(_x)
     function tanh_pb(ȳ::P)
-        # `1 - y^2` is exactly zero once `tanh(x)` rounds to `1.0` -- |x| >= 19.1 for `Float64`,
-        # 9.0 for `Float32` -- while `sech(x)^2` stays normal out to |x| ~ 350. Same stable form
-        # the `NDual` overload uses, so the two modes agree where the naive one collapses.
+        # As in NDual, avoid `1 - y^2`: it vanishes when tanh rounds to 1, before sech² does.
         u = exp(-2 * abs(_x))
         return NoRData(), _rvs_guarded_scale(ȳ, 4u / (one(P) + u)^2)
     end
@@ -1006,10 +993,8 @@ function rrule!!(::CoDual{typeof(mod)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     return zero_fcodual(y), mod_pb
 end
 
-# `rem` needs its own pair: without one, both modes descend into `Base.rem_internal`'s integer bit
-# manipulation and hit the bitcast guard (`divrem` reaches it too, via its `RoundToZero` branch).
-# Unlike `mod` above there is no `isint` NaN: `rem` keeps the finite one-sided subgradient at
-# integer ratios, which is what `modf` relies on. `%` is `rem`, so it is covered here as well.
+# Avoid `rem_internal`'s bitcast guard, also reached by divrem's RoundToZero branch.
+# Unlike mod, rem keeps a finite one-sided subgradient at integer ratios, as modf needs.
 @is_primitive MinimalCtx Tuple{typeof(rem),P,P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(rem),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
@@ -1022,16 +1007,12 @@ function rrule!!(::CoDual{typeof(rem)}, x1::CoDual{P}, x2::CoDual{P}) where {P<:
     b = primal(x2)
     y = rem(a, b)
     c = trunc(a / b)
-    # No guard on the first coefficient: it is exactly 1, so it cannot be the ±Inf/NaN the guard
-    # exists for. The second can be — `trunc(a/b)` is `Inf` once `b` is zero.
+    # Only the second coefficient can be non-finite (`b == 0`); the first is exactly 1.
     rem_pb(ȳ::P) = (NoRData(), ȳ, _rvs_guarded_scale(ȳ, -c))
     return zero_fcodual(y), rem_pb
 end
 
-# `flipsign`, `ldexp` and `rem_fast` need their own pairs for the same reason `rem` does: reverse
-# descends into integer bit manipulation and hits the bitcast guard, while forward already runs the
-# `NDual` overloads natively. Each `frule!!` reads the primal back off the dual result rather than
-# recomputing it.
+# As with rem, flipsign/ldexp/rem_fast need rules to avoid the bitcast guard.
 @is_primitive MinimalCtx Tuple{typeof(flipsign),P,P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(flipsign),N}, x1::Lifted{P,N,NDual{P,N}}, x2::Lifted{P,N,NDual{P,N}}
@@ -1042,8 +1023,7 @@ end
 function rrule!!(
     ::CoDual{typeof(flipsign)}, x1::CoDual{P}, x2::CoDual{P}
 ) where {P<:IEEEFloat}
-    # `signbit`, not a comparison: `flipsign(x, -0.0)` negates while `-0.0 < 0` is false. Piecewise
-    # constant in the second argument, so its cotangent is zero away from the jump at zero.
+    # Preserve -0.0's sign; the second argument is piecewise constant away from zero.
     s = flipsign(one(P), primal(x2))
     flipsign_pb(ȳ::P) = (NoRData(), ȳ * s, zero(P))
     return zero_fcodual(flipsign(primal(x1), primal(x2))), flipsign_pb
@@ -1273,10 +1253,8 @@ function rrule!!(::CoDual{typeof(modf)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), modf_pb
 end
 
-# `significand` and `frexp` rescale by a power of two that is constant within a binade, so each
-# derivative is that scale: `2^-exponent(x)` and `2^-(exponent(x)+1)`. Both descend into bit
-# manipulation without a rule and hit the bitcast guard, as `flipsign`/`ldexp`/`rem_fast` did.
-# `frexp`'s second output is the exponent, an `Int` with no derivative.
+# significand/frexp scale by a power of two constant within a binade; rules avoid bitcasts.
+# frexp's integer exponent has no derivative.
 @is_primitive MinimalCtx Tuple{typeof(significand),P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(significand),N}, x::Lifted{P,N,NDual{P,N}}
@@ -1345,9 +1323,6 @@ function rrule!!(
     return zero_fcodual(h), hypot_pb
 end
 
-# Registered test cases for the whole `:low_level_maths` group, at the end of the file after every
-# rule definition. The scalar-math primitives that route through the `Nfwd` NDual forward overloads
-# (tanpi/pow_fast/clamp/sincosd/sincospi/modf) live here too — no other group covers them.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
     test_cases = vcat(
         map([Float32, Float64]) do P
@@ -1407,9 +1382,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 (mod2pi, P(0.1)),
                 (mod, P(7.5), P(2.3)),
                 (mod, P(10.2), P(3.1)),
-                # Non-integer ratios only: `rem` jumps to zero at an integer ratio, where a central
-                # finite difference reads ~-1.5e6 against the true one-sided derivative of 1. The
-                # negative arguments are the points where `floor` would differ from `trunc`.
+                # Avoid rem's jumps at integer ratios; negative inputs distinguish trunc/floor.
                 (rem, P(7.5), P(2.3)),
                 (rem, P(-7.5), P(2.3)),
                 (rem, P(7.5), P(-2.3)),
@@ -1459,10 +1432,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 )
             end,
         ),
-        # `evalpoly` is a FORWARD-only primitive, so these pin `mode=ForwardMode`; reverse reaches
-        # it through its derived path. Coefficients are seeded like any other argument, so the
-        # rows cover the derivative with respect to them as well as to `x`. Degree 1 is the
-        # shortest Horner fold; degree 7 is the shape the routing benchmark used.
+        # Forward-only primitive; seed coefficients too, at short and longer Horner folds.
         map([Float32, Float64]) do P
             return [
                 (
@@ -1589,12 +1559,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
             (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
-            # Bounds CROSSED. Base tests the upper bound first, so `clamp` returns `hi` over
-            # the whole region `hi < a < lo` and the derivative belongs to `hi`. Both rules tested
-            # `a <= lo` first and credited `lo`, and because both modes agreed no mode comparison
-            # could see it — the finite-difference check is what catches it. The point is strictly
-            # inside the crossed region, where the function is locally smooth in all three
-            # arguments, so FD is well behaved here.
+            # Crossed bounds select hi. Inside hi < a < lo, FD detects crediting lo even
+            # if both modes make that mistake; the function is locally smooth here.
             (false, :none, nothing, clamp, 0.5, 1.0, 0.0),
             (false, :stability_and_allocs, nothing, sincosd, 30.0),
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
@@ -1613,11 +1579,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
             return (false, :none, opts, f, CoDual(x, z))
         end,
-        # `hypot` is singular at the origin: the true directional derivative is 0 in every
-        # arity, but a finite difference of `hypot(ε, ε)` returns `sqrt(2)`, so FD cannot pin
-        # this. The seeds come through the `CoDual` channel because a random seed would not
-        # sit on the singular point's ray, and `isequal` (the default comparator) is what
-        # separates an exact `0` from a denormal.
+        # At hypot's singular origin, FD cannot pin the zero-derivative convention.
+        # Explicit seeds pin the ray; isequal distinguishes exact zero from denormals.
         vec(
             map(Iterators.product([Float16, Float32, Float64], 1:3)) do (P, arity)
                 seeds = ntuple(_ -> CoDual(P(0), P(1)), arity)
