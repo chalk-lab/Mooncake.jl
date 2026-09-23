@@ -2841,23 +2841,28 @@ function frule!!(
     # legally hold garbage. The JVP is `dα·op(A)⁻¹⊛B`, needing the solve only when some
     # lane seeds α; with none, result and derivative are both identically zero and the
     # solve below would otherwise propagate a legal NaN in `A` into the result.
-    if iszero(α) && all(iszero, dαs)
-        fill!(B, zero(P))
+    if iszero(α)
         fill!(Bb, zero(P))
+        if !all(iszero, dαs)
+            BLAS.trsm!(side, uplo, trans, diag, one(P), A, B)
+            for k in 1:Nw
+                iszero(dαs[k]) || (view(Bb,k,:,:) .= dαs[k] .* B)
+            end
+        end
+        fill!(B, zero(P))
         bcopied && _write_back_partials!(B_dB, Bb)
         return B_dB
     end
     Ab, _ = _partials_block(A_dA)
     m, n = size(B)
-    # `X = op(A)⁻¹⊛B` (the primal RHS solve) is lane-invariant: hoist it.
-    X = copy(B)
-    trsm!(side, uplo, trans, diag, one(P), A, X)
-    # d(α·op(A)⁻¹⊛B) = dα·X + α·op(A)⁻¹⊛(dB − op(dA)⊛X). op(A)⁻¹ is linear, so the
-    # tangent takes one solve of that combined RHS, not separate solves of `dB` and
-    # `op(dA)⊛X`.
-    # 1) dB_k −= op(dA_k)⊛X — skipped when `A` is constant data. trmm masks dA's triangle
-    #    (and implicit unit diagonal, whose derivative the `diag == 'U'` correction
-    #    removes).
+    # Form α·dB + dα·B before the primal overwrites B. With Y = α·op(A)⁻¹⊛B,
+    # dY = op(A)⁻¹⊛(α·dB + dα·B − op(dA)⊛Y): no unscaled primal solve is needed.
+    @inbounds for j in 1:n, i in 1:m, k in 1:Nw
+        db = α * Bb[k, i, j]
+        Bb[k, i, j] = iszero(dαs[k]) ? db : db + dαs[k] * B[i, j]
+    end
+    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    # trmm masks dA's triangle; remove the implicit unit diagonal's contribution.
     if !iszero(Ab)
         R = size(A, 1)
         Abm = reshape(Ab, Nw, R, R)
@@ -2865,17 +2870,17 @@ function frule!!(
         tmp = Matrix{P}(undef, m, n)
         for k in 1:Nw
             copyto!(Ascr, view(Abm,k,:,:))
-            copyto!(tmp, X)
+            copyto!(tmp, B)
             BLAS.trmm!(side, uplo, trans, diag, one(P), Ascr, tmp)
-            diag == 'U' && (tmp .-= X)
+            diag == 'U' && (tmp .-= B)
             view(Bb,k,:,:) .-= tmp
         end
     end
-    # 2) α·op(A)⁻¹ applied to every lane (α folded into the solve). Side 'R' solves the
-    #    (Nw·m, n) flat view in one wide trsm, flags native; side 'L' right-divides each
-    #    slab by op(A)ᵀ (flag flip; complex 'C' needs a hoisted conj(A)).
+    # Apply op(A)⁻¹ to every lane. Side 'R' solves the (Nw·m, n) flat view in one wide
+    # trsm, flags native; side 'L' right-divides each slab by op(A)ᵀ (flag flip; complex
+    # 'C' needs a hoisted conj(A)).
     if side == 'R'
-        BLAS.trsm!('R', uplo, trans, diag, α, A, reshape(Bb, Nw * m, n))
+        BLAS.trsm!('R', uplo, trans, diag, one(P), A, reshape(Bb, Nw * m, n))
     else
         fA, Ae = if trans == 'N'
             ('T', A)
@@ -2885,24 +2890,10 @@ function frule!!(
             ('N', conj(A))
         end
         for j in 1:n
-            BLAS.trsm!('R', uplo, fA, diag, α, Ae, view(Bb,:,:,j))
+            BLAS.trsm!('R', uplo, fA, diag, one(P), Ae, view(Bb,:,:,j))
         end
     end
-    # 3) dα·X per seeded lane.
-    for k in 1:Nw
-        iszero(dαs[k]) || (view(Bb,k,:,:) .+= dαs[k] .* X)
-    end
     bcopied && _write_back_partials!(B_dB, Bb)
-    # Primal result α·op(A)⁻¹⊛B = α·X, and X already holds the unscaled solve: scale,
-    # don't re-solve. At `α == 0` BLAS returns `B := 0` by a quick return that never
-    # references `A`, so `A` may legally hold garbage and `0 * X` would turn it into a NaN
-    # primal. The early return above cannot cover this: a seeded `dα` still needs the solve,
-    # because the derivative genuinely depends on `A`.
-    if iszero(α)
-        fill!(B, zero(P))
-    else
-        B .= α .* X
-    end
     return B_dB
 end
 
@@ -3585,6 +3576,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
     )
+
+    # The unscaled solve overflows, but the scaled primal and JVP are finite. Pin dα=0
+    # so finite differences can perturb A and B without overflowing the scaled result.
+    let
+        α = P(real(P) === Float32 ? 1e-30 : 1e-300)
+        A = fill(P(0.25), 1, 1)
+        B = fill(P(real(P) === Float32 ? 1e38 : 1e308), 1, 1)
+        opts = (mode=ForwardMode,)
+        push!(
+            test_cases,
+            (false, :none, opts, BLAS.trsm!, 'L', 'U', 'N', 'N', CoDual(α, zero(P)), A, B),
+        )
+    end
 
     # trmm!/trsm! reverse ∇α at α=0: the pullback's `dot(B,dB)/α'` is 0/0 there (the primal zeroed
     # B), so it recomputes the finite gradient from the saved input. One α=0 case per op suffices
