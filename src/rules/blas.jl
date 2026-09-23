@@ -1495,7 +1495,7 @@ function frule!!(
     beta::Lifted{P,Nw},
     y_dy::Lifted{<:AbstractVector{P}},
 ) where {Nw,P<:BlasFloat}
-    _tA = primal(tA)
+    _tA = _lsame_flag(primal(tA))
     α = primal(alpha)
     β = primal(beta)
     A = _as_col(primal(A_dA))
@@ -1590,7 +1590,7 @@ end
 ) where {P<:BlasFloat}
 
     # Pull out primals and tangents (the latter only where necessary).
-    trans = _tA.x
+    trans = _lsame_flag(primal(_tA))
     alpha = _alpha.x
     A, dA = matrixify(_A)
     x, dx = arrayify(_x)
@@ -2335,7 +2335,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         beta::Lifted{T,Nw},
         C_dC::Lifted{<:AbstractMatrix{T}},
     ) where {Nw,T<:$elty}
-        s = primal(side)
+        s = _lsame_flag(primal(side))
         ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
@@ -2417,7 +2417,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {T<:$elty}
 
         # Extract primals.
-        s = primal(side)
+        s = _lsame_flag(primal(side))
         ul = _lsame_flag(primal(uplo))
         α = primal(alpha)
         β = primal(beta)
@@ -2515,7 +2515,7 @@ for (fname, elty, relty) in (
         C_dC::Lifted{<:AbstractMatrix{$elty}},
     ) where {Nw}
         uplo = _lsame_flag(primal(_uplo))
-        t = primal(_t)
+        t = _lsame_flag(primal(_t))
         α = primal(α_dα)
         A = primal(A_dA)
         β = primal(β_dβ)
@@ -3526,13 +3526,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
-    # BLAS resolves its flags with LSAME, so a lowercase one names the same call. Only `trans` and
-    # `diag` can reach the routine uncased: Julia's own wrapper compares `side` against 'L' and
-    # runs `chkuplo` on `uplo`, both case-sensitively, so those two error before BLAS sees them.
-    # One row is enough, every rule reading its flags through `_lsame_flag`, and adding lowercase
-    # to the alphabets above would multiply the whole matrix for no extra coverage. Before it,
-    # `diag = 'u'` took the non-unit-diagonal branch and returned a gradient of [1, 0, 1, 1] where
-    # the routine's own answer is [0, 0, 1, 0].
+    # Lowercase flags must select the same derivative branches as their uppercase forms.
+    # Keep uplo uppercase: Julia's wrapper validates it before calling BLAS.
     let
         rng = rng_ctor(123456)
         A = blas_matrices(rng, P, 3, 3)[1]
@@ -3656,6 +3651,69 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
     )
+
+    # Square operands also satisfy Julia's case-sensitive dimension checks for lowercase flags.
+    let
+        rng = rng_ctor(123463)
+        A = randn(rng, P, 3, 3)
+        B = randn(rng, P, 3, 3)
+        C = randn(rng, P, 3, 3)
+        x, y = randn(rng, P, 3), randn(rng, P, 3)
+        for t in ('n', 't', 'c')
+            push!(
+                test_cases,
+                (
+                    false,
+                    :stability,
+                    nothing,
+                    BLAS.gemv!,
+                    t,
+                    P(0.7),
+                    copy(A),
+                    copy(x),
+                    P(0.3),
+                    copy(y),
+                ),
+            )
+        end
+        fs = P <: BlasComplexFloat ? (BLAS.symm!, BLAS.hemm!) : (BLAS.symm!,)
+        for f in fs, side in ('l', 'r')
+            push!(
+                test_cases,
+                (
+                    false,
+                    perf_flag,
+                    nothing,
+                    f,
+                    side,
+                    'U',
+                    P(0.7),
+                    copy(A),
+                    copy(B),
+                    P(0.3),
+                    copy(C),
+                ),
+            )
+        end
+        f = P <: BlasComplexFloat ? BLAS.herk! : BLAS.syrk!
+        for t in ('n', P <: BlasComplexFloat ? 'c' : 't')
+            push!(
+                test_cases,
+                (
+                    false,
+                    perf_flag,
+                    nothing,
+                    f,
+                    'U',
+                    t,
+                    real(P)(0.7),
+                    copy(A),
+                    real(P)(0.3),
+                    copy(C),
+                ),
+            )
+        end
+    end
 
     throwing_rows, throwing_memory = _blas_throwing_rows(P)
     test_cases = vcat(Any[test_cases...], Any[_throwing_row(c) for c in throwing_rows])
