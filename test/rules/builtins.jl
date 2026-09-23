@@ -54,10 +54,7 @@ foo_throws(e) = throw(e)
         @test pb isa Mooncake.NoPullback
         @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
 
-        # A DIFFERENT element width is refused. This used to re-type the tangent pointer too, so
-        # `x * unsafe_load(Ptr{Float64}(pointer(v))) + sum(v)` over a `Vector{Float32}` wrote an
-        # eight-byte cotangent across the four-byte tangent slots of `v[1]` and `v[2]` and returned
-        # `Float32[5.8e-39, 2.0009766, 1.0, 1.0]` where `sum(v)` alone gives ones.
+        # Widening would write eight-byte cotangents across four-byte tangent slots.
         @test_throws ArgumentError rrule!!(
             zero_fcodual(bitcast),
             zero_fcodual(Ptr{Float64}),
@@ -122,11 +119,8 @@ end
 end
 
 @testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
-    # @is_primitive covers any Ptr and the reverse rule handles all T, but the forward frules
-    # only matched NDualEltype pointers; a non-diff Ptr (dual_type === NoDual) matched neither and
-    # threw a MethodError. The NoDual fallback must return the canonical array V.
-    # Use a `Vector{UInt8}` (not `Memory`, which is Julia 1.11+) so this runs on the LTS too; `buf`
-    # is kept alive for the duration of the testset, so `p` stays valid.
+    # Non-differentiable pointers still need the wrapped array's canonical V.
+    # Vector works on 1.10 too; keep buf alive while p is used.
     buf = UInt8[1, 2, 3, 4]
     p = pointer(buf)
     for N in (1, 2)
@@ -199,10 +193,8 @@ end
 end
 
 @testset "div_float pullback keeps `d/db` in range" begin
-    # Forming `d/db` as `-a/b^2` overflows the square to `Inf` (derivative 0.0 where it is
-    # -1e-200) or underflows it to 0 (giving `-Inf`), once `a` and `b` are both large or both
-    # tiny. Dividing twice by `b` keeps every intermediate in range. Not a `test_rule` case: its
-    # finite differences cannot resolve a derivative of -1e-200 against a value of 1.0.
+    # Squaring b overflows/underflows; dividing twice keeps d/db representable.
+    # FD cannot resolve a derivative of -1e-200 against a value of 1.0.
     for (a, b) in ((1e200, 1e200), (1e-200, 1e-200), (2.0, 4.0))
         for f in (/, Base.FastMath.div_fast)
             g = Mooncake.value_and_gradient!!(
