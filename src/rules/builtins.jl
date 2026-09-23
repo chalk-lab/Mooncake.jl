@@ -264,8 +264,9 @@ end
 # Pointer-to-pointer: wrapping a `Ptr{Ptr{R}}` yields an `Array{Ptr{R}}` whose elements are
 # themselves differentiable pointers, so the canonical V is the element-wise
 # `Array{NTuple{Nw,Ptr{R}}, D}` (each element holds that pointer's Nw per-lane shadow Ptrs),
-# not the `NDualArray` block form above (which only applies to `NDualEltype` elements). Wrap each
-# lane's shadow pointer into its own array, then interleave element-wise into the V.
+# not the `NDualArray` block form above (which only applies to `NDualEltype` elements).
+# Raw pointer lanes have dense element strides, so only width one can wrap their storage as V.
+# Supporting wider chunks requires a pointer representation that carries the tangent stride.
 function frule!!(
     ::Lifted{typeof(unsafe_wrap),Nw},
     ::Lifted{<:Type{<:Array},Nw},
@@ -275,12 +276,16 @@ function frule!!(
     _dims = primal(dims)
     primal_arr = unsafe_wrap(Array, primal(p), _dims)
     p_partials = tangent(p)
-    lane_arrays = ntuple(lane -> unsafe_wrap(Array, p_partials[lane], _dims), Val(Nw))
     D = ndims(primal_arr)
-    v = similar(primal_arr, NTuple{Nw,Ptr{R}})
-    @inbounds for i in eachindex(primal_arr, v)
-        v[i] = ntuple(lane -> lane_arrays[lane][i], Val(Nw))
-    end
+    Nw == 1 || throw(
+        ArgumentError(
+            "Forward-mode `unsafe_wrap` of pointer elements cannot preserve tangent " *
+            "aliasing at chunk width $Nw > 1. Use chunk width one or reverse mode.",
+        ),
+    )
+    _check_fwd_tangent_ptr_addressable(primal(p), p_partials[1])
+    vptr = Ptr{NTuple{Nw,Ptr{R}}}(p_partials[1])
+    v = unsafe_wrap(Array, vptr, _dims)
     return Lifted{Array{Ptr{R},D},Nw}(primal_arr, v)
 end
 
@@ -2396,6 +2401,21 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
         (false, :stability, nothing, typeof, randn(5)),
         (true, :stability, nothing, unsafe_wrap, Array, CoDual(p, dp), 1),
         (true, :stability, nothing, unsafe_wrap, Vector{Float64}, CoDual(p, dp), 1),
+        (
+            false,
+            :none,
+            (
+                throws=(ArgumentError, "cannot preserve tangent aliasing"),
+                mode=ForwardMode,
+                chunk_size=2,
+            ),
+            unsafe_wrap,
+            Array,
+            Lifted{typeof(pointer(c)),2}(
+                pointer(c), (pointer(dc), pointer(dc) + sizeof(Ptr{Float64}))
+            ),
+            1,
+        ),
     ]
 
     if VERSION > v"1.12-"

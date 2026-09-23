@@ -141,6 +141,25 @@ end
     end
 end
 
+@testset "unsafe_wrap pointer shadow aliasing" begin
+    # The registry checks the wrap call, but cannot mutate its explicit shadow buffer afterwards.
+    z(x) = Mooncake.zero_lifted(Val(1), x)
+    a, b = [3.0], [5.0]
+    da, db = [1.0], [7.0]
+    p, dp = fill(pointer(a), 2), fill(pointer(da), 2)
+    GC.@preserve a b da db p dp begin
+        ps = Mooncake.lift(pointer(p), pointer(dp))
+        y = Mooncake.frule!!(z(unsafe_wrap), z(Array), ps, z((1, 2)))
+        bs = Mooncake.lift(pointer(b), pointer(db))
+        Mooncake.frule!!(z(IntrinsicsWrappers.pointerset), ps, bs, z(2), z(1))
+        q = Mooncake.Lifted{Ptr{Float64},1}(Mooncake.primal(y)[2], Mooncake.tangent(y)[2])
+        out = Mooncake.frule!!(z(IntrinsicsWrappers.pointerref), q, z(1), z(1))
+        @test Mooncake.tangent(out, 1) == 7.0
+        Mooncake.tangent(y)[2] = (pointer(da),)
+        @test dp[2] == pointer(da)
+    end
+end
+
 @testset "NaN handling in builtins rrules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]

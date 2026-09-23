@@ -485,6 +485,12 @@ y = [randn(4) for _ in 1:6]
 The rule refuses rather than dropping the derivative. Differentiate that call at chunk width 1, or
 use reverse mode, which is unaffected.
 
+Wrapping a pointer-to-pointer buffer with `unsafe_wrap` preserves its shadow pointer storage at
+chunk width one. Wider chunks raise `ArgumentError`: the wrapped array interleaves its shadow
+pointers by element, whereas each raw pointer lane addresses a dense buffer. Supporting both
+layouts requires a pointer representation that carries the tangent stride; use chunk width one
+or reverse mode.
+
 ### Re-typing a pointer through `Ptr{Cvoid}`
 
 A tangent pointer carries its element type, and that is what lets Mooncake check that a re-typing is
