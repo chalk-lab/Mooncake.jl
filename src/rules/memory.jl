@@ -45,9 +45,7 @@ function randn_tangent_internal(rng::AbstractRNG, x::Memory, dict::MaybeCache)
     return _map_if_assigned!(x -> randn_tangent_internal(rng, x, dict), t, x)::T
 end
 
-# A `MemoryRef`'s forward V is a `MemoryRef` holding the referenced value's V, mirroring reverse's
-# `tangent_type(MemoryRef{T}) === MemoryRef{tangent_type(T)}`, so the invariant recurses through the
-# reference. An unassigned slot has nothing to compare.
+# MemoryRef's element-wise V mirrors the referenced primal; unassigned slots have no value.
 function TestUtils._chunked_v_invariant(p::MemoryRef, v::MemoryRef, c::IdDict)
     haskey(c, v) && return true
     c[v] = nothing
@@ -75,10 +73,7 @@ function TestUtils.has_equal_data_internal(
     return all(equality)
 end
 
-# Positions of `buf` still to add into, given what earlier operands already covered. Only reached
-# once a buffer has been seen before at a DIFFERENT extent, so the vector it returns is off the
-# common path entirely -- each caller handles the first sight and the fully-covered case inline,
-# where no allocation happens at all.
+# Only differing extents reach this allocating path; callers handle first/full coverage inline.
 function _increment_todo!(
     c::IdDict{Any,Any},
     buf,
@@ -221,11 +216,8 @@ end
 
 function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     x === y && return x
-    # Keyed on the target's BACKING STORAGE rather than the container, so that two positions over
-    # one buffer are incremented once however they are spelt: `a` and `reshape(a)` are distinct
-    # `Array` objects the container key missed. Keying on the source as well would be wrong — the
-    # forward gradient path increments a shared target from a source whose fields do NOT share, and
-    # counting those separately doubles the gradient.
+    # Key on target storage so reshapes accumulate once. Including the source would double
+    # contributions when a shared target receives independently stored forward gradients.
     full() = (_map_if_assigned!((x, y) -> increment_internal!!(c, x, y), x, x, y); x)
     c isa NoCache && return full()
     xr = getfield(x, :ref)
@@ -235,9 +227,7 @@ function increment_internal!!(c::IncCache, x::T, y::T) where {T<:Array}
     off = Core.memoryrefoffset(xr)
     want = off:(off + length(x) - 1)
     if prev === nothing
-        # `true` for an array that spans its buffer, so the common case stores an interned value
-        # and a later `Memory` over it dedups exactly as before. Only a non-spanning array records
-        # a range, and only it can leave a complement for someone else to finish.
+        # Full buffers use an interned sentinel; partial extents leave a complement to fill.
         c[buf] = _spans_memory(x, xr) ? true : want
         return full()
     end
@@ -261,9 +251,7 @@ end
 
 function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     haskey(c, t) && return c[t]::T
-    # Same shared-`Memory` path as `_add_to_primal_internal`, for the same reason: allocating per
-    # container severs the sharing, and the finite-difference harness runs
-    # `_add_to_primal(x, _scale(eps, dx))`, so it was severed before that call could preserve it.
+    # Preserve backing-storage sharing before finite differences call `_add_to_primal`.
     tr = getfield(t, :ref)
     if _spans_memory(t, tr)
         t′ = Base.wrap(Array, construct_ref(tr, _scale_internal(c, a, tr.mem)), size(t))::T
@@ -275,28 +263,16 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:Array}
     return _map_if_assigned!(t -> _scale_internal(c, a, t), t′, t)
 end
 
-# De-duplicate on the BACKING STORAGE rather than the container: two positions can hold distinct
-# `Array`s over one `Memory` (`a` and `reshape(a)`), and that buffer's dimensions must be counted once, as
-# they already are when one tangent OBJECT occupies both positions. `c` is an `IdDict`, so this
-# tuple compares its `Memory` by identity; a `Dict` would compare it by `==`, collapse two unrelated
-# zeroed buffers of equal length, and under-count -- which nothing downstream would refuse.
+# Deduplicate backing storage shared by distinct arrays (e.g. reshapes). The cache must use
+# identity: equality would conflate unrelated zeroed buffers and undercount dimensions.
 @inline function _dot_storage(x::Array)
     r = getfield(x, :ref)
     return (r.mem, Core.memoryrefoffset(r), length(x))
 end
 @inline _dot_storage(x::Memory) = (x, 1, length(x))
 
-# Which positions of a buffer pair have already been counted. An exact-extent key deduplicates
-# `a` against `a`, but an `Array` that does not SPAN its `Memory` overlaps it without matching it —
-# `(mem,1,2)` and `(mem,1,4)` are different keys over the same first two slots, and both were
-# summed. Dict keys express equality; this needs overlap, so the covered positions are recorded
-# per buffer pair and a later operand sums only what is left.
-#
-# Positions are the buffers' own indices, which pairs `t` with `s` coherently only when the two sit
-# at the SAME offset -- the structural case, where they share a shape. Differing offsets pair
-# different elements, so those keep the exact-key behaviour rather than a coverage claim that would
-# not mean what it says.
-# The part of `r` no range in `covered` already holds, as at most a handful of pieces.
+# Record covered positions per buffer pair to deduplicate overlapping extents. Positions share
+# an index space only at equal offsets; differing offsets must retain their element pairing.
 function _uncovered(covered::Vector{UnitRange{Int}}, r::UnitRange{Int})
     pieces = [r]
     for cr in covered
@@ -329,16 +305,12 @@ for A in (Array, Memory)
                     0.0
                 end
             end
-        # No cache, or operands at different offsets, so there is no shared index space to record
-        # coverage in; sum it all, as before.
+        # Different offsets have no shared index space for coverage.
         (c isa NoCache || to != so) && return full()
         k = (:dot_positions, tb, sb)
         prev = get(c, k, nothing)
         want = to:(to + tl - 1)
-        # First sight of this buffer pair is the overwhelmingly common case, and it stores a bare
-        # range rather than a vector of them: one boxed value, as the old exact-extent key cost,
-        # with no interval arithmetic. The vector appears only if a second, differing extent over
-        # the same pair ever shows up.
+        # Store a bare range on first sight; allocate a vector only for repeated buffer pairs.
         if prev === nothing
             c[k] = want
             return full()
@@ -365,16 +337,9 @@ function _add_to_primal_internal(
 ) where {P,N}
     key = (x, t, unsafe)
     haskey(c, key) && return c[key]::Array{P,N}
-    # Build over the perturbed backing `Memory` rather than a fresh buffer, so two arrays over one
-    # `Memory` (`a` and `reshape(a)`) come back over one `Memory` too. The `Memory` method caches on
-    # its own arguments, so the second array here reuses the first's result. Allocating separately
-    # severed that sharing, and finite differences over the result then measured a function that
-    # perturbs the two positions independently -- a different function from the one under test.
-    #
-    # Only when both arrays span their whole backing `Memory` does perturbing the memory correspond
-    # elementwise to perturbing the array. A `Vector` grown by `push!` keeps spare capacity, so its
-    # `Memory` is longer than it is and need not match its tangent's; the array-wise path below
-    # stays correct there, at the cost of not preserving sharing for such an array.
+    # Reuse perturbed backing Memory to preserve sharing between arrays in finite differences.
+    # Both arrays must span their buffers: spare capacity may differ between primal and tangent.
+    # The fallback handles spare capacity but does not preserve sharing.
     xr, tr = getfield(x, :ref), getfield(t, :ref)
     if _spans_memory(x, xr) && _spans_memory(t, tr)
         mem = _add_to_primal_internal(c, xr.mem, tr.mem, unsafe)
@@ -387,9 +352,7 @@ function _add_to_primal_internal(
     return _map_if_assigned!((x, t) -> _add_to_primal_internal(c, x, t, unsafe), x′, x, t)
 end
 
-# The bits-eltype condition is correctness, not speed: both callers build the new array only AFTER
-# recursing into the `Memory`, so a self-referential array would re-enter and lose its cycle. Only
-# reference eltypes can self-reference.
+# Both callers recurse before caching the new array; reference eltypes could form cycles.
 @inline function _spans_memory(x::Array, r::MemoryRef)
     isbitstype(eltype(x)) || return false
     return Core.memoryrefoffset(r) == 1 && length(r.mem) == length(x)
@@ -419,12 +382,7 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(unsafe_copyto!),MemoryRef{P},MemoryRef{P},Int} where {P}
 )
-# Copy the partials of the `_n` copied elements in sync with the primal copy. In the element-major
-# block the copied elements' partials are `_n` adjacent columns — one contiguous `Nw * _n` backing
-# range — so the whole tangent copy is a single flat `unsafe_copyto!` (memmove, overlap-safe), with
-# no per-lane striding at any pair of offsets. `P <: NDualEltype` (float or complex), matching the
-# sibling MemoryRef frules (e.g. the `copy_similar` / `copyto_axcheck!` path of complex
-# `logdet`/`logabsdet`).
+# Copy adjacent lane columns as one overlap-safe memmove, including complex elements.
 function frule!!(
     ::Lifted{typeof(unsafe_copyto!),Nw},
     dest::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -671,8 +629,7 @@ end
     return CoDual(memoryrefnew(x.x), memoryrefnew(x.dx)), NoPullback(f, x)
 end
 
-# Indexed construction straight from a `Memory`, which JuliaLang/julia#58768 adds in 1.13. Column
-# j of the block tracks mem slot j, as in the no-arg sibling above, so the ref lands at column `ii`.
+# JuliaLang/julia#58768 adds indexed Memory construction in 1.13; slot ii is block column ii.
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{Memory{P},Nw,<:NDualArray{P,Nw,1,Memory{P}}},
@@ -684,8 +641,6 @@ end
     return Lifted{MemoryRef{P},Nw}(y, NDualMemoryRef{P,Nw,Memory{P}}(y, block, primal(ii)))
 end
 
-# One vararg method covers both the index and index+boundscheck forms for the float
-# `NDualMemoryRef`-V slot, mirroring the element-wise `memoryrefnew` sibling below.
 @inline function frule!!(
     ::Lifted{typeof(memoryrefnew),Nw},
     x::Lifted{MemoryRef{P},Nw,NDualMemoryRef{P,Nw,Memory{P}}},
@@ -833,21 +788,10 @@ end
     return y, memoryrefset_adjoint
 end
 
-# ── Element-wise (plain `Array` of inner duals) memory ops ──────────────────
-#
-# For a differentiable non-float-element array, the forward V is the element-wise array
-# `Array{dual_type(Val(N), elt), D}` (see `dual_type(Array{T,D})` in lifted.jl).
-# Its `.ref` is a plain `MemoryRef{V_elt}` (a MemoryRef into the V array),
-# parallel to the primal's `MemoryRef{P_elt}`. These memory ops thread both refs
-# in lockstep — `memoryrefget` returns `Lifted{P_elt, Nw, V_elt}` with
-# `V_elt === dual_type(Val(Nw), P_elt)`, so the V chain stays coherent. They
-# dispatch on a *plain* `MemoryRef` V, distinct from the float-element parallel-arrays
-# `NDualMemoryRef` frules above. Forward-over-reverse exercises this path for the
-# reverse rule's `Vector{Tuple{pullback}}` pullback storage.
+# Element-wise V memory operations thread primal and V refs together, preserving recursive
+# coherence. Plain MemoryRef V dispatch is disjoint from NDualMemoryRef; forward-over-reverse
+# uses it for Vector{Tuple{pullback}} storage.
 @static if VERSION >= v"1.11-rc4"
-    # `memoryrefnew` over a differentiable V (`MemoryRef`/element-wise `Memory`): thread the primal
-    # and the parallel V ref/memory in lockstep. One vararg method covers the 1-arg (ref-to-start)
-    # and trailing-index forms for both `MemoryRef`-V and `Memory`-V slots (the no-arg case is K=0).
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
         x::Lifted{<:Union{Memory,MemoryRef},Nw,<:Union{Memory,MemoryRef}},
@@ -903,8 +847,7 @@ end
         memoryrefset!(tangent(x), tangent(value), ord, bc)
         return value
     end
-    # Element-wise `unsafe_copyto!(dest, src, n)`: copy the primal and the element-wise V memrefs in
-    # lockstep (used by `Memory`/`Array` growth over `Vector{Tuple{pullback}}`).
+    # Array growth must copy element-wise V refs alongside primal refs.
     @inline function frule!!(
         ::Lifted{typeof(unsafe_copyto!),Nw},
         dest::Lifted{<:MemoryRef,Nw,<:MemoryRef},
@@ -916,11 +859,7 @@ end
         unsafe_copyto!(tangent(dest), tangent(src), _n)
         return dest
     end
-    # Element-wise array field write (`Array` growth sets `.ref` / `.size`): set the field
-    # on the primal array and the parallel element-wise V array. `.size` (field 2) is metadata
-    # shared with the primal; every other field — i.e. `.ref` (field 1), the differentiable
-    # storage — takes the element-wise V ref. Key on `:size`/`2` (not `:ref`) so the integer
-    # alias `Val(1)` for `.ref` is handled, matching the reverse rrule and the NDualArray sibling.
+    # Size is primal metadata; ref is V storage. Include integer field aliases.
     @inline function frule!!(
         ::Lifted{typeof(lsetfield!),Nw},
         value::Lifted{<:Array,Nw,<:Array},
@@ -935,20 +874,9 @@ end
         )
         return x
     end
-    # Non-differentiable Memory/MemoryRef (e.g. `Stack` block storage of `Int32`):
-    # forward V is `NoDual`, so each op threads only the primal and keeps a
-    # `NoDual` result V. Reached in forward-over-reverse over reverse-rule infra.
-    #
-    # Not covered by `test_rule` by design: the canonical seed harness
-    # (`dual_type`/`zero_lifted`/`randn_lifted`) over a standalone `Memory`/`MemoryRef` primal always
-    # yields the wrapper V (`NDualArray`/`NDualMemoryRef`, or `MemoryRef{NoDual}` for a non-diff
-    # *element*), never this bare-`NoDual` sentinel — which only arises for a non-differentiable
-    # whole-buffer slot inside the reverse rule's own storage during forward-over-reverse. These
-    # methods are therefore exercised only through forward-over-reverse HVP/Hessian tests, not the
-    # per-rule battery; that is intentional, not a coverage gap.
-    # `memoryrefnew` over a non-differentiable (`NoDual`-V) `Memory`/`MemoryRef`: thread only the
-    # primal, keep a `NoDual` result V. One vararg method covers the 1-arg and trailing-index forms
-    # (the no-arg case is K=0), so there is no zero-vararg overlap to disambiguate.
+    # Whole-buffer NoDual slots arise in forward-over-reverse storage (e.g. Stack Int32 blocks).
+    # Canonical standalone seeds always produce wrappers, so HVP/Hessian tests cover these
+    # methods rather than the per-rule registry.
     @inline function frule!!(
         ::Lifted{typeof(memoryrefnew),Nw},
         x::Lifted{<:Union{Memory,MemoryRef},Nw,NoDual},
@@ -1014,10 +942,7 @@ end
 
 @static if VERSION >= v"1.12-"
     @is_primitive MinimalCtx Tuple{typeof(Core.memorynew),Type{<:Memory},Int}
-    # `Core.memorynew(Memory{P}, n)` is the same allocation as `Memory{P}(undef, n)`, differently
-    # lowered, so both modes defer to that sibling. The deferral also routes through the sibling's
-    # own dispatch, which is what picks the `NDualEltype` parallel-arrays V over the element-wise
-    # one; the dummy slots carry `NoDual` and cost no allocation.
+    # Delegate to constructor dispatch so both allocation spellings select the same V.
     function frule!!(
         ::Lifted{typeof(Core.memorynew),Nw}, ::Lifted{Type{Memory{P}},Nw}, n::Lifted
     ) where {Nw,P}
@@ -1042,31 +967,20 @@ function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
     x = Memory{P}(undef, primal(n))
-    # The allocation is UNINITIALISED, so allocating the tangent the same way hands back whatever
-    # the block last held — measured non-zero in 20 of 20 runs once the heap is dirtied. A fresh
-    # tangent must be zero.
+    # Fresh tangents must be zero even when the primal allocation contains stale data.
     dx = zero_tangent_internal(x, NoCache())
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
 
-# Element-wise `Memory{P}(undef, n)` for differentiable non-`NDualEltype` elements: the V is
-# the element-wise `Memory{dual_type(P)}`. Non-diff element → `NoDual`. The `NDualEltype`
-# overload above (`NDualArray` parallel-arrays) is more specific and wins for scalar
-# IEEEFloat/Complex elements. For an isbits element the fresh V slots are readable garbage,
-# which whole-buffer copies would propagate as nonzero partials — fill each with the coherent
-# zero dual of the (also garbage, also readable) primal element; non-isbits slots stay `#undef`
-# and are written by the parallel element-wise `memoryrefset!`.
+# The NDualEltype overload handles floats/complex; other elements use element-wise V.
+# Readable isbits slots need coherent zero duals to avoid copying garbage partials; reference
+# slots stay #undef until the parallel memoryrefset! writes them.
 @generated function frule!!(
     ::Lifted{Type{Memory{P}},Nw}, ::Lifted{UndefInitializer,Nw}, n::Lifted
 ) where {Nw,P}
-    # `isbitstype(P)` is world-independent (structural), so it stays in the generator body. But
-    # `dual_type(Val(Nw), Memory{P})` MUST be emitted into the RETURNED expression, not computed
-    # here: a generator-body call bakes its resolution at this generator's first-expansion world,
-    # so an extension's `dual_type` (e.g. CUDA's `CuArray → NDualArray`) loaded afterwards can never
-    # take effect — under forward-over-reverse the element `P` can be a reverse-pullback closure
-    # capturing `CuArray`s, and the baked generic recursion then descends into `CuPtr{Nothing}` and
-    # errors. In the returned expression `dual_type` resolves at the call world (extension visible),
-    # and stays `@foldable`-folded to a concrete type, so `MemV`/the `NoDual` branch remain stable.
+    # isbitstype is structural, but dual_type must resolve in the returned expression at the
+    # call world so later extension overloads apply (e.g. pullback closures capturing CuArrays).
+    # Computing it in the generator would bake in generic recursion into CuPtr{Nothing}.
     fill_expr = if isbitstype(P)
         :(@inbounds for i in eachindex(dv)
             dv[i] = zero_dual(Val($Nw), x[i])
@@ -1104,9 +1018,7 @@ function frule!!(
 ) where {Nw,P<:NDualEltype,D}
     _sz = primal(sz)
     y = _new_(Array{P,D}, primal(ref), _sz)
-    # The array's block is a window over the ref's SHARED block backing, starting at the ref's
-    # column (array element 1) with one extra leading lane dimension — mutations through the
-    # array V and through the ref V land in the same storage, mirroring the primal aliasing.
+    # Share the ref's backing from its column onward so array/ref V mutations alias.
     v = tangent(ref)
     flat = _new_(
         Vector{P},
@@ -1116,10 +1028,7 @@ function frule!!(
     block = NDualBlock{P,D + 1}(flat, (Nw, _sz...))
     return Lifted{Array{P,D},Nw}(y, NDualArray{P,Nw,D,Array{P,D}}(y, block))
 end
-# Element-wise `_new_(Array{P,D}, ref, size)` for non-float differentiable elements: the V
-# is the element-wise `Array{dual_type(P),D}` built from the element-wise V ref (a plain
-# `MemoryRef`) and the same size. Mirrors the reverse `rrule!!` below
-# (`_new_(Array{tangent_type(P),N}, ref.dx, size)`).
+# Build the element-wise V array over its V ref, mirroring reverse tangent storage.
 @inline function frule!!(
     ::Lifted{typeof(_new_),Nw},
     ::Lifted{Type{Array{P,D}},Nw},
@@ -1157,11 +1066,7 @@ function frule!!(
         new_primal, NDualArray{P,Nw,1,Memory{P}}(new_primal, new_block)
     )
 end
-# Element-wise-V `Memory` copy: the V is itself a `Memory` (per-element forward Vs), not the
-# parallel-arrays `NDualArray`. Covers non-diff concrete elements (`Memory{NoDual}`, e.g. the
-# `Memory{UInt8}` metadata `copy(::Dict)` copies on 1.11+) and abstract `Memory{Any}`. Shallow-copy
-# the V to match `copy`'s own shallow element semantics, mirroring the reverse `rrule!!`. The
-# `NDualArray`-V method above is more specific and is not a `Memory`, so the two never overlap.
+# Shallow-copy element-wise V, matching primal semantics (including UInt8 metadata and Any).
 function frule!!(
     ::Lifted{typeof(_foreigncall_),Nw},
     ::Lifted{Val{:jl_genericmemory_copy},Nw},
@@ -1195,11 +1100,7 @@ end
 
 # getfield / lgetfield rules for Memory, MemoryRef, and Array.
 
-# No forward `lgetfield` frules for Memory/MemoryRef/Array here: the generic `lgetfield` frule in
-# misc.jl projects the field V through the same `_get_lifted_field` methods (which handle `.ref` ->
-# `NDualMemoryRef`, `.mem` -> `NDualArray`, metadata -> `NoDual`; see their docstrings in misc.jl),
-# so an element-type-restricted frule here would only duplicate that path. The reverse `rrule!!`s
-# below are kept — they do their own field-specific projection.
+# Forward field projection uses generic lgetfield and _get_lifted_field in misc.jl.
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:Memory,<:Memory},
@@ -1208,10 +1109,7 @@ function rrule!!(
 ) where {name,order}
     y = getfield(primal(x), name, order)
     wants_length = name === 1 || name === :length
-    # The field's fdata is an `VoidPtrTangent`, which says what the address is laid out in. For a
-    # non-differentiable element type the tangent `Memory` has zero-size elements, so its pointer
-    # backs no bytes and the stride records that; a later re-typed `pointerset`/`pointerref` is then
-    # refused rather than reading or writing `sizeof(T)` bytes of a zero-byte allocation.
+    # Tag pointer layout so retyped loads/stores cannot dereference zero-byte tangent buffers.
     dy = if wants_length
         NoFData()
     elseif eltype(x.dx) === NoTangent
@@ -1265,9 +1163,7 @@ function rrule!!(
     return y, ternary_lgetfield_adjoint
 end
 
-# No 4-arg `getfield` frule here: builtins' runtime-name `getfield` frule is type-stable
-# (no `Val(primal(name))` round-trip) and projects memory-type fields through the same
-# `_get_lifted_field` methods, so a delegator in this file would only shadow that path.
+# Runtime-name forward getfield in builtins.jl avoids an unstable Val round-trip.
 function rrule!!(
     ::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -1284,8 +1180,7 @@ function rrule!!(
     return y, getfield_adjoint
 end
 
-# The 2-arg `getfield(x, name)` frule is version-agnostic and lives in builtins.jl
-# (so it is also available on Julia 1.10, which does not load this file).
+# Forward getfield lives in builtins.jl so it is available on Julia 1.10 too.
 function rrule!!(
     f::CoDual{typeof(getfield)},
     x::CoDual{<:_MemTypes,<:_MemTypes},
@@ -1296,13 +1191,9 @@ function rrule!!(
     return y, ternary_getfield_adjoint
 end
 
-# Write the primal field, then retarget the block IN PLACE, preserving the block object's identity
-# so every V sharing it keeps aliasing. `:size` maps to the block's flat parent length `Nw * n`
-# (the block's trailing dimension follows it); `:ref` (array growth installing new storage)
-# retargets the parent at the incoming ref V's block backing at its column — the array's
-# elements start there, one column each. As in the primal (`_growend!` writes `.size` and `.ref`
-# separately), the block may be transiently inconsistent between the two writes; nothing reads in
-# between.
+# Retarget the block in place to preserve V aliases. Size sets its flat length; ref points at
+# the incoming column. Array growth writes them separately, allowing transient inconsistency
+# only while nothing reads the block.
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Array,Nw,<:NDualArray},
@@ -1355,10 +1246,7 @@ function rrule!!(::CoDual{typeof(copy)}, a::CoDual{<:Array})
     end
     return y, copy_pullback!!
 end
-# Forward `copy(::Array)`: copy primal and V together. `NDualArray` float/complex array → copy
-# each lane's partial; element-wise `Array`-of-duals V → copy the (immutable-element) V array;
-# non-diff → NoDual. `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex
-# `NDualArray`s (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
+# Copy primal and V together; the four-parameter NDualArray prefix also matches complex V.
 function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
@@ -1372,8 +1260,6 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(fill!),Array{<:Union{UInt8,Int8}},Integer}
 @is_primitive MinimalCtx Tuple{typeof(fill!),Memory{<:Union{UInt8,Int8}},Integer}
-# UInt8/Int8 element arrays are non-differentiable — no per-lane tangent
-# update needed.
 function frule!!(
     ::Lifted{typeof(fill!),Nw}, a::Lifted{<:Union{Array{V},Memory{V}},Nw}, x::Lifted
 ) where {Nw,V<:Union{UInt8,Int8}}
@@ -1477,8 +1363,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             (false, :none, nothing, memoryrefget, mem_ref, :not_atomic, bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [false, true]
         ],
-        # `lmemoryrefget` (literal Val-wrapped ordering/boundscheck), the get-analogue of the
-        # `lmemoryrefset!` entry below.
         [
             (false, :none, nothing, lmemoryrefget, mem_ref, Val(:not_atomic), bc) for
             mem_ref in filter(isassigned, mem_refs) for bc in [Val(false), Val(true)]
@@ -1607,9 +1491,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:memory})
             Val(1),
             randn(rng, 10).ref,
         ),
-        # Element-wise V parent: writing `.ref` (field 1) by integer index `Val(1)` must thread the
-        # tangent ref, not the primal. The symbol form `Val(:ref)` took the right branch but the
-        # integer alias did not (regression vs the reverse rrule / NDualArray sibling predicate).
+        # Element-wise V must thread the tangent ref for integer field aliases too.
         (
             false,
             :none,
@@ -1674,10 +1556,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
         (true, :none, nothing, Base._growend!, randn(5), 3),
         (true, :none, nothing, Base._growat!, randn(5), 2, 2),
         (false, :none, nothing, sizehint!, randn(5), 10),
-        # Forward AD over growing a `Vector{ComplexF64}` runs `memoryrefnew` on a complex `Memory`,
-        # whose canonical forward V must be `NDualMemoryRef`: before the
-        # `dual_type(MemoryRef{Complex})` overload the slot was typed `MemoryRef{Complex{NDual}}` and
-        # the writeback threw a MethodError. Reverse mode is the oracle.
+        # Complex MemoryRef V must be NDualMemoryRef during array growth; reverse is the oracle.
         (
             false,
             :none,
@@ -1763,10 +1642,7 @@ end
         return Core.memoryrefget(Core.memoryrefnew(getfield(v, :ref), 5), :not_atomic, true)
     end
 
-    # A `MemoryRef` held across a reallocating resize still addresses the OLD `Memory`, so its
-    # derivative must too. Deriving the partials ref from a live parent array retargets it at
-    # the new storage instead, which reads the wrong element and reports 1.0 here where the
-    # directional derivative is 4.0 -- silently, since the primal stays correct.
+    # A ref held across reallocation must retain OLD derivative storage (JVP 4, not 1).
     function memoryref_across_realloc(v)
         r = getfield(v, :ref)
         push!(v, 0.0)
@@ -1785,10 +1661,8 @@ end
         return Core.memoryrefget(Core.memoryrefnew(m), :not_atomic, false)
     end
 
-    # Reading through a projected `.mem` must not allocate. The projection materialises an array
-    # header over the partials backing, which the optimiser drops only while nothing escapes the
-    # block; anything that does costs an allocation per projection, and the primal projects
-    # `.mem` per element wherever `length` or a bounds check reaches through the `MemoryRef`.
+    # Projecting .mem must not allocate: its temporary array header must not escape, since
+    # length and bounds checks can project once per element.
     function memoryref_mem_sum(v)
         m = getfield(getfield(v, :ref), :mem)
         r = Core.memoryrefnew(m)
@@ -1799,9 +1673,7 @@ end
         return y
     end
 
-    # The same divergence reached through `.mem` rather than `memoryrefnew`. The write after the
-    # resize lands only in the new storage, so projecting the partials parent instead of the ref
-    # reports a derivative of 7.0 where it is 1.0.
+    # Projecting .mem after resizing must retain old storage (derivative 1, not 7).
     function memoryref_mem_across_realloc(v)
         r = getfield(v, :ref)
         push!(v, 0.0)

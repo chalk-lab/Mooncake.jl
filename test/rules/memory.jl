@@ -23,12 +23,9 @@ end
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
 
-    # Regression: an isbits element-wise `Memory{P}(undef, n)` V must be filled with
-    # coherent zero duals — readable garbage partials would propagate as nonzero
-    # derivatives via whole-buffer copies.
+    # Isbits undef Memory V needs coherent zero partials before whole-buffer copies.
     @testset "element-wise undef Memory V zero partials (width $N)" for N in (1, 2, 3)
-        # Dirty the heap so an unzeroed partial buffer would read back nonzero — without this the
-        # guard is vacuous (a fresh `undef` buffer commonly reads zero by chance).
+        # Dirty the heap so an unzeroed buffer cannot pass merely by reusing zeroed pages.
         let junk = Memory{Float64}[]
             for _ in 1:200
                 m = Memory{Float64}(undef, 16)
@@ -46,9 +43,7 @@ end
         @test all(i -> tangent(r)[i][1].value === primal(r)[i][1], 1:4)
     end
 
-    # Regression: the NDualEltype `Core.memorynew` frule (Julia 1.12+ array lowering) must zero
-    # each partial buffer like its `Memory{P}(undef, n)` sibling — bare `Core.memorynew` returns
-    # uninitialized memory that whole-buffer copies would propagate as nonzero partials.
+    # Core.memorynew must zero NDualEltype partials too (Julia 1.12+ array lowering).
     @static if VERSION >= v"1.12-"
         @testset "Core.memorynew NDualEltype V zero partials (width $N)" for N in (1, 2, 3)
             # Dirty the heap so an unzeroed buffer would likely read back nonzero.
@@ -71,11 +66,8 @@ end
 
     @static if VERSION >= v"1.11-rc4"
         @testset "no tangent pointer for a zero-size element type" begin
-            # A `Memory{UInt8}`'s tangent is a `Memory{NoTangent}`, whose buffer holds no bytes, so
-            # handing out its address let a re-typed `pointerset` write `sizeof(Float64)` bytes into
-            # a zero-byte allocation — a segfault. The field's fdata is an `VoidPtrTangent`, which
-            # says so in its `elt` tag rather than by a NULL address. The registry cannot
-            # express this: seeding a `Ptr` primal yields the `uninit_*` placeholder.
+            # Zero-byte tangent buffers need a NoTangent layout tag to refuse retyped accesses.
+            # The registry cannot express this: Ptr seeding yields an uninit_* placeholder.
             m8 = Memory{UInt8}(undef, 8)
             o = Mooncake.rrule!!(
                 Mooncake.zero_fcodual(Mooncake.lgetfield),
@@ -84,8 +76,7 @@ end
                 Mooncake.zero_fcodual(Val(:not_atomic)),
             )[1]
             @test tangent(o).elt === Mooncake.NoTangent
-            # A differentiable element type still gets its real tangent buffer's address, tagged
-            # with what that buffer holds so a re-typing can be checked against it.
+            # Differentiable elements retain the real tangent address and layout tag.
             mf = Memory{Float64}(undef, 2)
             tf = Mooncake.zero_tangent(mf)
             o = Mooncake.rrule!!(
@@ -103,9 +94,7 @@ end
                 Mooncake.zero_fcodual(1),
                 Mooncake.zero_fcodual(1),
             )
-            # The guard must NOT fire for a zero-size tangent element type: a non-differentiable
-            # store carries `Ptr{NoTangent}`, whose deref touches no bytes and is safe even at
-            # NULL. A blanket null check rejected this and broke a registered `pointerset` case.
+            # Ptr{NoTangent} dereferences touch no bytes and must remain safe even at NULL.
             Mooncake.rrule!!(
                 Mooncake.zero_fcodual(Mooncake.IntrinsicsWrappers.pointerset),
                 Mooncake.CoDual(Ptr{UInt8}(pointer(m8)), Ptr{Mooncake.NoTangent}(0)),
@@ -128,12 +117,8 @@ end
 
         @static if VERSION >= v"1.12-"
             @testset "Core.memorynew hands back a ZERO tangent" begin
-                # `Core.memorynew` returns uninitialised memory, so allocating the tangent the same
-                # way returned whatever the block last held — non-zero in 20 of 20 runs once the
-                # heap is dirtied. Reachable: `copy`, `similar` and `Vector{T}(undef, n)` all lower
-                # through `memorynew` on 1.12. Asserted at the rule, not through a gradient, because
-                # the property is "the fresh tangent is zero": a freed page usually reads as zero,
-                # so an end-to-end check passes even when the rule is wrong.
+                # Dirty the heap and test the fresh tangent directly: end-to-end gradients can
+                # hide uninitialised partials when freed pages happen to contain zeros.
                 junk = [fill(-77.0, 64) for _ in 1:400]
                 GC.@preserve junk nothing
                 junk = nothing
