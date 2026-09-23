@@ -160,9 +160,27 @@ end
     end
 end
 
-@testset "NaN handling in builtins rrules" begin
+@testset "NaN handling in builtins rules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+    end
+
+    # The registry's chunk invariant requires finite partials. Exercise mixed inactive
+    # and nonfinite active lanes directly, preserving that invariant for registered cases.
+    for P in (Float16, Float32, Float64),
+        f in (IntrinsicsWrappers.sqrt_llvm, IntrinsicsWrappers.sqrt_llvm_fast),
+        x in (P(-1), P(0))
+
+        partials = ntuple(k -> isodd(k) ? P(1) : P(0), 8)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(8), f),
+            Lifted{P,8}(x, Mooncake.NDual{P,8}(x, partials)),
+        )
+        y = x < 0 ? P(NaN) : P(0)
+        active = x < 0 ? P(NaN) : P(Inf)
+        @test isequal(primal(out), y)
+        @test isequal(tangent(out).value, y)
+        @test isequal(tangent(out).partials, ntuple(k -> isodd(k) ? active : P(0), 8))
     end
 
     # Test cases for avoiding `NaN` poisoning. 

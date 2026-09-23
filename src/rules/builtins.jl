@@ -1330,15 +1330,14 @@ end
 @inactive_intrinsic slt_int
 
 @intrinsic sqrt_llvm
+@intrinsic sqrt_llvm_fast
 function frule!!(
-    ::Lifted{typeof(sqrt_llvm),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
-) where {Nw,T<:IEEEFloat}
-    # The NDual `sqrt` overload (Nfwd.jl) computes the primal `sqrt` once, stores it as the
-    # result's `.value` (inner-value invariant), and applies `_fwd_guarded_scale` — the NDual
-    # analogue of `nan_tangent_guard` — so the singular `sqrt(0)` case has zeroed partials
-    # instead of NaN. Read the primal back from the dual rather than recomputing `sqrt_llvm`.
-    dy = sqrt(tangent(x))
-    return Lifted{T,Nw}(dy.value, dy)
+    f::Lifted{F,Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
+) where {F<:Union{typeof(sqrt_llvm),typeof(sqrt_llvm_fast)},Nw,T<:IEEEFloat}
+    # Use the intrinsic: Base.sqrt throws for negative inputs instead of returning NaN.
+    y = primal(f)(primal(x))
+    dy = NDual{T,Nw}(y, Mooncake._fwd_guarded_scale(tangent(x).partials, inv(2 * y)))
+    return Lifted{T,Nw}(y, dy)
 end
 function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm(primal(x))
@@ -1349,14 +1348,6 @@ function rrule!!(::CoDual{typeof(sqrt_llvm)}, x::CoDual{P}) where {P}
     return CoDual(_y, NoFData()), llvm_sqrt_pullback!!
 end
 
-@intrinsic sqrt_llvm_fast
-function frule!!(
-    ::Lifted{typeof(sqrt_llvm_fast),Nw}, x::Lifted{T,Nw,NDual{T,Nw}}
-) where {Nw,T<:IEEEFloat}
-    # Read the primal back from the dual `sqrt` rather than recomputing it (see `sqrt_llvm`).
-    dy = sqrt(tangent(x))
-    return Lifted{T,Nw}(dy.value, dy)
-end
 function rrule!!(::CoDual{typeof(sqrt_llvm_fast)}, x::CoDual{P}) where {P}
     _y = sqrt_llvm_fast(primal(x))
     function llvm_sqrt_fast_pullback!!(dy)
@@ -2452,6 +2443,20 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:builtins})
                 ),
             )
         end
+    end
+
+    # Unlike Base.sqrt, the intrinsics return NaN for negative inputs. Pin the oracle:
+    # finite differences cannot resolve NaN values or the singular derivative at zero.
+    # Zero input seeds also check that inactive lanes stay zero in both chunk widths.
+    for P in (Float16, Float32, Float64),
+        f in (IntrinsicsWrappers.sqrt_llvm, IntrinsicsWrappers.sqrt_llvm_fast),
+        x in (P(-1), P(0))
+
+        y = x < 0 ? P(NaN) : P(0)
+        seed = x < 0 ? P(1) : P(0)
+        rvs = (NoRData(), x < 0 ? P(NaN) : P(0))
+        opts = (oracle=(value=y, deriv=(fwd=P(0), rvs=rvs)), output_tangent=seed)
+        push!(test_cases, (false, :stability, opts, f, CoDual(x, P(0))))
     end
 
     # A select-like primitive must take the partials of the operand it actually returned.
