@@ -1115,38 +1115,23 @@ end
 # tie behaviour differs, so without these methods a dual falls through FastMath's `Number` fallback
 # to `min`/`max` and carries a `.value` the primal never produced.
 #
-# Ordinary comparisons, not the `gt_fast` the primitives use, and NaN is out of contract. `gt_fast`
-# is undefined for NaN and its answer is not stable even within one program: the expression
-# `ifelse(gt_fast(1.0, NaN), 1.0, NaN)` gives `1.0` at top level and `NaN` inside a compiled
-# function, and `minmax_fast(NaN, 1.0)` was observed returning both `(NaN, 1.0)` and `(1.0, 1.0)` on
-# one Julia version. So no implementation can agree with these primitives on NaN, because the
-# primitives do not agree with themselves. `<` and `>` are defined, and reproduce all four
-# primitives exactly on every non-NaN pair drawn from {-0.0, 0.0, ±1, 2, ±Inf} — signed-zero ties
-# included, which is what the version split below is for. Under `@fastmath` a NaN operand is the
-# caller's own unspecified territory; what these methods fix is the well-defined half, where the
-# fallthrough to `min`/`max` gave a `.value` the primal never produced.
-#
-# Selecting the WHOLE dual keeps the inner-value invariant by construction. `_ndual_pick_*` is not
-# reused: it selects by `isequal` against the computed result, which cannot say which operand a tie
-# returned.
+# Evaluate the primitive itself: fast comparisons can lower differently across platforms,
+# including their choice of signed zero. Select only partials, keeping the existing equal-value
+# tie convention (second operand, except for `max_fast` before Julia 1.12).
+# NaN remains outside FastMath's contract.
 @inline function Base.FastMath.min_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
-    return ifelse(a.value < b.value, a, b)
+    v = Base.FastMath.min_fast(a.value, b.value)
+    pick_a = isequal(v, a.value) & !isequal(v, b.value)
+    return NDual{T,N}(v, ifelse(pick_a, a.partials, b.partials))
 end
-@static if VERSION >= v"1.12-"
-    # 1.12's intrinsic gives a tie to the SECOND operand, 1.11's `ifelse` form to the FIRST. Both
-    # verified against the primitive over every non-NaN pair; the wrong one misses by exactly the
-    # two signed-zero ties.
-    @inline function Base.FastMath.max_fast(
-        a::NDual{T,N}, b::NDual{T,N}
-    ) where {T<:IEEEFloat,N}
-        return ifelse(a.value > b.value, a, b)
+@inline function Base.FastMath.max_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
+    v = Base.FastMath.max_fast(a.value, b.value)
+    @static if VERSION >= v"1.12-"
+        pick_a = isequal(v, a.value) & !isequal(v, b.value)
+    else
+        pick_a = isequal(v, a.value) | !isequal(v, b.value)
     end
-else
-    @inline function Base.FastMath.max_fast(
-        a::NDual{T,N}, b::NDual{T,N}
-    ) where {T<:IEEEFloat,N}
-        return ifelse(b.value > a.value, b, a)
-    end
+    return NDual{T,N}(v, ifelse(pick_a, a.partials, b.partials))
 end
 @inline function Base.FastMath.minmax_fast(
     a::NDual{T,N}, b::NDual{T,N}

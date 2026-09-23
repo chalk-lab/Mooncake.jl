@@ -841,7 +841,7 @@ using Mooncake.Nfwd
         # Without `NDual` methods these fall through FastMath's `Number` fallback to `min`/`max`/
         # `rem`, which are DIFFERENT primitives, so the dual carried a `.value` the primal never
         # produced. Compared against each primitive over every pair of well-defined operands,
-        # signed-zero ties included — those ties are what the `max_fast` version split is for.
+        # signed-zero ties included — comparisons alone do not reproduce them on every platform.
         # NaN is deliberately absent: FastMath comparisons are undefined for it and the primitives
         # are not self-consistent there, so there is nothing stable to assert.
         vals = (-0.0, 0.0, 1.0, -1.0, 2.0, Inf, -Inf)
