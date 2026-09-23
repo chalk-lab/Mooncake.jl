@@ -48,285 +48,72 @@ function frule!!(
 end
 
 # ---- unary scalar rules ----
-@is_primitive MinimalCtx Tuple{typeof(exp),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(exp),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = exp(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(exp)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = exp(_x)
-    exp_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y))
-    return zero_fcodual(y), exp_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(exp2),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(exp2),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = exp2(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(exp2)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = exp2(_x)
-    exp2_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(2))))
-    return zero_fcodual(y), exp2_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(exp10),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(exp10),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = exp10(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(exp10)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = exp10(_x)
-    exp10_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(10))))
-    return zero_fcodual(y), exp10_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(expm1),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(expm1),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = expm1(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(expm1)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = expm1(_x)
-    expm1_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, exp(_x)))
-    return zero_fcodual(y), expm1_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(log),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(log),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = log(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(log)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = log(_x)
-    log_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x)))
-    return zero_fcodual(y), log_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(log2),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(log2),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = log2(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(log2)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = log2(_x)
-    log2_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x * oftype(_x, log(2)))))
-    return zero_fcodual(y), log2_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(log10),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(log10),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = log10(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(log10)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = log10(_x)
-    log10_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(_x * oftype(_x, log(10)))))
-    return zero_fcodual(y), log10_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(log1p),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(log1p),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = log1p(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(log1p)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = log1p(_x)
-    log1p_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x)))
-    return zero_fcodual(y), log1p_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(sqrt),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(sqrt),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = sqrt(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(sqrt)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = sqrt(_x)
-    sqrt_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(2 * y)))
-    return zero_fcodual(y), sqrt_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(cbrt),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(cbrt),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = cbrt(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(cbrt)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = cbrt(_x)
-    cbrt_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(3 * y^2)))
-    return zero_fcodual(y), cbrt_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(sec),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(sec),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = sec(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(sec)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = sec(_x)
-    sec_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * tan(_x)))
-    return zero_fcodual(y), sec_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(csc),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(csc),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = csc(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(csc)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = csc(_x)
-    csc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -y * cot(_x)))
-    return zero_fcodual(y), csc_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(cot),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(cot),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = cot(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(cot)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = cot(_x)
-    cot_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -(one(y) + y^2)))
-    return zero_fcodual(y), cot_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(asin),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(asin),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = asin(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(asin)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = asin(_x)
-    asin_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(one(_x) - _x^2))))
-    return zero_fcodual(y), asin_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acos),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(acos),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = acos(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acos)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acos(_x)
-    acos_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(sqrt(one(_x) - _x^2))))
-    return zero_fcodual(y), acos_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(atan),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(atan),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = atan(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(atan)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = atan(_x)
-    atan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x^2)))
-    return zero_fcodual(y), atan_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(asec),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(asec),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = asec(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(asec)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = asec(_x)
-    asec_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(abs(_x) * sqrt(_x^2 - one(_x)))))
-    return zero_fcodual(y), asec_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acsc),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(acsc),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = acsc(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acsc)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acsc(_x)
-    acsc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(abs(_x) * sqrt(_x^2 - one(_x)))))
-    return zero_fcodual(y), acsc_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acot),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(acot),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = acot(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acot)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acot(_x)
-    acot_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(one(_x) + _x^2)))
-    return zero_fcodual(y), acot_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(sinh),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(sinh),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = sinh(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(sinh)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = sinh(_x)
-    sinh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, cosh(_x)))
-    return zero_fcodual(y), sinh_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(cosh),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(cosh),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = cosh(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(cosh)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = cosh(_x)
-    cosh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, sinh(_x)))
-    return zero_fcodual(y), cosh_pb
+# Unary rules with a single guarded coefficient; evaluate it inside the pullback.
+for (f, coefficient) in (
+    (exp, :(y)),
+    (exp2, :(y * oftype(y, log(2)))),
+    (exp10, :(y * oftype(y, log(10)))),
+    (expm1, :(exp(_x))),
+    (log, :(inv(_x))),
+    (log2, :(inv(_x * oftype(_x, log(2))))),
+    (log10, :(inv(_x * oftype(_x, log(10))))),
+    (log1p, :(inv(one(_x) + _x))),
+    (sqrt, :(inv(2 * y))),
+    (cbrt, :(inv(3 * y^2))),
+    (sec, :(y * tan(_x))),
+    (csc, :(-y * cot(_x))),
+    (cot, :(-(one(y) + y^2))),
+    (asin, :(inv(sqrt(one(_x) - _x^2)))),
+    (acos, :(-inv(sqrt(one(_x) - _x^2)))),
+    (atan, :(inv(one(_x) + _x^2))),
+    (asec, :(inv(abs(_x) * sqrt(_x^2 - one(_x))))),
+    (acsc, :(-inv(abs(_x) * sqrt(_x^2 - one(_x))))),
+    (acot, :(-inv(one(_x) + _x^2))),
+    (sinh, :(cosh(_x))),
+    (cosh, :(sinh(_x))),
+    (sech, :(-tanh(_x) * y)),
+    (csch, :(-coth(_x) * y)),
+    (coth, :(-csch(_x)^2)),
+    (atanh, :(inv(one(_x) - _x^2))),
+    (asech, :(-inv(_x * sqrt(one(_x) - _x^2)))),
+    (acsch, :(-inv(abs(_x) * sqrt(one(_x) + _x^2)))),
+    (acoth, :(inv(one(_x) - _x^2))),
+    (secd, :(deg2rad(y * tand(_x)))),
+    (cscd, :(-deg2rad(y * cotd(_x)))),
+    (cotd, :(-deg2rad(one(y) + y^2))),
+    (asind, :(inv(deg2rad(sqrt(one(_x) - _x^2))))),
+    (acosd, :(-inv(deg2rad(sqrt(one(_x) - _x^2))))),
+    (atand, :(inv(deg2rad(one(_x) + _x^2)))),
+    (asecd, :(inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))),
+    (acscd, :(-inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))),
+    (acotd, :(-inv(deg2rad(one(_x) + _x^2)))),
+    (deg2rad, :(deg2rad(one(_x)))),
+    (rad2deg, :(rad2deg(one(_x)))),
+    (sinc, :(cosc(_x))),
+    (nextfloat, :(one(_x))),
+    (prevfloat, :(one(_x))),
+    (Base.FastMath.exp_fast, :(y)),
+    (Base.FastMath.exp2_fast, :(y * oftype(y, log(2)))),
+    (Base.FastMath.exp10_fast, :(y * oftype(y, log(10)))),
+    (Base.FastMath.atan_fast, :(inv(one(_x) + _x^2))),
+)
+    pb = Symbol(nameof(f), :_pb)
+    @eval begin
+        @is_primitive MinimalCtx Tuple{typeof($f),P} where {P<:IEEEFloat}
+        function frule!!(
+            ::Lifted{typeof($f),N}, x::Lifted{P,N,NDual{P,N}}
+        ) where {N,P<:IEEEFloat}
+            dy = $f(tangent(x))
+            y = dy.value
+            return Lifted{_typeof(y),N}(y, dy)
+        end
+        function rrule!!(::CoDual{typeof($f)}, x::CoDual{P}) where {P<:IEEEFloat}
+            _x = primal(x)
+            y = $f(_x)
+            $pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, $coefficient))
+            return zero_fcodual(y), $pb
+        end
+    end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(tanh),P} where {P<:IEEEFloat}
@@ -344,45 +131,6 @@ function rrule!!(::CoDual{typeof(tanh)}, x::CoDual{P}) where {P<:IEEEFloat}
         return NoRData(), _rvs_guarded_scale(ȳ, 4u / (one(P) + u)^2)
     end
     return zero_fcodual(y), tanh_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(sech),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(sech),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = sech(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(sech)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = sech(_x)
-    sech_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -tanh(_x) * y))
-    return zero_fcodual(y), sech_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(csch),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(csch),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = csch(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(csch)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = csch(_x)
-    csch_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -coth(_x) * y))
-    return zero_fcodual(y), csch_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(coth),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(coth),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = coth(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(coth)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = coth(_x)
-    coth_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -csch(_x)^2))
-    return zero_fcodual(y), coth_pb
 end
 
 @is_primitive MinimalCtx Tuple{typeof(asinh),P} where {P<:IEEEFloat}
@@ -425,244 +173,6 @@ function rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P}) where {P<:IEEEFloat}
     return zero_fcodual(y), acosh_pb
 end
 
-@is_primitive MinimalCtx Tuple{typeof(atanh),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(atanh),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = atanh(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(atanh)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = atanh(_x)
-    atanh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) - _x^2)))
-    return zero_fcodual(y), atanh_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(asech),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(asech),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = asech(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(asech)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = asech(_x)
-    asech_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(_x * sqrt(one(_x) - _x^2))))
-    return zero_fcodual(y), asech_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acsch),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(acsch),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = acsch(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acsch)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acsch(_x)
-    acsch_pb(ȳ::P) = (
-        NoRData(), _rvs_guarded_scale(ȳ, -inv(abs(_x) * sqrt(one(_x) + _x^2)))
-    )
-    return zero_fcodual(y), acsch_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acoth),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(acoth),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = acoth(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acoth)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acoth(_x)
-    acoth_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) - _x^2)))
-    return zero_fcodual(y), acoth_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(secd),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(secd),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = secd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(secd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = secd(_x)
-    secd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(y * tand(_x))))
-    return zero_fcodual(y), secd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(cscd),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(cscd),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = cscd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(cscd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = cscd(_x)
-    cscd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -deg2rad(y * cotd(_x))))
-    return zero_fcodual(y), cscd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(cotd),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(cotd),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = cotd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(cotd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = cotd(_x)
-    cotd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -deg2rad(one(y) + y^2)))
-    return zero_fcodual(y), cotd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(asind),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(asind),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = asind(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(asind)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = asind(_x)
-    asind_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(sqrt(one(_x) - _x^2)))))
-    return zero_fcodual(y), asind_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acosd),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(acosd),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = acosd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acosd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acosd(_x)
-    acosd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(sqrt(one(_x) - _x^2)))))
-    return zero_fcodual(y), acosd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(atand),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(atand),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = atand(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(atand)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = atand(_x)
-    atand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(one(_x) + _x^2))))
-    return zero_fcodual(y), atand_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(asecd),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(asecd),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = asecd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(asecd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = asecd(_x)
-    asecd_pb(ȳ::P) = (
-        NoRData(), _rvs_guarded_scale(ȳ, inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
-    )
-    return zero_fcodual(y), asecd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acscd),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(acscd),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = acscd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acscd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acscd(_x)
-    acscd_pb(ȳ::P) = (
-        NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(abs(_x) * sqrt(_x^2 - one(_x)))))
-    )
-    return zero_fcodual(y), acscd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(acotd),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(acotd),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = acotd(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(acotd)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = acotd(_x)
-    acotd_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, -inv(deg2rad(one(_x) + _x^2))))
-    return zero_fcodual(y), acotd_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(deg2rad),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(deg2rad),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = deg2rad(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(deg2rad)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = deg2rad(_x)
-    deg2rad_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(one(_x))))
-    return zero_fcodual(y), deg2rad_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(rad2deg),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(rad2deg),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = rad2deg(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(rad2deg)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = rad2deg(_x)
-    rad2deg_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, rad2deg(one(_x))))
-    return zero_fcodual(y), rad2deg_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(sinc),P} where {P<:IEEEFloat}
-function frule!!(::Lifted{typeof(sinc),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    dy = sinc(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(sinc)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = sinc(_x)
-    sinc_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, cosc(_x)))
-    return zero_fcodual(y), sinc_pb
-end
-
 @is_primitive MinimalCtx Tuple{typeof(mod2pi),P} where {P<:IEEEFloat}
 function frule!!(
     ::Lifted{typeof(mod2pi),N}, x::Lifted{P,N,NDual{P,N}}
@@ -681,104 +191,6 @@ function rrule!!(::CoDual{typeof(mod2pi)}, x::CoDual{P}) where {P<:IEEEFloat}
         ),
     )
     return zero_fcodual(y), mod2pi_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(nextfloat),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(nextfloat),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = nextfloat(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(nextfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = nextfloat(_x)
-    nextfloat_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(_x)))
-    return zero_fcodual(y), nextfloat_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(prevfloat),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(prevfloat),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = prevfloat(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P}) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = prevfloat(_x)
-    prevfloat_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(_x)))
-    return zero_fcodual(y), prevfloat_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp_fast),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(Base.FastMath.exp_fast),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = Base.FastMath.exp_fast(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = Base.FastMath.exp_fast(_x)
-    exp_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y))
-    return zero_fcodual(y), exp_fast_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp2_fast),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(Base.FastMath.exp2_fast),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = Base.FastMath.exp2_fast(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp2_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = Base.FastMath.exp2_fast(_x)
-    exp2_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(2))))
-    return zero_fcodual(y), exp2_fast_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.exp10_fast),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(Base.FastMath.exp10_fast),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = Base.FastMath.exp10_fast(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.exp10_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = Base.FastMath.exp10_fast(_x)
-    exp10_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, y * oftype(y, log(10))))
-    return zero_fcodual(y), exp10_fast_pb
-end
-
-@is_primitive MinimalCtx Tuple{typeof(Base.FastMath.atan_fast),P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(Base.FastMath.atan_fast),N}, x::Lifted{P,N,NDual{P,N}}
-) where {N,P<:IEEEFloat}
-    dy = Base.FastMath.atan_fast(tangent(x))
-    y = dy.value
-    return Lifted{_typeof(y),N}(y, dy)
-end
-function rrule!!(
-    ::CoDual{typeof(Base.FastMath.atan_fast)}, x::CoDual{P}
-) where {P<:IEEEFloat}
-    _x = primal(x)
-    y = Base.FastMath.atan_fast(_x)
-    atan_fast_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(one(_x) + _x^2)))
-    return zero_fcodual(y), atan_fast_pb
 end
 
 # ---- fused trig (sin/cos/tan families): one shared `sincos`-type call for value + derivative ----

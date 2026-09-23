@@ -59,48 +59,23 @@
 
     @testset "nfwd-backed non-smooth scalar rules" begin
         for T in (Float16, Float32, Float64)
-            @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(^),
-                    Mooncake.lift(zero(T), one(T)),
-                    Mooncake.lift(one(T), zero(T)),
-                ),
-                1,
-            ) === one(T)
-            @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(^),
-                    Mooncake.lift(zero(T), one(T)),
-                    Mooncake.lift(T(2), zero(T)),
-                ),
-                1,
-            ) === zero(T)
-            @test isinf(
-                tangent(
-                    Mooncake.frule!!(
-                        zero_dual(^),
-                        Mooncake.lift(zero(T), one(T)),
-                        Mooncake.lift(T(0.5), zero(T)),
-                    ),
-                    1,
-                ),
+            for (f, args, check) in (
+                (^, (0, 1), dx -> dx === one(T)),
+                (^, (0, 2), dx -> dx === zero(T)),
+                (^, (0, 0.5), isinf),
+                (mod, (4, 2), isnan),
+                (mod2pi, (2π,), isnan),
+                (max, (1, 1), dx -> dx === zero(T)),
+                (min, (1, 1), dx -> dx === one(T)),
+                (Base.eps, (1,), dx -> dx === zero(T)),
+                (nextfloat, (1,), dx -> dx === one(T)),
+                (prevfloat, (1,), dx -> dx === one(T)),
             )
-
-            @test isnan(
-                tangent(
-                    Mooncake.frule!!(
-                        zero_dual(mod),
-                        Mooncake.lift(T(4), one(T)),
-                        Mooncake.lift(T(2), zero(T)),
-                    ),
-                    1,
-                ),
-            )
-            @test isnan(
-                tangent(
-                    Mooncake.frule!!(zero_dual(mod2pi), Mooncake.lift(T(2π), one(T))), 1
-                ),
-            )
+                slots = ntuple(length(args)) do i
+                    Mooncake.lift(T(args[i]), i == 1 ? one(T) : zero(T))
+                end
+                @test check(tangent(Mooncake.frule!!(zero_dual(f), slots...), 1))
+            end
             # Reverse mod2pi must also be NaN at wrap points, including zero.
             let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(zero(T)))
                 @test isnan(pb(one(T))[2])
@@ -108,33 +83,6 @@
             let (_, pb) = Mooncake.rrule!!(zero_codual(mod2pi), zero_codual(T(0.7)))
                 @test pb(one(T))[2] === one(T)
             end
-
-            @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(max),
-                    Mooncake.lift(one(T), one(T)),
-                    Mooncake.lift(one(T), zero(T)),
-                ),
-                1,
-            ) === zero(T)
-            @test tangent(
-                Mooncake.frule!!(
-                    zero_dual(min),
-                    Mooncake.lift(one(T), one(T)),
-                    Mooncake.lift(one(T), zero(T)),
-                ),
-                1,
-            ) === one(T)
-
-            @test tangent(
-                Mooncake.frule!!(zero_dual(Base.eps), Mooncake.lift(one(T), one(T))), 1
-            ) === zero(T)
-            @test tangent(
-                Mooncake.frule!!(zero_dual(nextfloat), Mooncake.lift(one(T), one(T))), 1
-            ) === one(T)
-            @test tangent(
-                Mooncake.frule!!(zero_dual(prevfloat), Mooncake.lift(one(T), one(T))), 1
-            ) === one(T)
         end
     end
 
