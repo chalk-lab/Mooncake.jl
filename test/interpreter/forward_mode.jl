@@ -1,5 +1,5 @@
-# Helpers for the world-advance staleness test below (issue #1218; scope caveat at
-# `_build_rule!`). `stale_fwd_lazy` reaches the callee via LazyFRule, `stale_fwd_dyn` via DynamicFRule.
+# Helpers for the world-advance staleness test below (issue #1218).
+# `stale_fwd_lazy` uses LazyFRule; `stale_fwd_dyn` uses DynamicFRule.
 stale_fwd_inner(x) = Float32(x) * 2.0f0
 @noinline stale_fwd_callee(x) = stale_fwd_inner(x)
 # Two `:invoke` levels: one for the pinned rebuild, one for the rules that rebuild itself
@@ -8,6 +8,11 @@ stale_fwd_inner(x) = Float32(x) * 2.0f0
 stale_fwd_lazy(x) = stale_fwd_mid(x)
 const STALE_FWD_FNS = Function[stale_fwd_mid]
 stale_fwd_dyn(x) = (STALE_FWD_FNS[1])(x)
+
+@noinline refined_fwd_inner(x) =
+    sizeof(x) == sizeof(typeof(x)) ? x : Base.inferencebarrier(x)
+@noinline refined_fwd_outer(x) = refined_fwd_inner(x)
+refined_fwd(x) = refined_fwd_outer(x)
 
 # Dynamic dispatch (`inferencebarrier` hides the callee) so the derived rule captures a
 # `DynamicFRule` with a mutable `cache` Dict — used by the cache-hit `_copy` regression below.
@@ -56,6 +61,17 @@ function gc_preserve_probe(x)
 end
 
 @testset "s2s_forward_mode_ad" begin
+    @testset "rule return type after normalisation (#1327)" begin
+        for x in (1.0f0, 1.0), debug_mode in (false, true)
+            rule = Mooncake.build_frule(refined_fwd, x; debug_mode)
+            result = rule(
+                Mooncake.zero_lifted(Val(1), refined_fwd), Mooncake.lift(x, one(x))
+            )
+            @test primal(result) === x
+            @test tangent(result, 1) === one(x)
+        end
+    end
+
     @testset "GC preservation of primal and tangent storage (issue #1303)" begin
         # Observe collection without dereferencing a potentially stale pointer.
         @test gc_preserve_probe([1.0, 2.0]) == (true, true)

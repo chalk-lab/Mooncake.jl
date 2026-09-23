@@ -232,6 +232,8 @@ function generate_dual_ir(
         primal_ir = set_valid_world!(primal_ir, interp.world)
     end
     nargs = length(primal_ir.argtypes)
+    # Match frule_type before normalisation can refine invoke return types.
+    Treturn = dual_ret_type(primal_ir, Val(chunk_width))
 
     # Reject before normalise! runs: Julia 1.12+ lowers non-const global writes
     # (`global x = y`) to Base.setglobal! on 1.12 and Core.setglobal! on 1.13+. CC.verify_ir
@@ -294,9 +296,7 @@ function generate_dual_ir(
     dual_ir = do_optimize ? optimise_ir!(dual_ir; do_inline) : dual_ir
     return dual_ir,
     captures_tuple,
-    DualRuleInfo(
-        isva, nargs, dual_ret_type(primal_ir, Val(chunk_width)), ConstAliasSet(info.consts)
-    )
+    DualRuleInfo(isva, nargs, Treturn, ConstAliasSet(info.consts))
 end
 
 @inline get_capture(captures::T, n::Int) where {T} = captures[n]
@@ -584,7 +584,7 @@ function modify_fwd_ad_stmts!(
         replace_call!(
             dual_ir, ssa, Expr(:call, zero_lifted, Val(info.width), new_copyast_ssa)
         )
-    elseif Meta.isexpr(stmt, :loopinfo)
+    elseif Meta.isexpr(stmt, :loopinfo) || Meta.isexpr(stmt, :meta)
         # Leave this node alone.
     elseif isexpr(stmt, :throw_undef_if_not)
         # args[1] is a Symbol, args[2] is the condition which must be primalized
@@ -668,7 +668,6 @@ end
 
 # Build at the world `Trule` was predicted at: a later world can re-tighten `mi`'s inferred
 # return type, giving a rule that no longer matches `Trule` and fails to `convert` (#1218).
-# Not covered: the inference-complexity-widening case in #1209's headline MWE.
 @noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
     interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(

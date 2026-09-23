@@ -553,6 +553,34 @@ end
     end
 end
 
+@zero_derivative MinimalCtx Tuple{typeof(sortperm),Vector{<:IEEEFloat}}
+@is_primitive MinimalCtx Tuple{typeof(sort),Vector{<:IEEEFloat}}
+
+function frule!!(::Lifted{typeof(sort),N}, x::Lifted{Vector{T},N}) where {N,T<:IEEEFloat}
+    p = sortperm(primal(x))
+    y = primal(x)[p]
+    # Element `i` of `y` is element `p[i]` of `x`, so its lane column is column `p[i]` of `x`'s block.
+    dy = NDualArray{T,N,1,Vector{T}}(y)
+    copyto!(
+        getfield(dy, :partials_block), view(getfield(tangent(x), :partials_block), :, p)
+    )
+    return Lifted{Vector{T},N}(y, dy)
+end
+
+function rrule!!(::CoDual{typeof(sort)}, x::CoDual{<:Vector{<:IEEEFloat}})
+    p = sortperm(primal(x))
+    dx = tangent(x)
+    y = primal(x)[p]
+    dy = zero(y)
+    function sort_pb!!(::NoRData)
+        for i in eachindex(p)
+            dx[p[i]] += dy[i]
+        end
+        return NoRData(), NoRData()
+    end
+    return CoDual(y, dy), sort_pb!!
+end
+
 function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
 
     # Data which needs to not be GC'd.
@@ -655,6 +683,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(1), 4.0),
         (false, :none, nothing, lsetfield!, Ref(5.0), Val(:x), 4.0),
     ]
+
+    for T in (Float16, Float32, Float64), f in (sort, sortperm)
+        # Float16 needs small inputs for the finite-difference step grid.
+        x = T === Float16 ? T[0.01, -0.01] : T[3, 1, 11, 2, 10, 4, 9, 5, 8, 6, 7]
+        push!(specific_test_cases, (false, :stability, nothing, f, x))
+    end
 
     # Some specific test cases for lgetfield to test the basics.
     specific_lgetfield_test_cases = Any[

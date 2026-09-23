@@ -660,6 +660,10 @@ function test_frule_correctness(
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
     ẋ = map(normalize_tangent ∘ last ∘ unlift, x_ẋ)
+    # One direction per mutable object: `_add_to_primal` caches on primal AND tangent, so two
+    # slots over one object would otherwise be perturbed as two separate arrays.
+    seen = IdDict{Any,Any}()
+    ẋ = map((xi, ẋi) -> ismutable(xi) ? get!(seen, xi, ẋi) : ẋi, x, ẋ)
     x_primal = _deepcopy(x)
     y_primal = x_primal[1](x_primal[2:end]...)
 
@@ -691,8 +695,16 @@ function test_frule_correctness(
         )
     end
 
-    # Use AD to compute Frechet derivative at ẋ.
-    x_ẋ_rule = map((x, ẋ) -> lift(_deepcopy(x), ẋ), x, ẋ)
+    # Use AD to compute Frechet derivative at ẋ. Two slots holding one mutable object get one slot,
+    # as `_seed_lifteds` seeds them; lifting each from its own copy would test an unaliased call.
+    d = IdDict{Any,Any}()
+    x_ẋ_rule = map(x, ẋ) do xi, ẋi
+        if ismutable(xi)
+            get!(() -> lift(_deepcopy(xi), ẋi), d, xi)
+        else
+            lift(_deepcopy(xi), ẋi)
+        end
+    end
     inputs_address_map = populate_address_map(
         map(primal, x_ẋ_rule), map(tangent, x_ẋ_rule)
     )

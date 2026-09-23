@@ -572,9 +572,12 @@ function rrule!!(
     a = primal(a_da)
     x, dx = viewify(n, X_dX, incx)
     y, dy = viewify(n, Y_dY, incy)
+    # Restore from a copy, not `y .-= a .* x`: `axpy!(n, a, x, incx, x, incx)` is legal, and there
+    # `x` is the updated `y`, so the subtraction would not recover the old value.
+    y_copy = copy(y)
     BLAS.axpy!(n, a, primal(X_dX), incx, primal(Y_dY), incy)
     function axpy!_pb!!(::NoRData)
-        y .-= a .* x                       # restore: `y_old = y_new - a*x`, exactly invertible
+        y .= y_copy
         ∇a = _rvs_guarded_dot(x, dy)
         dx .+= a' .* dy                    # `y` keeps its own cotangent: d y_new / d y_old is I
         return NoRData(), NoRData(), ∇a, NoRData(), NoRData(), NoRData(), NoRData()
@@ -3185,6 +3188,41 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 end
             end
         )...,
+
+        # axpy!(n, a, x, incx, y, incy)
+        map_prod([1, 3, 11], [1, 2], [1, 2]) do (n, incx, incy)
+            flags = (false, :stability, nothing)
+            return (
+                flags...,
+                BLAS.axpy!,
+                n,
+                randn(rng, P),
+                randn(rng, P, n * incx),
+                incx,
+                randn(rng, P, n * incy),
+                incy,
+            )
+        end,
+
+        # axpy!(n, a, x, 1, y, 1) with mismatched X/Y wrapper types (Vector, SubArray,
+        # ReshapedArray, ...) -- the sweep above always pairs same-type Vectors, which
+        # would miss a primitive registration that wrongly ties X and Y to one concrete
+        # type. `circshift` forces the mismatch: `blas_vectors` returns the same sequence
+        # of types every call, so zipping two calls by index would just pair each type with
+        # itself. `only_contiguous=true` since incx=incy=1 below isn't valid for
+        # `blas_vectors`' one non-contiguous entry.
+        let xs = blas_vectors(rng, P, 5; only_contiguous=true)
+            map(xs, circshift(xs, 1)) do x, y
+                (false, :stability, nothing, BLAS.axpy!, 5, randn(rng, P), x, 1, y, 1)
+            end
+        end...,
+
+        # axpy!(n, a, x, incx, x, incx): X and Y are the same array.
+        map_prod([1, 3, 11], [1, 2]) do (n, incx)
+            flags = (false, :stability, nothing)
+            x = randn(rng, P, n * incx)
+            return (flags..., BLAS.axpy!, n, randn(rng, P), x, incx, x, incx)
+        end,
 
         #
         # BLAS LEVEL 2
