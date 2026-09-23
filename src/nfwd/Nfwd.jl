@@ -945,7 +945,7 @@ end
 # tanpi(x) = tan(π·x); derivative = π·sec²(π·x) = π·(1 + tan²(π·x)).
 @inline function Base.tanpi(a::NDual{T,N}) where {T<:IEEEFloat,N}
     v = tanpi(a.value)
-    return NDual{T,N}(v, _fwd_scale(a.partials, T(π) * (one(T) + v^2)))
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, T(π) * (one(T) + v^2)))
 end
 
 # sincospi — fused sin(π·x)+cos(π·x); each derivative gains a π factor.
@@ -958,7 +958,7 @@ end
 # Reciprocal trigonometric: sec, csc, cot and their inverses.
 @inline function Base.sec(a::NDual{T,N}) where {T,N}
     sv = sec(a.value)
-    return NDual{T,N}(sv, _fwd_scale(a.partials, sv * tan(a.value)))
+    return NDual{T,N}(sv, _fwd_guarded_scale(a.partials, sv * tan(a.value)))
 end
 @inline function Base.csc(a::NDual{T,N}) where {T,N}
     cv = csc(a.value)
@@ -993,16 +993,12 @@ end
 end
 @inline function Base.tand(a::NDual{T,N}) where {T,N}
     tv = tand(a.value)
-    return NDual{T,N}(tv, _fwd_scale(a.partials, T(deg2rad(one(T) + tv^2))))
+    return NDual{T,N}(tv, _fwd_guarded_scale(a.partials, T(deg2rad(one(T) + tv^2))))
 end
 @inline function Base.secd(a::NDual{T,N}) where {T,N}
     sv = secd(a.value)
-    return NDual{T,N}(sv, _fwd_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
+    return NDual{T,N}(sv, _fwd_guarded_scale(a.partials, T(deg2rad(sv * tand(a.value)))))
 end
-# `cscd`/`cotd` are guarded where `secd`/`tand` need not be: their coefficients grow like the
-# SQUARE of the value, which overflows near zero while the value itself is merely large --
-# `cscd(1e-200)` is `5.7e201` with a `-Inf` coefficient. `secd`/`tand` peak near 90 degrees, where
-# argument resolution caps the value around `1e16` and its square is comfortably finite.
 @inline function Base.cscd(a::NDual{T,N}) where {T,N}
     cv = cscd(a.value)
     return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(cv * cotd(a.value)))))

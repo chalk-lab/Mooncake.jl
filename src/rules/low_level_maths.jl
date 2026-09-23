@@ -1511,6 +1511,19 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             (false, :stability_and_allocs, nothing, sincospi, 0.25),
             (false, :stability_and_allocs, nothing, modf, 1.7),
         ],
+        map([
+            (tanpi, Float16(0.5)),
+            (tanpi, Float32(0.5)),
+            (tanpi, 0.5),
+            (secd, Float16(90)),
+            (secd, Float32(90)),
+            (secd, 90.0),
+            (sec, Float16(π / 2)),
+        ]) do (f, x)
+            z = zero(x)
+            opts = (oracle=(deriv=(fwd=z, rvs=(NoRData(), z)),), output_tangent=z)
+            return (false, :none, opts, f, CoDual(x, z))
+        end,
         # `hypot` is singular at the origin: the true directional derivative is 0 in every
         # arity, but a finite difference of `hypot(ε, ε)` returns `sqrt(2)`, so FD cannot pin
         # this. The seeds come through the `CoDual` channel because a random seed would not
