@@ -86,6 +86,8 @@ end
             is_primitive=false,
             mode,
             skip_chunked,
+            throws=TestUtils._case_throws(opts),
+            primal_throws=TestUtils._case_primal_throws(opts),
         )
     end
 

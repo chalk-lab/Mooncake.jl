@@ -30,8 +30,8 @@ Custom differentiation rules may be needed; see [Defining Rules](@ref).
 
 Mooncake.jl does not support differentiating through `try`/`catch` or `try`/`finally` blocks
 in **reverse mode**. Attempting to do so will produce an `UnhandledLanguageFeatureException`
-with a message explaining the cause. Forward mode supports `try`/`catch` and `try`/`finally`,
-except that binding the exception (`catch e`) is refused.
+with a message explaining the cause. Forward mode supports `try`/`catch`, `try`/`finally` and
+`rethrow()`, except that binding the exception (`catch e`) is refused.
 
 **The fix** is to replace `try`/`catch` blocks with explicit conditional checks where possible.
 For example:

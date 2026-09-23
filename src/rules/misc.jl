@@ -116,6 +116,14 @@ function rrule!!(::CoDual{typeof(stop_gradient)}, x::CoDual)
     return y, stop_gradient_pb!!
 end
 
+# `rethrow` is a `ccall(:jl_rethrow)`, which has no foreigncall rule, so a `finally` or `catch`
+# block's exception path would raise `MissingForeigncallRuleError` in place of the exception
+# itself. Forward only: reverse refuses try/catch before any rule is reached.
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(rethrow)}
+@is_primitive MinimalCtx ForwardMode Tuple{typeof(rethrow),Any}
+frule!!(::Lifted{typeof(rethrow)}) = rethrow()
+frule!!(::Lifted{typeof(rethrow)}, e::Lifted) = rethrow(primal(e))
+
 """
     lgetfield(x, f::Val)
 

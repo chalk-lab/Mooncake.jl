@@ -458,6 +458,17 @@ function try_finally_tester(x, v)
     return y
 end
 
+function try_catch_rethrow_tester(x, v)
+    y = x
+    try
+        y = y * v[1]
+    catch
+        y = y * 3
+        y < 0 && rethrow()
+    end
+    return y
+end
+
 # `y` may be unassigned at the catch, so the block's entry carries an undefined `UpsilonNode`.
 function try_catch_undef_tester(x, b)
     local y
@@ -890,6 +901,30 @@ function generate_test_functions()
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, 1.5),
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, -1.5),
         (false, :none, (mode=Mooncake.ForwardMode,), try_finally_tester, 1.5, [2.0]),
+        (
+            false,
+            :none,
+            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+            try_finally_tester,
+            1.5,
+            Float64[],
+        ),
+        (
+            false,
+            :none,
+            (mode=Mooncake.ForwardMode,),
+            try_catch_rethrow_tester,
+            1.5,
+            Float64[],
+        ),
+        (
+            false,
+            :none,
+            (throws=BoundsError, primal=true, mode=Mooncake.ForwardMode),
+            try_catch_rethrow_tester,
+            -1.5,
+            Float64[],
+        ),
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, true),
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, 1.5, false),
         (false, :none, (mode=Mooncake.ForwardMode,), try_catch_undef_tester, -1.5, true),
