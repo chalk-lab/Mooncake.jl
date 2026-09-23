@@ -1,13 +1,8 @@
 @testset "foreigncall" begin
     TestUtils.run_rule_test_cases(StableRNG, Val(:foreigncall))
 
-    # Regression: the jl_get_world_counter/jl_matching_methods frule returns
-    # `zero_lifted(Val(Nw), y)` so the forward V is CANONICAL. jl_matching_methods returns a
-    # `Vector{Any}` (tangent_type is `Vector{Any}`, NOT `NoTangent`), so hardcoding `NoDual` was a
-    # non-canonical V; the world counter (`UInt`) legitimately duals to `NoDual`. This asserts the
-    # shape the rule's `zero_lifted` guarantees for both (the registered `Base._methods_by_ftype`
-    # case above exercises the rule end-to-end but can't distinguish `NoDual` from the zero
-    # `Vector{Any}` dual, since both yield a zero derivative).
+    # Zero derivatives alone cannot distinguish canonical V from an incorrect NoDual
+    # for matching-methods' Vector{Any}. Check shape explicitly alongside the registry.
     @testset "world-counter / matching-methods canonical V (width $N)" for N in (1, 2)
         w = Base.get_world_counter()
         yw = w                                                   # jl_get_world_counter → UInt
@@ -37,10 +32,7 @@
         @test grad_g[2] == 12.0
     end
 
-    # Regression: the llvm.powi frule must set the inner NDual's `.value` to the primal result
-    # `y` and scale only the partials. A naive `grad * tangent(x)` scaled `.value` to `grad*x`,
-    # silently breaking the V.value === primal invariant — latent, since width-1 `test_rule`
-    # checks only the outer primal and the partials, never the inner NDual value.
+    # Check inner value coherence explicitly: scaling the whole dual corrupts V.value.
     @testset "llvm.powi forward NDual.value coherence" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")
@@ -66,9 +58,7 @@
         end
     end
 
-    # Regression: the chunked llvm.powi frule must scale partials with `_fwd_guarded_scale`, so
-    # an inactive (zero-seed) lane stays exactly 0.0 even where `grad` is ±Inf (x=0, negative
-    # exponent). Unguarded `_fwd_scale` gave `0 * Inf = NaN`. Mirrors the `pow_fast` guard.
+    # Inactive lanes must stay zero at infinite gradients, where 0 * Inf would be NaN.
     @testset "llvm.powi inactive-lane guard at x=0 negative exponent" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")
@@ -91,14 +81,9 @@
         @test tangent(r).partials[2] == 0.0
     end
 
-    # Regression: the REVERSE llvm.powi pullback must apply the same zero-cotangent guard, so a
-    # zero incoming cotangent yields an exact 0 even where grad is ±Inf (x=0, negative exponent).
-    # Unguarded `grad * dy` gave `Inf * 0 = NaN`.
-    #
-    # Not a registry row: the hand-built llvmcall argument list is not one the interpreter ever
-    # produces, and its pullback returns eight cotangents for nine arguments, so the registry's
-    # interface check rejects it. Reaching the pole needs that synthetic call; ordinary `x^n`
-    # traffic is covered by the derived cases.
+    # Zero cotangents must stay zero at infinite gradients.
+    # The synthetic llvmcall argument list is rejected by the registry's interface check;
+    # ordinary derived x^n cases cannot reach this pole.
     @testset "llvm.powi reverse zero-cotangent guard at x=0 negative exponent" begin
         fc = Mooncake._foreigncall_
         nm = Symbol("llvm.powi.f64.i32")
@@ -119,9 +104,7 @@
         @test pb2(1.0)[6] ≈ 12.0
     end
 
-    # Regression: the deepcopy frule must copy the whole slot in ONE deepcopy walk. Copying
-    # primal and V separately severs `NDualArray.primal === primal(slot)`, so the copy's inner
-    # `.value` reads a stale third array after the copied primal is mutated.
+    # A shared deepcopy walk must preserve slot-internal aliasing after primal mutation.
     @testset "deepcopy preserves slot-internal aliasing (width $N)" for N in (1, 2, 3)
         x = Mooncake.randn_lifted(Val(N), Xoshiro(123), [1.0, 2.0])
         y = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), deepcopy), x)
