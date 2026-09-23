@@ -328,17 +328,16 @@ Base.nextfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(nextfloat(a.value), a.par
 Base.prevfloat(a::NDual{T,N}) where {T,N} = NDual{T,N}(prevfloat(a.value), a.partials)
 # exponent / significand / frexp: scalar operations; return scalar value (integer / NDual).
 # `significand` and `frexp` rescale `x` by a power of two that is CONSTANT within a binade, so the
-# derivative is that scale. Guarded: a subnormal `x` has a very negative exponent, so the scale
-# overflows while the value stays in `[1, 2)` -- `significand(5e-324)` is `1.0` with a coefficient
-# of `Inf`.
+# derivative is that scale. Apply it directly to each partial: the scale itself may overflow
+# even when the scaled partial is finite.
 Base.exponent(a::NDual) = exponent(a.value)
 @inline function Base.significand(a::NDual{T,N}) where {T,N}
-    c = ldexp(one(T), -exponent(a.value))
-    return NDual{T,N}(significand(a.value), _fwd_guarded_scale(a.partials, c))
+    e = -exponent(a.value)
+    return NDual{T,N}(significand(a.value), map(p -> ldexp(p, e), a.partials))
 end
 @inline function Base.frexp(a::NDual{T,N}) where {T,N}
     v, e = frexp(a.value)
-    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, ldexp(one(T), -e))), e
+    return NDual{T,N}(v, map(p -> ldexp(p, -e), a.partials)), e
 end
 
 # ── Zero / One ────────────────────────────────────────────────────────────────────
@@ -902,10 +901,9 @@ end
 )
 @inline Base.log(::Irrational{:ℯ}, a::NDual{T,N}) where {T,N} = log(a)
 
-# ldexp(a, n) = a * 2^n — linear; derivative = 2^n. Guarded: with a small enough `a` the value
-# stays finite while `2^n` overflows, as `ldexp(1e-300, 2000)` does.
+# Scale each partial directly to avoid overflow or underflow of the coefficient `2^n`.
 @inline function Base.ldexp(a::NDual{T,N}, n::Integer) where {T,N}
-    return NDual{T,N}(ldexp(a.value, n), _fwd_guarded_scale(a.partials, T(exp2(n))))
+    return NDual{T,N}(ldexp(a.value, n), map(p -> ldexp(p, n), a.partials))
 end
 
 # Roots

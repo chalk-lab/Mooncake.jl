@@ -1048,10 +1048,7 @@ function rrule!!(
     ::CoDual{typeof(ldexp)}, x::CoDual{P}, n::CoDual{<:Integer}
 ) where {P<:IEEEFloat}
     _n = primal(n)
-    # Guarded: `2^n` overflows while the result stays finite whenever `x` is small enough --
-    # `ldexp(1e-300, 2000)` is finite with a coefficient of `Inf`.
-    s = ldexp(one(P), _n)
-    ldexp_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, s), NoRData())
+    ldexp_pb(ȳ::P) = (NoRData(), ldexp(ȳ, _n), NoRData())
     return zero_fcodual(ldexp(primal(x), _n)), ldexp_pb
 end
 
@@ -1277,8 +1274,8 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(significand)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
-    c = ldexp(one(P), -exponent(_x))
-    significand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c))
+    e = -exponent(_x)
+    significand_pb(ȳ::P) = (NoRData(), ldexp(ȳ, e))
     return zero_fcodual(significand(_x)), significand_pb
 end
 
@@ -1291,8 +1288,7 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(frexp)}, x::CoDual{P}) where {P<:IEEEFloat}
     y = frexp(primal(x))
-    c = ldexp(one(P), -y[2])
-    frexp_pb(ȳ) = (NoRData(), _rvs_guarded_scale(ȳ[1], c))
+    frexp_pb(ȳ) = (NoRData(), ldexp(ȳ[1], -y[2]))
     return zero_fcodual(y), frexp_pb
 end
 
@@ -1456,6 +1452,30 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                     ntuple(i -> P(i) / 3, 8),
                 ),
             ]
+        end...,
+        # Pin nonzero seeds where a separately materialised power of two overflows or
+        # underflows. Finite differences cannot resolve these scales or binade boundaries.
+        map([Float16, Float32, Float64]) do P
+            x = nextfloat(zero(P))
+            large = ldexp(one(P), exponent(floatmax(P)) - 4)
+            cases = [
+                (ldexp, x, -exponent(x)),
+                (ldexp, large, exponent(x) - 1),
+                (significand, x),
+                (frexp, x),
+            ]
+            map(cases) do (f, seed, args...)
+                y = f(seed, args...)
+                dy = f === frexp ? y[1] : y
+                fwd = f === frexp ? (dy, NoTangent()) : dy
+                rvs = (NoRData(), dy, map(_ -> NoRData(), args)...)
+                output_tangent = f === frexp ? (seed, NoTangent()) : seed
+                opts = (
+                    oracle=(value=y, deriv=(fwd=fwd, rvs=rvs)),
+                    output_tangent=output_tangent,
+                )
+                return (false, :none, opts, f, CoDual(seed, seed), args...)
+            end
         end...,
         Any[
             (false, :none, (oracle=(value=tan(Float16(1)),),), tan, Float16(1)),
