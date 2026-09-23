@@ -409,7 +409,12 @@ end
 function rrule!!(::CoDual{typeof(asinh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = asinh(_x)
-    asinh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(_x^2 + one(_x)))))
+    c = if abs(_x) > sqrt(floatmax(P))
+        inv(hypot(_x, one(_x)))
+    else
+        inv(sqrt(_x^2 + one(_x)))
+    end
+    asinh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c))
     return zero_fcodual(y), asinh_pb
 end
 
@@ -424,7 +429,12 @@ end
 function rrule!!(::CoDual{typeof(acosh)}, x::CoDual{P}) where {P<:IEEEFloat}
     _x = primal(x)
     y = acosh(_x)
-    acosh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, inv(sqrt(_x^2 - one(_x)))))
+    c = if abs(_x) > sqrt(floatmax(P))
+        inv(abs(_x))
+    else
+        inv(sqrt(_x^2 - one(_x)))
+    end
+    acosh_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c))
     return zero_fcodual(y), acosh_pb
 end
 
@@ -926,9 +936,11 @@ function rrule!!(::CoDual{typeof(atan)}, x1::CoDual{P}, x2::CoDual{P}) where {P<
     b = primal(x2)
     y = atan(a, b)
     r2 = a^2 + b^2
-    atan_pb(ȳ::P) = (
-        NoRData(), _rvs_guarded_scale(ȳ, b / r2), _rvs_guarded_scale(ȳ, -a / r2)
-    )
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(P) : hypot(a, b)
+    c1 = regular ? b / r2 : (b / h) / h
+    c2 = regular ? -a / r2 : (-a / h) / h
+    atan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, c1), _rvs_guarded_scale(ȳ, c2))
     return zero_fcodual(y), atan_pb
 end
 
@@ -1497,6 +1509,48 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
         end...,
         Any[
             (false, :none, (oracle=(value=tan(Float16(1)),),), tan, Float16(1)),
+            (
+                false,
+                :none,
+                (
+                    oracle=(
+                        value=asinh(Float16(1000)),
+                        deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
+                    ),
+                    output_tangent=Float16(1),
+                ),
+                asinh,
+                CoDual(Float16(1000), Float16(1)),
+            ),
+            (
+                false,
+                :none,
+                (
+                    oracle=(
+                        value=acosh(Float16(1000)),
+                        deriv=(fwd=Float16(0.001), rvs=(NoRData(), Float16(0.001))),
+                    ),
+                    output_tangent=Float16(1),
+                ),
+                acosh,
+                CoDual(Float16(1000), Float16(1)),
+            ),
+            (
+                false,
+                :none,
+                (
+                    oracle=(
+                        value=atan(1e-200, 1e-200),
+                        deriv=(NoRData(), 5e199, -5e199),
+                        cmp=(a, b) -> isapprox(a, b; rtol=1e-14),
+                    ),
+                    output_tangent=1.0,
+                    mode=ReverseMode,
+                ),
+                atan,
+                1e-200,
+                1e-200,
+            ),
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
             (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),

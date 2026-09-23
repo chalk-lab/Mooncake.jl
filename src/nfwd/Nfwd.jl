@@ -747,6 +747,10 @@ end
 end
 @inline function Base.atan(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     r2 = a.value^2 + b.value^2
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(T) : hypot(a.value, b.value)
+    c1 = regular ? b.value / r2 : (b.value / h) / h
+    c2 = regular ? -a.value / r2 : (-a.value / h) / h
     # Each operand's partials are scaled by their OWN coefficient, as the `NDual`/`Real` method
     # below does. Scaling the intermediate `x*dy - y*dx` by `inv(r2)` instead masks the singularity
     # at (0, 0): the intermediate is all-zero there, so the outer guard reads every lane as
@@ -755,10 +759,7 @@ end
     # genuinely unseeded lane is guarded to zero.
     return NDual{T,N}(
         atan(a.value, b.value),
-        _fwd_add(
-            _fwd_guarded_scale(a.partials, b.value / r2),
-            _fwd_guarded_scale(b.partials, -a.value / r2),
-        ),
+        _fwd_add(_fwd_guarded_scale(a.partials, c1), _fwd_guarded_scale(b.partials, c2)),
     )
 end
 @inline Base.atan(a::NDual{T1,N1}, b::NDual{T2,N2}) where {T1,T2,N1,N2} = atan(
@@ -771,8 +772,11 @@ end
 @inline function Base.atan(y::NDual{T,N}, x::R) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y.value)^2 + S(x)^2
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(S) : hypot(S(y.value), S(x))
+    c = regular ? S(x) / r2 : (S(x) / h) / h
     sp = ntuple(i -> S(y.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_guarded_scale(sp, S(x) / r2))
+    return NDual{S,N}(atan(S(y.value), S(x)), _fwd_guarded_scale(sp, c))
 end
 
 # Real*NDual atan: d/dx[atan(y,x)] = -y/(y²+x²).  Without this, y::Real is promoted to
@@ -781,8 +785,11 @@ end
 @inline function Base.atan(y::R, x::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     r2 = S(y)^2 + S(x.value)^2
+    regular = isfinite(r2) && !iszero(r2)
+    h = regular ? zero(S) : hypot(S(y), S(x.value))
+    c = regular ? -S(y) / r2 : (-S(y) / h) / h
     sp = ntuple(i -> S(x.partials[i]), Val(N))
-    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_guarded_scale(sp, -S(y) / r2))
+    return NDual{S,N}(atan(S(y), S(x.value)), _fwd_guarded_scale(sp, c))
 end
 
 # Hyperbolic
@@ -799,12 +806,20 @@ end
     return NDual{T,N}(tanh(a.value), _fwd_scale(a.partials, 4u / (one(T) + u)^2))
 end
 @inline function Base.asinh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(asinh(a.value), _fwd_scale(a.partials, inv(sqrt(a.value^2 + one(T)))))
+    c = if abs(a.value) > sqrt(floatmax(T))
+        inv(hypot(a.value, one(T)))
+    else
+        inv(sqrt(a.value^2 + one(T)))
+    end
+    return NDual{T,N}(asinh(a.value), _fwd_scale(a.partials, c))
 end
 @inline function Base.acosh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acosh(a.value), _fwd_guarded_scale(a.partials, inv(sqrt(a.value^2 - one(T))))
-    )
+    c = if abs(a.value) > sqrt(floatmax(T))
+        inv(abs(a.value))
+    else
+        inv(sqrt(a.value^2 - one(T)))
+    end
+    return NDual{T,N}(acosh(a.value), _fwd_guarded_scale(a.partials, c))
 end
 @inline function Base.atanh(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
