@@ -234,9 +234,7 @@ end
 @inline _nfwd_dual_has_partials(::Type{<:Complex{<:NDual}}) = true
 @inline _nfwd_dual_has_partials(::Type) = false
 
-# Scalar analog of `_nfwd_lift`: assemble one value's canonical forward V from its
-# primal and per-lane primal-typed partials — `NDual` for real, `Complex{NDual}`
-# (interleaving real/imag) for complex. Shared by the element-read frules.
+# Assemble canonical scalar V from primal-typed lanes; shared by element-read frules.
 @inline _scalar_ndual(y::T, parts::NTuple{N,T}) where {T<:IEEEFloat,N} = NDual{T,N}(
     y, parts
 )
@@ -367,13 +365,8 @@ Base.promote_rule(::Type{NDual{T,N}}, ::Type{NDual{T,N}}) where {T,N} = NDual{T,
 @inline function Base.promote_rule(::Type{NDual{T1,N}}, ::Type{NDual{T2,N}}) where {T1,T2,N}
     return NDual{promote_type(T1, T2),N}
 end
-# Differing widths mean two forward passes have met, and their promotion is `NDual{NDual}` — which
-# the `T<:IEEEFloat` bound refuses with a bare `TypeError` naming an internal type parameter. This
-# is where that type is formed, so every op reaching it through `promote_type` (`max`, `min`,
-# container promotion) inherits the diagnosis, not just those with a `_promote_matching_nduals`
-# check of their own.
-# Residue: `muladd`/`fma`/`clamp` promote to a well-formed `S` and rewrap it, so they still give the
-# raw `TypeError`; reaching them needs hand-built duals, which no Mooncake pass produces.
+# Different widths cannot nest: diagnose at promotion so max/min and containers inherit it.
+# Residue: hand-built mixed-width muladd/fma/clamp still raise TypeError when rewrapping.
 function Base.promote_rule(::Type{NDual{T1,N1}}, ::Type{NDual{T2,N2}}) where {T1,T2,N1,N2}
     _throw_ndual_lane_mismatch(:promote_type, N1, N2)
 end
@@ -381,10 +374,7 @@ end
     return NDual{T,N}(T(d.value), ntuple(i -> T(d.partials[i]), Val(N)))
 end
 
-# Converting a forward dual to an integer discards the tangent — a non-differentiable operation.
-# Fail loudly rather than silently dropping the derivative (dual-laundering), so a function that
-# reaches this path is flagged as not forward-mode differentiable there instead of returning a
-# silently wrong (zero) gradient.
+# Integer conversion cannot propagate derivatives; refuse rather than silently discard them.
 @noinline _throw_ndual_to_int(::Type{I}) where {I<:Integer} = throw(
     ArgumentError(
         "cannot convert a forward-mode dual (NDual) to $I: an integer conversion is not " *
@@ -504,10 +494,7 @@ end
 @inline Base.:*(b::Bool, x::NDual{T,N}) where {T,N} = ifelse(b, x, copysign(zero(x), x))
 @inline Base.:*(x::NDual{T,N}, b::Bool) where {T,N} = b * x
 
-# Quotient rule: d(a/b) = (da - (a/b)*db) / b. Guarded scales (both the inner `v*db` and the
-# outer `/b`): at a removable singularity `b.value==0` the factors `v` and `inv(b.value)` are
-# `Inf`, so an inactive (zero-partial) lane would otherwise become `0*Inf = NaN`; the guard
-# keeps it `0` (matching the power/log/sqrt paths).
+# Guard both quotient-rule scales: at b.value == 0, inactive lanes must not become 0*Inf.
 @inline function Base.:/(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     v = a.value / b.value
     return NDual{T,N}(
@@ -547,11 +534,8 @@ end
     return NDual{S,N}(v, _fwd_guarded_scale(sp, -(v * vi)))
 end
 
-# Direct inv: d(1/x)/dx = -1/x² = -(1/x)².  Avoids the quotient-rule path that
-# promoting one(T)/a would trigger, eliminating a useless `0*x.value` fmul per slot.
-# Guarded scale: at `a.value==0` the factor `-(vi*vi)` is `-Inf`, so an inactive (zero-partial)
-# lane would become `0*-Inf = NaN`; the guard keeps it `0` (matches the integer-power paths).
-# Also fixes `x^-1` / `literal_pow(^, x, Val(-1))`, which delegate to this method.
+# Avoid the zero numerator partials of the quotient rule; guard inactive lanes at zero.
+# Literal x^-1 delegates here too.
 @inline function Base.inv(a::NDual{T,N}) where {T,N}
     vi = inv(a.value)
     return NDual{T,N}(vi, _fwd_guarded_scale(a.partials, -(vi * vi)))
@@ -635,15 +619,11 @@ end
 
 # ── Integer and real power ────────────────────────────────────────────────────────
 
-# Literal-integer power: n is a compile-time Val{n}, so scalar sub-expressions use
-# Base.literal_pow (e.g. x^2 → x*x, x^3 → x*x*x) rather than a runtime dispatch.
-# This is the fast path for source-code literals like t^2 or t^3.
+# Use Base.literal_pow so literal powers retain compile-time scalar specialisation.
 @inline function Base.literal_pow(::typeof(^), a::NDual{T,N}, ::Val{n}) where {T,N,n}
     v = Base.literal_pow(^, a.value, Val(n))
     dv = ifelse(iszero(n), zero(T), T(n) * Base.literal_pow(^, a.value, Val(n - 1)))
-    # Guarded scale: at a singularity (e.g. n<0, a.value==0 makes dv=±Inf) inactive
-    # lanes (zero partial) must stay zero rather than become 0*Inf=NaN, matching the
-    # real-exponent `^` path.
+    # Guard inactive lanes when negative powers have infinite coefficients at zero.
     return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 # Base defines literal_pow(^, ::AbstractFloat, ::Val{-1}) = inv(x) as a concrete
@@ -656,8 +636,7 @@ end
 @inline function Base.:^(a::NDual{T,N}, n::Integer) where {T,N}
     v = a.value^n
     dv = ifelse(iszero(n), zero(T), T(n) * a.value^(n - 1))
-    # Guarded scale: keeps inactive (zero-partial) lanes at zero when dv is ±Inf at a
-    # singularity (n<0, a.value==0), matching the real-exponent `^` path.
+    # Guard inactive lanes at singularities, as for real exponents.
     return NDual{T,N}(v, _fwd_guarded_scale(a.partials, dv))
 end
 
@@ -690,12 +669,8 @@ end
 @inline function Base.:^(b::R, a::NDual{T,N}) where {R<:Real,T,N}
     S = promote_type(T, R)
     v = S(b)^S(a.value)
-    # d(b^a)/da = b^a·log(b). `_nfwd_pow_grad_p` takes `real(log(complex(b)))`, so b<0 gives
-    # `v·log|b|` — a convention, since `d/dx b^x` has no real derivative there, and the one the
-    # reverse `power` rrule already uses. At the removable singularity b==0 the naive `v*log(b)` is
-    # `0*-Inf = NaN` even in active lanes, though the limit is 0 for a positive exponent (b^a→0
-    # dominates log(b)→-Inf); it yields 0 there, and NaN for a nonpositive exponent, which is
-    # genuinely undefined. `_fwd_guarded_scale` keeps an inactive (zero-seed) lane 0 in that case.
+    # For b<0, use v*log|b|, matching the reverse rule despite no real derivative.
+    # At b==0, positive exponents have limit 0; nonpositive ones give NaN on active lanes.
     ap = ntuple(i -> S(a.partials[i]), Val(N))
     return NDual{S,N}(v, _fwd_guarded_scale(ap, _nfwd_pow_grad_p(S(b), S(a.value), v)))
 end
@@ -727,11 +702,8 @@ end
     v = tan(a.value)
     return NDual{T,N}(v, _fwd_guarded_scale(a.partials, one(T) + v^2))
 end
-# asin/acos (and acosh/asech/asec/acsc + their degree variants below) have a finite value
-# but an infinite derivative at the domain boundary x = ±1 (a removable singularity for the
-# derivative). At those points `_fwd_scale` would compute `Inf * 0` = NaN on inactive chunk
-# lanes; `_fwd_guarded_scale` masks zero lanes to 0, matching the sqrt/log/inv siblings and the
-# reverse-mode `_rvs_guarded_scale` oracle.
+# At domain boundaries these functions have finite values and infinite derivatives;
+# guard inactive lanes, matching reverse mode.
 @inline function Base.asin(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         asin(a.value), _fwd_guarded_scale(a.partials, inv(sqrt(one(T) - a.value^2)))
@@ -751,12 +723,8 @@ end
     h = regular ? zero(T) : hypot(a.value, b.value)
     c1 = regular ? b.value / r2 : (b.value / h) / h
     c2 = regular ? -a.value / r2 : (-a.value / h) / h
-    # Each operand's partials are scaled by their OWN coefficient, as the `NDual`/`Real` method
-    # below does. Scaling the intermediate `x*dy - y*dx` by `inv(r2)` instead masks the singularity
-    # at (0, 0): the intermediate is all-zero there, so the outer guard reads every lane as
-    # INACTIVE and suppresses the `Inf`, returning 0 where the derivative is undefined and reverse
-    # mode returns NaN. Here the coefficient is `0/0`, so an ACTIVE lane gets NaN and only a
-    # genuinely unseeded lane is guarded to zero.
+    # Scale original seeds separately: at (0, 0), x*dy-y*dx is zero even on active lanes,
+    # so guarding that intermediate would suppress the undefined derivative.
     return NDual{T,N}(
         atan(a.value, b.value),
         _fwd_add(_fwd_guarded_scale(a.partials, c1), _fwd_guarded_scale(b.partials, c2)),
@@ -865,9 +833,8 @@ end
 @inline function Base.exp2(a::NDual{T,N}) where {T,N}
     return (ev=exp2(a.value); NDual{T,N}(ev, _fwd_scale(a.partials, ev * T(log(2)))))
 end
-# Guarded, unlike `exp`/`exp2`: the coefficient is `value * log(10)`, so it overflows while the
-# value is still finite -- `exp10(308.0)` is `1.0e308` with an `Inf` coefficient. `exp`'s
-# coefficient IS the value and `exp2`'s is smaller than it, so neither has that window.
+# exp10 needs guarding: value*log(10) can overflow while the value stays finite
+# (e.g. x=308). exp/exp2 coefficients cannot overflow first.
 @inline function Base.exp10(a::NDual{T,N}) where {T,N}
     return (
         ev=exp10(a.value); NDual{T,N}(ev, _fwd_guarded_scale(a.partials, ev * T(log(10))))
@@ -946,8 +913,7 @@ Base.sign(a::NDual{T,N}) where {T,N} = NDual{T,N}(sign(a.value), _fwd_zero(Val(N
     NDual{T,N}(cv, _fwd_scale(a.partials, -sv))
 end
 
-# sinpi / cospi — sin(π·x) and cos(π·x); derivative gains a π factor. One `sincospi` call yields both
-# the value and the other function (the derivative factor), halving the transcendental cost.
+# sincospi shares the value and derivative factor, halving transcendental work.
 @inline function Base.sinpi(a::NDual{T,N}) where {T,N}
     sv, cv = sincospi(a.value)
     return NDual{T,N}(sv, _fwd_scale(a.partials, T(π) * cv))
@@ -1106,14 +1072,9 @@ end
     return isequal(v, a) | !isequal(v, b)
 end
 
-# min / max — preserve Base's scalar result on NaN and signed-zero ties, then select the
-# corresponding tangent. When both operands are exactly the same scalar value, keep the
-# existing ordinary-tie convention (second arg for max, first arg for min).
-#
-# Selecting the WHOLE dual is safe here, unlike in the `max_float` frule, because
-# `_ndual_pick_*` asks which operand `isequal` to the already-computed `max`/`min`: the winner's
-# `.value` is the primal by construction. Deriving the winner from a bare comparison instead
-# would break the inner-value invariant, since `NaN > x` is false while the primitive returns NaN.
+# Preserve Base's NaN/signed-zero result; ties credit b for max, a for min.
+# Selecting the whole dual is safe only because _ndual_pick_* uses isequal against
+# the primal result; a bare ordering comparison would break the inner-value invariant.
 @inline function Base.max(a::NDual{T,N}, b::NDual{T,N}) where {T,N}
     return ifelse(_ndual_pick_max(a.value, b.value), a, b)
 end
@@ -1121,14 +1082,9 @@ end
     return ifelse(_ndual_pick_min(a.value, b.value), a, b)
 end
 
-# FastMath min / max / minmax are DIFFERENT primitives from `min`/`max`, not faster spellings: their
-# tie behaviour differs, so without these methods a dual falls through FastMath's `Number` fallback
-# to `min`/`max` and carries a `.value` the primal never produced.
-#
-# Evaluate the primitive itself: fast comparisons can lower differently across platforms,
-# including their choice of signed zero. Select only partials, keeping the existing equal-value
-# tie convention (second operand, except for `max_fast` before Julia 1.12).
-# NaN remains outside FastMath's contract.
+# FastMath primitives have different tie semantics from min/max. Evaluate them directly
+# to preserve platform-dependent signed zeros, selecting only partials. Equal-value ties
+# credit b except for max_fast before Julia 1.12. NaN is outside FastMath's contract.
 @inline function Base.FastMath.min_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
     v = Base.FastMath.min_fast(a.value, b.value)
     pick_a = isequal(v, a.value) & !isequal(v, b.value)
@@ -1148,36 +1104,26 @@ end
 ) where {T<:IEEEFloat,N}
     return (Base.FastMath.min_fast(a, b), Base.FastMath.max_fast(a, b))
 end
-# `rem_fast` routes through `rem_internal` on absolute values, which cannot be mirrored on a dual,
-# so take the value from the primitive itself and scale the partials by the same coefficients the
-# `rem` rule uses. The second is guarded: `trunc(a/b)` is `Inf` once `b` is zero. A zero divisor
-# makes the primitive itself throw `DivideError`, which this inherits.
+# rem_fast uses rem_internal on absolute values: take its primal directly (including
+# DivideError at zero divisors), and guard the rem coefficient when trunc(a/b) is infinite.
 @inline function Base.FastMath.rem_fast(a::NDual{T,N}, b::NDual{T,N}) where {T<:IEEEFloat,N}
     v = Base.FastMath.rem_fast(a.value, b.value)
     c = trunc(a.value / b.value)
     return NDual{T,N}(v, _fwd_add(a.partials, _fwd_guarded_scale(b.partials, -c)))
 end
 
-# clamp — the value is Base's, so bound promotion, a signed-zero `x`, and crossed bounds all match
-# it; the tangent follows the `rrule!!`'s convention of a zero subgradient at and beyond either
-# endpoint, so the two modes agree. Selecting with ifelse keeps this branchless (no GPU warp
-# divergence). Reconstructing the value as `ifelse(x <= lo, lo, ...)` instead does NOT match Base:
-# it returns `+0.0` for `clamp(-0.0, 0.0, 1.0)` and picks `lo` when the bounds cross.
+# Use Base's primal for promotion, signed zeros and crossed bounds; non-strict tangent
+# comparisons match the reverse rule at endpoints. ifelse avoids GPU warp divergence.
 @inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::NDual{T,N}) where {T,N}
-    # UPPER bound first, as Base's `ifelse(x > hi, hi, ifelse(x < lo, lo, x))` tests it: with the
-    # bounds crossed (`hi < a <= lo`) Base returns `hi`, so the tangent has to come from `hi` too.
-    # Testing `below` first credited `lo` while the value came from `hi`. Only the crossed case
-    # changes; the non-strict comparisons keep the zero-subgradient-at-the-endpoint convention the
-    # `rrule!!` shares.
+    # Test the upper bound first to match Base for crossed bounds; non-strict comparisons
+    # retain the reverse rule's endpoint convention.
     above = a.value >= hi.value
     below = (a.value <= lo.value) & !above
     src = ifelse(above, hi, ifelse(below, lo, a))
     return NDual{T,N}(clamp(a.value, lo.value, hi.value), src.partials)
 end
-# One bound dual, the other plain: promote the plain one and delegate, so the tangent of the dual
-# bound still contributes. `NDual <: Real`, so without these the plain-bounds method below catches a
-# dual bound and `promote_type(T, NDual, ...)` tries to build a nested `NDual{NDual}`. Promote rather
-# than narrow with `T(hi)` — narrowing is the defect the `^`/`log`/`/` methods above were fixed for.
+# Explicit mixed bounds avoid promoting T with NDual (which would nest duals).
+# Promote the plain bound rather than narrowing it, and retain the dual bound's tangent.
 @inline function Base.clamp(a::NDual{T,N}, lo::NDual{T,N}, hi::H) where {T,N,H<:Real}
     S = promote_type(T, H)
     return clamp(convert(NDual{S,N}, a), convert(NDual{S,N}, lo), NDual{S,N}(S(hi)))
@@ -1445,18 +1391,12 @@ for _op in (:div, :fld, :cld, :gcd, :lcm)
     )
 end
 
-# `rem(x, y) = x - trunc(x/y)*y` (rounds toward zero), so its subgradient is ∂x=1,
-# ∂y=-trunc(x/y) (a.e.) — `trunc`, not `floor` (they differ for negative x/y; `mod` uses `floor`).
-# Defining the two-NDual method here resolves the ambiguity with Base's `rem(x::T, y::T) where
-# T<:Real` and enables functions like `modf` that call `rem(x, T(1))` internally. Unlike `mod`,
-# `rem` keeps the finite one-sided subgradient at integer ratios rather than NaN: `modf` differentiates
-# only through the first argument (`y == 1` is constant), so the one-sided value is what it needs.
+# rem uses -trunc(x/y), not mod's -floor(x/y), and keeps the finite one-sided
+# subgradient at integer ratios for modf. Two NDual arguments also disambiguate Base.
 @inline function Base.rem(x::NDual{T,N}, y::NDual{T,N}) where {T<:IEEEFloat,N}
     pv, yv = ndual_value(x), ndual_value(y)
     c = trunc(pv / yv)
-    # `c` is ±Inf once `pv / yv` overflows (a subnormal divisor), and an unguarded `Inf * 0.0`
-    # turns an INACTIVE lane into NaN while the primal stays finite. `mod` below guards for the
-    # same reason.
+    # Guard inactive lanes if pv/yv overflows while the primal remains finite.
     return NDual{T,N}(rem(pv, yv), _fwd_add(x.partials, _fwd_guarded_scale(y.partials, -c)))
 end
 
@@ -1562,11 +1502,8 @@ function LinearAlgebra.cholesky(
     (::LinearAlgebra.NoPivot)=LinearAlgebra.NoPivot();
     check::Bool=true,
 ) where {T<:IEEEFloat,N}
-    # Run LinearAlgebra's generic (non-BLAS) Cholesky directly on the `NDual` elements. It computes
-    # the same derivative as the analytic pushforward (identical to machine precision across
-    # condition numbers, so no consistency/robustness loss versus the `potrf!` frule) and is several
-    # times faster: for the SplitEM `NDual`, the algorithm's dual arithmetic beats an explicit
-    # primal-factorise-plus-per-partial-solve, which only pays off for large matrices.
+    # Generic Cholesky on NDuals matches the analytic pushforward to machine precision
+    # and is faster for small matrices than primal factorisation plus per-lane solves.
     return @invoke LinearAlgebra.cholesky(A::AbstractMatrix, LinearAlgebra.NoPivot(); check)
 end
 
@@ -1685,8 +1622,7 @@ end
 const _NFWD_PREFERRED_CHUNK_SIZE = 8
 
 @inline function _nfwd_default_chunk_size(x::Tuple)
-    # `init=0` so an empty args tuple (e.g. a zero-argument callable) yields chunk size 1 rather than
-    # throwing on an empty reduction — matching `primal_dim(::Tuple)`, which also passes `init=0`.
+    # init=0 gives zero-argument callables chunk size 1, matching primal_dim(::Tuple).
     return max(1, min(sum(primal_dim, x; init=0), _NFWD_PREFERRED_CHUNK_SIZE))
 end
 
@@ -1963,34 +1899,14 @@ end
 @inline primal_dim(x::Tuple) = sum(primal_dim, x; init=0)
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualArray{Element, N, D, A, Wrapped, B}` — element-major canonical V for arrays.
-#
-# `NDualArray` and a plain `Array` of `NDual`s carry the same information, but keeping the
-# primal separate from the partials is more friendly: `primal` is a genuine `A` that can be
-# passed straight to a BLAS/LAPACK `ccall`, and it aliases user storage (the forward
-# primal-aliasing contract), while the partials are slot-local.
-#
-# The `N` lane tangents live in ONE element-major block `partials_block::B` of shape
-# `(N, size(primal)...)`: element `i`'s `N` per-lane partials are the contiguous column
-# `partials_block[:, i]`, so scalar `getindex`/`setindex!` is a single contiguous column
-# read/write. `B` is `_block_type(A)` — `NDualBlock{Element, D+1}` (a `Memory`
-# primal also blocks to a rank-2 `NDualBlock`; `Memory` is 1-D only).
-#
-# `Wrapped` is determined by `(Element, N)`
-# — `NDual{T, N}` for real `Element=T<:IEEEFloat` and `Complex{NDual{T, N}}` for
-# `Element=Complex{T<:IEEEFloat}`. Subtype `AbstractArray{Wrapped, D}` so
-# element-wise code through the array interface continues to dispatch; element
-# access is lazy (constructs an `NDual` on the fly from the block column).
-#
-# Compatibility shim: `a.partials` (the old `NTuple{N, A}` field) is synthesized by
-# `Base.getproperty` as an `NTuple{N, SubArray}` of per-lane strided views into the block,
-# so existing `a.partials[k]` consumers stay correct (at strided-view speed). Consumers that
-# need a dense `A` per lane (raw `ccall`/`pointer`/`setfield!` on `a.partials[k]`) must be
-# rewritten against the block.
-#
-# Mooncake-namespace method extensions (`primal`/`tangent`/`unpack_ndual`/
-# `unlift`) for `NDualArray` live in `src/tangents/lifted.jl`.
-# ──────────────────────────────────────────────────────────────────────────
+# `NDualArray{Element,N,D,A,Wrapped,B}` is the canonical array V.
+# The primal aliases user storage and remains usable by BLAS/LAPACK; partials are slot-local.
+# B = _block_type(A) holds lanes in element-major shape (N, size(primal)...), so each
+# element's lanes are contiguous. Memory primals use rank-2 blocks.
+# Wrapped is NDual{T,N} for real T, Complex{NDual{T,N}} for Complex{T}; element access
+# constructs it lazily while the AbstractArray supertype preserves generic dispatch.
+# Legacy a.partials consumers receive strided lane views. Consumers needing dense arrays
+# (ccall/pointer/setfield!) must use the block. Mooncake methods live in tangents/lifted.jl.
 
 const NDualEltype = Union{IEEEFloat,Complex{<:IEEEFloat}}
 
@@ -2008,24 +1924,12 @@ end
 # ──────────────────────────────────────────────────────────────────────────
 # `NDualBlock{T, D}` — the element-major partials block, one type on every supported Julia.
 #
-# Storage is a flat `Vector{T}` plus the block's `dims`; the shaped array is a HEADER over that
-# vector, never a `Base.reshape` of it. That distinction is what lets one layout serve Julia 1.10:
-# `reshape` of an `Array` marks its buffer shared, after which the in-place resize primitives throw
-# "cannot resize array with shared data" — and the partials block of a `Vector` primal has to stay
-# resizable, because resizing the primal resizes it.
-#
-# The header is immutable, and the LAST dimension is derived from the parent's length rather than
-# read from `dims` (`_derived_dims`). That is what makes growth work without a mutable field: only
-# a `Vector` primal ever grows, so only the block's trailing dimension ever changes, and resizing
-# the flat parent updates the shape by itself. A mutable header would cost ~1.14× on element access
-# instead — its field loads cannot be hoisted out of a caller's loop, unlike an immutable's.
-#
-# `<: DenseArray` rather than `<: AbstractArray` is load-bearing: `StridedArray` is a `Union` that
-# includes `DenseArray`, and `mul!`, `\`, and friends dispatch on `StridedArray` to reach BLAS. An
-# `AbstractArray` subtype cannot join that union, so those calls would silently fall onto the
-# generic scalar kernel (~5× slower on a 64×64 `mul!`) while still computing the right answer. The
-# `DenseArray` contract holds here: contiguous column-major storage, unit first stride.
-# ──────────────────────────────────────────────────────────────────────────
+# A header over a flat Vector keeps storage resizable on Julia 1.10; Base.reshape
+# would mark it shared and make resize throw. The immutable header lets field loads
+# hoist; _derived_dims recomputes the trailing dimension from the parent length,
+# so Vector primal growth needs no mutable shape field.
+# DenseArray membership is essential for StridedArray/BLAS dispatch (otherwise
+# mul! uses the slower generic kernel). Storage is contiguous with unit first stride.
 
 struct NDualBlock{T,D} <: DenseArray{T,D}
     parent::Vector{T}
@@ -2076,15 +1980,11 @@ function Base.reshape(b::NDualBlock{T}, dims::NTuple{D,Int}) where {T,D}
     return NDualBlock{T,D}(getfield(b, :parent), dims)
 end
 
-# The block's flat linear storage, for scalar element access. Reading through the `NDualBlock`
-# wrapper is equivalent, but naming the parent keeps the hot `setindex!` loop on one array. The
-# fallback covers blocks that are not `NDualBlock` (the CUDA extension's `CuArray` block).
+# Access the flat parent to keep hot stores on one array; the fallback serves CUDA blocks.
 @inline _block_storage(b::NDualBlock) = getfield(b, :parent)
 @inline _block_storage(b) = b
 
-# Apply an in-place `Vector` resize primitive to the block's flat parent. The block is
-# element-major, so `d` primal elements are `N * d` block entries, and the block's trailing
-# dimension follows the parent's length, so nothing else needs updating.
+# Each primal element owns N block entries; resizing the parent updates the trailing shape.
 @inline function _resize_block!(resize!!, b::NDualBlock, N::Int, d::Integer)
     resize!!(getfield(b, :parent), N * d)
     return b
@@ -2117,15 +2017,9 @@ end
     end
 end
 
-# The concrete element-major block type for a primal container `A`. No generic fallback: an
-# unknown container (e.g. a GPU array) must define its own method, or fail loudly here rather
-# than silently landing a CPU block.
-#
-# `_block_dims` gives the block's `undef` dimensions as `(N, size(primal)...)`. Element access is
-# always linear, through `_lane_index`; a backend whose block is oriented differently overrides
-# that and `tangent_view`/`_lane_views`, as the CUDA extension does.
-# A `Memory{T}` primal blocks to a rank-2 block — `Memory` is 1-D only, so the block cannot
-# itself be a `Memory`.
+# Unknown containers must define _block_type rather than silently getting CPU storage.
+# Backends with different orientation override _lane_index, tangent_view and _lane_views.
+# Memory is one-dimensional and uses a rank-2 block.
 @inline _block_type(::Type{Array{Element,D}}) where {Element,D} = NDualBlock{Element,D + 1}
 @static if VERSION >= v"1.11-rc4"  # `Memory` does not exist on Julia 1.10.
     @inline _block_type(::Type{Memory{Element}}) where {Element} = NDualBlock{Element,2}
@@ -2147,11 +2041,7 @@ struct NDualArray{
 } <: AbstractArray{Wrapped,D}
     primal::A
     partials_block::B
-    # Explicit inner constructor: enforce that `Wrapped` matches `(Element, N)` and `B`
-    # matches `_block_type(A)` — the auto-generated one admits any `Wrapped`/`B`, silently
-    # desynchronising `eltype` from what `getindex` returns (resp. the block layout from the
-    # primal container). (Cf. `NDualRef`'s explicit inner constructor.) The `===` checks on
-    # static parameters constant-fold after specialisation; the shape check is O(1).
+    # Enforce coherent element and block types; static checks constant-fold, shape is O(1).
     function NDualArray{Element,N,D,A,Wrapped,B}(
         primal::A, partials_block::B
     ) where {
@@ -2253,18 +2143,12 @@ end
     Element,N,D,A,_wrapped_eltype(Element, Val(N)),_block_type(A)
 }
 
-# Linear index of element `elem`'s lane `lane` (both 1-based) in the partials block. This is the
-# block's ORIENTATION SEAM: element-major here, so an element's lanes are one contiguous column,
-# and a backend whose block is oriented differently (the CUDA extension's lane-major
-# `(dims..., N)`) overrides THIS and inherits every accessor below. Addressing the wrong axis is
-# silent — it reaches lane `((p-1) ÷ N)+1` of element `((p-1) mod N)+1` — so the formula must
-# live in exactly one place.
+# Centralise element-major lane addressing here; CUDA overrides it for lane-major
+# (dims..., N) storage. Duplicating the formula would silently address the wrong lane.
 @inline _lane_index(::NDualArray{Element,N}, elem::Int, lane::Int) where {Element,N} =
     (elem - 1) * N + lane
 
-# Seed manipulation, used by the interface.jl chunked-forward gradient/Jacobian: zero all
-# partials, and read/write one element's lane. Inlined, so `getfield` hoists out of caller
-# loops — same cost as hand-hoisting the block.
+# Inlined seed access lets getfield hoist out of gradient/Jacobian loops.
 @inline function _zero_seed!(a::NDualArray{Element}) where {Element}
     fill!(getfield(a, :partials_block), zero(Element))
     return a
@@ -2277,27 +2161,20 @@ end
     return a
 end
 
-# Compatibility shim: synthesize the old `partials::NTuple{N, A}` field as `N` per-lane
-# strided views into the element-major block (lane `k` is `partials_block[k, :, …, :]`, same
-# shape as `primal`). Reads and writes through a view land in the block. Callers use
-# `tangent_view(a, k)` for a single lane; `_lane_views` for the whole tuple.
+# Per-lane strided views write through to the block; tangent_view builds just one lane.
 @inline function _lane_views(a::NDualArray{Element,N,D}) where {Element,N,D}
     block = getfield(a, :partials_block)
     colons = ntuple(_ -> Colon(), Val(D))
     return ntuple(k -> view(block, k, colons...), Val(N))
 end
 
-# Write-through view of lane `k`'s partials: block row `k`, same shape as `primal`. Mutations land
-# in the block (unlike `tangent(x, lane)`, which returns a dense reverse-shaped COPY). Builds just
-# the one lane — the preferred single-lane accessor; `_lane_views` builds the whole tuple.
+# Write-through lane view, unlike tangent(x, lane)'s dense reverse-shaped copy.
 @inline tangent_view(a::NDualArray{Element,N,D}, k::Integer) where {Element,N,D} = view(
     getfield(a, :partials_block), k, ntuple(_ -> Colon(), Val(D))...
 )
 
-# AbstractArray interface. Shape is the primal's: the block carries no dimensions of its own — it
-# is `N * length(primal)` flat, indexed via the primal's `LinearIndices` (`_lane_index`). Resize
-# mutates primal and block in place in lockstep (same `Vector` objects, grown), so the immutable
-# wrapper's stable field references always observe the current state.
+# Shape follows the primal; resize mutates primal and block together while preserving
+# the immutable wrapper's field identities.
 Base.size(a::NDualArray) = size(a.primal)
 function Base.IndexStyle(::Type{<:NDualArray{<:Any,<:Any,<:Any,A}}) where {A}
     return IndexStyle(A)
@@ -2330,9 +2207,7 @@ end
     return acc
 end
 
-# One `getindex` for both real and complex eltypes: `_scalar_ndual` builds an `NDual{T,N}` from a
-# real element and a `Complex{NDual{T,N}}` from a complex one. `setindex!` stays split — its `x`
-# argument type differs by eltype.
+# _scalar_ndual handles real/complex elements; setindex! dispatches on their distinct V types.
 @inline function Base.getindex(a::NDualArray{Element,N}, i::Vararg{Int}) where {Element,N}
     block = _block_storage(getfield(a, :partials_block))
     e = _linear_elem(a, i...)
@@ -2377,49 +2252,30 @@ end
     end
     return a
 end
-# `NDualArray` has no element-type `convert`: changing the element type has to allocate a new
-# primal, leaving the dual attached to an array the caller does not hold, so a later mutation
-# through the caller's array is silently absent from the derivative. A converting store must
-# rebuild the dual over the destination object instead, as the `IdDict` `setindex!` frule does.
-# Without this method such a store raises a `MethodError`, which is the better failure. The scalar
-# `NDual` conversion above is sound for the opposite reason: an immutable scalar carries its
-# partials inline, so it has no aliased storage a copy could detach from.
+# No element-type convert: it would copy the primal and sever user-storage aliasing.
+# Converting stores must rebuild V over the destination (as IdDict setindex! does),
+# or fail with MethodError. Scalar NDual conversion is safe because storage is inline.
 
-# `maximum`/`minimum` over an `NDualArray` select the arg-extreme element's dual. The generic path
-# folds `max`/`min` over `A[i]`, building one `NDual` per element; instead scan the (real) primal for
-# the arg-extreme and take a single `getindex` — ~10×. Real elements only (max/min need a
-# total order).
-# `argmax` would return the FIRST maximal index, but the `max`-fold that `maximum` performs on plain
-# floats credits the LAST, so a tie handed the derivative to the wrong element. `isequal` rather than
-# `==`: `maximum([0.0, -0.0])` is `0.0`, which `==` also matches against `-0.0`.
+# Scan the real primal then index one dual (~10x faster than folding NDual elements).
+# max ties credit the LAST element, unlike argmax. Use isequal to distinguish signed zeros.
 function Base.maximum(nda::NDualArray{E}) where {E<:IEEEFloat}
     p = getfield(nda, :primal)
     @inbounds nda[findlast(isequal(maximum(p)), p)]
 end
-# `findfirst`, mirroring `maximum`'s `findlast`: the `min`-fold and `_ndual_pick_min` both credit the
-# FIRST minimal element. `argmin` picks the same index on every input tried, but routes through
-# `findmin` rather than a vectorised scan, which measured 4-6× slower on 1.10 and more on 1.13.
+# min ties credit the FIRST element; findfirst's vectorised scan beats argmin/findmin.
 function Base.minimum(nda::NDualArray{E}) where {E<:IEEEFloat}
     p = getfield(nda, :primal)
     @inbounds nda[findfirst(isequal(minimum(p)), p)]
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualRef{P, N}` — canonical V for `Base.RefValue{P<:NDualEltype}` (real or complex
-# scalar), the scalar analogue of `NDualArray`. Carries the same information as a `Ref` of an
-# interleaved `NDual`, but the `N` per-lane scalar partials live in their own parallel `Ref`,
-# not interleaved with the value, so a raw pointer taken via `pointer_from_objref` lands them
-# at a parallel address (correct forward raw-pointer access). Being a *distinct* type (not a bare `RefValue`) stops the generic struct
-# recursion from re-lifting it — so the seed factories, `_materialise_lane`, `_new_`,
-# `lgetfield`/`lsetfield!`, and raw-pointer frules each carry an explicit branch (as for
-# `NDualArray`). The slot's primal `Ref` lives in the enclosing `Lifted`, not here.
-# ──────────────────────────────────────────────────────────────────────────
+# `NDualRef{P,N}` keeps partials in a separate Ref for parallel raw-pointer access.
+# Its distinct type prevents generic struct re-lifting; seeds, materialisation, field
+# access and pointer rules handle it explicitly. The primal Ref lives in Lifted.
 export NDualRef
 struct NDualRef{P<:NDualEltype,N}
     partials::Base.RefValue{NTuple{N,P}}
-    # Explicit inner constructor: suppresses the auto-generated implicit `NDualRef(partials)`, whose
-    # `P` is unbound at `N=0` (`NTuple{0,P}` mentions no `P`) and would trip Aqua's unbound-args check.
-    # All call sites use the explicit `NDualRef{P,N}(...)` form, which binds both params.
+    # Suppress the implicit constructor: at N=0 its unbound P would fail Aqua.
     function NDualRef{P,N}(partials::Base.RefValue{NTuple{N,P}}) where {P<:NDualEltype,N}
         return new{P,N}(partials)
     end
@@ -2430,41 +2286,18 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────
-# `NDualMemoryRef{Element, N, M}` — element-major-block wrapper for `MemoryRef`
-# (Julia 1.11+). `MemoryRef` is the low-level reference-to-memory-slot
-# primitive and is *not* `<: AbstractArray`, so `NDualArray` does not
-# cover it. Like `NDualArray`, this carries the same information as a
-# `MemoryRef` of interleaved `NDual`s, but the primal ref stays a genuine
-# `MemoryRef{Element}` (usable directly in a `ccall`) while the `N` lane
-# partials live in a shared `(N, ncols)` element-major block, held here only as
-# its flat backing `partials_ref` (the block's `getfield(block, :ref)`, at
-# col-1 lane-1): `col` names the block column carrying the referenced element's
-# partials, so `memoryrefget`/`memoryrefset!` touch the contiguous lane run at
-# `_block_column_ref(partials_ref, col, N)` and `memoryrefnew(x, i)` just
-# advances `col` by `i - 1`.
-#
-# The block backing is SHARED with the enclosing container's V — an `NDualArray`
-# over the same `Memory` (or over an `Array` wrapping it) holds the very same
-# block, so mutations through either V are visible through the other, mirroring
-# the primal `Memory`/`MemoryRef`/`Array` aliasing. Column `col + j` always pairs
-# with mem slot `memoryrefoffset(primal) + j`; factory-built refs cover the
-# whole backing `Memory` (column j ↔ mem slot j, `col == memoryrefoffset`),
-# while a ref projected out of an `Array`'s V covers that array's elements
-# (column 1 ↔ the array's first element).
-# ──────────────────────────────────────────────────────────────────────────
+# `NDualMemoryRef{Element,N,M}` covers MemoryRef, which is not an AbstractArray.
+# Keep the primal ref usable by ccall and the shared (N,ncols) partials block as a flat
+# backing ref at column 1, lane 1. col selects the element; memoryrefnew advances it by i-1.
+# Sharing with Memory/Array V preserves mutation aliasing. Column col+j pairs with primal
+# slot memoryrefoffset(primal)+j: Memory factories cover the full backing, whereas
+# Array-projected refs start at that array's first element.
 
 @static if VERSION >= v"1.11-rc4"
     export NDualMemoryRef
 
-    # The shared `(N, ncols)` element-major block is stored only as its flat backing:
-    # `partials_ref` is the block's `getfield(block, :ref)` (col-1, lane-1) — a `MemoryRef`
-    # whatever the enclosing block's rank, so the type stays uniform (no extra type param, so
-    # the single `dual_type(MemoryRef{T})` and `Lifted`'s V-invariance hold). `ncols` is the
-    # block's column count; `col` is the 1-based column of the referenced element. Storing the
-    # ref rather than a shaped `Matrix` keeps the `.ref` projection of a rank-`D>1` `NDualArray`
-    # alloc-free: `getfield(block, :ref)` needs no `reshape` header (the SplitEM forward-alloc
-    # regression), while genuine block reconstruction (`_reconstruct_block`, bulk ops only) is
-    # a `Base.wrap` off the hot path.
+    # A flat MemoryRef keeps the V type rank-independent and Array.ref projection alloc-free.
+    # Reconstruct shaped blocks only for bulk operations, off the hot path.
     struct NDualMemoryRef{Element<:NDualEltype,N,M<:Memory{Element}}
         primal::MemoryRef{Element}
         partials_ref::MemoryRef{Element}
@@ -2476,10 +2309,8 @@ end
             ncols::Int,
             col::Int,
         ) where {Element<:NDualEltype,N,M<:Memory{Element}}
-            # `ncols` is the block's column count, NOT the backing `Memory`'s length: an
-            # `Array`-projected ref has `ncols == length(array)`, so an offset validated against
-            # the Memory can land in capacity slack with no column. `ncols + 1` is an end ref —
-            # formable, not dereferenceable — and an empty array's ref is exactly that.
+            # Validate against seeded columns, not backing capacity: Array refs may have slack.
+            # Column ncols+1 is formable but not dereferenceable, including an empty array's ref.
             1 <= col <= ncols + 1 || throw(
                 ArgumentError(
                     "NDualMemoryRef column $col is past the $ncols partials columns. The " *
@@ -2517,14 +2348,9 @@ end
         return NDualMemoryRef{Element,N,M}(p, block, Core.memoryrefoffset(p))
     end
 
-    # `MemoryRef` into the block's backing at the start (lane 1) of column `col`. Columns are
-    # adjacent in the column-major block, so a run of `n` columns from here is one contiguous
-    # backing range of `n * N` elements — flat copies need no per-lane striding at any offset.
-    # `memoryrefnew` skips its bounds check here: the constructor confines `col` to
-    # `1:ncols + 1` — which the primal ref's own offset does not, being validated against the
-    # backing `Memory`, whose length can exceed `ncols` — and `k ∈ 1:N` stays within a column's
-    # `N` rows. Only the `ncols + 1` end ref is out of the block, and dereferencing it is primal
-    # UB. The per-lane check is otherwise a hot-path cost on scalar array access.
+    # Column col starts at lane 1; n columns occupy n*N contiguous entries.
+    # Skip bounds checks: construction confines col to 1:ncols+1 and lanes stay in 1:N.
+    # Dereferencing the end ref is primal UB; checking every lane would tax scalar access.
     @inline function _block_column_ref(partials_ref::MemoryRef, col::Int, N::Int)
         col == 1 && return partials_ref
         return Core.memoryrefnew(partials_ref, (col - 1) * N + 1, false)

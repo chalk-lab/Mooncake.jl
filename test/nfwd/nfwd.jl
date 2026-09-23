@@ -51,9 +51,7 @@ using Mooncake.Nfwd
         @test promote_type(NDual{Float32,2}, NDual{Float64,2}) === NDual{Float64,2}
         @test promote_type(NDual{Float64,2}, NDual{Float32,2}) === NDual{Float64,2}
 
-        # Differing widths promote to `NDual{NDual}`. `max` and `vcat` are the discriminators:
-        # neither has a mixed-width method of its own, so each reaches the nested type only
-        # through `promote_type`, and without the guard there gets a bare `TypeError`.
+        # max/vcat reach the mixed-width guard through promotion, without mixed-width methods.
         w2 = NDual{Float64,2}(3.0, (1.0, 0.0))
         nested = DimensionMismatch(
             "NDual lane count mismatch in `promote_type`: left operand has 1 lanes, right " *
@@ -92,11 +90,7 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(r3) ≈ 4.0
         @test Nfwd.ndual_partial(r3, 1) ≈ 2.0
 
-        # Regression: `/(Real, NDual)` and the two `atan(·, ·)` Real/NDual
-        # methods promoted the value to `S = promote_type(T, R)` but left the partials at `T`,
-        # so a wider-float Real operand fed a type-`S` scale into `_fwd_scale`/`_fwd_guarded_scale`
-        # (which require matching types) → MethodError instead of the promised NDual{S,N}. The
-        # partials must promote to `S` too, mirroring the `+`/`-`/`*` methods above.
+        # Mixed precision must promote partials too: guarded scales require matching types.
         w32 = NDual{Float32,2}(1.0f0, (1.0f0, 0.0f0))
         q = 2.0 / w32                       # d(2/x)/dx = -2/x² = -2 at x=1
         @test q isa NDual{Float64,2}
@@ -114,10 +108,7 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(ax, 1) ≈ -0.4
         @test iszero(Nfwd.ndual_partial(ax, 2))
 
-        # Regression: `/(NDual, Real)`, `^` in both directions and `log(Real, NDual)` NARROWED the
-        # plain operand to `T` instead of promoting, so a `Float64` operand on an `NDual{Float32}`
-        # gave the wrong value AND the wrong type — `2f0^1.5` returned `2.828427::Float32` where
-        # Base gives `2.8284271247461903::Float64`.
+        # Plain Float64 operands must promote Float32 duals, preserving Base's exact value.
         @test (a32^1.5) isa NDual{Float64,1}
         @test Nfwd.ndual_value(a32^1.5) === 2.0f0^1.5
         @test (1.5^a32) isa NDual{Float64,1}
@@ -136,12 +127,8 @@ using Mooncake.Nfwd
         @test (NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) isa NDual{Float64,1}
         @test Nfwd.ndual_value(NDual{Float32,1}(2.0f0, (1.0f0,)) / 3.0) === 2.0f0 / 3.0
 
-        # Regression: `clamp` reconstructed its value from the comparisons rather than deferring to
-        # Base, so it narrowed a wider bound, returned `+0.0` for `clamp(-0.0, 0.0, 1.0)`, and chose
-        # `lo` when the bounds cross. Finite differences cannot catch the last two — `-0.0 == 0.0`
-        # numerically and a kink defeats the comparison — hence exact checks here rather than a
-        # registry entry. The tangent convention (zero subgradient at and beyond either endpoint) is
-        # the `rrule!!`'s, and must not drift from it.
+        # Exact checks are needed for signed zeros and crossed bounds (finite differences cannot
+        # distinguish them). Endpoint tangents must agree with the reverse rule.
         c32 = NDual{Float32,1}(2.0f0, (1.0f0,))
         @test clamp(c32, 0.0, 1.5) isa NDual{Float64,1}
         @test Nfwd.ndual_value(clamp(c32, 0.0, 1.5)) === clamp(2.0f0, 0.0, 1.5)
@@ -158,9 +145,7 @@ using Mooncake.Nfwd
         hi = NDual{Float64,1}(1.0, (7.0,))
         @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(2.0, (1.0,)), lo, hi), 1) === 7.0
         @test Nfwd.ndual_partial(clamp(NDual{Float64,1}(-1.0, (1.0,)), lo, hi), 1) === 5.0
-        # One bound dual, the other plain. `NDual <: Real`, so without dedicated methods the
-        # plain-bounds method caught a dual bound and `promote_type` tried to build a nested
-        # `NDual{NDual}`, throwing a `TypeError`.
+        # Mixed bounds need dedicated methods to avoid nesting NDual through Real dispatch.
         mid = NDual{Float64,1}(0.5, (1.0,))
         @test Nfwd.ndual_value(clamp(mid, lo, 1.0)) === 0.5
         @test Nfwd.ndual_partial(clamp(mid, lo, 1.0), 1) === 1.0
@@ -220,11 +205,7 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(inv(x)) ≈ 1/3.0
         @test Nfwd.ndual_partial(inv(x), 1) ≈ -1/9.0
 
-        # At a removable singularity (x=0) the inv / `x^-1` / division paths scale by a blown-up
-        # reciprocal, so an *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
-        # become 0*Inf = NaN; the active lane keeps the genuine singular ±Inf. (Regression:
-        # inv / literal `x^-1` / Real÷NDual / NDual÷NDual / NDual÷Real previously used the unguarded
-        # `_fwd_scale`, unlike the integer-power paths.) lane1 inactive, lane2 active.
+        # At zero, reciprocal paths must preserve inactive zero lanes and active infinities.
         z = _d2(0.0, 0.0, 1.0)
         for d in (inv(z), z^(-1), 1.0 / z, _d2(3.0, 0.0, 1.0) / z, _d2(3.0, 0.0, 1.0) / 0.0)
             @test Nfwd.ndual_partial(d, 1) === 0.0   # inactive lane: 0, not NaN
@@ -233,12 +214,8 @@ using Mooncake.Nfwd
     end
 
     @testset "singular coefficients leave inactive lanes alone" begin
-        # Same requirement as the `inv` block above, for every remaining site whose coefficient is
-        # singular by construction. An inactive (zero-partial) lane must stay 0 rather than become
-        # `0 * Inf = NaN`, while the active lane keeps the genuine singularity. Reverse uses the
-        # guarded scale for these functions, so an unguarded forward one made the modes disagree on
-        # coordinates the singular call never touches. `tan` and `sec` are deliberately absent: at
-        # `pi/2` their coefficient is huge but finite, so nothing is poisoned there.
+        # Singular coefficients must preserve inactive zeros and active singularities.
+        # tan/sec are absent: at pi/2 their coefficients are huge but finite.
         for (f, v) in (
             (csc, 0.0),
             (cot, 0.0),
@@ -253,14 +230,9 @@ using Mooncake.Nfwd
             @test Nfwd.ndual_partial(d, 2) === 0.0     # inactive lane: 0, not NaN
             @test !isfinite(Nfwd.ndual_partial(d, 1))  # active lane: the real singularity
         end
-        # The same requirement for coefficients that OVERFLOW rather than being singular by
-        # construction: the value is still finite here, which is exactly the condition the guard
-        # exists for. Which functions belong was settled by scanning every unguarded `_fwd_scale`
-        # site, not by inspection. `exp`, `exp2`, `expm1`, `sinh` and `cosh` are absent because
-        # their value overflows alongside the coefficient (`exp`'s coefficient IS its value,
-        # `exp2`'s is smaller); `tan`, `sec`, `tand` and `secd` because argument resolution caps
-        # their value near `1e16`, whose square is comfortably finite; `abs2` and `sinc` because
-        # neither can produce a non-finite coefficient at all.
+        # These coefficients overflow while their values stay finite. exp/exp2/expm1/sinh/cosh
+        # overflow with their values; tan/sec/tand/secd are capped by argument resolution,
+        # and abs2/sinc cannot produce non-finite coefficients.
         for (f, v) in ((exp10, 308.0), (cscd, 1e-200), (cotd, 1e-200))
             d = f(_d2(v, 1.0, 0.0))
             @test isfinite(Nfwd.ndual_value(d))        # the value has NOT overflowed
@@ -279,15 +251,11 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), _d2(0.0, 0.0, 0.0)), 2) === 0.0
         @test Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), 0.0), 2) === 0.0
         @test Nfwd.ndual_partial(atan(0.0, _d2(0.0, 1.0, 0.0)), 2) === 0.0
-        # The ACTIVE lane must keep the singularity in all three shapes. Scaling the intermediate
-        # `x*dy - y*dx` by `inv(r2)` made the two-`NDual` shape return 0 at the origin: the
-        # intermediate is all-zero there, so the guard read every lane as inactive and suppressed
-        # the `Inf`. The two mixed shapes always scaled the original partials and were right.
+        # Atan must scale original seeds: guarding x*dy-y*dx at the origin hides active NaNs.
         @test isnan(Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), _d2(0.0, 0.0, 0.0)), 1))
         @test isnan(Nfwd.ndual_partial(atan(_d2(0.0, 1.0, 0.0), 0.0), 1))
         @test isnan(Nfwd.ndual_partial(atan(0.0, _d2(0.0, 1.0, 0.0)), 1))
-        # `rem`'s divisor coefficient is `trunc(x/y)`, which is Inf once `x/y` overflows, so an
-        # unguarded `Inf * 0.0` made an INACTIVE lane NaN while the primal stayed finite.
+        # A subnormal divisor can overflow rem's coefficient while its value stays finite.
         rsub = rem(_d2(1.0, 1.0, 0.0), _d2(1e-310, 0.0, 0.0))
         @test isfinite(Nfwd.ndual_value(rsub))
         @test Nfwd.ndual_partial(rsub, 1) === 1.0
@@ -295,9 +263,7 @@ using Mooncake.Nfwd
     end
 
     @testset "Real / NDual takes the value from the division" begin
-        # `c * inv(x)` overflows for a subnormal divisor where `c / x` is finite, so the value has
-        # to come from the division itself. The `inv` form stays in the partial scale, which is
-        # what it was written for.
+        # A subnormal divisor can overflow inv(x) while c/x stays finite.
         d = 1e-300 / _d2(1e-310, 1.0, 0.0)
         @test Nfwd.ndual_value(d) == 1e-300 / 1e-310
         @test isfinite(Nfwd.ndual_value(d))
@@ -329,18 +295,13 @@ using Mooncake.Nfwd
         bp = 2.0^_d(3.0, 1.0)
         @test Nfwd.ndual_value(bp) ≈ 8.0
         @test Nfwd.ndual_partial(bp, 1) ≈ 8.0 * log(2.0)
-        # Negative real base. `d/dx (-2)^x` does not exist as a real derivative, so the answer is
-        # a convention: `_nfwd_pow_grad_p` takes `real(log(complex(b)))`, giving `v·log|b|`. This
-        # must agree with the `NDual^NDual` sibling below and with the reverse `power` rrule, both
-        # of which use the same coefficient; pinned at two widths since the seed shape differs.
+        # For negative bases use v*log|b|, matching NDual^NDual and reverse despite no real
+        # derivative. Keep both widths because the seed shapes differ.
         @test Nfwd.ndual_partial((-2.0)^_d(3.0, 1.0), 1) ≈ -8.0 * log(2.0)
         @test Nfwd.ndual_value((-2.0)^_d(3.0, 1.0)) ≈ -8.0
         @test Nfwd.ndual_partial((-2.0)^_d2(3.0, 1.0, 0.0), 1) ≈ -8.0 * log(2.0)
         @test Nfwd.ndual_partial((-2.0)^_d2(3.0, 1.0, 0.0), 2) === 0.0
-        # Zero real base with an NDual exponent, POSITIVE exponent (b=0, a=2): primal is 0, and
-        # d(b^a)/da = b^a·log(b) has the removable-singularity limit 0 (b^a→0 dominates log(b)→-Inf).
-        # BOTH lanes must be 0 — the naive `v*log(b) = 0·(-Inf)` gave NaN in active lanes; the
-        # inactive lane was already guarded. `_nfwd_pow_grad_p` now yields the 0 limit.
+        # At zero base and positive exponent the derivative limit is zero on BOTH lanes.
         bz = (0.0)^_d2(2.0, 1.0, 0.0)
         @test Nfwd.ndual_value(bz) == 0.0
         @test Nfwd.ndual_partial(bz, 1) === 0.0   # active lane: removable-singularity limit
@@ -353,9 +314,7 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1) === 0.0
         @test !isnan(Nfwd.ndual_partial(_d(0.0, 1.0)^0.0, 1))
 
-        # integer / literal negative exponent at x=0: dv = ±Inf, so an *inactive* (zero-partial)
-        # lane must stay 0 via the guarded scale, not become 0*Inf = NaN. The active lane keeps
-        # the genuine singular Inf. (Regression for the unguarded `_fwd_scale` on these paths.)
+        # Negative powers at zero preserve inactive zeros and active infinities.
         zneg = _d2(0.0, 1.0, 0.0)
         @test isinf(Nfwd.ndual_partial(zneg^(-2), 1))      # active lane: genuine singularity
         @test Nfwd.ndual_partial(zneg^(-2), 2) === 0.0     # inactive lane: zero, not NaN
@@ -417,8 +376,7 @@ using Mooncake.Nfwd
     end
 
     @testset "complex NDualArray indexing" begin
-        # Complex-eltype NDualArray (element `Complex{NDual}`) must be indexable — previously its
-        # get/setindex! were `where {Element<:IEEEFloat}` only and threw `CanonicalIndexError`.
+        # Complex NDualArray indexing must handle Complex{NDual} elements.
         for N in (1, 2, 3)
             p = ComplexF64[1.0 + 2.0im, 3.0 - 1.0im]
             parts = ntuple(k -> ComplexF64[k + 0.0im, 0.0 + k * im], N)
@@ -549,11 +507,8 @@ using Mooncake.Nfwd
             end
         end
 
-        # Boundary singularity: asin/acos/acosh/asech/asec/acsc and their degree variants
-        # have a FINITE value but an infinite derivative at x = ±1 (a removable singularity for the
-        # derivative). An *inactive* (zero-partial) lane must stay 0 via the guarded scale, not
-        # become `Inf * 0 = NaN`; the active lane keeps the genuine singular ±Inf. lane1 active,
-        # lane2 inactive. (Regression: these paths previously used the unguarded `_fwd_scale`.)
+        # Domain boundaries have finite values and infinite active derivatives; inactive lanes
+        # must remain zero.
         for f in (asin, acos, acosh, asech, asec, acsc, asind, acosd, asecd, acscd)
             d = f(_d2(1.0, 1.0, 0.0))
             @test isfinite(Nfwd.ndual_value(d))               # value finite at the boundary
@@ -810,17 +765,14 @@ using Mooncake.Nfwd
         @test Nfwd.ndual_value(real(sz32)) ≈ real(sin(complex(3.0f0, 4.0f0))) rtol=1e-5
     end
 
-    # Regression: `static_primal_dim(::Type{<:Tuple})` must propagate `nothing` (not `0 + nothing`,
-    # which throws) when a tuple element's size is not type-determinable, e.g. a tuple containing an
-    # Array.
+    # Tuple dimensions propagate nothing when an element's size is not type-determinable.
     @testset "type-level dimensions: tuple-with-array propagates nothing" begin
         @test Nfwd.static_primal_dim(Tuple{Float64,Float64}) == 2
         @test Nfwd.static_primal_dim(Tuple{ComplexF64,Float64}) == 3
         @test Nfwd.static_primal_dim(Tuple{}) == 0
         @test Nfwd.static_primal_dim(Tuple{Vector{Float64},Float64}) === nothing
         @test Nfwd.static_primal_dim(Tuple{Tuple{Vector{Float64}},Float64}) === nothing
-        # Regression: `_nfwd_default_chunk_size(())` (empty args, e.g. a zero-arg callable) must
-        # return 1, not throw on an empty reduction (`sum` needs `init=0`).
+        # Empty arguments require init=0 in the dimension sum.
         @test Nfwd._nfwd_default_chunk_size(()) == 1
     end
 
@@ -838,12 +790,8 @@ using Mooncake.Nfwd
     end
 
     @testset "FastMath min/max/minmax/rem carry the primitive's value" begin
-        # Without `NDual` methods these fall through FastMath's `Number` fallback to `min`/`max`/
-        # `rem`, which are DIFFERENT primitives, so the dual carried a `.value` the primal never
-        # produced. Compared against each primitive over every pair of well-defined operands,
-        # signed-zero ties included — comparisons alone do not reproduce them on every platform.
-        # NaN is deliberately absent: FastMath comparisons are undefined for it and the primitives
-        # are not self-consistent there, so there is nothing stable to assert.
+        # FastMath must keep its own primitive's value, including platform-specific signed-zero
+        # ties. NaNs are excluded because FastMath comparisons are undefined for them.
         vals = (-0.0, 0.0, 1.0, -1.0, 2.0, Inf, -Inf)
         for x in vals, y in vals
             dx, dy = _d(x, 1.0), _d(y, 1.0)
@@ -964,10 +912,7 @@ using Mooncake.Nfwd
         @test eps(x) === eps(1.0)
         @test eps(NDual{Float64,1}) === eps(Float64)
         @test iszero(NDual{Float64,1}(0.0, (0.0,)))
-        # Value-only, so a nonzero partial does not make a zero value nonzero. It used to, which
-        # disagreed with this type's own `==`/`isequal`/`hash` and sent a body branching on
-        # `iszero` down a different branch than the primal takes. That also makes the old
-        # `-0.0`-partial case moot: no partial is consulted.
+        # iszero must ignore partials, matching ==/isequal/hash and primal control flow.
         @test iszero(NDual{Float64,1}(0.0, (1.0,)))
         @test !iszero(NDual{Float64,1}(1.0, (0.0,)))
         @test hash(_d(3.0, 1.0), UInt(0)) == hash(3.0, UInt(0))
@@ -1312,11 +1257,7 @@ end
     end
 
     @testset "maximum / minimum shortcuts agree with the fold at a tie" begin
-        # `maximum(::NDualArray)` indexes one element rather than folding, so its tie convention has
-        # to match the fold's or the derivative is credited to the wrong element — `argmax` returns
-        # the FIRST maximal index while the `max`-fold credits the LAST. Version-independent: the
-        # nfwd classifier only admits `maximum(::Vector)` on 1.10, but the shortcut is wrong
-        # everywhere, so this would go live on 1.11+ the day the classifier changes.
+        # Extrema shortcuts must match fold ties: max credits the LAST maximum, unlike argmax.
         for v in ([1.0, 1.0], [2.0, 1.0, 2.0], [1.0, 2.0, 3.0], [3.0, 2.0, 1.0])
             n = length(v)
             duals = [
