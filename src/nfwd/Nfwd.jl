@@ -724,8 +724,8 @@ end
     return NDual{T,N}(c, _fwd_scale(a.partials, -s))
 end
 @inline function Base.tan(a::NDual{T,N}) where {T,N}
-    s, c = sincos(a.value)
-    return NDual{T,N}(s / c, _fwd_scale(a.partials, inv(c)^2))
+    v = tan(a.value)
+    return NDual{T,N}(v, _fwd_guarded_scale(a.partials, one(T) + v^2))
 end
 # asin/acos (and acosh/asech/asec/acsc + their degree variants below) have a finite value
 # but an infinite derivative at the domain boundary x = ±1 (a removable singularity for the

@@ -819,19 +819,13 @@ end
 
 @is_primitive MinimalCtx Tuple{typeof(tan),P} where {P<:IEEEFloat}
 function frule!!(::Lifted{typeof(tan),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
-    nd = tangent(x)
-    v = nd.value
-    s, c = sincos(v)
-    t = s / c
-    y = t
-    return Lifted{P,N}(y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, one(t) + t^2)))
+    dy = tan(tangent(x))
+    return Lifted{P,N}(dy.value, dy)
 end
 function rrule!!(::CoDual{typeof(tan)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
-    s, c = sincos(v)
-    t = s / c
-    y = t
-    tan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(t) + t^2))
+    y = tan(v)
+    tan_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, one(y) + y^2))
     return zero_fcodual(y), tan_pb
 end
 
@@ -871,19 +865,15 @@ end
 function frule!!(::Lifted{typeof(tand),N}, x::Lifted{P,N,NDual{P,N}}) where {N,P<:IEEEFloat}
     nd = tangent(x)
     v = nd.value
-    s, c = sincosd(v)
-    t = s / c
-    y = t
+    y = tand(v)
     return Lifted{P,N}(
-        y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, deg2rad(one(t) + t^2)))
+        y, NDual{P,N}(y, _fwd_guarded_scale(nd.partials, deg2rad(one(y) + y^2)))
     )
 end
 function rrule!!(::CoDual{typeof(tand)}, x::CoDual{P}) where {P<:IEEEFloat}
     v = primal(x)
-    s, c = sincosd(v)
-    t = s / c
-    y = t
-    tand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(one(t) + t^2)))
+    y = tand(v)
+    tand_pb(ȳ::P) = (NoRData(), _rvs_guarded_scale(ȳ, deg2rad(one(y) + y^2)))
     return zero_fcodual(y), tand_pb
 end
 
@@ -1468,6 +1458,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             ]
         end...,
         Any[
+            (false, :none, (oracle=(value=tan(Float16(1)),),), tan, Float16(1)),
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
             (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
