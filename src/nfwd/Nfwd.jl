@@ -702,18 +702,31 @@ end
     v = tan(a.value)
     return NDual{T,N}(v, _fwd_guarded_scale(a.partials, one(T) + v^2))
 end
-# At domain boundaries these functions have finite values and infinite derivatives;
-# guard inactive lanes, matching reverse mode.
-@inline function Base.asin(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asin(a.value), _fwd_guarded_scale(a.partials, inv(sqrt(one(T) - a.value^2)))
-    )
+# Coefficients can be singular even at finite primal values (e.g. asin at its boundary).
+# Guard inactive lanes, matching reverse mode.
+for (f, coefficient) in (
+    (:asin, :(inv(sqrt(one(T) - a.value^2)))),
+    (:acos, :(-inv(sqrt(one(T) - a.value^2)))),
+    (:atanh, :(inv(one(T) - a.value^2))),
+    (:asech, :(-inv(a.value * sqrt(one(T) - a.value^2)))),
+    (:acsch, :(-inv(abs(a.value) * sqrt(one(T) + a.value^2)))),
+    (:acoth, :(inv(one(T) - a.value^2))),
+    (:log, :(inv(a.value))),
+    (:log1p, :(inv(one(T) + a.value))),
+    (:log2, :(inv(a.value * T(log(2))))),
+    (:log10, :(inv(a.value * T(log(10))))),
+    (:asec, :(inv(abs(a.value) * sqrt(a.value^2 - one(T))))),
+    (:acsc, :(-inv(abs(a.value) * sqrt(a.value^2 - one(T))))),
+    (:asind, :(inv(T(deg2rad(sqrt(one(T) - a.value^2)))))),
+    (:acosd, :(-inv(T(deg2rad(sqrt(one(T) - a.value^2)))))),
+    (:asecd, :(inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T))))))),
+    (:acscd, :(-inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T))))))),
+)
+    @eval @inline function Base.$f(a::NDual{T,N}) where {T,N}
+        return NDual{T,N}($f(a.value), _fwd_guarded_scale(a.partials, $coefficient))
+    end
 end
-@inline function Base.acos(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acos(a.value), _fwd_guarded_scale(a.partials, -inv(sqrt(one(T) - a.value^2)))
-    )
-end
+
 @inline function Base.atan(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(atan(a.value), _fwd_scale(a.partials, inv(one(T) + a.value^2)))
 end
@@ -789,11 +802,6 @@ end
     end
     return NDual{T,N}(acosh(a.value), _fwd_guarded_scale(a.partials, c))
 end
-@inline function Base.atanh(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        atanh(a.value), _fwd_guarded_scale(a.partials, inv(one(T) - a.value^2))
-    )
-end
 
 # Reciprocal hyperbolic: sech, csch, coth and their inverses.
 @inline function Base.sech(a::NDual{T,N}) where {T,N}
@@ -807,23 +815,6 @@ end
 @inline function Base.coth(a::NDual{T,N}) where {T,N}
     sv = csch(a.value)
     return NDual{T,N}(coth(a.value), _fwd_guarded_scale(a.partials, -(sv^2)))
-end
-@inline function Base.asech(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asech(a.value),
-        _fwd_guarded_scale(a.partials, -inv(a.value * sqrt(one(T) - a.value^2))),
-    )
-end
-@inline function Base.acsch(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acsch(a.value),
-        _fwd_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(one(T) + a.value^2))),
-    )
-end
-@inline function Base.acoth(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acoth(a.value), _fwd_guarded_scale(a.partials, inv(one(T) - a.value^2))
-    )
 end
 
 # Exp / Log
@@ -840,22 +831,7 @@ end
         ev=exp10(a.value); NDual{T,N}(ev, _fwd_guarded_scale(a.partials, ev * T(log(10))))
     )
 end
-@inline function Base.log(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log(a.value), _fwd_guarded_scale(a.partials, inv(a.value)))
-end
-@inline function Base.log2(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log2(a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(2))))
-    )
-end
-@inline function Base.log10(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        log10(a.value), _fwd_guarded_scale(a.partials, inv(a.value * T(log(10))))
-    )
-end
-@inline function Base.log1p(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(log1p(a.value), _fwd_guarded_scale(a.partials, inv(one(T) + a.value)))
-end
+
 @inline function Base.expm1(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(expm1(a.value), _fwd_scale(a.partials, exp(a.value)))
 end
@@ -949,18 +925,7 @@ end
     cv = cot(a.value)
     return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, -(one(T) + cv^2)))
 end
-@inline function Base.asec(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asec(a.value),
-        _fwd_guarded_scale(a.partials, inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
-    )
-end
-@inline function Base.acsc(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acsc(a.value),
-        _fwd_guarded_scale(a.partials, -inv(abs(a.value) * sqrt(a.value^2 - one(T)))),
-    )
-end
+
 @inline function Base.acot(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(acot(a.value), _fwd_scale(a.partials, -inv(one(T) + a.value^2)))
 end
@@ -988,39 +953,13 @@ end
     cv = cotd(a.value)
     return NDual{T,N}(cv, _fwd_guarded_scale(a.partials, T(-deg2rad(one(T) + cv^2))))
 end
-@inline function Base.asind(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asind(a.value),
-        _fwd_guarded_scale(a.partials, inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
-    )
-end
-@inline function Base.acosd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acosd(a.value),
-        _fwd_guarded_scale(a.partials, -inv(T(deg2rad(sqrt(one(T) - a.value^2))))),
-    )
-end
+
 @inline function Base.atand(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         atand(a.value), _fwd_scale(a.partials, inv(T(deg2rad(one(T) + a.value^2))))
     )
 end
-@inline function Base.asecd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        asecd(a.value),
-        _fwd_guarded_scale(
-            a.partials, inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
-        ),
-    )
-end
-@inline function Base.acscd(a::NDual{T,N}) where {T,N}
-    return NDual{T,N}(
-        acscd(a.value),
-        _fwd_guarded_scale(
-            a.partials, -inv(T(deg2rad(abs(a.value) * sqrt(a.value^2 - one(T)))))
-        ),
-    )
-end
+
 @inline function Base.acotd(a::NDual{T,N}) where {T,N}
     return NDual{T,N}(
         acotd(a.value), _fwd_scale(a.partials, -inv(T(deg2rad(one(T) + a.value^2))))
