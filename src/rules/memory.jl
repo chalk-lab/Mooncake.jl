@@ -1608,28 +1608,14 @@ function derived_rule_test_cases(rng_ctor, ::Val{:memory})
             slack_v,
         ),
     )
-    push!(
-        test_cases,
-        (false, :none, (mode=ForwardMode,), memoryref_across_realloc, collect(1.0:4.0)),
+    for (perf, f) in (
+        (:none, memoryref_across_realloc),
+        (:none, memoryref_mem_across_realloc),
+        (:none, memoryref_mem_projected_then_realloc),
+        (:allocs, memoryref_mem_sum),
     )
-    push!(
-        test_cases,
-        (false, :none, (mode=ForwardMode,), memoryref_mem_across_realloc, collect(1.0:4.0)),
-    )
-    push!(
-        test_cases,
-        (
-            false,
-            :none,
-            (mode=ForwardMode,),
-            memoryref_mem_projected_then_realloc,
-            collect(1.0:4.0),
-        ),
-    )
-    push!(
-        test_cases,
-        (false, :allocs, (mode=ForwardMode,), memoryref_mem_sum, collect(1.0:4.0)),
-    )
+        push!(test_cases, (false, perf, (mode=ForwardMode,), f, collect(1.0:4.0)))
+    end
     memory = Any[slack_v]
     return test_cases, memory
 end

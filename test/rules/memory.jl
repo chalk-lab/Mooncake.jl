@@ -23,43 +23,32 @@ end
         @test pointer(t[1].ref.mem) === pointer(t[2])
     end
 
-    # Isbits undef Memory V needs coherent zero partials before whole-buffer copies.
-    @testset "element-wise undef Memory V zero partials (width $N)" for N in (1, 2, 3)
+    # Fresh V partials must be zero before whole-buffer copies, for both allocation spellings.
+    allocations = Any[(
+        Memory{Tuple{Float64,Int}}, (undef, 4), n -> Memory{Float64}(undef, n)
+    )]
+    @static if VERSION >= v"1.12-"
+        push!(
+            allocations,
+            (Core.memorynew, (Memory{Float64}, 8), n -> Core.memorynew(Memory{Float64}, n)),
+        )
+    end
+    @testset "$f V zero partials (width $N)" for (f, args, allocate) in allocations,
+        N in (1, 2, 3)
         # Dirty the heap so an unzeroed buffer cannot pass merely by reusing zeroed pages.
         let junk = Memory{Float64}[]
             for _ in 1:200
-                m = Memory{Float64}(undef, 16)
+                m = allocate(16)
                 fill!(m, 12345.0)
                 push!(junk, m)
             end
         end
         GC.gc(false)
-        r = Mooncake.frule!!(
-            Mooncake.zero_lifted(Val(N), Memory{Tuple{Float64,Int}}),
-            Mooncake.zero_lifted(Val(N), undef),
-            Mooncake.zero_lifted(Val(N), 4),
-        )
-        @test all(i -> all(iszero, tangent(r)[i][1].partials), 1:4)
-        @test all(i -> tangent(r)[i][1].value === primal(r)[i][1], 1:4)
-    end
-
-    # Core.memorynew must zero NDualEltype partials too (Julia 1.12+ array lowering).
-    @static if VERSION >= v"1.12-"
-        @testset "Core.memorynew NDualEltype V zero partials (width $N)" for N in (1, 2, 3)
-            # Dirty the heap so an unzeroed buffer would likely read back nonzero.
-            let junk = Memory{Float64}[]
-                for _ in 1:200
-                    m = Core.memorynew(Memory{Float64}, 16)
-                    fill!(m, 12345.0)
-                    push!(junk, m)
-                end
-            end
-            GC.gc(false)
-            r = Mooncake.frule!!(
-                Mooncake.zero_lifted(Val(N), Core.memorynew),
-                Mooncake.zero_lifted(Val(N), Memory{Float64}),
-                Mooncake.zero_lifted(Val(N), 8),
-            )
+        r = Mooncake.frule!!(map(x -> Mooncake.zero_lifted(Val(N), x), (f, args...))...)
+        if f === Memory{Tuple{Float64,Int}}
+            @test all(i -> all(iszero, tangent(r)[i][1].partials), 1:4)
+            @test all(i -> tangent(r)[i][1].value === primal(r)[i][1], 1:4)
+        else
             @test all(iszero, tangent(r).partials_block)
         end
     end
