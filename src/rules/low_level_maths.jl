@@ -1508,7 +1508,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
             end
         end...,
         Any[
-            (false, :none, (oracle=(value=tan(Float16(1)),),), tan, Float16(1)),
+            let
+                x = Float16(1)
+                bx = BigFloat(x)
+                y = Float16(tan(bx))
+                dy = Float16(one(bx) + tan(bx)^2)
+                (
+                    false,
+                    :none,
+                    (
+                        oracle=(value=y, deriv=(fwd=dy, rvs=(NoRData(), dy))),
+                        output_tangent=x,
+                    ),
+                    tan,
+                    CoDual(x, x),
+                )
+            end,
             (
                 false,
                 :none,
@@ -1535,22 +1550,42 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:low_level_maths})
                 acosh,
                 CoDual(Float16(1000), Float16(1)),
             ),
-            (
-                false,
-                :none,
+            let
+                x = 1e-200
+                d = Float64(inv(BigFloat(2) * BigFloat(x)))
                 (
-                    oracle=(
-                        value=atan(1e-200, 1e-200),
-                        deriv=(NoRData(), 5e199, -5e199),
-                        cmp=(a, b) -> isapprox(a, b; rtol=1e-14),
+                    false,
+                    :none,
+                    (
+                        oracle=(deriv=d, cmp=(a, b) -> isapprox(a, b; rtol=1e-14)),
+                        mode=ForwardMode,
                     ),
-                    output_tangent=1.0,
-                    mode=ReverseMode,
-                ),
-                atan,
-                1e-200,
-                1e-200,
-            ),
+                    atan,
+                    CoDual(x, 1.0),
+                    CoDual(x, 0.0),
+                )
+            end,
+            let
+                x = 1e-200
+                d = Float64(inv(BigFloat(2) * BigFloat(x)))
+                (
+                    false,
+                    :none,
+                    (
+                        oracle=(
+                            deriv=(NoRData(), d, -d),
+                            cmp=(a, b) ->
+                                isequal(a[1], b[1]) &&
+                                all(isapprox(a[i], b[i]; rtol=1e-14) for i in 2:3),
+                        ),
+                        output_tangent=1.0,
+                        mode=ReverseMode,
+                    ),
+                    atan,
+                    CoDual(x, 0.0),
+                    CoDual(x, 0.0),
+                )
+            end,
             (false, :stability_and_allocs, nothing, tanpi, 0.1),
             (false, :stability_and_allocs, nothing, Base.FastMath.pow_fast, 2.0, 3),
             (false, :stability_and_allocs, nothing, clamp, 0.5, 0.0, 1.0),
