@@ -86,7 +86,12 @@ end
 # field V names the PARENT array, and the wrapper cannot be rebuilt from it — a `SubArray`'s
 # `indices`/`offset1`/`stride1` lift to `NoDual`, so only the primal has them. A slot pairing one
 # view with a representation over another remains constructible.
-@inline _slot_primal(primal, rep) = primal
+# The fallback preserves the caller's primal for scalar and structural Vs.  Its
+# return type can legitimately be an abstract `Type` value (for example when a
+# `NoDual` slot carries `Type{Union{...}}`), so DispatchDoctor cannot certify
+# inference stability for this method even though the operation itself is
+# type-correct.
+@unstable @inline _slot_primal(primal, rep) = primal
 @inline _slot_primal(::Any, rep::NDualArray) = getfield(rep, :primal)
 @static if VERSION >= v"1.11-rc4"
     @inline _slot_primal(::Any, rep::NDualMemoryRef) = getfield(rep, :primal)
