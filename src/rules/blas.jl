@@ -529,16 +529,18 @@ end
     MinimalCtx,
     Tuple{
         typeof(BLAS.axpy!),Integer,P,X,Integer,Y,Integer
-    } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
+    } where {
+        P<:BlasFloat,X<:Union{Ptr{P},AbstractArray{P}},Y<:Union{Ptr{P},AbstractArray{P}}
+    },
 )
 
 function frule!!(
     ::Lifted{typeof(BLAS.axpy!),Nw},
     _n::Lifted,
     a_da::Lifted{P,Nw},
-    X_dX::Lifted{<:AbstractArray{P}},
+    X_dX::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::Lifted,
-    Y_dY::Lifted{<:AbstractArray{P}},
+    Y_dY::Lifted{<:Union{Ptr{P},AbstractArray{P}}},
     _incy::Lifted,
 ) where {Nw,P<:BlasFloat}
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
@@ -563,9 +565,9 @@ function rrule!!(
     ::CoDual{typeof(BLAS.axpy!)},
     _n::CoDual,
     a_da::CoDual{P},
-    X_dX::CoDual{<:AbstractArray{P}},
+    X_dX::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incx::CoDual,
-    Y_dY::CoDual{<:AbstractArray{P}},
+    Y_dY::CoDual{<:Union{Ptr{P},AbstractArray{P}}},
     _incy::CoDual,
 ) where {P<:BlasFloat}
     n, incx, incy = primal(_n), primal(_incx), primal(_incy)
@@ -3751,6 +3753,7 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
         Any[
             (placeholder, BLAS.nrm2, (3, pointer(xs), 1), (;)),
             (placeholder, BLAS.scal!, (3, P(2), pointer(xs), 1), (;)),
+            (placeholder, BLAS.axpy!, (3, P(2), pointer(xs), 1, pointer(ys), 1), (;)),
             ((placeholder, f, (3, pointer(xs), 1, pointer(ys), 1), opts) for
              (f, opts) in two_operand)...,
         ],
