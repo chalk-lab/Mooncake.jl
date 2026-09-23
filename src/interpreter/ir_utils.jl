@@ -254,6 +254,41 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
     return ir
 end
 
+# Julia 1.10's `reprocess_instruction!` has no `UpsilonNode`/`PhiCNode` branch (added in 1.11):
+# an Upsilon whose operand was refined falls to `argextype`, which is a `Const` of the node
+# itself, and is replaced by a `QuoteNode`, after which `verify_ir` fails on the PhiC. Neither
+# node is refined on 1.11 either (the PhiC is "not modeled", so the Upsilon's refinement never
+# reaches a use), so leaving both untouched loses nothing.
+@static if VERSION < v"1.11"
+    function CC.reprocess_instruction!(
+        interp::BugPatchInterpreter,
+        idx::Int,
+        bb::Union{Int,Nothing},
+        @nospecialize(inst),
+        @nospecialize(typ),
+        irsv::CC.IRInterpretationState,
+    )
+        inst isa Union{Core.UpsilonNode,Core.PhiCNode} && return false
+        return invoke(
+            CC.reprocess_instruction!,
+            Tuple{
+                CC.AbstractInterpreter,
+                Int,
+                Union{Int,Nothing},
+                Any,
+                Any,
+                CC.IRInterpretationState,
+            },
+            interp,
+            idx,
+            bb,
+            inst,
+            typ,
+            irsv,
+        )
+    end
+end
+
 # In automatically generated code, it is meaningless to include code coverage effects.
 # Moreover, it seems to cause some serious inference problems. Consequently, it makes sense
 # to remove such effects before optimising IRCode.

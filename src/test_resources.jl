@@ -423,6 +423,41 @@ function pi_node_tester(y::Ref{Any})
     return isa(x, Int) ? sin(x) : x
 end
 
+# try/catch shapes, forward mode only (reverse refuses the construct). `try_finally_tester`
+# keeps a throwing statement in the try block so the optimiser cannot elide the construct
+# before Mooncake sees it.
+function try_catch_arg_tester(x)
+    y = 0.0
+    try
+        x > 0 && error("")
+        y = x
+    catch
+        y = 2x
+    end
+    return y
+end
+
+function try_catch_computed_tester(x)
+    y = x
+    try
+        x > 0 && error("")
+        y = y * 2
+    catch
+        y = y * 3
+    end
+    return y
+end
+
+function try_finally_tester(x, v)
+    y = x
+    try
+        y = y * v[1]
+    finally
+        y = y + 1
+    end
+    return y
+end
+
 Base.@nospecializeinfer arg_in_pi_node(@nospecialize(x)) = x isa Bool ? x : false
 
 function avoid_throwing_path_tester(x)
@@ -838,6 +873,11 @@ function generate_test_functions()
         (false, :allocs, nothing, phi_const_bool_tester, -5.0),
         (false, :allocs, nothing, phi_node_with_undefined_value, true, 4.0),
         (false, :allocs, nothing, phi_node_with_undefined_value, false, 4.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, 5.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_arg_tester, -5.0),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, 1.5),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_catch_computed_tester, -1.5),
+        (false, :none, (mode=Mooncake.ForwardMode,), try_finally_tester, 1.5, [2.0]),
         (false, :allocs, nothing, test_multiple_phinode_block, 3.0, 3),
         (
             false,

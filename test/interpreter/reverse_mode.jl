@@ -468,6 +468,7 @@ stale_rvs_dyn(x) = (STALE_RVS_FNS[1])(x)
     )
         sig = _typeof((f, x...))
         @info "$n: $sig"
+        TestUtils._case_skip_reverse(bnds) && continue
         mode = ReverseMode
         TestUtils.test_rule(
             Xoshiro(123456), f, x...; perf_flag, interface_only, is_primitive=false, mode
