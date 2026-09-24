@@ -1678,24 +1678,23 @@ end
             xa = Mooncake.randn_lifted(Val(N), StableRNG(10), a)
             xb = Mooncake.randn_lifted(Val(N), StableRNG(11), b)
             xc = Mooncake.randn_lifted(Val(N), StableRNG(12), c)
-            pa, pb, pc = Mooncake.tangent(xa), Mooncake.tangent(xb), Mooncake.tangent(xc)
-
-            out_v = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), vcat), xa, xb)
-            @test Array(Mooncake.primal(out_v)) == Array(vcat(a, b))
-            out_h = Mooncake.frule!!(Mooncake.zero_lifted(Val(N), hcat), xa, xc)
-            @test Array(Mooncake.primal(out_h)) == Array(hcat(a, c))
-            out_p = Mooncake.frule!!(
-                Mooncake.zero_lifted(Val(N), permutedims),
-                xa,
-                Mooncake.zero_lifted(Val(N), (2, 1)),
+            tv(V, i) = Mooncake.Nfwd.tangent_view(V, i)
+            for (f, args, primals, extra) in (
+                (vcat, (xa, xb), (a, b), ()),
+                (hcat, (xa, xc), (a, c), ()),
+                (permutedims, (xa,), (a,), ((2, 1),)),
             )
-            @test Array(Mooncake.primal(out_p)) == Array(permutedims(a, (2, 1)))
-            Vv, Vh, Vp = map(Mooncake.tangent, (out_v, out_h, out_p))
-            for k in 1:N
-                tv(V, i) = Mooncake.Nfwd.tangent_view(V, i)
-                @test Array(tv(Vv, k)) == Array(vcat(tv(pa, k), tv(pb, k)))
-                @test Array(tv(Vh, k)) == Array(hcat(tv(pa, k), tv(pc, k)))
-                @test Array(tv(Vp, k)) == Array(permutedims(tv(pa, k), (2, 1)))
+                out = Mooncake.frule!!(
+                    Mooncake.zero_lifted(Val(N), f),
+                    args...,
+                    map(x -> Mooncake.zero_lifted(Val(N), x), extra)...,
+                )
+                @test Array(Mooncake.primal(out)) == Array(f(primals..., extra...))
+                for k in 1:N
+                    lanes = map(x -> tv(Mooncake.tangent(x), k), args)
+                    @test Array(tv(Mooncake.tangent(out), k)) ==
+                        Array(f(lanes..., extra...))
+                end
             end
         end
 

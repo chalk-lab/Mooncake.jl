@@ -980,14 +980,22 @@ end
 
 # CuDataRef field access — fields (`rc`, `freed`, `cached`) are
 # reference-counting internals with no derivative flow; Lifted V is `NoDual`.
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{<:CuDataRef,Nw,NoDual},
-    ::Lifted{Val{name},Nw},
-    ::Lifted{Val{order},Nw},
-) where {Nw,name,order}
-    y = _cu_lgetfield_primal(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoDual())
+for X in (:(Lifted{<:CuDataRef,Nw,NoDual}), :(Lifted{<:CuArray,Nw,<:NDualArray}))
+    @eval function frule!!(
+        ::Lifted{typeof(lgetfield),Nw},
+        x::$X,
+        ::Lifted{Val{name},Nw},
+        ::Lifted{Val{order},Nw},
+    ) where {Nw,name,order}
+        y = _cu_lgetfield_primal(primal(x), name, order)
+        return Lifted{typeof(y),Nw}(y, NoDual())
+    end
+    @eval function frule!!(
+        ::Lifted{typeof(lgetfield),Nw}, x::$X, ::Lifted{Val{name},Nw}
+    ) where {Nw,name}
+        y = _cu_lgetfield_primal(primal(x), name, nothing)
+        return Lifted{typeof(y),Nw}(y, NoDual())
+    end
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
@@ -996,12 +1004,6 @@ function rrule!!(
     ::CoDual{Val{order}},
 ) where {name,order}
     return _cudataref_lgetfield_rev(primal(x), name, order), _nopb(Val(4))
-end
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw}, x::Lifted{<:CuDataRef,Nw,NoDual}, ::Lifted{Val{name},Nw}
-) where {Nw,name}
-    y = _cu_lgetfield_primal(primal(x), name, nothing)
-    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuDataRef,<:CuDataRef}, ::CoDual{Val{name}}
@@ -1013,15 +1015,6 @@ end
 # `:dims` metadata). Reverse mode (rrule) routes the cotangent through `:data`; the metadata fields
 # are non-differentiable. Forward mode (frule) returns a `NoDual` result V for every field — the
 # JVP lives in the `NDualArray` partials, not behind the `.data` handle.
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{<:CuArray,Nw,<:NDualArray},
-    ::Lifted{Val{name},Nw},
-    ::Lifted{Val{order},Nw},
-) where {Nw,name,order}
-    y = _cu_lgetfield_primal(primal(x), name, order)
-    return Lifted{typeof(y),Nw}(y, NoDual())
-end
 function rrule!!(
     ::CoDual{typeof(lgetfield)},
     x::CoDual{<:CuArray,<:CuArray},
@@ -1029,14 +1022,6 @@ function rrule!!(
     ::CoDual{Val{order}},
 ) where {name,order}
     return _cuarray_lgetfield_rev(primal(x), x.dx, name, order), _nopb(Val(4))
-end
-function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{<:CuArray,Nw,<:NDualArray},
-    ::Lifted{Val{name},Nw},
-) where {Nw,name}
-    y = _cu_lgetfield_primal(primal(x), name, nothing)
-    return Lifted{typeof(y),Nw}(y, NoDual())
 end
 function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{<:CuArray,<:CuArray}, ::CoDual{Val{name}}
@@ -1148,9 +1133,7 @@ function frule!!(
     y = px[pidx]
     x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> x_partials[k][pidx], Val(Nw))
-    Y = typeof(y)
-    Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(getindex)},
@@ -1631,9 +1614,7 @@ function frule!!(
     y = cumsum(px; kw...)
     x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> cumsum(x_partials[k]; kw...), Val(Nw))
-    Y = typeof(y)
-    Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cumsum)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1687,9 +1668,7 @@ function frule!!(
         )
         return pnz .* contribution
     end
-    Y = typeof(y)
-    Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cumprod)}, x::CoDual{<:CuMaybeComplexArray}; kw...)
     px, dx = arrayify(x)
@@ -1784,9 +1763,7 @@ function frule!!(
     d = get(kw, :dims, nothing)
     x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> _scan_jvp(x_partials[k], d), Val(Nw))
-    Y = typeof(y)
-    Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(accumulate)},
@@ -1845,8 +1822,7 @@ function frule!!(
         dy = eltype(y).(_scan_jvp(x_partials[k], d))
         return _kw_init_jvp(dy, _kw_init_tangent(tangent(kw, k)), applies)
     end
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(Y),Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -3067,8 +3043,7 @@ function frule!!(
     c = map(primal, counts)
     y = repeat(px, c...)
     y_partials = ntuple(k -> repeat(x_partials[k], c...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(Y),Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(repeat)},
@@ -3103,8 +3078,7 @@ function frule!!(
     px, x_partials = arrayify(x)
     y = repeat(px; pkw...)
     y_partials = ntuple(k -> repeat(x_partials[k]; pkw...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(Y),Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -3318,17 +3292,16 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(vcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
 )
-function frule!!(
-    ::Lifted{typeof(vcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...
-) where {Nw}
-    # vcat is linear: concat the primals, and concat each lane's partials the same way. `arrayify`
-    # canonicalises each argument's primal and its per-lane partials through any wrapper (mirroring
-    # the reverse rrule below); the dense result gives a plain `NDualArray` V.
-    pairs = map(arrayify, args)
-    y = vcat(map(first, pairs)...)
-    y_partials = ntuple(k -> vcat(map(p -> p[2][k], pairs)...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+# Concatenation is linear; arrayify preserves each wrapper's primal and lane shape.
+for f in (:vcat, :hcat)
+    @eval function frule!!(
+        ::Lifted{typeof($f),Nw}, args::Lifted{<:CuMaybeWrappedArray}...
+    ) where {Nw}
+        pairs = map(arrayify, args)
+        y = $f(map(first, pairs)...)
+        y_partials = ntuple(k -> $f(map(p -> p[2][k], pairs)...), Val(Nw))
+        return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
+    end
 end
 function rrule!!(::CoDual{typeof(vcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
@@ -3344,15 +3317,6 @@ end
 @is_primitive(
     MinimalCtx, Tuple{typeof(hcat),CuMaybeWrappedArray,Vararg{CuMaybeWrappedArray}}
 )
-function frule!!(
-    ::Lifted{typeof(hcat),Nw}, args::Lifted{<:CuMaybeWrappedArray}...
-) where {Nw}
-    pairs = map(arrayify, args)
-    y = hcat(map(first, pairs)...)
-    y_partials = ntuple(k -> hcat(map(p -> p[2][k], pairs)...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
-end
 function rrule!!(::CoDual{typeof(hcat)}, args::CoDual{<:CuMaybeWrappedArray}...)
     pairs = map(arrayify, args)
     primals = map(first, pairs)
@@ -3384,8 +3348,7 @@ function frule!!(
     pairs = map(arrayify, args)
     y = cat(map(first, pairs)...; pkw...)
     y_partials = ntuple(k -> cat(map(p -> p[2][k], pairs)...; pkw...), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
@@ -4087,9 +4050,7 @@ function frule!!(
     y = cu(primal(x))
     x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> cu(x_partials[k]), Val(Nw))
-    Y = typeof(y)
-    Element = eltype(y)
-    return Lifted{Y,Nw}(y, NDualArray{Element,Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(::CoDual{typeof(cu)}, x::CoDual{<:_CuTransferable})
     dx = tangent(x)
@@ -4112,8 +4073,7 @@ function frule!!(
     y = Array(primal(x))
     x_partials = Nfwd._lane_views(tangent(x))
     y_partials = ntuple(k -> Array(x_partials[k]), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{T,Nw,D,Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{Type{Array{T,N}}}, x::CoDual{<:CuArray{T,N}}
@@ -5117,11 +5077,8 @@ function frule!!(
         end
         _gpu_accumulate_jvp!(zero(decoded.primal_out), flat_pargs, flat_ts_k, out)
     end
-    A = typeof(decoded.primal_out)
-    T = eltype(A)
-    D = ndims(A)
-    return Lifted{A,Nw}(
-        decoded.primal_out, NDualArray{T,Nw,D,A}(decoded.primal_out, dy_lanes)
+    return Lifted{typeof(decoded.primal_out),Nw}(
+        decoded.primal_out, _wrap_v_lanes(decoded.primal_out, dy_lanes)
     )
 end
 
@@ -5314,8 +5271,7 @@ function frule!!(
     pperm = primal(perm)
     y = permutedims(px, pperm)
     y_partials = ntuple(k -> permutedims(x_partials[k], pperm), Val(Nw))
-    Y = typeof(y)
-    return Lifted{Y,Nw}(y, NDualArray{eltype(y),Nw,ndims(y),Y}(y, y_partials))
+    return Lifted{typeof(y),Nw}(y, _wrap_v_lanes(y, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(permutedims)}, x::CoDual{<:CuMaybeWrappedArray}, perm::CoDual
@@ -5399,8 +5355,7 @@ function frule!!(
     y_partials = ntuple(
         k -> sum((2λ) .* diff .* (x_partials[k] .- m_partials[k]); dims=_dims), Val(Nw)
     )
-    Y = typeof(σ²)
-    return Lifted{Y,Nw}(σ², NDualArray{eltype(σ²),Nw,ndims(σ²),Y}(σ², y_partials))
+    return Lifted{typeof(σ²),Nw}(σ², _wrap_v_lanes(σ², y_partials))
 end
 
 function rrule!!(
@@ -5631,8 +5586,7 @@ function frule!!(
     n = prod(d -> size(px, d), unique(_dims); init=1)
     λ = eltype(px)(inv(n))
     y_partials = ntuple(k -> sum(λ .* x_partials[k]; dims=_dims), Val(Nw))
-    Y = typeof(μ)
-    return Lifted{Y,Nw}(μ, NDualArray{eltype(μ),Nw,ndims(μ),Y}(μ, y_partials))
+    return Lifted{typeof(μ),Nw}(μ, _wrap_v_lanes(μ, y_partials))
 end
 function rrule!!(
     ::CoDual{typeof(Core.kwcall)},
