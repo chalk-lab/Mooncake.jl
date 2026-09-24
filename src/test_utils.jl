@@ -344,6 +344,8 @@ end
 # matrices were equal. Descending into fields therefore compares whatever the allocator last wrote.
 # Comparison goes element-wise through the wrapper rather than via `==`, which would report two
 # `NaN`s unequal where this function reports them equal.
+# Forward tangents of these wrappers carry an `NDualArray` over the same backing matrix, so their
+# snapshots must use the wrapper's visible entries too.
 for T in (
     :Symmetric,
     :Hermitian,
@@ -359,6 +361,31 @@ for T in (
         return all(
             has_equal_data_internal(x[i], y[i], equal_undefs, d) for i in eachindex(x, y)
         )
+    end
+end
+
+_wrapper_tangent(p::Symmetric, data) = Symmetric(data, Symbol(p.uplo))
+_wrapper_tangent(p::Hermitian, data) = Hermitian(data, Symbol(p.uplo))
+_wrapper_tangent(p::UpperTriangular, data) = UpperTriangular(data)
+_wrapper_tangent(p::LowerTriangular, data) = LowerTriangular(data)
+_wrapper_tangent(p::UnitUpperTriangular, data) = UnitUpperTriangular(data)
+_wrapper_tangent(p::UnitLowerTriangular, data) = UnitLowerTriangular(data)
+
+_snapshot_forward_tangent(y) = _deepcopy(tangent(y))
+
+function _snapshot_forward_tangent(y::Lifted{P,N}) where {P,N}
+    p = primal(y)
+    p isa Union{
+        Symmetric,
+        Hermitian,
+        UpperTriangular,
+        LowerTriangular,
+        UnitUpperTriangular,
+        UnitLowerTriangular,
+    } || return _deepcopy(tangent(y))
+    return ntuple(N) do k
+        fields = getfield(tangent(y, k), :fields)
+        _wrapper_tangent(p, getfield(fields, :data))
     end
 end
 
@@ -1437,7 +1464,7 @@ function test_frule_reuse(x_ẋ...; frule)
     else
         _deepcopy(primal(y_ẏ_a))
     end
-    ẏ_a = _deepcopy(tangent(y_ẏ_a))
+    ẏ_a = _snapshot_forward_tangent(y_ẏ_a)
     ẋ_a = map(_deepcopy ∘ tangent, x_ẋ_a)
 
     y_ẏ_b = frule(x_ẋ_b...)
@@ -1446,7 +1473,7 @@ function test_frule_reuse(x_ẋ...; frule)
     else
         _deepcopy(primal(y_ẏ_b))
     end
-    ẏ_b = _deepcopy(tangent(y_ẏ_b))
+    ẏ_b = _snapshot_forward_tangent(y_ẏ_b)
     ẋ_b = map(_deepcopy ∘ tangent, x_ẋ_b)
 
     @test has_equal_data(y_primal_a, y_primal_b)
