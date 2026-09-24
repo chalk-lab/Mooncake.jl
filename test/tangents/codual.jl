@@ -96,18 +96,13 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
         phantom_tuple = UnionAll(TypeVar(:A), Tuple{TypeVar(:T),TypeVar(:A)})
         @test codual_type(phantom) === CoDual
         @test Mooncake.fcodual_type(phantom) === CoDual
-        # Forward `dual_type` is width-parameterised (`dual_type(::Val{N}, ::Type)`) on this branch;
-        # the legacy one-arg `Dual` mapping is gone. A phantom-TypeVar primal widens to `Any`.
+        # Phantom-TypeVar primals widen to `Any` at the requested width.
         @test dual_type(Val(1), phantom) === Any
         @test codual_type(phantom_tuple) === CoDual
         @test Mooncake.fcodual_type(phantom_tuple) === CoDual
-        # A free-TypeVar `Tuple` (e.g. `Tuple{T,A}`) leaves the `P<:Tuple` static parameter
-        # unbound; the forward `dual_type`/`lifted_type` bodies guard with `@isdefined(P)` (the
-        # idiom the `CoDual` constructor uses) and widen to `Any` rather than referencing the
-        # undefined `P` and throwing `UndefVarError`.
+        # Free TypeVars leave `P` unbound; tuple methods must guard before using it.
         @test dual_type(Val(1), phantom_tuple) === Any
-        # `lifted_type` returns a (broad) `Lifted` *slot* type, like the generic `lifted_type`
-        # phantom guard — not the inner-V `Any` that `dual_type` returns.
+        # The slot widens to `Lifted`, while its inner representation widens to `Any`.
         @test Mooncake.lifted_type(Val(1), phantom_tuple) === Lifted
     end
 
@@ -125,10 +120,7 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
     end
 
     @testset "_reaches_recursive_type" begin
-        # `record_const_alias!` must not ask `tangent_type` about a type it cannot answer for.
-        # `Base.ImmutableDict` holds a `parent` of its own type; `IOContext` holds such a dict and
-        # so is equally out of reach, which is why the question is reachability and not
-        # self-reference.
+        # Avoid `tangent_type` on recursive types, including recursion through a field.
         @test Mooncake._reaches_recursive_type(Base.ImmutableDict{Symbol,Any})
         @test Mooncake._reaches_recursive_type(IOContext{IOStream})
         # Constants that do own shareable derivative storage stay guarded.
@@ -136,19 +128,13 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
         @test !Mooncake._reaches_recursive_type(Diagonal{Float64,Vector{Float64}})
         @test !Mooncake._reaches_recursive_type(Tuple{Float64,Vector{Float64}})
         @test !Mooncake._reaches_recursive_type(String)
-        # A union is how recursion is usually spelled, and `tangent_type` distributes over one,
-        # so the walk must: without this the guard reported a linked-list node as answerable and
-        # then overflowed asking for its tangent type.
+        # Follow unions to detect linked-list recursion before asking for its tangent type.
         @test Mooncake._reaches_recursive_type(_RecursiveNode)
     end
 
     @testset "a rebound non-const global is matched by binding, not by build-time value" begin
-        # Both modes re-read a non-const global on every call, so the object an argument can clash
-        # with is whichever one is bound at CALL time. Recording the build-time value instead left
-        # the guard hunting an object the caller had stopped passing, and the derivative came back
-        # silently wrong: [1.0, 2.0] against [2.0, 4.0] in reverse, a JVP of 1.0 against 2.0
-        # through the forward transform. No registry row can express this -- the rebinding has to
-        # happen BETWEEN building the rule and calling it, and `test_rule` does both at once.
+        # Resolve globals at call time in both modes. The registry cannot rebind a global
+        # between building and calling a rule, so this needs a direct test.
         r = Mooncake.build_rrule(_global_alias_f, [1.0, 2.0])
         x = [1.0, 2.0]                    # equal contents, DIFFERENT object
         global _GLOBAL_ALIAS_G = x        # the argument is now the global
@@ -171,9 +157,7 @@ _global_alias_f(x) = sum(x .* _GLOBAL_ALIAS_G)
     end
 
     @testset "record_const_alias! records what it cannot ask about" begin
-        # The guard exists to refuse, so an unknown resolves towards refusing. A struct wider than
-        # the walk's budget is not recursive at all, but the answer is unavailable: recording it
-        # yields a loud refusal where skipping yielded a gradient of [1.0, 1.0] against [2.0, 2.0].
+        # Budget exhaustion must record conservatively, even for non-recursive types.
         wide = _WideConst(ntuple(i -> Val(i), 601), [1.0, 2.0])
         consts = Any[]
         Mooncake.record_const_alias!(consts, wide)

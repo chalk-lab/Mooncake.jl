@@ -157,15 +157,12 @@ end
 """
     ConstAliasSet(primals::Vector{Any} = Any[])
 
-The constant and global primals a rule built derivative storage for at rule-build time.
-`DerivedRule` and `DerivedFRule` each carry one, and refuse a call whose arguments
-include one of these objects: that storage is shared with nothing, so the contribution through the
-constant would be dropped.
+Constants and globals with derivative storage created at rule-build time. Rules refuse
+arguments identical to these objects because their derivative storage is separate.
 
-A field of this fixed, concrete, non-differentiable type rather than a type parameter. A parameter
-would make a rule's type depend on whether its function happens to read a differentiable constant,
-which defeats the `Core.Compiler.return_type(build_derived_rrule, ...)` inference that
-`__build_primitive_frule` relies on to key its cache.
+Use a concrete, non-differentiable field of this type: parameterising rules by constants
+breaks the `Core.Compiler.return_type(build_derived_rrule, ...)` inference used by
+`__build_primitive_frule` to key its cache.
 """
 struct ConstAliasSet
     primals::Vector{Any}
@@ -177,22 +174,17 @@ tangent_type(::Type{ConstAliasSet}) = NoTangent
 """
     _check_constant_aliasing(consts::ConstAliasSet, args)
 
-Refuse `args` if any of them is one of the rule's build-time constants. Every rule kind calls this
-at entry; the set is empty for most rules, which is the branch that matters for cost.
-
-Detection is best effort: passing is not a guarantee of no aliasing. Matching is by identity at the
-root, so a constant that merely contains the argument is missed — with `const A = [1.0, 2.0]` and
-`const T = (A,)`, a call at `x === A` is accepted and its gradient is silently wrong. See
-[`record_const_alias!`](@ref) for why the walk that would catch this was rejected.
+Refuse arguments identical to a rule's constants. Most rules have an empty set.
+Matching only checks root identity; nesting on either side can hide aliasing and produce
+wrong derivatives. See [`record_const_alias!`](@ref) for this boundary's rationale.
 """
 @inline function _check_constant_aliasing(consts::ConstAliasSet, args)
     isempty(consts.primals) && return nothing
     return _check_constant_aliasing_slow(consts.primals, args)
 end
 
-# `args` is a heterogeneous tuple, so iterating it directly infers a union and boxes each
-# `primal(a)` — 400 bytes for three arguments. `_aliases_any_arg` recurses instead, which
-# unrolls; `any` with a closure would too, but heap-allocates the closure over `c::Any`.
+# Recurse over heterogeneous `args` to avoid boxing `primal(a)` during iteration.
+# A closure over `c::Any` would heap-allocate even if `any` unrolled the tuple.
 @noinline function _check_constant_aliasing_slow(consts::Vector{Any}, args)
     for c in consts
         _aliases_any_arg(c, args) && _throw_constant_alias_error(c)
@@ -208,22 +200,16 @@ end
 """
     GlobalBinding(mod, name)
 
-A non-const global recorded in a [`ConstAliasSet`](@ref) by BINDING rather than by value.
-
-The forward transform reads such a global afresh on every call, so the object an argument could
-clash with is whichever one the binding holds at CALL time. Recording the build-time value instead
-leaves the guard hunting an object the caller no longer passes once the global is rebound, and the
-contribution through it is dropped silently. A `const` global cannot move, so it is still recorded
-directly.
+A non-const global recorded in a [`ConstAliasSet`](@ref) by binding. Resolve its value at
+call time so rebinding cannot bypass the alias guard. Const globals are recorded directly.
 """
 struct GlobalBinding
     mod::Module
     name::Symbol
 end
 
-# `Any` by nature, and that is the point: the guard has to compare against whatever the binding
-# holds at call time, so the return type cannot be narrowed without defeating the check. Marked
-# `@unstable` for DispatchDoctor, which enforces stability over the rest of the module.
+# The binding's call-time value can have any type; `@unstable` exempts this check
+# from DispatchDoctor without narrowing which objects it can detect.
 @unstable @inline _alias_target(@nospecialize(c)) = c
 @unstable @inline function _alias_target(b::GlobalBinding)
     return isdefined(b.mod, b.name) ? getglobal(b.mod, b.name) : nothing
@@ -243,19 +229,15 @@ end
     )
 end
 
-# `tangent_type` does not terminate on a recursive type -- a custom tangent type is the documented
-# remedy -- and the nfwd classifier meets such values as constants that no rule builds storage for.
-# Skipping them costs no coverage: a type with no representable tangent has no derivative storage
-# for an argument to share. Reachability, not self-reference, is the question: every `IOContext`
-# holds a `Base.ImmutableDict{Symbol,Any}` whose first field is its own type. The node cap errs
-# towards skipping, the safe direction.
+# `tangent_type` needs custom methods for recursive types. Check reachability:
+# `IOContext` contains a self-referential `Base.ImmutableDict{Symbol,Any}`.
+# Exceeding the node budget also reports true, so callers record without asking.
 function _reaches_recursive_type(
     @nospecialize(P::Type),
     on_path::IdDict{Type,Bool}=IdDict{Type,Bool}(),
     nodes::Ref{Int}=Ref(0),
 )
-    # A union is where the recursion usually hides: `next::Union{Nothing,LNode}` is how a linked
-    # list is spelled, and `tangent_type` distributes over unions, so the walk must too.
+    # Follow unions like `next::Union{Nothing,LNode}`, as `tangent_type` does.
     if P isa Union
         return _reaches_recursive_type(P.a, on_path, nodes) ||
                _reaches_recursive_type(P.b, on_path, nodes)
@@ -274,26 +256,16 @@ end
 """
     record_const_alias!(consts::Vector{Any}, @nospecialize(v))
 
-Add the constant primal `v` to `consts` if an argument that is the same object would clash with it.
+Record `v` when an identical argument could clash with its mutable derivative storage.
+Values with `NoFData` are skipped, avoiding spurious matches on equal scalars but also
+missing differentiable immutable constants such as `const C = ("a", 1.0)` in both modes.
+Unknown storage is recorded: an unnecessary refusal is preferable to a wrong derivative.
 
-Only a value owning mutable derivative storage can clash, and those are exactly the ones whose
-fdata is not `NoFData`. A scalar, or an immutable aggregate of scalars, has none: there is nothing
-for an argument to share, and excluding it is also what stops `===` matching a constant `2.0`
-against an argument that happens to be `2.0`. The cost is that a differentiable immutable constant
-passed as an argument — `const C = ("a", 1.0)` — is not caught, in either mode.
-
-Where that question cannot be asked the constant is RECORDED, not skipped. This guard exists to
-refuse, so an unknown must resolve towards refusing: an unnecessary refusal is a loud, explicable
-error, while a missed one is a silently wrong derivative.
-
-Matching is by identity at the ROOT, so nesting defeats it on either side: with
-`const A = [1.0, 2.0]; const T = (A,)`, a call at `x === A` is not refused and the reverse gradient
-comes back `[1.0, 2.0]` against `[2.0, 4.0]`. Recording every object reachable from each constant
-instead was tried and rejected on measurement, not taste: a real constant's value graph reaches
-modules and method tables, so a recursive walk overflows the stack during precompilation and an
-iterative one takes precompilation from 40 seconds past 600. Bounding that walk would put back the
-silent under-collection this function was just fixed to avoid, so the boundary stands until there
-is a way to enumerate reachable derivative storage without walking arbitrary objects.
+Only root identity is checked, so nesting on either side can hide aliasing. Walking each
+constant's reachable objects reaches modules and method tables: recursive traversal
+stack-overflows, while iterative traversal pushed precompilation from 40s past 600s.
+Bounding that walk would silently under-collect; detecting nested aliases requires a way
+to enumerate derivative storage without traversing arbitrary objects.
 """
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v))
     record_const_alias!(consts, v, v)
@@ -302,15 +274,10 @@ end
 # `stored` is what lands in the set: the value itself, or a `GlobalBinding` to resolve at call
 # time. `v` is always the value, since only it can answer whether there is storage to clash over.
 function record_const_alias!(consts::Vector{Any}, @nospecialize(v), @nospecialize(stored))
-    # An isbits value has no fdata to share (`Ptr` aside, and a `Ptr` constant is embedded as an IR
-    # literal rather than reaching here). Testing that first also keeps `tangent_type` off the
-    # primitive types it deliberately refuses, which the constants of an arbitrary walked body
-    # include.
+    # Isbits values have no shared fdata (`Ptr` constants arrive as IR literals).
+    # Check first to avoid asking `tangent_type` about unsupported primitives.
     isbits(v) && return nothing
-    # `tangent_type` does not terminate on a recursive type, and the walk that establishes this can
-    # also run out of budget, where the answer is UNKNOWN rather than "not recursive". Both cases
-    # record without asking: a constant whose tangent type cannot be computed is one no rule can
-    # build storage for, which is precisely the clash this set exists to refuse.
+    # Record recursive types and exhausted walks without asking `tangent_type`.
     if !_reaches_recursive_type(_typeof(v))
         fdata_type(tangent_type(_typeof(v))) === NoFData && return nothing
     end

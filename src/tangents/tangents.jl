@@ -335,31 +335,19 @@ tangent_type(::Type{<:TypeVar}) = NoTangent
 """
     VoidPtrTangent
 
-The tangent of a `Ptr{Cvoid}`.
+Tangent of a `Ptr{Cvoid}`, whose pointee type is erased. Such pointers can come from
+`unsafe_convert(Ptr{Cvoid}, p)` (including `unsafe_copyto!` and `pointer(::Array)`) or
+from storage with no tangent; the primal type alone cannot distinguish them.
 
-"Erased" throughout here means TYPE ERASURE: `Ptr{Cvoid}` is C's `void*`, a pointer whose element
-type has been thrown away. What this type holds is the tangent of such a pointer — the tangent
-itself is not erased, the element type it points at is.
+`elt` records the tangent element type for `_tangent_retyping_verdict`. Size alone is
+insufficient: a heap reference and `Float64` can occupy the same space, but overwriting
+one with the other corrupts the GC's view of the heap.
 
-`Ptr{Nothing}` is the one pointer type whose tangent cannot be described by its primal alone. It is
-reached both by erasing a live tangent pointer (`unsafe_convert(Ptr{Cvoid}, p)`, which
-`unsafe_copyto!` and `pointer(::Array)` both do) and by taking the address of something with no
-tangent storage at all. Giving both `Ptr{NoTangent}` conflates them, and a re-typing back to a
-differentiable element then cannot be checked.
-
-`elt` is the tangent ELEMENT TYPE behind the address, so a widening can be checked by exactly the
-rule that governs the one-hop case — see `_tangent_retyping_verdict`, which both callers
-use. Recording the type rather than its size is what lets `Vector{Float64}` be distinguished from
-`Float64`: both occupy 8 bytes in a buffer, but one is a heap reference and storing a float over it
-corrupts the GC's view of the heap.
-
-Two element types are markers rather than real elements:
-
-- `NoTangent` says no tangent storage lies behind the address, so any differentiable widening is
-  refused. This is also the honest element type of a non-differentiable buffer's tangent.
-- `Nothing` says the address is a tangent OBJECT rather than a buffer of uniform elements, as
-  `pointer_from_objref` returns. Element type is not the property there, and that rule establishes
-  at the point of creation that the tangent shares the primal's layout.
+Two marker element types have special meanings:
+- `NoTangent`: no differentiable storage; refuse differentiable widening. Also the
+  actual tangent element type for non-differentiable buffers.
+- `Nothing`: a tangent object address from `pointer_from_objref`, whose rule checks
+  that the tangent shares the primal's layout, rather than a uniform element buffer.
 """
 struct VoidPtrTangent
     p::Ptr{Nothing}
@@ -533,10 +521,8 @@ end
 
 @foldable @generated function tangent_type(::Type{P}) where {P}
 
-    # DEFERRED (runtime) error, not a gen-time `error(...)`: a gen-time throw bakes into the
-    # `@foldable`-cached IR of callers and isn't invalidated when a later, more-specific overload
-    # (e.g. an extension's `CuPtr`) is added — the world-age trap. `:(error(...))` fires only if
-    # dispatch actually reaches this fallback at runtime. (Mirrors `fdata_type`; see AGENTS.md.)
+    # Defer errors to runtime: generator-time throws survive in callers' `@foldable`
+    # cached IR even after a more-specific extension overload is added.
     if isprimitivetype(P)
         msg = "$P is a primitive type. Implement a method of `tangent_type` for it."
         return :(error($msg))
@@ -637,10 +623,7 @@ end
 function zero_tangent_internal(x::Ptr{Nothing}, ::MaybeCache)
     return VoidPtrTangent(x, NoTangent)
 end
-# A `SimpleVector` is mutable and can be aliased, so it must participate in the cache and not
-# merely thread it into its elements: two arguments over one `SimpleVector` have to come back with
-# the same tangent, or cotangent accumulation splits across two storages. Registered before
-# filling, as the `Array` method does, so a cycle through an element terminates.
+# Cache the `SimpleVector` itself to preserve aliasing, before filling to break cycles.
 function zero_tangent_internal(x::SimpleVector, dict::MaybeCache)
     haskey(dict, x) && return dict[x]::Vector{Any}
     t = Vector{Any}(undef, length(x))
@@ -1122,11 +1105,8 @@ If `c` is a `NoCache`, assume that neither `t` nor `s` contain either circular r
 or aliasing.
 """
 _dot_internal(::MaybeCache, ::NoTangent, ::NoTangent) = 0.0
-# A `NoTangent` is the zero element of its (zero-dimensional) space, so its inner
-# product with any tangent is 0. This cross-type pairing arises in the test harness
-# when forward and reverse mode disagree on whether a value is differentiable — e.g.
-# `lgetfield(::Array, Val(1))` yields a forward `MemoryRef` tangent (carried for HVP)
-# but a reverse `NoTangent` rdata; the consistency check then dots the two.
+# Cross-type dots occur when forward/reverse representations differ, e.g. an Array's
+# forward `MemoryRef` tangent versus reverse `NoTangent` rdata. NoTangent contributes zero.
 _dot_internal(::MaybeCache, ::NoTangent, ::Any) = 0.0
 _dot_internal(::MaybeCache, ::Any, ::NoTangent) = 0.0
 _dot_internal(::MaybeCache, t::T, s::T) where {T<:Union{IEEEFloat,Integer}} = Float64(t * s)
@@ -1184,27 +1164,11 @@ aliasing in either `x` or `t`.
 """
 _add_to_primal_internal(::MaybeCache, x, ::NoTangent, ::Bool) = x
 
-# A `Ptr` tangent is the `uninit_*` placeholder: type-correct, addressing tangent storage, but
-# carrying no derivative of its own and never to be dereferenced as one. So every tangent-arithmetic
-# operation here treats it as INERT — a scaled placeholder is the placeholder, its inner product is
-# zero, and adding it to a primal leaves the primal alone. `increment!!` is the exception and lives
-# with the other increments above: two tangents of one primal must be the same address, so it
-# accepts an egal pair and throws on any other. Without these the operations are partial, and
-# any `Ptr` reaching a gradient (a bare argument, or a struct with a `Ptr` field, ordinary in code
-# wrapping a C library) failed with a raw `MethodError` naming an internal instead of
-# differentiating the fields that do carry derivatives.
-#
-# Safe only because the FORWARD rules refuse to read a derivative through such a pointer. Adding
-# these while `unsafe_wrap` still wrapped through the placeholder turned that crash into a silently
-# wrong forward derivative, which is why the guard had to land first.
-#
-# `Ptr{Nothing}` carries its placeholder as a `VoidPtrTangent` rather than as a bare pointer, so it
-# needs the same methods; without them the operations are partial for it alone. `randn_tangent` is
-# in this set because returning the pointer would return a `Ptr{Nothing}` where `tangent_type`
-# declares `VoidPtrTangent` — no error, just a tangent of the wrong type.
-# `uninit_tangent`, not `x`: the tangent of a `Ptr{P}` is a `Ptr{tangent_type(P)}`, and returning the
-# primal pointer is only correctly typed when `tangent_type(P) === P`. This also covers
-# `Ptr{Nothing}`, whose `uninit_tangent` is the `VoidPtrTangent`.
+# Pointer placeholders carry no derivative of the address and are inert in arithmetic.
+# `increment!!` additionally requires identical tangents for one primal. Forward rules
+# must refuse derivative reads through placeholders, including through `unsafe_wrap`.
+# `uninit_tangent` gives the correct tangent type, including `VoidPtrTangent` for Cvoid;
+# returning the primal pointer is only type-correct when `tangent_type(P) === P`.
 randn_tangent_internal(::AbstractRNG, x::Ptr, ::MaybeCache) = uninit_tangent(x)
 set_to_zero_internal!!(::SetToZeroCache, x::Ptr) = x
 _scale_internal(::MaybeCache, ::Float64, t::Ptr) = t
@@ -1573,12 +1537,8 @@ live in `src/rules/linear_algebra.jl`.
         end
         return :(NamedTuple{$names}(($(dest_exprs...),)))
     end
-    # AbstractArray with a non-float element: the element's differentiability decides between
-    # mapping `friendly_tangent_cache` over the elements (differentiable) and the raw cache
-    # (non-differentiable — skips pointless caches/maps on e.g. integer/sparse containers). The
-    # `tangent_type(eltype)` test is emitted in the RETURNED expression — never the generator body
-    # — so it resolves at the call world (where an extension's eltype overload is visible), instead
-    # of baking the generator-definition-world resolution that a later overload could not dislodge.
+    # Non-float arrays need element caches only for differentiable elements.
+    # Emit the `tangent_type` call at runtime so later extension overloads remain visible.
     if P <: AbstractArray && !(eltype(P) <: Union{IEEEFloat,Complex{<:IEEEFloat}})
         ET = eltype(P)
         return :(
