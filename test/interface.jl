@@ -908,11 +908,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             for (arg, darg) in zip(fargs, _dfargs)
                 @test tangent_type(typeof(arg)) == typeof(darg)
             end
-            # The prepared-cache zero-allocation contract. Asserted, rather than the
-            # `alloc_count > 0 ? @test_broken : @test` it replaces, which could not fail in
-            # either branch and so asserted nothing on any version. On 1.11 and 1.12 every case
-            # here is exactly zero; on 1.10 the `__call_rule` dispatch barrier (julia#61368, see
-            # the note in `src/utils.jl`) costs 3-4 for all but `sum`, so bound it there.
+            # Prepared calls must allocate nothing on 1.11+; bound 1.10's __call_rule barrier
+            # cost instead (julia#61368; see src/utils.jl).
             alloc_count = TestUtils.count_allocs(value_and_gradient!!, cache, fargs...)
             @static if VERSION < v"1.11-"
                 @test alloc_count <= 4
@@ -1126,11 +1123,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "output aliasing an input the rule grew" begin
-            # The pullback restores mutations `f` made to its inputs, so an output that ALIASES
-            # a grown input reads back at its pre-growth size once the reverse pass has run.
-            # Snapshotting after it recorded size (2,) for a live (3,), and every later call
-            # then failed against that cache. No registry case can assert on the prepared
-            # output buffer or on cache reuse.
+            # Snapshot grown outputs before the pullback restores input size. The registry
+            # cannot check prepared output buffers or cache reuse.
             grow(x) = (push!(x, 2 * x[1]); x)
             @testset "friendly_tangents=$fr" for fr in (false, true)
                 x = [1.0, 2.0]
@@ -1155,10 +1149,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "a gradient cache also serves value_and_pullback!!" begin
-            # A friendly pullback converts the caller's `ybar` into the cache's output-tangent
-            # buffer, so a friendly gradient cache that left it `nothing` threw on the first
-            # such call while the unfriendly one worked. Cross-API reuse of one cache is not
-            # expressible as a registry case.
+            # Cross-API reuse requires a gradient cache's output-tangent buffer for friendly
+            # pullbacks; a rule registry cannot express this cache contract.
             fsq = x -> sum(abs2, x)
             @testset "friendly_tangents=$fr" for fr in (false, true)
                 x = [1.0, 2.0]
@@ -1464,12 +1456,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             oc = Base.Experimental.@opaque x -> x + 1
             @test Mooncake._copy_output(oc) === oc
 
-            # End-to-end: friendly forward-over-reverse over a genuinely non-primitive array
-            # function (`sum(x.^2)` broadcasts, unlike the primitive `sum(abs2, x)`) builds a
-            # gradient closure that captures the compiled reverse rule. `friendly_tangents=true`
-            # must (a) prepare without descending into that rule's reflection graph, and (b)
-            # evaluate HVP/Hessian correctly — the inner forward cache is always non-friendly, so
-            # the flag does not change results. Regression for the two HVP/Hessian friendly bugs.
+            # Broadcast sum(x.^2) captures a compiled reverse rule; primitive sum(abs2, x)
+            # does not. Friendly preparation must avoid walking cyclic reflection graphs and
+            # keep the inner forward cache non-friendly, preserving HVP/Hessian results.
             x = [1.0, 2.0, 3.0]
             v = [1.0, 0.0, 0.0]
             for f in (x -> sum(x .^ 2), x -> sum(abs2, x)), ft in (false, true)
@@ -1541,10 +1530,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             # directional derivative of sum(abs2, x) is 2x ⋅ dir
             @test last(z_and_dz_arr) == 2 * x * dx + 2 * y * dy
 
-            # Regression: the FULL gradient must fill every element, not just the first. The
-            # packable path seeds the element-major block by linear index; a 2-D `block[lane,
-            # elem]` index silently mis-seeds all but element 1 on Julia 1.10 (the block is a
-            # flat `Vector` there), giving e.g. [2x₁, 0, 0]. Exercise widths that split and span.
+            # Widths that split and span the array must fill every gradient entry, including on
+            # 1.10's flat partials storage.
             x3 = [1.0, 2.0, 3.0]
             for cs in (1, 2, 3)
                 gc = Mooncake.prepare_derivative_cache(
@@ -1634,20 +1621,10 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "forward gradient accepts a `Dict` / `Set` argument" begin
-            # `_basis_seed!!` walks the forward V writing standard-basis lanes. A lifted `Dict`
-            # (and a `Set`, which wraps one) has bare `Memory` backing its `slots`/`keys`, which
-            # carry no derivative at all, and the walk had no method for it: forward threw a raw
-            # `MethodError` naming an internal for an input reverse mode accepts, `_check_liftable_input`
-            # admits, and Julia 1.10 forward already handled (1.10 `Dict`s use `Vector`s).
-            #
-            # Distinct coefficients, so a gradient entry landing in the wrong slot cannot pass by
-            # symmetry: the seed walk must advance the dimension cursor in the order `tangent_dim` counts, and a
-            # mismatch there misplaces entries silently rather than erroring. `kwargs` comes from
-            # the enclosing loop, so the four iterations cover the seed path with debug mode on and
-            # off rather than repeating one configuration.
-            # A `Dict` whose two VALUES are one array: the seed walks the backing `Memory`,
-            # which registered the container but delegated to the cache-free factory, so the two
-            # elements got independent partials and each position saw only its own contribution.
+            # Dict/Set backing storage includes nondifferentiable Memory (Vectors on 1.10).
+            # Distinct coefficients check that the seed cursor follows tangent_dim order.
+            # Shared Dict values must also share partials; registering only the backing container
+            # would lose element aliasing. The enclosing kwargs cover debug mode on and off.
             galias(dd) = sum(dd[1]) + sum(dd[2])
             # A multi-line function, not `mkalias() = (v = …; …)`: inside a `@testset`, a
             # one-line function whose body is a `;`-block assigns to the ENCLOSING scope, so a
@@ -1695,10 +1672,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gf[3] == gr[3]
                 @test collect(gf[2].fields.vals) == collect(gr[2].fields.vals)
             end
-            # An `IdDict` interleaves keys and values in one backing `ht`, so its V has no separate
-            # non-differentiable field and it needed its own seed method. The per-key gradients are
-            # checked, not just `d/dv`: the seed walk has to advance the dimension cursor in the order
-            # `tangent_dim` counts, and a mismatch misplaces entries silently rather than erroring.
+            # IdDict interleaves keys/values in one backing ht. Check per-key gradients as well as
+            # d/dv to detect a seed cursor that disagrees with tangent_dim order.
             fid(d, v) = d[:a] * v[1] + 10.0 * d[:b] * v[2] + 100.0 * sum(v)
             mkid() = IdDict{Symbol,Float64}(:a => 2.0, :b => 3.0)
             vir, gir = Mooncake.value_and_gradient!!(
@@ -1863,9 +1838,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test mut_y == sum(abs2, mut_x)
             @test mut_grad[2] == 2 .* mut_x
 
-            # A differentiable closure `f` takes the generic path on a scalar input: the
-            # width-1 fast path cannot represent `f`'s own dimensions (regression: it hard-coded
-            # NoTangent for `f` and seeded uninitialised tangent storage).
+            # A differentiable callable needs the generic path to sweep its own dimensions too;
+            # a single scalar seed cannot represent them.
             closure_f = let c = 3.0
                 v -> c * v
             end
@@ -1913,10 +1887,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 Mooncake.zero_lifted(Val(3), y),
             )
 
-            # Derived vararg rules at chunk width > 1 exercise `__unflatten_dual_varargs`' width-W
-            # group assembly (`Lifted{GP,W}(group_primal, group_v)`), which `test_frule` skips
-            # (derived rules run width 1 only) and other chunked tests miss (all fixed-arity). A W=1
-            # regression in that path throws a typeassert; cover it at chunk_size=2.
+            # Exercise width-W vararg group assembly, beyond the fixed-arity chunk cases.
             vararg_f = (a, bs...) -> a + sum(bs)
             vararg_cache = Mooncake.prepare_derivative_cache(
                 vararg_f, x, y, 3.0; config=Mooncake.Config(; chunk_size=2, kwargs...)
@@ -1963,11 +1934,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 ),
             )
 
-            # A view input cannot use the flat packable seed (`similar(::SubArray)` is a plain
-            # `Vector`, mismatching the view type the rule and cache spec expect). It must fall
-            # through to the structured path and return the structural (parent-field) gradient,
-            # matching reverse mode (regression: the flat seed threw a PreparedCacheError, and the
-            # AbstractVector fast method then mis-dispatched the StructuredGradSeed).
+            # A view's similar returns a Vector, so flat seeds mismatch its cache/rule type.
+            # Require the structured path and its parent-field gradient to agree with reverse.
             view_f = v -> sum(abs2, v)
             view_x = view(collect(1.0:6.0), 1:3)
             view_cache = Mooncake.prepare_derivative_cache(
@@ -2000,9 +1968,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 end
             end
 
-            # A structured input whose NESTED array is reused at the same length but a different
-            # shape must be rejected (size, not just length, is validated) instead of silently
-            # computing on the stale cache-owned shape (regression: returned the wrong primal).
+            # Nested arrays must match size, not only length: otherwise the rule sees the stale
+            # cached shape. Top-level cache validation cannot detect this.
             nested_f = t -> sum(t[1] * permutedims(t[1]))
             nested_cache = Mooncake.prepare_derivative_cache(
                 nested_f,
@@ -2177,10 +2144,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             _, gA = Mooncake.value_and_gradient!!(cA, fA, Ax)
             @test gA[2] ≈ 2 .* Ax
 
-            # An `f` that rebinds a field leaves the seed holding a V the prepare-time leaf
-            # table never saw, so only a width below the dimension count exposes it: at width >=
-            # dimension there is a single chunk and nothing later reads the orphan. Reusing one
-            # cache checks that the restore holds across calls too.
+            # Field rebinding can orphan cached leaves. Widths below the dimension count expose
+            # this on later chunks; repeated calls also check restoration across reuse.
             fr = b -> (b.w=2 .* b.w; sum(abs2, b.w))
             w0 = [1.0, 2.0, 3.0]
             for W in (1, 2, 3, 4)
@@ -2210,9 +2175,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gr[2][1] ≈ 2 .* tx2[1]
             @test gr[2][2] ≈ 2 .* tx2[2]
 
-            # In-place-mutating `f` whose array spans >1 chunk: the seed primal must be
-            # restored (and partials re-zeroed) every chunk, else a later chunk runs on an
-            # earlier chunk's mutated primal. dimension 10 > max chunk width forces two chunks.
+            # Dimension 10 forces two chunks: restore seed primals and zero partials each chunk
+            # to prevent mutation from compounding.
             fip = t -> begin
                 t[1] .= t[1] .* 2.0
                 sum(abs2, t[1])
@@ -2264,10 +2228,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test gmix[2].v ≈ ones(2)
             @test gmix[2].s ≈ 2 * mx.s
 
-            # Complex leaves take the same layout path as real ones. Each complex element owns
-            # TWO consecutive dimensions, so a width that splits one across chunks is the case
-            # the range arithmetic has to get right; reverse mode is the oracle. No registry
-            # case can express "which internal path did this take", which is the point here.
+            # Complex leaves use the layout path; widths splitting an element's real/imaginary
+            # dimensions check range arithmetic. Rule registries cannot assert seed-path admission.
             @testset "complex leaves take the layout path, chunk width $W" for W in
                                                                                (1, 3, 8)
                 fcx = nt -> sum(abs2, nt.p) + 2 * sum(abs2, nt.q)
@@ -2281,9 +2243,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gcx[2].q ≈ 4 .* cx.q
             end
 
-            # Scalar-only structured inputs (isbits V) take the concrete-barrier path
-            # (IsbitsGradSeed): tuple/NamedTuple/immutable-struct of scalars — correct +
-            # zero-alloc. (Previously the generic chunked path, ~52 allocations.)
+            # Isbits scalar structures must use IsbitsGradSeed and remain allocation-free.
             fnt = nt -> nt.a^2 * nt.b + sin(nt.a) * nt.c
             ntx = (; a=1.3, b=2.1, c=0.7)
             cnt = Mooncake.prepare_derivative_cache(
@@ -2366,15 +2326,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "a mutating `f` over one repeated argument shares partials" begin
-            # Every argument-tuple lift needs ONE shared aliasing cache: the float-array `lift`
-            # packs its seed into a fresh partials block per call, so two arguments over one
-            # storage otherwise get independent partials while the PRIMAL still aliases. The
-            # returned pair is then self-contradictory — the value says the mutation was seen, the
-            # derivative says it was not.
-            #
-            # The `sum(a .* b)` case below cannot expose this: with no mutation, independent blocks
-            # give the right answer anyway by the product rule. The trigger is mutation THROUGH the
-            # aliased storage.
+            # Aliased primals must share partials through one lift cache. Mutation through one
+            # argument must affect the other's derivative too; a non-mutating product cannot expose
+            # independent partial blocks because its product rule still gives the right answer.
             fmut(x, y) = (x .*= 2.0; sum(y))
             mk() = collect(1.0:4.0)
             # Analytic: g(a) = 2*sum(a), so the value is 20.0 and the JVP along ones(4) is 8.0.
@@ -2401,10 +2355,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     (aa, dd),
                 )
                 @test (v, d) == (20.0, 8.0)
-                # The other direction: two DIFFERENT tangents for one storage is ill-posed, and
-                # the rule-level method used to answer it with whichever the lift reached first
-                # (2.0 here, for a request that has no single answer). The cache methods already
-                # refused it; this one now does too.
+                # Rule-direct tuple calls must also refuse conflicting tangents for shared storage;
+                # choosing the first seed gives an arbitrary JVP.
                 @test_throws ArgumentError Mooncake.value_and_derivative!!(
                     Mooncake.build_frule(fmut, a, a),
                     (fmut, Mooncake.NoTangent()),
@@ -2448,11 +2400,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             @test d_nf ≈ sum(dA_al .* B_al) + sum(A_al .* dB_al)
 
-            # A REPEATED mutable argument given two DIFFERENT tangents is ill-posed: the two
-            # positions are one array, so they are one tangent, and only one direction exists to
-            # carry. Both tuple methods used to answer it, differently and silently — the
-            # unfriendly path kept the first tangent (2.0) and the friendly path the last (4.0),
-            # which are the JVPs along `dA_al` and `dB_al` respectively.
+            # Conflicting tangents for one mutable primal are ill-posed in both tuple interfaces;
+            # choosing the first or last seed would silently produce different JVPs.
             for cfg in (friendly, Mooncake.Config(; friendly_tangents=false, kwargs...))
                 c_rep = Mooncake.prepare_derivative_cache(g_al, X_al, X_al; config=cfg)
                 @test_throws ArgumentError Mooncake.value_and_derivative!!(
@@ -2465,13 +2414,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test d_rep ≈ 2 * sum(dA_al .* X_al)
             end
 
-            # The same ill-posedness ONE LEVEL DOWN, where the top-level `===` scan cannot see
-            # it: a closure capturing the array that is also passed as the argument. The two
-            # positions are different objects, so that scan passes, but they are one storage and
-            # so one tangent. `zero_tangent` for the callable is the natural way to write "do not
-            # perturb the function", and it silently returned 0.0 where the directional
-            # derivative is 2 * sum(d) * sum(cap) = 6.0. Only the non-friendly method can see it;
-            # see `_check_shared_input_tangents` for why the other two entry points cannot.
+            # A callable's captured argument evades top-level identity checks but still requires
+            # one shared tangent. Only the non-friendly cache can compare these supplied seeds;
+            # see `_check_shared_input_tangents` for the other entry points' limitations.
             mk_capturing(a) = y -> sum(y) * sum(a)
             cap_arr = [1.0, 2.0]
             d_cap = [1.0, 0.0]
@@ -2488,11 +2433,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             @test d_shared ≈ 2 * sum(d_cap) * sum(cap_arr)
 
-            # TWO shared leaves, one of them given matching tangents. The check tested only
-            # whether SOME sharing was present, so the matching leaf vouched for the conflicting
-            # one: `dq` reached the callable's copy and `[1.0]` the argument's, and the answer
-            # followed whichever the lift reached first — 2.0 at `dq = [0.0]` and 12.0 at
-            # `dq = [5.0]` for one well-posed direction of 4.0.
+            # One coherently shared leaf cannot vouch for a second leaf with conflicting seeds.
+            # Check both conflicting directions, then the fully coherent case.
             ap_a = [1.0]
             ap_b = [1.0]
             f_ap = FwdAliasPair(ap_a, ap_b)
@@ -2521,10 +2463,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "reused cache reads call-time non-differentiable state" begin
-            # `_refresh_seed!` restores the differentiable leaves of the prepare-time `deepcopy`;
-            # everything non-differentiable used to keep its prepare-time value for the life of
-            # the cache. Prepared at `k = 2` and called at `k = 4`, this returned 3.0 with a
-            # gradient of [1, 1, 0, 0].
+            # Refresh call-time nondifferentiable fields as well as differentiable buffers.
             w491 = [1.0, 2.0, 3.0, 4.0]
             plain = Mooncake.Config(; friendly_tangents=false, kwargs...)
             c491 = Mooncake.prepare_derivative_cache(
@@ -2549,10 +2488,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
         @testset "refreshing non-differentiable state keeps the slot coherent and the caller's" begin
             plain498 = Mooncake.Config(; friendly_tangents=false, kwargs...)
-            # The refresh reads the CALL's non-differentiable state. A `NoDual` slot asserts the
-            # position has no derivative, so a call-time value whose canonical dual DOES have one
-            # must be refused here rather than reaching the dual IR's typeassert as a raw
-            # `TypeError`. `_check_prepared_cache` cannot see it: both calls pass an `S`.
+            # Refuse call-time differentiable values in prepared NoDual slots before an incoherent
+            # slot reaches the dual IR; the unchanged outer struct type hides this from cache checks.
             s498 = Mooncake.prepare_derivative_cache(
                 fwd_abstract_field, FwdAbstractField(2, [1.0, 2.0, 3.0]); config=plain498
             )
@@ -2573,10 +2510,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             v500, g500 = Mooncake.value_and_gradient!!(cache500, fwd_counting, w500, c500)
             @test c500.n == 0                 # the caller's object is untouched
             @test g500[2] ≈ ones(16)
-            # 16 dimension at chunk 8 is TWO chunks, and the refresh runs per chunk: without that,
-            # chunk 1's mutation carried into chunk 2 and the value came from the last chunk
-            # (138.0 for a truth of 137.0). One chunk was already right, so `n` must exceed the
-            # chunk width for this to bite.
+            # Two chunks expose nondifferentiable-state mutation compounding; one chunk would pass.
             @test v500 ≈ fwd_counting(collect(1.0:16.0), FwdCounter(0))
 
             # A `const` field: the copy into the cache's object must write it, which `setfield!`
@@ -2614,11 +2548,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
         end
 
         @testset "cache copy refuses a size it cannot hold" begin
-            # The cached buffer is sized at preparation time and the copy indexes it under
-            # `@inbounds` while iterating the SOURCE, and `isassigned(dst, i)` reports false out of
-            # range rather than throwing. A longer source therefore wrote past the end: a segfault
-            # here, and below a silently truncated value handed back before the corruption showed
-            # up at an unrelated GC.
+            # Inbounds copies must reject larger nested sources: isassigned is false out of range
+            # and cannot protect the destination from an overrun.
             f_nest = x -> sum(sum, x)
             c_nest = Mooncake.prepare_derivative_cache(f_nest, [collect(1.0:2.0)])
             @test_throws Mooncake.PreparedCacheError Mooncake.value_and_gradient!!(
@@ -2771,10 +2702,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 cache_ip = Mooncake.prepare_derivative_cache(sc, [1.0, 2.0, 3.0])
                 v_ip, _ = Mooncake.value_and_jacobian!!(cache_ip, sc, [1.0, 2.0, 3.0])
                 @test v_ip == [2.0, 4.0, 6.0]
-                # The zero-allocation path returns a value aliasing a cache-owned buffer, as it
-                # does for `J`; the docstring says so and the allocation test pins the guarantee
-                # that forbids copying it. Assert the documented behaviour so a future copy has to
-                # change the contract deliberately rather than by accident.
+                # The packable path returns cache-owned value/J buffers. Pin reuse behaviour so a
+                # future copy cannot silently change the documented zero-allocation contract.
                 cache_pk = Mooncake.prepare_derivative_cache(scale2!, [1.0, 2.0, 3.0])
                 v_first, _ = Mooncake.value_and_jacobian!!(
                     cache_pk, scale2!, [1.0, 2.0, 3.0]
@@ -2894,10 +2823,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test val_mut_jac_chunked == 4 .* x_mut_jac_chunked .^ 2
             @test jac_mut_jac_chunked ≈ Diagonal(8 .* x_mut_jac_chunked)
 
-            # The forward gradient and derivative must likewise leave a mutating `f`'s
-            # input unchanged and give correct results across chunk sizes (the chunked
-            # sweeps re-run `f` on shared input storage; without snapshot/restore an
-            # in-place `f` compounds across chunks — see the FCache `input_snapshot` buffer).
+            # Gradient and derivative calls must restore mutated inputs too; multiple chunks
+            # expose mutations compounded across sweeps.
             x_mut0 = [1.0, 2.0, 3.0]
             g_mut(x) = sum((x .*= 2; x .^ 2))   # true grad 8x
             for cs in (1, 2, 3)
@@ -2916,11 +2843,9 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             @test xd == x_mut0
 
-            # An `f` that mutates and THEN raises must leave the inputs restored too: the
-            # exception otherwise reaches the caller alongside a half-updated argument, and a
-            # retry (a shortened line search step, say) runs on it. Reverse mode is excluded by
-            # construction — it restores mutations on the pullback, which an exception in the
-            # forward sweep never reaches; see `known_limitations.md`.
+            # Forward calls must restore inputs even after an exception. Reverse is excluded:
+            # restoration needs a pullback that the throwing forward pass never reaches;
+            # see `known_limitations.md`.
             x_throw = [10.0, 2.0, 3.0]
             f_throw(x) = (x .*= 2; x[1] > 10 ? throw(DomainError(x[1])) : sum(x .^ 2))
             for friendly in (true, false)
@@ -2956,11 +2881,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
             end
 
-            # Differentiable `f` (captures a vector ⇒ dimension(f) ≥ 1) with a short input and a vector
-            # output takes the non-packable forward path, where the per-chunk width
-            # `W = gradient_chunk_size` includes `f`'s dimensions, so `W > length(x)`. The first-chunk
-            # J-write loop must guard `lane <= total_dim`, else it writes past `J`'s `length(x)`
-            # columns (BoundsError under --check-bounds=yes). Forward must match the reverse oracle.
+            # A differentiable capture can make W exceed the input length on the generic Jacobian
+            # path. Check first-chunk bounds and agreement with reverse under --check-bounds=yes.
             let
                 g_cap = let w = collect(1.0:7.0)
                     z -> [z[1] * sum(w), z[1] + z[2]]
@@ -2975,10 +2897,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test Jf == Jr == [28.0 0.0; 1.0 1.0]
             end
 
-            # A callable whose captured array IS the input. Seeding the callable and the input
-            # separately gave the one storage two partials blocks, so the basis direction seeded
-            # into `x` never reached the callable's view of it and every column came back short:
-            # `diag(1, 2, 3)` for `x .= x .* x`, whose Jacobian is `diag(2x)`.
+            # A captured array that is also the input must share partials, so x's basis direction
+            # reaches both occurrences through mutation.
             let
                 w_al = [1.0, 2.0, 3.0]
                 sc_al = FwdInPlaceScaler(w_al)
@@ -3150,12 +3070,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
             end
 
-            # Single-direction (width-1) forward-over-reverse value correctness.
-            # Regression guard for the two forward-mode V-drops these exercise:
-            # (1) `lgetfield` `.ref` projection on `NDualArray` slots (array reads
-            # through `getindex`/broadcast must keep their partials); (2) the
-            # reverse rule's `fwds_oc`/`pb_oc` sharing one forward-tangent buffer
-            # for their common capture stacks. Either drop silently zeroes `hvp`.
+            # Width-1 HVPs must preserve partials through array `.ref` projection and through
+            # shared forward/reverse capture stacks. Either loss silently zeroes the HVP.
             @testset "HVP value correctness" begin
                 # Scalar: hvp = f''(x)·v is distinct from the gradient f'(x).
                 let f = x -> x^4, x = 2.0, v = 1.0
@@ -3293,10 +3209,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test H1 ≈ H2
             end
 
-            # `FwdAliasHolder(w)(w)` is `sum(w .^ 2)`, whose Hessian is `2I`. A basis sweep
-            # reaches the shared leaf at one position per column, so the chunked sweep returned
-            # `I`. Both sweeps must refuse: the width-1 one inherits the guard from
-            # `value_and_hvp!!`, the chunked one only from the entry-point check.
+            # Both Hessian sweeps must refuse aliased captures: width 1 inherits the HVP guard,
+            # while the chunked sweep relies on the entry-point check.
             @testset "aliased input is refused on both sweeps" begin
                 w = [1.0, 2.0, 3.0]
                 for cfg in (Mooncake.Config(), Mooncake.Config(; chunk_size=1))
@@ -3393,11 +3307,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "repeated mutable argument shares one gradient" begin
-                # `f(x, x)` mutates through one slot and reads through the other, so the aliased
-                # gradient is [4,2,2]; treating the slots as independent gives [1,1,1] and [2,1,1],
-                # which sum to [3,2,2]. Seeds were built per argument, so the two slots got separate
-                # tangent storage and the reverse aliasing invariant (aliased primals share fdata)
-                # was broken at the interface boundary.
+                # Aliased arguments must share reverse fdata. Mutation makes the shared gradient
+                # [4,2,2], distinct from summing the independent-slot gradients [1,1,1] and [2,1,1].
                 f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
                 xp = [1.0, 2.0, 3.0]
                 cache = prepare_gradient_cache(f, xp, xp)
@@ -3430,12 +3341,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "aliasing mismatch between preparation and call" begin
-                # A prepared cache holds one cotangent buffer per argument, so the aliasing among
-                # arguments is part of the shape it was prepared for. Reusing it with different
-                # aliasing accumulates into the wrong buffers: prepared-distinct-called-aliased gave
-                # [1,1,1] and [2,1,1] where the aliased gradient is [4,2,2], and the converse gave
-                # [4,2,2] for BOTH slots where they should be independent. Neither is visible from
-                # types or sizes, so both directions are rejected.
+                # Types/sizes cannot detect changed sharing. Reject either direction of alias-partition
+                # mismatch, which otherwise accumulates into the wrong prepared buffers.
                 f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
                 x0 = [1.0, 2.0, 3.0]
                 distinct_cache = prepare_gradient_cache(f, copy(x0), copy(x0))
@@ -3456,11 +3363,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gd[2] == [1.0, 1.0, 1.0]
                 @test gd[3] == [2.0, 1.0, 1.0]
 
-                # The same mismatch with each array wrapped in a one-tuple. The wrapper is
-                # immutable, so comparing only the top-level tangents saw nothing and this
-                # returned [3,2,2] against an aliased truth of [4,2,2], silently.
-                # `_mutable_tangent_paths` finds the nested position from the type, so the
-                # comparison costs a `===` per call rather than a traversal.
+                # Tuple-wrapped arrays need the same check: mutable tangent paths are found from
+                # types to avoid a per-call graph traversal.
                 g(t, u) = (t[1][1] += u[1][1]; sum(t[1]) + sum(u[1]))
                 nested_distinct = prepare_gradient_cache(g, (copy(x0),), (copy(x0),))
                 tg = (copy(x0),)
@@ -3483,11 +3387,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 @test gnd[2][1] == [1.0, 1.0, 1.0]
                 @test gnd[3][1] == [2.0, 1.0, 1.0]
 
-                # An `Array` against its backing `Memory`. The two are never `===`, so the
-                # identity comparison above reported "distinct" for a pair reverse gives one
-                # cotangent buffer, and a cache prepared with unrelated arguments returned
-                # [1,1,1] at both positions against a truth of [2,2,2] — silently. The
-                # comparison is by backing buffer for exactly this pair.
+                # Array/Memory pairs are distinct objects over one cotangent buffer; compare backing
+                # storage rather than object identity.
                 @static if VERSION >= v"1.11-rc4"
                     h(a, m) = sum(a) + sum(m)
                     mem_pair() = (v=copy(x0); (v, getfield(v, :ref).mem))
@@ -3512,11 +3413,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     _, gr = Mooncake.value_and_gradient!!(reshaped, h, b, reshape(b, 3, 1))
                     @test gr[2] == [2.0, 2.0, 2.0]
 
-                    # The forward gradient assembles one dimension range per argument, so it refuses the
-                    # pair outright — and the refusal has to be the per-CALL check, not the
-                    # prepare-time `inputs_share_storage` flag: on a cache prepared with unrelated
-                    # arguments that flag is false, and the sweep returned [1,1,1] at both
-                    # positions against the same truth of [2,2,2], silently.
+                    # Forward must refuse this per call: a cache prepared with unrelated arguments has a
+                    # false prepare-time sharing flag, which cannot guard a newly aliased Array/Memory pair.
                     fwd = Mooncake.prepare_derivative_cache(
                         h, copy(x0), fill!(Memory{Float64}(undef, 3), 1.0)
                     )
@@ -3538,10 +3436,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     )[2][2] == Float64[]
                 end
 
-                # Aliasing WITHIN one argument is the same mismatch: one buffer per leaf either
-                # way. Comparing only argument against argument saw nothing here, and a cache
-                # prepared at `(a, b)` called at `(a, a)` returned [1,2,3] at both slots against a
-                # truth of [2,4,6], silently.
+                # Compare leaves within one argument too; each prepared leaf owns one buffer.
                 one_arg(t) = sum(t[1] .* t[2])
                 a1, b1 = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]
                 intra_distinct = prepare_gradient_cache(one_arg, (a1, b1))
@@ -3597,11 +3492,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "sharing a memoised node inside one argument" begin
-                # Sharing that `_mutable_tangent_paths` cannot see from the type — a mutable
-                # child reached through a reference-element array — is caught where the copy
-                # family memoises it. Without the guard the restore re-pointed the CALLER's
-                # graph to match the snapshot's: `[u, v]` prepared at `[w, w]` came back as
-                # `[u, u]` holding `v`'s contents, with `v` detached.
+                # Reference-element array sharing is checked by the copy family's memoisation:
+                # restoration must not re-point the caller's graph to match the prepared snapshot.
                 nested(x) = (x[1][1][1] += 1.0; sum(sum, x[1]) + sum(sum, x[2]))
                 seed_arg(x) = (x, Mooncake.zero_tangent(x))
                 w = [[1.0, 2.0]]
@@ -3632,10 +3524,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "both modes refuse an input with no concrete representation" begin
-                # A NamedTuple with an abstract field widens to a non-concrete `dual_type` and
-                # `tangent_type` alike, and the slot wrappers are invariant in that parameter, so
-                # no annotation works in either mode. Both checks replace a `TypeError` naming
-                # internal slot types — reverse used to report only that.
+                # Abstract-field NamedTuples lack concrete derivative representations in both modes;
+                # invariant slot wrappers must refuse them before internal annotation errors.
                 NTA = NamedTuple{(:a,),Tuple{Any}}
                 nt_field(t) = t.a * 2.0
                 @test_throws ArgumentError Mooncake.prepare_derivative_cache(
@@ -3661,10 +3551,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "gradient and shared storage agree across versions" begin
-                # Two containers over one buffer. 1.10 used to RETURN d/t[1]=1.0, d/t[2]=2.0 where
-                # the shared buffer's derivative is 3.0 per element -- an answer no perturbation can
-                # produce -- because its tangents, unlike 1.11+'s, do not alias, so a tangent-keyed
-                # check saw nothing to refuse.
+                # Reject shared buffers on 1.10 too, where reshape tangents do not alias.
                 a_v = collect(1.0:6.0)
                 g_v = t -> sum(t[1]) + 2 * sum(t[2])
                 c_v = Mooncake.prepare_derivative_cache(g_v, (a_v, reshape(a_v, 2, 3)))
@@ -3684,10 +3571,7 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                 )
                 @test v_n == sum(1.0:6.0) * 12
                 @test g_n[2] ≈ fill(12.0, 6)
-                # The same sharing NESTED IN A STRUCT. 1.10 reads the sharing off the primals, and
-                # walked only arrays and tuples, so a struct holding two positions over one buffer
-                # stayed silent there and returned d/u = 1.0, d/v = 2.0 where the shared buffer's
-                # derivative is 3.0 per element.
+                # The 1.10 primal storage walk must also find sharing nested in structs.
                 a_s = collect(1.0:6.0)
                 g_s = p -> sum(p.u) + 2 * sum(p.v)
                 p_s = StructuredPair(a_s, reshape(a_s, 2, 3))
@@ -3697,11 +3581,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
 
             @static if VERSION >= v"1.11-"
                 @testset "forward gradient refuses inputs sharing backing storage" begin
-                    # `a` and `reshape(a)` are DISTINCT objects over ONE `Memory`, which `tangent_dim`'s
-                    # identity-keyed de-duplication cannot see, so the dimension comparison agrees with
-                    # the per-position sum. The gradient buffers alias all the same and the sweep
-                    # writes each dimension exactly once, so one position's contribution overwrote the
-                    # other's: 2.0 where reverse gives 3.0 for `sum(t[1]) + 2*sum(t[2])`.
+                    # Distinct containers over one buffer evade identity-based tangent_dim deduplication;
+                    # the forward gradient must refuse rather than overwrite their shared gradient entries.
                     a_st = collect(1.0:6.0)
                     g_st = t -> sum(t[1]) + 2 * sum(t[2])
                     # An `Array` beside its own backing `Memory` is the same sharing reached a
@@ -3717,10 +3598,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                             c_st, g_st, t_st
                         )
                     end
-                    # The same sharing one level down, which the traversal used to walk past:
-                    # inside an array ELEMENT, and behind a `Ref`, whose tangent field is a
-                    # `PossiblyUninitTangent`. Both returned 4.0 for a per-position derivative of
-                    # 1.0, with no refusal.
+                    # Find shared backing storage inside array elements and behind Ref's
+                    # PossiblyUninitTangent field too.
                     g_el = t -> sum(sum, t[1]) + 2 * sum(sum, t[2])
                     t_el = ([a_st], [reshape(a_st, 2, 3)])
                     c_el = Mooncake.prepare_derivative_cache(g_el, t_el)
@@ -3758,11 +3637,8 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "forward gradient refuses a repeated mutable argument" begin
-                # The gradient is assembled from one standard-basis dimension range per argument, which
-                # cannot represent a repeated argument: the seeds are per-argument, so the seeded
-                # primal stops aliasing and a mutating `f` reported the value for DISTINCT
-                # arguments (13.0 instead of 14.0). Sharing the seed slot instead double-counts.
-                # `value_and_derivative!!` handles it, since the caller shares one tangent.
+                # Per-argument gradient ranges cannot represent repeated mutable storage. A derivative
+                # call can, using one caller-supplied tangent shared across positions.
                 f(x, y) = (x[1] += y[1]; sum(x) + sum(y))
                 x0 = [1.0, 2.0, 3.0]
                 xp = copy(x0)
@@ -3798,23 +3674,16 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             end
 
             @testset "forward gradient refuses inputs sharing storage across positions" begin
-                # `_check_primal_aliasing` sees only a repeated top-level MUTABLE argument,
-                # and only the arguments — never `f`. A callable holding an array also passed as
-                # an argument shares storage at depth, so the shared leaf was differentiated once
-                # per position and came back scaled by that count: [4,8,12] for a gradient that is
-                # [2,4,6]. Refuse, as for the repeated argument.
+                # Prepared sharing checks must include captured arrays: the per-call top-level scan
+                # sees only mutable arguments, excluding f and its fields.
                 w = [1.0, 2.0, 3.0]
                 aliased = Mooncake.prepare_derivative_cache(FwdAliasHolder(w), w)
                 @test_throws ArgumentError Mooncake.value_and_gradient!!(
                     aliased, FwdAliasHolder(w), w
                 )
-                # `value_and_derivative!!` shares the cache and handles aliased inputs, so the
-                # refusal must not have moved into construction.
-                # ONE tangent object for the one shared storage: the holder's field and the
-                # argument tangent are the same array. Two equal but distinct arrays are refused,
-                # the same identity rule the repeated-argument check applies at the top level —
-                # a storage carries one direction, and two objects cannot be shown to agree
-                # without a value walk.
+                # Derivative calls support aliased inputs, so refusal must stay out of preparation.
+                # Share ONE tangent object across the captured field and argument: equal but distinct
+                # arrays cannot certify a single direction without a value walk.
                 dw = fill(1.0, 3)
                 dh = Mooncake.Tangent((; v=dw))
                 v, d = Mooncake.value_and_derivative!!(

@@ -55,16 +55,8 @@ function throw_circular_reference_or_alias_error(y)
     )
 end
 
-# Cache types in this file:
-# - `Cache`: reusable reverse-mode cache for repeated `value_and_pullback!!` and
-#   `value_and_gradient!!` calls.
-# - `FCache`: reusable forward-mode cache for repeated `value_and_derivative!!` and
-#   `value_and_gradient!!` calls.
-# - `HVPCache`: reusable forward-over-reverse cache for repeated `value_and_hvp!!` calls;
-#   Hessian helpers reuse this cache rather than introducing a separate Hessian cache type.
-# All seven parameters are load-bearing: they keep the prepared reverse cache concrete
-# across the cached rule, reusable primal/tangent buffers, and cached input/output types
-# and sizes.
+# Cache parameters keep the rule, reusable buffers, and input/output signatures concrete.
+# HVPCache is shared by HVP and Hessian calls.
 struct Cache{Trule,Ty_cache,Ttangents<:Tuple,Tdests,Tȳ_cache,TIS<:Tuple,TOS}
     rule::Trule
     # Cache for function output; **primal** type for y.
@@ -86,9 +78,7 @@ end
 # `input_types_and_sizes` leads with the entry for `f`; the displayed inputs are `x...`.
 _cache_input_types_and_sizes(cache) = Base.tail(getfield(cache, :input_types_and_sizes))
 
-# Human-readable `"T (kind)"` summary of a cached value's type, used only by `show`.
-# `sizestr` is spliced into the array branch: a concrete `TypeAndSize` knows the size, while
-# the type-only summary does not.
+# `sizestr` distinguishes a known array size from the type-only summary used by `show`.
 function _cache_summary(::Type{T}, sizestr) where {T}
     T === Any && return "unknown"
     kind = if T <: IEEEFloat || T <: Complex{<:IEEEFloat}
@@ -132,11 +122,8 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     gradient_chunk_size::GradientChunkSize
     chunk_rule::CF
     input_types_and_sizes::S
-    # Reusable buffer holding a copy of the input args `x...` (not `f`, which is never
-    # mutated and may be uncopyable, e.g. the HVP `grad_f` closure), allocated once at cache
-    # construction. The public API snapshots into it and restores from it (in place, via
-    # `_copy_to_output!!`) around every call, so the inputs are never mutated even though
-    # the forward rule aliases (and an in-place `f` mutates) the user's storage.
+    # Snapshot x... (not the potentially uncopyable f) once per call and restore in place:
+    # forward slots alias user storage, which a mutating rule must leave unchanged.
     input_snapshot::IS
     # Cache-owned gradient seeds: a tuple for same-eltype float vectors,
     # StructuredGradSeed for array-backed leaves, or IsbitsGradSeed for real scalars.
@@ -146,11 +133,8 @@ struct FCache{R,IT<:Union{Nothing,Tuple},FG,GW,CF,S<:Tuple,IS,GS,JB}
     # Whether the prepared inputs share differentiable storage across positions (`f.v === x`,
     # say), which the gradient sweeps cannot represent and so refuse. See `_inputs_share_storage`.
     inputs_share_storage::Bool
-    # Jacobian output buffer for the zero-allocation packable `value_and_jacobian!!` over a
-    # single same-eltype float vector: a `Ref` holding a `length(y) × length(x)` matrix,
-    # sized and filled on the first call (the output shape is not known at construction).
-    # Like the gradient buffers it is reused and returned (overwritten on the next call).
-    # `nothing` for every other shape.
+    # Packable single-float-vector Jacobian buffer, sized on first use (output size is lazy).
+    # Returned storage is reused and overwritten; other shapes use `nothing`.
     jacobian_buffer::JB
 end
 
@@ -170,10 +154,7 @@ function _cache_show_fields(cache::FCache)
     )
 end
 
-# Cached types and sizes are compared again when a prepared cache is reused. The value's
-# type `T` is encoded as a type parameter so that `_check_prepared_cache` can read it at
-# @generated specialisation time — eliminating the runtime `jl_types_equal` call that
-# a `DataType`-valued field would require.
+# Encode `T` in the type so generated cache checks avoid runtime `jl_types_equal`.
 struct TypeAndSize{T,S}
     size::S
 end
@@ -258,13 +239,8 @@ function _alias_label(i::Int, path)
     return (i == 1 ? "`f" : "`x$(i - 1)") * prod(k -> "[$k]", path; init="") * "`"
 end
 
-# Do two positions name one accumulation buffer? Object identity answers it for every container
-# except an `Array` against its backing `Memory`, which are never `===` yet are one storage — and
-# reverse ties their tangents accordingly, so `===` reported "distinct" for a pair the cache had
-# merged. `f(a, a.ref.mem) = sum(a) + sum(m)` on a cache prepared with unrelated arguments then
-# returned `[1,1,1]` against a truth of `[2,2,2]`, silently. Asked of the primals and of the
-# tangents with the ONE predicate, so the two answers are comparable: `(b, reshape(b))` shares a
-# buffer on both sides and still passes.
+# Use the same storage identity for primals and tangents: an Array and its backing
+# Memory are distinct objects but share accumulation storage, as do reshaped arrays.
 @inline _storage_id(@nospecialize(x)) = x
 @static if VERSION >= v"1.11-rc4"  # 1.10 has no `Memory`, and its tangents do not share one.
     @inline _storage_id(x::Array) = getfield(x, :ref).mem
@@ -290,35 +266,17 @@ function _aliasable_positions(@nospecialize(T::Type), leafwise::Bool)
     return leaves
 end
 
-# Only MUTABLE tangents are comparable this way. `===` on an immutable is value equality, so two
-# zero tangents of isbits arguments are always identical (`0.0 === 0.0`) whatever the primals are —
-# checking those rejects `f(a, b)` prepared at `(2.0, 2.0)` and called at `(3.0, 4.0)`. An
-# immutable tangent also holds no shared storage to accumulate into.
-#
-# A mutable nested inside an immutable container (a tuple-wrapped array, say) needs comparing too,
-# and `_mutable_tangent_paths` finds those positions from the TYPE. Doing that here rather than at
-# run time is what keeps this affordable: the generator walks the structure once per signature,
-# instead of collecting the mutable objects reachable from each argument on every call — measured
-# at 131ms and 12.6MB for a `Vector` of 100k arrays. Containers whose arity is not in the type (a
-# `Vector` of arrays, a `Dict`) and the fields of a struct tangent still cannot be unrolled and
-# remain unchecked; see `known_limitations.md`.
-#
-# `bidirectional` selects the reverse contract (the two answers must agree) or the forward one
-# (only tangents sharing where primals do not is refused).
+# Compare mutable tangent leaves only: immutable `===` is value equality, not aliasing.
+# Find nested Tuple/NamedTuple leaves from their types to avoid a per-call graph walk.
+# Variable-arity containers and struct fields remain unchecked; see `known_limitations.md`.
+# `bidirectional` requires both partitions to agree (reverse); forward only refuses
+# shared tangent storage for distinct primals.
 function _alias_checks(@nospecialize(tangents::Type), bidirectional::Bool)
-    # Every mutable tangent leaf in the signature, as `(argument index, path)`, flattened across
-    # the whole signature and compared pairwise rather than argument against argument: two leaves
-    # of ONE argument alias exactly as two arguments do (`f(t)` prepared at `t = (a, b)` and called
-    # at `(a, a)` gave half the gradient at both positions, silently), and the cache holds one
-    # buffer per leaf either way.
+    # Compare leaves across the whole signature, including two leaves of one argument.
     leaves = _aliasable_positions(tangents, true)
     n = length(leaves)
-    # The unrolled form is quadratic in the leaf count, and past a few hundred pairs that is paid
-    # in compile time: 128 leaves took 19s to expand and compile, against 0.6s for 32 and 0.05s for
-    # 8. The cut is therefore at 256 pairs — 23 leaves, around a quarter of a second of codegen —
-    # beyond which the same contract runs as one linear pass at run time. That pass allocates two
-    # `IdDict`s, which is why it is not used throughout: the entry points this guards are
-    # allocation-free.
+    # Limit quadratic codegen to 256 pairs; larger signatures use a linear runtime pass.
+    # The runtime pass allocates two IdDicts, so small signatures retain the unrolled path.
     if n * (n - 1) ÷ 2 > 256
         ts = Expr(:tuple, (_path_expr(:tangents, i, p) for (i, p) in leaves)...)
         fs = Expr(:tuple, (_path_expr(:fx, i, p) for (i, p) in leaves)...)
@@ -366,35 +324,21 @@ end
     return nothing
 end
 
-# Reverse mode accumulates into one cotangent buffer per argument, fixed when the cache was
-# prepared. If two arguments are the same object, their buffers must be too (the aliasing
-# invariant); if they are distinct, their buffers must be distinct or two gradients are summed
-# into one. Neither is detectable from types or sizes, so it is checked separately here.
+# Reverse requires the prepared tangent partition to match the call's primal partition;
+# types and sizes alone cannot establish this.
 @generated function _check_tangent_aliasing(tangents::Tuple, fx::Tuple)
     return Expr(:block, _alias_checks(tangents, true), :(return nothing))
 end
 
-# Forward twin, one-directional. A friendly forward cache holds one tangent buffer per argument,
-# built through one aliasing cache, so prepare-time positions that alias share ONE buffer and a
-# call with distinct primals writes each supplied tangent into it in turn, leaving both holding the
-# last. The opposite direction is CORRECT — distinct buffers each hold the caller's seed and the
-# aliased primal receives both — so the bidirectional check would refuse a valid forward call.
+# A friendly forward cache shares prepared tangent buffers. Distinct call-time primals
+# cannot write different seeds into one buffer; separate buffers for aliased primals are valid.
 @generated function _check_prepared_forward_aliasing(tangents::Tuple, fx::Tuple)
     return Expr(:block, _alias_checks(tangents, false), :(return nothing))
 end
 
-# A repeated top-level MUTABLE primal has one storage, so its tangent has one too — the seeds for
-# the two positions are the same object. Two DIFFERENT supplied tangents therefore cannot both be
-# carried, and the three tuple methods resolved that differently and silently: the unfriendly cache
-# path and the bare-rule one lift through an aliasing cache and keep the first, the friendly path
-# writes both into the one prepared buffer and keeps the last. For `h(x, y) = sum(x .* y)` at
-# `a = [1.0, 2.0]` with `dx1 = [1, 0]` and `dx2 = [0, 1]` those are 2.0 and 4.0.
-#
-# Neither is a defect in the arithmetic: 2.0 and 4.0 are the JVPs along `dx1` and `dx2`, and since
-# `x` and `y` are ONE array those are the only directions there are. The request itself is the
-# ill-posed part, so it is refused rather than answered arbitrarily. Supplying the SAME tangent at
-# both positions is well-posed and still works — that is how a mutating `f` over a repeated
-# argument is differentiated.
+# Repeated mutable primals must receive the same tangent object. Otherwise cached and
+# rule-direct tuple paths silently keep different seeds (first or last), with no unique JVP.
+# Sharing one tangent remains supported, including through mutation.
 @generated function _check_repeated_arg_tangents(fx::Tuple)
     n = length(fx.parameters)
     checks = Expr(:block)
@@ -423,21 +367,13 @@ end
     )
 end
 
-# The same ill-posed request one level down, where the top-level `===` scan cannot see it: `f`
-# capturing an array that is also passed as an argument. The two are different objects, so that
-# scan passes, yet they are one storage and so one tangent, and the lift keeps whichever position
-# it reaches first. `zero_tangent(f)` is the natural way to hit it, and it silently zeroes the
-# direction the caller asked about.
-#
-# Compare supplied storage against tangents seeded through ONE cache. Runs only when
-# `inputs_share_storage`, computed at cache construction, flags sharing, so an ordinary call pays nothing.
+# A callable capturing an argument's array shares storage without top-level identity.
+# Compare supplied tangents against one canonically seeded set, only when the prepared
+# `inputs_share_storage` flag indicates sharing.
 @inline function _check_shared_input_tangents(
     cache, input_primals::Tuple, input_tangents::Tuple
 )
-    # `inputs_share_storage` describes the PREPARED inputs, so it is a pre-filter and not the verdict: a
-    # cache prepared with aliased arguments may be called with distinct ones, which this method
-    # supports (it lifts the caller's own tangents afresh). Confirm the CALL-TIME primals share
-    # before refusing. Both traversals sit behind the flag, so an ordinary call pays nothing.
+    # The prepared flag is only a pre-filter: call-time primals may be distinct, which is valid.
     getfield(cache, :inputs_share_storage) || return nothing
     ts = _zero_tangents(input_primals)
     shared_dim = tangent_dim(ts)
@@ -448,13 +384,8 @@ end
         # Coherent shared seeds remain supported; constructing them for HVP is separate work.
         return _check_tangent_storage!(IdDict{Any,Any}(), ts, input_tangents)
     end
-    # `_zero_tangents` gives one tangent per shared storage, so `shared_dim` bounds how many dimensions
-    # the supplied tangents may distinctly cover: any MORE and some shared leaf was given two
-    # tangent objects, of which the lift keeps whichever position it reaches first. Testing only
-    # that SOME sharing was present accepted that — a callable holding both arguments, with the
-    # first array's tangent shared and the second's conflicting, answered 2.0 or 12.0 by which
-    # direction the callable's copy carried, for a well-posed 4.0. FEWER dimensions is one tangent
-    # reused across positions that do NOT share, which lifts to independent Vs and is correct.
+    # Canonical tangents count shared storage once. Extra supplied dimensions indicate
+    # conflicting seeds; fewer are valid when distinct primals receive the same direction.
     shared = tangent_dim(input_tangents, IdDict{Any,Any}())
     shared > shared_dim && _throw_shared_input_tangent_error()
     # One buffer under two array containers (`da` and `reshape(da)`, or an `Array` beside its
@@ -517,27 +448,12 @@ end
     )
 end
 
-# A forward GRADIENT assembles the gradient from standard-basis directional derivatives, one dimension
-# range per argument. A repeated mutable argument breaks that accounting: the seeds are built per
-# argument, so the seeded primal stops aliasing and the sweep differentiates a different function
-# (a mutating `f` then reports the value for distinct arguments), and making the slots share a
-# primal is not enough either — the direction has to reach every position the argument occupies,
-# and the dimension ranges then no longer correspond one-to-one with arguments. Refuse instead of
-# returning a wrong gradient. `value_and_derivative!!` handles this correctly, because the caller
-# supplies the seeds and can share one tangent across the repeated positions.
-#
-# Mutable arguments only, and only at the top level: `===` on an immutable is value equality, so a
-# repeated scalar is not aliasing. Sharing nested inside an immutable container is caught instead by
-# `_inputs_share_storage` at cache construction, where the traversal it needs is paid once; see
-# `_check_tangent_aliasing` for why that traversal is too expensive to run per call.
-# `@generated` so the pair loop unrolls to literal indices. A runtime loop indexes a heterogeneous
-# argument tuple dynamically, which is type-unstable and allocated 400 bytes per call on this path.
-#
-# By `_shares_storage`, not `===`, so an `Array` and its backing `Memory` count: they are one storage
-# and so one dimension range, and the per-argument sweep differentiates it once per position. This runs
-# per CALL, which is what makes it the verdict rather than the prepare-time `inputs_share_storage` flag —
-# a cache prepared with unrelated arguments and called with `(a, a.ref.mem)` otherwise returned
-# `[1,1,1]` at both positions against a truth of `[2,2,2]`, silently.
+# A forward gradient's per-argument basis ranges cannot represent shared storage;
+# `value_and_derivative!!` can, using a caller-supplied shared seed.
+# Check mutable top-level arguments per call using `_shares_storage`, including Array/Memory
+# pairs. Immutable identity is value equality. Nested sharing and sharing with `f` are
+# checked at preparation by `_inputs_share_storage` to avoid per-call traversal.
+# Generate literal indices: dynamic indexing of the heterogeneous tuple is type-unstable.
 @generated function _check_primal_aliasing(x::Tuple)
     checks = Expr(:block)
     leaves = _aliasable_positions(x, false)
@@ -558,10 +474,8 @@ end
     end
 end
 
-# `ismutabletype` says a position COULD alias, not that it carries a derivative. Two positions
-# alias, for this purpose, only if they share storage AND that storage has dimensions — which is what
-# keeps two EMPTY arrays out of it (they share Julia's one global empty `Memory`) and a
-# `Vector{Int}` beside its buffer. Runtime, not type-level: emptiness is not in the type.
+# Shared storage matters only if it carries dimensions. Empty arrays share Julia's global
+# empty Memory, and integer buffers carry no derivatives; emptiness requires a runtime check.
 @inline _holds_derivatives(x) = tangent_dim(zero_tangent(x)) != 0
 
 function _throw_gradient_arg_alias_error(i::Int, j::Int)
@@ -577,23 +491,11 @@ function _throw_gradient_arg_alias_error(i::Int, j::Int)
     )
 end
 
-# Whether the inputs share differentiable storage ACROSS positions, exactly. `_zero_tangents`
-# builds the tuple through one aliasing cache, so a shared leaf gets one tangent and counts its
-# dimension once; summing per-argument tangents counts it once per position it occupies. Sharing
-# WITHIN one argument leaves both counts equal (both share it), and `===` on an immutable is
-# value equality, so equal scalars (`f(2.0, 2.0)`) cannot make them differ either.
-#
-# `_check_primal_aliasing` catches only a repeated top-level MUTABLE argument. This
-# catches sharing at any depth, and sharing with `f` — which that check never sees, as it is
-# passed the arguments alone. Cost is a full extra tangent set, so it runs once at cache
-# construction rather than per call; aliasing that appears only at call time is therefore not
-# caught, matching what `_check_tangent_aliasing` accepts for reverse mode, for the same
-# reason. The forward Jacobian needs no such check: it differentiates one argument with `f`
-# held fixed, so one dimension range covers every position and there is nothing to double-count.
-# Both counts read the SAME tangents: `shared_dim` is `tangent_dim(ts)`, one walk with one identity cache,
-# while `tangent_dim` per element starts a fresh cache and so counts a shared leaf once per position.
-# Rebuilding a tangent set per argument gives the same two numbers and allocated 1.6 MB on a pair of
-# 100k-element vectors.
+# Count the SAME tangents jointly and per argument: only cross-position sharing changes
+# the count; repeated leaves within one argument and equal scalars do not.
+# This catches nested sharing and sharing with `f`, unlike `_check_primal_aliasing`.
+# The full traversal runs only at preparation, so newly introduced nested sharing is not
+# caught. The Jacobian needs no check: its single input range covers aliased captures too.
 function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
     shared_dim != sum(tangent_dim, ts; init=0) && return true
     # 1.11+ reads the sharing off the TANGENTS, where aliased primals share a `Memory`. On 1.10
@@ -605,11 +507,9 @@ function _inputs_share_storage(shared_dim::Int, ts::Tuple, fx::Tuple)
     end
 end
 
-# Two IdDicts, not one, because an object plays two roles. `objs` is what has been VISITED, so the
-# same tangent at two positions is recognised as the case the aliasing cache already handles
-# correctly. `backing` is the STORAGE that has been claimed, so a different container over it is the
-# case `tangent_dim`'s identity-keyed de-duplication misses. A `Memory` is both at once: its own tangent at
-# one position and the backing of an `Array` tangent at another.
+# Track visited objects separately from claimed backing storage: repeated objects already
+# share tangents, but distinct containers over one buffer evade identity-based dimension counts.
+# Memory can be both a visited object and another container's backing storage.
 struct _StorageSeen
     objs::IdDict{Any,Nothing}
     backing::IdDict{Any,Nothing}
@@ -620,13 +520,8 @@ function _any_shared_storage(x)
     )
 end
 
-# Two guards on the way in, both testing that there is something to double-count. An EMPTY
-# array or `Memory` is not evidence of sharing: every empty `Array` points at Julia's one
-# global empty `Memory`, so two unrelated ones look aliased. Nor is a container whose elements
-# have no derivative — a `Vector{Int}` and its own reshape share a `Memory{NoTangent}`, and
-# refusing that rejected a gradient the sweep computes correctly. The refusal's own message is
-# the test: a shared leaf "comes back scaled by that count", and a `NoTangent` leaf has no
-# count.
+# Empty arrays share Julia's global empty Memory; nondifferentiable buffers have no
+# contributions to double-count. Neither should trigger the sharing guard.
 function _any_shared_storage!(s::_StorageSeen, x::_BuiltinArrays)
     (isempty(x) || tangent_type(eltype(x)) === NoTangent) && return false
     haskey(s.objs, x) && return false
@@ -662,13 +557,9 @@ end
         return _any_shared_storage!(s, x.fields)
     end
 else
-    # Julia 1.10 walks the PRIMALS, not the tangents: a reshaped array's tangent there does not
-    # alias its parent's, so tangent-keyed detection would find nothing.
-    #
-    # Struct fields are reached BY TANGENT TYPE, not by walking every object's fields: the primals
-    # include `f`, and a closure capturing a module would otherwise drag the whole module graph in.
-    # A differentiable struct is exactly one whose tangent is a `Tangent`/`MutableTangent`, which
-    # is also how the 1.11+ walk finds them — it sees the tangent directly and dispatches on it.
+    # On 1.10, reshape tangents do not share storage, so walk primals instead.
+    # Admit struct fields by tangent type, matching the 1.11+ tangent walk and avoiding
+    # unrelated graphs such as a module captured by f.
     function _any_shared_storage!(s::_StorageSeen, x)
         tangent_type(_typeof(x)) <: Union{Tangent,MutableTangent} || return false
         # Only a mutable can be cyclic, and registering an immutable would key an `IdDict` on its
@@ -684,32 +575,17 @@ else
     end
 end
 
-# A concrete primal whose derivative type is NOT concrete has no usable slot annotation: `Lifted`
-# and `CoDual` are invariant in it, so the slot the seed factories build is not a subtype of the
-# annotation. Refusing it here, where the argument types are known, is load-bearing rather than
-# cosmetic: without it the reverse path SEGFAULTS in Julia's codegen emitting the OpaqueClosure
-# call (`emit_specsig_oc_call` -> `value_to_pointer` -> `zext_struct`), and the forward path builds
-# a cache for a shape it cannot represent instead of refusing. In practice this is a NamedTuple with
-# an abstract field type, which both `dual_type` and `tangent_type` widen to `Any`. Only the inputs
-# are checked: a value of this shape built and consumed INSIDE the function differentiates fine, and
-# a return value's type is not known until the rule is built.
-#
-# Asked PER MODE, because the two questions are not interchangeable. An extension may give a type a
-# representation in one mode only, and then the other mode's question is not merely a different
-# answer but the wrong question to ask. `MooncakeDynamicExpressionsExt` is the live case: an
-# expression tree is self-referential, so its custom `TangentNode` is what makes `tangent_type`
-# concrete, while `dual_type` refuses outright. Asking that from a reverse-mode `prepare_*_cache`
-# turned a working gradient into an error.
+# A concrete input needs a concrete derivative representation: invariant CoDual/Lifted
+# slots otherwise fail annotation, potentially crashing reverse codegen. Abstract-field
+# NamedTuples are one example. Only inputs are checked; internal values can still work.
+# Ask each mode separately: extensions may support only one representation, e.g.
+# DynamicExpressions' recursive nodes have a custom reverse tangent but no forward dual.
 @inline function _check_representable_input(mode::Mode, @nospecialize(P::Type), i::Int)
     isconcretetype(P) || return nothing
     forward = mode isa ForwardMode
-    # An `NDualArray` stores its partials as `zero(T)` of its element parameter, so a
-    # non-concrete `T` is concrete as a TYPE yet cannot be built: a
-    # `Vector{Union{Float32,Float64}}` reached seed construction and died on `MethodError: no
-    # method matching Union{Float32,Float64}(::Int64)`. Only element types `dual_type` maps to
-    # an `NDualArray` are affected — `Vector{Any}`, `Vector{Real}` and
-    # `Vector{Union{Nothing,Float64}}` take other representations and work. Reverse mode builds
-    # these fine (`zero_tangent` gives a plain array), so this is forward-only.
+    # NDualArray partials use `zero(T)`, requiring a concrete element type even when the
+    # array type itself is concrete. Other forward array representations and reverse
+    # plain-array tangents support abstract element types.
     if forward
         D = dual_type(Val(1), P)
         D <: Nfwd.NDualArray &&
@@ -761,27 +637,16 @@ function _throw_gradient_input_alias_error()
     )
 end
 
-# Input-mutation safety (used only by the GENERIC chunked gradient path and the forward
-# Jacobian sweep below — the zero-alloc paths instead refresh cache-owned seed buffers, see
-# `_refresh_all!` / `_isbits_chunk`). Forward slots alias the user's input (`primal(slot)
-# === x`), and a sweep re-runs `f` once per chunk on that shared storage; an
-# in-place-mutating `f` would otherwise compound its mutation across chunks and corrupt
-# later chunks' derivatives. Those sweeps snapshot the input args into the prepared
-# `cache.input_snapshot` buffer (args only — `f` is never mutated and may be uncopyable) and
-# restore from it (in place, via `_copy_to_output!!`) before each re-run and once at the
-# end, leaving the inputs unchanged, consistent with reverse mode.
+# Generic gradient and Jacobian sweeps snapshot/restore arguments before each chunk and
+# at exit, preventing compounded mutations. Zero-allocation paths refresh cache-owned seeds
+# instead. The callable is not snapshotted; it may be uncopyable.
 
 # ── Zero-allocation gradient for array-backed structured inputs ───────────────
 
 #
-# Generalises the flat float-vector packable path to `NDualArray` leaves nested in
-# tuples/NamedTuples/structs. A `StructuredGradSeed` preallocates per-arg width-`W` seeds
-# and per-arg gradient buffers once, plus a flat tuple of `(forward-seed NDualArray,
-# gradient Array)` leaf pairs in tangent_dim order. Per chunk the seed leaf partials are poked in
-# place and each lane's directional derivative is written straight into the matching
-# gradient leaf — no per-chunk allocation. Real and complex IEEEFloat array leaves qualify,
-# including mixed leaf eltypes. Scalar dimensions, unsupported dual shapes, repeated leaves,
-# or non-isbits NoDual state select the generic snapshot/restore path.
+# Preallocate width-W seeds, gradients, and dimension-ordered array leaf pairs.
+# Real/complex arrays with mixed eltypes qualify; scalar dimensions, unsupported shapes,
+# repeated leaves, or non-isbits NoDual state require generic snapshot/restore.
 struct StructuredGradSeed{Ff,As,Gs,Ls,Bs}
     f_seed::Ff
     arg_seeds::As
@@ -791,14 +656,8 @@ struct StructuredGradSeed{Ff,As,Gs,Ls,Bs}
     bindings::Bs
 end
 
-# For inputs whose forward V is isbits (tuples/NamedTuples/immutable structs of scalars):
-# there are no array leaves to poke, but every piece — `zero_lifted`, the dict-free isbits
-# `basis_lifted!!`, `value_and_derivative!!`, and the scatter — is allocation-free, so a
-# concrete barrier with compile-time width `W` runs the chunked gradient with no allocation.
-# Each chunk rebuilds the isbits seed on the stack (capturing the current primal) and
-# reconstructs the per-arg `Lifted`s through the stored templates' concrete types
-# (`typeof(tmpl)(primal, V)`, which folds where `Lifted{fieldtype(P,i),W}` does not).
-# `total_dim` is precomputed to avoid `tangent_dim`'s `IdDict`.
+# Isbits seeds rebuild on the stack behind a concrete width-W barrier. Stored template
+# types keep Lifted reconstruction concrete; precomputed dimensions avoid an IdDict.
 struct IsbitsGradSeed{W,Tmpls}
     templates::Tmpls
     total_dim::Int
@@ -830,11 +689,8 @@ struct HVPCache{Tf,Tgrad_f,Tgrad_tangent,Tfwd_cache,TOS,THB}
     hess_buffers::THB
 end
 
-# Name the public function that refused, and its MODE where a cache says which one. The same
-# name covers both modes — `value_and_gradient!!` accepts aliased inputs through a reverse cache
-# and refuses them through a forward one — so the mode is what makes the message actionable.
-# `value_and_hvp!!` and the Hessian are forward-over-reverse, so neither label fits and the bare
-# name is used.
+# Include the cache's mode in errors: forward and reverse have different admission rules.
+# HVP/Hessian use the bare name because they combine both modes.
 _caller_label(::Nothing, ::Nothing) = "this function"
 _caller_label(::Nothing, ::Cache) = "reverse-mode differentiation"
 _caller_label(::Nothing, ::FCache) = "forward-mode differentiation"
@@ -913,11 +769,8 @@ end
     _check_repeated_arg_tangents(fx)
     input_primals = tuple_map(first, fx)
     input_tangents = tuple_map(last, fx)
-    # One aliasing cache across the argument tuple, as the `FCache{R,Nothing,…}` method below
-    # does: the float-array `lift` packs its seed into a FRESH partials block per call, so two
-    # arguments over one storage would otherwise get independent partials. The primal still
-    # aliases, so a mutation through one argument is visible through the other while its partial
-    # is not, and the returned value and derivative describe different functions.
+    # Share the lift cache across arguments: fresh partial blocks for aliased primals would
+    # make mutations visible through the primal but not through its derivative.
     c = IdDict()
     input_lifteds = tuple_map((p, t) -> lift(p, t, c), input_primals, input_tangents)
     output = __call_rule(rule, input_lifteds)
@@ -982,11 +835,7 @@ is shown by the cache.
     gradient_chunk_size_auto = requested_chunk_size == 0
     rule = build_frule(fx...; config.debug_mode, config.silence_debug_messages)
     input_types_and_sizes = map(_type_and_size, fx)
-    # All input shapes chunk: the width-`W` `frule!!` and `basis_lifted!!` seeding are
-    # type-generic, so structs, tuples, complex, and differentiable `f` batch `W`
-    # directional derivatives per pass through the generic chunked gradient path just like
-    # float arrays. Only the zero-allocation fast path below is shape-restricted (see
-    # `gradient_seed`).
+    # All shapes chunk; only zero-allocation seeds below are shape-restricted.
     input_ts = _zero_tangents(fx)
     total_dim = tangent_dim(input_ts)
     inputs_share_storage = _inputs_share_storage(total_dim, input_ts, fx)
@@ -994,9 +843,7 @@ is shown by the cache.
         requested = gradient_chunk_size_auto ? _MAX_CHUNK_WIDTH : requested_chunk_size
         min(total_dim, requested)
     end
-    # The chunk cache is a native width-`W` `frule!!` that evaluates `W` directional
-    # derivatives per pass (`W = gradient_chunk_size`). Width 1 carries no batching
-    # benefit over `cache.single_rule`, so leave it unbuilt.
+    # Width 1 reuses `single_rule`; wider rules batch directional derivatives.
     chunk_rule = if gradient_chunk_size > 1
         build_frule(
             fx...;
@@ -1012,20 +859,9 @@ is shown by the cache.
     # the inert `f_seed`. `nothing` for every other shape, which uses the generic gradient
     # path.
     gradient_seed = let args = Base.tail(fx)
-        # The zero-allocation seed needs a non-differentiable `f` (the path rewraps `f`
-        # without sweeping its dimensions, assuming `V === NoDual`) and same-eltype float-vector
-        # args. The same-eltype requirement mirrors the seed method's dispatch
-        # (`x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T}}`): a mixed-eltype seed
-        # would be dead cache weight that dispatch can never reach.
-        #
-        # `typeof(similar(a)) == typeof(a)`: the flat seed primals are `similar(a)`, but the
-        # rule and `input_types_and_sizes` are built for `typeof(a)`. For an input whose
-        # `similar` does not round-trip its type (a `SubArray`/view, whose `similar` is a
-        # plain `Vector`), the seed primal type would mismatch both, so the inner
-        # `value_and_derivative!!` revalidation throws a PreparedCacheError (and the rule's
-        # OpaqueClosure would type-mismatch anyway). Exclude those here so they fall through
-        # to the structured path, whose `deepcopy`-built seeds DO round-trip the type and so
-        # handle them correctly.
+        # The flat seed assumes nondifferentiable `f` and same-eltype float vectors, matching
+        # its sweep's dispatch. `similar` must preserve each argument's type: a plain Vector
+        # seed for a SubArray mismatches the cache and rule. Such wrappers use structured seeds.
         if gradient_chunk_size >= 1 &&
             tangent_type(typeof(first(fx))) === NoTangent &&
             !isempty(args) &&
@@ -1044,24 +880,16 @@ is shown by the cache.
             nothing
         end
     end
-    # Structured array-backed inputs (NDualArray leaves nested in
-    # tuples/NamedTuples/structs) that the flat-vector seed above does not cover:
-    # preallocate per-arg seeds + gradient buffers and gather their leaf pairs for the
-    # zero-allocation leaf-table path. `nothing` (so the generic chunked path runs) when any
-    # dimension is not array-backed, or `f` is differentiable.
+    # Try structured array-backed seeds next; unsupported dimensions or differentiable `f`
+    # fall back to the generic sweep.
     if gradient_seed === nothing &&
         gradient_chunk_size >= 1 &&
         tangent_type(typeof(first(fx))) === NoTangent &&
         !isempty(Base.tail(fx))
         W = gradient_chunk_size
         _args = Base.tail(fx)
-        # Seed over fresh copies, NOT the user's arrays: `zero_lifted(Val(W), a)`'s
-        # `NDualArray` leaves alias `a`'s storage, so seeding over the prepare-time args
-        # directly would let an in-place `f` clobber the user's input (the per-chunk
-        # `_refresh_all!` copies the call-time input into these cache-owned buffers, which
-        # the rule may then mutate). `deepcopy` (not `_copy_output`) preserves any intra-arg
-        # aliasing, so the `_tangent_layout` guard still detects aliased leaves and bails
-        # to the generic path. Mirrors the flat path's `similar`.
+        # Seed cache-owned copies so in-place rules cannot mutate prepare-time arguments.
+        # Preserve intra-argument aliases so `_tangent_layout` can reject them.
         _arg_seeds = map(a -> zero_lifted(Val(W), deepcopy(a)), _args)
         _grad_bufs = _zero_tangents(_args)
         _leaves = _tangent_layout(_arg_seeds, _grad_bufs)
@@ -1076,11 +904,8 @@ is shown by the cache.
             )
         elseif isbitstype(typeof(fx)) &&
             _all_real_scalars(typeof(tangent(zero_lifted(Val(W), fx))))
-            # Scalar-only structured input with real-float dimensions: the concrete-barrier path
-            # rebuilds the seed on the stack each chunk. The primal tuple must be isbits too
-            # — otherwise the per-chunk `zero_lifted` would allocate (an `IdDict`); a
-            # non-isbits `f` falls back to the generic path. Store per-input `Lifted`
-            # templates (for type-stable reconstruction) and the precomputed dimension count.
+            # Both primal and V must be isbits to avoid per-chunk allocation; templates keep
+            # Lifted reconstruction type-stable.
             templates = map(a -> zero_lifted(Val(W), a), fx)
             gradient_seed = IsbitsGradSeed{W,typeof(templates)}(templates, total_dim)
         end
@@ -1130,15 +955,8 @@ Returns a `Lifted` containing the result of applying forward-mode AD to compute 
 (Fréchet) derivative of `primal(f)` at the primal values in `x` in the direction of the
 tangent values in `f` and `x`.
 """
-# Derivative dispatch summary for `value_and_derivative!!(cache, ...)`:
-# - `value_and_derivative!!(cache, lifteds...)`: native/internal tangent interface;
-#   accepts width 1 or the cache's resolved width W and calls the matching cached rule
-# - `value_and_derivative!!(cache, (f, df), (x, dx), ...)`: tuple interface; lifts each
-#   width-1 tangent and runs the cached `frule`
-# Width dispatch on the `Lifted{P,N,V}` width parameter: all-width-1 slots are a single
-# directional derivative through `single_rule`; width-`W` slots are a `W`-lane chunk through
-# `chunk_rule` (built at that width). `Lifted{<:Any,1}` is strictly more specific, so the
-# first method serves single directions and the second serves chunks.
+# Width-1 slots select `single_rule`; wider slots must match the prepared chunk width.
+# The tuple interface below always supplies width 1.
 function value_and_derivative!!(cache::FCache, fx::Vararg{Lifted{<:Any,1},N}) where {N}
     input_primals = map(primal, fx)
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
@@ -1215,10 +1033,7 @@ fields is not restored.
         primal_to_tangent!!, cache.input_tangents, input_friendly_tangents
     )
 
-    # Snapshot the inputs into the cache buffer and restore from it after the rule runs, so
-    # an in-place-mutating `f` does not mutate the user's inputs. The restore is in a
-    # `finally`: an `f` that mutates and then raises (a domain error inside a line search,
-    # say) otherwise hands the caller a half-updated argument along with the exception.
+    # Restore in `finally` so a mutating rule that throws also leaves inputs unchanged.
     input_snapshot, restore_contexts = _snapshot_inputs!!(
         cache.input_snapshot, Base.tail(input_primals)
     )
@@ -1238,10 +1053,7 @@ fields is not restored.
             output_internal_tangent,
             _friendly_cache((output_primal,)),
         )
-        # `output_primal` may alias an in-place-mutated input (e.g. `f` returns its mutated
-        # arg); copy it out before the `finally` restore, or the restore overwrites the
-        # returned value with the original input. Free for scalar/immutable outputs; a copy
-        # only for mutable ones.
+        # Copy before restoring: the result may alias a mutated input. Isbits copies are free.
         return _copy_output(output_primal), output_friendly_tangent
     finally
         _restore_inputs!!(Base.tail(input_primals), input_snapshot, restore_contexts)
@@ -1255,13 +1067,9 @@ end
     _check_prepared_cache(getfield(cache, :input_types_and_sizes), input_primals)
     _check_repeated_arg_tangents(fx)
     input_tangents = tuple_map(last, fx)
-    # Sharing the `===` scan above cannot see — `f` capturing an array also passed as an
-    # argument — is only answerable here. The friendly method converts INTO the prepared tangent
-    # buffers, which are built through one aliasing cache, so two conflicting directions for one
-    # shared leaf both land in the one buffer and the last wins; it has no second tangent object
-    # left to compare. The rule-direct `(rule, (p, t)...)` method has no prepared tangent set at
-    # all, and building one per call would cost a full extra tangent set on a path whose point is
-    # to skip the cache. That residual is in `known_limitations.md`.
+    # Only this method can check nested shared-input seeds: the friendly path has already
+    # merged them into prepared buffers, and the rule-direct path has no canonical tangent
+    # set. Building one there would defeat its allocation savings; see `known_limitations.md`.
     _check_shared_input_tangents(cache, input_primals, input_tangents)
 
     tuple_map(_check_tangent_for_primal, input_primals, input_tangents)
@@ -1295,10 +1103,8 @@ function _check_vector_argument(
         ),
     )
     T = eltype(x)
-    # Concrete, not merely a subtype: `Union{Float32,Float64} <: IEEEFloat` holds, and such an
-    # input used to reach the seeding machinery and die on `MethodError: no method matching
-    # Union{Float32,Float64}(::Int64)`. Concreteness also makes `eltype(y) <: T` equality, so
-    # the output check needs no separate test.
+    # Concreteness excludes Union float eltypes that cannot seed NDualArray and makes
+    # output `eltype(y) <: T` an equality check.
     isconcretetype(T) || throw(
         ArgumentError(
             "$(_caller_label(caller, cache)) requires a concrete element type; got eltype $T",
@@ -1310,10 +1116,7 @@ function _check_vector_argument(
             "element types; got eltype $T",
         ),
     )
-    # `dense` is load-bearing, not caution: the sweep seeds standard-basis columns by linear
-    # index from 1, so a view whose elements do not sit at offsets `1:n` of its parent has
-    # its columns seeded into the wrong slots and returns a WRONG Jacobian with no error.
-    # Measured on a stride-2 view: `[1 0 1; 2 0 6]` against a truth of `[1 1 1; 2 6 10]`.
+    # The sweep seeds offsets `1:n`; strided views would seed the wrong parent elements.
     !dense ||
         x isa DenseVector ||
         throw(
@@ -1361,17 +1164,10 @@ function _check_jacobian_output(y, Tx)
     # One call, not two: `Tx` is the eltype of an input already checked against `IEEEFloat`,
     # so `Ty <: Tx` carries the float property with it.
     Ty = _check_vector_output(y; caller=(value_and_jacobian!!), eltypes=Tx, dense=true)
-    # A `view`, a range, or any other wrapper vector has a struct lift over its parent as its
-    # derivative representation, not a flat array, and NEITHER mode can build a Jacobian from
-    # one: forward indexes a lane's tangent and died on a raw `MethodError` from `keys`, reverse
-    # died on an internal `fdata_type` assertion. The kind of representation does not depend on
-    # the chunk width, so width 1 answers this for every cache.
-    # `dual_type` stands in for both modes here, which `_check_representable_input` shows is not
-    # sound in general — a self-referential type can be concrete under `tangent_type` and
-    # non-terminating under `dual_type`. Bounded here by the `AbstractVector` guard above rather
-    # than by an argument that the two agree; a recursive `AbstractVector` would still overflow on
-    # the reverse path. Asking the reverse question needs a verified `tangent_type` mirror of the
-    # `NDualArray` test across the whole wrapper family, which no failing case yet motivates.
+    # Wrapper derivatives may be struct lifts, not flat arrays, in either mode.
+    # Width 1 suffices to check the representation. Using `dual_type` for reverse is bounded
+    # by the AbstractVector guard, but a recursive AbstractVector could still overflow;
+    # a reverse-specific check needs verification across the wrapper family.
     dual_type(Val(1), typeof(y)) <: NDualArray || throw(
         ArgumentError(
             "value_and_jacobian!! does not support a $(typeof(y)) output: its derivative " *
@@ -1382,12 +1178,8 @@ function _check_jacobian_output(y, Tx)
     return Ty
 end
 
-# Type-stable inner sweep for the zero-allocation packable Jacobian (function barrier,
-# called from the `@unstable` method below). Per chunk: restore the seed primal from `x`,
-# set this chunk's standard-basis columns in the seed's `NDualArray` partials in place, run
-# the width-dispatched `value_and_derivative!!`, and copy each lane's directional derivative
-# into the corresponding `J` column. `J` is sized from the first output and cached in `Jref`
-# (reused, overwritten next call).
+# A concrete barrier keeps the packable Jacobian sweep type-stable. Jref owns the output
+# matrix, sized on the first call and overwritten on reuse.
 function _fcache_jacobian_packable!!(
     cache::FCache, Jref, f_seed, arg_seed, W::Int, total_dim::Int, x::AbstractVector{T}
 ) where {T}
@@ -1488,14 +1280,7 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             _restore_inputs!!((x,), snapshots, contexts)
         end
     end
-    # Zero-allocation packable path: reuse the width-`W` seed and Jacobian buffer
-    # preallocated at prepare time (single same-eltype float vector in, float vector out).
-    # Mirrors the zero-alloc `value_and_gradient!!`: seed standard-basis columns into the
-    # cached `NDualArray` partials in place, run the width-dispatched
-    # `value_and_derivative!!`, and scatter each lane's directional derivative (one Jacobian
-    # column) into the reused `J`. The seed primal is a cache buffer (`x` is copied into it
-    # each chunk), so `x` is never touched — no snapshot needed. Like the gradient buffers,
-    # the returned `J` aliases the cache and is overwritten on the next call.
+    # Packable seeds and J are cache-owned and reused; refreshing seeds leaves x untouched.
     seed = cache.gradient_seed
     Jref = cache.jacobian_buffer
     # Gate on `seed isa Tuple`, not just `!== nothing`: the packable seed is a 3-tuple, but
@@ -1513,21 +1298,10 @@ As with all functionality in Mooncake, `x` is returned to its original state: if
             cache, Jref, f_seed, arg_seeds[1], cache.gradient_chunk_size.width, total_dim, x
         )
     end
-    # Non-packable path (differentiable `f`, or anything else `gradient_seed` does not
-    # cover): seed each chunk's `W` standard-basis columns starting at `start_col` via
-    # `basis_lifted!!` (slots past `total_dim` map to `0`, an all-zero lane) and read one
-    # Jacobian column per lane. `W = gradient_chunk_size` is `min(tangent_dim((f, x...)),
-    # requested)`, which INCLUDES `f`'s own dimensions, so for a differentiable `f` it can exceed
-    # `total_dim = length(x)`; every J-write loop must guard `lane <= total_dim`.
-    # Width-dispatched `value_and_derivative!!` routes to `chunk_rule` (W > 1) or
-    # `single_rule` (W == 1, no chunk rule).
+    # A differentiable `f` contributes to the prepared width W, so W can exceed length(x).
+    # Guard every Jacobian write, including the first chunk's, against that smaller dimension.
     W = cache.gradient_chunk_size.width
-    # Seeded through ONE aliasing cache and split, as the generic gradient sweep does. Two
-    # separate lifts give an array that `f` captures and `x` names independent partials blocks,
-    # so the basis direction seeded into `x` never reaches `f`'s view of the one storage: a
-    # closure doubling its capture before squaring `x` reported `diag(4, 8)` for `diag(8, 16)`.
-    # Sharing is the whole fix — `basis_lifted!!` below walks `x_seed` alone and reaches `f`'s
-    # leaf through it.
+    # One lift cache lets x's basis directions reach aliased captures in f too.
     seed_vs = tangent(zero_lifted(Val(W), (f, x)))
     f_seed = Lifted{typeof(f),W}(f, seed_vs[1])
     x_seed = Lifted{typeof(x),W}(x, seed_vs[2])  # partials reseeded in place per chunk
@@ -1783,12 +1557,8 @@ _friendly_cache(fx::Tuple) = isbitstype(typeof(fx)) ? NoCache() : IdDict{Any,Any
     return tuple_map((d, p, t) -> tangent_to_friendly!!(d, p, t, c), dests, fx, native)
 end
 
-# Build the argument tuple's tangents through ONE aliasing cache, so two arguments that alias each
-# other get ONE tangent. Reverse mode requires aliased primals to share fdata (accumulation must land
-# in one storage); `zero_tangent(x)` allocates a fresh cache per call, so a per-argument
-# `tuple_map(zero_tangent, fx)` severs that and yields the independent-slot chain rule instead of the
-# true gradient. It also makes `tangent_dim` count a repeated argument twice. Mirrors `_to_friendly` above,
-# which already shares a cache across the tuple when converting the other way.
+# Share one seeding cache across arguments to preserve reverse fdata aliasing and count
+# repeated storage once in `tangent_dim`. `_to_friendly` shares the conversion cache too.
 @inline function _zero_tangents(fx::Tuple)
     c = _friendly_cache(fx)
     return tuple_map(x -> zero_tangent_internal(x, c), fx)
@@ -1901,11 +1671,8 @@ The API guarantees that tangents are initialized at zero before the first autodi
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
 
-    # Snapshot the output BEFORE the reverse pass, and take the type and size and the output-tangent
-    # buffer from that snapshot. The pullback restores mutations `f` made to its inputs, so for an
-    # `f` whose output ALIASES an input it grew, reading the output afterwards sees the restored
-    # value: `grow(x) = (push!(x, 2 * x[1]); x)` prepared at `[1.0, 2.0]` recorded an output of
-    # size (2,) for a live output of size (3,), and every later call failed against that cache.
+    # Snapshot before the pullback restores input mutations: an output aliasing a grown
+    # input must retain its output size and contents in the cache.
     y_cache = _copy_output(primal(y))
     y_cache = _copy_to_output!!(y_cache, primal(y))
     output_type_and_size = _type_and_size(y_cache)
@@ -2056,10 +1823,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     # reads it anyway).
     y_cache = _copy_output(primal(y))
     dests = config.friendly_tangents ? map(friendly_tangent_cache, fx) : nothing
-    # The output-tangent buffer comes with `dests`: a friendly pullback converts the
-    # caller's `ȳ` into it, so leaving it `nothing` made a friendly gradient cache throw
-    # `AssertionError: typeof(tangent) <: tangent_type(P)` the moment it was handed to
-    # `value_and_pullback!!`, while the unfriendly one worked.
+    # A friendly gradient cache also serves pullbacks, which require this output-tangent buffer.
     ȳ_cache = config.friendly_tangents ? zero_tangent(y_cache) : nothing
     return Cache(
         rule,
@@ -2157,12 +1921,8 @@ value_and_gradient!!(cache, f, x, y)
     return value, friendly_gradient
 end
 
-# Is forward V `T` built only from real-float scalar dimensions (`NoDual`/`NDual{<:IEEEFloat}`
-# nested in tuples/NamedTuples/`ImmutableDual`)? The `IsbitsGradSeed` barrier seeds/scatters
-# via a one-dimension-per -leaf cursor walk that only knows these shapes, so this is its admission
-# gate: complex dimensions (two dimensions per element), `PossiblyUninitTangent`, and any other isbits V
-# fall back to the generic path (which handles them) rather than hitting an opaque
-# `MethodError` in the scatter.
+# IsbitsGradSeed's cursor handles only real scalar dimensions nested in tuples,
+# NamedTuples or ImmutableDual. Complex, uninitialised and other shapes must fall back.
 _all_real_scalars(::Type{NoDual}) = true
 _all_real_scalars(::Type{<:Nfwd.NDual{T}}) where {T<:IEEEFloat} = true
 function _all_real_scalars(::Type{T}) where {T<:Tuple}
@@ -2210,13 +1970,9 @@ function _grad_leaves(v::MutableDual, g::MutableTangent, dict)
 end
 _grad_leaves(@nospecialize(v), @nospecialize(g), dict) = nothing  # scalar/complex/abstract/uninit/mismatch
 
-# A `MutableDual` holds its per-field Vs in one rebindable `fields` NamedTuple, so an `f` that
-# REBINDS a field (`b.w = 2 .* b.w`) rather than mutating it in place leaves the seed holding a
-# V the prepare-time `leaves` never saw, and from chunk 2 onwards `_seed_chunk!` perturbs the
-# orphan. Save both primal and dual field bindings and rebind before every chunk; re-gathering
-# `leaves` per chunk would instead cost this path its zero-allocation guarantee. Termination
-# needs no cycle guard: this walks exactly the nodes `_grad_leaves` did, which bails to the
-# generic path on any `MutableDual` it reaches twice, so a cycle never gets here.
+# Restore primal and dual field bindings each chunk: rebinding would orphan the cached
+# leaf table. Re-gathering would allocate. `_grad_leaves` already excludes repeats and
+# cycles, so no cycle guard is needed here.
 _save_seed_bindings(::Nfwd.NDualArray, p) = ()
 # Composite NoDual leaves can own mutable descendants outside the dual leaf table.
 # Use generic snapshot/restore for these inputs, including changed extents and bindings.
@@ -2315,15 +2071,9 @@ fields is not restored.
     )
 end
 
-# Generic chunked fallback for any input the four concrete fast paths (scalar / packable
-# float vectors / array-backed-structured `StructuredGradSeed` / scalar-isbits
-# `IsbitsGradSeed`) do not cover: differentiable `f`, complex, mixed/abstract element types,
-# possibly-uninitialised fields, aliased/cyclic structured inputs. It splices the runtime
-# chunk width `cache.gradient_chunk_size` into `ntuple`/`Lifted` type parameters, so it is
-# deliberately type-unstable (the gradient infers as `Any`) — trading inference and the
-# per-chunk fresh-seed allocation for shape generality. `@unstable`, like the sibling
-# `prepare_*`/`value_and_jacobian!!`/`value_gradient_and_hessian!!` entry points; the four
-# fast paths above stay concrete.
+# The generic fallback uses runtime width in seed type parameters, deliberately trading
+# type stability and fresh per-chunk allocations for shape generality. Concrete fast
+# paths retain type stability and zero allocation.
 @unstable function value_and_gradient!!(cache::FCache, f::F, x::Vararg{Any,N}) where {F,N}
     # Array-backed structured inputs take the zero-allocation leaf-table path; scalar-only
     # structured inputs take the isbits concrete-barrier path.
@@ -2369,22 +2119,9 @@ end
         return _finalize_gradient(cache, y, native_gradients, input_primals)
     end
 
-    # Per chunk of `W` standard-basis directions starting at `start_slot`:  - seed the
-    # forward direction by basis-seeding the whole input tuple's `zero_lifted` V   
-    # (`basis_lifted!!` walks all inputs' dimensions with one global cursor; slots past   
-    # `total_dim` give zero lanes), then split that tuple V into per-input width-`W` slots; 
-    # - run the width-dispatched `value_and_derivative!!` (chunk rule for `W > 1`, single
-    # rule    for `W == 1`) and read lane `k`'s directional derivative as `coeff =
-    # tangent(out, k)`;  - scatter `coeff * reverse_tangent` into the gradient, where the
-    # reverse basis tangent    per lane is the width-1 `basis_lifted!!` seed at that scalar
-    # dimension, `unlift`ed back to a    reverse tangent (a scalar output makes each lane's
-    # derivative the coefficient for its    seeded basis direction). `W =
-    # gradient_chunk_size`. Each chunk guards `slot <= total_dim`: a lane past the last tangent_dim
-    # (a short final/only chunk, or `W > total_dim`) carries a zero seed direction
-    # (`basis_lifted!!` maps out-of-range slots to none) that contributes nothing — keeping
-    # the sweep correct and uniform with the Jacobian/Hessian sweeps rather than relying on
-    # `W <= total_dim` (the assumption whose absence in the Jacobian sweep caused an
-    # out-of-bounds write).
+    # Seed the whole input tuple through one cache, split into width-W slots, and scatter
+    # lane coefficients against width-1 reverse basis tangents. Guard the final short chunk:
+    # out-of-range seeds are zero lanes, not gradient entries.
     W = cache.gradient_chunk_size.width
     nfields = Val(fieldcount(typeof(input_primals)))
     P = typeof(input_primals)
@@ -2500,23 +2237,7 @@ end
 # `value_and_gradient!!` fast paths
 #
 
-# FCache path overview:
-# - derivative machinery: `value_and_derivative!!` (width-dispatched single/chunk rule).
-# - gradient machinery: `value_and_gradient!!` (four zero-alloc fast paths / generic
-#   chunked).
-#
-# Gradient dispatch summary for `value_and_gradient!!(cache, f, x...)` (all need a non-diff
-# `f` except the scalar path):
-# - `x::IEEEFloat`: scalar width-1 path
-# - all-`AbstractVector{<:IEEEFloat}`: zero-allocation packable path (preallocated seeds)
-# - real/complex IEEEFloat array-backed inputs with isbits NoDual state: `StructuredGradSeed`
-#   leaf-table
-# - tuples/NamedTuples/immutable structs of real float scalars: zero-alloc `IsbitsGradSeed`
-#   barrier
-# - otherwise (differentiable `f`, unsupported leaves, non-isbits NoDual, aliases/cycles): generic
-#   chunked
-#   path, which per chunk seeds `gradient_chunk_size` standard-basis directions and runs the
-#   width-dispatched `value_and_derivative!!`
+# See `value_and_gradient!!(::FCache, ...)` for fast-path admission and fallback shapes.
 
 # Scalar `value_and_gradient!!` fast path: a single width-1 forward evaluation through
 # `cache.single_rule`. A scalar input has one degree of freedom, so there is nothing to
@@ -2536,36 +2257,20 @@ end
     return _finalize_gradient(cache, y, native_gradients, (f, x))
 end
 
-# Zero-allocation packable gradient for one or more same-eltype float vectors. Reuse the
-# preallocated width-`W` seeds (`cache.gradient_seed = (f_seed, arg_seeds, grad_bufs)`): per
-# chunk, mutate each arg seed's `NDualArray` partials in place to set standard-basis
-# directions (mapping the global slot to the owning arg via running offsets), run the
-# width-dispatched `value_and_derivative!!`, and scatter each lane's directional derivative
-# straight into the preallocated per-arg gradient buffer. The seed primals are restored from
-# `xs` and the partials zeroed at the top of every chunk, so an in-place `f` neither touches
-# the user's arrays nor compounds across chunks. This method only matches same-eltype
-# float-vector args; other zero-alloc shapes (array-backed structured / scalar-only
-# structured) build their own seed at prepare time and dispatch from the generic
-# `value_and_gradient!!` to `_structured_gradient!!` / `_isbits_gradient!!`. A
-# differentiable `f` (no preallocated seed) falls back to the generic chunked path.
+# The flat sweep reuses same-eltype vector seeds. Restore primals and zero partials per
+# chunk to prevent compounded mutation; structured seeds and differentiable callables
+# are delegated to the generic entry point.
 function value_and_gradient!!(
     cache::FCache, f::F, x1::AbstractVector{T}, xs_rest::Vararg{AbstractVector{T},Nm1}
 ) where {F,T<:IEEEFloat,Nm1}
-    # Leading `x1` binds `T` directly (a bare `Vararg{AbstractVector{T},N}` leaves `T`
-    # unbound at N=0; Aqua). Gradient always has >=1 input. Reconstruct `xs`/`N` to leave
-    # the body below unchanged.
+    # Leading `x1` binds T; a bare Vararg leaves it unbound at N=0 (Aqua).
     xs = (x1, xs_rest...)
     N = Nm1 + 1
     _check_primal_aliasing(xs)
     _check_gradient_input_aliasing(cache)
     seed = cache.gradient_seed
-    # Only the flat packable seed (the `(f_seed, arg_seeds, grad_bufs)` tuple) is
-    # destructured below. Any other seed — `nothing` (differentiable `f` / non-packable), or
-    # the struct seeds `StructuredGradSeed`/`IsbitsGradSeed` (e.g. a view, whose `similar`
-    # is not its own type so it is excluded from the flat path) — is delegated to the
-    # generic method, which dispatches on the seed type (and validates the cache itself).
-    # `invoke` is needed because a plain call would re-dispatch back to this method (the
-    # args are float vectors).
+    # Only destructure flat tuple seeds; other shapes use the generic method's dispatch.
+    # `invoke` avoids re-entering this float-vector method.
     seed isa Tuple ||
         return invoke(value_and_gradient!!, Tuple{FCache,Any,Vararg{Any}}, cache, f, xs...)
     # Validate once, on the packable path only (the fallback validates in the generic
@@ -2647,11 +2352,8 @@ end
 # is all the per-call primal state the rule needs). Type-stable, allocation-free.
 _refresh_seed!(::NoDual, @nospecialize(x)) = nothing
 function _refresh_seed!(v::Nfwd.NDualArray{T}, x::AbstractArray) where {T<:Nfwd.NDualEltype}
-    # `_check_prepared_cache` only checks top-level sizes, so a structured input whose
-    # NESTED array changed shape still reaches here. Check `size`, not just `length`: a
-    # same-length reshape (e.g. (2,3)->(3,2)) would otherwise `copyto!` linearly into the
-    # stale cache-owned shape and run the rule on it — silently wrong for any f that depends
-    # on size/axes. Fail loudly and locally (a clear PreparedCacheError) instead.
+    # Validate nested sizes, not just lengths: a reshaped input must not silently run on
+    # the stale cache-owned shape. Top-level cache checks cannot see this.
     size(v.primal) == size(x) || throw(
         PreparedCacheError(
             "Prepared cache mismatch: a nested array argument has size $(size(x)) but " *
@@ -2680,22 +2382,13 @@ end
         :(nothing),
     )
 end
-# `_refresh_seed!` above restores only the differentiable leaves of the prepare-time `deepcopy`, so
-# every non-differentiable part of a structured argument — a struct's `Int` field, a `SubArray`'s
-# indices — kept its prepare-time value for the life of the cache, and a cache prepared for
-# `sum(m.w[1:2])` answered THAT question when called with `k = 4`. Types and top-level sizes match,
-# so `_check_prepared_cache` cannot see it. Rebuild the primal around the call's
-# non-differentiable state instead, keeping the cache-owned differentiable buffers; every level
-# returns the object it was handed when nothing changed, so an unchanged call constructs nothing.
-# The V shapes mirror `_refresh_seed!`'s methods, and anything else `MethodError`s here rather than
-# being skipped.
+# Refresh call-time nondifferentiable state too: types and top-level sizes do not detect
+# changed struct fields or view indices. Preserve cache-owned differentiable buffers and
+# return unchanged objects to retain zero allocation. Unsupported V shapes must error.
 _refresh_nondiff(::Nfwd.NDualArray, p, _x) = p
 
-# A `NoDual` slot asserts this position has no derivative, which is a statement about the CALL's
-# value, not only the prepare-time one. An abstractly-typed field prepared at an `Int` and called
-# with a `Float64` would keep the `NoDual` while the primal's canonical dual is an `NDual`, and the
-# dual IR's typeassert fires downstream with a raw `TypeError`. Refuse here, where the argument that
-# caused it is still in hand.
+# A NoDual slot must remain nondifferentiable at call time. Refuse an abstract field
+# changing from Int to Float before an incoherent slot reaches the dual IR.
 function _refresh_nondiff(::NoDual, p, x)
     if tangent_type(_typeof(x)) !== NoTangent
         throw(
@@ -2706,15 +2399,9 @@ function _refresh_nondiff(::NoDual, p, x)
             ),
         )
     end
-    # Immutable values cannot be written through, so the call's value passes straight out. A MUTABLE
-    # one would let an in-place `f` write to the user's argument, so the call's state is copied into
-    # the cache's own object instead; `_refresh_seed!` restores only differentiable leaves, so the
-    # mutation would otherwise compound across the chunk sweep. `_copy_to_output!!` is the copy: it
-    # recurses through fields, arrays and `Memory` rather than stopping at the top level, threads an
-    # `IdDict` so cycles and shared sub-objects survive, and writes `const` fields through
-    # `jl_set_nth_field`, which `setfield!` refuses. A bits type owns no mutable storage for `f` to
-    # write through, so it passes out untouched, as does a value of a different type from the
-    # prepared one (the caller rebuilds the primal around it).
+    # Copy same-type non-isbits state into cache storage so in-place mutation cannot reach
+    # user storage or compound across chunks. `_copy_to_output!!` preserves cycles, aliases,
+    # and const fields. Bits values and changed types pass through for the caller to rebuild.
     P = typeof(x)
     return typeof(p) === P && !isbitstype(P) ? _copy_to_output!!(p, x) : x
 end
@@ -2815,11 +2502,8 @@ end
     end
 end
 
-# Refresh every argument's seed from the call's inputs: `_refresh_nondiff` rebuilds the primal
-# around the call's non-differentiable state, then `_refresh_seed!` copies the differentiable
-# leaves into the cache-owned buffers. Returns the STORED tuple, not a fresh one, when no argument
-# needed rebuilding — the structured gradient path is asserted allocation-free, and building a
-# tuple of non-isbits `Lifted`s per call would show up there.
+# Refresh nondifferentiable state and differentiable buffers. Return the stored tuple
+# when unchanged: rebuilding non-isbits Lifteds would break zero allocation.
 @generated function _refresh_all!(arg_seeds::Tuple, xs::Tuple)
     n = length(arg_seeds.parameters)
     n == 0 && return :arg_seeds
@@ -2844,16 +2528,9 @@ end
     end
 end
 
-# `_seed_chunk!` and `_scatter_chunk!` mutate preallocated seed and gradient storage.
-# Recursive (unrolled, type-stable, allocation-free) sweeps over the layout rows, each of which
-# carries the range of dimensions it owns. Each chunk re-zeros all partials (an in-place `f`
-# dirties them, not just the hot entries) before `_seed_chunk!` sets the ≤`W` standard-basis ones
-# — so the seeding work is O(total_dim) per chunk, O(total_dim²) over a full gradient (compute,
-# not allocation); the alternative (clear only the previous chunk's hot entries) is unsafe for an
-# in-place `f`. `_zero_seeds!` stays a SEPARATE pass rather than folding into `_seed_chunk!`: per
-# row that becomes zero-then-seed, which wipes an earlier row's seed should two rows ever share a
-# partials block, and nothing here establishes that they cannot. It also clears EVERY row, not
-# just the chunk's, which is why it is not named for the chunk.
+# Unroll layout rows for type stability and zero allocation. Clear ALL partials each chunk:
+# in-place f can dirty inactive entries too (O(total_dim²) work over the sweep).
+# Keep zeroing separate from seeding so shared blocks cannot erase an earlier row's seed.
 @inline _zero_seeds!(::Tuple{}) = nothing
 @inline function _zero_seeds!(ls::Tuple)
     Nfwd._zero_seed!(first(ls)[1])
@@ -2918,13 +2595,8 @@ end
     return nothing
 end
 
-# Zero-allocation gradient for array-backed structured inputs (see `StructuredGradSeed`).
-# Mirrors the flat-vector packable gradient: per chunk restore the seed primals from the
-# current inputs and re-zero the partials (so an in-place `f` neither touches the user's
-# arrays nor compounds across chunks), poke the chunk's standard-basis partials in place,
-# run the width-dispatched `value_and_derivative!!`, and write each lane's directional
-# derivative straight into the matching preallocated gradient leaf (every dimension is written
-# exactly once, so `grad_bufs` needs no zeroing).
+# Structured sweep: restore seed primals and partials each chunk to prevent compounded
+# mutation. Each gradient dimension is written once, so grad_bufs needs no zeroing.
 function _structured_gradient!!(
     cache::FCache, f::F, xs::Tuple, seed::StructuredGradSeed
 ) where {F}
@@ -2947,11 +2619,8 @@ function _structured_gradient!!(
         # Undo any field rebinding by `f`, which would otherwise orphan `leaves`.
         _restore_seed_bindings!(seed.bindings)
         foreach(row -> _reset_seed_extent!(row[1], length(row[2])), leaves)
-        # Per chunk, not once per call: the stored seeds hold the PREPARE-time non-differentiable
-        # state, which this rebuilds from the call's arguments (as the `f` rewrap above does for the
-        # callable) — and an `f` that mutates a non-differentiable argument would otherwise carry
-        # chunk 1's mutation into chunk 2, so the reported value came from the last chunk. Copies
-        # into the cache's own objects, so an unchanged call rebuilds nothing.
+        # Refresh call-time nondifferentiable state every chunk too, so mutation cannot
+        # compound. Unchanged state rebuilds nothing.
         arg_seeds = _refresh_all!(arg_seeds, xs)
         _zero_seeds!(leaves)
         _seed_chunk!(leaves, s, W)
@@ -2965,12 +2634,7 @@ function _structured_gradient!!(
     return _finalize_gradient(cache, y, native_gradients, input_primals)
 end
 
-# `_isbits_chunk` and `_isbits_scatter` return fresh values behind a concrete-type barrier
-# that avoids an `IdDict` and keeps this path allocation-free.
-# One chunk of the isbits gradient: rebuild the width-`W` seed on the stack (current
-# primal), basis-seed it at the chunk's slots, reconstruct the per-arg `Lifted`s through the
-# stored templates' concrete types, and run the width-dispatched rule. All allocation-free
-# for isbits V.
+# A concrete barrier keeps isbits seed reconstruction on the stack without an IdDict.
 @inline function _isbits_chunk(cache, input_primals, templates, ::Val{W}, s) where {W}
     seed_w = zero_lifted(Val(W), input_primals)
     vs = tangent(basis_lifted!!(seed_w, ntuple(k -> s + k - 1, Val(W))))
@@ -3112,35 +2776,16 @@ true
     # `grad_cache.rule`.
     grad_cache = prepare_gradient_cache(f, x...; config)
 
-    # `DerivedFoRRule` wraps a pre-built `Lifted(rule, rule_tangent)` so forward AD reuses
-    # the rule's forward-mode-compiled dual callables instead of `zero_dual` re-deriving
-    # them and leaking reverse-mode primitives (e.g. inlined `IdDict()`) into the forward
-    # IR. The type parameter `D` discriminates derived (`D <: Lifted`) from primitive (`D
-    # === Nothing`) rrules — primitive rrules have no MistyClosure IR and keep using
-    # `grad_cache`'s rule directly. Internal chunk width for the forward-over-reverse dual
-    # callables and `grad_f`'s forward chunk rule (kept in lockstep so they agree). Default
-    # 1 (width-1): a standalone HVP is a single direction, so `value_and_hvp!!` must stay
-    # width-1. `prepare_hessian_cache` passes `_chunk = N > 1` to build a width-N variant
-    # for its chunked Hessian sweep; cap at `tangent_dim(x)` (cannot batch more Hessian columns than
-    # input dimensions).
+    # Reuse DerivedFoRRule's precompiled Lifted dual callables; re-deriving would leak
+    # reverse-optimised IR into forward AD. Primitive rules have no MistyClosure IR and use
+    # grad_cache directly. Keep dual and outer forward-rule widths equal; standalone HVP
+    # stays width 1, while Hessians request a width capped at the input dimension.
     fwd_chunk_size = _chunk == 1 ? 1 : min(_chunk, tangent_dim(_zero_tangents(x)))
-    # Build `grad_f`'s forward cache at EXACTLY `fwd_chunk_size`, never passing
-    # `config.chunk_size` through: at width 1 (standalone HVP) this builds no `chunk_rule`,
-    # so the cache cannot bake an unusable width-K chunk rule over a width-1 for_rule (the
-    # FoR `rule_dual` and the `chunk_rule` widths can never diverge). The width-W Hessian
-    # variant (from `prepare_hessian_cache`) gets a width-W `chunk_rule` matching its
-    # width-W for_rule. `empty_cache=false`: any global-cache reset already happened in
-    # `prepare_gradient_cache` above; re-clearing here would invalidate it. The inner
-    # forward cache differentiates `grad_f` (a compiled reverse-gradient closure), not user
-    # data: its only inputs are `grad_f`, its internal `grad_tangent`, and the direction
-    # `v`, all already internal tangents. It must stay non-friendly regardless of
-    # `config.friendly_tangents`. Threading the flag in would (a) make
-    # `prepare_derivative_cache` `_copy_output` `grad_f`, whose captured compiled rule
-    # reaches `Method`/`Core.MethodInstance` reflection and errors, and (b) route
-    # `value_and_hvp!!` through the friendly tuple path, which mis-treats `grad_tangent` as
-    # a primal-shaped tangent. `friendly_tangents` governs the reverse output-tangent
-    # contract only; HVP/Hessian take no user output tangent, so the flag does not affect
-    # their result shape.
+    # Use the FoR width, not config.chunk_size, to avoid incompatible chunk rules.
+    # Do not clear caches again: prepare_gradient_cache already honoured empty_cache.
+    # Keep the inner cache non-friendly: grad_tangent and v are internal tangents, not
+    # primal-shaped directions. HVP/Hessian take no user output tangent, so friendly_tangents
+    # does not affect their result shape.
     fwd_config = Config(;
         config.debug_mode,
         config.silence_debug_messages,
@@ -3254,11 +2899,8 @@ end
 #
 
 function _make_hessian_buffers(x::AbstractVector)
-    # Allocate `H` via `similar(x, …)` and `grad`/`v` via `zero_tangent(x)` so a GPU-array
-    # input (e.g. `CuArray`) gets device-resident buffers; for a `Vector{T}` input this is
-    # identical to host `zeros`. The chunked/width-1 sweeps write `H`/`grad`/`v` in place
-    # (broadcast + `copyto!`), so a device-resident `x` yields a device-resident gradient
-    # and Hessian.
+    # Match x's array type so GPU inputs get device-resident H/grad/v buffers;
+    # both sweeps write via broadcast and copyto! without scalar device indexing.
     T = eltype(x)
     n = length(x)
     return (;
@@ -3359,14 +3001,9 @@ Mooncake.value_gradient_and_hessian!!(cache, f, x)
     )
 end
 
-# Chunked forward-over-reverse Hessian sweep (single-arg). The Hessian is the Jacobian of
-# `grad_f`: x -> (value, gradient). Seed `W` standard-basis columns of `x1` per pass via
-# `basis_lifted!!`, run the width-`W` forward derivative of `grad_f`, and read one Hessian
-# column per lane from the gradient-tangent (output tuple index 2). Mirrors the chunked
-# Jacobian sweep. Fills `g` (gradient) and `H` (Hessian, columns) in place and returns the
-# primal value. A function barrier (specialised on `Val{W}`) keeps the per-lane partials
-# unboxed despite the `@unstable` caller. `x1` is snapshotted and restored so an in-place
-# `f` does not corrupt the input across chunks (the seed primal aliases `x1`).
+# Hessian columns are lanes of grad_f's gradient output (tuple index 2).
+# Val(W) keeps partials unboxed across the unstable caller's barrier. Snapshot/restore
+# x1 because seed primals alias it and mutations must not compound across chunks.
 function _chunked_hessian_sweep!(grad_f, fwd, H, g, x1, n::Int, ::Val{W}) where {W}
     f_seed = zero_lifted(Val(W), grad_f)
     x_seed = zero_lifted(Val(W), x1)
@@ -3561,12 +3198,8 @@ function __exclude_func_with_unsupported_output(fx)
     return __exclude_unsupported_output(_y)
 end
 
-# For an isbits `T` (guaranteed by the caller) this terminates, since isbits types cannot be
-# self-referential: true iff `T` is a `Ptr` or transitively contains a `Ptr` field. Lets the
-# isbits fast path skip pointer-free output while still routing a `Ptr` buried in an isbits
-# struct to the loud Ptr-in-output guard below (otherwise the "output may not contain a
-# pointer" guarantee fails silently, because a `Ptr` — and a struct whose fields are all
-# bits — is itself isbits).
+# Isbits recursion terminates, but Ptr and isbits structs containing Ptr must still
+# reach the unsupported-output guard rather than the pointer-free fast path.
 _isbits_contains_ptr(::Type{<:Ptr}) = true
 _isbits_contains_ptr(::Type{T}) where {T} = any(_isbits_contains_ptr, fieldtypes(T))
 
@@ -3630,14 +3263,9 @@ function _restore_inputs!!(dst::Tuple, src::Tuple, contexts::Tuple)
     end
 end
 
-# Reaching one node twice means that graph shares it between two positions; the other graph must
-# share it at the same two positions, or the only way to finish the copy is to re-point one of them
-# — and for the input restore that is the CALLER's object graph. `Outer(p, q)` restored from a
-# snapshot prepared at `Outer(sh, sh)` came back with `p` at both fields, holding `q`'s contents,
-# and `q` detached. The prepared cache cannot represent this sharing, so refuse it. Both directions
-# are registered so the mismatch is caught while the inputs are being copied INTO the snapshot,
-# before the rule runs. Matching graphs (including cycles, where the repeat is the in-progress node
-# itself) cost one `===`.
+# Source and destination graphs must share nodes at the same positions, or restoration
+# would re-point the caller's graph. Register both directions while populating the snapshot
+# to reject mismatches before running the rule. Matching repeats and cycles cost one `===`.
 @inline function _same_destination(previous::P, dst::P) where {P}
     previous === dst && return previous
     return _throw_copy_sharing_error(P)
@@ -3668,11 +3296,8 @@ end
     return dst::P, false
 end
 
-# `dst` is cache-owned storage sized at preparation time and `src` is what the call produced, so a
-# mismatch means the cache cannot hold this value. The loops below index `dst` under `@inbounds`
-# while iterating `src`, and `isassigned(dst, i)` reports FALSE out of range rather than throwing,
-# so without this an overrun writes past the end: a segfault where `src` is longer, and a silently
-# truncated result handed back to the caller.
+# Check extents before inbounds copies: isassigned(dst, i) is false out of range, so it
+# cannot prevent an overrun or a truncated result when the cached shape is stale.
 @inline function _check_copy_extent(dst, src)
     size(dst) == size(src) && return nothing
     throw(
@@ -3873,11 +3498,8 @@ work for `Core.svec`. For types with custom copy semantics, overload this functi
 _copy_output(x::Core.TypeName, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 _copy_output(x::Module, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
-# Compiled callables retain reflection/IR objects whose reference graph is cyclic
-# (e.g. Method.specializations <-> MethodInstance.def), so field-by-field descent
-# never terminates. They are never differentiable, so return them as-is — this lets
-# the friendly `prepare_hvp_cache` path copy a gradient closure that captures a
-# compiled rule without overflowing.
+# Compiled callables are nondifferentiable and retain cyclic reflection/IR graphs;
+# return them unchanged so copying a captured reverse rule terminates.
 _copy_output(x::Core.OpaqueClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 _copy_output(x::MistyClosure, c::C=nothing) where {C<:Union{Nothing,IdDict}} = x
 
@@ -4118,13 +3740,8 @@ end
     end
 end
 
-# `tangent_dim(t)` counts the differentiable scalar degrees of freedom of a TANGENT `t`, so the
-# canonical non-differentiable `NoTangent` is 0 directly. Walk with an identity cache so
-# aliased mutable tangents contribute once and cyclic tangents terminate locally. Dense leaf
-# counts reuse the nfwd engine's slot vocabulary (`primal_dim`, the single source of
-# truth); the dedup wrapper around array/mutable nodes is the gradient-specific extension
-# (nfwd never dedups). IEEEFloat/Complex array tangents are isbits and always assigned, so
-# the count equals `length`/`2length`.
+# Count tangent dimensions with mutable-node deduplication for aliases and cycles.
+# Dense leaves reuse Nfwd.primal_dim; IEEEFloat/Complex elements are always assigned.
 @inline tangent_dim(t) = tangent_dim(t, IdDict{Any,Any}())
 @inline tangent_dim(::NoTangent, ::IdDict{Any,Any}) = 0
 @inline function tangent_dim(t::Union{IEEEFloat,Complex{<:IEEEFloat}}, ::IdDict{Any,Any})
@@ -4160,12 +3777,8 @@ end
 @inline function tangent_dim(t::PossiblyUninitTangent, seen::IdDict{Any,Any})
     return is_init(t) ? tangent_dim(val(t), seen) : 0
 end
-# Generic fallback for tuples, named tuples, and any tangent struct —
-# `Tangent`/`MutableTangent` (whose single `fields` NamedTuple recurses), but also
-# `MistyClosureTangent` and other custom/closure tangents from e.g. the HVP `grad_f`. Walk
-# its fields with mutable-node dedup so aliased and cyclic tangents are handled uniformly
-# (tuples/named-tuples are immutable and fully-initialised, so `fieldcount`/`getfield`
-# recursion matches element iteration).
+# Walk fields of tuple/named-tuple and custom/closure tangents, deduplicating mutable
+# nodes. This also covers Tangent/MutableTangent through their `fields` NamedTuple.
 @inline function tangent_dim(t::P, seen::IdDict{Any,Any}) where {P}
     if Base.ismutabletype(P)
         haskey(seen, t) && return 0
