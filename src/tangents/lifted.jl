@@ -1,19 +1,6 @@
-# Forward-mode slot wrapper `Lifted{P, N, V}` and its associated width-N
-# `dual_type` / `lifted_type` queries and seed factories. Loaded after
-# `nfwd/Nfwd.jl` so the `NDual{T, N}` IEEEFloat carrier is in scope.
-#
-# Design note (forward vs reverse). The forward V is *type-precise*: `V ===
-# dual_type(Val(N), P)` mirrors the primal, so differentiability (`NDual` vs `NoDual`),
-# wrapper nesting, and array layout (`NDualArray` vs element-wise array) are each distinct
-# *types*. Reverse (`CoDual`) is *runtime-uniform* — non-differentiability is the
-# value `NoFData`, and wrappers are flattened by a runtime `arrayify` — so one
-# `rrule!!` subsumes shapes that a `frule!!` must enumerate as separate methods
-# (e.g. a `NoDual`-V overload beside the `NDual`-V one; one signature per wrapper
-# backing). Reverse is therefore both the TEMPLATE (broaden a forward frule to its
-# rrule sibling's breadth) and the ORACLE (a forward-fail / reverse-pass on the
-# same input flags a real bug — including convention slips the type system cannot
-# catch, e.g. a dropped `Symmetric` factor-of-2). When porting a frule from an
-# rrule, replicate the *convention*, not just the formula.
+# Loaded after nfwd/Nfwd.jl for the NDual carriers. Forward V types encode differentiability,
+# wrappers and layout, so frules may need separate methods for shapes one rrule handles.
+# When porting a reverse rule, preserve its conventions as well as its formula.
 
 """
     ImmutableDual{T<:NamedTuple}
@@ -77,16 +64,10 @@ struct Lifted{P,N,V}
     end
 end
 
-# An `NDualArray` / `NDualMemoryRef` already names the array it was built over — that field
-# aliases the user's storage and the partials block is indexed against it — so it, not the
-# separately supplied argument, is the slot's primal. Pairing array `a` with a representation
-# built over `b` is then unrepresentable rather than merely unlikely.
-#
-# NOT closed here: a wrapper primal (`SubArray`, `Diagonal`, …) lifts to an `ImmutableDual` whose
-# field V names the PARENT array, and the wrapper cannot be rebuilt from it — a `SubArray`'s
-# `indices`/`offset1`/`stride1` lift to `NoDual`, so only the primal has them. A slot pairing one
-# view with a representation over another remains constructible.
-# Type-valued primals (e.g. `Type{Union{...}}`) need not infer a concrete return type.
+# NDualArray / NDualMemoryRef already name their primal storage; use that identity.
+# Wrapper primals (SubArray, Diagonal, …) cannot be rebuilt from their field Vs because
+# metadata such as indices lifts to NoDual, so mismatched wrapper slots remain constructible.
+# Type-valued primals (e.g. Type{Union{...}}) need not infer a concrete return type.
 @unstable @inline _slot_primal(primal, rep) = primal
 @inline _slot_primal(::Any, rep::NDualArray) = getfield(rep, :primal)
 @static if VERSION >= v"1.11-rc4"
@@ -108,9 +89,6 @@ is visible from its argument types.
 """
 struct NoDual end
 
-# Two-argument constructor with V inferred from typeof(rep). The
-# canonical wrapping path: `rep` is already a built inner V of the
-# correct shape; this overload just wraps the (primal, rep) pair.
 @inline function Lifted{P,N}(primal::P, rep::V) where {P,N,V}
     return Lifted{P,N,V}(primal, rep)
 end
@@ -167,11 +145,6 @@ function Base.:(==)(a::Lifted, b::Lifted)
     return primal(a) == primal(b) && tangent(a) == tangent(b)
 end
 
-# `NDualArray` / `NDualMemoryRef` (and the `NDualEltype` constant)
-# live in `src/nfwd/Nfwd.jl` and are re-exported into Mooncake via
-# `using .Nfwd: NDualArray, NDualMemoryRef, NDualEltype` in `src/Mooncake.jl`.
-# The Mooncake-namespace method extensions for these types are below.
-
 # Whole-array accessors — O(1) by aliasing.
 @inline primal(a::NDualArray) = a.primal
 @inline tangent(a::NDualArray) = Nfwd._lane_views(a)
@@ -186,15 +159,8 @@ end
 @inline function tangent(x::Lifted{P,N,NDual{T,N}}, lane::Integer) where {P,T<:IEEEFloat,N}
     return tangent(x).partials[lane]
 end
-# Two per-lane accessors on an array slot, differing in copy-vs-view (for an array/memory leaf
-# both name the same lane partials):
-#   tangent(x, lane)      -> dense COPY in `tangent_type(P)` (the primal's own array type),
-#                            read-only; O(length). Use for reverse-shape matching / struct-field
-#                            extraction / passing as a value. Necessary because struct recursion
-#                            `convert`s per-lane fields to their declared reverse tangent types,
-#                            which the strided block-row view cannot satisfy.
-#   tangent_view(x, lane) -> live strided VIEW into the block (stride `N`), write-through;
-#                            zero-copy. Use to WRITE a lane's partials into the slot's storage.
+# tangent(x, lane) materialises a dense tangent_type(P) copy for reverse-shaped field
+# conversion. tangent_view(x, lane) is a write-through stride-N view of the same partials.
 @inline function tangent(x::Lifted{P,N,<:NDualArray}, lane::Integer) where {P,N}
     v = tangent(x)
     return copyto!(similar(getfield(v, :primal)), tangent_view(v, lane))
@@ -252,14 +218,8 @@ end
     v = tangent(x)
     return Complex(real(v).partials[lane], imag(v).partials[lane])
 end
-# The reverse value comes from the PRIMAL, not from the V, for the same reason as the array
-# sibling below: `NoDual` says there is no forward partial, not that the reverse tangent is
-# `NoTangent`. The two differ for a non-differentiable `Ptr` (reverse `Ptr{NoTangent}`) and for
-# CUDA's opaque `DataRef` (reverse: the handle itself, its shared cotangent storage), so mapping
-# `NoDual` to `NoTangent` returned a wrong-typed value with no error at the site. What licenses the
-# `NoDual` is `dual_type` declaring it — the canonicity `verify_lifted_type` checks, and the only
-# question an extension can answer — not `tangent_type`; a NON-canonical `NoDual` (over a primal
-# whose `dual_type` is an `NDualArray`, say) is malformed and must not be minted a tangent.
+# NoDual means no forward partial, not necessarily NoTangent in reverse (Ptr and CUDA's
+# DataRef differ). Rebuild from the primal, but refuse a noncanonical NoDual first.
 @inline function tangent(x::Lifted{P,N,NoDual}, ::Integer) where {P,N}
     verify_lifted_type(x) || _throw_noncanonical_nodual(Val(N), P)
     return uninit_tangent(primal(x))
@@ -273,14 +233,8 @@ end
         ),
     )
 end
-# Element-wise non-differentiable array V (`Array{NoDual}`, e.g. `Vector{Int}`). The element comes
-# from the PRIMAL, not from the V: `NoDual` says only that there is no forward partial, and the
-# reverse element it stands for is whatever `tangent_type` gives that primal element. Mapping
-# `NoDual` to `NoTangent` is right for `Vector{Int}` and wrong for `Vector{Ptr{Int}}`, whose
-# reverse tangent is `Vector{Ptr{NoTangent}}` carrying the addresses — that returned a wrong-typed
-# `Vector{NoTangent}` with no error, and a `MethodError` once it had to fill a declared field.
-# `unlift` already rebuilt the placeholder for the same reason; deriving from the primal is what
-# makes the two agree for every element type rather than for the ones each remembered.
+# Rebuild from the primal: Vector{Ptr{Int}} has NoDual elements in forward but needs
+# Ptr{NoTangent} addresses in reverse. Mapping NoDual to NoTangent would lose them.
 @inline function tangent(x::Lifted{P,N,<:AbstractArray{NoDual}}, ::Integer) where {P,N}
     return uninit_tangent(primal(x))
 end
@@ -316,21 +270,11 @@ end
 # unpack; use per-lane access (`tangent(x, lane)`) for width N > 1.
 @inline unlift(x::Lifted{P,1}) where {P} = (primal(x), tangent(x, 1))
 
-# ──────────────────────────────────────────────────────────────────────────
-# `_materialise_lane(slot, lane, cache)` — build lane `lane`'s REVERSE tangent, of type
-# `tangent_type(P)`. This is the one traversal behind both `tangent(slot, lane)` for aggregate V
-# and `unlift`; writable per-lane access is `tangent_view(slot, lane)`, never this.
-#
-# It threads an aliasing cache keyed on the primal and registers a mutable shell before recursing,
-# so a self-referential primal (`node.next === node`) terminates and aliased mutables share one
-# tangent — mirroring reverse `zero_tangent_internal`.
-# ──────────────────────────────────────────────────────────────────────────
+# Materialise reverse tangent_type(P), never a writable view. Register mutable shells
+# before recursion so cycles terminate and aliased children share one reverse tangent.
 
-# Terminal: a LEAF V, whose lane tangent already is the reverse tangent. An aggregate V that
-# reaches here has no `_materialise_lane` of its own and silently gets the lane accessor, which
-# for a custom aggregate is some shape reverse tangent arithmetic has no method for and which
-# fails several frames downstream. Check the shape here instead, so the next custom aggregate V
-# says what is missing at the boundary that produced it.
+# Only leaf Vs may fall back to the lane accessor. Diagnose unsupported aggregates here
+# instead of passing a wrong-shaped tangent to reverse arithmetic.
 @inline function _materialise_lane(x::Lifted{P,N}, lane::Integer, cache::IdDict) where {P,N}
     t = tangent(x, lane)
     t isa tangent_type(P) || _throw_not_a_leaf_v(P, t)
@@ -520,15 +464,9 @@ function _materialise_lane(
     shell.fields = fieldtype(Tt, :fields)((Ft <: PossiblyUninitTangent ? Ft(part) : part,))
     return shell
 end
-# A `PossiblyUninitTangent` backing field reproduces the reverse `Tangent`'s PUT shape: an
-# undefined primal field maps to an uninit reverse PUT.
-# The child slot is annotated with the field's CONCRETE type, as the element-wise array recursion
-# does (`Lifted{typeof(pe),N}`), not the declared `fieldtype(P, name)`. An abstract declared type
-# would otherwise give `Lifted{Any,N,...}`, and the lane methods dispatch on `P`: they then
-# evaluate `fieldtype(Any, name)` and throw, find no method at all for a NamedTuple V, or — for a
-# Tuple V, since `Any` is not `<:Tuple` — fall to the per-lane-`Ptr` method and silently return one
-# element's whole V. `Rt` keeps the DECLARED type: it is the reverse `PossiblyUninitTangent`'s
-# backing type, and the concrete result still fits inside it.
+# Undefined primal fields produce uninitialised reverse PUTs. Child slots use the held
+# value's concrete type: a declared Any would break struct lookup or treat a tuple as lanes.
+# Rt remains the declared reverse backing type, which admits the concrete result.
 @inline _materialise_field_lane(
     ::Val{N}, ::Type{P}, p, name, vfield, lane, cache::IdDict
 ) where {N,P} =
@@ -554,10 +492,7 @@ end
     )
 end
 
-# `_dot_internal` / `_scale_internal` overloads for forward-mode V
-# shapes that the test framework's tangent-shape arithmetic may see
-# when it operates on raw Lifted V values (e.g. `tangent(y_ẏ_a)` in
-# `test_frule_reuse`).
+# Raw forward Vs reach tangent arithmetic through test_frule_reuse.
 _dot_internal(::MaybeCache, ::NoDual, ::NoDual) = 0.0
 function _dot_internal(c::MaybeCache, t::T, s::T) where {T<:ImmutableDual}
     return _dot_internal(c, t.fields, s.fields)::Float64
@@ -607,13 +542,8 @@ end
 @unstable function _add_to_primal_internal(
     c::MaybeCache, x::P, t::ImmutableDual, unsafe::Bool
 ) where {P}
-    # The V wraps a NamedTuple of per-field Vs; reconstruct `x` by adding each field's V back to
-    # the corresponding primal field. Mirrors reverse-mode
-    # `_add_to_primal_internal(::MaybeCache, x, ::Tangent, ::Bool)` in src/tangents/tangents.jl,
-    # including its non-always-init-field handling: a `PossiblyUninitTangent`-wrapped field is
-    # unwrapped via `is_init`/`val`, an undefined field maps to `FieldUndefined()`, and the result
-    # is built through `__construct_type` so the `unsafe` flag / inner-constructor invariants and
-    # the `AddToPrimalException` diagnostic are honoured (rather than always calling `_new_`).
+    # Match reverse Tangent reconstruction: unwrap PUTs, preserve undefined fields, and use
+    # __construct_type to honour unsafe, inner constructors and AddToPrimalException.
     nt = t.fields
     isempty(propertynames(nt)) && return x
     fields = map(fieldnames(P)) do name
@@ -669,8 +599,7 @@ end
 
 @static if VERSION >= v"1.11-rc4"
     @inline primal(a::NDualMemoryRef) = a.primal
-    # `tangent`/`unpack_ndual` present the shared partials as the whole `(N, ncols)` block; the
-    # ref only stores its backing, so reconstruct the Matrix on demand (bulk/interface use only).
+    # Bulk/interface access reconstructs the shared (N, ncols) block from its backing ref.
     @inline tangent(a::NDualMemoryRef) = Nfwd._reconstruct_block(a)
     @inline unpack_ndual(a::NDualMemoryRef) = (a.primal, Nfwd._reconstruct_block(a))
 end
@@ -815,21 +744,6 @@ end
     d, lane, IdDict{Any,Any}()
 )
 
-# ──────────────────────────────────────────────────────────────────────────
-# Width-N `dual_type` and `lifted_type` queries.
-#
-# `dual_type(Val(N), P)` returns the canonical inner V for a primal of
-# type `P` at width `N` — i.e. the type of `tangent(d::Lifted{P, N})`'s
-# payload, equal to the type of the slot's `value::V` field.
-#
-# `lifted_type(Val(N), P)` returns the corresponding wrapped slot type.
-# For concrete `P`, `lifted_type(Val(N), P) === Lifted{P, N, dual_type(Val(N), P)}`.
-#
-# This file defines the IEEEFloat scalar case; container shapes (Array,
-# Complex, Tuple, NamedTuple, struct lifts) are handled by the further
-# `dual_type(::Val{N}, ...)` methods below.
-# ──────────────────────────────────────────────────────────────────────────
-
 """
     dual_type(::Val{N}, ::Type{P}) -> Type
 
@@ -893,14 +807,8 @@ end
 ) where {N,R<:IEEEFloat,D}
     return Nfwd._ndual_array_V(Array{Complex{R},D}, Val(N))
 end
-# General array V, mirroring reverse-mode `tangent_type(Array{T,D}) === Array{tangent_type(T), D}`:
-# always the element-wise Array-of-Structures V `Array{dual_type(Val(N), T), D}`, including
-# `Array{NoDual, D}` for a non-differentiable element (e.g. `Vector{Int}` → `Vector{NoDual}`,
-# mirroring reverse's `Vector{NoTangent}`). `tangent_type(Array{T,D})` is never `NoTangent`, so an
-# array is never collapsed to whole `NoDual` — coherence requires `dual_type(P) === NoDual` only
-# when `tangent_type(P) === NoTangent`. The IEEEFloat / Complex overloads above are more specific
-# and provide the `NDualArray` optimisation for scalar-float elements; this element-wise form covers
-# everything else (non-diff elements, tuples, structs, closures).
+# Arrays never collapse to whole NoDual: reverse always gives an array tangent.
+# Float/complex elements use NDualArray; all others recurse element-wise, including NoDual.
 @foldable @generated function dual_type(::Val{N}, ::Type{Array{T,D}}) where {N,T,D}
     return :(Array{dual_type(Val($N), $T),$D})
 end
@@ -950,12 +858,7 @@ end
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{NamedTuple{names,T}}
 ) where {N,names,T<:Tuple}
-    # An all-non-differentiable NamedTuple collapses to whole `NoDual`, mirroring
-    # the generic struct / Array / Memory / Ptr rules. (Tuple stays element-wise:
-    # its head/tail `dual_type` recursion needs a Tuple tail to cons onto.) A
-    # NamedTuple `V` is not consed into a parent, so whole-`NoDual` is safe here,
-    # and it matches the value the forward machinery actually produces for
-    # non-differentiable kwargs/config flowing through rule construction.
+    # Non-differentiable NamedTuples collapse to NoDual, matching reverse and kwargs seeds.
     tangent_type(NamedTuple{names,T}) === NoTangent && return NoDual
     # Mirror `tangent_type(NamedTuple)`: an abstract field (e.g. `parts::Any` in a reverse
     # `MutableTangent` NamedTuple flowing through the forward-over-reverse HVP path) makes
@@ -1025,12 +928,8 @@ end
     ) where {N,R<:IEEEFloat}
         return NDualMemoryRef{Complex{R},N,Memory{Complex{R}}}
     end
-    # General (non-float) `Memory` / `MemoryRef` V, mirroring the element-wise `Array` rule
-    # above: non-diff element → `NoDual`; differentiable element → element-wise
-    # `Memory{dual_type(elt)}` / `MemoryRef{dual_type(elt)}` (a plain memory/ref
-    # of per-element forward Vs). Covers the reverse rule's `Memory{Tuple{pullback}}`
-    # comms storage under forward-over-reverse. The IEEEFloat overloads above are
-    # more specific and provide the `NDualArray` optimisation for scalar-float elements.
+    # Non-float Memory / MemoryRef recurse element-wise, including reverse pullback storage
+    # under forward-over-reverse. Float overloads above provide block-backed Vs.
     @foldable @generated function dual_type(::Val{N}, ::Type{Memory{T}}) where {N,T}
         return :(Memory{dual_type(Val($N), $T)})
     end
@@ -1039,13 +938,8 @@ end
     end
 end
 
-# Recursive structural lift for concrete struct primals — the `@generated` fallback. Two terminal
-# answers, mirroring reverse: a non-concrete `P` widens to `Any` (an upper bound, not a claim of
-# no-derivative — abstract slot primals sharpen to a concrete V at runtime, and a concrete V is a
-# subtype of the `Any`-typed backing slot), and `tangent_type(P) === NoTangent` maps to `NoDual`,
-# which also terminates the field recursion. Fields lift uniformly through
-# `dual_type(Val(N), fieldtype)`; the seed factories below coerce field storage into the declared
-# backing NamedTuple, so a differentiable value in an `Any`-typed field still gives the canonical V.
+# Structural fallback: abstract P widens to Any; non-differentiable P gives NoDual.
+# Fields recurse uniformly, with seed factories coercing into the declared backing NamedTuple.
 @foldable @generated function dual_type(::Val{N}, ::Type{P}) where {N,P}
     # Deliberately does NOT distribute over `Union` the way reverse-mode `tangent_type`
     # union-splits: a non-concrete `P` (including any `Union`) widens to `Any`. `Lifted` is
@@ -1055,13 +949,8 @@ end
     # OpaqueClosures lower a valid branch to `unreachable`. The `Any` widening keeps the slot
     # type sound; concrete leaves recover the exact `V` when the seed factories feed `typeof(x)`.
     isconcretetype(P) || return Any
-    # The `NoDual` (non-differentiable) decision keys off `tangent_type(P)`, which an
-    # extension may override (e.g. CUDA's `CuPtr`/`CuArray`). Emit that call in the RETURNED
-    # expression — never the generator body — so it resolves at the `dual_type` call's world,
-    # where extension overloads are visible, instead of the generator's (core) definition
-    # world: a generator-body call bakes its resolution at definition time and a later
-    # overload cannot dislodge it. The structural skeleton below (field names, mutability,
-    # field count) is world-independent, so it stays in the generator body.
+    # Resolve extension-overloadable tangent_type in the returned expression at the call
+    # world. Only the world-independent structural skeleton belongs in the generator.
     if fieldcount(P) == 0
         return :(tangent_type($P) === NoTangent ? NoDual : NTuple{$N,tangent_type($P)})
     end
@@ -1162,18 +1051,9 @@ function _all_nodual_union_members(@nospecialize(U))
     end
 end
 
-# Concrete-struct fallback. More-specific overloads above (IEEEFloat,
-# Complex, Array, Tuple, NamedTuple, MemoryRef) win when applicable;
-# structs land here.
-#
-# For abstract `P` (or `DataType` and other metatypes whose instances are
-# concrete subtypes), return a UnionAll-typed Lifted so a runtime arg
-# with a more-specific concrete `T<:P` matches. The interpreter widens
-# argtypes via `CC.widenconst` and may produce abstract `P`; without
-# the UnionAll, `Lifted{Type{X}, N, V}` wouldn't be a subtype of
-# `Lifted{DataType, N, NoDual}` (Lifted is invariant in `P`).
-# `@foldable`: same effect-assertion + DispatchDoctor `@stable` exemption as the `Tuple` overload
-# above (keeps foldability under coverage and preserves the `@isdefined(P)` guard).
+# Abstract P and metatypes need a UnionAll slot: Lifted is invariant in P.
+# @foldable preserves folding under coverage and exempts the phantom-P guard from
+# DispatchDoctor's unconditional static-parameter reads, as in the Tuple overload.
 @foldable @inline function lifted_type(::Val{N}, ::Type{P}) where {N,P}
     # `@isdefined(P)` is false when the static parameter couldn't be bound — e.g. a `UnionAll`
     # with a free `TypeVar` in its body. Touching `P` would then throw `UndefVarError`; return the
@@ -1212,32 +1092,14 @@ end
     return Lifted{Type{X},N,dual_type(Val(N), Type{X})}
 end
 
-# ──────────────────────────────────────────────────────────────────────────
-# Seed factories.
-#
-# Layer 2 — bare inner V (the slot's `value::V` field content):
-#   `zero_dual(Val(N), x)`     — `dual_type(Val(N), typeof(x))` with zero partials.
-#   `uninit_dual(Val(N), x)`   — same shape; tangent payload semantically uninitialized.
-#   `randn_dual(Val(N), rng, x)` — random partials sampled from `randn`.
-#
-# Layer 3 — wrapped Lifted slot:
-#   `zero_lifted(Val(N), x)`     — `Lifted{typeof(x), N}` wrapping `zero_dual`.
-#   `uninit_lifted(Val(N), x)`   — wrapping `uninit_dual`.
-#   `randn_lifted(Val(N), rng, x)` — wrapping `randn_dual`.
-# ──────────────────────────────────────────────────────────────────────────
+# Width-N seed factories return bare Vs; *_lifted factories wrap them in Lifted slots.
 
 @inline function zero_dual(::Val{N}, x::T) where {N,T<:IEEEFloat}
     return NDual{T,N}(x, ntuple(_ -> zero(T), Val(N)))
 end
 
-# ── Width-1 boundary helper for user-supplied tangents ──────────────────────
-#
-# `lift(primal, ẋ)` builds a width-1 `Lifted{P, 1, V}` slot from a primal and
-# a tangent value of shape `tangent_type(P)`. Used by public-facing APIs
-# (`value_and_derivative!!`, `test_rule`, etc.) that take a user-supplied JVP
-# direction, and by the interpreter cutover boundary. Width-1 only — width-N
-# chunk seeds are built internally via `basis_lifted!!` + `Lifted{P, N}(primal, value)`
-# with the appropriate width-N V.
+# lift(primal, tangent_type(P)) is the width-1 user-JVP boundary. Width-N basis seeds
+# are built with basis_lifted!! and Lifted{P,N}.
 @inline lift(x::T, ẋ::T) where {T<:IEEEFloat} = Lifted{T,1}(x, NDual{T,1}(x, (ẋ,)))
 @inline function lift(x::A, ẋ::A) where {E<:NDualEltype,D,A<:Array{E,D}}
     return Lifted{A,1}(x, NDualArray{E,1,D,A}(x, (ẋ,)))
@@ -1363,27 +1225,13 @@ end
         return Lifted{typeof(x),1,typeof(ref_v)}(x, ref_v)
     end
 end
-# ── Aliasing cache for `lift` ───────────────────────────────────────────────
-#
-# `lift` threads an optional aliasing cache `c`, mirroring reverse-mode
-# `zero_tangent`'s `MaybeCache`: a fresh `IdDict`, created once per top-level
-# lift and passed down the structural recursion. The `MistyClosure` overload
-# uses it to build a reverse rule's captures' forward V exactly once and share
-# it (keyed by the primal captures identity) — so `fwds_oc` and `pb_oc`, which
-# share those captures (block stacks), share the forward tangent too; otherwise
-# partials pushed in the forward pass are invisible when popped in the reverse
-# pass (the HVP silently zeroes). Leaf/passthrough overloads ignore `c` via this
-# fallback; only the structural overloads below thread it.
+# Thread one aliasing cache through aggregate lifts. MistyClosure uses it for shared
+# forward/pullback captures, or HVP partials pushed forward are invisible on the pullback.
+# Leaf/passthrough overloads may ignore the cache.
 @inline lift(x, ẋ, ::Union{Nothing,IdDict}) = lift(x, ẋ)
 
-# Coerce the per-field V tuple into the declared backing NamedTuple
-# (`fieldtype(dual_type(Val(1), P), 1)`), mirroring the seed factories so the
-# resulting V matches `dual_type(Val(1), P)` even when a field declared abstract
-# holds a differentiable value (its V stored as `Any`).
-# Build the declared backing NamedTuple from a reverse Tangent's `fields`,
-# field-by-field. A `PossiblyUninitTangent` backing field is `isdefined`-guarded
-# (an undefined primal field — e.g. lazily-built `LazyDerivedRule.rule` — yields
-# an uninit PUT); always-init fields lift directly. Mirrors the seed factories.
+# Coerce into the declared backing NamedTuple so abstract fields keep the canonical V.
+# Guard possibly-uninitialised fields before reading the primal or reverse PUT.
 @generated function _lift_backing(x, nt, ::Type{Backing}, c) where {Backing}
     names = Backing.parameters[1]
     Vfs = Backing.parameters[2].parameters
@@ -1413,11 +1261,8 @@ end
 @inline function lift(
     x::Base.RefValue{P}, ẋ::MutableTangent, c::Union{Nothing,IdDict}
 ) where {P<:NDualEltype}
-    # Registered in the cache like every other leaf that owns partial storage: one `Ref` reached
-    # twice through an aggregate must yield ONE V, or a write through one occurrence updates the
-    # shared primal but only its own partials and the JVP is silently wrong. Built inline rather
-    # than delegating to the two-argument form as the `Array` leaf does, because that form calls
-    # this one with `nothing`.
+    # Register storage-owning leaves so repeated Refs share partials. Build here because
+    # the two-argument entry delegates to this method with nothing.
     c isa IdDict && haskey(c, x) && return c[x]::Lifted{Base.RefValue{P},1}
     lifted = Lifted{Base.RefValue{P},1}(
         x, NDualRef{P,1}(Base.RefValue{NTuple{1,P}}((val(ẋ.fields.x),)))
@@ -1569,10 +1414,7 @@ end
     return NDual{T,N}(x, ntuple(_ -> randn(rng, T), Val(N)))
 end
 
-# Non-differentiable primitives — mirrors `dual_type(Val(N), T) === NoDual`
-# above. Without these the @generated struct-lift fallback errors on
-# primitive `T` (Int, Symbol, …), blocking `zero_lifted(Val(N), 42)` etc.
-# at the interpreter boundary.
+# Primitive seeds bypass the structural fallback, matching their NoDual dual_type.
 for f in (:zero_dual, :uninit_dual)
     @eval @inline $f(::Val{N}, ::Union{Integer,Char,Symbol,Nothing}) where {N} = NoDual()
     @eval @inline $f(::Val{N}, ::Union{Type,TypeVar,Module,Expr}) where {N} = NoDual()
@@ -1629,17 +1471,8 @@ end
     return NDualRef{P,N}(Base.RefValue{NTuple{N,P}}(ntuple(_ -> randn(rng, P), Val(N))))
 end
 
-# ── Array seed factories (differentiable non-float elements: element-wise) ────
-#
-# Mirrors `dual_type(Val(N), Array{T,D}) === Array{dual_type(Val(N), T), D}` and
-# the element-wise `lift(::Array, ::Array)` path: a per-element V array, built element-wise
-# (skipping undefined slots). Float / Complex-float elements use the more-specific
-# `NDualArray` methods above.
-#
-# NOT `@generated`: the element-type `dual_type(w, T)` may be overloaded by an extension
-# (e.g. `BFloat16`), so it must run in the caller's world; a `@generated` generator would pin it to
-# the definition world (pre-extension) and mis-lower. (`dual_type` of a concrete `Array` is always
-# an array V, never bare `NoDual`, so no whole-array short-circuit is needed.)
+# Element-wise array seeds skip undefined slots; numeric elements use NDualArray above.
+# Keep dual_type in the caller's world so extension overloads remain visible.
 @inline function zero_dual(w::Val{N}, x::Array{T,D}) where {N,T,D}
     v = similar(x, dual_type(w, T))
     @inbounds for i in eachindex(x)
@@ -1662,14 +1495,8 @@ end
     return v
 end
 
-# ── Tuple seed factories (concrete tuple) ───────────────────────────────────
-#
-# Element-wise build via Tuple-aware `map`. Each element's dispatch picks its own seed factory
-# recursively. Gate on `dual_type === NoDual` (the forward query) for consistency with the other
-# forward factories. An empty tuple has `dual_type(Tuple{}) === NoDual` (matching
-# `tangent_type(Tuple{}) === NoTangent`), so it seeds to `NoDual()` — e.g. a `ReshapedArray`'s empty
-# `mi::Tuple{}` field. (The private cons helper `_dual_tuple_v(Tuple{})` returns `Tuple{}` as its
-# recursion base case — an implementation detail distinct from the public `dual_type`.)
+# Gate tuple seeds on dual_type: even the empty tuple seeds to NoDual, while the
+# private _dual_tuple_v recursion base remains Tuple{}.
 
 @inline function zero_dual(w::Val{N}, x::Tuple) where {N}
     dual_type(w, typeof(x)) === NoDual && return NoDual()
@@ -1684,11 +1511,7 @@ end
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 
-# ── NamedTuple seed factories ───────────────────────────────────────────────
-#
-# Julia's `map(f, ::NamedTuple)` preserves the names and returns a
-# NamedTuple, so element-wise seed building works the same as for Tuple.
-
+# map preserves NamedTuple names.
 # All-non-differentiable NamedTuples seed to whole `NoDual`, matching their
 # `dual_type`; otherwise build element-wise.
 @inline function zero_dual(w::Val{N}, x::NamedTuple) where {N}
@@ -1704,11 +1527,7 @@ end
     return map(xi -> randn_dual(w, rng, xi), x)
 end
 
-# ── Complex seed factories (R <: IEEEFloat) ─────────────────────────────────
-#
-# Defined before the generic struct-lift seed factory so the more-specific
-# Complex overload wins for `Complex{<:IEEEFloat}` slots — the canonical V
-# is `Complex{NDual{R, N}}`, not the structural-lift `ImmutableDual{...}`.
+# Complex floats use Complex{NDual}, not the generic structural lift.
 
 @inline function zero_dual(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
     return Complex{NDual{R,N}}(zero_dual(w, real(z)), zero_dual(w, imag(z)))
@@ -1722,15 +1541,8 @@ end
     return Complex{NDual{R,N}}(randn_dual(w, rng, real(z)), randn_dual(w, rng, imag(z)))
 end
 
-# ── Concrete-struct seed factories (generic @generated fallback) ────────────
-#
-# Build a `NamedTuple{fieldnames(P), Tuple{V_i...}}` of recursive field Vs
-# and wrap in `ImmutableDual` or `MutableDual` based on mutability. Sub-
-# function calls (`zero_dual`, etc.) live in the returned expression per
-# AGENTS.md; non-concrete and primitive `P` use the deferred-error pattern.
-# More-specific overloads above (IEEEFloat, Complex, Array, Tuple,
-# NamedTuple) take precedence, so this fallback only fires for user-defined
-# struct primals.
+# Structural seeds wrap per-field Vs according to mutability. Sub-function calls stay
+# in the returned expression, with deferred errors for unsupported P.
 
 @inline _zero_dual_zero_field(::Val{N}, x) where {N} = ntuple(_ -> zero_tangent(x), Val(N))
 @inline _uninit_dual_zero_field(::Val{N}, x) where {N} = ntuple(
@@ -1766,12 +1578,7 @@ for (f, helper) in
     ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
     @eval @generated function $f(::Val{N}, x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
-        # Coherence with `dual_type`: a `NoDual` V has no backing to seed. This covers
-        # `tangent_type(P) === NoTangent` and non-differentiable-element arrays/`Ptr`
-        # (where `tangent_type(P) !== NoTangent` but the element is non-diff, e.g. a
-        # reverse rule's `Vector{Int32}` block-stack storage). The `dual_type(...) ===
-        # NoDual` test goes in the returned expression (call world), not the generator
-        # body — see `dual_type(::Type{P})` above for why.
+        # NoDual has no backing to seed. Resolve dual_type at the call world.
         if fieldcount(P) == 0
             return :(
                 if dual_type(Val($N), typeof(x)) === NoDual
@@ -1831,25 +1638,10 @@ end
     end
 end
 
-# ── Cache-aware seed construction (cycle/alias-aware) ───────────────────────
-#
-# The cache-free `zero_dual`/`uninit_dual`/`randn_dual` factories above are plain type recursion:
-# they neither dedup aliased array fields nor terminate on a cyclic mutable struct. The `*_internal`
-# functions thread a `MaybeCache` instead — arrays register by primal identity, and a mutable struct
-# registers its `MutableDual` shell before recursing — so `zero_lifted`/`uninit_lifted`/`randn_lifted`
-# are correct for the public seeds. The cache-free factories stay the fast path for direct callers.
-#
-# The two entry points must agree: a non-standard V needs BOTH the cache-free factory and the
-# cache-threading one, or whichever is left unoverridden silently yields a non-canonical V.
+# Cache-aware seeds register mutable shells before recursion to preserve cycles and aliases.
+# Custom Vs need BOTH cache-free and cache-threading factories; direct callers use the former.
 @static if VERSION >= v"1.11-rc4"
-    # An `Array`'s partials block is a WINDOW into its backing `Memory`'s block, so the two Vs
-    # share partial storage exactly as the primals share elements. Without this, an aggregate
-    # holding both a `Vector` and its own `Memory` seeds two independent derivative stores and a
-    # write through one is invisible through the other — the primal aliasing is preserved and the
-    # partials aliasing is not, which is a silently wrong derivative.
-    #
-    # `memv` is the `Memory`'s V, obtained through the same cache, so two arrays over one `Memory`
-    # window the one block.
+    # Window the backing Memory's cached block so Array/Memory aliases share partials.
     @inline function _derived_array_dual(
         ::Val{N}, x::Array{E,D}, memv
     ) where {N,E<:NDualEltype,D}
@@ -1864,15 +1656,8 @@ end
     end
 end
 
-# 1.10 has no backing `Memory` to window, so key on the STORAGE itself (`Base.dataids`, what Base's
-# own aliasing machinery uses, paired with the length to separate different extents) and rebuild
-# over this primal with a block sharing the cached block's parent. Sharing the parent `Vector` is
-# what makes a partial written through one view visible through the other; without it `a` and
-# `reshape(a)` get independent partials while the primal still aliases.
-#
-# One helper for every seed factory: `_randn_dual_internal` had no such branch, so on 1.10 an
-# aliased pair seeded two independent blocks and a test naming that aliasing exercised two separate
-# inputs. `owned` builds the un-shared V and is called only on a miss.
+# Julia 1.10 has no Memory: key on (Base.dataids, length) and share the cached block's
+# parent across reshapes. Every factory uses this; owned runs only on a cache miss.
 @static if VERSION < v"1.11-rc4"
     @inline function _cached_array_dual(
         w::Val{N}, x::Array, d::MaybeCache, owned::F
@@ -1927,15 +1712,8 @@ for (factory, internal) in
                 end
             end
         end
-        # Array: register by identity so aliased struct fields share one V. The cache lookup
-        # is asserted to the concrete `dual_type` — `d` is an `IdDict{Any,Any}`, so an
-        # un-asserted `d[x]` infers `Any` and poisons `zero_lifted`/`uninit_lifted` to an
-        # abstract `Lifted{P,N}` (runtime dispatch + allocs at the slot ctor). Mirrors the
-        # assert the mutable-struct branch above already does on `d[x]`.
-        #
-        # Float/Complex arrays seed to an `NDualArray` whose elements are scalars, so no element
-        # can reference back into `x` and the recursion cannot cycle. The cache is still needed for
-        # the block, which windows the backing `Memory`'s.
+        # Assert cache hits to the concrete V or IdDict{Any,Any} poisons inference.
+        # Numeric elements cannot cycle; their blocks still share the backing Memory's V.
         function $internal(w::Val{N}, x::Array{<:NDualEltype}, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             # Derive the block from the backing `Memory`'s (see `_derived_array_dual`). Only with a
@@ -1953,12 +1731,8 @@ for (factory, internal) in
             d[x] = v
             return v
         end
-        # Element-wise arrays (e.g. `Vector{Any}`, nested/aliased arrays) can alias or even
-        # reference themselves (`x = Any[]; push!(x, x)`). Register the shell BEFORE filling — as
-        # the mutable-struct branch above and reverse `zero_tangent_internal` do — and thread `d`
-        # through the elements, so a cycle reaching `x` again returns the shell instead of recursing
-        # forever, and aliased sub-arrays share one V. (The cache-free factory does neither: it
-        # recurses through the cache-free element factory and stack-overflows on a self-reference.)
+        # Register before filling: nested arrays may alias or cycle. Thread the same cache
+        # through children, unlike the deliberately cache-free factories.
         function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
@@ -1991,13 +1765,8 @@ for (factory, internal) in
         $internal(w::Val{N}, z::Complex, ::MaybeCache) where {N} = $factory(w, z)
     end
     @static if VERSION >= v"1.11-rc4"
-        # A `Memory` and a ref into it are ONE storage, so the ref's V must window the `Memory`'s
-        # rather than own a block of its own — otherwise a partial written through the array is
-        # invisible through the ref and the JVP silently drops that contribution. Same derivation
-        # as the `Array` branch above (`_derived_array_dual`), and the two cases mirror the
-        # `Memory` branch below: a leaf element type windows the block, anything else takes a ref
-        # into the element-wise shell. Only with a cache: without one there is no other V to share
-        # with, so an owned block is both correct and cheaper.
+        # With a cache, MemoryRef must share the backing Memory's partials. Leaf elements
+        # window its block; aggregates reference its element-wise shell. NoCache owns a block.
         @eval function $internal(
             w::Val{N}, x::MemoryRef{E}, d::MaybeCache
         ) where {N,E<:NDualEltype}
@@ -2199,19 +1968,9 @@ end
     )
 end
 
-# ── Standard-basis seed (`basis_lifted!!`) ──────────────────────────────────
-#
-# `basis_lifted!!(seed, slots)` resets `seed` (built by `zero_lifted`) to the
-# standard-basis direction(s): lane `k` is hot at the `slots[k]`-th scalar dimension of
-# the input, where dimensions are counted in the same order as `tangent_dim` / `zero_tangent`
-# (a `Complex` element occupies two consecutive real dimensions). It writes the partials
-# in place for an `NDualArray` (so a preallocated array seed can be reseeded per
-# chunk allocation-free) and rebuilds the immutable inner V otherwise (`NDual`,
-# tuples, `ImmutableDual`, and the `MutableDual` NamedTuple); the caller always
-# uses the return value (the `!!` convention). A `cursor` threads the global
-# scalar-dimension index and an `IdDict`
-# visits aliased arrays / cyclic mutable structs once, matching the dedup in
-# `tangent_dim` and the cycle/alias-aware `zero_lifted` the seed must come from.
+# Reseed lanes at slots[k] in tangent_dim order (complex: real then imaginary).
+# Mutate array partials in place and rebuild immutable Vs; callers must use the result.
+# Visit aliased arrays and cyclic mutable structs once, matching zero_lifted/tangent_dim.
 @inline function basis_lifted!!(seed::Lifted{P,N,V}, slots::NTuple{N,Int}) where {P,N,V}
     # An isbits V has no arrays or mutable wrappers, so there is nothing to mutate in place and
     # nothing to dedup: thread a plain `Int` cursor and rebuild on the stack, skipping the
@@ -2233,11 +1992,8 @@ end
 @inline _basis_seed_isbits(::NoDual, _slots::NTuple{N,Int}, c::Int) where {N} = (
     NoDual(), c
 )
-# A `Ptr` lane carries no addressable tangent (its per-lane `NTuple{N,Ptr}` V is a bitcast
-# placeholder), so it is 0-dimension like `NoDual`: leave it unchanged and don't advance the cursor.
-# Matches the `Ptr` exemption in `verify_lifted_type` and keeps the dimension / seed walks in step
-# (the reverse tangent of a `Ptr` also contributes 0 dimension). Reached when the `NTuple{N,Ptr}` V
-# dispatches through the `::Tuple` methods to each `Ptr` element.
+# Ptr lanes are non-addressable placeholders with zero tangent_dim. Leave them unchanged
+# and do not advance the cursor, including when reached through an NTuple V.
 @inline _basis_seed_isbits(v::Ptr, _slots::NTuple{N,Int}, c::Int) where {N} = (v, c)
 @inline function _basis_seed_isbits(v::NDual{T,N}, slots::NTuple{N,Int}, c::Int) where {T,N}
     c += 1
@@ -2305,14 +2061,9 @@ end
     @inline _partials_allocation(store::Array) = getfield(store, :ref).mem
 end
 
-# Two containers can own ONE partials store: `a` and `reshape(a, 1, 2)` window the same block, as
-# do an `Array` and its backing `Memory`. Clearing it is therefore not the second container's to
-# do — `dict` keyed on the V alone does not see the sharing, so the second walk zeroed the hot
-# lane the first had written and the whole direction came back zero. Claim the whole underlying
-# ALLOCATION here, zero all of it on the claim, and let every later container write its own hot
-# lanes into it. Keying the flat storage's (address, length) instead misses a NESTED window — a
-# `Vector` with capacity slack passed alongside its own backing `Memory` — whose longer clear then
-# takes a key of its own and wipes the shorter's hot lane.
+# Claim and clear the whole allocation once, then let each container write its hot lanes.
+# V identity misses shared windows; (address, length) misses nested windows with capacity
+# slack, allowing a later clear to erase an earlier container's hot lane.
 @inline function _clear_partials_store!(dict, block, z)
     store = _partials_allocation(Nfwd._block_storage(block))
     haskey(dict, store) && return nothing
@@ -2321,17 +2072,10 @@ end
     return nothing
 end
 
-# `tangent_dim` reaches a `MemoryRef` tangent through its `mem` field, so a `Memory` and any `MemoryRef`
-# into it contribute ONE set of scalar dimensions. The V graph does not show that: `NDualMemoryRef` is
-# rebased flat onto the backing block instead of holding the `Memory`'s V, so the `haskey(dict, v)`
-# dedup cannot see the sharing (a `SubArray`, whose V does hold its parent's V, needs nothing
-# extra). Claim the backing `Memory` PRIMAL — the object whose tangent `tangent_dim` dedups on — so both
-# walks advance together. Without it `(m, memoryref(m), b)` counted 4 dimensions while the seed put `b`
-# at slots 5 and 6, past the end of the sweep, and `b`'s derivative came back zero. The partials
-# allocation above cannot serve as the key: an `Array` and its backing `Memory` share ONE
-# allocation yet have independent reverse tangents, and `tangent_dim` counts both. Recorded
-# AFTER the clear, so a second container still zeroes its own block if it turns out not to share
-# one. Reports whether the storage had ALREADY been recorded, so a caller skips on `true`.
+# tangent_dim dedups Memory and MemoryRef through the primal Memory; NDualMemoryRef's
+# flattened V does not expose that sharing. Claim the primal after clearing each block.
+# Allocation identity is insufficient: Array and Memory can share allocation but differ
+# in reverse container tangents. Return true when the primal was already seen.
 @inline _memory_seen!(_dict, _primal) = false
 @static if VERSION >= v"1.11-rc4"
     @inline function _memory_seen!(dict, mem::Memory)
@@ -2389,12 +2133,8 @@ function _basis_seed!!(v::Array, slots::NTuple{N,Int}, cursor, dict) where {N}
     end
     return v
 end
-# An `IdDict` V is an `IdDict` of inner duals. Walk its BACKING FIELD rather than its keys: `tangent_dim`
-# reaches an `IdDict` tangent through its generic struct fallback, which walks `fieldcount` fields
-# and so traverses `ht` in slot order, and the two walks must advance the cursor in the same order
-# or gradient entries are misplaced silently. Iterating `keys(v)` would follow hash order instead.
-# Deliberately a method for `IdDict` and not a generic struct fallback: a fallback would silently
-# seed any V shape nobody has vetted, where a `MethodError` at least says so.
+# IdDict values must follow backing ht slot order, as tangent_dim does. Do not generalise
+# to unvetted struct Vs: missing methods must fail loudly.
 function _basis_seed!!(v::IdDict, slots::NTuple{N,Int}, cursor, dict) where {N}
     haskey(dict, v) && return dict[v]
     dict[v] = v
@@ -2470,13 +2210,8 @@ function _basis_seed!!(v::MutableDual, slots::NTuple{N,Int}, cursor, dict) where
     v.fields = _basis_seed!!(v.fields, slots, cursor, dict)
     return v
 end
-# `MemoryRef{<:NDualEltype}` forward V (Julia 1.11+): like `NDualArray` but the block column
-# pairs with the memory slot. Factory-built refs (the only ones seeded) cover the whole backing
-# `Memory` (column j ↔ mem slot j), and `tangent_dim` walks that whole `Memory`, so advance one cursor
-# step per block column (two for complex — real then imag, like the `NDualArray` complex method)
-# and write each lane there; register in `dict` for aliasing. Complex `MemoryRef` is seedable (it
-# has a `dual_type` → `NDualMemoryRef` overload and forward factories), so a complex
-# `NDualMemoryRef` reaches here and needs the complex method below, mirroring `NDualArray`.
+# Factory-built NDualMemoryRefs cover the whole Memory (column j ↔ slot j), which
+# tangent_dim walks. Seed each column, real then imaginary for complex elements, and dedup.
 @static if VERSION >= v"1.11-rc4"
     function _basis_seed!!(
         v::NDualMemoryRef{T,N}, slots::NTuple{N,Int}, cursor, dict
@@ -2517,10 +2252,7 @@ end
     end
 end
 
-# Width-1 helpers: zero_dual(x) / uninit_dual(x) / randn_dual(rng, x) produce a
-# `Lifted{P,1}` slot directly. Kept under the same `zero_dual` / `uninit_dual` /
-# `randn_dual` names so the many existing callsites (`zero_dual(f)` for function
-# args, etc.) work without renames.
+# Width-1 compatibility entry points return Lifted slots.
 @inline zero_dual(x) = zero_lifted(Val(1), x)
 @inline uninit_dual(x) = uninit_lifted(Val(1), x)
 @inline randn_dual(rng::AbstractRNG, x) = randn_lifted(Val(1), rng, x)
@@ -2530,16 +2262,8 @@ end
 # `zero_dual` is the canonical MemoryRef seed factory (bits-element dense zero-init).
 
 @static if VERSION >= v"1.11-rc4"
-    # MemoryRef / Memory seed factories for `NDualEltype` elements (real `IEEEFloat` and
-    # `Complex{IEEEFloat}`). `MemoryRef{E}` duals to `NDualMemoryRef`; `Memory{E} <:
-    # AbstractArray{E,1}` duals to the standard `NDualArray`. One method per (factory × container)
-    # covers both element kinds — `randn(rng, E, len)` and `Memory{E}(undef, …)` work for real and
-    # complex `E`. These stay strictly more specific than the generic element-wise `@generated`
-    # factories below, keeping the seed coherent with `dual_type` and the reverse `zero_tangent`
-    # oracle (a bare complex `MemoryRef`/`Memory` would otherwise fall through to the generic path,
-    # whose element-wise Memory V mismatches the `NDualArray`/`NDualMemoryRef` these types dual to).
-    # `uninit`/`randn` for MemoryRef mirror the `NDualMemoryRef` zero-init constructor: a fresh
-    # block covering the whole backing `Memory` (column j ↔ mem slot j), column = `p`'s offset.
+    # Numeric Memory / MemoryRef seeds must stay more specific than element-wise factories.
+    # MemoryRef blocks cover the whole backing Memory, with the ref's column at its offset.
     @inline function zero_dual(::Val{N}, p::MemoryRef{E}) where {N,E<:NDualEltype}
         return NDualMemoryRef{E,N,Memory{E}}(p)
     end
@@ -2568,13 +2292,8 @@ end
             m, ntuple(_ -> Memory{E}(randn(rng, E, length(m))), Val(N))
         )
     end
-    # Element-wise (non-float differentiable element) `Memory` / `MemoryRef` seeds,
-    # mirroring the element-wise array factory and `dual_type`: a per-element V memory,
-    # built element-wise; a non-diff element gives `NoDual`. The IEEEFloat
-    # overloads above are more specific and provide the `NDualArray` optimisation.
-    # Plain functions (not `@generated`), like the element-wise Array factories above: `dual_type`
-    # is `@foldable`, so it resolves at the caller's world (extension overloads stay visible) and
-    # folds to a concrete element type, keeping these type-stable and allocation-free.
+    # Non-float Memory seeds recurse element-wise. Plain functions keep extension dual_type
+    # overloads visible at the caller's world; foldability preserves concrete element types.
     @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
         v = Memory{dual_type(Val(N), T)}(undef, length(m))
         @inbounds for i in eachindex(m)

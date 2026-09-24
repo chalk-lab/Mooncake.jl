@@ -54,11 +54,8 @@ end
 mutable struct LiftedTest_AbstractField  # abstract field type -> dual field NamedTuple is abstract
     x::Real
 end
-# As above, but the abstract field HOLDS a structured value rather than a leaf. `x::Real` above
-# only ever holds a `Float64`, whose child slot never has to answer a structural question, so a
-# declared-type annotation is harmless there and hides the recursion bug. Immutable, so the lane
-# tangent is a `Tangent` built through `_field_lane_tangent`; a mutable one would route `.x`
-# through `_lane_tangent`, which handles only scalar `NDual` V — a separate documented gap.
+# An abstract field holding a struct exercises recursive lane materialisation;
+# the scalar Real field above cannot expose declared-type recursion errors.
 struct LiftedTest_AbstractHeld
     x::Any
 end
@@ -162,10 +159,8 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "cyclic plain-array tangent arithmetic" begin
-        # A self-referential plain `Array` lifts to a cyclic element-wise V (the seed registers its
-        # shell before filling); the tangent-arithmetic helpers must terminate via their aliasing
-        # caches, as for the cyclic mutable struct above. (Seed/per-lane/lift/unlift across widths
-        # are covered by the `test_lifted` drive below.)
+        # Cyclic element-wise Vs need the same arithmetic cache discipline as MutableDual.
+        # test_lifted below covers seed/lane/lift/unlift across widths.
         x = Any[]
         push!(x, x)
         v = tangent(zero_lifted(Val(1), x))
@@ -178,12 +173,8 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "one `Ref` reached twice lifts to one V" begin
-        # Every `lift` leaf that owns partial storage registers in the threaded cache, so two
-        # occurrences of one primal share a V. `Ref`'s leaf took the cache and discarded it, giving
-        # two independent partials buffers over one primal: a write through one occurrence updated
-        # the shared value but only its own partials, and the read through the other returned the
-        # new value with a stale partial. Not expressible through `test_lifted`, which drives the
-        # factories over ONE value and so cannot state a property about two slots.
+        # Repeated Refs must share V storage. Bespoke: test_lifted cannot relate two slots;
+        # a mutation through one must update the partial read through the other.
         mk() = (r=Ref(1.0); (r, r))
         p = mk()
         v = Mooncake.tangent(Mooncake.lift(p, Mooncake.zero_tangent(p)))
@@ -204,10 +195,7 @@ const NDAC_VecC64 = NDualArray{
 
     @static if VERSION < v"1.11-"
         @testset "1.10 forward seed and lift alias two arrays over one buffer" begin
-            # 1.11+ windows the backing `Memory`'s block, which 1.10 has no equivalent of, so both
-            # the seed and the lift keyed by ARRAY OBJECT and gave `a` and `reshape(a)` independent
-            # partials while the primal still aliased. The reverse side got storage keying earlier;
-            # this is the forward half of the same problem.
+            # Julia 1.10 has no backing Memory; reshape aliases must share via storage keys.
             fm(x, y) = (x[1] *= 3.0; y[1])
             mkv() = collect(1.0:4.0)
             a = mkv()
@@ -215,11 +203,8 @@ const NDAC_VecC64 = NDualArray{
             cache = Mooncake.prepare_derivative_cache(fm, a, b)
             aa = mkv()
             bb = reshape(aa, 2, 2)
-            # The tangents must ALIAS exactly as the primals do. One buffer carries one
-            # direction, so two independent tangent arrays over aliased primals is ill-posed and
-            # refused; `reshape` shares `da`'s storage, where `copy` would not. They cannot be the
-            # same OBJECT here -- one is a vector, the other a matrix -- which is why the rule is
-            # shared storage rather than identity.
+            # One primal buffer requires one tangent direction. Reshape preserves tangent
+            # storage despite different container identities; independent copies are refused.
             da = [1.0, 0.0, 0.0, 0.0]
             db = reshape(da, 2, 2)
             # `fm` over one buffer is `3*a[1]`, so the directional derivative along e1 is 3.0.
@@ -240,12 +225,7 @@ const NDAC_VecC64 = NDualArray{
 
     @static if VERSION >= v"1.11-"
         @testset "a `Memory` and a ref into it share one partials store" begin
-            # A `Memory` and a `MemoryRef` into it are ONE storage, so a partial written through the
-            # array must be visible through the ref. Two methods broke that while their siblings did
-            # not: the `MemoryRef` seed branch registered in the aliasing cache but built its V with
-            # the cache-free factory, and the float `MemoryRef` lift copied `ẋ.mem` into a private
-            # block. The contribution reaching the value through the ref was written to a buffer
-            # nothing reads. Reverse mode was already correct on the same program.
+            # Memory and MemoryRef must share partials, on both seed and lift paths.
             fm(x) = (x[1][1] *= 2; x[2][])
             mk() = (m=Memory{Float64}(undef, 1); m[1]=1.0; (m, Core.memoryref(m, 1)))
             cache = Mooncake.prepare_derivative_cache(fm, mk())
@@ -277,11 +257,7 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "one array reached twice through a `SimpleVector` lifts to one V" begin
-        # Same defect as the `Ref` leaf above, one leaf over. `SimpleVector` had only a two-argument
-        # `lift`, so the three-argument call fell to the generic passthrough, which DISCARDS the
-        # cache — and its elements were lifted through the two-argument form too, so no cache
-        # existed anywhere below it. A type with no three-argument method at all does not show up in
-        # a search for methods that ignore their cache argument.
+        # SimpleVector's three-argument lift must thread the cache through its elements.
         v = [[1.0, 2.0]]
         sv = Core.svec(v, v)
         dv = [[1.0, 0.0]]
@@ -363,14 +339,8 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "abstract field holding a structured value" begin
-        # The child slot must be annotated with the field's CONCRETE type, as the element-wise array
-        # recursion does. With the declared `Any` the child is `Lifted{Any,N,...}`, and the lane and
-        # unlift methods dispatch on `P`: they evaluate `fieldtype(Any, name)` and throw for a struct,
-        # find no method for a NamedTuple V, and — since `Any` is not `<:Tuple` — fall to the
-        # per-lane-`Ptr` method for a Tuple V, which indexes the tuple by LANE instead of returning
-        # that lane's partials.
-        # Assert the recursion, not the wrapper: a mutable struct's lane tangent is a
-        # `MutableDualTangentView`, so the field's own tangent is what carries the evidence.
+        # Child slots need concrete held types. Declared Any breaks struct/NamedTuple
+        # dispatch and treats tuple elements as lanes. Inspect the field's tangent shape.
         s = zero_lifted(Val(1), LiftedTest_AbstractHeld(LiftedTest_Point(1.0, 2.0)))
         @test tangent(s, 1).fields.x isa Mooncake.Tangent
         @test unlift(s) isa Tuple
@@ -400,19 +370,12 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "the unlift terminal refuses a non-leaf" begin
-        # The terminal hands back the lane accessor, which is the reverse tangent only for a leaf.
-        # An aggregate V with no `_materialise_lane` of its own silently took that path and failed
-        # several frames later inside reverse tangent arithmetic; it now says so at the boundary.
-        # Here the malformed V is a `NoDual` over a differentiable primal, refused by the
-        # `NoDual` accessor before it can mint that primal an uninit tangent.
+        # A malformed NoDual over a differentiable aggregate must fail at the boundary.
         s = TestResources.StructFoo(6.0, [1.0, 2.0])
         @test_throws ArgumentError unlift(
             Lifted{Tuple{typeof(s)},1,Tuple{NoDual}}((s,), (NoDual(),))
         )
-        # An ARRAY of `Ptr` to a non-differentiable element takes the all-`NoDual` fast path,
-        # whose lane accessor is the reverse tangent only when the ELEMENT's tangent is
-        # `NoTangent`. Here it is `Ptr{NoTangent}`, so the accessor's `Vector{NoTangent}` is the
-        # wrong shape and the element-wise path has to rebuild it.
+        # All-NoDual pointer arrays need element-wise reverse Ptr{NoTangent} reconstruction.
         pv = [Ptr{Int}(0), Ptr{Int}(0)]
         @test last(unlift(Mooncake.zero_lifted(Val(1), pv))) isa
             Mooncake.tangent_type(Vector{Ptr{Int}})
@@ -429,19 +392,13 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "a canonical NoDual over a non-`NoTangent` primal is not refused" begin
-        # What licenses a `NoDual` V is `dual_type` declaring it, not `tangent_type === NoTangent`:
-        # a forward-opaque primal can still have a real reverse placeholder, as CUDA's `DataRef`
-        # does. Keying off `tangent_type` refused the slot instead of materialising it, which is
-        # the `copy(::CuDataRef)` frule erroring in `test/ext/cuda`.
+        # dual_type licenses NoDual even with a real reverse placeholder, as for CUDA DataRef.
         h = LiftedTest_Handle(7)
         @test unlift(Lifted{LiftedTest_Handle,1,NoDual}(h, NoDual())) === (h, h)
     end
 
     @testset "metatype kinds get an unbounded slot" begin
-        # A type-valued result inferred as its KIND is wrapped at runtime as `Lifted{Type{X}}`, and
-        # `Lifted` is invariant in `P`, so a bounded slot rejects it. All four kinds are
-        # `isconcretetype`, so each needs the carve-out — naming only `DataType` left the other
-        # three with bounded slots that no runtime value satisfies.
+        # All four concrete metatype kinds need unbounded slots for runtime Type{X} primals.
         for T in (DataType, UnionAll, Union, Core.TypeofBottom), N in (1, 3)
             @test lifted_type(Val(N), T) isa UnionAll
         end
@@ -514,10 +471,7 @@ const NDAC_VecC64 = NDualArray{
         @test all(iszero, tangent_view(vc, 1)) && all(iszero, tangent_view(vc, 2))
         @test typeof(zero_lifted(Val(2), xc)) === lifted_type(Val(2), Vector{ComplexF64})
 
-        # Complex MemoryRef (1.11+): the forward seed factories must produce the canonical
-        # NDualMemoryRef{Complex} that dual_type advertises (and that reverse zero_tangent supports).
-        # Previously only float MemoryRefs had factories, so a complex one fell to the generic
-        # @generated factory and threw a confusing nested `memoryref` MethodError.
+        # Complex MemoryRef factories must agree with the canonical NDualMemoryRef V.
         @static if VERSION >= v"1.11-"
             mrc = ComplexF64[1.0 + 2.0im, 3.0 - 1.0im].ref
             DTc = dual_type(Val(2), typeof(mrc))
@@ -579,11 +533,7 @@ const NDAC_VecC64 = NDualArray{
             tangent_view(a, 2)[1] === -7.0
     end
 
-    # Regression: the per-lane tangent of a `Ref{<:IEEEFloat}` (NDualRef V) must be the
-    # reverse-oracle shape — a `MutableTangent{@NamedTuple{x::PossiblyUninitTangent{P}}}` (a `Ref` is a
-    # mutable struct) — NOT the bare lane partial. Returning the scalar diverged from `unlift`/the
-    # reverse oracle and made struct-recursion field extraction (which converts each field into its
-    # declared reverse tangent) throw a convert `MethodError` for a `Ref`-valued field.
+    # Ref lane tangents must be reverse-shaped MutableTangents, so struct fields can hold them.
     @testset "NDualRef per-lane tangent is reverse-shaped" begin
         # Bare Ref: per-lane shape must equal the width-1 unlift (reverse) shape.
         sref = zero_lifted(Val(2), Ref(3.0))
@@ -602,10 +552,7 @@ const NDAC_VecC64 = NDualArray{
 
     @static if VERSION >= v"1.11-"
         @testset "aliased Memory shares one V, on both the seed and lift paths" begin
-            # The V packs a fresh block per call, so without the aliasing cache two fields holding
-            # one `Memory` get independent blocks: a mutation through one is invisible through the
-            # other and `tangent_dim` counts the shared storage twice. The float `Array` overloads honour the
-            # cache; these two did not.
+            # Repeated Memory/MemoryRef primals must reuse partial storage across calls.
             mem = Memory{Float64}(undef, 1)
             mem[1] = 3.0
             d = IdDict{Any,Any}()
@@ -626,11 +573,8 @@ const NDAC_VecC64 = NDualArray{
         end
 
         @testset "an Array's block windows its backing Memory's" begin
-            # The primal aliasing was already preserved (`a.ref.mem === mem`) while the partials
-            # were not: two independent derivative stores over one buffer, so a lane written
-            # through the array was invisible through the `Memory`. Value right, derivative
-            # wrong. `test_rule` cannot catch this — its finite-difference oracle perturbs the
-            # primal through the same aliasing-blind seed it hands the rule, so both agree.
+            # Partial storage must alias with the primal. test_rule's finite-difference oracle
+            # uses the same seeding machinery, so an independent mutation check is needed.
             a = [1.0, 2.0, 3.0]
             v = tangent(zero_lifted(Val(2), (a, a.ref.mem)))
             Mooncake.Nfwd.tangent_view(v[1], 1)[2] = 5.0
@@ -745,10 +689,7 @@ const NDAC_VecC64 = NDualArray{
         @test slot.rep.fields.v.partials === (5.0, 0.0)
         @test tangent_view(slot, 2).v === 0.0  # other lane unchanged
 
-        # A user field must resolve to its lane tangent whatever it is called — including the
-        # underscored names the view uses for its own fields, which `getproperty` used to
-        # short-circuit on, returning the view's parent on a read while a write went to the
-        # field.
+        # Every user field name, including underscored internal names, resolves to its lane.
         pview = tangent_view(
             zero_lifted(Val(2), LiftedTest_ParentField(3.0, 4.0, 5.0, 6.0)), 1
         )
@@ -758,10 +699,7 @@ const NDAC_VecC64 = NDualArray{
             @test getproperty(pview, name) === 7.0
         end
 
-        # Regression: a mutable struct with an ABSTRACT field type lifts to a `MutableDual`
-        # whose backing NamedTuple is abstract (`@NamedTuple{x}`, x::Any). Writing a lane tangent
-        # narrows the merged NamedTuple to a concrete element type, which is not `isa` the stored
-        # abstract type — a bare `setfield!` throws `TypeError`. The view must `convert` back.
+        # Abstract backing fields require conversion after merge narrows the NamedTuple.
         aview = tangent_view(zero_lifted(Val(2), LiftedTest_AbstractField(1.0)), 1)
         @test aview.x === 0.0
         aview.x = 4.0
@@ -865,24 +803,7 @@ const NDAC_VecC64 = NDualArray{
         @test ts isa AbstractVector && ts[1] isa Tangent
     end
 
-    # builtins.jl intrinsics (abs/add/copysign/div/mul/neg/sub/fma/muladd/fpext/fptrunc) are
-    # registered in `hand_written_rule_test_cases(:builtins)`, which drives them through
-    # `test_rule` (both modes, widths 1 and 8, FD) plus the per-lane oracle, so no bespoke
-    # one-to-one parallel testset is needed here.
-
-    # low_level_maths.jl scalar primitives are registry-covered under Val{:low_level_maths}
-    # (exp/log/sin/.../hypot plus tanpi/pow_fast/clamp/sincos/sincosd/sincospi/modf). test_rule's
-    # per-lane oracle already checks per-lane partials for these numeric-dual primitives, so the
-    # explicit-seed direct `sin` check added nothing.
-
-    # tasks.jl: `lgetfield`/`getfield` of a `Task` field is registered in
-    # `hand_written_rule_test_cases(:tasks)`; `test_frule_interface` asserts the `NoDual` V via
-    # `verify_lifted_type` across widths 1 and 8, so no bespoke parallel is needed. `_new_` on immutable
-    # and mutable structs is likewise registered (Val{:new}: StructFoo -> ImmutableDual, MutableFoo
-    # -> MutableDual, with the V shape checked by verify_lifted_type), so no new.jl parallel either.
-    # The iddict.jl parallel below IS kept: the IdDict setindex!->getindex persistence (mutation
-    # threaded across two rule calls on the same slot) is not expressible as a registry case.
-    # (memory.jl's ctor / memoryrefnew / lmemoryrefget are all registered, so no memory parallel.)
+    # IdDict mutation across two rule calls is not expressible as a single registry case.
 
     @testset "frule!! one-to-one parallels (iddict.jl)" begin
         # Constructor, then setindex! + getindex round trip.
@@ -921,11 +842,8 @@ const NDAC_VecC64 = NDualArray{
             @test t[1] == [0.0, 0.0] && t[2] == 1.0  # the scalar is tangent_dim 3
         end
 
-        # The rebuilt V must keep the DECLARED backing NamedTuple. Re-deriving each field type from
-        # the rebuilt VALUE narrows an `Any`-declared field to the seed's concrete type, so
-        # `V !== dual_type(Val(N), P)` and the OpaqueClosure argument typeassert rejects the slot.
-        # The value assertions here cannot see it — the partials are correct, only the type is wrong.
-        # A `Float64` in the field takes the isbits path, a struct the general one.
+        # Reseeding must keep the declared backing NamedTuple, even for Any fields.
+        # Values alone cannot detect noncanonical V. Exercise isbits and general paths.
         @test Mooncake.verify_lifted_type(bl(LiftedTest_AbstractHeld(1.0), (1,)))
         @test Mooncake.verify_lifted_type(
             bl(LiftedTest_AbstractHeld(LiftedTest_Point(1.0, 2.0)), (1,))
@@ -944,12 +862,9 @@ const NDAC_VecC64 = NDualArray{
             @test tangent_view(nt.a, 1) == [1.0, 0.0]
         end
 
-        # `a` and `reshape(a)` are distinct V objects over ONE partials store, so the second
-        # container to reach it must not clear it: it used to, wiping the hot lane the first had
-        # written, and the whole direction came back zero. Ownership is asserted as well as the
-        # values, because two stores holding equal numbers agree here and diverge on the next
-        # write. No registry expresses this — `test_lifted` checks the `lift`/seed factories, not a
-        # basis direction.
+        # Reshape shares partial storage: a second container must not clear the hot lane.
+        # Assert storage identity too; equal values can hide independent stores.
+        # test_lifted checks factories, not basis directions.
         let a = [1.0, 2.0], b = bl((a, reshape(a, 1, 2)), (1,))
             @test tangent(b, 1) == ([1.0, 0.0], [1.0 0.0])
             ps = map(v -> getfield(getfield(v, :partials_block), :parent), tangent(b))
@@ -999,12 +914,9 @@ const NDAC_VecC64 = NDualArray{
             end
         end
 
-        # `tangent_dim` and the seed cursor must count the same dimensions. `tangent_dim` reaches a `MemoryRef`
-        # tangent through its `mem` field, so it scores a `Memory` and a ref into it ONCE; the
-        # seed used to advance over the whole backing `Memory` a second time, pushing everything
-        # after the pair past the end of the sweep. `tangent_dim` reported 4 here while `b`'s dimensions sat at
-        # slots 5 and 6, so `b`'s derivative came back zero. Not expressible in a registry: no
-        # rule is involved, and `test_lifted` checks the seed factories, not a basis direction.
+        # Memory and MemoryRef contribute one set of dimensions. Check a later array's
+        # basis positions too, so a duplicate cursor advance cannot silently drop its gradient.
+        # test_lifted checks factories, not basis directions.
         @static if VERSION >= v"1.11-"
             let m = Memory{Float64}(undef, 2), b = [3.0, 4.0]
                 m .= [1.0, 2.0]
@@ -1039,12 +951,8 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "lift preserves cross-field array aliasing (D3)" begin
-        # A top-level 2-arg `lift` of an aggregate (Tuple / NamedTuple / immutable struct)
-        # must thread one shared cache so two fields aliasing the same mutable array get one
-        # shared V, matching reverse `zero_tangent_internal`. Previously each field upgraded
-        # `nothing` to its own IdDict, producing independent Vs (a silently-wrong JVP).
-        # Uses a non-float element type (`Vector{Vector{Float64}}`): float arrays alias via
-        # the shared reverse tangent regardless, so they can't exhibit the bug.
+        # Aggregate lift must share one cache across repeated mutable fields.
+        # Non-float elements expose independent container partials hidden by float tangent aliases.
         a = [[1.0], [2.0]]
         let vt = tangent(lift((a, a), zero_tangent((a, a))))
             @test vt[1] === vt[2]
@@ -1059,11 +967,7 @@ const NDAC_VecC64 = NDualArray{
     end
 
     @testset "_add_to_primal with non-always-init struct fields (D4/D9)" begin
-        # Forward `_add_to_primal` must handle a `PossiblyUninitTangent`-wrapped field the way
-        # reverse mode does: unwrap an initialised PUT via `is_init`/`val`, map an undefined
-        # field to `FieldUndefined()`, and reconstruct through `__construct_type` (honouring
-        # `unsafe`). Previously it hand-rolled the field loop with `_new_` and MethodError'd on
-        # the PUT (bitstype field) or hit `UndefRefError` (genuinely-undefined heap field).
+        # Match reverse reconstruction: unwrap PUTs, preserve undefined fields, honour unsafe.
         @testset "bitstype uninit field (PUT initialised)" begin
             x = LiftedTest_MaybeInit(3.0)  # `y` is bitstype ⇒ isdefined, PUT carries a value
             for N in (1, 2, 3)
@@ -1074,11 +978,8 @@ const NDAC_VecC64 = NDualArray{
             end
             z = zero_lifted(Val(1), x)
             @test Mooncake._add_to_primal(primal(z), tangent(z), true).x === 3.0
-            # D9: with `unsafe=false`, reconstruction goes through the public constructor. Both
-            # fields are present here, but `LiftedTest_MaybeInit` has only a 1-arg constructor, so
-            # `P(x, y)` fails and a diagnostic `AddToPrimalException` is thrown — the reverse-oracle
-            # contract (cf. the reverse test in tangents.jl). The pre-D9 `_new_` path bypassed the
-            # constructor and would silently succeed, so this pins the `unsafe` half of the fix.
+            # Safe reconstruction must use the public constructor. Both fields are present,
+            # but only a one-argument constructor exists, so report AddToPrimalException.
             @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(
                 primal(z), tangent(z), false
             )
@@ -1092,8 +993,7 @@ const NDAC_VecC64 = NDualArray{
                 @test xp.x != 3.0
                 @test !isdefined(xp, :y)  # undefined field stays undefined, matching reverse
             end
-            # D9: here `y` maps to `FieldUndefined`, so `__construct_type` calls the 1-arg
-            # `P(x)` — which exists — and `unsafe=false` succeeds, leaving `y` undefined.
+            # An undefined y permits the public one-argument constructor; safe reconstruction succeeds.
             let z = randn_lifted(Val(1), Xoshiro(3), x)
                 r = Mooncake._add_to_primal(primal(z), tangent(z), false)
                 @test r isa LiftedTest_MaybeInitHeap
@@ -1130,14 +1030,8 @@ const NDAC_VecC64 = NDualArray{
             test_lifted_type(P, Val(N))
         end
 
-        # Pointer primals cannot go in `tangent_test_cases()`: that table also drives reverse
-        # `test_tangent`, which has no `test_tangent_type` method for a `Ptr`. Drive them here
-        # so the forward contract still covers them. Both the seed factories and the
-        # `lift`/`unlift` bridge translate between a lane pointer and a reverse placeholder
-        # tangent, and those two coincide only for `Ptr{Float64}` — the other eltypes are
-        # exactly where a translation gets skipped. `Ptr{Int}` covers the fourth shape, a
-        # non-differentiable pointee, whose forward V is `NoDual` while reverse still keeps a
-        # typed `Ptr{NoTangent}` placeholder.
+        # Pointer cases cannot join tangent_test_cases: reverse test_tangent_type has no Ptr
+        # method. Exercise lane/reverse-placeholder translation for each pointer shape here.
         ptr_backing = [1.0, 2.0]
         @testset "test_lifted $(typeof(p))" for p in (
             Ptr{Nothing}(pointer(ptr_backing)),
@@ -1152,13 +1046,8 @@ const NDAC_VecC64 = NDualArray{
             test_lifted(Xoshiro(123456), p)
         end
 
-        # `Task` and `IdDict` have their own V rather than a structural lift, so each needs BOTH
-        # seed entry points — the cache-threading `_*_dual_internal` and the cache-free
-        # `zero_dual`/`uninit_dual`/`randn_dual`. Driven here rather than from
-        # `tangent_test_cases()` for the same reason as the pointers above: that table also drives
-        # the reverse suites, which neither survives — an `IdDict` allocates under
-        # `test_tangent`'s perf check, and a `Task` trips `test_tangent_splitting`'s
-        # `tangent_type(F, R)` assertion.
+        # Task and IdDict require both seed entry points for their custom Vs. Keep them out
+        # of the shared reverse table: IdDict fails its allocation check, Task its splitting check.
         @testset "test_lifted $nm" for (nm, p) in (
             ("IdDict", IdDict(1 => randn(2))), ("Task", Task(() -> 1))
         )
@@ -1185,10 +1074,8 @@ const NDAC_VecC64 = NDualArray{
         end
 
         @testset "cache-free `IdDict` seed shares one V per aliased value" begin
-            # `test_lifted`'s cache-free assertions pin the V's TYPE, not its storage identity, so
-            # they cannot state this. Two keys holding one array must reach one partials block, or
-            # a write through one key is invisible through the other and the JVP silently drops
-            # that contribution — what the cache-threading `zero_lifted` already guarantees.
+            # test_lifted checks cache-free seed types, not storage identity. Aliased values
+            # must share a block so mutation through either key updates the same partials.
             a = randn(2)
             v = Mooncake.zero_dual(Val(1), IdDict{Int,Vector{Float64}}(1 => a, 2 => a))
             @test getfield(v[1], :partials_block) === getfield(v[2], :partials_block)
