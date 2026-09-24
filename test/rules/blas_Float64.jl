@@ -95,30 +95,12 @@
         Asym = (A + A') / 2
         nan3 = fill(NaN, 3, 3)
 
-        # `α != 1` skips the (α==1 && β==0) fast path, reaching the recomputation.
-        o = Mooncake.rrule!!(
-            Mooncake.zero_fcodual(BLAS.gemm!),
-            Mooncake.zero_fcodual('N'),
-            Mooncake.zero_fcodual('N'),
-            Mooncake.zero_fcodual(2.0),
-            Mooncake.zero_fcodual(copy(A)),
-            Mooncake.zero_fcodual(copy(B)),
-            Mooncake.zero_fcodual(0.0),
-            Mooncake.zero_fcodual(copy(nan3)),
-        )[1]
-        @test primal(o) ≈ 2.0 * A * B
-
-        o = Mooncake.rrule!!(
-            Mooncake.zero_fcodual(BLAS.symm!),
-            Mooncake.zero_fcodual('L'),
-            Mooncake.zero_fcodual('U'),
-            Mooncake.zero_fcodual(2.0),
-            Mooncake.zero_fcodual(copy(Asym)),
-            Mooncake.zero_fcodual(copy(B)),
-            Mooncake.zero_fcodual(0.0),
-            Mooncake.zero_fcodual(copy(nan3)),
-        )[1]
-        @test primal(o) ≈ 2.0 * Asym * B
+        # α != 1 reaches the recomputation instead of the α==1 && β==0 fast path.
+        for (f, flags, M) in ((BLAS.gemm!, ('N', 'N'), A), (BLAS.symm!, ('L', 'U'), Asym))
+            args = (f, flags..., 2.0, copy(M), copy(B), 0.0, copy(nan3))
+            o = Mooncake.rrule!!(map(Mooncake.zero_fcodual, args)...)[1]
+            @test primal(o) ≈ 2.0 * M * B
+        end
 
         # `α == 0`: A unreferenced, so a NaN there must not reach the result or the partials.
         o = Mooncake.rrule!!(
@@ -192,66 +174,53 @@
             )
         end
 
-        @testset "trsm! α=0 ignores a NaN A: width $Nw" for Nw in (1, 2, 3)
-            r = Mooncake.frule!!(
-                Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
-                Mooncake.lift('L', Mooncake.NoTangent()),
-                Mooncake.lift('U', Mooncake.NoTangent()),
-                Mooncake.lift('N', Mooncake.NoTangent()),
-                Mooncake.lift('U', Mooncake.NoTangent()),
-                Mooncake.zero_lifted(Val(Nw), 0.0),
-                Mooncake.zero_lifted(Val(Nw), copy(nan3)),
-                Mooncake.zero_lifted(Val(Nw), copy(B)),
-            )
-            @test all(iszero, primal(r))
-            @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
-        end
-
         # Seeded dα needs the solve, but the α == 0 primal must still be zero
         # even when the solve reads NaN from A.
-        @testset "trsm! α=0 with a seeded dα: width $Nw" for Nw in (1, 2, 3)
+        @testset "trsm! α=0, seeded dα=$seeded: width $Nw" for seeded in (false, true),
+            Nw in (1, 2, 3)
+
+            α = if seeded
+                Mooncake.randn_lifted(Val(Nw), StableRNG(9), 0.0)
+            else
+                Mooncake.zero_lifted(Val(Nw), 0.0)
+            end
             r = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
                 Mooncake.lift('L', Mooncake.NoTangent()),
                 Mooncake.lift('U', Mooncake.NoTangent()),
                 Mooncake.lift('N', Mooncake.NoTangent()),
                 Mooncake.lift('U', Mooncake.NoTangent()),
-                Mooncake.randn_lifted(Val(Nw), StableRNG(9), 0.0),
+                α,
                 Mooncake.zero_lifted(Val(Nw), copy(nan3)),
                 Mooncake.zero_lifted(Val(Nw), copy(B)),
             )
             @test all(iszero, primal(r))
+            if !seeded
+                @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
+            end
         end
     end
 
     # At β=0, C may be uninitialised/NaN; the dβ*C term must mask NaN entries.
     @testset "syrk! dβ*C NaN-C guard at β=0" begin
         A = randn(StableRNG(1), 3, 2)
-        # NaN input C, β=0, dβ=1: the output tangent's upper triangle must be NaN-free.
-        rN = Mooncake.frule!!(
-            Mooncake.zero_lifted(Val(1), BLAS.syrk!),
-            Mooncake.lift('U', Mooncake.NoTangent()),
-            Mooncake.lift('N', Mooncake.NoTangent()),
-            Mooncake.lift(1.0, 0.0),
-            Mooncake.lift(A, zero(A)),
-            Mooncake.lift(0.0, 1.0),
-            Mooncake.lift(fill(NaN, 3, 3), zeros(3, 3)),
-        )
-        dN = tangent(rN)
-        @test !any(isnan, [dN[i, j].partials[1] for i in 1:3 for j in i:3])
-        # Finite C: the dβ=1 term contributes exactly C on the upper triangle.
-        C = randn(StableRNG(2), 3, 3)
-        rF = Mooncake.frule!!(
-            Mooncake.zero_lifted(Val(1), BLAS.syrk!),
-            Mooncake.lift('U', Mooncake.NoTangent()),
-            Mooncake.lift('N', Mooncake.NoTangent()),
-            Mooncake.lift(1.0, 0.0),
-            Mooncake.lift(A, zero(A)),
-            Mooncake.lift(0.0, 1.0),
-            Mooncake.lift(copy(C), zeros(3, 3)),
-        )
-        dF = tangent(rF)
-        @test dF[1, 2].partials[1] ≈ C[1, 2]
+        for C in (fill(NaN, 3, 3), randn(StableRNG(2), 3, 3))
+            r = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(1), BLAS.syrk!),
+                Mooncake.lift('U', Mooncake.NoTangent()),
+                Mooncake.lift('N', Mooncake.NoTangent()),
+                Mooncake.lift(1.0, 0.0),
+                Mooncake.lift(A, zero(A)),
+                Mooncake.lift(0.0, 1.0),
+                Mooncake.lift(copy(C), zeros(3, 3)),
+            )
+            d = tangent(r)
+            if isnan(C[1, 1])
+                @test !any(isnan, [d[i, j].partials[1] for i in 1:3 for j in i:3])
+            else
+                @test d[1, 2].partials[1] ≈ C[1, 2]
+            end
+        end
     end
 end
 

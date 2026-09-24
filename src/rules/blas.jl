@@ -2873,6 +2873,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     rng = rng_ctor(123456)
     # A float scalar of a DIFFERENT precision from `P`, for the short-form `axpy!` rows below.
     Q = real(P) === Float64 ? Float32 : Float64
+    plain = (false, :none, nothing)
 
     test_cases = vcat(
 
@@ -2889,42 +2890,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
 
         # Dense/strided long and short forms; width > 1 catches lane-stride misreads.
         Any[
-            (false, :none, nothing, BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, 5, P(2), randn(rng, P, 5), 1, randn(rng, P, 5), 1),
             (
-                false,
-                :none,
-                nothing,
-                BLAS.axpy!,
-                5,
-                P(2),
-                randn(rng, P, 5),
-                1,
-                randn(rng, P, 5),
-                1,
-            ),
-            (
-                false,
-                :none,
-                nothing,
+                plain...,
                 BLAS.axpy!,
                 P(2),
                 view(randn(rng, P, 10), 1:2:10),
                 view(randn(rng, P, 10), 1:2:10),
             ),
+            (plain..., BLAS.axpby!, P(2), randn(rng, P, 5), P(3), randn(rng, P, 5)),
             (
-                false,
-                :none,
-                nothing,
-                BLAS.axpby!,
-                P(2),
-                randn(rng, P, 5),
-                P(3),
-                randn(rng, P, 5),
-            ),
-            (
-                false,
-                :none,
-                nothing,
+                plain...,
                 BLAS.axpby!,
                 P(2),
                 view(randn(rng, P, 10), 1:2:10),
@@ -2932,24 +2909,22 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 view(randn(rng, P, 10), 1:2:10),
             ),
             # Number scalars: NoTangent Int and mixed-precision floating tangents.
-            (false, :none, nothing, BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
-            (false, :none, nothing, BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
-            (false, :none, nothing, BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
+            (plain..., BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
         ]...,
 
         # Convenience forms need their own boundary above width 1; cover strides too.
         Any[
-            (false, :none, nothing, BLAS.scal!, P(2), randn(rng, P, 5)),
-            (false, :none, nothing, BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
+            (plain..., BLAS.scal!, P(2), randn(rng, P, 5)),
+            (plain..., BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
         ]...,
         (
             if P <: Real
                 Any[
-                    (false, :none, nothing, BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
+                    (plain..., BLAS.dot, randn(rng, P, 5), randn(rng, P, 5)),
                     (
-                        false,
-                        :none,
-                        nothing,
+                        plain...,
                         BLAS.dot,
                         view(randn(rng, P, 10), 1:2:10),
                         view(randn(rng, P, 10), 1:2:10),
@@ -3409,32 +3384,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             Ainv[diagind(Ainv)] .+= 1
             B = randn(rng, P, 2, 2)
             [
-                (
-                    false,
-                    :none,
-                    nothing,
-                    BLAS.trmm!,
-                    'L',
-                    'U',
-                    'N',
-                    'N',
-                    zero(P),
-                    A,
-                    copy(B),
-                ),
-                (
-                    false,
-                    :none,
-                    nothing,
-                    BLAS.trsm!,
-                    'L',
-                    'U',
-                    'N',
-                    'N',
-                    zero(P),
-                    Ainv,
-                    copy(B),
-                ),
+                (false, :none, nothing, f, 'L', 'U', 'N', 'N', zero(P), M, copy(B)) for
+                (f, M) in ((BLAS.trmm!, A), (BLAS.trsm!, Ainv))
             ]
         end,
     )
