@@ -107,10 +107,7 @@ sr(n::Int) = StableRNG(n)
         test_rule(sr(123456), f, x...; perf_flag, is_primitive)
     end
 
-    # `log1psq` and `log2mexp` are FORWARD-only primitives, so the shared loop above cannot cover
-    # them as such: it passes no mode, and asserting `is_primitive` there would fail in reverse,
-    # which still reaches them through its derived path. Asserted here instead, which also brings
-    # the chunked widths that `is_primitive=false` skips.
+    # Assert primitive dispatch only in forward mode; reverse uses derived rules.
     @testset "forward-only primitives" begin
         for P in (Float64, Float32), (f, x) in ((log1psq, P(0.3)), (log2mexp, P(0.1)))
             test_rule(

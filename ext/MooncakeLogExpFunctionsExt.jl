@@ -107,11 +107,9 @@ function LogExpFunctions.logsumexp(x::AbstractVector{NDual{T,N}}) where {T<:IEEE
         v = x[i].value
         v > u && (u = v)
     end
-    # At an infinite maximum logsumexp is non-differentiable. This scalar-NDual path runs inside CUDA
-    # elementwise/reduction kernels, where one NaN poisons the whole reduction, so it returns the
-    # argmax subgradient (uniform over the maximal entries). The NDualArray frules and the reverse
-    # rrules deliberately return NaN there instead — mutually consistent, and a loud flag of the
-    # singularity, rather than committing to a subgradient on the hot path.
+    # At an infinite maximum, scalar-NDual CUDA kernels use a uniform argmax subgradient
+    # to avoid poisoning reductions with NaN. NDualArray frules and reverse rrules instead
+    # return NaN consistently to flag the singularity.
     isinf(u) && return _nf_logsumexp_inf(x, u)
     # Pass 2: accumulate sum(exp(xᵢ − u)) and partial-slot weighted sums.
     # Both _nf_logsumexp_accum and _nf_logsumexp_scale take grad as a function parameter
@@ -170,11 +168,9 @@ xexpy_partials(x, y, z) = (exp(y), z)
 
 @inline scale_partial(p, d) = isfinite(p) ? p * d : nan_tangent_guard(d, p * d)
 
-# Both run native today, so these rules hold that performance rather than improve on it: measured
-# against the transform, `log1psq` costs 1.66x at width 1 and 1.90x at width 8, `log2mexp` 1.52x
-# and 1.13x. The bodies run the audited `NDual` overloads, as the scalar rules elsewhere do.
-# `log1pexp`, `log1mexp` and `logexpm1` measured at parity (1.02x-1.12x) and deliberately get no
-# rule. Forward only: reverse reaches all of these through its derived path.
+# Forward-only timings against the transform: log1psq 1.66x/1.90x and log2mexp
+# 1.52x/1.13x at widths 1/8. Reverse stays derived; log1pexp, log1mexp and
+# logexpm1 measured at parity (1.02x-1.12x), so get no rule.
 for f in (:log1psq, :log2mexp)
     @eval begin
         @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),P} where {P<:IEEEFloat}
@@ -261,8 +257,6 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(Core.kwcall),NamedTuple,typeof(logsumexp),AbstractArray{<:IEEEFloat}
 }
-# Handles both scalar (Colon dims) and array (Int/Tuple dims) result
-# shapes. Per-lane scalar/array reduction.
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
@@ -274,7 +268,6 @@ function frule!!(
     y = logsumexp(_x; kw...)
     w = exp.(_x .- y)  # softmax weights, lane-independent — computed once, not per lane
     tmp = similar(_x)  # scratch reused across lanes
-    # Per-lane reduction is identical for scalar and array results; only the output wrapper differs.
     dy = ntuple(Val(Nw)) do lane
         tmp .= tangent_view(x, lane) .* w
         sum(tmp; kw...)
@@ -285,7 +278,6 @@ function frule!!(
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy))
     end
 end
-# Per-lane scalar accumulation `dy_lane = sum(_dx_lane[i] * exp(_x[i] - y))`.
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw},
     x::Lifted{Array{P,D},Nw,<:NDualArray{P,Nw,D,Array{P,D},NDual{P,Nw}}},
@@ -293,10 +285,8 @@ function frule!!(
     _x = primal(x)
     y = logsumexp(_x)
     parts = _lane_views(tangent(x))
-    # Element-outer, lane-inner: exp(x[i]-y) (the lane-independent softmax weight) is computed once
-    # per element and folded into every lane's sum in one pass — exp once per element, no weight
-    # array. `foldl` carries the per-lane tuple as its accumulator so the inner `ntuple` never closes
-    # over a reassigned variable (which would box and allocate); the rule stays allocation-free.
+    # Share each softmax weight across lanes without a weight array. `foldl` keeps
+    # the ntuple accumulator out of a captured, reassigned variable, avoiding boxing.
     grad = foldl(eachindex(_x); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
         wi = exp(@inbounds(_x[i]) - y)
         ntuple(lane -> g[lane] + @inbounds(parts[lane][i]) * wi, Val(Nw))
@@ -315,12 +305,8 @@ function frule!!(
     dy_lanes = ntuple(lane -> dot(tangent_view(x, lane), w), Val(Nw))
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy_lanes))
 end
-# Wrapped-input variants (e.g. a `view`/`SubArray`, whose forward V is an `ImmutableDual`): canonicalise
-# each lane to a dense tangent via `arrayify` (mirroring the reverse rrules, which also use `arrayify`),
-# then reuse the same per-lane reductions as the dense methods above. The dense `Array`/`NDualArray`
-# methods are strictly more specific. Restricted to `BlasFloat` (what `arrayify` supports) — a *wrapped*
-# non-`BlasFloat` array (e.g. a `Float16` `SubArray`) therefore has no matching forward rule and fails
-# loudly with a `MethodError`; dense `Array{Float16}` is still covered by the `IEEEFloat` methods above.
+# Wrapped inputs require arrayify, which supports only BlasFloat: wrapped Float16
+# fails with MethodError, while dense Float16 uses the IEEEFloat methods above.
 function frule!!(
     ::Lifted{typeof(Core.kwcall),Nw},
     kwargs::Lifted{<:NamedTuple,Nw},
@@ -333,7 +319,6 @@ function frule!!(
     # `dot` conjugates, so keep `sum(dxs .* w)` here (P may be Complex); w is lane-independent.
     w = exp.(px .- y)  # softmax weights, computed once, not per lane
     tmp = similar(px)  # scratch reused across lanes
-    # Per-lane reduction is identical for scalar and array results; only the output wrapper differs.
     dy = ntuple(Val(Nw)) do lane
         tmp .= dxs[lane] .* w
         sum(tmp; kw...)
@@ -344,24 +329,19 @@ function frule!!(
         return Lifted{P,Nw}(y, NDual{P,Nw}(y, dy))
     end
 end
-# Plain scalar logsumexp on a wrapped input: 0-alloc manual loop (mirrors the dense scalar method).
 function frule!!(
     ::Lifted{typeof(logsumexp),Nw}, x::Lifted{<:AbstractArray{P},Nw,<:ImmutableDual}
 ) where {Nw,P<:BlasFloat}
     px, dxs = arrayify(x)
     y = logsumexp(px)
-    # Element-outer, lane-inner (see the dense-`Array` method): exp once per element, folded into
-    # every lane's sum via `foldl` so the inner `ntuple` never closes over a reassigned variable —
-    # no weight array, no boxing, allocation-free.
+    # As above, foldl shares weights across lanes without boxing the accumulator.
     grad = foldl(eachindex(px); init=ntuple(_ -> zero(P), Val(Nw))) do g, i
         wi = exp(@inbounds(px[i]) - y)
         ntuple(lane -> g[lane] + @inbounds(dxs[lane][i]) * wi, Val(Nw))
     end
     return Lifted{P,Nw}(y, NDual{P,Nw}(y, grad))
 end
-# In-place logsumexp! where either argument is wrapped (or they differ in wrapper): arrayify both,
-# mirroring the dense frule + reverse rrule. The dense `Array`/`NDualArray` (both args) frule above is
-# strictly more specific and wins for the dense/dense case; this covers the mixed/wrapped combinations.
+# Canonicalise mixed/wrapped arguments; the dense/dense method is more specific.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
     out::Lifted{<:AbstractArray{P},Nw},
@@ -429,7 +409,6 @@ end
 @is_primitive DefaultCtx Tuple{
     typeof(logsumexp!),AbstractArray{P},AbstractArray{P}
 } where {P<:IEEEFloat}
-# Per-lane in-place `sum!` into `tangent_view(out, lane)`.
 function frule!!(
     ::Lifted{typeof(logsumexp!),Nw},
     out::Lifted{Ao,Nw,<:NDualArray{P,Nw,Do,Ao,NDual{P,Nw}}},

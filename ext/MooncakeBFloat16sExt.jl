@@ -78,32 +78,21 @@ zero_rdata_from_type(::Type{P}) = zero(P)
 
 @inline nan_tangent_guard(dy::P, t::P) = iszero(dy) ? zero(P) : t
 
-# Forward-mode canonical V for `Core.BFloat16` — `NTuple{N, BFloat16}`,
-# i.e. N parallel BFloat16 partials, one per lane. BFloat16 is not in
-# `IEEEFloat` (so `NDual` doesn't cover it), and it's a single-number
-# leaf type, so the structural-lift fallback doesn't apply either.
-# Mirrors the TwicePrecision / Ptr V pattern (`NTuple{N, T}`).
+# BFloat16 is a scalar leaf outside IEEEFloat: V holds one partial per lane,
+# rather than an NDual or a structural lift.
 @foldable @inline function Mooncake.dual_type(::Val{N}, ::Type{P}) where {N}
     return NTuple{N,P}
 end
 @foldable @inline function Mooncake.lifted_type(::Val{N}, ::Type{P}) where {N}
     return Mooncake.Lifted{P,N,NTuple{N,P}}
 end
-# A BFloat16 is a single-number leaf, so its width-1 V `Tuple{BFloat16}` is a leaf, not a structural
-# tuple. Provide the `lift` boundary and override `_materialise_lane` to read the lane directly —
-# the generic one would treat the tuple as per-field and index the fieldless primal
-# (`BoundsError: access DataType at index [1]`). Mirrors the TwicePrecision NTuple-V pattern.
+# The width-1 tuple is a scalar leaf; structural recursion would index a fieldless primal.
 @inline Mooncake.lift(x::P, ẋ::P) = Mooncake.Lifted{P,1}(x, (ẋ,))
 @inline Mooncake._materialise_lane(
     x::Mooncake.Lifted{P,1,Tuple{P}}, lane::Integer, ::IdDict
 ) = Mooncake.tangent(x, lane)
 
-# `NTuple{N,P}` is a single-scalar leaf (ONE dimension, N lanes), like `NDual{T,N}` — not a structural
-# tuple. Without these terminals the gradient/Jacobian driver mis-counts the input's dimensions (a bare
-# BFloat16 tangent hits the fieldless-struct fallback → 0 dimension → silent zero gradient) and the
-# standard-basis seed walk MethodErrors when a BFloat16 leaf is nested in a larger V (the generic
-# `::Tuple` recursion has no bare-BFloat16 terminal). Mirror the `NDual` terminals: one dimension, and a
-# lane is hot iff its slot matches the cursor.
+# Count one dimension, not zero fields; nested basis walks need this scalar terminal too.
 @inline Mooncake.tangent_dim(::P, ::IdDict{Any,Any}) = 1
 @inline function Mooncake._basis_seed_isbits(
     ::NTuple{N,P}, slots::NTuple{N,Int}, c::Int
@@ -368,15 +357,7 @@ function Mooncake.rrule!!(::CoDual{typeof(prevfloat)}, x::CoDual{P})
     return zero_fcodual(prevfloat(primal(x))), pb
 end
 
-# ──────────────────────────────────────────────────────────────────────────
-# Forward `frule!!`s for the BFloat16 primitives (the matching `rrule!!`s are above).
-#
-# V for BFloat16 is `NTuple{Nw, BFloat16}` (defined at the top of this
-# module). Each body applies the primitive's derivative with a per-lane
-# `ntuple` over the partials tuple. For BFloat16 → Float32/Float64
-# conversion rules, the output V is `NDual{F, Nw}` because the output
-# primal is in `IEEEFloat`.
-# ──────────────────────────────────────────────────────────────────────────
+# BFloat16 conversions to IEEEFloat return NDual; BFloat16 results keep tuple partials.
 
 const _PNT{N} = NTuple{N,P}
 using Mooncake: NDual
@@ -415,8 +396,6 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(y, dy)
 end
 
-# Unary scalar primitives — per-lane `deriv * partial` (with optional
-# nan_tangent_guard for safety on degenerate inputs).
 for (op, deriv_expr, guarded) in (
     (:sqrt, :(dx / (2 * y)), true),
     (:cbrt, :(dx / (3 * y^2)), true),
@@ -476,7 +455,6 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(c, dy)
 end
 
-# Binary: hypot, ^
 function Mooncake.frule!!(
     ::Lifted{typeof(hypot),Nw},
     x::Lifted{P,Nw,_PNT{Nw}},
@@ -512,7 +490,6 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(z, dz)
 end
 
-# Binary: max, min — branch on which arg wins
 function Mooncake.frule!!(
     ::Lifted{typeof(max),Nw},
     x::Lifted{P,Nw,_PNT{Nw}},
@@ -538,7 +515,6 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(min(_x, _y), dz)
 end
 
-# abs — sign-based branch on per-lane tangent
 function Mooncake.frule!!(
     ::Lifted{typeof(abs),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
 ) where {Nw}
@@ -548,14 +524,12 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(abs(_x), dy)
 end
 
-# Base.eps — zero tangent
 function Mooncake.frule!!(
     ::Lifted{typeof(Base.eps),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
 ) where {Nw}
     return Lifted{P,Nw}(eps(primal(x)), ntuple(_ -> zero(P), Val(Nw)))
 end
 
-# nextfloat, prevfloat — passthrough tangent
 function Mooncake.frule!!(
     ::Lifted{typeof(nextfloat),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
 ) where {Nw}
