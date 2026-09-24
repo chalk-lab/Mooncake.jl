@@ -282,26 +282,19 @@ end
         @testset "type-valued (DataType) argument" begin
             # The existential must dispatch without inferring `unreachable` (Base.padding
             # on Julia 1.12); Lifted invariance requires widening the kind bound to Type.
-            f_slot = Mooncake.Lifted{
-                typeof(ToolsForRulesResources.datatype_arg_zero_tester),1,Mooncake.NoDual
-            }
             existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
-            @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
-
+            s_slot = Mooncake.Lifted{Float64,1,Mooncake.Nfwd.NDual{Float64,1}}
             # With `where`, widen DataType but keep S direct: calls involving static
             # parameters are invalid in signature type positions.
-            fp_slot = Mooncake.Lifted{
-                typeof(ToolsForRulesResources.datatype_arg_zero_tester_param),
-                1,
-                Mooncake.NoDual,
-            }
-            s_slot = Mooncake.Lifted{Float64,1,Mooncake.Nfwd.NDual{Float64,1}}
-            @test hasmethod(Mooncake.frule!!, Tuple{fp_slot,existential,s_slot})
-            # The static-parameter argument still dispatches (a concrete `S` slot matches).
-            @test hasmethod(
-                Mooncake.frule!!,
-                Tuple{fp_slot,Mooncake.Lifted{Type{Float64},1,Mooncake.NoDual},s_slot},
+            f_param = ToolsForRulesResources.datatype_arg_zero_tester_param
+            for (f, slots) in (
+                (ToolsForRulesResources.datatype_arg_zero_tester, (existential,)),
+                (f_param, (existential, s_slot)),
+                (f_param, (Mooncake.Lifted{Type{Float64},1,Mooncake.NoDual}, s_slot)),
             )
+                f_slot = Mooncake.Lifted{typeof(f),1,Mooncake.NoDual}
+                @test hasmethod(Mooncake.frule!!, Tuple{f_slot,slots...})
+            end
         end
 
         @test_throws(

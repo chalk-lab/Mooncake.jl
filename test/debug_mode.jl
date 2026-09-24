@@ -72,45 +72,22 @@
         end
 
         @testset "integration with test_rule" begin
-            # Test basic case - test_rule expects primal functions, not Duals
-            Mooncake.TestUtils.test_rule(
-                sr(123456), sin, 1.0; mode=ForwardMode, debug_mode=true, perf_flag=:none
+            # * and identity are derived; identity's NoDual slot needs interface-only checks.
+            for (fargs, opts) in (
+                ((sin, 1.0), (;)),
+                ((sum, randn(5)), (;)),
+                ((*, 2.0, 3.0), (; is_primitive=false)),
+                ((identity, 5), (; interface_only=true, is_primitive=false)),
             )
-
-            # Test with array
-            Mooncake.TestUtils.test_rule(
-                sr(123456),
-                sum,
-                randn(5);
-                mode=ForwardMode,
-                debug_mode=true,
-                perf_flag=:none,
-            )
-
-            # More than one differentiable argument, and a non-differentiable one whose slot
-            # carries `NoDual`: both reach the wrapper differently from the scalar case above.
-            # `is_primitive=false`: the primitive here is `mul_float`, not `*`, and `identity`
-            # is derived too, so both reach the wrapper through a `DerivedFRule`.
-            Mooncake.TestUtils.test_rule(
-                sr(123456),
-                *,
-                2.0,
-                3.0;
-                mode=ForwardMode,
-                debug_mode=true,
-                perf_flag=:none,
-                is_primitive=false,
-            )
-            Mooncake.TestUtils.test_rule(
-                sr(123456),
-                identity,
-                5;
-                mode=ForwardMode,
-                debug_mode=true,
-                perf_flag=:none,
-                interface_only=true,
-                is_primitive=false,
-            )
+                Mooncake.TestUtils.test_rule(
+                    sr(123456),
+                    fargs...;
+                    mode=ForwardMode,
+                    debug_mode=true,
+                    perf_flag=:none,
+                    opts...,
+                )
+            end
         end
     end
 end
