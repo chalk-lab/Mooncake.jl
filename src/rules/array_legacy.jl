@@ -1,20 +1,13 @@
-# Julia 1.10 has no `Memory`, so two `Array`s over one buffer (`a` and `reshape(a)`) are distinct
-# objects with nothing in common to key a cache on — the 1.11+ path keys on the backing `Memory`
-# object. `Base.dataids` is what Base's own aliasing machinery uses for exactly this question, and
-# the pair with `length` distinguishes different extents over one start. Valid as a cache key only
-# WITHIN one call, which is all these caches live for: every array walked is rooted by the caller
-# and so cannot be freed and its address reused mid-walk.
+# Julia 1.10 lacks Memory identity: dataids plus length identifies shared storage
+# and distinguishes extents. Valid only within a call while callers root every array,
+# preventing address reuse.
 @inline _legacy_storage(x::Array) = (Base.dataids(x), length(x))
-# A cache hit may have been stored under a different shape over the same buffer, so it is reshaped
-# back — sharing data, not copying. The ELTYPE is asserted at retrieval and the dimensionality comes
-# from the caller's own `N`, which keeps the result concrete: asserting only the reshaped result
-# leaves the cached value `Any` and every use of it dispatches at runtime.
+# Reshape shared cached storage to the caller's shape. Assert its Vector eltype before
+# reshaping to keep dispatch concrete, not just the result type.
 @inline function _legacy_reshape(cached, ::Type{T}, sz::NTuple{N,Int}) where {T,N}
     return reshape(cached::Vector{T}, sz)::Array{T,N}
 end
-# Cached as a `vec`, which shares data, so a hit knows both the eltype and the dimensionality of
-# what it is reshaping. Storing the caller's own shape instead leaves the source `ndims` unknown and
-# `reshape` dispatches on `size` at runtime.
+# Cache vec views so retrieval knows both eltype and dimensionality without copying.
 @inline _legacy_cached(x::Array) = vec(x)
 
 @inline function zero_tangent_internal(x::Array{P,N}, dict::MaybeCache) where {P,N}
@@ -106,22 +99,17 @@ end
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),Tuple{}} where {T,N}
 @zero_derivative MinimalCtx Tuple{Type{<:Array{T,N}},typeof(undef),NTuple{N}} where {T,N}
 
-# `Base.dataids` is broadcasting's aliasing token, and on Julia 1.10 it is the array's raw address
-# (`(UInt(pointer(A)),)`) — which the `jl_array_ptr` frule cannot serve above chunk width 1, since a
-# lane of the element-major block is stride-`N`. The address is only compared, never dereferenced,
-# and a `Tuple{UInt}` carries no derivative, so intercept here rather than descending to the
-# pointer. Both modes: a `dx .+= ...` inside a reverse pullback only reaches the pointer under
-# chunked forward-over-reverse, but the descent happens while the REVERSE rule is built, so a
-# forward-only rule comes too late. Julia 1.11+ keys `dataids` on the backing `Memory`'s
-# `objectid` and never takes this path.
+# On Julia 1.10 dataids compares raw addresses without dereferencing them; its Tuple{UInt}
+# is non-differentiable. Intercept in both modes: reverse rule construction otherwise
+# reaches jl_array_ptr before chunked forward-over-reverse can reject stride-N lanes.
+# Julia 1.11+ uses the backing Memory's objectid instead.
 @zero_derivative MinimalCtx Tuple{typeof(Base.dataids),Array}
 
+# Plain-Array V overloads mutate per-element duals in lockstep, including Array{NoDual}
+# for non-differentiable elements and pullback buffers under forward-over-reverse.
 @is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
-# Mutate the user's Vector and the partials block in sync. The block is element-major, so `d`
-# primal elements from the front are the leading `N * d` block entries. `T<:NDualEltype` with the
-# 4-param V prefix so complex `NDualArray`s (`Complex{NDual}` inner) match too; the body is
-# element-type-agnostic. The plain-`Array`-V overload below covers non-`NDualArray`
-# element-wise Vs.
+# Element-major storage needs N * d block entries per d primal elements.
+# The NDualEltype/4-parameter V prefix also accepts complex NDualArrays.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N},
     a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
@@ -132,9 +120,6 @@ function frule!!(
     Nfwd._resize_block!(Base._deletebeg!, getfield(tangent(a), :partials_block), N, d_p)
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: delete primal and the element-wise tangent `Array` in lockstep. Covers both
-# differentiable non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g.
-# `Vector{Int}`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deletebeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -175,9 +160,6 @@ function frule!!(
     Nfwd._resize_block!(Base._deleteend!, getfield(tangent(a), :partials_block), N, d_p)
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
-# non-float elements and non-differentiable element vectors (`Array{NoDual}` V, e.g. `Vector{Int}`
-# reached via `filter`) — `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deleteend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -230,9 +212,6 @@ function frule!!(
     )
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: an `Array` of per-element Vs, deleted in lockstep. Covers both differentiable
-# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
-# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._deleteat!),N},
     a::Lifted{<:Vector,N,<:Array},
@@ -283,9 +262,6 @@ function frule!!(
     Nfwd._resize_block!(Base._growbeg!, getfield(tangent(a), :partials_block), N, d_p)
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
-# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
-# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growbeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -321,10 +297,6 @@ function frule!!(
     Nfwd._resize_block!(Base._growend!, getfield(tangent(a), :partials_block), N, d_p)
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers vectors of differentiable
-# non-float elements (e.g. the `Vector{Tuple{pullback}}` grown by reverse rules under
-# forward-over-reverse on Julia 1.10) AND non-differentiable element vectors (`Array{NoDual}` V) —
-# `Array{NoDual} <: Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
 ) where {N}
@@ -364,9 +336,6 @@ function frule!!(
     )
     return zero_lifted(Val(N), nothing)
 end
-# Plain-`Array` V: an `Array` of per-element Vs, grown in lockstep. Covers both differentiable
-# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
-# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(Base._growat!),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, d::Lifted
 ) where {N}
@@ -409,9 +378,6 @@ function frule!!(
     sizehint!(getfield(getfield(tangent(x), :partials_block), :parent), N * sz_p)
     return x
 end
-# Plain-`Array` V: an `Array` of per-element Vs, hinted in lockstep. Covers both differentiable
-# non-float elements and non-differentiable element vectors (`Array{NoDual}` V) — `Array{NoDual} <:
-# Array`, so no separate `NoDual` method is needed.
 function frule!!(
     ::Lifted{typeof(sizehint!),N}, x::Lifted{<:Vector,N,<:Array}, sz::Lifted
 ) where {N}
@@ -426,11 +392,8 @@ function rrule!!(f::CoDual{typeof(sizehint!)}, x::CoDual{<:Vector}, sz::CoDual{<
     return x, NoPullback(f, x, sz)
 end
 
-# `Lifted{Ptr{T},N}(y, dy_partials)` is the canonical Ptr V — `dy_partials` is the
-# `NTuple{N,Ptr{T}}` that `dual_type(Val(N), Ptr{T})` expects. In the element-major block a lane
-# is stride-`N`, so only width 1 has a dense per-lane buffer a raw pointer could address; wider
-# chunks fail loudly rather than hand out a pointer that silently reads lane 1 only. Real and
-# complex element types share this body.
+# A raw pointer requires dense lane storage: element-major lanes are stride-N,
+# so only width 1 is addressable. Return the canonical tuple of lane pointers.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -452,14 +415,8 @@ function frule!!(
     block_parent = getfield(getfield(tangent(a), :partials_block), :parent)
     return Lifted{Ptr{T},N}(y, (ccall(:jl_array_ptr, Ptr{T}, (Any,), block_parent),))
 end
-# Element-wise V (abstract/non-float-element array, e.g. `Matrix{Real}` reached via
-# `Base._unsafe_copyto!`): the tangent is a single element-wise `Array` `tangent(a)`,
-# not the `NDualArray`'s parallel per-lane partials. Its pointer is the single element-wise
-# partial pointer; the canonical V for `Ptr{P}` is `NTuple{1, Ptr{E}}` (E = element-wise
-# dual element), coherent with `dual_type(Val(1), Ptr{P})`. Width 1 is the only supported width:
-# N lanes would need N distinct pointers from one interleaved element-wise array. Wider chunks
-# throw here rather than falling through to a `MissingForeigncallRuleError`, matching the
-# `NDualArray` method above.
+# Element-wise arrays (e.g. Matrix{Real} via _unsafe_copyto!) yield one Ptr{E}.
+# Only width 1 is addressable; wider interleaved lanes must throw locally.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -481,15 +438,9 @@ function frule!!(
     dy = ccall(:jl_array_ptr, Ptr{E}, (Any,), tangent(a))
     return Lifted{Ptr{P},N}(y, (dy,))
 end
-# An all-`NoDual` element-wise V carries no derivative, so neither does its pointer: `NoDual` IS the
-# canonical V here, since a non-differentiable element type makes `dual_type(Val(1), Ptr{P})` `NoDual`.
-# The method above would instead hand out `pointer(::Array{NoDual})` — a real address into a buffer of
-# zero-size elements — which contradicts the slot's own declared type and which a re-typing `bitcast`
-# then reads as `Float64` partials, giving a derivative that varies with unrelated heap contents.
-# Mirrors the 1.11+ `_get_lifted_field(::MemoryRef, :ptr_or_offset)` exclusion for a `NoDual` element.
-# Width-`N` unrestricted, unlike the two methods above: a non-differentiable element type has no
-# lanes to address, so `dual_type` gives `Vector{NoDual}`/`NoDual` at every width and the stride
-# argument is vacuous.
+# Array{NoDual} has no addressable derivative at any width: returning its pointer
+# would let bitcast read unrelated heap contents as partials. Use canonical NoDual,
+# as the MemoryRef ptr_or_offset path does on Julia 1.11+.
 function frule!!(
     ::Lifted{typeof(_foreigncall_),N},
     ::Lifted{Val{:jl_array_ptr},N},
@@ -609,13 +560,9 @@ function rrule!!(
     return dest, unsafe_copyto_pb!!
 end
 
-# Primitive forward rule for `complex(::Array{<:IEEEFloat})`. Its derived copy chain
-# (`Vector{Complex}` constructor → `_copyto_impl!` → `_unsafe_copyto!`) reaches the `jl_array_ptr`
-# foreigncall and element-wise `Core.arrayset`, which are uncovered for complex `NDualArray` on
-# legacy-array Julia (1.11-rc4+ lowers array copies through the covered `MemoryRef` path); a
-# primitive short-circuits the chain. ForwardMode-scoped so reverse mode keeps its derived rule;
-# the JVP is exact (complex(x) = x + 0im, so d(complex(x)) = complex(dx)). No version guard — this
-# file is only included on `VERSION < 1.11-rc4` (see `Mooncake.jl`).
+# On legacy Julia, derived complex-array copying reaches unsupported jl_array_ptr/arrayset
+# paths. Override forward mode only; reverse keeps its derived rule. This file is
+# loaded only before Julia 1.11-rc4, where MemoryRef copying takes over.
 @is_primitive MinimalCtx ForwardMode Tuple{
     typeof(complex),Array{P,D}
 } where {P<:IEEEFloat,D}
@@ -645,9 +592,7 @@ Base.@propagate_inbounds function frule!!(
     dy_partials = ntuple(k -> @inbounds(blk[Nfwd._lane_index(v, e, k)]), Val(Nw))
     return Lifted{T,Nw}(y, _scalar_ndual(y, dy_partials))
 end
-# Element-wise V: read the element primal and its per-element V from the parallel arrays.
-# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; the read yields
-# the element's `NoDual`), so no separate `NoDual` method is needed.
+# Element-wise reads also cover Array{NoDual}, yielding the element's NoDual.
 Base.@propagate_inbounds function frule!!(
     ::Lifted{typeof(Core.arrayref),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -700,9 +645,7 @@ function frule!!(
     end
     return A
 end
-# Element-wise V: set the element primal and its per-element V into the parallel arrays.
-# Covers non-differentiable element vectors too (`Array{NoDual} <: Array`; writing the
-# scalar's `NoDual` into the V is a typed no-op), so no separate `NoDual` method is needed.
+# Element-wise stores also cover Array{NoDual}, where the dual store is a typed no-op.
 function frule!!(
     ::Lifted{typeof(Core.arrayset),Nw},
     inbounds::Lifted{Bool,Nw},
@@ -784,8 +727,7 @@ function rrule!!(f::CoDual{typeof(Core.arraysize)}, X, dim)
 end
 
 @is_primitive MinimalCtx Tuple{typeof(copy),Array}
-# `T<:NDualEltype` (not just `IEEEFloat`) with the 4-param V prefix so complex `NDualArray`s
-# (`Wrapped === Complex{NDual}`) match too — the `rrule!!` already handles complex.
+# NDualEltype and the 4-parameter V prefix include complex NDualArrays.
 function frule!!(
     ::Lifted{typeof(copy),N}, a::Lifted{Array{T,D},N,<:NDualArray{T,N,D,Array{T,D}}}
 ) where {N,T<:NDualEltype,D}
@@ -795,10 +737,7 @@ function frule!!(
         new_primal, NDualArray{T,N,D,Array{T,D}}(new_primal, new_block)
     )
 end
-# Element-wise V (non-differentiable / element-wise array, e.g. a `Vector{UInt8}` → `Vector{NoDual}`
-# reached via `copy(::Set)`/`copy(::Dict)` internals): copy the primal and the element-wise V
-# array. Mirrors the 1.11+ `Memory` path's general overload and the `rrule!!`'s `<:Array`
-# breadth; the more-specific `NDualArray` overload above wins for float parallel-arrays.
+# Element-wise copies include non-differentiable arrays reached via Set/Dict copying.
 @inline function frule!!(::Lifted{typeof(copy),N}, a::Lifted{<:Array,N,<:Array}) where {N}
     return Lifted{typeof(primal(a)),N}(copy(primal(a)), copy(tangent(a)))
 end

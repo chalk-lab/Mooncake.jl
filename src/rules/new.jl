@@ -1,19 +1,7 @@
 @is_primitive MinimalCtx Tuple{typeof(_new_),Vararg}
 
-# Lifted-arg `_new_` — branches on P shape inside the @generated body and
-# returns a per-shape construction expression. All sub-function calls
-# (`_new_`, `tuple_map`, `Lifted`, `ImmutableDual`, `MutableDual`) live in
-# the returned expression per AGENTS.md; the generator body uses only
-# introspection. In particular each branch's `dual_type(Val(Nw), P) === NoDual` collapse test
-# (whole-`NoDual` vs element-wise V) is emitted into the returned expression and evaluated at the
-# call world, never the generator body, so a more-specific or extension `dual_type` overload (e.g.
-# CUDA `CuArray`/`CuPtr`) is respected. Specific overloads in other files (e.g.
-# `_new_(Complex{P}, ::P, ::P)` in `complex.jl`) are more specific and
-# take precedence.
-#
-# For the struct-lift case, constructor-omitted fields (`i > M` of `fieldcount(P)`)
-# are padded with uninitialised backing (`fieldtype(backing, i)()`), matching
-# `build_output_tangent`'s `PossiblyUninitTangent` behaviour.
+# Keep construction and dual_type calls in returned code to respect call-world overloads.
+# Constructor-omitted fields use uninitialised backing, as in build_output_tangent.
 @generated function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,M}
 ) where {P,Nw,M}
@@ -24,14 +12,12 @@
     if P <: Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            # An all-non-differentiable tuple (incl. the empty `Tuple{}`) has
-            # `dual_type(P) === NoDual`; build whole `NoDual`, not an element-wise V.
+            # All-non-differentiable tuples, including Tuple{}, collapse to whole NoDual.
             dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
             return Lifted{P,Nw}(y, tuple_map(tangent, x))
         end
     elseif P <: NamedTuple
-        # An all-non-differentiable NamedTuple has `dual_type(P) === NoDual`, so build whole
-        # `NoDual` rather than an element-wise V (same collapse as the Tuple/struct branches).
+        # Non-differentiable NamedTuples also collapse to whole NoDual.
         names = (P.parameters[1])::Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
@@ -39,8 +25,7 @@
             return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
         end
     elseif fieldcount(P) == 0
-        # Fieldless (incl. every primitive type — `fieldcount` returns 0 for them): no
-        # differentiable content, so V is `NoDual`. (`fieldcount` is world-independent here.)
+        # Fieldless types (including primitives) have no differentiable content.
         return quote
             y = _new_(P, tuple_map(primal, x)...)
             return Lifted{P,Nw}(y, NoDual())
@@ -48,12 +33,8 @@
     else
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
         inits = always_initialised(P)
-        # Coerce the field-V tuple into the *declared* backing NamedTuple
-        # `fieldtype(dual_type(Val(Nw), P), 1)`: a field declared abstract is
-        # stored as `Any`; a non-always-init field as `PossiblyUninitTangent`,
-        # initialised from its backing field type when the arg is supplied
-        # (`i <= M`) or left uninit when `_new_` omits it (`i > M`, e.g.
-        # `StructFoo(a)` leaving `b` undefined). Keeps V `=== dual_type(Val(Nw), P)`.
+        # Use declared backing types: abstract fields store Any, and possibly uninitialised
+        # fields wrap supplied values or remain uninitialised when omitted. This keeps V canonical.
         field_exprs = map(1:fieldcount(P)) do i
             i > M && return :(fieldtype(backing, $i)())
             base = :(tangent(x[$i]))
@@ -61,14 +42,10 @@
         end
         return quote
             y = _new_(P, tuple_map(primal, x)...)
-            # A non-differentiable struct collapses to `NoDual` (same collapse as the
-            # Tuple/NamedTuple branches).
+            # Non-differentiable structs also collapse to whole NoDual.
             V = dual_type(Val(Nw), P)
             V === NoDual && return Lifted{P,Nw}(y, NoDual())
-            # This branch can only build a struct-lift wrapper. When P's canonical V is a
-            # dedicated container instead (e.g. `NDualMemoryRef` for `MemoryRef`), the backing
-            # construction below would throw a baffling MethodError — fail clearly instead.
-            # (Runtime guard, so a more-specific `frule!!` for such a P wins before reaching this.)
+            # Dedicated containers need specific rules; struct backing construction is invalid for them.
             V <: Union{ImmutableDual,MutableDual} || error(
                 "forward _new_($P, ...): the canonical forward representation is $V, not a " *
                 "struct-lift Immutable/MutableDual, so the generic struct construction does " *
@@ -81,10 +58,7 @@
     end
 end
 
-# `Ref(x)` / `RefValue{P}(x)` with `P<:NDualEltype` (real or complex scalar): the canonical V is
-# `NDualRef`, not the generic struct lift. Its parallel partials buffer takes the seed's per-lane
-# partials (`_nfwd_dual_partial` handles `NDual` and `Complex{NDual}`). More specific than the
-# @generated `_new_` above, so it wins.
+# Real/complex RefValue uses NDualRef, not struct lift; seed its per-lane partials.
 function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}, x::Lifted{P,Nw}
 ) where {Nw,P<:NDualEltype}
@@ -94,9 +68,7 @@ function frule!!(
         pr, NDualRef{P,Nw}(Base.RefValue{NTuple{Nw,P}}(parts))
     )
 end
-# Zero-arg `RefValue{P}()` (uninitialised — no value to seed): canonical V is a zero-init
-# `NDualRef`. Without this, M=0 falls into the @generated struct-lift branch above, which builds
-# a `MutableDual` backing incoherent with `dual_type === NDualRef` and throws.
+# Uninitialised real/complex RefValue needs zero-init NDualRef, not MutableDual.
 function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{Base.RefValue{P}},Nw}
 ) where {Nw,P<:NDualEltype}
@@ -145,9 +117,8 @@ function rrule!!(
     y = _new_(P, tuple_map(primal, x)...)
     return CoDual(y, tangent_type(P)()), NoPullback(f, p, x...)
 end
-# Forward analog: an `IdDict`'s canonical dual is `IdDict{K,dual_type(V)}`, a dedicated container
-# rather than a struct-lift, so the generic `@generated frule!!` above hits its guard. The fields a
-# `_new_`ed IdDict is built from are all non-differentiable, so its dual is the empty dual dict.
+# IdDict uses a dedicated dual container; its non-differentiable constructor fields
+# produce an empty dual dict.
 function frule!!(
     ::Lifted{typeof(_new_),Nw}, ::Lifted{Type{P},Nw}, x::Vararg{Lifted,N}
 ) where {P<:IdDict,Nw,N}
@@ -344,10 +315,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:new})
     general_test_cases = map(TestTypes.PRIMALS) do (interface_only, P, args)
         return (interface_only, :none, nothing, _new_, P, args...)
     end
-    # Forward `_new_` on a type whose canonical V is a dedicated container (not a struct-lift
-    # wrapper) must fail with the coherence error naming the supported primitive
-    # (`memoryrefnew` for `MemoryRef`), not a baffling MethodError from the construction.
-    # `Memory` does not exist before 1.11, so there is nothing to build there.
+    # Dedicated containers must report the coherence error and supported primitive.
+    # MemoryRef is unavailable before Julia 1.11.
     coherence_cases, coherence_memory = @static if VERSION >= v"1.11-"
         let mem = fill!(Memory{Float64}(undef, 3), 1.0), ref = memoryref(mem)
             Any[(

@@ -2,11 +2,7 @@
 # because we drop the gradient, because the tangent type of integers is NoTangent.
 # https://github.com/JuliaLang/julia/blob/9f9e989f241fad1ae03c3920c20a93d8017a5b8f/base/pointer.jl#L282
 @is_primitive MinimalCtx Tuple{typeof(Base.:(+)),Ptr,Integer}
-# V for a differentiable `Ptr` is `NTuple{N, Ptr{E}}` (per-lane partial pointers,
-# E = parallel-arrays element type or the element-wise dual element); the pointer shift
-# `tangent_lane + primal(y)` is applied to each lane. Covers both the parallel-arrays
-# float case (`Ptr{T}`, V `NTuple{N,Ptr{T}}`) and the element-wise abstract-element case
-# (`Ptr{Real}`, V `NTuple{1,Ptr{Any}}`), matching the `rrule!!` breadth below.
+# Shift each lane pointer, including abstract-element pointers such as Ptr{Real}.
 function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{P,Nw,<:NTuple{Nw,Ptr}}, y::Lifted{<:Integer}
 ) where {Nw,P<:Ptr}
@@ -15,9 +11,7 @@ function frule!!(
     # REVERSE tangent, a `VoidPtrTangent` for `Ptr{Nothing}`, not the address the lane holds.
     return Lifted{P,Nw}(primal(x) + yp, ntuple(lane -> tangent(x)[lane] + yp, Val(Nw)))
 end
-# Non-differentiable pointer (V === NoDual): the shift carries no derivative. The
-# reverse `rrule!!` below matches any `<:Ptr`, so forward needs this to match its
-# breadth (a `NoDual`-V pointer arises e.g. from the generic `bitcast` fallback).
+# NoDual pointers (e.g. from bitcast) must match the primitive's full Ptr coverage.
 function frule!!(
     ::Lifted{typeof(Base.:(+)),Nw}, x::Lifted{<:Ptr,Nw,NoDual}, y::Lifted{<:Integer}
 ) where {Nw}
@@ -36,11 +30,8 @@ end
 
 @zero_derivative MinimalCtx Tuple{typeof(randn),AbstractRNG,Vararg}
 @zero_derivative MinimalCtx Tuple{typeof(string),Vararg}
-# Character predicates backed by a `utf8proc` ccall, which the transform cannot see through. They
-# are `Bool`-valued and have no derivative, but without these `LinearAlgebra`'s wrapper-char
-# dispatch takes `Symmetric(A) * B` -- ordinary code -- into a `MissingForeigncallRuleError` in both
-# modes. Measured membership: `isdigit`, `isspace`, `iscntrl` and `isxdigit` take ASCII fast paths
-# and never reach the ccall, so they are not listed.
+# These Bool-valued predicates reach utf8proc foreign calls, including through
+# LinearAlgebra wrapper-char dispatch. isdigit/isspace/iscntrl/isxdigit use ASCII fast paths.
 for f in (:isuppercase, :islowercase, :isletter, :isnumeric, :ispunct, :isprint)
     @eval @zero_derivative MinimalCtx Tuple{typeof($f),AbstractChar}
 end
@@ -301,11 +292,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
                 1.0,
             ),
 
-            # `Symmetric(A) * B` is the shape that made these matter: on 1.12 `LinearAlgebra`'s
-            # wrapper-char dispatch calls `isuppercase`, whose `utf8proc` ccall the transform
-            # cannot see through, so ordinary code failed in BOTH modes. The predicates are
-            # exercised through a barrier as well, since a literal argument constant-folds the
-            # call away before the transform ever sees it.
+            # Matrix wrappers exercise utf8proc-backed char dispatch. A barrier keeps direct
+            # predicate tests from constant-folding away before AD sees them.
             (
                 false,
                 :none,
