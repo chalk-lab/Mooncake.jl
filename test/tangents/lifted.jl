@@ -954,47 +954,38 @@ const NDAC_VecC64 = NDualArray{
         # Aggregate lift must share one cache across repeated mutable fields.
         # Non-float elements expose independent container partials hidden by float tangent aliases.
         a = [[1.0], [2.0]]
-        let vt = tangent(lift((a, a), zero_tangent((a, a))))
-            @test vt[1] === vt[2]
-        end
-        let vn = tangent(lift((p=a, q=a), zero_tangent((p=a, q=a))))
-            @test vn.p === vn.q
-        end
-        let x = LiftedTest_TwoArrays(a, a)
-            v = tangent(lift(x, zero_tangent(x))).fields
-            @test v.p === v.q
+        for x in ((a, a), (p=a, q=a), LiftedTest_TwoArrays(a, a))
+            v = tangent(lift(x, zero_tangent(x)))
+            fields = x isa LiftedTest_TwoArrays ? v.fields : v
+            @test fields[1] === fields[2]
         end
     end
 
     @testset "_add_to_primal with non-always-init struct fields (D4/D9)" begin
         # Match reverse reconstruction: unwrap PUTs, preserve undefined fields, honour unsafe.
-        @testset "bitstype uninit field (PUT initialised)" begin
-            x = LiftedTest_MaybeInit(3.0)  # `y` is bitstype ⇒ isdefined, PUT carries a value
+        # Bitstype y is defined (PUT); heap y stays FieldUndefined.
+        @testset "$T" for (T, seed) in
+                          ((LiftedTest_MaybeInit, 1), (LiftedTest_MaybeInitHeap, 2))
+            x = T(3.0)
             for N in (1, 2, 3)
-                r = randn_lifted(Val(N), Xoshiro(1), x)
+                r = randn_lifted(Val(N), Xoshiro(seed), x)
                 xp = Mooncake._add_to_primal(primal(r), tangent(r), true)
-                @test xp isa LiftedTest_MaybeInit
+                @test xp isa T
                 @test xp.x != 3.0
+                if T === LiftedTest_MaybeInitHeap
+                    @test !isdefined(xp, :y)
+                end
             end
-            z = zero_lifted(Val(1), x)
-            @test Mooncake._add_to_primal(primal(z), tangent(z), true).x === 3.0
-            # Safe reconstruction must use the public constructor. Both fields are present,
-            # but only a one-argument constructor exists, so report AddToPrimalException.
-            @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(
-                primal(z), tangent(z), false
-            )
-        end
-        @testset "heap uninit field (FieldUndefined)" begin
-            x = LiftedTest_MaybeInitHeap(3.0)  # `y::Vector` genuinely undefined
-            for N in (1, 2, 3)
-                r = randn_lifted(Val(N), Xoshiro(2), x)
-                xp = Mooncake._add_to_primal(primal(r), tangent(r), true)
-                @test xp isa LiftedTest_MaybeInitHeap
-                @test xp.x != 3.0
-                @test !isdefined(xp, :y)  # undefined field stays undefined, matching reverse
-            end
-            # An undefined y permits the public one-argument constructor; safe reconstruction succeeds.
-            let z = randn_lifted(Val(1), Xoshiro(3), x)
+            if T === LiftedTest_MaybeInit
+                z = zero_lifted(Val(1), x)
+                @test Mooncake._add_to_primal(primal(z), tangent(z), true).x === 3.0
+                # Both fields exist, but the public constructor takes only one argument.
+                @test_throws Mooncake.AddToPrimalException Mooncake._add_to_primal(
+                    primal(z), tangent(z), false
+                )
+            else
+                # FieldUndefined permits the public one-argument constructor.
+                z = randn_lifted(Val(1), Xoshiro(3), x)
                 r = Mooncake._add_to_primal(primal(z), tangent(z), false)
                 @test r isa LiftedTest_MaybeInitHeap
                 @test !isdefined(r, :y)

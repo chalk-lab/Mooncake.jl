@@ -1473,72 +1473,39 @@ end
 
 # Element-wise array seeds skip undefined slots; numeric elements use NDualArray above.
 # Keep dual_type in the caller's world so extension overloads remain visible.
-@inline function zero_dual(w::Val{N}, x::Array{T,D}) where {N,T,D}
-    v = similar(x, dual_type(w, T))
-    @inbounds for i in eachindex(x)
-        isassigned(x, i) && (v[i] = zero_dual(w, x[i]))
+for factory in (:zero_dual, :uninit_dual, :randn_dual)
+    rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
+    rng_vals = factory === :randn_dual ? (:rng,) : ()
+    @eval @inline function $factory(w::Val{N}, $(rng_args...), x::Array{T,D}) where {N,T,D}
+        v = similar(x, dual_type(w, T))
+        @inbounds for i in eachindex(x)
+            isassigned(x, i) && (v[i] = $factory(w, $(rng_vals...), x[i]))
+        end
+        return v
     end
-    return v
-end
-@inline function uninit_dual(w::Val{N}, x::Array{T,D}) where {N,T,D}
-    v = similar(x, dual_type(w, T))
-    @inbounds for i in eachindex(x)
-        isassigned(x, i) && (v[i] = uninit_dual(w, x[i]))
+    # Gate tuple seeds on dual_type: even the empty tuple seeds to NoDual, while the
+    # private _dual_tuple_v recursion base remains Tuple{}.
+    @eval @inline function $factory(w::Val{N}, $(rng_args...), x::Tuple) where {N}
+        dual_type(w, typeof(x)) === NoDual && return NoDual()
+        return map(xi -> $factory(w, $(rng_vals...), xi), x)
     end
-    return v
-end
-@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Array{T,D}) where {N,T,D}
-    v = similar(x, dual_type(w, T))
-    @inbounds for i in eachindex(x)
-        isassigned(x, i) && (v[i] = randn_dual(w, rng, x[i]))
+
+    # map preserves NamedTuple names.
+    # All-non-differentiable NamedTuples seed to whole `NoDual`, matching their
+    # `dual_type`; otherwise build element-wise.
+    @eval @inline function $factory(w::Val{N}, $(rng_args...), x::NamedTuple) where {N}
+        tangent_type(typeof(x)) === NoTangent && return NoDual()
+        return map(xi -> $factory(w, $(rng_vals...), xi), x)
     end
-    return v
-end
 
-# Gate tuple seeds on dual_type: even the empty tuple seeds to NoDual, while the
-# private _dual_tuple_v recursion base remains Tuple{}.
-
-@inline function zero_dual(w::Val{N}, x::Tuple) where {N}
-    dual_type(w, typeof(x)) === NoDual && return NoDual()
-    return map(xi -> zero_dual(w, xi), x)
-end
-@inline function uninit_dual(w::Val{N}, x::Tuple) where {N}
-    dual_type(w, typeof(x)) === NoDual && return NoDual()
-    return map(xi -> uninit_dual(w, xi), x)
-end
-@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
-    dual_type(w, typeof(x)) === NoDual && return NoDual()
-    return map(xi -> randn_dual(w, rng, xi), x)
-end
-
-# map preserves NamedTuple names.
-# All-non-differentiable NamedTuples seed to whole `NoDual`, matching their
-# `dual_type`; otherwise build element-wise.
-@inline function zero_dual(w::Val{N}, x::NamedTuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
-    return map(xi -> zero_dual(w, xi), x)
-end
-@inline function uninit_dual(w::Val{N}, x::NamedTuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
-    return map(xi -> uninit_dual(w, xi), x)
-end
-@inline function randn_dual(w::Val{N}, rng::AbstractRNG, x::NamedTuple) where {N}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
-    return map(xi -> randn_dual(w, rng, xi), x)
-end
-
-# Complex floats use Complex{NDual}, not the generic structural lift.
-
-@inline function zero_dual(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
-    return Complex{NDual{R,N}}(zero_dual(w, real(z)), zero_dual(w, imag(z)))
-end
-@inline function uninit_dual(w::Val{N}, z::Complex{R}) where {N,R<:IEEEFloat}
-    return Complex{NDual{R,N}}(uninit_dual(w, real(z)), uninit_dual(w, imag(z)))
-end
-@inline function randn_dual(
-    w::Val{N}, rng::AbstractRNG, z::Complex{R}
-) where {N,R<:IEEEFloat}
-    return Complex{NDual{R,N}}(randn_dual(w, rng, real(z)), randn_dual(w, rng, imag(z)))
+    # Complex floats use Complex{NDual}, not the generic structural lift.
+    @eval @inline function $factory(
+        w::Val{N}, $(rng_args...), z::Complex{R}
+    ) where {N,R<:IEEEFloat}
+        return Complex{NDual{R,N}}(
+            $factory(w, $(rng_vals...), real(z)), $factory(w, $(rng_vals...), imag(z))
+        )
+    end
 end
 
 # Structural seeds wrap per-field Vs according to mutability. Sub-function calls stay
@@ -1680,115 +1647,136 @@ end
     end
 end
 
-for (factory, internal) in
-    ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
-    @eval begin
-        @generated function $internal(w::Val{N}, x::P, d::MaybeCache) where {N,P}
-            # `fieldcount(P) == 0` is world-independent (gen-time); the
-            # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
-            fieldcount(P) == 0 && return :($$(QuoteNode(factory))(w, x))
-            seeds = map(1:fieldcount(P)) do i
-                nm = QuoteNode(fieldnames(P)[i])
-                _seed_field_expr(
-                    N, P, i, :($$(QuoteNode(internal))(w, getfield(x, $nm), d))
-                )
-            end
-            if ismutabletype(P)
-                return quote
-                    V = dual_type(Val(N), P)
-                    V === NoDual && return NoDual()
-                    backing = fieldtype(V, 1)
-                    haskey(d, x) && return d[x]::MutableDual{backing}
-                    shell = MutableDual{backing}()
-                    d[x] = shell
-                    shell.fields = backing(($(seeds...),))
-                    return shell
+for (factory, internal) in (
+    (:zero_dual, :_zero_dual_internal),
+    (:uninit_dual, :_uninit_dual_internal),
+    (:randn_dual, :_randn_dual_internal),
+)
+    rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
+    rng_vals = factory === :randn_dual ? (:rng,) : ()
+    if factory !== :randn_dual
+        @eval begin
+            @generated function $internal(w::Val{N}, x::P, d::MaybeCache) where {N,P}
+                # `fieldcount(P) == 0` is world-independent (gen-time); the
+                # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
+                fieldcount(P) == 0 && return :($$(QuoteNode(factory))(w, x))
+                seeds = map(1:fieldcount(P)) do i
+                    nm = QuoteNode(fieldnames(P)[i])
+                    _seed_field_expr(
+                        N, P, i, :($$(QuoteNode(internal))(w, getfield(x, $nm), d))
+                    )
                 end
-            else
-                return quote
-                    V = dual_type(Val(N), P)
-                    V === NoDual && return NoDual()
-                    ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
+                if ismutabletype(P)
+                    return quote
+                        V = dual_type(Val(N), P)
+                        V === NoDual && return NoDual()
+                        backing = fieldtype(V, 1)
+                        haskey(d, x) && return d[x]::MutableDual{backing}
+                        shell = MutableDual{backing}()
+                        d[x] = shell
+                        shell.fields = backing(($(seeds...),))
+                        return shell
+                    end
+                else
+                    return quote
+                        V = dual_type(Val(N), P)
+                        V === NoDual && return NoDual()
+                        ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
+                    end
                 end
             end
         end
+    end
+    @eval begin
         # Assert cache hits to the concrete V or IdDict{Any,Any} poisons inference.
         # Numeric elements cannot cycle; their blocks still share the backing Memory's V.
-        function $internal(w::Val{N}, x::Array{<:NDualEltype}, d::MaybeCache) where {N}
+        function $internal(
+            w::Val{N}, $(rng_args...), x::Array{<:NDualEltype}, d::MaybeCache
+        ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             # Derive the block from the backing `Memory`'s (see `_derived_array_dual`). Only with a
             # cache: without one there is no other V to share with, so an owned block is both
             # correct and cheaper.
             @static if VERSION >= v"1.11-rc4"
                 v = if d isa NoCache
-                    $factory(w, x)
+                    $factory(w, $(rng_vals...), x)
                 else
-                    _derived_array_dual(w, x, $internal(w, getfield(x, :ref).mem, d))
+                    _derived_array_dual(
+                        w, x, $internal(w, $(rng_vals...), getfield(x, :ref).mem, d)
+                    )
                 end
             else
-                v = _cached_array_dual(w, x, d, () -> $factory(w, x))
+                v = _cached_array_dual(w, x, d, () -> $factory(w, $(rng_vals...), x))
             end
             d[x] = v
             return v
         end
         # Register before filling: nested arrays may alias or cycle. Thread the same cache
         # through children, unlike the deliberately cache-free factories.
-        function $internal(w::Val{N}, x::Array, d::MaybeCache) where {N}
+        function $internal(w::Val{N}, $(rng_args...), x::Array, d::MaybeCache) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
             d[x] = shell
             @inbounds for i in eachindex(x)
-                isassigned(x, i) && (shell[i] = $internal(w, x[i], d))
+                isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
             end
             return shell
         end
         # `Ref{P<:NDualEltype}` → `NDualRef` (scalar analogue of the `Array` branch): build the
         # wrapper directly and register by identity, so the generic struct recursion never re-lifts it.
         function $internal(
-            w::Val{N}, x::Base.RefValue{P}, d::MaybeCache
+            w::Val{N}, $(rng_args...), x::Base.RefValue{P}, d::MaybeCache
         ) where {N,P<:NDualEltype}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-            v = $factory(w, x)
+            v = $factory(w, $(rng_vals...), x)
             d[x] = v
             return v
         end
-        function $internal(w::Val{N}, x::Tuple, d::MaybeCache) where {N}
+        function $internal(w::Val{N}, $(rng_args...), x::Tuple, d::MaybeCache) where {N}
             dual_type(w, typeof(x)) === NoDual && return NoDual()
-            return map(xi -> $internal(w, xi, d), x)
+            return map(xi -> $internal(w, $(rng_vals...), xi, d), x)
         end
-        function $internal(w::Val{N}, x::NamedTuple{names}, d::MaybeCache) where {N,names}
+        function $internal(
+            w::Val{N}, $(rng_args...), x::NamedTuple{names}, d::MaybeCache
+        ) where {N,names}
             tangent_type(typeof(x)) === NoTangent && return NoDual()
-            return NamedTuple{names}(map(xi -> $internal(w, xi, d), values(x)))
+            return NamedTuple{names}(
+                map(xi -> $internal(w, $(rng_vals...), xi, d), values(x))
+            )
         end
         # Complex / Memory / MemoryRef have fields but their own canonical V (not a
         # structural lift), so delegate to the cache-free factory.
-        $internal(w::Val{N}, z::Complex, ::MaybeCache) where {N} = $factory(w, z)
+        $internal(w::Val{N}, $(rng_args...), z::Complex, ::MaybeCache) where {N} = $factory(
+            w, $(rng_vals...), z
+        )
     end
     @static if VERSION >= v"1.11-rc4"
         # With a cache, MemoryRef must share the backing Memory's partials. Leaf elements
         # window its block; aggregates reference its element-wise shell. NoCache owns a block.
         @eval function $internal(
-            w::Val{N}, x::MemoryRef{E}, d::MaybeCache
+            w::Val{N}, $(rng_args...), x::MemoryRef{E}, d::MaybeCache
         ) where {N,E<:NDualEltype}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = if d isa NoCache
-                $factory(w, x)
+                $factory(w, $(rng_vals...), x)
             else
                 NDualMemoryRef{E,N,Memory{E}}(
                     x,
-                    getfield($internal(w, x.mem, d), :partials_block),
+                    getfield($internal(w, $(rng_vals...), x.mem, d), :partials_block),
                     Core.memoryrefoffset(x),
                 )
             end
             d[x] = v
             return v
         end
-        @eval function $internal(w::Val{N}, x::MemoryRef, d::MaybeCache) where {N}
+        @eval function $internal(
+            w::Val{N}, $(rng_args...), x::MemoryRef, d::MaybeCache
+        ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             v = if d isa NoCache
-                $factory(w, x)
+                $factory(w, $(rng_vals...), x)
             else
-                _memoryref_at($internal(w, x.mem, d), Core.memoryrefoffset(x))
+                _memoryref_at($internal(w, $(rng_vals...), x.mem, d), Core.memoryrefoffset(x))
             end
             d[x] = v
             return v
@@ -1797,17 +1785,19 @@ for (factory, internal) in
         # `Memory` of aggregates (a `Dict`'s `vals`, say) must thread `d` through its elements the
         # way the element-wise `Array` branch does, or two elements holding one array get
         # independent partials: registering `x` alone shares the container, not what is inside it.
-        @eval function $internal(w::Val{N}, x::Memory, d::MaybeCache) where {N}
+        @eval function $internal(
+            w::Val{N}, $(rng_args...), x::Memory, d::MaybeCache
+        ) where {N}
             haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
             if eltype(x) <: NDualEltype
-                v = $factory(w, x)
+                v = $factory(w, $(rng_vals...), x)
                 d[x] = v
                 return v
             end
             shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
             d[x] = shell
             @inbounds for i in eachindex(x)
-                isassigned(x, i) && (shell[i] = $internal(w, x[i], d))
+                isassigned(x, i) && (shell[i] = $internal(w, $(rng_vals...), x[i], d))
             end
             return shell
         end
@@ -1843,129 +1833,19 @@ end
         end
     end
 end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::Array{<:NDualEltype}, d::MaybeCache
-) where {N}
-    # Assert the cache lookup to the concrete `dual_type`; see the `_zero_dual_internal`
-    # Array overload for why an un-asserted `IdDict{Any,Any}` lookup poisons inference.
-    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-    # Window the backing `Memory`'s block, as the zero/uninit branches do.
-    @static if VERSION >= v"1.11-rc4"
-        v = if d isa NoCache
-            randn_dual(w, rng, x)
-        else
-            _derived_array_dual(w, x, _randn_dual_internal(w, rng, getfield(x, :ref).mem, d))
-        end
-    else
-        v = _cached_array_dual(w, x, d, () -> randn_dual(w, rng, x))
+for (factory, internal) in (
+    (:zero_lifted, :_zero_dual_internal),
+    (:uninit_lifted, :_uninit_dual_internal),
+    (:randn_lifted, :_randn_dual_internal),
+)
+    rng_args = factory === :randn_lifted ? (:(rng::AbstractRNG),) : ()
+    rng_vals = factory === :randn_lifted ? (:rng,) : ()
+    @eval @inline function $factory(w::Val{N}, $(rng_args...), x::P) where {N,P}
+        return Lifted{P,N}(
+            x,
+            $internal(w, $(rng_vals...), x, isbitstype(P) ? NoCache() : IdDict{Any,Any}()),
+        )
     end
-    d[x] = v
-    return v
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::Array, d::MaybeCache
-) where {N}
-    # Element-wise array: register the shell before filling and thread `d` through the elements,
-    # so a self-referential or aliased array seeds without overflowing; see `_zero_dual_internal`.
-    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-    shell = similar(x, eltype(dual_type(Val(N), typeof(x))))
-    d[x] = shell
-    @inbounds for i in eachindex(x)
-        isassigned(x, i) && (shell[i] = _randn_dual_internal(w, rng, x[i], d))
-    end
-    return shell
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::Base.RefValue{P}, d::MaybeCache
-) where {N,P<:NDualEltype}
-    haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-    v = randn_dual(w, rng, x)
-    d[x] = v
-    return v
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::Tuple, d::MaybeCache
-) where {N}
-    dual_type(w, typeof(x)) === NoDual && return NoDual()
-    return map(xi -> _randn_dual_internal(w, rng, xi, d), x)
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::NamedTuple{names}, d::MaybeCache
-) where {N,names}
-    tangent_type(typeof(x)) === NoTangent && return NoDual()
-    return NamedTuple{names}(map(xi -> _randn_dual_internal(w, rng, xi, d), values(x)))
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, z::Complex, ::MaybeCache
-) where {N}
-    randn_dual(w, rng, z)
-end
-@static if VERSION >= v"1.11-rc4"
-    # Same derivation as the zero/uninit factories: the ref's V windows the backing `Memory`'s
-    # rather than owning a block, or a partial written through the array is invisible through the
-    # ref.
-    function _randn_dual_internal(
-        w::Val{N}, rng::AbstractRNG, x::MemoryRef{E}, d::MaybeCache
-    ) where {N,E<:NDualEltype}
-        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-        v = if d isa NoCache
-            randn_dual(w, rng, x)
-        else
-            NDualMemoryRef{E,N,Memory{E}}(
-                x,
-                getfield(_randn_dual_internal(w, rng, x.mem, d), :partials_block),
-                Core.memoryrefoffset(x),
-            )
-        end
-        d[x] = v
-        return v
-    end
-    function _randn_dual_internal(
-        w::Val{N}, rng::AbstractRNG, x::MemoryRef, d::MaybeCache
-    ) where {N}
-        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-        v = if d isa NoCache
-            randn_dual(w, rng, x)
-        else
-            _memoryref_at(_randn_dual_internal(w, rng, x.mem, d), Core.memoryrefoffset(x))
-        end
-        d[x] = v
-        return v
-    end
-    # Same split as the zero/uninit factories: a `Memory` of leaves delegates, a `Memory` of
-    # aggregates threads `d` through its elements.
-    function _randn_dual_internal(
-        w::Val{N}, rng::AbstractRNG, x::Memory, d::MaybeCache
-    ) where {N}
-        haskey(d, x) && return d[x]::dual_type(Val(N), typeof(x))
-        if eltype(x) <: NDualEltype
-            v = randn_dual(w, rng, x)
-            d[x] = v
-            return v
-        end
-        shell = Memory{eltype(dual_type(Val(N), typeof(x)))}(undef, length(x))
-        d[x] = shell
-        @inbounds for i in eachindex(x)
-            isassigned(x, i) && (shell[i] = _randn_dual_internal(w, rng, x[i], d))
-        end
-        return shell
-    end
-end
-
-@inline function zero_lifted(w::Val{N}, x::P) where {N,P}
-    return Lifted{P,N}(
-        x, _zero_dual_internal(w, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
-    )
-end
-@inline function uninit_lifted(w::Val{N}, x::P) where {N,P}
-    return Lifted{P,N}(
-        x, _uninit_dual_internal(w, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
-    )
-end
-@inline function randn_lifted(w::Val{N}, rng::AbstractRNG, x::P) where {N,P}
-    return Lifted{P,N}(
-        x, _randn_dual_internal(w, rng, x, isbitstype(P) ? NoCache() : IdDict{Any,Any}())
-    )
 end
 
 # Reseed lanes at slots[k] in tangent_dim order (complex: real then imaginary).
@@ -2294,26 +2174,16 @@ end
     end
     # Non-float Memory seeds recurse element-wise. Plain functions keep extension dual_type
     # overloads visible at the caller's world; foldability preserves concrete element types.
-    @inline function zero_dual(::Val{N}, m::Memory{T}) where {N,T}
-        v = Memory{dual_type(Val(N), T)}(undef, length(m))
-        @inbounds for i in eachindex(m)
-            isassigned(m, i) && (v[i] = zero_dual(Val(N), m[i]))
+    for factory in (:zero_dual, :uninit_dual, :randn_dual)
+        rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
+        rng_vals = factory === :randn_dual ? (:rng,) : ()
+        @eval @inline function $factory(::Val{N}, $(rng_args...), m::Memory{T}) where {N,T}
+            v = Memory{dual_type(Val(N), T)}(undef, length(m))
+            @inbounds for i in eachindex(m)
+                isassigned(m, i) && (v[i] = $factory(Val(N), $(rng_vals...), m[i]))
+            end
+            return v
         end
-        return v
-    end
-    @inline function uninit_dual(::Val{N}, m::Memory{T}) where {N,T}
-        v = Memory{dual_type(Val(N), T)}(undef, length(m))
-        @inbounds for i in eachindex(m)
-            isassigned(m, i) && (v[i] = uninit_dual(Val(N), m[i]))
-        end
-        return v
-    end
-    @inline function randn_dual(::Val{N}, rng::AbstractRNG, m::Memory{T}) where {N,T}
-        v = Memory{dual_type(Val(N), T)}(undef, length(m))
-        @inbounds for i in eachindex(m)
-            isassigned(m, i) && (v[i] = randn_dual(Val(N), rng, m[i]))
-        end
-        return v
     end
     @inline function zero_dual(::Val{N}, p::MemoryRef{T}) where {N,T}
         return _memoryref_at(zero_dual(Val(N), p.mem), Core.memoryrefoffset(p))
