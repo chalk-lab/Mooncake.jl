@@ -81,39 +81,26 @@ end
 
 const TaskCoDual = CoDual{Task,TaskTangent}
 
-# Forward-mode canonical V for Task — same `TaskTangent` reverse mode uses.
-# Task support is scoped to RNG-state queries (see the top of this file), not to differentiating
-# arbitrary Task fields; the `TaskTangent` carries no lane data, so one shared `TaskTangent` per
-# slot suffices independent of width N.
+# Task support is limited to RNG-state queries. Its fieldless V is width-independent.
 @foldable @inline dual_type(::Val{N}, ::Type{Task}) where {N} = TaskTangent
-# No `lifted_type(::Type{Task})` override needed: the generic concrete-struct `lifted_type` returns
-# `Lifted{Task,N,dual_type(Val(N),Task)}` = `Lifted{Task,N,TaskTangent}`.
 
-# Forward seed factories: a `Task`'s V is the singleton `TaskTangent` (= its reverse tangent),
-# not a structural lift, so the generic `@generated` seed factory cannot build it (a `Task`
-# has 16 fields but no NamedTuple-backed dual). Seed it directly, mirroring reverse
-# `zero_tangent_internal` / `randn_tangent_internal`. `zero_lifted` / `randn_lifted` enter via
-# the `*_internal` family.
+# Both cached and cache-free factories must bypass structural lifting: Task fields have
+# no counterparts in TaskTangent.
 for f in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval @inline $f(::Val{N}, ::Task, ::MaybeCache) where {N} = TaskTangent()
 end
 @inline _randn_dual_internal(::Val{N}, ::AbstractRNG, ::Task, ::MaybeCache) where {N} = TaskTangent()
-# The cache-free factories are the second entry point — an `frule!!` returning a zero derivative
-# calls them directly — and need the override too, or a `Task` falls into the generic `@generated`
-# struct walker and dies on its 16 fields.
 for f in (:zero_dual, :uninit_dual)
     @eval @inline $f(::Val{N}, ::Task) where {N} = TaskTangent()
 end
 @inline randn_dual(::Val{N}, ::AbstractRNG, ::Task) where {N} = TaskTangent()
-# Per-lane tangent accessor and the width-1 lift boundary for the singleton V.
 @inline tangent(::Lifted{Task,N,TaskTangent}, ::Integer) where {N} = TaskTangent()
 @inline lift(x::Task, ẋ::TaskTangent) = Lifted{Task,1}(x, ẋ)
 
 function frule!!(
     ::Lifted{typeof(lgetfield),N}, x::Lifted{Task,N,TaskTangent}, ::Lifted{Val{f},N}
 ) where {N,f}
-    # Within the supported RNG-state-query scope (see the top of this file), Task field reads
-    # carry no forward derivative.
+    # Supported RNG-state fields carry no forward derivative.
     y = getfield(primal(x), f)
     return Lifted{typeof(y),N}(y, NoDual())
 end
@@ -143,9 +130,7 @@ function frule!!(
     ::Lifted{Val{name},N},
     val::Lifted,
 ) where {N,name}
-    # `set_tangent_field!(::TaskTangent, ::Symbol, ::NoTangent)` is
-    # a no-op (Task fields are non-differentiable), so we only mutate the
-    # user's Task primal and return the new-value slot unchanged.
+    # Task field tangents are unchanged because set_tangent_field! is a no-op.
     setfield!(primal(task), name, primal(val))
     return val
 end

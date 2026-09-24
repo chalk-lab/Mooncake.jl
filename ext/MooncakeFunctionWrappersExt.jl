@@ -81,10 +81,7 @@ function _construct_frule_types(R, A, (::Val{N})=Val(1)) where {N}
     # Convert signature into a tuple of types.
     primal_arg_types = (A.parameters...,)
 
-    # Signature and OpaqueClosure type for the forward pass. `build_frule` returns a
-    # Lifted-dispatched callable, so the OC signature uses width-`N` lifted_type for each arg
-    # and return. The reverse tangent uses N = 1 (its `frule_wrapper` field is never run);
-    # the forward V (`dual_type(Val(N), ...)`) uses the chunk width N.
+    # Reverse uses width 1 (its frule_wrapper is never run); forward uses chunk width N.
     fwd_sig = Tuple{map(P -> lifted_type(Val(N), P), primal_arg_types)...}
     fwd_ret_type = lifted_type(Val(N), R)
     fwd_oc_type = Core.OpaqueClosure{fwd_sig,fwd_ret_type}
@@ -97,13 +94,8 @@ end
     return FunctionWrapperTangent{rrule_oc_type,frule_oc_type}
 end
 
-# Forward-mode canonical V reuses the `FunctionWrapperTangent` struct (it serves as its own
-# fdata and abstracts the wrapper's `Ptr`/`captures::Any` fields behind OpaqueClosures), but at
-# chunk width N its `frule_wrapper` OpaqueClosure is built at `chunk_size = N`. So the forward V
-# `dual_type(Val(N), …)` is `FunctionWrapperTangent{rrule_oc, frule_oc_N}` — a distinct concrete
-# type from the width-1 reverse `tangent_type` (whose `frule_wrapper` field is never run). The
-# forward seed factories build it (carved out below so the generic structural lift does not recurse
-# into the wrapper's `Ptr` fields); its `frule_wrapper` closes over the obj's width-N forward slot.
+# Forward V hides Ptr/capture fields behind OpaqueClosures, as the reverse tangent does,
+# but its frule_wrapper closes over a width-N slot and has a width-N signature.
 @foldable function dual_type(::Val{N}, ::Type{FunctionWrapper{R,A}}) where {N,R,A<:Tuple}
     rrule_oc_type = _construct_rrule_types(R, A)[1]
     frule_oc_type = _construct_frule_types(R, A, Val(N))[1]
@@ -142,10 +134,7 @@ function has_equal_data_internal(
     return has_equal_data_internal(t.dobj_ref[], s.dobj_ref[], equal_undefs, d)
 end
 
-# Shared reverse-pass construction: the rrule forwards-pass OpaqueClosure (which also closes over
-# the reverse-pass) and the obj-tangent ref. Deliberately does NOT build the frule — each caller
-# builds its own (`_function_wrapper_tangent` at width 1, `_function_wrapper_forward_tangent` at
-# width N).
+# Share reverse parts without building a frule: callers choose width 1 or N.
 function _function_wrapper_reverse_parts(R, obj::Tobj, A, obj_tangent) where {Tobj}
 
     # Analyse types for rrule.
@@ -196,14 +185,10 @@ function _function_wrapper_reverse_parts(R, obj::Tobj, A, obj_tangent) where {To
     return run_fwds_pass, obj_tangent_ref
 end
 
-# Reverse (and FD) tangent: shared reverse parts plus a *width-1* frule. The `frule_wrapper` field
-# is never run by reverse mode, but it is read (copied) by `_scale_internal`, so it must be a valid
-# OpaqueClosure of the declared type — hence the width-1 build here.
+# Reverse/FD needs a valid width-1 frule_wrapper for _scale_internal to copy.
 function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     run_fwds_pass, obj_tangent_ref = _function_wrapper_reverse_parts(R, obj, A, obj_tangent)
 
-    # Forward-pass wrapper for the width-1 frule. `frule` is Lifted-dispatched; wrap
-    # the closure obj + current obj_tangent into a width-1 Lifted slot via the boundary helper.
     _, frule_sig, frule_ret = _construct_frule_types(R, A)
     frule = build_frule(get_interpreter(ForwardMode), Tuple{Tobj,A.parameters...})
     @static if VERSION ≥ v"1.12-"
@@ -220,19 +205,12 @@ function _function_wrapper_tangent(R, obj::Tobj, A, obj_tangent) where {Tobj}
     return t, obj_tangent_ref
 end
 
-# Forward-mode V builder for chunk width N. `obj_fwd_slot` is the wrapped object's width-N forward
-# slot — supplied with N independent lane directions either by a forward seed factory
-# (`zero/uninit/randn_lifted(Val(N), obj)`) or by the FunctionWrapper-construction `frule!!` (where it
-# is the lifted constructor argument). The frule OpaqueClosure is built at `chunk_size = N` and closes
-# over `obj_fwd_slot`. The reverse fields (`fwds_wrapper`, `dobj_ref`) are reused from the width-1
-# builder so the V type matches `dual_type`; `dobj_ref` is the slot's lane-1 direction, keeping width-1
-# FD consistent with AD (at width 1 the slot has exactly that one direction).
+# The frule closes over the supplied width-N slot (seeded or a constructor argument).
+# Reverse fields keep the type coherent; lane 1 in dobj_ref makes width-1 FD agree with AD.
 function _function_wrapper_forward_tangent(
     R, A, obj_fwd_slot::Lifted{Tobj,N}, ::Val{N}
 ) where {Tobj,N}
     obj = primal(obj_fwd_slot)
-    # Use the shared reverse parts directly (not `_function_wrapper_tangent`) so we do not build a
-    # width-1 frule only to discard it — this path builds the width-N frule below.
     run_fwds_pass, obj_tangent_ref = _function_wrapper_reverse_parts(
         R, obj, A, tangent(obj_fwd_slot, 1)
     )
@@ -274,11 +252,8 @@ function randn_tangent_internal(
     return t
 end
 
-# Forward seed factories: build the width-N forward V. The wrapped object's width-N forward slot
-# is built through the threaded seed cache `d` (not `zero_lifted`/`uninit_lifted`/`randn_lifted`,
-# which spin up a fresh cache) so that a captured object aliased elsewhere in the same seed shares
-# one tangent buffer — matching the reverse `zero_tangent_internal`/`randn_tangent_internal` factories
-# above and the `MistyClosure` forward factories.
+# Thread the seed cache into captures so aliases elsewhere in the seed share tangents.
+# Calling zero/uninit/randn_lifted here would create a fresh cache.
 function _zero_dual_internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
     haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
     obj = p.obj[]
@@ -349,10 +324,8 @@ function _scale_internal(c::MaybeCache, a::Float64, t::T) where {T<:FunctionWrap
     return T(t.fwds_wrapper, t.frule_wrapper, Ref(_scale_internal(c, a, t.dobj_ref[])))
 end
 
-# `FunctionWrapperTangent` is not field-parallel to `FunctionWrapper` (its fields are opaque
-# closures + a `dobj_ref`, not the wrapper's `ptr`/`obj`/… fields), so the standardised
-# field-access interaction tests (`getfield`/`_new_`/`setfield!`/…) do not apply — AD of a
-# FunctionWrapper happens at the call/construction level, never via field access.
+# Opaque closures and dobj_ref are not field-parallel to FunctionWrapper; test calls and
+# construction rather than structural field interactions.
 TestUtils.supports_field_access_interactions(::Type{<:FunctionWrapper}) = false
 
 function TestUtils.populate_address_map_internal(
@@ -390,8 +363,6 @@ function rrule!!(::CoDual{Type{FunctionWrapper{R,A}}}, obj::CoDual{P}) where {R,
 end
 
 function frule!!(::Lifted{Type{FunctionWrapper{R,A}},N}, obj::Lifted{P,N}) where {R,A,P,N}
-    # `obj` is already the wrapped object's width-N forward slot, so the constructed
-    # FunctionWrapper's forward V closes its frule over it directly.
     y = FunctionWrapper{R,A}(primal(obj))
     return Lifted{typeof(y),N}(y, _function_wrapper_forward_tangent(R, A, obj, Val(N)))
 end

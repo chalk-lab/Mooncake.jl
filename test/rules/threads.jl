@@ -13,14 +13,8 @@ end
         StableRNG(123), threaded_sin_sum, x; is_primitive=false, mode=ForwardMode
     )
 
-    # Regression: a `Task`-returning threading foreigncall (jl_new_task) must yield a
-    # canonical-coherent slot. The frule wraps results with `zero_lifted`, so the Task gets a
-    # `TaskTangent` V; a blanket `Lifted(y, NoDual())` would fail `verify_canonical_dual_type`
-    # (dual_type(Task) === TaskTangent). The Task's V is never consumed in simple forward AD, so
-    # this is checked at the frule boundary. `TaskTangent` is width-invariant, so width 1 suffices.
-    # Args mirror the normalized `_foreigncall_(Val(:jl_new_task), RT, AT, nreq, cc, f, cf, ssize)`.
-    # `ssize` is a native `Int` (Int32 on 32-bit), so the arg-type must be `Int`, not a hardcoded
-    # `Int64` — the latter mismatches the `Int32` value on 32-bit and ccall-TypeErrors.
+    # Check coherence at the boundary: forward AD never consumes this fieldless Task V.
+    # TaskTangent is width-independent. Match ssize to native Int, including on 32-bit.
     @testset "jl_new_task slot coherence" begin
         zl(v) = Mooncake.zero_lifted(Val(1), v)
         r = Mooncake.frule!!(

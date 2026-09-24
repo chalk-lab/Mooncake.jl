@@ -93,11 +93,8 @@ using FunctionWrappers: FunctionWrapper
         test_rule(rng, fargs...; perf_flag, is_primitive, interface_only, skip_chunked=true)
     end
 
-    # Chunked forward (width N > 1): `test_rule` runs the width-N frule but skips its per-lane
-    # oracle for FunctionWrapper — the tangent bakes all N lanes into one OpaqueClosure, so per-lane
-    # extraction is unsupported (`_chunk_lane_checkable` excludes it). Verify the output's per-lane
-    # partials directly: zero-seed the wrapper, or construct one from a closure with a
-    # differentiated capture (each lane an independent direction).
+    # The generic per-lane oracle skips FunctionWrapperTangent's opaque width-N captures.
+    # Check each output lane for both zero-seeded wrappers and differentiated captures.
     @testset "chunked forward (width N)" begin
         FW = FunctionWrapper{Float64,Tuple{Float64}}
         ndual(x, seeds) = Mooncake.Lifted{Float64,length(seeds)}(
@@ -128,11 +125,8 @@ using FunctionWrappers: FunctionWrapper
             @test Mooncake.primal(o2) ≈ x0 * y0
             @test all(k -> Mooncake.tangent(o2, k) ≈ y0 * xs[k] + x0 * ys[k], 1:N)
 
-            # A `FunctionWrapperTangent` bakes all N lanes into one OpaqueClosure, so a slot
-            # holding one cannot be decomposed per lane above width 1. It refuses rather than
-            # handing every lane the full width-N tangent. Bespoke because the registry drives
-            # rules, and this guard is on the `tangent(::Lifted, ::Integer)` accessor — which the
-            # chunked per-lane oracle skips for exactly this V shape, so no row reaches it.
+            # All lanes share one opaque closure. The registry skips per-lane extraction
+            # for this V shape, so check the accessor's width > 1 guard directly.
             @test_throws ArgumentError Mooncake.tangent(zl(N, fw_sin), 1)
         end
         # At width 1 the whole tangent IS lane 1, so the same call is allowed.
