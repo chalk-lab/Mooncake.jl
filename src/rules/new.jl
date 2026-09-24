@@ -9,20 +9,16 @@
         msg = "_new_ Lifted: P=$P is not concrete"
         return :(error($msg))
     end
-    if P <: Tuple
-        return quote
-            y = _new_(P, tuple_map(primal, x)...)
-            # All-non-differentiable tuples, including Tuple{}, collapse to whole NoDual.
-            dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
-            return Lifted{P,Nw}(y, tuple_map(tangent, x))
+    if P <: Union{Tuple,NamedTuple}
+        fields = :(tuple_map(tangent, x))
+        if P <: NamedTuple
+            fields = :(NamedTuple{$(P.parameters[1]::Tuple)}($fields))
         end
-    elseif P <: NamedTuple
-        # Non-differentiable NamedTuples also collapse to whole NoDual.
-        names = (P.parameters[1])::Tuple
         return quote
             y = _new_(P, tuple_map(primal, x)...)
+            # Non-differentiable tuples, including Tuple{}, collapse to whole NoDual.
             dual_type(Val(Nw), P) === NoDual && return Lifted{P,Nw}(y, NoDual())
-            return Lifted{P,Nw}(y, NamedTuple{$names}(tuple_map(tangent, x)))
+            return Lifted{P,Nw}(y, $fields)
         end
     elseif fieldcount(P) == 0
         # Fieldless types (including primitives) have no differentiable content.

@@ -294,22 +294,16 @@ function derived_rule_test_cases(rng_ctor, ::Val{:avoiding_non_differentiable_co
 
             # Matrix wrappers exercise utf8proc-backed char dispatch. A barrier keeps direct
             # predicate tests from constant-folding away before AD sees them.
-            (
-                false,
-                :none,
-                nothing,
-                (X, Y) -> Symmetric(X) * Y,
-                randn(rng_ctor(123), 4, 4),
-                randn(rng_ctor(124), 4, 3),
-            ),
-            (
-                false,
-                :none,
-                nothing,
-                (X, Y) -> Hermitian(X) * Y,
-                randn(rng_ctor(123), 4, 4),
-                randn(rng_ctor(124), 4, 3),
-            ),
+            map(((X, Y) -> Symmetric(X) * Y, (X, Y) -> Hermitian(X) * Y)) do f
+                return (
+                    false,
+                    :none,
+                    nothing,
+                    f,
+                    randn(rng_ctor(123), 4, 4),
+                    randn(rng_ctor(124), 4, 3),
+                )
+            end...,
             map((
                 isuppercase, islowercase, isletter, isnumeric, ispunct, isprint
             )) do pred

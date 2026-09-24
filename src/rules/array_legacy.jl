@@ -107,27 +107,32 @@ end
 
 # Plain-Array V overloads mutate per-element duals in lockstep, including Array{NoDual}
 # for non-differentiable elements and pullback buffers under forward-over-reverse.
-@is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 # Element-major storage needs N * d block entries per d primal elements.
 # The NDualEltype/4-parameter V prefix also accepts complex NDualArrays.
-function frule!!(
-    ::Lifted{typeof(Base._deletebeg!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    d::Lifted,
-) where {N,T<:NDualEltype}
-    d_p = primal(d)
-    Base._deletebeg!(primal(a), d_p)
-    Nfwd._resize_block!(Base._deletebeg!, getfield(tangent(a), :partials_block), N, d_p)
-    return zero_lifted(Val(N), nothing)
+for f in (Base._deletebeg!, Base._deleteend!, Base._growbeg!, Base._growend!)
+    @eval begin
+        function frule!!(
+            ::Lifted{typeof($f),N},
+            a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+            d::Lifted,
+        ) where {N,T<:NDualEltype}
+            d_p = primal(d)
+            $f(primal(a), d_p)
+            Nfwd._resize_block!($f, getfield(tangent(a), :partials_block), N, d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+        function frule!!(
+            ::Lifted{typeof($f),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
+        ) where {N}
+            d_p = primal(d)
+            $f(primal(a), d_p)
+            $f(tangent(a), d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+    end
 end
-function frule!!(
-    ::Lifted{typeof(Base._deletebeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
-) where {N}
-    d_p = primal(d)
-    Base._deletebeg!(primal(a), d_p)
-    Base._deletebeg!(tangent(a), d_p)
-    return zero_lifted(Val(N), nothing)
-end
+
+@is_primitive MinimalCtx Tuple{typeof(Base._deletebeg!),Vector,Integer}
 function rrule!!(
     ::CoDual{typeof(Base._deletebeg!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -150,24 +155,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteend!),Vector,Integer}
-function frule!!(
-    ::Lifted{typeof(Base._deleteend!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    d::Lifted,
-) where {N,T<:NDualEltype}
-    d_p = primal(d)
-    Base._deleteend!(primal(a), d_p)
-    Nfwd._resize_block!(Base._deleteend!, getfield(tangent(a), :partials_block), N, d_p)
-    return zero_lifted(Val(N), nothing)
-end
-function frule!!(
-    ::Lifted{typeof(Base._deleteend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
-) where {N}
-    d_p = primal(d)
-    Base._deleteend!(primal(a), d_p)
-    Base._deleteend!(tangent(a), d_p)
-    return zero_lifted(Val(N), nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._deleteend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -196,34 +183,38 @@ function rrule!!(
     return zero_fcodual(nothing), _deleteend!_pb!!
 end
 
+for (f, arg) in ((Base._deleteat!, :delta), (Base._growat!, :d))
+    @eval begin
+        function frule!!(
+            ::Lifted{typeof($f),N},
+            a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
+            i::Lifted,
+            $arg::Lifted,
+        ) where {N,T<:NDualEltype}
+            i_p = primal(i)
+            d_p = primal($arg)
+            $f(primal(a), i_p, d_p)
+            # Element `i_p` starts at block entry `(i_p - 1) * N + 1`, and `d_p` elements span `d_p * N`.
+            $f(
+                getfield(getfield(tangent(a), :partials_block), :parent),
+                (i_p - 1) * N + 1,
+                d_p * N,
+            )
+            return zero_lifted(Val(N), nothing)
+        end
+        function frule!!(
+            ::Lifted{typeof($f),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, $arg::Lifted
+        ) where {N}
+            i_p = primal(i)
+            d_p = primal($arg)
+            $f(primal(a), i_p, d_p)
+            $f(tangent(a), i_p, d_p)
+            return zero_lifted(Val(N), nothing)
+        end
+    end
+end
+
 @is_primitive MinimalCtx Tuple{typeof(Base._deleteat!),Vector,Integer,Integer}
-function frule!!(
-    ::Lifted{typeof(Base._deleteat!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    i::Lifted,
-    delta::Lifted,
-) where {N,T<:NDualEltype}
-    i_p = primal(i)
-    d_p = primal(delta)
-    Base._deleteat!(primal(a), i_p, d_p)
-    # Element `i_p` starts at block entry `(i_p - 1) * N + 1`, and `d_p` elements span `d_p * N`.
-    Base._deleteat!(
-        getfield(getfield(tangent(a), :partials_block), :parent), (i_p - 1) * N + 1, d_p * N
-    )
-    return zero_lifted(Val(N), nothing)
-end
-function frule!!(
-    ::Lifted{typeof(Base._deleteat!),N},
-    a::Lifted{<:Vector,N,<:Array},
-    i::Lifted,
-    delta::Lifted,
-) where {N}
-    i_p = primal(i)
-    d_p = primal(delta)
-    Base._deleteat!(primal(a), i_p, d_p)
-    Base._deleteat!(tangent(a), i_p, d_p)
-    return zero_lifted(Val(N), nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._deleteat!)},
     _a::CoDual{<:Vector},
@@ -252,24 +243,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growbeg!),Vector,Integer}
-function frule!!(
-    ::Lifted{typeof(Base._growbeg!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    d::Lifted,
-) where {N,T<:NDualEltype}
-    d_p = primal(d)
-    Base._growbeg!(primal(a), d_p)
-    Nfwd._resize_block!(Base._growbeg!, getfield(tangent(a), :partials_block), N, d_p)
-    return zero_lifted(Val(N), nothing)
-end
-function frule!!(
-    ::Lifted{typeof(Base._growbeg!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
-) where {N}
-    d_p = primal(d)
-    Base._growbeg!(primal(a), d_p)
-    Base._growbeg!(tangent(a), d_p)
-    return zero_lifted(Val(N), nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growbeg!)}, _a::CoDual{<:Vector{T}}, _delta::CoDual{<:Integer}
 ) where {T}
@@ -287,24 +260,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growend!),Vector,Integer}
-function frule!!(
-    ::Lifted{typeof(Base._growend!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    d::Lifted,
-) where {N,T<:NDualEltype}
-    d_p = primal(d)
-    Base._growend!(primal(a), d_p)
-    Nfwd._resize_block!(Base._growend!, getfield(tangent(a), :partials_block), N, d_p)
-    return zero_lifted(Val(N), nothing)
-end
-function frule!!(
-    ::Lifted{typeof(Base._growend!),N}, a::Lifted{<:Vector,N,<:Array}, d::Lifted
-) where {N}
-    d_p = primal(d)
-    Base._growend!(primal(a), d_p)
-    Base._growend!(tangent(a), d_p)
-    return zero_lifted(Val(N), nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growend!)}, _a::CoDual{<:Vector}, _delta::CoDual{<:Integer}
 )
@@ -322,29 +277,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(Base._growat!),Vector,Integer,Integer}
-function frule!!(
-    ::Lifted{typeof(Base._growat!),N},
-    a::Lifted{Vector{T},N,<:NDualArray{T,N,1,Vector{T}}},
-    i::Lifted,
-    d::Lifted,
-) where {N,T<:NDualEltype}
-    i_p = primal(i)
-    d_p = primal(d)
-    Base._growat!(primal(a), i_p, d_p)
-    Base._growat!(
-        getfield(getfield(tangent(a), :partials_block), :parent), (i_p - 1) * N + 1, d_p * N
-    )
-    return zero_lifted(Val(N), nothing)
-end
-function frule!!(
-    ::Lifted{typeof(Base._growat!),N}, a::Lifted{<:Vector,N,<:Array}, i::Lifted, d::Lifted
-) where {N}
-    i_p = primal(i)
-    d_p = primal(d)
-    Base._growat!(primal(a), i_p, d_p)
-    Base._growat!(tangent(a), i_p, d_p)
-    return zero_lifted(Val(N), nothing)
-end
 function rrule!!(
     ::CoDual{typeof(Base._growat!)},
     _a::CoDual{<:Vector},
