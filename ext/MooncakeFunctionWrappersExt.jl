@@ -254,23 +254,15 @@ end
 
 # Thread the seed cache into captures so aliases elsewhere in the seed share tangents.
 # Calling zero/uninit/randn_lifted here would create a fresh cache.
-function _zero_dual_internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
-    haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
-    obj = p.obj[]
-    slot = Lifted{typeof(obj),N}(obj, _zero_dual_internal(Val(N), obj, d))
-    t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
-    d[p] = t
-    return t
-end
-function _uninit_dual_internal(
-    ::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache
-) where {N,R,A}
-    haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
-    obj = p.obj[]
-    slot = Lifted{typeof(obj),N}(obj, _uninit_dual_internal(Val(N), obj, d))
-    t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
-    d[p] = t
-    return t
+for internal in (:_zero_dual_internal, :_uninit_dual_internal)
+    @eval function $internal(::Val{N}, p::FunctionWrapper{R,A}, d::MaybeCache) where {N,R,A}
+        haskey(d, p) && return d[p]::dual_type(Val(N), typeof(p))
+        obj = p.obj[]
+        slot = Lifted{typeof(obj),N}(obj, $internal(Val(N), obj, d))
+        t = _function_wrapper_forward_tangent(R, A, slot, Val(N))
+        d[p] = t
+        return t
+    end
 end
 function _randn_dual_internal(
     ::Val{N}, rng::AbstractRNG, p::FunctionWrapper{R,A}, d::MaybeCache
