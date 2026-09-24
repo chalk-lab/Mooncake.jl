@@ -68,11 +68,8 @@ using PrecompileTools: @setup_workload, @compile_workload
     end
 end
 
-# Everything the interpreters cached while this module was being precompiled is dead
-# weight after loading (`get_interpreter` rebuilds them at the new world age), and the
-# 1.10 pkgimage loader inserts every serialised `CodeInstance` into its `MethodInstance`'s
-# native cache, so leaving Mooncake's inference results for Base methods here would shadow
-# Base's own with source-less, code-less entries.
+# Interpreters rebuild at the loading world age. Clear inference results so Julia 1.10's
+# pkgimage loader cannot shadow Base's native cache with source-less, code-less entries.
 empty_mooncake_caches!()
 
 #! format: on

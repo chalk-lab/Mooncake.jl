@@ -47,12 +47,8 @@
 
     @testset "forward debug mode" begin
         @testset "argument checking" begin
-            # Mirrors the reverse analogue: `verify_args` (the signature-subtype check that runs
-            # first in the DebugFRule pipeline) prevents a segfault when the call's primal types do
-            # not match the rule signature. Build a Float64 rule, then drive it through the wrapper
-            # with a Float32 slot and confirm the loud `ArgumentError` fires end-to-end.
-            # Not a `throws` case: `test_rule` builds the rule from the same arguments it calls
-            # it with, so the type mismatch this needs cannot be expressed there.
+            # Mismatched primal types must fail before entering the rule to avoid a segfault.
+            # The registry builds and calls with the same types, so cannot express this case.
             f = x -> 5x
             rule = Mooncake.build_frule(zero_dual(f), 5.0; debug_mode=true)
             @test_throws ArgumentError rule(

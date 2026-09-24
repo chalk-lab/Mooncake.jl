@@ -57,9 +57,7 @@ zero_tester_reverse_only(x) = 0
 datatype_arg_zero_tester(::DataType) = 0
 @zero_derivative MinimalCtx Tuple{typeof(datatype_arg_zero_tester),DataType}
 
-# Same, but with a `where`-parametric signature: the kind-typed (DataType) argument must still be
-# widened to `Type` (the static param `S` must not be), so the forward frule covers the existential
-# `Lifted{Type{_A}} where _A` inference infers. See the regression test below.
+# Widen the kind bound even with `where`, but leave the static parameter S unchanged.
 datatype_arg_zero_tester_param(::DataType, ::S) where {S<:Real} = 0
 @zero_derivative MinimalCtx Tuple{
     typeof(datatype_arg_zero_tester_param),DataType,S
@@ -120,12 +118,8 @@ end
 
 @from_chainrules DefaultCtx Tuple{typeof(test_nothing)} false
 
-# Sibling of `test_nothing` with a DIFFERENTIABLE output. ChainRules' `@non_differentiable`
-# generates this same `NoTangent` shape for float-returning functions (`floor`, `round`, `sign`),
-# where `NoDual` is not the canonical V. Width 1 packs the result through `lift` and wider widths
-# through `_lift_from_lanes`, so a mismatch between them passes at width 1 and dies above it —
-# which `test_nothing` cannot catch, its `nothing` result making `NoDual` correct.
-
+# Unlike `nothing`, a float with a CRC.NoTangent result still needs a differentiable V
+# at both width 1 (`lift`) and wider widths (`_lift_from_lanes`).
 test_nondiff_float(x::Float64) = floor(x)
 
 CRC.frule((_, _), ::typeof(test_nondiff_float), x::Float64) = (floor(x), CRC.NoTangent())
@@ -158,9 +152,7 @@ function CRC.rrule(::typeof(test_add), x, y)
 end
 @from_rrule DefaultCtx Tuple{typeof(test_add),T,T} where {T<:IEEEFloat} false
 
-# Test case whose rrule returns a ZeroTangent for a differentiable argument (a common CRC idiom for a
-# structurally-zero gradient slot). Regression: increment_and_get_rdata! must handle
-# CRC.ZeroTangent (zero increment) rather than throwing the generic ArgumentError.
+# A differentiable argument with CRC.ZeroTangent must receive a zero increment.
 test_zerotangent(x::Float64, y::Float64) = x^2
 function CRC.rrule(::typeof(test_zerotangent), x::Float64, y::Float64)
     test_zerotangent_pb(dz::Float64) = CRC.NoTangent(), 2x * dz, CRC.ZeroTangent()
@@ -288,21 +280,16 @@ end
         )
 
         @testset "type-valued (DataType) argument" begin
-            # Regression: a DataType-valued argument's forward slot can be inferred as the
-            # existential `Lifted{Type{_A}} where _A`, which a naive `Lifted{<:DataType}`
-            # frule bound does not cover (`Lifted` is invariant) — inference then bakes an
-            # `unreachable` that crashes at runtime. `@zero_derivative` widens kind-typed
-            # bounds to `Type`. Was: `Base.padding` forward on Julia 1.12.
+            # The existential must dispatch without inferring `unreachable` (Base.padding
+            # on Julia 1.12); Lifted invariance requires widening the kind bound to Type.
             f_slot = Mooncake.Lifted{
                 typeof(ToolsForRulesResources.datatype_arg_zero_tester),1,Mooncake.NoDual
             }
             existential = Mooncake.Lifted{Type{_A},1,Mooncake.NoDual} where {_A}
             @test hasmethod(Mooncake.frule!!, Tuple{f_slot,existential})
 
-            # Regression: the same widening must apply to a `where`-parametric signature — the
-            # kind-typed `DataType` arg widened to `Type`, but NOT the static parameter `S` (wrapping
-            # it in a function call would be invalid in signature position). Without the fix the frule
-            # bound was `Lifted{<:DataType}`, which does not cover the existential.
+            # With `where`, widen DataType but keep S direct: calls involving static
+            # parameters are invalid in signature type positions.
             fp_slot = Mooncake.Lifted{
                 typeof(ToolsForRulesResources.datatype_arg_zero_tester_param),
                 1,
@@ -399,10 +386,7 @@ end
             )
         end
         @testset "ZeroTangent gradient slot" begin
-            # A CRC pullback returning `ZeroTangent()` for a differentiable argument must apply
-            # a zero increment; `increment_and_get_rdata!` used to have no method for it and
-            # threw. `y` is unused, so the zero gradient is checked here too. Reverse only:
-            # `@from_rrule` gives no forward rule.
+            # Reverse only: @from_rrule supplies no frule. Also check the unused y gradient.
             test_rule(
                 sr(1),
                 ToolsForRulesResources.test_zerotangent,
@@ -473,10 +457,7 @@ end
         end
 
         @testset "@from_chainrules width>1 unsupported result errors loudly" begin
-            # The width-N result packing covers only scalars/dense-arrays/tuples/non-diff results;
-            # an unsupported result (e.g. a `NamedTuple`) succeeds at width 1 via the generic
-            # `lift` but must fail with a clear `ArgumentError` at width > 1, not a bare
-            # `MethodError`.
+            # NamedTuple works via width-1 `lift` but needs a clear wider-width error.
             @test_throws ArgumentError Mooncake._lift_from_lanes(
                 (a=1.0, b=2.0), ((a=0.1, b=0.2), (a=0.3, b=0.4))
             )

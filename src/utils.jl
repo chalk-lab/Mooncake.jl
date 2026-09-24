@@ -515,17 +515,12 @@ _copy(x::Type) = x
 # invalidated (null specfun) by a world-counter advance — e.g. loading DispatchDoctor or
 # defining new methods (#61368). Both are fixed upstream by #51017 (Julia 1.11+).
 #
-# Fix: __call_rule forces generic dispatch on Julia 1.10, so the compiled code calls via
-# jl_apply_generic, which never reaches emit_specsig_oc_call. Three controls make this
-# deterministic — where a bare `Base.inferencebarrier` hint does NOT (it only blocked
-# inference, leaving the method free to re-specialise on the concrete callee and recover the
-# specsig call): `@nospecialize` compiles a single `rule::Any` method (no per-callee
-# specialisation); the explicit `(rule::Any)` cast forbids codegen from emitting a specsig call
-# against an abstract callee; `@noinline` stops the cast being inlined into a site where the
-# concrete type is visible again. The OpaqueClosure method additionally guards `args isa A` so a
-# runtime argument mismatch throws a clean TypeError rather than segfaulting. On Julia 1.11+ the
-# bug is absent and __call_rule is a direct call. Generic dispatch boxes isbits arguments at each
-# nested rule callsite, so zero-allocation performance checks are skipped on Julia < 1.11.
+# On Julia 1.10, __call_rule forces jl_apply_generic, bypassing emit_specsig_oc_call.
+# @nospecialize prevents per-callee specialisation; `(rule::Any)` forbids a specsig call;
+# @noinline hides the concrete callee from codegen. Inferencebarrier alone still permits
+# re-specialisation. The OC argument guard produces TypeError instead of a segfault.
+# Julia 1.11+ calls directly. Generic dispatch boxes isbits arguments at nested callsites,
+# hence test_utils skips zero-allocation checks on Julia < 1.11.
 #
 # This generic fallback returns Any. Specialised overloads restore type stability:
 #   - DerivedFRule, DerivedRule (forward_mode.jl, reverse_mode.jl): type assertion via params

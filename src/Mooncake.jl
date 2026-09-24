@@ -157,9 +157,7 @@ include(joinpath("tangents", "fwds_rvs_data.jl"))
 include(joinpath("tangents", "codual.jl"))
 include("stack.jl")
 
-# Load forward-mode V infrastructure (Nfwd / Lifted / lifted_type / NoDual /
-# seed factories) before the interpreter — `interpreter/forward_mode.jl`
-# dispatches on `Lifted{P, N, V}` (any chunk width N).
+# Load forward representations before the interpreter, which dispatches on Lifted.
 include(joinpath("nfwd", "Nfwd.jl"))
 using .Nfwd: _nfwd_boxed_message_width as _boxed_message_width,
     _nfwd_wrap_boxed_line as _wrap_boxed_line
@@ -196,9 +194,7 @@ end
 
 include("tools_for_rules.jl")
 
-# A rule invocation that must fail loudly is an ordinary registry row whose `opts` carry
-# `throws`: an exception type, a message, or both. This converts the `(expectation, f, args,
-# opts)` spelling the guard cases are written in into that row shape.
+# Convert (expectation, f, args, opts) to a registry row; throws accepts a type/message/both.
 _throwing_row(case) = (false, :none, (throws=case[1], case[4]...), case[2], case[3]...)
 
 @unstable include("test_utils.jl")

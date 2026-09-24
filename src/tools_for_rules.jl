@@ -288,21 +288,12 @@ function _vararg_wrapped_type(vararg_esc_expr, wrapper)
     return :(Vararg{$wrapper{<:$T},$N})
 end
 
-# Forward-mode argument bound for `@zero_derivative`. A *kind*-typed argument — `DataType`,
-# `UnionAll`, `Union`, `Core.TypeofBottom`, whose values are themselves types — has a
-# forward slot `Lifted{Type{X}}` that inference can widen to the existential
-# `Lifted{Type{_A}} where _A`. The naive bound `Lifted{<:DataType}` does not cover that
-# (`Type{_A} <: DataType` fails for some `_A`), and `Lifted` is invariant, so inference
-# infers a MethodError and bakes an `unreachable` that runtime — dispatching on a concrete
-# `Type{X} <: DataType` — reaches, crashing. Widening to `Type` (`Type{_A} <: Type` always
-# holds) covers it. A specific `Type{X}`, bare `Type`, and ordinary types stay as declared;
-# the reverse `CoDual` bounds are left untouched. Shares `lifted_type`'s kind set via
-# `_is_metatype_kind`, rather than restating it — the two enumerations had drifted apart.
+# Kind-typed arguments need `Type` bounds: `Lifted{<:DataType}` excludes the inferred
+# existential `Lifted{Type{_A}} where _A`, causing an `unreachable` at runtime.
+# Share `lifted_type`'s kind set; ordinary types and reverse bounds stay unchanged.
 @inline _fwd_zd_arg_bound(::Type{T}) where {T} = _is_metatype_kind(T) ? Type : T
 
-# Collect every `Symbol` mentioned in an expression (recursing through `esc`/nested `Expr`s). Used to
-# decide whether a `@zero_derivative` argument references a `where`-clause static parameter — if it
-# does, its forward bound must not be wrapped in `_fwd_zd_arg_bound(...)` (see `_zero_derivative_impl`).
+# Find static-parameter references, including inside escaped and nested expressions.
 _collect_expr_symbols!(acc::Set{Symbol}, e::Symbol) = (push!(acc, e); acc)
 function _collect_expr_symbols!(acc::Set{Symbol}, e::Expr)
     (foreach(a -> _collect_expr_symbols!(acc, a), e.args); acc)
@@ -316,17 +307,8 @@ function _zero_derivative_impl(ctx, sig, mode)
     arg_type_symbols, where_params = parse_signature_expr(sig)
     arg_names = map(n -> Symbol("x_$n"), eachindex(arg_type_symbols))
 
-    # Forward per-arg Lifted bound. Widen kind-typed args (DataType/UnionAll/Union/TypeofBottom) to
-    # `Type` via `_fwd_zd_arg_bound` (see its docstring: a naive `Lifted{<:DataType}` fails to cover
-    # the existential `Lifted{Type{_A}} where _A` inference infers, baking an `unreachable`). This must
-    # also happen for `where`-parametric signatures — but only for args that do NOT reference a static
-    # parameter: `_fwd_zd_arg_bound($t)` is a function call, invalid in method-signature (type-param)
-    # position when `$t` mentions a static parameter, so those keep the direct bound. Widening a
-    # static-param-free arg is a no-op unless it is a bare kind type, so it is always safe.
-    # An arg that references a static parameter keeps its direct bound (`_fwd_zd_arg_bound($t)` is a
-    # function call, invalid in type-param position when `$t` mentions a static param); every other
-    # arg is widened. With no `where`, no arg references a static param, so `where_syms` is empty and
-    # every arg widens.
+    # Widen kind bounds unless the argument mentions a static parameter: function calls
+    # involving static parameters are invalid in method-signature type positions.
     where_syms = if where_params === nothing
         Set{Symbol}()
     else
@@ -515,10 +497,7 @@ function increment_and_get_rdata!(
     increment!!(f, t)
     return NoRData()
 end
-# `NoTangent` (a non-differentiable argument) and `ZeroTangent` (the ChainRules idiom for a
-# differentiable argument whose gradient is structurally zero) both mean a zero increment: leave
-# fdata untouched and return the rdata `r`. Without the `ZeroTangent` case, a common CRC pullback
-# returning `ZeroTangent()` for a slot hit the generic fallback and threw an ArgumentError.
+# Both non-differentiable and structurally-zero CRC tangents leave fdata/rdata unchanged.
 increment_and_get_rdata!(::Any, r, ::Union{CRC.NoTangent,CRC.ZeroTangent}) = r
 function increment_and_get_rdata!(f, r, t::CRC.Thunk)
     return increment_and_get_rdata!(f, r, CRC.unthunk(t))
@@ -641,9 +620,7 @@ function notimplemented_tangent_guard(
     dy::L
 ) where {L<:Union{Base.IEEEFloat,Complex{<:Base.IEEEFloat}}}
     return if _dot(dy, dy) != L(0)
-        # A NotImplemented tangent must fully poison the value. For a Complex `L`, `L(NaN)` is
-        # `Complex(NaN, 0.0)` — the imaginary part would leak an unpoisoned zero gradient — so NaN
-        # both components.
+        # `L(NaN)` leaves a complex imaginary component zero; poison both components.
         L <: Complex ? L(NaN, NaN) : L(NaN)
     else
         L(0)
@@ -713,10 +690,7 @@ end
     return _lift_from_lanes(Ω, ntuple(k -> mooncake_tangent(Ω, lanes[k][2]), Val(Nw)))
 end
 
-# Pack a primal result `y` and its `Nw` per-lane mooncake tangents into the
-# canonical width-`Nw` output slot. Covers the `@from_chainrules`-supported
-# result surface — real/complex scalars and dense arrays of those; a fully
-# non-differentiable result yields `NoDual`.
+# Pack the supported ChainRules result shapes into canonical width-Nw slots.
 @inline function _lift_from_lanes(y::T, dys::NTuple{Nw,T}) where {T<:IEEEFloat,Nw}
     return Lifted{T,Nw}(y, NDual{T,Nw}(y, dys))
 end
@@ -732,19 +706,13 @@ end
 ) where {E<:NDualEltype,D,A<:Array{E,D},Nw}
     return Lifted{A,Nw}(y, NDualArray{E,Nw,D,A}(y, dys))
 end
-# Keyed on the LANE TANGENTS being `NoTangent`, which is not the same as `P` being
-# non-differentiable: ChainRules' `@non_differentiable` generates this shape for float-returning
-# functions too (`floor`, `round`, `sign`). `uninit_lifted` builds `dual_type(Val(Nw), P)`, so
-# `NoDual` still comes back when it is canonical, and this matches what width 1 already does via
-# `lift(x, ::NoTangent)` — the widths must agree, or a rule that passes at width 1 dies above it.
+# CRC.NoTangent can accompany a differentiable result (floor/round/sign): use its
+# canonical V, as width 1 does via `lift`, rather than assuming `NoDual`.
 @inline function _lift_from_lanes(y, ::NTuple{Nw,NoTangent}) where {Nw}
     return uninit_lifted(Val(Nw), y)
 end
-# Tuple result (e.g. `logabsgamma` returning `(Float64, Int64)`): element-wise recursion, the V
-# being the tuple of element Vs (`Lifted` wraps once at the top level, per the dual protocol).
-# `@generated` to unroll over the tuple's static arity: a plain `ntuple(length(y))` does not
-# specialize on `y`'s arity and falls to the slow generic `ntuple`, which dominates forward AD
-# through tuple-returning imported rules (distribution logpdfs — ~half of gp_pois's forward time).
+# Recurse through tuple elements, wrapping `Lifted` only once. Generate static arity
+# to avoid generic `ntuple(length(y))` overhead for imported tuple-returning rules.
 @generated function _lift_from_lanes(y::Tuple, dys::NTuple{Nw,Tuple}) where {Nw}
     L = length(y.parameters)
     elems = Any[]
@@ -754,12 +722,8 @@ end
     end
     return :(Lifted{typeof(y),Nw}(y, $(Expr(:tuple, elems...))))
 end
-# Least-specific fallback: the width-1 `_frule_wrapper` packs results with the generic `lift`,
-# which also handles struct/`NamedTuple`/structured-array results, but the width-`Nw` methods above
-# cover only the documented `@from_chainrules` surface (real/complex IEEE-float scalars, dense
-# arrays of those, tuples of those, fully non-differentiable). An imported rule returning anything
-# else would succeed at width 1 but hit a bare `MethodError` here — fail loudly and
-# width-independently instead.
+# Width 1's generic `lift` accepts more shapes; unsupported wider results must raise
+# a clear ArgumentError instead of a MethodError.
 @noinline function _lift_from_lanes(y, dys::Tuple)
     msg =
         "`@from_chainrules` forward rules at chunk width > 1 support results that are real or " *
@@ -768,10 +732,8 @@ end
         "imported rule to those result types."
     return throw(ArgumentError(msg))
 end
-# Chunk width is always ≥ 1, so an empty lane-tuple never occurs at runtime. These methods only
-# disambiguate the `NTuple{Nw,…}` overloads above at `Nw == 0` (`Tuple{}`), where each typed-`y`
-# overload would otherwise overlap the `NoTangent` catch-all (flagged by Aqua). One per typed `y`,
-# so each is strictly more specific than both colliding overloads on both arguments.
+# Widths are positive; these empty-tuple methods disambiguate each typed-y overload
+# against the NoTangent catch-all at Nw == 0 for Aqua.
 @noinline _lift_from_lanes(::IEEEFloat, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Complex{<:IEEEFloat}, ::Tuple{}) = _zero_lanes_error()
 @noinline _lift_from_lanes(::Array{<:NDualEltype}, ::Tuple{}) = _zero_lanes_error()

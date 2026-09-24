@@ -46,12 +46,8 @@ end
     return verify_canonical_dual_type(y)
 end
 
-# A concrete-primal slot must carry exactly the canonical V. `Ptr` primals are exempt:
-# `bitcast`/`unsafe_convert` chains legitimately re-type per-lane pointer Vs (see the
-# `pointerref` rules). This is a type-level check by design: `dual_type` fully determines the
-# recursive V *type*, and the canonical seed factories keep each `NDualArray`'s partials axes in
-# step with its primal — a runtime axis mismatch is not separately asserted here (it would surface
-# in the rule's own array ops), unlike reverse mode's structural `verify_fdata_value` walk.
+# Check types only: canonical seeds keep NDualArray partials axes aligned with the
+# primal; runtime axis mismatches surface in array ops, unlike reverse's structural walk.
 @noinline function verify_canonical_dual_type(x::Lifted{P,N,V}) where {P,N,V}
     (isconcretetype(P) && !(P <: Ptr)) || return nothing
     Vexp = dual_type(Val(N), P)

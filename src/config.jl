@@ -49,8 +49,6 @@ function Config(;
     empty_cache::Bool=false,
     enable_nfwd=nothing,
 )
-    # `enable_nfwd` is accepted only for backward compatibility and has no effect: forward-mode
-    # caches always use the native chunk `frule!!`, so the keyword is deprecated.
     enable_nfwd === nothing || Base.depwarn(
         "The `enable_nfwd` keyword to `Mooncake.Config` is deprecated and has no effect; " *
         "forward-mode caches always use the native chunk `frule!!`.",
