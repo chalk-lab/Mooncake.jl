@@ -273,10 +273,9 @@ end
             print_results=false,
             oracle=o,
         )
-        @test_throws ArgumentError run((;))
-        @test_throws ArgumentError run((vlaue=6.0,))
-        @test_throws ArgumentError run((value=6.0, extra=1))
-        @test_throws ArgumentError run(6.0)
+        for oracle in ((;), (vlaue=6.0,), (value=6.0, extra=1), 6.0)
+            @test_throws ArgumentError run(oracle)
+        end
         # A value-only reference still validates derivatives by finite differences.
         run((value=6.0,))
         bad_frule(args...) = Lifted{Float64,1}(

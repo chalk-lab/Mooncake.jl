@@ -550,19 +550,12 @@ end
 
 # Disambiguate struct-dual tangents against the primal-specific methods below.
 # These primal/dual pairings cannot occur for coherent slots.
-function populate_address_map_internal(
-    m::AddressMap,
-    ::Union{Tuple,NamedTuple},
-    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
-)
-    return m
-end
-function populate_address_map_internal(
-    m::AddressMap,
-    ::Union{Core.TypeName,Type,Symbol,String},
-    ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual},
-)
-    return m
+for P in (Union{Tuple,NamedTuple}, Union{Core.TypeName,Type,Symbol,String})
+    @eval function populate_address_map_internal(
+        m::AddressMap, ::$P, ::Union{Mooncake.ImmutableDual,Mooncake.MutableDual}
+    )
+        return m
+    end
 end
 
 function populate_address_map_internal(
@@ -813,15 +806,6 @@ function _seed_lifteds(::Val{N}, rng::AbstractRNG, x::Tuple) where {N}
 end
 
 # Aliased arguments must share fdata even when numerical comparisons cannot resolve it.
-function _check_aliased_coduals(x_x̄::Tuple)
-    for i in eachindex(x_x̄), j in (i + 1):lastindex(x_x̄)
-        p = primal(x_x̄[i])
-        (ismutable(p) && p === primal(x_x̄[j])) || continue
-        @test _shares_tangent_storage(tangent(x_x̄[i]), tangent(x_x̄[j]))
-    end
-    return nothing
-end
-
 # Storage, not object identity: what the invariant buys is that accumulation lands in one place.
 # On 1.10 the legacy array path caches on the storage and hands back a fresh reshape header, so
 # two aliased arguments get tangents that share a buffer without being the same object.
@@ -832,13 +816,18 @@ end
 
 # Independent directions on aliased primals can pass finite differences, so check
 # forward seed sharing structurally; reverse passes its CoDuals directly to the rule.
-function _check_aliased_seeds(slots::Tuple)
-    for i in eachindex(slots), j in (i + 1):lastindex(slots)
-        p = primal(slots[i])
-        (ismutable(p) && p === primal(slots[j])) || continue
-        @test tangent(slots[i]) === tangent(slots[j])
+for (f, cmp, x) in (
+    (:_check_aliased_coduals, :_shares_tangent_storage, :x_x̄),
+    (:_check_aliased_seeds, :(===), :slots),
+)
+    @eval function $f($x::Tuple)
+        for i in eachindex($x), j in (i + 1):lastindex($x)
+            p = primal($x[i])
+            (ismutable(p) && p === primal($x[j])) || continue
+            @test $cmp(tangent($x[i]), tangent($x[j]))
+        end
+        return nothing
     end
-    return nothing
 end
 
 # Decide width here: a separate Val{1} method would conflict with type dispatch.
@@ -1101,23 +1090,22 @@ function _chunked_v_invariant(p, v::Mooncake.PossiblyUninitTangent, c::IdDict)
 end
 # Guard both slots: isbits V elements (e.g. NoDual) are always assigned even when
 # the primal buffer is sparse, as in Dict keys/vals.
-function _chunked_v_invariant(p::AbstractArray, v::AbstractArray, c::IdDict)
-    haskey(c, v) && return true
-    c[v] = nothing
-    return all(
-        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
-        eachindex(v),
-    )
-end
-# SimpleVector is not an AbstractArray, but its V is a Vector{Any} of element Vs.
-function _chunked_v_invariant(p::Core.SimpleVector, v::AbstractArray, c::IdDict)
-    haskey(c, v) && return true
-    c[v] = nothing
-    length(p) == length(v) || return false
-    return all(
-        i -> !isassigned(v, i) || !isassigned(p, i) || _chunked_v_invariant(p[i], v[i], c),
-        eachindex(v),
-    )
+# SimpleVector needs an arity check; it is not an AbstractArray.
+for P in (AbstractArray, Core.SimpleVector)
+    length_check =
+        P === Core.SimpleVector ? (:(length(p) == length(v) || return false),) : ()
+    @eval function _chunked_v_invariant(p::$P, v::AbstractArray, c::IdDict)
+        haskey(c, v) && return true
+        c[v] = nothing
+        $(length_check...)
+        return all(
+            i ->
+                !isassigned(v, i) ||
+                !isassigned(p, i) ||
+                _chunked_v_invariant(p[i], v[i], c),
+            eachindex(v),
+        )
+    end
 end
 
 # These shapes carry no inner value: sentinels are non-differentiable, NDualRef
