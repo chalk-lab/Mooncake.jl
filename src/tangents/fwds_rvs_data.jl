@@ -672,6 +672,7 @@ end
 # zeros. Those must reach the generic `false` / `CannotProduceZeroRDataFromType` path.
 for P in (Float16, Float32, Float64)
     @eval @foldable can_produce_zero_rdata_from_type(::Type{$P}) = true
+    @eval zero_rdata_from_type(::Type{$P}) = zero($P)
 end
 
 @foldable can_produce_zero_rdata_from_type(::Type{<:Type}) = true
@@ -753,10 +754,6 @@ function zero_rdata_from_type(::Type{P}) where {P<:NamedTuple}
     can_produce_zero_rdata_from_type(P) || return CannotProduceZeroRDataFromType()
     rdata_type(tangent_type(P)) == NoRData && return NoRData()
     return NamedTuple{fieldnames(P)}(tuple_map(zero_rdata_from_type, fieldtypes(P)))
-end
-
-for P in (Float16, Float32, Float64)
-    @eval zero_rdata_from_type(::Type{$P}) = zero($P)
 end
 
 zero_rdata_from_type(::Type{<:Type}) = NoRData()

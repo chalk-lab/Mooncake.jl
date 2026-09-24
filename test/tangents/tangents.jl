@@ -234,48 +234,31 @@ end
         )
         @test Mooncake.get_tangent_field(t, :a) === 3.0
     end
-    @testset "a `Ptr` tangent is inert in tangent arithmetic" begin
-        # Pointer placeholders must be inert while other fields still differentiate.
-        # The registry's `primal_to_tangent!!` round trip refuses pointers, so test directly.
-        pbuf = [3.0]
-        pt = Mooncake.uninit_tangent(pointer(pbuf))
-        @test Mooncake._scale(2.0, pt) === pt
-        @test Mooncake._dot(pt, pt) == 0.0
-        @test Mooncake.increment!!(pt, pt) === pt
-        @test Mooncake.set_to_zero!!(pt) === pt
-        @test Mooncake._add_to_primal(pointer(pbuf), pt, true) === pointer(pbuf)
-        # The point of inertness: the OTHER fields still differentiate.
-        v, g = Mooncake.value_and_gradient!!(
-            Mooncake.prepare_gradient_cache(_ptr_mixed, PtrMixed(pointer(pbuf), 5.0), 3.0),
-            _ptr_mixed,
-            PtrMixed(pointer(pbuf), 5.0),
-            3.0,
-        )
-        @test v == 15.0
-        @test g[2].fields.w == 3.0
-        @test g[3] == 5.0
-    end
-
-    @testset "a `VoidPtrTangent` is inert in the same way" begin
-        # Cvoid uses `VoidPtrTangent`; also check `randn_tangent` respects that type.
-        vbuf = [3.0]
-        vp = Ptr{Cvoid}(pointer(vbuf))
-        vt = Mooncake.uninit_tangent(vp)
-        @test Mooncake._scale(2.0, vt) === vt
-        @test Mooncake._dot(vt, vt) == 0.0
-        @test Mooncake.set_to_zero!!(vt) === vt
-        @test Mooncake._add_to_primal(vp, vt, true) === vp
-        @test Mooncake.randn_tangent(Xoshiro(1), vp) isa Mooncake.tangent_type(typeof(vp))
-        # Non-self-tangent pointee types also require correctly typed random tangents.
-        @testset "randn_tangent type for Ptr{$P}" for P in (Int, Float64, UInt8, Bool)
-            q = Ptr{P}(0)
-            @test Mooncake.randn_tangent(Xoshiro(1), q) isa Mooncake.tangent_type(typeof(q))
+    # The registry's `primal_to_tangent!!` round trip refuses pointers, so test directly.
+    @testset "Ptr{$P} tangent is inert in tangent arithmetic" for (P, M, f) in (
+        (Float64, PtrMixed, _ptr_mixed), (Cvoid, VoidPtrMixed, _void_ptr_mixed)
+    )
+        buf = [3.0]
+        p = Ptr{P}(pointer(buf))
+        t = Mooncake.uninit_tangent(p)
+        @test Mooncake._scale(2.0, t) === t
+        @test Mooncake._dot(t, t) == 0.0
+        @test Mooncake.set_to_zero!!(t) === t
+        @test Mooncake._add_to_primal(p, t, true) === p
+        if P === Float64
+            @test Mooncake.increment!!(t, t) === t
+        else
+            @test Mooncake.randn_tangent(Xoshiro(1), p) isa Mooncake.tangent_type(typeof(p))
+            # Non-self-tangent pointee types also require correctly typed random tangents.
+            @testset "randn_tangent type for Ptr{$Q}" for Q in (Int, Float64, UInt8, Bool)
+                q = Ptr{Q}(0)
+                @test Mooncake.randn_tangent(Xoshiro(1), q) isa
+                    Mooncake.tangent_type(typeof(q))
+            end
         end
+        # The other fields must still differentiate.
         v, g = Mooncake.value_and_gradient!!(
-            Mooncake.prepare_gradient_cache(_void_ptr_mixed, VoidPtrMixed(vp, 5.0), 3.0),
-            _void_ptr_mixed,
-            VoidPtrMixed(vp, 5.0),
-            3.0,
+            Mooncake.prepare_gradient_cache(f, M(p, 5.0), 3.0), f, M(p, 5.0), 3.0
         )
         @test v == 15.0
         @test g[2].fields.w == 3.0
