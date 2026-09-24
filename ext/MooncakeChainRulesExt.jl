@@ -37,21 +37,15 @@ function (pb::ExpPullback)(::NoRData)
     return NoRData(), NoRData()
 end
 
-# Per-lane `ChainRules.frule` call. ChainRules expects a Matrix tangent
-# per lane; produce both via per-lane partial copy, then rebuild the
-# result `NDualArray`.
 function frule!!(
     ::Lifted{typeof(exp),Nw},
     X_dX::Lifted{Matrix{P},Nw,<:NDualArray{P,Nw,2,Matrix{P},NDual{P,Nw}}},
 ) where {Nw,P<:IEEEFloat}
     Xp = primal(X_dX)
-    # One `ChainRules.frule` call per lane. ChainRules' matrix-exp frule computes the primal
-    # `exp(X)` and the directional derivative together via a single augmented block-matrix
-    # exponential, so each lane recomputes `exp(X)` (the dominant cost): it cannot be hoisted out
-    # of the loop, as there is no JVP-only path through the ChainRules boundary. `exp!` destroys its
-    # input, so `Xc`/`dXc` are reused scratches refilled from `Xp`/the lane's tangent each lane. The
-    # frule returns freshly-allocated `Matrix{P}` for both the primal and each partial, so use them
-    # directly (no extra `similar`/`copyto!`); the (lane-independent) `Y_primal` is lane 1's (Nw ≥ 1).
+    # ChainRules requires Matrix tangents and computes value/JVP together by augmented
+    # matrix exponential, with no JVP-only path: each lane must recompute exp(X). exp!
+    # mutates its input: refill both scratches. Keep the fresh outputs without copying,
+    # taking the lane-independent primal from lane 1 (Nw ≥ 1).
     Xc = similar(Xp)
     dXc = similar(Xp)
     copyto!(Xc, Xp)
