@@ -817,15 +817,8 @@ is shown by the cache.
 @unstable @inline function prepare_derivative_cache(
     f, x::Vararg{Any,N}; config=Config()
 ) where {N}
-    config.empty_cache && empty_mooncake_caches!()
     fx = (f, x...)
-    # `_stable_typeof`, not `_typeof`: the latter sharpens NamedTuple elements, narrowing
-    # `@NamedTuple{a}` to `@NamedTuple{a::Float64}`, whose `dual_type` IS concrete — the check would
-    # then miss exactly the shape it exists for.
-    ntuple(
-        i -> _check_representable_input(ForwardMode(), Base._stable_typeof(fx[i]), i - 1),
-        Val(N + 1),
-    )
+    _prepare_cache_inputs(ForwardMode(), fx, config)
     requested_chunk_size = getfield(config, :chunk_size)
     requested_chunk_size = if isnothing(requested_chunk_size)
         0
@@ -1652,13 +1645,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     arguments are restored by the reverse pass and net to a single observable change.
 """
 @unstable function prepare_pullback_cache(fx...; config=Config())
-
-    # Clear global caches if requested.
-    config.empty_cache && empty_mooncake_caches!()
-    foreach(
-        i -> _check_representable_input(ReverseMode(), Base._stable_typeof(fx[i]), i - 1),
-        eachindex(fx),
-    )
+    _prepare_cache_inputs(ReverseMode(), fx, config)
 
     # Check that the output of `fx` is supported.
     __exclude_func_with_unsupported_output(fx)
@@ -1692,6 +1679,17 @@ The API guarantees that tangents are initialized at zero before the first autodi
         input_types_and_sizes,
         output_type_and_size,
     )
+end
+
+function _prepare_cache_inputs(mode::Mode, fx::Tuple, config)
+    config.empty_cache && empty_mooncake_caches!()
+    # `_stable_typeof` preserves abstract NamedTuple fields; `_typeof` sharpens them,
+    # potentially making `dual_type` concrete and bypassing the forward representation check.
+    ntuple(
+        i -> _check_representable_input(mode, Base._stable_typeof(fx[i]), i - 1),
+        Val(length(fx)),
+    )
+    return nothing
 end
 
 """
@@ -1805,11 +1803,7 @@ The API guarantees that tangents are initialized at zero before the first autodi
     Calls `f(x...)` once during cache preparation.
 """
 @unstable function prepare_gradient_cache(fx...; config=Config())
-    config.empty_cache && empty_mooncake_caches!()
-    foreach(
-        i -> _check_representable_input(ReverseMode(), Base._stable_typeof(fx[i]), i - 1),
-        eachindex(fx),
-    )
+    _prepare_cache_inputs(ReverseMode(), fx, config)
     rule = build_rrule(fx...; config.debug_mode, config.silence_debug_messages)
     tangents = _zero_tangents(fx)
     y, rvs!! = __call_rule(rule, map((x, dx) -> CoDual(x, fdata(dx)), fx, tangents))
