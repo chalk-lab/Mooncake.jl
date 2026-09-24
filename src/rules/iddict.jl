@@ -149,20 +149,11 @@ tangent(f::IdDict, ::NoRData) = f
 
 @is_primitive MinimalCtx Tuple{typeof(Base.rehash!),IdDict,Any}
 
-# Forward-mode canonical V for `IdDict{K, V}` — one dict mapping K to the
-# value type's canonical N-width V. Matches reverse-mode `tangent_type` shape
-# (one dict, K → tangent_type(V)) but with V replaced by `dual_type(Val(N), V)`.
 @foldable @inline function dual_type(::Val{N}, ::Type{IdDict{K,V}}) where {N,K,V}
     return IdDict{K,dual_type(Val(N), V)}
 end
-# No `lifted_type(::IdDict)` method needed: the generic concrete-struct `lifted_type` returns
-# `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `IdDict{K,V}` uses the `dual_type` above
-# and yields exactly `Lifted{IdDict{K,V},N,IdDict{K,dual_type(Val(N),V)}}`.
-
-# Forward seed / lift / lane-accessor for the custom V `IdDict{K, dual_type(V)}`. Without these the
-# generic struct-lift fallback fires on `IdDict`'s `ht::Memory{Any}` field and builds an invalid
-# `MutableDual{Memory{Any}}`. Mirror the reverse `*_tangent_internal` per-value recursion (with the
-# same aliasing/cycle cache), the `lift` boundary, and the AbstractArray lane accessor.
+# Recurse by value with an aliasing/cycle cache; the structural fallback would lift
+# IdDict's internal hash table instead of constructing its canonical dictionary V.
 for f in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval function $f(w::Val{N}, x::IdDict{K,V}, c::MaybeCache) where {N,K,V}
         DV = dual_type(Val(N), V)
@@ -187,14 +178,8 @@ function _randn_dual_internal(
     end
     return out
 end
-# The cache-free factories are the second entry point — an `frule!!` returning a zero derivative
-# calls them directly — and need the override too, or an `IdDict` falls into the generic
-# `@generated` struct walker and dies on its `ht::Memory{Any}` field. Forward to the recursion
-# above with a fresh cache rather than duplicate it, and with a real `IdDict` rather than
-# `NoCache`: an `IdDict` primal is never `isbitstype`, which is the test `zero_lifted` and the
-# reverse factories already use to decide. Without it two keys holding one array get independent
-# partial stores, so a write through one is invisible through the other, and a self-referential
-# dict overflows the stack instead of terminating on the registered shell.
+# Direct factories also need the custom V. A real cache preserves aliased values
+# and terminates cycles; NoCache would create independent partial stores.
 for (f, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
     @eval @inline $f(w::Val{N}, x::IdDict) where {N} = $internal(w, x, IdDict{Any,Any}())
@@ -204,10 +189,7 @@ end
 end
 # Width-1 boundary: pair each primal value with its reverse tangent to build the forward V.
 @inline lift(x::IdDict, ẋ::IdDict) = lift(x, ẋ, nothing)
-# Cache-threading form mirroring the reverse `_zero_dual_internal(::IdDict)` factory above and the
-# struct/array `lift` boundaries: register the (empty) `out` V in the aliasing cache `c` BEFORE
-# recursing into the values, so aliased values share one V and a self-referential / cyclic IdDict
-# terminates instead of overflowing the stack (the reverse oracle's IdDict factories all guard).
+# Register the shell before recursion to preserve aliases and terminate cycles.
 function lift(x::IdDict{K,V}, ẋ::IdDict, c::Union{Nothing,IdDict}) where {K,V}
     d = c === nothing ? IdDict() : c
     haskey(d, x) && return d[x]::Lifted{IdDict{K,V},1}
@@ -336,13 +318,9 @@ function frule!!(
     ::Lifted{typeof(get),N}, d::Lifted{IdDict{K,V},N}, key::Lifted, default::Lifted
 ) where {N,K,V}
     _key = primal(key)
-    # Key absent ⇒ return the `default` slot unchanged, mirroring the reverse rrule's
-    # `has_key ? ... : default`. Building `Lifted{V,N}(default, ...)` would mis-type a
-    # default whose type differs from the dict value type `V` (the ctor requires `primal::V`).
+    # An absent key returns default unchanged, even when its type differs from V.
     haskey(primal(d), _key) || return default
-    # Typed from the STORED VALUE, not from the dict's declared `V`: for `V === Any` the latter
-    # gives a `Lifted{Any,…}` slot that downstream frule dispatch has no method for. Mirrors the
-    # reverse rrule, which derives the `CoDual`'s primal type from the value.
+    # Use the stored type: V may be Any, which would break downstream slot dispatch.
     y = primal(d)[_key]
     return Lifted{typeof(y),N}(y, tangent(d)[_key])
 end
@@ -460,14 +438,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:iddict})
         # interface_only: the non-differentiable default carries no derivative.
         (true, :none, nothing, get, IdDict{Symbol,Float64}(:a => 1.0), :b, 2),
         (false, :none, nothing, getindex, IdDict(true => 5.0, false => 4.0), true),
-        # `V === Any`: the slot must be typed from the STORED VALUE. Typing it from the
-        # declared `V` gives a `Lifted{Any,…}` that downstream frule dispatch has no method for,
-        # while every concrete-`V` case above passes because there the two agree.
+        # Abstract V must still return a concretely typed slot.
         (false, :none, nothing, getindex, IdDict{Symbol,Any}(:a => 2.0), :a),
         (false, :none, nothing, get, IdDict{Symbol,Any}(:a => 2.0), :a, 0.0),
-        # A MUTABLE-STRUCT value type: the dict's lane has to materialise a reverse tangent
-        # per value, keyed on the dict so a cycle through it terminates. Array and scalar value
-        # types are both leaves and so miss this.
+        # Mutable structs exercise recursive lane materialisation, unlike leaf values.
         (
             false,
             :none,

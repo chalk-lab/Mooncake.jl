@@ -12,10 +12,7 @@ import ..CoDual
 import ..Lifted
 import ..NoPullback
 import ..zero_fcodual
-# `frule!!` / `rrule!!` must be imported so the definitions below add methods to
-# `Mooncake.frule!!` / `Mooncake.rrule!!` rather than creating dead module-local functions.
-# `zero_lifted` builds the canonical zero-derivative `Lifted` for the non-differentiable `Cint`
-# result of the foreigncall.
+# Extend Mooncake's rules rather than creating module-local functions.
 import ..frule!!
 import ..rrule!!
 import ..zero_lifted

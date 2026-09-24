@@ -42,10 +42,7 @@ function _compute_hessian(f, x::Vector{Float64})
     return H
 end
 
-# A `DerivedRule` and its `MistyClosure`s have their own V rather than a structural lift, so each
-# needs BOTH seed entry points — the cache-threading `_*_dual_internal` and the cache-free
-# `zero_dual`/`uninit_dual`/`randn_dual`, which `test_lifted` checks against the declared
-# `dual_type`.
+# Custom V needs both cached and cache-free seed factories; test_lifted checks both.
 let rule = build_rrule(Tuple{typeof(_throw_empty_fdata_exception),Float64})
     @testset "test_lifted $nm" for (nm, p) in
                                    (("DerivedRule", rule), ("MistyClosure", rule.fwds_oc))
@@ -255,11 +252,8 @@ end
     end
 
     @testset "cholesky" begin
-        # Sibling of the triangular solve above. `potrf!`'s `rrule!!` copies `A` so the pullback can
-        # restore the primal, and forward-over-reverse inlined that `copy`, exposing its
-        # `jl_genericmemory_copy_slice` ccall, which has no `frule!!`: the HVP died with a
-        # `MissingForeigncallRuleError`. `diagm(x)` is a DENSE matrix on purpose — a `Diagonal`
-        # would take its own factorisation and never reach `potrf!`.
+        # Dense diagm reaches potrf!, whose restoring copy must remain a rule boundary
+        # in forward-over-reverse to avoid an unsupported memory-copy foreigncall.
         f(x) = logdet(cholesky(diagm(x)))          # == sum(log, x)
         x = [2.0, 3.0, 5.0]
         v = [1.0, 0.0, 0.0]
@@ -270,11 +264,8 @@ end
     end
 
     @testset "symmetric determinants" begin
-        # Sibling of the `cholesky` case above, for the `bunchkaufman`/`sytrf!` path. The three
-        # `Symmetric` determinant `rrule!!`s factorised inside their own bodies, so
-        # forward-over-reverse reached `sytrf!`, which has no `frule!!`, and every HVP raised
-        # `MissingForeigncallRuleError` while gradients and JVPs worked. `diagm(x)` is dense on
-        # purpose, so `Symmetric` wraps a `StridedMatrix` and reaches the rules.
+        # Dense diagm reaches the Symmetric rules; their factorisation must remain
+        # a rule boundary in forward-over-reverse to avoid an unsupported sytrf!.
         x = [2.0, 3.0, 5.0]
         v = [1.0, 0.0, 0.0]
         for (f, grad, hvp) in [
@@ -306,10 +297,7 @@ end
     end
 
     @testset "_copy of FoR constructor caches (cache-hit rebuild)" begin
-        # `build_frule` returns `_copy(cached_rule)` on a cache hit and recurses into the
-        # OpaqueClosure captures; a forward-over-reverse rule captures these FoR constructor
-        # caches, so they need `_copy` giving fresh independent state. Without it the HVP
-        # cache-hit path raises `MethodError: no method matching copy(::DynamicFoRRule)`.
+        # Copies of captured constructor caches must have independent, empty state.
         d = Mooncake.DynamicFoRRule()
         d.cache[(Tuple{typeof(sum),Vector{Float64}}, false, 1)] = (1, 2, 3)
         dc = Mooncake._copy(d)
@@ -348,9 +336,7 @@ end
     @test Mooncake.tangent_type(typeof(get_interpreter(ForwardMode))) == Mooncake.NoTangent
 end
 
-# The `jl_genericmemory_owner` forward rule (a forward-over-reverse `dataids`-inlining workaround)
-# must return the canonical forward V for its `Memory` result — `NDualArray`, not a bare `NoDual`
-# (which would yield `NoTangent()` on a lane read and diverge from the reverse oracle).
+# Memory-owner results need canonical V so lane reads agree with the reverse oracle.
 @static if VERSION >= v"1.11-"
     @testset "jl_genericmemory_owner frule canonical V" begin
         m = Memory{Float64}(undef, 3) .= [1.0, 2.0, 3.0]

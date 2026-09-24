@@ -4,18 +4,14 @@
         T = IdDict{Bool,Float64}
         TestUtils.test_tangent(sr(123456), p, T; interface_only=false, perf=false)
         TestUtils.test_tangent_splitting(sr(123456), p)
-        # An abstract value type: a lane traversal that types its result from the per-value
-        # reads narrows `IdDict{Symbol,Any}` to `IdDict{Symbol,Float64}`. It cannot join
-        # `tangent_test_cases()`, whose driver runs `test_tangent` with the allocation checks
-        # on, which no abstract-valued `IdDict` can pass.
+        # Abstract V must survive lane traversal. The tangent registry's allocation
+        # checks exclude abstract-valued IdDicts, so exercise test_lifted directly.
         TestUtils.test_lifted(sr(123456), IdDict{Symbol,Any}(:a => 5.0))
     end
     TestUtils.run_rule_test_cases(StableRNG, Val(:iddict))
 
     @testset "forward lift preserves IdDict value aliasing" begin
-        # Two keys map to one array: the forward V must share a single tangent buffer (matching the
-        # reverse-mode aliasing invariant), not build a fresh one per value. The width-1 `lift`
-        # boundary previously took no aliasing cache, so the shared array was lifted twice.
+        # Two keys sharing an array must share its forward and reverse tangent storage.
         arr = [1.0, 2.0]
         d = IdDict{Symbol,Any}(:x => arr, :y => arr)
         t = Mooncake.zero_tangent(d)

@@ -40,9 +40,7 @@ using StableRNGs: StableRNG
         end
     end
 
-    # Regression: the jl_generating_output rules must extend `Mooncake.frule!!` / `rrule!!`, not
-    # create dead module-local functions (which happens if `DispatchDoctorRules` forgets to import
-    # them). A dead local leaves the @is_primitive-declared foreigncall with no live rule.
+    # The primitive declaration requires live methods on Mooncake's rule functions.
     @testset "rules registered on Mooncake.frule!!/rrule!!" begin
         @test Mooncake.DispatchDoctorRules.frule!! === Mooncake.frule!!
         @test Mooncake.DispatchDoctorRules.rrule!! === Mooncake.rrule!!
