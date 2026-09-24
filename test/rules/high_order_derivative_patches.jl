@@ -222,19 +222,13 @@ end
         @test value_and_hvp!!(prepare_hvp_cache(f, 1.0), f, 1.0, 1.0) == (1.0, 2.0, 2.0)
     end
 
-    @testset "gradient correctness for x^4" begin
+    @testset "value, gradient and HVP correctness for x^4" begin
         f(x) = x[1]^4.0
         x = [2.0]
         cache = prepare_hvp_cache(f, x)
-        f_val, grad, _ = value_and_hvp!!(cache, f, [1.0], x)
+        f_val, grad, hvp = value_and_hvp!!(cache, f, [1.0], x)
         @test f_val ≈ 16.0
         @test grad ≈ [32.0]
-    end
-
-    @testset "HVP correctness for x^4" begin
-        f(x) = x[1]^4.0
-        x = [2.0]
-        _, _, hvp = value_and_hvp!!(prepare_hvp_cache(f, x), f, [1.0], x)
         @test hvp ≈ [48.0]
     end
 

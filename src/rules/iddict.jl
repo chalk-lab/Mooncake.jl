@@ -154,29 +154,21 @@ tangent(f::IdDict, ::NoRData) = f
 end
 # Recurse by value with an aliasing/cycle cache; the structural fallback would lift
 # IdDict's internal hash table instead of constructing its canonical dictionary V.
-for f in (:_zero_dual_internal, :_uninit_dual_internal)
-    @eval function $f(w::Val{N}, x::IdDict{K,V}, c::MaybeCache) where {N,K,V}
+for f in (:_zero_dual_internal, :_uninit_dual_internal, :_randn_dual_internal)
+    rng_args = f === :_randn_dual_internal ? (:(rng::AbstractRNG),) : ()
+    rng_vals = f === :_randn_dual_internal ? (:rng,) : ()
+    @eval function $f(
+        w::Val{N}, $(rng_args...), x::IdDict{K,V}, c::MaybeCache
+    ) where {N,K,V}
         DV = dual_type(Val(N), V)
         haskey(c, x) && return c[x]::IdDict{K,DV}
         out = IdDict{K,DV}()
         c[x] = out
         for (k, v) in x
-            out[k] = $f(w, v, c)
+            out[k] = $f(w, $(rng_vals...), v, c)
         end
         return out
     end
-end
-function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::IdDict{K,V}, c::MaybeCache
-) where {N,K,V}
-    DV = dual_type(Val(N), V)
-    haskey(c, x) && return c[x]::IdDict{K,DV}
-    out = IdDict{K,DV}()
-    c[x] = out
-    for (k, v) in x
-        out[k] = _randn_dual_internal(w, rng, v, c)
-    end
-    return out
 end
 # Direct factories also need the custom V. A real cache preserves aliased values
 # and terminates cycles; NoCache would create independent partial stores.
