@@ -99,10 +99,7 @@ stop_gradient(x) = x
 
 @is_primitive MinimalCtx Tuple{typeof(stop_gradient),Any}
 
-# `stop_gradient` zeros all derivative information. The result must still carry the canonical
-# `dual_type(Val(Nw), P)` V (a `NoDual` paired with a differentiable primal violates coherence and
-# breaks downstream field-access frules); `zero_lifted` builds that V with zero partials, which is
-# exactly a blocked gradient.
+# Zero partials must retain the canonical V; NoDual would break downstream field access.
 function frule!!(::Lifted{typeof(stop_gradient),Nw}, x::Lifted) where {Nw}
     return zero_lifted(Val(Nw), primal(x))
 end
@@ -143,18 +140,12 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
-# Extract the field's slot-level V from the parent V via `_get_lifted_field`.
-# Forward-mode lift wrappers (`ImmutableDual`/`MutableDual`) and plain
-# `Tuple`/`NamedTuple` V's are handled by the `_get_lifted_field` dispatch
-# table below.
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}
 ) where {Nw,f}
     primal_field = getfield(primal(x), f)
-    # A non-differentiable parent (`tangent(x) === NoDual()`) yields a non-differentiable field,
-    # but its forward V is the field's *canonical* zero V — `NoDual` for the usual scalars, yet
-    # `Vector{Any}` for a `SimpleVector` field (e.g. `lgetfield(::DataType, Val(:parameters))`).
-    # `uninit_lifted` builds that canonical slot (mirrors the reverse non-diff `getfield` path).
+    # A NoDual parent can have a differentiable field (e.g. DataType.parameters);
+    # construct the field's canonical V.
     # TODO(#1295): those partials do not alias the storage the pass seeded for the field.
     tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
     V_i = _get_lifted_field(tangent(x), f)
@@ -162,10 +153,7 @@ lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
 
-# `Ref{P<:NDualEltype}` field read (`r[]`): rebuild the scalar inner V (`NDual` real /
-# `Complex{NDual}` complex, via `_scalar_ndual`) from the primal value and the `NDualRef` parallel
-# partials buffer. The generic frule above routes ImmutableDual/MutableDual/Tuple/NamedTuple V's;
-# `NDualRef` is the `Ref`-specific V, so it needs its own branch.
+# NDualRef stores partials separately, so field reads must rebuild the scalar V.
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
@@ -184,33 +172,17 @@ end
     getfield(getfield(V, :fields), name)
 )
 @inline _get_lifted_field(::NoDual, _) = NoDual()
-# Complex slots (V `Complex{NDual}`): route field reads here so the generic `lgetfield` frule
-# refines the forward V without a Complex-specific method — `getfield(Complex{NDual}, :re/:im)` is
-# the field's `NDual`. Mirrors the reverse-mode `getfield` path.
+# Complex{NDual} fields already hold their canonical scalar V.
 @inline _get_lifted_field(V::Complex, name) = getfield(V, name)
-# NDualArray is the parallel-arrays wrapper for `Array{T,D}` slots (not a struct lift).
-# Sub-field access into the underlying primal struct happens in inlined
-# `Array` / `Memory` code; project to the matching parallel-arrays per-lane V so the
-# downstream rule (`memoryrefnew`, etc.) keeps a coherent V chain.
 @static if VERSION >= v"1.11-rc4"
-    # An `Array{T,D}` (any rank D) has a `.ref::MemoryRef{T}` field over flat
-    # `Memory{T}` storage. Project the NDualArray V to the matching memory-ref V
-    # so the downstream `memoryrefnew`/`memoryrefget` chain stays coherent.
-    # Accept the integer field index too: `getfield(arr, 1)` is `.ref` — without
-    # this the integer form silently fell through to a `NoDual`, zeroing the
-    # forward derivative of `.ref` in forward-over-reverse.
+    # Project Array.ref by name or index, preserving the memoryref chain's canonical V.
     @inline function _get_lifted_field(
         V::Nfwd.NDualArray{T,N,D,A}, name::Union{Symbol,Int}
     ) where {T<:Nfwd.NDualEltype,N,D,A<:Array{T,D}}
         name = name isa Int ? fieldname(typeof(V.primal), name) : name
         if name === :ref
-            # The array's `.ref` points at element 1, which is block column 1 (the block's
-            # columns follow the array's elements). The ref V needs only the block's flat backing
-            # (its flat parent's `.ref`, a `MemoryRef` for any block rank) plus the column count —
-            # a pure getfield chain, no `reshape` header. `.ref` is projected once per element in
-            # derived elementwise access, so a per-projection Array-header allocation would be
-            # ~one allocation per element (the SplitEM forward-alloc regression). The backing is
-            # SHARED, so mutations through the ref V land in this array's block and vice versa.
+            # Share block storage so mutations alias. Use its flat parent's ref to avoid
+            # allocating a reshape header on every element access; array.ref starts at column 1.
             return Nfwd.NDualMemoryRef{T,N,Memory{T}}(
                 getfield(V.primal, :ref),
                 getfield(getfield(getfield(V, :partials_block), :parent), :ref),
@@ -220,14 +192,9 @@ end
         end
         return NoDual()
     end
-    # `.mem` of a `MemoryRef` is the underlying `Memory`; project the block-backed memory-ref V
-    # to the `NDualArray` over that whole `Memory`. The ref's block may be a WINDOW into a larger
-    # backing (an `Array`-projected ref covers only the array's elements, and a grown `Vector`'s
-    # `Memory` has capacity slack), so rebuild the full `(N, memlen)` block over the same backing
-    # — column j of this ref's block pairs with mem slot `o - col + j`, so mem slot 1 starts at
-    # backing offset `refoff + (col - o) * N`. Sharing the backing preserves aliasing: mutations
-    # through the `Memory` V and through this ref land in the same storage. Mirrors the reverse
-    # `rrule!!`, which returns `x.dx.mem`.
+    # The ref may cover only a window (e.g. a grown Vector with capacity slack).
+    # Mem slot 1 is at refoff + (col - o)*N; project the whole Memory over the
+    # same backing so mutations through the ref and Memory V still alias.
     @inline function _get_lifted_field(
         V::Nfwd.NDualMemoryRef{T,N,M}, name::Union{Symbol,Int}
     ) where {T,N,M}
@@ -281,21 +248,13 @@ end
         end
         return NoDual()
     end
-    # Element-wise array V (a plain `Array` of per-element forward Vs, for differentiable
-    # non-float-element arrays): its `.ref` is a `MemoryRef` into the V array,
-    # parallel to the primal's `.ref`. Other fields (`.size`) are non-diff. Accept the integer
-    # field index too (`getfield(arr, 1)` occurs in forward-over-reverse), like the
-    # `NDualArray` method above.
+    # Element-wise arrays project .ref by name or index; .size is non-differentiable.
     @inline function _get_lifted_field(V::Array, name::Union{Symbol,Int})
         name = name isa Int ? fieldname(typeof(V), name) : name
         return name === :ref ? getfield(V, :ref) : NoDual()
     end
-    # Element-wise memory-ref V (a plain `MemoryRef` into an element-wise V `Memory`): `.mem` projects to the
-    # element-wise `Memory` V; `.ptr_or_offset` is the raw data pointer into that V `Memory`, typed as its
-    # element-wise dual element (e.g. `Ptr{NDualArray}`) so a downstream `unsafe_copyto!` copies the correct
-    # per-element stride. Wrapped in a 1-tuple — the canonical per-lane `Ptr` V (width-1, element-wise).
-    # Mirrors the 1.10 `jl_array_ptr` element-wise frule, which emits `Ptr{NDualArray}` directly; without
-    # this the 1.12 `pointer(::Vector{<diff non-float>})` path drops the tangent (`NoDual`).
+    # Element-wise refs project .mem and a width-1 pointer typed for the dual element,
+    # so unsafe_copyto! uses the correct stride (as in the 1.10 jl_array_ptr rule).
     @inline function _get_lifted_field(V::MemoryRef, name::Union{Symbol,Int})
         name = name isa Int ? fieldname(typeof(V), name) : name
         name === :mem && return getfield(V, :mem)
@@ -315,14 +274,9 @@ end
 # Generic NDualArray fall-through (older Julia, non-Vector storage, etc.).
 @inline _get_lifted_field(::Mooncake.Nfwd.NDualArray, _) = NoDual()
 
-# Element-wise raw-pointer V (`pointer(::Vector{<differentiable non-float>})`, whose element dual is
-# an `NDualArray`) projects to a single width-1 `Ptr` 1-tuple. At chunk width > 1 the per-element dual
-# has no dense per-lane buffer a single raw pointer could reconstruct, so a raw-pointer round-trip
-# would SILENTLY drop the derivative. Shape-based (a `Ptr` tuple whose length ≠ `Nw`), so it
-# constant-folds and never fires on the coherent per-lane `NTuple{Nw,Ptr}` scalar path; width 1 is
-# correct and passes through. Every rule that builds a slot V from `_get_lifted_field` must call this:
-# `Nw` is a parameter of the frule and invisible to the projection, which is why the check cannot live
-# inside `_get_lifted_field` and why a new caller is a fresh chance to omit it.
+# Element-wise pointer tuples support only width 1: no dense per-lane buffer exists
+# at wider widths. Every _get_lifted_field caller building a slot must check this;
+# the projection itself cannot see Nw. Coherent NTuple{Nw,Ptr} values pass through.
 @inline function _check_lifted_field_ptr_lanes(V_i, ::Val{Nw}) where {Nw}
     if Nw > 1 && V_i isa Tuple{Vararg{Ptr}} && length(V_i) != Nw
         throw(
@@ -378,8 +332,6 @@ end
 # lgetfield with order argument
 #
 
-# This deliberately duplicates the form above rather than sharing code, which proved no cleaner.
-
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, ::Lifted{Val{order}}
@@ -391,10 +343,7 @@ end
     _check_lifted_field_ptr_lanes(V_i, Val(Nw))
     return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
 end
-# `Ref{P<:NDualEltype}` field read with an order argument: the `NDualRef` V needs the same
-# rebuild as the 2-arg branch (the order arg controls atomicity, not the value/derivative).
-# Without this the generic 3-arg frule above routes through `_get_lifted_field(::NDualRef, ...)`,
-# which has no method.
+# Ordered Ref reads also need to rebuild the scalar V from NDualRef partials.
 @inline function frule!!(
     ::Lifted{typeof(lgetfield),Nw},
     x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
@@ -425,9 +374,6 @@ end
 end
 
 @is_primitive MinimalCtx Tuple{typeof(lsetfield!),Any,Any,Any}
-# Write the field's per-lane V_i back into the parent's MutableDual via the
-# central writeback helper. Mutable structs only (immutable structs go through
-# reverse-mode rebuild paths and don't reach lsetfield!).
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{P,Nw,<:MutableDual},
@@ -435,14 +381,9 @@ end
     x::Lifted,
 ) where {Nw,P,name}
     setfield!(primal(value), name, primal(x))
-    # Normalise an integer field index to its symbol name: the V's backing `NamedTuple` is
-    # symbol-keyed, so `NamedTuple{(name,)}` with an `Int` `name` would throw (mirrors the
-    # integer-index normalisation in `_get_lifted_field`).
+    # The backing NamedTuple requires symbol keys.
     nm = name isa Int ? fieldname(P, name) : name
-    # Write the field's per-lane V back through the shared `MutableDual` writeback helper, which
-    # coerces the backing field type and `convert`s the merged `NamedTuple` (needed for abstract
-    # fields — see `_setfield_tangent!`). Sharing the helper keeps this in lockstep with the
-    # runtime-name `setfield!` frule rather than duplicating the merge logic.
+    # Share runtime-name writeback, including conversion for abstract backing fields.
     _setfield_tangent!(tangent(value), nm, tangent(x))
     return x
 end
@@ -457,9 +398,7 @@ end
     setfield!(primal(value), name, primal(x))
     return x
 end
-# `Ref{P<:NDualEltype}` field write (`r[] = v`): set the primal value and the `NDualRef` partials
-# shadow (`_nfwd_dual_partial` extracts the per-lane partials from `NDual`/`Complex{NDual}`). The
-# MutableDual frule above handles generic mutable structs; `NDualRef` is the Ref-specific V.
+# NDualRef keeps scalar partials in a separate shadow buffer.
 @inline function frule!!(
     ::Lifted{typeof(lsetfield!),Nw},
     value::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
@@ -511,11 +450,8 @@ end
 
 @static if VERSION < v"1.11"
     @is_primitive MinimalCtx Tuple{typeof(copy),Dict}
-    # Copy a Dict-field forward V to alias the copied primal array. A float-element field
-    # (e.g. `Vector{Float64}` vals → `NDualArray`) rebuilds over the new primal array with a
-    # copied partials block; an element-wise field (`Vector{UInt8}` slots → `Vector{NoDual}`,
-    # `Vector{Any}` keys/vals) is a shallow array copy whose elements alias the shallow-shared
-    # key/value objects, matching `Base.copy(::Dict)`.
+    # Rebind float-array V to the copied primal; shallow-copy element-wise V so
+    # its elements alias the shallow-shared keys/values, matching Base.copy(::Dict).
     _copy_dict_field_v(new_arr, v::NDualArray) = typeof(v)(
         new_arr, copy(getfield(v, :partials_block))
     )
@@ -673,10 +609,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
             Val(:y),
             true,
         ),
-        # Always-initialised ABSTRACT field (`Foo.x::Real`): its backing V field is bare `Any`, so the
-        # merged `NamedTuple` narrows to a concrete dual type and (NamedTuple invariance) would fail a
-        # bare `setfield!` writeback — the `convert` in the shared `_setfield_tangent!` is required.
-        # `:none` perf flag: an abstract field legitimately boxes, so don't assert stability/allocs.
+        # Foo.x::Real requires converting the merged backing NamedTuple; abstract fields
+        # legitimately box, so use :none rather than asserting stability/allocations.
         (false, :none, nothing, lsetfield!, TestResources.Foo(5.0), Val(:x), 4.0),
         # Positional access on a single-field Ref: setfield!(r, 1, v) === setfield!(r, :x, v), so the
         # lsetfield! frule must accept Val(1) as well as Val(:x).
@@ -734,12 +668,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:misc})
         (false, :none, nothing, lgetfield, UInt8, Val(:hash)),
         (false, :none, nothing, lgetfield, UInt8, Val(:flags)),
 
-        # Ref{<:NDualEltype} carries the `NDualRef` V. Regression for the 3-arg (order-arg) form:
-        # the generic frule routed it through a missing `_get_lifted_field(::NDualRef, ...)`. The
-        # `order` loop below generates both the 2-arg and 3-arg variants from this single entry.
+        # NDualRef reads by name and position, with both arities from the order loop.
         (false, :none, nothing, lgetfield, Ref(5.0), Val(:x)),
-        # Positional access on a single-field Ref: getfield(r, 1) === getfield(r, :x), so the frule
-        # must accept Val(1) as well as Val(:x). The order loop below generates both arg forms.
         (false, :none, nothing, lgetfield, Ref(5.0), Val(1)),
     ]
 

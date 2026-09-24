@@ -39,8 +39,7 @@ _dot_internal(::MaybeCache, t::P, s::P) where {P<:TWP} = Float64(t) * Float64(s)
 _scale_internal(::MaybeCache, a::Float64, t::TWP) = a * t
 
 populate_address_map_internal(m::AddressMap, ::P, ::P) where {P<:TWP} = m
-# Forward V `NTuple{N,TWP}` carries no mutable aliasing (TWP is immutable) — no-op, like the
-# reverse `(::P, ::P)` above.
+# TWP is immutable, so its forward partials carry no mutable aliases.
 populate_address_map_internal(m::AddressMap, ::TWP, ::Tuple{Vararg{TWP}}) = m
 
 fdata_type(::Type{<:TWP}) = NoFData
@@ -57,37 +56,17 @@ zero_rdata(p::TWP) = zero_tangent(p)
 
 zero_rdata_from_type(P::Type{<:TWP{F}}) where {F} = P(zero(F), zero(F))
 
-#
-# Forward-mode canonical V for `TwicePrecision{P}` — `NTuple{N, TWP{P}}`,
-# i.e. `N` parallel TWP-typed partials, one per lane. Mirrors the
-# reverse-mode `tangent_type(TWP) === TWP` shape at the per-lane level,
-# echoing the Ptr V pattern (a single primitive-leaf type carrying N
-# parallel copies). The structural-lift fallback doesn't apply here
-# because TWP is conceptually a single number, not a struct with
-# differentiable fields.
-#
-
+# TWP is one number, not two differentiable fields; each lane carries one TWP partial.
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{TwicePrecision{P}}
 ) where {N,P<:IEEEFloat}
     return NTuple{N,TwicePrecision{P}}
 end
-# Per-lane partials carry no inner value, so the chunked invariant has nothing to compare against
-# the primal — the same exemption the `Ptr` V pattern above takes.
+# TWP partials carry no inner primal value to compare.
 TestUtils._chunked_v_invariant(::TWP, ::Tuple{Vararg{TWP}}, ::IdDict) = true
 
-# No `lifted_type(::Type{TwicePrecision})` override needed: the generic concrete-struct
-# `lifted_type` returns `Lifted{P,N,dual_type(Val(N),P)}`, which for a concrete `TwicePrecision{P}`
-# uses the `dual_type` above and yields `Lifted{TwicePrecision{P},N,NTuple{N,TwicePrecision{P}}}`.
-
-# Forward seed/lift/unlift for the custom V `NTuple{N, TWP{P}}` (one TWP partial per lane),
-# mirroring reverse `zero_tangent_internal` / `randn_tangent_internal`. The generic
-# `@generated` struct-lift factory would build `TWP((NDual, NDual))` and hit the TWP
-# constructor's `Float64(::NDual)` (NDual has no `Float64` conversion), so seed the per-lane
-# tuple directly.
-# Both the cache-threading factories (which `zero_lifted` enters through) and the cache-free ones
-# (which an `frule!!` returning a zero derivative calls directly) need the override: the generic
-# ones are `@generated` struct walkers keyed on `fieldcount`, and a TWP has two fields.
+# Override both cached and cache-free factories: generic struct lifting would attempt
+# the unsupported TWP constructor conversion `Float64(::NDual)`.
 for f in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval @inline function $f(::Val{N}, ::TWP{F}, ::MaybeCache) where {N,F}
         return ntuple(_ -> TWP{F}(zero(F), zero(F)), Val(N))
@@ -107,16 +86,9 @@ end
     return ntuple(_ -> TWP{F}(randn(rng, F), randn(rng, F)), Val(N))
 end
 @inline lift(x::TWP{F}, ẋ::TWP{F}) where {F} = Lifted{TWP{F},1}(x, (ẋ,))
-# `NTuple{N,TWP}` is a single-number leaf (ONE dimension, N lanes), like `NDual{T,N}` — not a structural
-# tuple. Without these terminals the gradient/Jacobian driver mis-counts a TWP input's dimensions (the
-# generic struct `tangent_dim` recurses `hi`/`lo` → 2, but a TWP is one number) and the standard-basis seed
-# walk MethodErrors on the bare-TWP element of the `NTuple` leaf. Mirror the `NDual` terminals; a
-# unit tangent direction is `TWP(1, 0)`.
+# Treat the partial tuple as one scalar dimension; its unit direction is TWP(1, 0).
 @inline tangent_dim(::TWP, ::IdDict{Any,Any}) = 1
-# The V-tuple arg is spelled `Tuple{TWP{F},Vararg{TWP{F}}}` (at least one element) rather than
-# `NTuple{N,TWP{F}}` so `F` is always bound: an empty `NTuple{0,TWP{F}}` leaves `F` free (Aqua
-# `unbound_args`). A basis-seed leaf always has `N >= 1` lanes, so this excludes only an unreachable
-# case; `N` still binds from `slots`.
+# Require a nonempty tuple to bind F (Aqua unbound_args); basis seeds have N >= 1.
 @inline function _basis_seed_isbits(
     ::Tuple{TWP{F},Vararg{TWP{F}}}, slots::NTuple{N,Int}, c::Int
 ) where {N,F}
@@ -362,11 +334,8 @@ function frule!!(
     y = range_start_step_length(primal(a), primal(st), primal(len))
     a_parts = tangent(a).partials
     st_parts = tangent(st).partials
-    # `ref` is the range value at index `offset`, not at index 1: `ref == a + (offset-1)*step`.
-    # `floatrange`/`_linspace` place `offset` at the element nearest the zero crossing, so it is 1
-    # only for ranges that do not straddle zero. Without the `(offset-1)` term,
-    # `d(r[i]) == d(ref) + (i-offset)*d(step)` depends on that internal choice; with it the
-    # dependence cancels to the correct `d(a) + (i-1)*d(step)`.
+    # `ref == a + (offset-1)*step`; zero-crossing ranges can have offset != 1.
+    # This correction makes d(r[i]) == d(a) + (i-1)*d(step), independent of offset.
     o = y.offset - 1
     ref_v = ntuple(k -> TWP{T}(a_parts[k] + o * st_parts[k], zero(T)), Val(N))
     step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
@@ -569,9 +538,7 @@ end
         x::Lifted{TwicePrecision{Float64},N,NTuple{N,TwicePrecision{Float64}}},
     ) where {N}
         _x = primal(x)
-        # `_exp_allowing_twice64` returns a `Float64` (not a `TwicePrecision`), so the output
-        # slot is a scalar `NDual`; the per-lane JVP `y * dx` (a `TwicePrecision`) projects to
-        # the `Float64` output tangent. Mirrors the reverse rule's `Float64` output cotangent.
+        # The Float64 result needs scalar NDual storage and Float64 partials.
         y = Base._exp_allowing_twice64(_x)
         x_parts = tangent(x)
         dy = ntuple(k -> Float64(y * x_parts[k]), Val(N))
@@ -659,9 +626,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         (false, :stability_and_allocs, nothing, sum, range(-0.1, 9.9; length=51)),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, 11.7, 7),
         (false, :allocs, nothing, Base.range_start_stop_length, -0.5, -11.7, 11),
-        # Straddles zero, so `offset == 3` and the `(offset-1)*step` term in `ref`'s derivative is
-        # live. Every other range row here has `offset == 1`, where that term vanishes and a rule
-        # that drops it still passes.
+        # offset == 3 exercises the ref correction; other constructor rows have offset == 1.
         (false, :allocs, nothing, Base.range_start_stop_length, -3.0, 1.0, 4),
     ]
     @static if VERSION >= v"1.11"
@@ -741,10 +706,8 @@ function derived_rule_test_cases(rng_ctor, ::Val{:twice_precision})
         # Functionality in base/range.jl
         (false, :allocs, nothing, range, 0.0, 5.6),
         (false, :allocs, nothing, (lb, ub) -> range(lb, ub; length=10), -0.45, 9.5),
-        # Ranges straddling zero, where `offset != 1` and `ref != start`. Consuming the range
-        # rather than testing the constructor directly: `ref` jumps discontinuously as `offset`
-        # switches, so a finite-difference oracle on the constructor's own output is unreliable,
-        # while a value read out of the range is smooth and offset-independent.
+        # Across zero, ref jumps when offset changes. Test smooth consumed values instead
+        # of finite-differencing the constructor output.
         (false, :allocs, nothing, (a, st) -> sum(range(a; step=st, length=4)), -0.9, 0.5),
         (false, :allocs, nothing, (a, st, b) -> sum((:)(a, st, b)), -1.0, 0.3, 1.0),
     ]
