@@ -158,13 +158,10 @@ end
         _bcast_copy_sin(x) = sum(copy(Base.Broadcast.broadcasted(sin, x)))
         _sum_f_sin(x) = sum(sin, x)
         _sum_f_exp(x) = sum(exp, x)
-        # Regression: a predicate `f` maps to `Bool`, so `sum(f, x)` has a
-        # non-differentiable `Int` result. Forward mode must return a zero-derivative (NoDual) V, not
-        # crash. Exercised on a dense CuArray and (via the caller passing `x'`) an Adjoint below.
+        # Bool mappings reduce to Int: forward must return NoDual (dense and adjoint).
         _sum_f_pred(x) = sum(y -> y > 0.5, x)
-        # Same predicate stripped to a CONCRETE float: the result is differentiable while the kernel
-        # carries no partials, so `NoDual` is canonical for the `Int` case above and wrong here.
-        # `oftype(y, ...)` converts to `y`'s dual type instead and never reaches that branch.
+        # A concrete Float32 cast strips partials but requires a differentiable V.
+        # oftype(y, ...) would retain the dual and miss this branch.
         _sum_f_pred_f32(x) = sum(y -> Float32(y > 0), x)
         # complex sum(f, x) wrappers
         _sum_f_cx_abs2(x) = sum(abs2, x)
@@ -203,9 +200,7 @@ end
         _sum_f_cx_abs2_d1(x) = sum(abs2, x; dims=1)
         _sum_f_cx_sin_d2(x) = sum(sin, x; dims=2)
         _mapreduce_abs2_d1(x) = mapreduce(abs2, +, x; dims=1)
-        # `dims` AND `init` together: the init-type guard has to compare against the
-        # reduction's element type, since a `dims` reduction returns an array and no scalar
-        # `init` can ever equal its type.
+        # dims returns an array: compare init's type against its element type.
         _mapreduce_abs2_d1_init(x) = mapreduce(abs2, +, x; dims=1, init=0.0f0)
         _mapreduce_abs2_add_sum_d1(x) = mapreduce(abs2, Base.add_sum, x; dims=1)
         _reduce_plus(x) = reduce(+, x)
@@ -315,9 +310,7 @@ end
         _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
         _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
         _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
-        # A view covering ALL of its parent, where that parent is itself an offset view. The
-        # forward rule tested `y.offset == 0` rather than `y.offset == parent.offset`, so every
-        # such view inherited a non-zero offset and was refused as "partial" despite full coverage.
+        # Full coverage inherits the offset of a parent that is itself a view.
         _full_view_of_view(a) = sum(view(view(a, 2:5), 1:4))
         _view_cols(m) = sum(view(m, :, 1) .* CuArray(Float32[1, 2, 3]))
         _view_weighted_cx(a) = real(sum(view(a, 1:3) .* CuArray(ComplexF32[1, 2im, 3])))
@@ -375,9 +368,7 @@ end
         # reattached belongs to the array at the bottom rather than to the outer cast's
         # immediate argument.  Both modes agreed on an exact zero before, so nothing but a
         # value comparison catches it.
-        # A fused cast of a differentiable SCALAR inside a broadcast: the cast diff decorates
-        # the tangent, so handling it by overloading the leaf helpers' second argument made
-        # them ambiguous with every leaf-primal method and this died on dispatch.
+        # Scalar cast tangents must not introduce ambiguities with leaf-primal dispatch.
         _bcast_cast_scalar(x, y) = sum(@. x + Float32(y))
         _bcast_cast_chain_exp(x) = sum(exp.(Float64.(Float32.(x))))
         _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
@@ -518,13 +509,8 @@ end
         # `nothing` is Base.repeat's own default for inner/outer, so it can arrive here.
         _repeat_nothing(x) = sum(repeat(x; inner=nothing, outer=(2, 2)))
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
-        # _view_sum: a contiguous-range view of a CuArray returns a CuArray (via
-        # unsafe_contiguous_view → unsafe_convert(CuPtr{T}, parent) + offset). In REVERSE mode
-        # (view is not a forward primitive there) that pointer arithmetic is traced, exercising
-        # CuPtr{Float32} + Integer. In FORWARD mode the `view` frule intercepts and builds the
-        # result CuArray's NDualArray directly, so the CuPtr lowering is not traced. A strided
-        # (non-contiguous) index instead yields a SubArray (the frule's ImmutableDual branch),
-        # tested directly below.
+        # Reverse traces contiguous views through CuPtr + Integer; forward intercepts
+        # view directly. Strided SubArray construction is tested separately below.
         _view_sum(x) = sum(view(x, 2:length(x)))
         _view_sum_cx(x) = real(sum(view(x, 2:length(x))))
         # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
@@ -643,19 +629,11 @@ end
         _min_idx_init(a, x) = minimum(CuArray([1, 2, 3]); init=a) * sum(x)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
-            # Reverse-only: `_new_(CuArray, DataRef, …)` is the reconstruction path for the
-            # reverse rule, where the DataRef carries the cotangent. There is no forward
-            # counterpart by design — `dual_type(CuDataRef) === NoDual` (the handle is forward
-            # bookkeeping; the JVP lives in the result's `NDualArray` partials), and forward
-            # views/reshapes build that `NDualArray` directly via the `view` frule, never `_new_`.
-            #
-            # `test_rule` would create `randn_dual` inputs for `CuDataRef`, which would
-            # require custom `randn_tangent_internal`/`zero_tangent_internal` methods.
-            # We avoid that because those methods would mainly exist to satisfy the test helper.
-            #
-            # NOTE: test_rrule_interface takes full tangents (tangent_type) in the second CoDual
-            # slot, then extracts fdata internally via to_fwds before calling the rule.
-            # Non-differentiable args therefore take NoTangent() here — NOT NoFData().
+            # Reverse reconstruction carries the cotangent in DataRef. Forward uses
+            # NoDual handles and constructs NDualArray directly in view/reshape.
+            # test_rule cannot randomise DataRef; supply an opaque handle explicitly.
+            # test_rrule_interface takes full tangents, including NoTangent metadata,
+            # and extracts fdata internally.
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
                 test_rrule_interface(
@@ -1588,10 +1566,8 @@ end
             )
         end
 
-        # A fused cast of a differentiable SCALAR inside a broadcast, which broke both modes for
-        # different reasons: forward on an ambiguity between the leaf helpers' primal dispatch and
-        # the cast decorator, reverse because the accumulated gradient reached the Broadcasted
-        # rdata carrying the kernel's element type rather than the argument's.
+        # Fused scalar casts exercise leaf dispatch and conversion of kernel-typed
+        # gradients back to the scalar argument's rdata type.
         @testset "fused scalar cast in a broadcast" begin
             test_rule(
                 StableRNG(123),
@@ -1632,12 +1608,8 @@ end
             end
         end
 
-        # Reverse mode only: materialising the range constructs `Base.TwicePrecision`
-        # intermediates, whose `dual_type` is the per-lane tuple fallback even though
-        # `tangent_type` is the type itself — so a `Float64` read out of one lands in a slot
-        # whose V no scalar frule matches. Nothing about it is GPU-specific:
-        # `Mooncake.zero_dual(Val(1), Base.TwicePrecision{Float32}(1.0f0))` throws with no
-        # CUDA loaded at all.
+        # Reverse only: Base.TwicePrecision's tuple V is incompatible with scalar
+        # frules. This forward limitation also affects host arrays.
         @testset "materialising a float range restores the gradient" begin
             test_rule(
                 StableRNG(123),
@@ -1649,11 +1621,8 @@ end
             )
         end
 
-        # A write through a view whose block DOES alias the parent's is correct, not refused: a
-        # view spanning the whole parent shares the entire lane-major block, an empty view has
-        # nothing to strand, and a `resize!`d array is not a view at all. Each of these was
-        # mishandled when the guard tested geometry alone — the first silently wrong, the other
-        # two wrongly rejected.
+        # Full and empty views must remain writable: full views share the parent's
+        # block, and empty views have no partials to detach.
         @testset "writes that reach the parent tangent stay differentiable" begin
             @testset "$nm" for (nm, f, x) in (
                 (
@@ -1671,10 +1640,7 @@ end
                     z -> (y=z .* 2; fill!(view(y, 1:0), 0.0f0); sum(y)),
                     _rand(rng, Float32, 4),
                 ),
-                # A colon view of a MATRIX spans the whole allocation but comes back as a vector,
-                # so keying the alias on equal shapes rather than equal extent left exactly this
-                # case detached and silently wrong. The vector cases above cannot catch it, since
-                # there shape and extent coincide.
+                # Full coverage must permit rank changes, not just equal shapes.
                 (
                     "rank-changing full-extent view",
                     z -> (y=z .* 2; v=view(y, :); v.=0.0f0; sum(y)),
@@ -1685,11 +1651,8 @@ end
             end
         end
 
-        # Reverse mode only: forward mode refuses a write through a contiguous `CuArray` view
-        # (cases 290/291 pin the error) because the view's block is a copy of the parent's. The
-        # lane-major block cannot express the view's strided region as a `CuArray`, so aliasing
-        # it would take an element-major GPU block — which would cost the per-lane contiguity
-        # the batched cuBLAS paths rely on.
+        # Reverse only: forward rejects partial contiguous CuArray views because
+        # their strided regions cannot share the lane-major block.
         @testset "in-place broadcast into a view consumes the view's cotangent" begin
             test_rule(
                 StableRNG(123),
@@ -1701,12 +1664,9 @@ end
             )
         end
 
-        # Regression: the forward vcat/hcat/cat/permutedims frules canonicalise each argument
-        # via `arrayify(::Lifted)`. The generic `arrayify` is bounded to `BlasFloat`, so Float16 and
-        # ComplexF16 `CuArray`s (admitted by `CuMaybeWrappedArray`) `MethodError`ed until the CUDA ext
-        # added an eltype-agnostic forward `arrayify`. `test_rule`'s finite differences are unusable at
-        # Float16/ComplexF16 precision, so verify directly: these ops are linear, so the forward JVP is
-        # exactly the same rearrangement of each lane's partials. FD-free, so exact and deterministic.
+        # Float16/ComplexF16 need the GPU arrayify overload (host uses BlasFloat).
+        # Finite differences are unreliable here; linear rearrangements give exact
+        # per-lane JVP oracles.
         @testset "Float16/ComplexF16 concat forward exact — $ET, width $N" for ET in (
                 Float16, ComplexF16
             ),
@@ -3432,13 +3392,9 @@ end
         end
 
         @testset "prepared forward gradient/Jacobian over a CuArray" begin
-            # The seeding fast paths write basis seeds one element at a time through
-            # `Nfwd._set_partial!`, which indexes the partials block by linear offset. The host
-            # block is element-major and the CuArray block lane-major, so an unadjusted offset
-            # walks the wrong axis and the assembled result is scrambled at every chunk width
-            # except `W == length(x)`, where the two orderings coincide. Sweep the widths either
-            # side of that: a single width can agree by accident. The scalar writes need
-            # `allowscalar`, which is also why nothing else here reaches this path.
+            # CuArray's lane-major seeding differs from the host layout. Sweep widths
+            # below and at length(x); one width can agree by accident. These scalar
+            # seed writes require allowscalar and are not reached by the rule tests.
             xg = cu(Float32[1, 2, 3, 4, 5])
             sq(z) = sum(z .* z)
             CUDA.@allowscalar for W in 1:5
@@ -3461,13 +3417,9 @@ end
         end
 
         @testset "NDualArray element accessors over a lane-major block" begin
-            # `getindex`/`setindex!` address the block through `Nfwd._lane_index`, the same
-            # orientation seam the seeding fast paths reach via `_set_partial!`/`_get_partial`.
-            # A host element-major formula against the lane-major CuArray block walks the wrong
-            # axis and silently returns another element's lane. `maximum`/`minimum` are written
-            # in terms of `getindex`, so they inherit it. Widths either side of `length(x)`,
-            # where the two orderings coincide. Scalar indexing is the only way to reach these,
-            # which is why nothing else here does.
+            # Accessors (and maximum/minimum) use _lane_index. Sweep widths around
+            # length(x) to distinguish lane-major from host element-major addressing.
+            # These scalar accesses require allowscalar and are otherwise unreached.
             xh = Float64[10, 20, 30]
             Nfwd = Mooncake.Nfwd
             CUDA.@allowscalar for W in 1:4

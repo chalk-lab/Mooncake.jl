@@ -224,18 +224,8 @@ end
 @foldable tangent_type(::Type{P}) where {P<:CuMaybeComplexArray} = P
 @foldable tangent_type(::Type{P}, ::Type{NoRData}) where {P<:CuMaybeComplexArray} = P
 
-# Forward-mode canonical V for CUDA primitives — mirrors the host
-# (`Array{T,D}` / `Ptr{T}` / etc.) V shapes:
-#
-#   CuArray{T<:IEEEFloat,D}            → NDualArray{T,N,D,CuArray{T,D},NDual{T,N},CuArray{T,D+1}}
-#   CuArray{Complex{R<:IEEEFloat},D}   → NDualArray{Complex{R},N,D,…,Complex{NDual{R,N}},CuArray{Complex{R},D+1}}
-#   CuPtr{T}                            → NTuple{N, CuPtr{T}}
-#   CuDataRef (any memory-kind variant) → NoDual (opaque handle)
-#
-# The concrete block type `B` (6th param) must be spelled out — `Lifted`/`NDualArray` are
-# invariant in it, so a `B`-free `dual_type` would fail the `::dual_type(...)` seed typeasserts.
-# `NDualArray` accepts any `AbstractArray{T,D}` storage by construction, including `CuArray`; the
-# block is LANE-MAJOR `(dims..., N)` for `CuArray` (see `_block_dims`/`tangent_view` below).
+# Spell out the concrete block type: Lifted/NDualArray are invariant in it, and
+# seed typeasserts require it. CuArray uses a lane-major block (dims..., N).
 @foldable @inline function dual_type(
     ::Val{N}, ::Type{P}
 ) where {N,T<:IEEEFloat,D,P<:CuArray{T,D}}
@@ -247,34 +237,23 @@ end
     return NDualArray{Complex{R},N,D,P,Complex{NDual{R,N}},Nfwd._block_type(P)}
 end
 
-# LANE-MAJOR block for a `CuArray`: `CuArray{T,D+1,M}` of size `(dims..., N)`. The host block is
-# element-major `(N, dims...)` so scalar `getindex` reads a contiguous lane column — but a GPU
-# never scalar-indexes (CUDA forbids it), so that layout would only make each lane a stride-`N`
-# view, which the low-level CUDA primitives (`unsafe_copyto!`/`unsafe_free!`/cuBLAS batch) reject.
-# With the lane as the LAST dimension, lane `k` is the contiguous slice `view(block, colons..., k)`
-# — accepted by those primitives and by per-lane broadcasts with no gather (and it lines up with
-# the batched-cuBLAS follow-on). `_block_dims`/`_block_shape_ok`/`tangent_view` below carry this
-# orientation; `_block_type` is orientation-free (the type is the same either way).
+# Lane-major (dims..., N) makes each lane contiguous for unsafe_copyto!, unsafe_free!
+# and cuBLAS. The host's element-major layout would give rejected stride-N views.
+# _block_type is orientation-independent; dimensions and views below set the layout.
 @inline Nfwd._block_type(::Type{CuArray{T,D,M}}) where {T,D,M} = CuArray{T,D + 1,M}
 @inline Nfwd._block_dims(N::Int, p::CuArray) = (size(p)..., N)
 @inline Nfwd._block_shape_ok(block::CuArray, N::Int, p) = size(block) == (size(p)..., N)
-# Lane `k`'s partial: the contiguous last-dim slice. Overrides the host element-major
-# `tangent_view` (which views the leading lane axis); `_lane_views` builds on this.
 @inline function Nfwd.tangent_view(
     a::NDualArray{E,N,D,A}, k::Integer
 ) where {E,N,D,A<:CuArray}
     return view(getfield(a, :partials_block), ntuple(_ -> Colon(), Val(D))..., k)
 end
-# Whole per-lane tuple. Overrides the host generic, which slices the block's LEADING axis
-# (element-major `(N, dims...)`); the CuArray block is lane-major `(dims..., N)`, so build
-# from the lane-major `tangent_view` above instead.
+# The host generic slices the leading axis; CuArray lanes occupy the last axis.
 @inline Nfwd._lane_views(a::NDualArray{E,N,D,A}) where {E,N,D,A<:CuArray} = ntuple(
     k -> Nfwd.tangent_view(a, k), Val(N)
 )
-# GPU-friendly pack: the generic `_pack_block` fills element-by-element (scalar `setindex!`,
-# which a `CuArray` forbids). Copy each lane's partial into its block slice `[dims..., k]` — one
-# device copy per lane, no scalar indexing. `copyto!` accepts any-typed source, so lane views of
-# another block (`SubArray`, e.g. reconstructing a result from an input's lane views) work too.
+# CuArray forbids the generic packer's scalar stores. Copy whole lanes instead;
+# copyto! also accepts views of another block.
 @inline function _cu_pack_lane_major(p::CuArray, ts, Nw::Int)
     block = Nfwd._block_type(typeof(p))(undef, Nfwd._block_dims(Nw, p)...)
     colons = ntuple(_ -> Colon(), Val(ndims(p)))
@@ -292,22 +271,15 @@ function Nfwd._pack_block(p::CuArray, ts::NTuple{Nw,<:AbstractArray}) where {Nw}
     _cu_pack_lane_major(p, ts, Nw)
 end
 
-# Single-element lane addressing. The host seam indexes the element-major block at
-# `(elem-1)*N + lane`; on the lane-major CuArray block that reaches lane `((p-1) ÷ n)+1` of
-# element `((p-1) mod n)+1` — the wrong axis, silently, so the assembled gradient is scrambled at
-# every chunk width except `W == n`, where the two orderings coincide. Overriding the seam fixes
-# `_get_partial`/`_set_partial!` and the `NDualArray` `getindex`/`setindex!` (hence
-# `maximum`/`minimum`) together. These stay scalar `CuArray` accesses, so the seeding fast paths
-# still need `CUDA.allowscalar(true)` and cost a launch per element per lane; what changes is
-# that they no longer return a wrong answer to callers who have enabled it.
+# Override the host's element-major indexing for seeding and NDualArray accessors
+# (including maximum/minimum). Scalar accesses still require CUDA.allowscalar and
+# cost a launch per element per lane.
 @inline Nfwd._lane_index(
     a::NDualArray{E,N,D,A}, elem::Int, lane::Int
 ) where {E,N,D,A<:CuArray} = (lane - 1) * length(getfield(a, :primal)) + elem
 
-# Seed factories for CuArray (mirror the host `Array{T,D}` overloads in `src/lifted.jl`):
-# the @generated struct-lift fallback would recurse into CuArray's internal `Ptr` fields
-# and fail; an explicit `NDualArray` seed keeps `zero_dual` / `uninit_dual` / `randn_dual`
-# coherent with `dual_type`.
+# Explicit seeds avoid the generic struct lift into CuArray's internal pointers
+# and keep zero_dual/uninit_dual/randn_dual coherent with dual_type.
 @inline function Mooncake.zero_dual(::Val{N}, x::A) where {N,A<:CuMaybeComplexArray}
     return NDualArray{eltype(A),N,ndims(A),A}(x)
 end
@@ -322,11 +294,8 @@ end
     partials = ntuple(_ -> A(randn(rng, eltype(A), size(x)...)), Val(N))
     return NDualArray{eltype(A),N,ndims(A),A}(x, partials)
 end
-# Cache-aware seed delegations: a `CuArray` has a custom `NDualArray` V, so the cache-aware
-# `_*_dual_internal` must delegate to the cache-free factory above (like core's `Array`
-# delegation) rather than fall to the generic struct-lift @generated, which would recurse into
-# CuArray's internal `DataRef`/`Ptr` fields. Register by primal identity so aliased CuArrays
-# (e.g. from `reshape`/`view`) share one V.
+# Avoid struct-lifting CuArray's DataRef/Ptr fields; cache the array-level V by
+# primal identity, as the host Array factories do.
 const _CuDualArray = Union{CuArray{<:IEEEFloat},CuArray{<:Complex{<:IEEEFloat}}}
 for (factory, internal) in
     ((:zero_dual, :_zero_dual_internal), (:uninit_dual, :_uninit_dual_internal))
@@ -352,8 +321,6 @@ end
     return tangent_type(T) === NoTangent ? NoDual : NTuple{N,CuPtr{T}}
 end
 
-# One body, the other two delegate — the shape the host `Ptr` factories use in
-# `src/tangents/lifted.jl`. All three build the same per-lane null-pointer seed.
 @inline Mooncake.zero_dual(w::Val, x::CuPtr) = Mooncake.uninit_dual(w, x)
 @inline Mooncake.randn_dual(w::Val, ::Random.AbstractRNG, x::CuPtr) = Mooncake.uninit_dual(
     w, x
@@ -363,26 +330,18 @@ end
     return ntuple(_ -> CuPtr{T}(UInt64(0)), Val(N))
 end
 
-# Width-1 `lift` overloads for CuPtr / CuArray — mirror the host `Ptr` / `Array`
-# `lift` overloads in `src/lifted.jl`. Without these, the test-side `lift(p, ẋ)`
-# boundary call MethodErrors for CuPtr / CuArray inputs.
 @inline function Mooncake.lift(x::CuPtr{T}, ẋ::CuPtr{T}) where {T}
     return Mooncake.Lifted{CuPtr{T},1}(x, (ẋ,))
 end
 @inline function Mooncake.lift(x::A, ẋ::A) where {A<:CuMaybeComplexArray}
     return Mooncake.Lifted{A,1}(x, NDualArray{eltype(A),1,ndims(A),A}(x, (ẋ,)))
 end
-# CuDataRef is non-differentiable (V === NoDual). This `lift(x::A, ::A)` method accepts a
-# same-typed second argument (the tangent the test harness supplies) and discards it, producing
-# the canonical NoDual V.
+# The harness supplies a same-typed DataRef tangent; forward handles carry no JVP.
 @inline function Mooncake.lift(x::A, ::A) where {A<:CuDataRef}
     return Mooncake.Lifted{A,1}(x, NoDual())
 end
-# Forward uses NoDual; reverse uses `tangent_type === P` (above). The difference is the aliasing model:
-# reverse reuses the handle as *shared* cotangent storage so aliased CuArrays/views accumulate gradient
-# into one place (the reverse aliasing invariant). Forward tangents are slot-local — nothing is shared —
-# and a CuArray's JVP lives at the array level in the result's `NDualArray` partials (views build that
-# via the `view` frule, never through a tangent on the DataRef). So the handle carries no forward derivative.
+# Reverse shares the handle for cotangent accumulation. Forward keeps slot-local
+# JVPs in the array's NDualArray (including views), so the handle has no derivative.
 @foldable @inline dual_type(::Val{N}, ::Type{P}) where {N,P<:CuDataRef} = NoDual
 @unstable @foldable tangent_type(::Type{CuRefValue{P}}) where {P} = CuRefValue{
     tangent_type(P)
@@ -430,14 +389,8 @@ function rrule!!(
     _nopb(Val(3))
 end
 
-# Chunked-Hessian basis seeding for device-resident arrays. The generic
-# `_basis_seed!!(::NDualArray)` writes each lane's one-hot with scalar `setindex!`, which a
-# CuArray forbids. Each lane consumes one degree of freedom per element (numbered by `cursor`
-# in `eachindex` order, i.e. column-major linear for a dense CuArray), so lane `k`'s partial is
-# a one-hot at element `slots[k] - base`. Zero the whole block, then write each lane's single
-# one-hot into the contiguous block at its LANE-MAJOR position `(k - 1) * n + hot` (lane `k`'s
-# slice is the contiguous run `[(k-1)*n + 1 : k*n]`) — a 1-element host→device `copyto!`, no
-# scalar indexing.
+# Device Hessian seeds use one host-to-device copy per lane to avoid scalar stores.
+# cursor numbers elements in eachindex order; lane k has offset (k - 1) * length(v).
 function Mooncake._basis_seed!!(
     v::NDualArray{T,N,D,A}, slots::NTuple{N,Int}, cursor, dict
 ) where {T<:IEEEFloat,N,D,A<:CuArray}
@@ -485,7 +438,6 @@ end
 # For non-differentiable T (e.g. CuPtr{Cvoid} used in memory management), the tangent
 # is NoTangent and the pointer arithmetic carries no gradient.
 @is_primitive(MinimalCtx, Tuple{typeof(+),CuPtr{T},Integer} where {T})
-# Differentiable T: per-lane CuPtr offset.
 function frule!!(
     ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NTuple{Nw,CuPtr{T}}}, n::Lifted{<:Integer}
 ) where {Nw,T}
@@ -495,7 +447,6 @@ function frule!!(
     new_partials = ntuple(k -> p_partials[k] + np, Val(Nw))
     return Lifted{CuPtr{T},Nw}(new_primal, new_partials)
 end
-# Non-differentiable T: NoDual tangent.
 function frule!!(
     ::Lifted{typeof(+),Nw}, p::Lifted{CuPtr{T},Nw,NoDual}, n::Lifted{<:Integer}
 ) where {Nw,T}
@@ -708,12 +659,9 @@ tangent(p::CuMaybeComplexArray, ::NoRData) = p
 function arrayify(x::A, dx::A) where {A<:CuMaybeComplexArray}
     return (x, dx)
 end
-# Forward-mode `arrayify` for GPU arrays. The generic `arrayify(::Lifted)` (blas.jl) is bounded to
-# `BlasFloat`, excluding Float16/ComplexF16, but the concat/permutedims frules admit them via
-# `CuMaybeWrappedArray`. Delegate to the eltype-agnostic `_arrayify_lane` recursion — which handles a
-# dense `CuArray`'s `NDualArray` V and the Adjoint/Transpose/SubArray wrappers alike, with no
-# `BlasFloat` bound — mirroring the reverse `arrayify(::A,::A)` above. More specific than the generic
-# method on the array type, so it also takes `BlasFloat` GPU arrays (no ambiguity, same result).
+# The host Lifted overload excludes Float16/ComplexF16 via BlasFloat, while GPU
+# concat/permutedims admit them. _arrayify_lane handles dense and wrapped arrays
+# without that bound; this array-type-specific overload also covers BlasFloat.
 function arrayify(x::Lifted{<:CuMaybeWrappedArray,N}) where {N}
     A = Mooncake.primal(x)
     return A, ntuple(lane -> Mooncake._arrayify_lane(A, Mooncake.tangent(x), lane), Val(N))
@@ -935,19 +883,10 @@ function rrule!!(
     return CoDual(derive(T, pa, d, o), derive(T, da, d, o)), _nopb(Val(5))
 end
 
-# A contiguous `view(::CuArray, range)` hands back a `CuArray` that is a strict sub-region of the
-# parent's allocation. Its forward block cannot alias the parent's: the block is lane-major, so the
-# parent bytes belonging to the view are strided across lanes and no `CuArray` describes them. The
-# `view` frule below therefore copies, which reads correctly and writes wrongly — the write lands
-# in the copy and never reaches the parent's tangent. Refuse such a write rather than return a
-# silently wrong JVP. `reshape`/`vec` keep every element and so alias their block outright.
-# `view(::CuArray, inds...)` of a contiguous range reconstructs a CuArray via GPU pointer
-# arithmetic (`unsafe_contiguous_view` → `_new_(CuArray, parent.data, …)`). Made a
-# FORWARD-mode primitive so the forward transform does not trace into that primal-only
-# reconstruction and drop the parallel per-lane partials: view the primal and each partial
-# alike, mirroring `reshape` above. Reverse mode is NOT a primitive — the traced path
-# already produces the canonical tangent for both contiguous (CuArray) and non-contiguous
-# (SubArray) results; a hand-written rrule!! here returned a malformed SubArray CoDual.
+# Partial contiguous CuArray views cannot share the lane-major block. Refuse them
+# at creation: a copied tangent becomes stale when either primal alias is written.
+# Forward intercepts view before primal-only pointer reconstruction. Reverse traces
+# that reconstruction to preserve canonical CuArray and SubArray tangents.
 @is_primitive(
     MinimalCtx, Mooncake.ForwardMode, Tuple{typeof(view),CuMaybeComplexArray,Vararg}
 )
@@ -961,16 +900,8 @@ function frule!!(
     x_partials = Nfwd._lane_views(tangent(x))
     if y isa CuMaybeComplexArray
         Y = typeof(y)
-        # A view spanning the whole parent covers the entire lane-major block, so it can share
-        # that block — as `reshape` does. Copying it instead would detach the tangent and a write
-        # through the view would never reach the parent's, silently. The test is COVERAGE, not
-        # shape: `view(M, :)` over a matrix spans the whole allocation while changing rank, so
-        # requiring equal shapes left exactly that case detached and silently wrong. Reshaping the
-        # parent's block to the view's shape covers both, and is a no-op when the shape is equal.
-        # `y.offset == primal(x).offset`, not `== 0`: the test is whether the view STARTS where
-        # the parent does, and a parent that is itself an offset view carries a non-zero offset that
-        # every full-coverage view of it inherits. Requiring zero refused exactly those — a
-        # `view(v, 1:length(v))` over `v = view(a, 3:6)` covers all of `v` and was rejected.
+        # Full coverage can share the block even when rank changes (view(M, :)).
+        # Compare against the parent's offset, which may itself be nonzero.
         if length(y) == length(primal(x)) && y.offset == primal(x).offset
             blk = reshape(getfield(tangent(x), :partials_block), (size(y)..., Nw))
             V = NDualArray{
@@ -983,19 +914,10 @@ function frule!!(
         # An empty result has no element whose partial could be stranded, so the copy below is
         # harmless and the refusal would only reject a no-op.
         if !isempty(y)
-            # A strict sub-range cannot share the block as ONE array: it is strided across lanes
-            # in the lane-major layout. Copying instead makes the block a snapshot, wrong in both
-            # directions — a write through the view never reaches the parent's tangent, and a write
-            # to the PARENT leaves the snapshot stale, so even reading through the view returns a
-            # pre-mutation derivative. Only the first is detectable at the write, so the view is
-            # refused where it is taken.
-            #
-            # Holding `N` borrowed per-lane arrays would work instead — each lane's sub-range IS a
-            # contiguous `CuArray` — and is declined deliberately: a borrowed block and an owned one
-            # would share a type and support the same operations, differing only in whether they
-            # alias, which no signature can express. A site written for one then returns a plausible
-            # wrong derivative for the other rather than failing. Refusing here keeps one kind of
-            # block, so no site can mishandle a second.
+            # A copied block loses writes through either alias. Borrowed per-lane
+            # arrays could share the sub-range, but would make owned and borrowed
+            # blocks indistinguishable by type, allowing silently wrong derivatives.
+            # Keep one block representation and refuse the view at creation.
             throw(
                 ArgumentError(
                     "Forward mode cannot take a partial view of a `CuArray`: the view's per-lane " *
@@ -1023,13 +945,8 @@ function frule!!(
     return Lifted{typeof(y),Nw}(y, V)
 end
 
-# Reverse `_new_` rule for the DataRef-based inner CuArray constructor. The tangent reuses the
-# input tangent's DataRef (shared cotangent storage), so gradient accumulation propagates
-# automatically. There is deliberately NO forward parallel: `dual_type(CuDataRef) === NoDual` makes
-# the handle forward-opaque (the JVP lives at the array level in the result's `NDualArray`, not in
-# the DataRef), so a forward `_new_(CuArray, DataRef, …)` would have no tangent to propagate — and
-# it is never needed, because forward views/reshapes build the result's `NDualArray` directly via
-# the `view` frule above, never through this constructor.
+# Reverse construction shares the input DataRef's cotangent storage. No forward
+# counterpart: DataRef has NoDual, and view/reshape construct NDualArray directly.
 function rrule!!(
     ::CoDual{typeof(_new_)},
     ::CoDual{Type{P}},
@@ -1612,8 +1529,7 @@ function frule!!(
     px = primal(x)
     y = prod(px)
     x_partials = Nfwd._lane_views(tangent(x))
-    # ∂prod/∂xᵢ does not depend on the lane, so the exclusive product is formed once and each
-    # lane's JVP is its inner product with it.
+    # Reuse the lane-independent exclusive product.
     excl = _prod_exclusive(px, :, (;))
     if isempty(px)
         # prod over no elements has derivative 0, and gemv_batched! quick-returns on a
@@ -2545,10 +2461,7 @@ end
 function frule!!(
     ::Lifted{typeof(fill!),Nw}, a::Lifted{<:CuMaybeWrappedArray,Nw}, x::Lifted
 ) where {Nw}
-    # `arrayify` handles a dense CuArray and Adjoint/Transpose/SubArray wrappers alike: `pa` is
-    # the destination (filled through the wrapper) and each `a_partials[lane]` is the same wrapper
-    # shape over lane `k`'s partials, so `fill!` writes the constant into exactly the region the
-    # primal touches — matching the reverse rrule, which also goes through `arrayify`.
+    # arrayify preserves wrapped destinations so every lane writes the primal's region.
     pa, a_partials = arrayify(a)
     fill!(pa, primal(x))
     Eout = eltype(a_partials[1])
@@ -2557,8 +2470,7 @@ function frule!!(
             fill!(partial, zero(Eout))
         end
     else
-        # Per-lane scalar tangent via the canonical accessor, which handles a real `NDual`
-        # and a complex `Complex{NDual}` alike — the raw `.partials` field exists only on `NDual`.
+        # The lane accessor handles both real NDual and Complex{NDual}.
         @inbounds for lane in 1:Nw
             fill!(a_partials[lane], Eout(tangent(x, lane)))
         end
@@ -2800,13 +2712,8 @@ end
 # Performance: equivalent to NDual with 2-wide Duals — one kernel pass.
 
 @is_primitive(MinimalCtx, Tuple{typeof(sum),Any,CuComplexArray})
-# Width-`Nw` forward rule for `sum(f, x)` on real/complex CuArrays.
-# Shared width-N `sum(f, x)` forward body: one dual broadcast computes f and df/dx for every
-# element, then each lane reuses `out` for a cheap reduction against that lane's input tangent.
-# `flat_px`/`x_partials` are extracted per V shape by the callers (dense NDualArray vs the
-# Transpose/Adjoint ImmutableDual parent). A non-differentiable mapping result (e.g. a Bool/Int-valued
-# `f`) yields a `NoDual` V — a non-float `primal_out` must NOT go through `_wrap_scalar_v_lanes`
-# (float-only). Mirrors the zero-derivative reverse rrule.
+# One dual broadcast supplies f and df/dx for all lanes. Callers extract dense or
+# wrapped input partials; non-float results must not reach _wrap_scalar_v_lanes.
 @inline function _gpu_sum_f_lifted(
     ::Val{Nw}, pf, flat_px, x_partials, pkw=NamedTuple()
 ) where {Nw}
@@ -4652,12 +4559,8 @@ end
 
 @inline _leaf_effective_tangent(_, _) = nothing  # non-differentiable
 
-# A cast diff DECORATES the tangent; it is not a kind of leaf primal. Overloading slot 2 of
-# `_leaf_effective_tangent`, which dispatches on slot 1, made it ambiguous with every member of
-# that family -- 8 such pairs across the two helpers, and a GPU broadcast carrying a fused scalar
-# cast died on the ambiguity rather than computing a JVP. These entry points dispatch on the
-# DECORATED slot alone, so their two methods order cleanly, and the leaf families below stay
-# dispatched on the primal. Callers use these.
+# Dispatch on the decorated tangent separately from the leaf-primal family to
+# avoid ambiguities between the two argument positions.
 @inline function _leaf_tangent(_, diff::_GpuBroadcastCastDiff{T}) where {T}
     t_eff = _leaf_tangent(diff.primal_arg, diff.diff_arg)
     return t_eff === nothing ? nothing : _gpu_cast_like(T, t_eff)
@@ -5133,12 +5036,8 @@ function _check_mixed_gpu_eltype(flat_pargs)
     return nothing
 end
 
-# Per-lane tangent extraction for the canonical forward V shapes that appear as
-# `Broadcasted.args` entries, used by the `materialize` / `materialize!` frules
-# below to reconstruct a legacy reverse-mode-shaped Broadcasted tangent (which
-# the existing `_prepare_gpu_broadcast` / `_gpu_bcast_leaves` helpers consume).
-# `lane` selects the chunk slot, so each lane reuses the single dual-broadcast
-# kernel for an independent JVP.
+# Reconstruct reverse-shaped Broadcasted tangents for the existing leaf helpers.
+# Each lane uses the same dual-broadcast kernel for an independent JVP.
 @inline _bc_tangent(::Union{Mooncake.NoDual,Mooncake.NoTangent}, _, _) = NoTangent()
 @inline _bc_tangent(::Tuple{<:Union{Mooncake.NoDual,Mooncake.NoTangent}}, _, _) = NoTangent()
 @inline _bc_tangent(v::Nfwd.NDual, _, lane) = v.partials[lane]
@@ -5198,19 +5097,15 @@ function frule!!(
     # has no method for would report a MethodError in place of the intended message.
     _check_gpu_bcast_captures(bc_primal)
     bc_V = tangent(bc)
-    # `out`, `decoded`, `flat_bc`, and `flat_pargs` are primal-only (lane-independent),
-    # so run the single dual-broadcast kernel once and reuse it for every lane's JVP
-    # (including lane 1's flattened tangents, captured here).
+    # Run the lane-independent kernel once; retain lane 1's flattened tangents.
     bc_prepared, flat_bc, flat_pargs, flat_ts_1 = _prepare_gpu_broadcast(
         bc_primal, _bc_tangent(bc_V, bc_primal, 1)
     )
     out = _gpu_broadcast_dual(flat_bc.f, flat_pargs...)
     decoded = _gpu_decode_ndual_output(Val(:broadcast), out)
 
-    # `is_diff` says the kernel's element type carried no partials, which is not the same as
-    # the output being non-differentiable: a float array built only from index arrays, say
-    # `cnt ./ 2`, has a forward V even though nothing flows into it. Bool output from a
-    # comparison is the case this branch was written for, and there the V really is `NoDual`.
+    # No kernel partials does not imply NoDual: index-only inputs can produce float
+    # outputs (cnt ./ 2), which still require their canonical zero representation.
     if !decoded.is_diff
         return Lifted{typeof(out),Nw}(out, Mooncake.zero_dual(Val(Nw), out))
     end
