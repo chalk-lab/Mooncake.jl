@@ -533,23 +533,6 @@ const NDAC_VecC64 = NDualArray{
             tangent_view(a, 2)[1] === -7.0
     end
 
-    # Ref lane tangents must be reverse-shaped MutableTangents, so struct fields can hold them.
-    @testset "NDualRef per-lane tangent is reverse-shaped" begin
-        # Bare Ref: per-lane shape must equal the width-1 unlift (reverse) shape.
-        sref = zero_lifted(Val(2), Ref(3.0))
-        Tt = Mooncake.tangent_type(Base.RefValue{Float64})
-        @test tangent(sref, 1) isa Tt
-        @test tangent(sref, 2) isa Tt
-        _, t1 = unlift(zero_lifted(Val(1), Ref(3.0)))
-        @test typeof(tangent(sref, 1)) === typeof(t1)
-        # Immutable struct with a Ref field: field extraction must not throw and must yield the
-        # declared reverse Tangent shape.
-        s2 = zero_lifted(Val(1), LiftedTest_RefContainer(Ref(2.5)))
-        tv = tangent(s2, 1)
-        @test tv isa Tangent
-        @test getfield(tv, :fields).r isa Tt
-    end
-
     @static if VERSION >= v"1.11-"
         @testset "aliased Memory shares one V, on both the seed and lift paths" begin
             # Repeated Memory/MemoryRef primals must reuse partial storage across calls.
@@ -1004,6 +987,12 @@ const NDAC_VecC64 = NDualArray{
             # Detect the cycle rather than listing the cases, so a new cyclic table entry needs
             # no bookkeeping here.
             test_lifted(Xoshiro(123456), p; cache_free=(!_self_referential(p)))
+        end
+
+        @testset "test_lifted Ref fields $(typeof(p))" for p in (
+            Ref(3.0), LiftedTest_RefContainer(Ref(2.5))
+        )
+            test_lifted(Xoshiro(123456), p; widths=(1, 2, 8))
         end
 
         # Type-level widening / sentinel cases the value-drive cannot reach (abstract and
