@@ -66,14 +66,8 @@ _scale_internal(::MaybeCache, a::Float64, t::T) where {T<:CF} = T(a * t)
 
 TestUtils.populate_address_map_internal(m::TestUtils.AddressMap, ::P, ::P) where {P<:CF} = m
 
-# `lgetfield(::Complex, ::Val)` takes the generic `misc.jl` rules in both modes: forward via the
-# `_get_lifted_field(::Complex, name)` entry, reverse routing its rdata through `increment_field!!`
-# above. A Complex-specific `rrule!!` could never fire — `fdata_type(::Type{<:CF})` is `NoFData`.
-
-# `_new_(Type{Complex{P}}, re, im)` is already a primitive via the generic `Tuple{typeof(_new_),Vararg}`
-# declaration in `new.jl`; this Complex-specific frule only refines the forward construction, so it
-# needs no `@is_primitive` of its own. (The previous `Tuple{typeof(_new_),<:Complex{P},P,P}` declaration
-# matched nothing — `_new_`'s second argument is the *type* `Type{Complex{P}}`, not a `Complex` value.)
+# Generic lgetfield rules use _get_lifted_field forward and increment_field!! reverse.
+# _new_ is already primitive via the generic declaration in new.jl.
 function frule!!(
     ::Lifted{typeof(_new_),N},
     ::Lifted{Type{Complex{P}},N},
@@ -91,9 +85,7 @@ function rrule!!(
     return zero_fcodual(_new_(Complex{P}, re.x, im.x)), _new_complex_pb
 end
 
-# Complex-scalar `lgetfield` (field read) and `_new_` (construction) are primitives (via the generic
-# lgetfield/_new_ declarations), so register them as hand-written cases to get the chunked widths the
-# derived cases below skip (is_primitive=false).
+# Register primitives separately for chunked checks (derived cases use is_primitive=false).
 function hand_written_rule_test_cases(rng_ctor, ::Val{:complex})
     (
         Any[

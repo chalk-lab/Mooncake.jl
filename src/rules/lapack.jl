@@ -1,16 +1,12 @@
 # See https://sethaxen.com/blog/2021/02/differentiating-the-lu-decomposition/ for details.
-# Shared width-N Fréchet-derivative body for the `getrf!` frules (plain and `Core.kwcall`),
-# which differ only in the primal call. `A`/`dA_lanes` come from `arrayify(A_dA)` and `A` is
-# already overwritten by the in-place `getrf!`.
+# `A`/`dA_lanes` come from `arrayify(A_dA)`; getrf! has already overwritten `A`.
 function _getrf_fwd(A_dA::Lifted{<:AbstractMatrix,Nw}, A, dA_lanes, ipiv, info) where {Nw}
     T = eltype(A)
     # `ipiv` permutes ROWS: the column count reads `p` out of range for a tall `A` below.
     p = LinearAlgebra.ipiv2perm(ipiv, size(A, 1))
     n = size(A, 1)
-    # F = L \ (P·dA) / U, then dA = L*tril(F,-1) + triu(F)*U. Two scratches reused across lanes;
-    # the solves/products run in place via direct BLAS (LinearAlgebra's triangular `\`/`*` and
-    # `[p,:]`/`tril`/`triu` allocate per call). `A` is the packed LU factor: unit-lower `L`
-    # (BLAS diag 'U') and upper `U` (diag 'N').
+    # F = L \ (P·dA) / U; dA = L*tril(F,-1) + triu(F)*U. Reuse dense scratches and
+    # direct BLAS to avoid per-lane allocations; packed A has unit-lower L and upper U.
     Fbuf = similar(A)
     buf = similar(A)
     @inbounds for lane in 1:Nw
@@ -145,11 +141,8 @@ function frule!!(
     # `X = op(A)⁻¹·B` (the primal RHS solve) is lane-invariant: hoist it.
     X = copy(B)
     LAPACK.trtrs!(uplo, trans, diag, A, X)
-    # d(op(A)⁻¹·B) = op(A)⁻¹·(dB − op(dA)·X). op(A)⁻¹ is linear, so the tangent takes one
-    # solve of that combined RHS, not separate solves of `dB` and `op(dA)·X`.
-    # 1) dB_k −= op(dA_k)·X — skipped when `A` is constant data. trmm masks dA's triangle
-    #    (and implicit unit diagonal, whose derivative the `diag == 'U'` correction
-    #    removes).
+    # Linearity combines dB − op(dA)·X into one solve. trmm masks the triangle;
+    # subtract X for a unit diagonal, whose derivative is zero.
     if !iszero(Ab)
         R = size(A, 1)
         Abm = reshape(Ab, Nw, R, R)
@@ -163,15 +156,14 @@ function frule!!(
             view(Bb3,k,:,:) .-= tmp
         end
     end
-    # 2) op(A)⁻¹ applied to every lane: right-divide each dB slab by op(A)ᵀ (real
+    # op(A)⁻¹ applied to every lane: right-divide each dB slab by op(A)ᵀ (real
     #    element types only, so a flag flip suffices).
     fA = trans == 'N' ? 'T' : 'N'
     for j in 1:nrhs
         BLAS.trsm!('R', uplo, fA, diag, one(P), A, view(Bb3,:,:,j))
     end
     bcopied && _write_back_partials!(B_dB, Bb)
-    # Primal result op(A)⁻¹·B = X, already solved above and unmutated: copy it, don't
-    # re-solve.
+    # Reuse the lane-invariant primal solve.
     copyto!(B, X)
     return B_dB
 end
@@ -236,10 +228,8 @@ function frule!!(
     U = UpperTriangular(A)
     p = LinearAlgebra.ipiv2perm(ipiv, size(B, 1))
     invp = invperm(p)
-    # d(LU) = dL*U + L*dU (dL strict-lower via the unit-diagonal factor, dU upper). Build
-    # it into `tmp` with in-place `BLAS.trmm!`, then row-permute by `invp` into `buf`
-    # (both reused across lanes). The per-lane getrs! solve needs a dense RHS, so each
-    # lane's dB round-trips through the `dBscr` scratch (matching `B`'s shape).
+    # d(LU) = dL*U + L*dU, with strict-lower dL and upper dU; undo the row permutation.
+    # Reuse dense scratches because BLAS/getrs! cannot use stride-Nw lane views.
     n = size(A, 1)
     tmp = similar(A)
     buf = similar(A)
@@ -371,9 +361,8 @@ function frule!!(
     buf1 = similar(A)
     buf2 = similar(A)
     Ascr = Matrix{P}(undef, n, n)
-    # Phase 1 (before getri! destroys the LU factor A): store tmp2 = (dL*U + L*dU)[invp,:]
-    # for each lane INTO its own block slice (the output partial), via the dense `Ascr`
-    # scratch (the BLAS calls need dense operands; a block lane is stride-Nw).
+    # Store (dL*U + L*dU)[invp,:] in each lane before getri! destroys A.
+    # BLAS needs dense scratch because lane views have stride Nw.
     @inbounds for lane in 1:Nw
         copyto!(Ascr, view(Abm,lane,:,:))
         copyto!(buf1, U)
@@ -509,9 +498,7 @@ function rrule!!(
     # Extract args and take a copy of A.
     uplo = _uplo.x
     A, dA = arrayify(_A)
-    # Keep `copy` in the IR so forward-over-reverse AD can dispatch to its `frule!!`, as `trtrs!`
-    # does: inlined, its internal `jl_genericmemory_copy_slice` ccall has no forward rule and an
-    # HVP through `cholesky` dies. `A_copy` is live — the pullback restores the primal with it.
+    # Keep copy uninlined for forward-over-reverse: jl_genericmemory_copy_slice has no frule.
     A_copy = Base.@noinline copy(A)
 
     # Run primal.
@@ -589,12 +576,8 @@ function frule!!(
     n = size(A, 1)
     Abm = reshape(Ab, Nw, n, n)
     LAPACK.potrs!(uplo, A, B)
-    # dS = dL*L' + L*dL' (resp. U'dU + dU'U). Build its two (triangular*triangular) terms
-    # into hoisted scratches via in-place `BLAS.trmm!` (materialize one factor, apply the
-    # other in place); the symmetric `mul!` then runs BLAS symm!/symv! in place. The sum
-    # is symmetric (`X + X'`), so `Symmetric(buf1)` (uplo `:U`) reads it exactly. The
-    # BLAS/LAPACK calls need dense operands, so each lane's dA and dB round-trip through
-    # the `Ascr`/`dBscr` scratches (a block lane is stride-Nw).
+    # dS = dL*L' + L*dL' (or U'dU + dU'U) is symmetric, so Symmetric(buf1)
+    # reads it exactly. Reuse dense scratches: BLAS/LAPACK cannot use stride-Nw lanes.
     buf1 = similar(A)
     buf2 = similar(A)
     Ascr = Matrix{P}(undef, n, n)
@@ -677,9 +660,7 @@ end
         Ab, _ = _partials_block(A_dA)
         Bb, bcopied = _partials_block(B_dB)
         LAPACK.lacpy!(B, A, uplo)
-        # The tangent copy mirrors the primal's triangle selection, applied to all lanes
-        # at once: for each copied element the `Nw` lanes are one contiguous block
-        # column, so the copies below move whole lane columns.
+        # Copy whole contiguous lane columns for each selected primal element.
         m, n = size(A)
         Ab3 = reshape(Ab, Nw, size(A)...)
         Bb3 = reshape(Bb, Nw, size(B)...)
@@ -838,9 +819,8 @@ function _accum_sym_logdet!(
     end
     return nothing
 end
-# A real `Hermitian` IS the `Symmetric` matrix with the same stored triangle, takes the same
-# `bunchkaufman`/`sytrf!` path, and gives bit-identical `logdet`, `inv` and `dot` weighting, so the
-# determinant rules below serve both. `BlasRealFloat` keeps complex out, where the two differ.
+# Real Hermitian and Symmetric share storage weighting and the Bunch-Kaufman path;
+# determinant rules restrict P to BlasRealFloat because complex matrices differ.
 const _SymHerm{P} = Union{Symmetric{P,<:StridedMatrix{P}},Hermitian{P,<:StridedMatrix{P}}}
 
 function _accum_sym_logdet!(
@@ -870,9 +850,8 @@ function frule!!(
     F = bunchkaufman(S)
     Sinv = inv(F)
     y = logdet(F)
-    # `arrayify` re-wraps each lane's `.data` partial as `Symmetric(·, uplo)`, applying the storage
-    # weighting (2× off-diagonals, 1× diagonal, 0 off-triangle) the reverse `rrule!!` encodes via
-    # `_accum_sym_logdet!`; a plain `dot` over the full matrix would be wrong.
+    # arrayify applies symmetric storage weighting (2× off-diagonal, 1× diagonal,
+    # 0 off-triangle), matching _accum_sym_logdet!; a plain full-matrix dot is wrong.
     dy_lanes = ntuple(k -> dot(Sinv, d_lanes[k]), Val(Nw))
     return Lifted{P,Nw}(y, _scalar_ndual(y, dy_lanes))
 end
@@ -880,15 +859,9 @@ function rrule!!(
     ::CoDual{typeof(logdet)}, _S::CoDual{<:_SymHerm{P}}
 ) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    # Forward-over-reverse differentiates this body, so nothing here may reach `bunchkaufman` and
-    # its `sytrf!` foreigncall, which has no `frule!!`; the `potrf!` rule keeps its `copy`
-    # un-inlined for the same reason. `logdet(S)` is this rule's own primitive, so the transform
-    # dispatches to the `frule!!` above instead of descending, and `inv(::Symmetric)` factorises
-    # with `lu`, which does have rules. Values are unchanged (`logdet` still factorises with
-    # Bunch-Kaufman internally), but the two calls no longer share a factorisation: measured
-    # 1.6-2.2x the linear algebra of the `F = bunchkaufman(S)` form this replaces, across
-    # n = 10, 50, 200. Recovering that needs the file's strategy 2 -- one primitive handing back
-    # `logdet(F)` and `inv(F)` from a single factorisation -- which no rule here has yet.
+    # Forward-over-reverse must avoid bunchkaufman/sytrf!, which has no frule.
+    # logdet dispatches to the primitive above; inv uses differentiable LU. Separate
+    # factorizations cost 1.6–2.2x for n=10,50,200; sharing one needs a new primitive.
     ld = logdet(S)
     Sinv = Matrix(inv(S))
     function logdet_sym_pb!!(ȳ::P)
@@ -958,9 +931,8 @@ function frule!!(
 end
 function rrule!!(::CoDual{typeof(det)}, _S::CoDual{<:_SymHerm{P}}) where {P<:BlasRealFloat}
     S, ddata = arrayify(_S)
-    # `bunchkaufman`-free, as in `logdet`'s pullback above, so forward-over-reverse can
-    # differentiate this body. `det(S)` reaches the same factorisation and returns `0` rather than
-    # throwing at a singular `S`, matching the `check=false` it replaces.
+    # Avoid bunchkaufman for forward-over-reverse (see logdet); det(S) returns zero
+    # at singular S, matching check=false.
     d = det(S)
     # `S̄ += ȳ·adj(S)`, weighted for symmetric storage. Keep the cheap `d·S⁻¹` form off the
     # singular path, where it is `0·Inf`.
@@ -1017,8 +989,7 @@ function rrule!!(
     return CoDual((ld, s), NoFData()), logabsdet_sym_pb!!
 end
 
-# `getrf!`'s derivative is derived for a square factor, so every rectangular shape must refuse. A
-# tall `A` gathered the row permutation out of range under `@inbounds` and segfaulted instead.
+# getrf! derivatives require square factors; rectangular inputs must fail before unsafe indexing.
 function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     rng = rng_ctor(123)
     Ps = [Float64, Float32]
@@ -1129,10 +1100,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             )
         end...,
 
-        # The same three on a real `Hermitian`, which reaches the identical `bunchkaufman`/`sytrf!`
-        # path and gave `MissingForeigncallRuleError` before the rules admitted it. One size only:
-        # the numerics are the `Symmetric` ones above (measured bit-identical), so what these pin is
-        # that dispatch reaches the rule at all, at both uplos and both precisions.
+        # Real Hermitian dispatch: both triangles and precisions; numerics match Symmetric.
         map_prod(['U', 'L'], Ps) do (uplo, P)
             Hs = map(
                 A -> Hermitian(A, Symbol(uplo)), positive_definite_blas_matrices(rng, P, 3)
@@ -1168,23 +1136,17 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 return collect(V * Diagonal(λs) * V')
             end
             Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
-            # `Float32` `det` is `interface_only` for the same reason as the definite and
-            # `Hermitian` blocks above: the FD check, not the rule, is what fails. On an
-            # ill-conditioned draw the estimates scatter over four orders of magnitude around a
-            # stable rule value, and the rule agrees with the same computation in `Float64` to
-            # a relative 2e-7. `logabsdet` below keeps its full `Float32` FD check.
+            # Float32 det keeps interface-only checks because finite differences cancel;
+            # logabsdet still receives full Float32 correctness checks.
             return vcat(
                 map(S -> (P == Float32, :none, nothing, det, S), Ss),
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
             )
         end...,
 
-        # Singular inputs. `logabsdet` returns (-Inf, 0.0) without throwing and its gradient is
-        # zero by the `iszero(s)` guard; neither is FD-verifiable, so it stays interface_only.
-        # `det` IS differentiable at a singular point -- the derivative is the adjugate -- so it
-        # is FD-checked here: N = 2 is rank n-1, where the adjugate is nonzero, and N = 3 is
-        # rank n-2, where it vanishes. `Float32` det is interface_only for the same
-        # FD-cancellation reason as the definite and indefinite cases above.
+        # Singular logabsdet returns (-Inf, 0) with zero derivative: interface-only.
+        # det is FD-checked except in Float32 (cancellation): N=2 has rank n-1 and a
+        # nonzero adjugate; N=3 has rank n-2 and zero adjugate.
         map_prod([2, 3], ['U', 'L'], Ps) do (N, uplo, P)
             # rank-1 outer-product: v*v' is symmetric and singular for N ≥ 2
             v = ones(P, N)
