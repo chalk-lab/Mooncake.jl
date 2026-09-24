@@ -996,6 +996,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
     complexPs = [Float64, Float32, ComplexF64, ComplexF32]
     bools = [false, true]
     uplos = ['U', 'L', 'N']
+    det_inputs = vcat(
+        flat_product([Symmetric], [1, 3, 5], ['U', 'L'], Ps),
+        flat_product([Hermitian], [3], ['U', 'L'], Ps),
+    )
     test_cases = vcat(
 
         # getrf!
@@ -1078,11 +1082,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             []
         end)...,
 
-        # logdet / det / logabsdet on Symmetric
         # Positive-definite inputs: valid for all three functions.
-        map_prod([1, 3, 5], ['U', 'L'], Ps) do (N, uplo, P)
+        map(det_inputs) do (W, N, uplo, P)
             As = positive_definite_blas_matrices(rng, P, N)
-            Ss = map(A -> Symmetric(A, Symbol(uplo)), As)
+            Ss = map(A -> W(A, Symbol(uplo)), As)
             # For Float32 det, the FD correctness check is unreliable:
             # - Non-contiguous arrays: the FD test normalises the perturbation over the full
             #   parent, so the effective step in the submatrix is O(ε/√parent_size) — too
@@ -1097,18 +1100,6 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
                 map(S -> (false, :none, nothing, logdet, S), Ss),
                 map(S -> (det_interface_only, :none, nothing, det, S), Ss),
                 map(S -> (false, :none, nothing, logabsdet, S), Ss),
-            )
-        end...,
-
-        # Real Hermitian dispatch: both triangles and precisions; numerics match Symmetric.
-        map_prod(['U', 'L'], Ps) do (uplo, P)
-            Hs = map(
-                A -> Hermitian(A, Symbol(uplo)), positive_definite_blas_matrices(rng, P, 3)
-            )
-            return vcat(
-                map(H -> (false, :none, nothing, logdet, H), Hs),
-                map(H -> (P == Float32, :none, nothing, det, H), Hs),
-                map(H -> (false, :none, nothing, logabsdet, H), Hs),
             )
         end...,
 
