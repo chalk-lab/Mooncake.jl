@@ -3011,25 +3011,19 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
                     @test g ≈ 4x^3          # 32
                     @test hv ≈ 12x^2 * v    # 48 — would be 0 if a partial were dropped
                 end
-                # Array, Hessian 2I: hvp = 2v. Reads x via getindex/broadcast.
-                let f = x -> sum(x .* x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
-                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                    @test val ≈ sum(x .* x)
-                    @test g ≈ 2 .* x
-                    @test hv ≈ 2 .* v
+                # Broadcast and BLAS paths both have Hessian 2I. The `dot` pullback
+                # threads tangent pointers through forward-over-reverse.
+                for f in (x -> sum(x .* x), x -> dot(x, x))
+                    let x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
+                        val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
+                        @test val ≈ f(x)
+                        @test g ≈ 2 .* x
+                        @test hv ≈ 2 .* v
+                    end
                 end
                 # Fused-primitive path (`sum(abs2, ·)`), same Hessian.
                 let f = x -> sum(abs2, x), x = [2.0, 3.0, 4.0], v = [0.0, 1.0, 0.0]
                     _, _, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                    @test hv ≈ 2 .* v
-                end
-                # BLAS `dot` path: the reverse `dot` pullback threads `Ptr{NoTangent}`
-                # fdata pointers, whose forward V must keep the per-lane partial pointers (else the
-                # forward-over-reverse `_new_` backing mismatches and crashes).
-                let f = x -> dot(x, x), x = [2.0, 3.0, 4.0], v = [1.0, 0.0, 0.0]
-                    val, g, hv = value_and_hvp!!(prepare_hvp_cache(f, x), f, v, x)
-                    @test val ≈ dot(x, x)
-                    @test g ≈ 2 .* x
                     @test hv ≈ 2 .* v
                 end
             end
