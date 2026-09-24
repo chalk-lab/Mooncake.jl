@@ -17,10 +17,8 @@ struct MistyClosureTangent
     dual_callable::Any
 end
 
-# Degree-of-freedom count (forward gradient/Jacobian seeding) of a MistyClosure tangent: only
-# the differentiable `captures_tangent` carries scalar dimensions. `dual_callable` is the compiled
-# dual rule (an OpaqueClosure/MistyClosure), not a tangent — walking it generically recurses
-# unboundedly into compiled IR (e.g. via the HVP `grad_f`), so it is skipped.
+# Only captures carry tangent dimensions; walking dual_callable can recurse unboundedly
+# into compiled IR.
 @inline tangent_dim(t::MistyClosureTangent, seen::IdDict{Any,Any}) = tangent_dim(
     t.captures_tangent, seen
 )
@@ -67,15 +65,8 @@ function TestUtils._chunked_v_invariant(_p, v::MistyClosureTangent, c::IdDict)
     )
 end
 
-# Forward-mode V for a MistyClosure is its `MistyClosureTangent` — NOT the
-# generic structural lift of the closure's IR. In the *forward* slot the
-# `captures_tangent` field holds the already-lifted forward captures slot
-# (`Lifted{captures, V}`), built here at lift time rather than per `frule!!`
-# call. Building once is required for forward-over-reverse: a reverse rule's
-# `fwds_oc` and `pb_oc` share their captures, so they must share the forward
-# tangent buffer — which they do when both are lifted within one operation that
-# threads the aliasing cache `c` (keyed by the primal captures identity). The
-# `dual_callable` is the forward rule built by `_dual_mc`.
+# Forward V holds a Lifted captures slot, built once with cache c keyed by captures identity.
+# This shares fwds_oc/pb_oc tangent buffers for forward-over-reverse; dual_callable is _dual_mc.
 @foldable @inline dual_type(::Val{N}, ::Type{<:MistyClosure}) where {N} =
     MistyClosureTangent
 lift(x::MistyClosure, ẋ::MistyClosureTangent) = lift(x, ẋ, nothing)
@@ -91,10 +82,7 @@ function lift(x::MistyClosure, ẋ::MistyClosureTangent, c::Union{Nothing,IdDict
     )
 end
 
-# Per-lane tangent: only `captures_tangent` (itself a `Lifted` captures slot) carries
-# dimensions, so recurse into it for lane `lane` and carry `dual_callable` through unchanged. The cache
-# keys on the captures identity, so a reverse rule's shared `fwds_oc`/`pb_oc` captures give one
-# tangent.
+# Materialise only captures, preserving fwds_oc/pb_oc sharing through the identity cache.
 @inline tangent(x::Lifted{P,N,MistyClosureTangent}, lane::Integer) where {P<:MistyClosure,N} = _materialise_lane(
     x, lane, IdDict{Any,Any}()
 )
@@ -115,13 +103,8 @@ function randn_tangent_internal(rng::AbstractRNG, p::MistyClosure, d::MaybeCache
     return MistyClosureTangent(randn_tangent_internal(rng, p.oc.captures, d), _dual_mc(p))
 end
 
-# Forward-mode cache-aware seed factories. Like Complex/Memory, a MistyClosure has
-# fields but its own canonical V (`MistyClosureTangent`), not the generic structural
-# lift — so the cache-aware `_*_dual_internal` must build the tangent here rather than
-# recurse into the closure's internals (the `OpaqueClosure`'s `Ptr` and `captures::Any`
-# fields, which have no coherent V). Mirrors the reverse factories above; the forward
-# `captures_tangent` is a `Lifted` slot (as built by `lift`), cached by captures identity
-# so a reverse rule's shared `fwds_oc`/`pb_oc` captures get one tangent buffer.
+# Custom V avoids structurally lifting OpaqueClosure's incoherent Ptr/captures::Any fields.
+# Cache Lifted captures by identity so fwds_oc/pb_oc share one forward tangent buffer.
 for internal in (:_zero_dual_internal, :_uninit_dual_internal)
     @eval function $internal(w::Val{N}, p::MistyClosure, d::MaybeCache) where {N}
         cap = p.oc.captures
@@ -284,10 +267,7 @@ function misty_closure_new_rrule_exception()
 end
 
 @is_primitive MinimalCtx Tuple{MistyClosure,Vararg{Any,N}} where {N}
-# The forward-slot `captures_tangent` already holds the lifted (and, in
-# forward-over-reverse, shared) forward captures slot built at lift time, so
-# forward it directly to the `_dual_mc`-built callable. Re-lifting here would
-# allocate a fresh, unshared buffer and silently zero the HVP.
+# Reuse the shared Lifted captures slot: re-lifting allocates unshared storage and zeros HVPs.
 function frule!!(f::Lifted{<:MistyClosure}, x::Vararg{Lifted})
     t = tangent(f)
     return t.dual_callable(t.captures_tangent, x...)

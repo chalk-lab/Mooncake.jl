@@ -959,9 +959,8 @@ struct ADInfo
     lazy_zero_rdata_ref_id::ID
     fwd_ret_type::Type
     rvs_ret_type::Type
-    # Non-const globals read in the body, recorded by BINDING. `_aliasable_constants` sees only
-    # the finished shared data, where a global is indistinguishable from any other constant, yet
-    # its object is the one that can move between build and call.
+    # Track bindings separately: shared data cannot distinguish non-const globals,
+    # whose values may change between build and call, from constants.
     global_bindings::Vector{GlobalBinding}
 end
 
@@ -1402,11 +1401,8 @@ end
 function make_ad_stmts!(stmt::GlobalRef, line::ID, info::ADInfo)
     isconst(stmt) && return const_ad_stmt(stmt, line, info)
 
-    # Record the binding, not the value: a non-const global is re-read on every call (the
-    # `uninit_fcodual(global_ref)` below), so the object an argument can clash with is whichever
-    # one is bound at CALL time. A build-time snapshot leaves `_check_constant_aliasing` hunting
-    # an object the caller stopped passing the moment the global was rebound, and the contribution
-    # through it is dropped silently.
+    # Re-read the global each call; __verify_const wraps it with uninit_fcodual.
+    # Track its binding so rebinding cannot leave the alias guard checking a stale value.
     push!(info.global_bindings, GlobalBinding(stmt.mod, stmt.name))
     const_id, globalref_id = ID(), ID()
     fwds = [
@@ -1814,8 +1810,7 @@ struct DerivedRule{Tprimal,Tfwd_args,Tfwd_ret,Tpb_args,Tpb_ret,isva,Tnargs<:Val}
     fwds_oc::RuleMC{Tfwd_args,Tfwd_ret}
     pb_oc_ref::Base.RefValue{RuleMC{Tpb_args,Tpb_ret}}
     nargs::Tnargs
-    # Constant and global primals this rule minted fdata for at build time, empty for most rules.
-    # See `_aliasable_constants`.
+    # Build-time fdata primals that arguments must not alias; see _aliasable_constants.
     consts::ConstAliasSet
 end
 
@@ -1835,11 +1830,9 @@ end
 """
     _aliasable_constants(shared_data::Tuple)
 
-The aliasable primals in `shared_data`: IR constants, `QuoteNode`s and `GlobalRef`s, whose fdata
-`const_codual_stmt` mints once at rule-build time via `uninit_fcodual`. That storage is shared with
-nothing, so if the caller also passes one of these objects as an argument, the two never accumulate
-into one buffer and the contribution through the constant is silently dropped, so `DerivedRule`
-refuses that call. `record_const_alias!` decides which primals qualify. Empty for most rules.
+Collect IR constants, QuoteNodes and GlobalRefs selected by `record_const_alias!`.
+Their `const_codual_stmt` build-time fdata is unshared, so `DerivedRule` must refuse
+aliased arguments or silently lose the constant's contribution. Empty for most rules.
 """
 function _aliasable_constants(
     shared_data::Tuple, bindings::Vector{GlobalBinding}=GlobalBinding[]
@@ -1873,25 +1866,16 @@ end
     _check_constant_aliasing(fwds.consts, args)
     uf_args = __unflatten_codual_varargs(_isva(fwds), args, fwds.nargs)
     pb = Pullback(sig, fwds.pb_oc_ref, _isva(fwds), N)
-    # Route the forward-pass call through `__call_rule`: on Julia 1.10 this is the `(rule::Any)`
-    # barrier, which de-specialises the call so codegen emits `jl_apply_generic` rather than a
-    # specsig OC call at this site (the julia#51016/#61368 trigger). On 1.11+ it is the direct
-    # call, semantically identical and changing no derivative.
-    #
-    # We pass the `MistyClosure` itself, not its bare `.oc`: forward-over-reverse HVP
-    # forward-differentiates this body, and a `.oc` field access would need an undefined
-    # `_get_lifted_field` on the MistyClosure's forward tangent. The trade-off: because `fwds_oc`
-    # is a `MistyClosure` (not a `Core.OpaqueClosure`), this dispatches to the generic barrier, not
-    # the `OpaqueClosure{A}` overload's `args isa A` guard. So unlike the forward `DerivedFRule`
-    # (which passes the bare guarded `.oc`), the inner `mc.oc(...)` is unguarded here — a
-    # type-mismatched call on 1.10 is not converted to a clean `TypeError` the same way.
+    # On 1.10 __call_rule uses jl_apply_generic to avoid specsig OC crashes
+    # (julia#51016/julia#61368); 1.11+ calls directly. Pass MistyClosure because
+    # forward-over-reverse cannot lift its .oc field (_get_lifted_field is undefined).
+    # This uses the generic barrier, bypassing the bare OpaqueClosure's args isa A guard:
+    # unlike DerivedFRule, mismatched calls on 1.10 do not get that clean TypeError.
     return __call_rule(fwds.fwds_oc, uf_args)::CoDual, pb
 end
 
-# On Julia 1.10, route the call through the dynamic `__call_rule` barrier (the `(rule::Any)` cast
-# in a `@noinline` body avoids the specsig OC-call codegen crash) and assert the return type to
-# restore type stability. Both the CoDual and Pullback types are encoded in DerivedRule's type
-# parameters; the Pullback's nargs comes from the number of args at the call site.
+# On 1.10, @noinline plus (rule::Any) avoids specsig OC codegen crashes.
+# Restore type stability from DerivedRule's parameters and the call-site argument count.
 @static if VERSION < v"1.11-"
     @noinline function __call_rule(
         rule::DerivedRule{Tp,FA,FR,RA,RR,isva,Val{pnargs}}, args::A

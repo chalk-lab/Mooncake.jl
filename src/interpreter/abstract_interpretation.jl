@@ -115,10 +115,8 @@ else
 end
 
 @static if VERSION < v"1.12-"
-    # Until 1.12, `cache_result!` pushes every interpreter's `CodeInstance` onto
-    # `newly_inferred`, so a precompile workload would serialise Mooncake's inference
-    # results for Base methods into the pkgimage as if they were native ones. 1.12+
-    # pushes only from `InternalCodeCache`.
+    # Before 1.12, cache_result! records every interpreter's CodeInstances as native;
+    # suppress Mooncake's pkgimage entries. Julia 1.12+ only records InternalCodeCache results.
     function CC.cache_result!(interp::MooncakeInterpreter, result::CC.InferenceResult)
         tracked = CC.track_newly_inferred.x
         CC.track_newly_inferred.x = false

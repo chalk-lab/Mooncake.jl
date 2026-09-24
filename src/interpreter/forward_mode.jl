@@ -97,11 +97,8 @@ function build_frule(
             interp.world, (sig_or_mi, debug_mode, :forward, chunk_size)
         )
         if haskey(interp.oc_cache, oc_cache_key)
-            # Mirror reverse-mode `build_derived_rrule`: return an independent copy so each
-            # retrieval gets its own mutable OpaqueClosure-capture state (a `DynamicFRule`'s
-            # `cache::Dict`, a `LazyFRule`'s rebuilt `rule`). Returning the shared cached
-            # object would race under threads / nested AD, which is exactly what the forward
-            # `_copy` machinery (and reverse's eager copy) exist to prevent.
+            # Copy mutable captures (DynamicFRule.cache and LazyFRule.rule) to prevent
+            # races between builds, as in reverse-mode build_derived_rrule.
             return _copy(interp.oc_cache[oc_cache_key])
         else
             # Derive forward-pass IR, and shove in a `MistyClosure`.
@@ -128,16 +125,12 @@ end
 
 struct DerivedFRule{primal_sig,Tfwd_oc,isva,nargs}
     fwd_oc::Tfwd_oc
-    # Constant and global primals this rule built forward values for at build time, empty for most
-    # rules. Collected by `const_lifted!`; reverse's `DerivedRule` carries the same thing.
+    # Build-time constant primals collected by const_lifted!; arguments must not alias them.
     consts::ConstAliasSet
 end
 
-# Invoke the wrapped OpaqueClosure (`fwd_oc.oc`) directly rather than the `MistyClosure`
-# wrapper — the wrapper carries tangent metadata used elsewhere, not on this call path. The
-# call goes through `__call_rule`: on Julia 1.10 the `OpaqueClosure` method routes via
-# `jl_apply_generic` (no specsig OC call, avoiding the julia#51016/#61368 codegen segfaults)
-# behind an argument-type guard; on Julia 1.11+ it is a direct specsig call.
+# Bypass MistyClosure's tangent metadata. __call_rule guards argument types and avoids
+# specsig OC calls on Julia 1.10 (julia#51016/julia#61368); 1.11+ calls directly.
 @inline function (fwd::DerivedFRule{P,sig,isva,nargs})(
     args::Vararg{Lifted,N}
 ) where {P,sig,N,isva,nargs}
@@ -145,9 +138,7 @@ end
     return __call_rule(fwd.fwd_oc.oc, __unflatten_dual_varargs(isva, args, Val(nargs)))
 end
 
-# On Julia 1.10 the call above goes through the dynamic `__call_rule` barrier and is inferred as
-# `Any`; assert the rule's return type `R` (encoded in the MistyClosure type parameter) to
-# restore type stability for callers.
+# The Julia 1.10 dynamic barrier infers Any; recover the return type from MistyClosure.
 @static if VERSION < v"1.11-"
     @inline function __call_rule(
         rule::DerivedFRule{P,MistyClosure{OpaqueClosure{A,R}},isva,nargs}, args
@@ -183,19 +174,14 @@ are transformed into `(lift(5.0, 0.0), lift((4.0, 3.0), (0.0, 0.0)))` (each a `L
 """
 function __unflatten_dual_varargs(isva::Bool, args, ::Val{nargs}) where {nargs}
     isva || return args
-    # The grouped vararg slot must carry the same chunk width as the incoming slots
-    # (read from any arg's type parameter — all slots share the rule's build width).
+    # All slots, including the vararg group, must share the rule's chunk width.
     W = _lifted_width(first(args))
     group_primal = map(primal, args[nargs:end])
-    # Plain `typeof`, not `_typeof`: `_typeof` per-element-sharpens, so a tuple of `Type` values
-    # becomes `Tuple{Type{X},…}`, but the value's runtime type is `Tuple{DataType,…}` — not a
-    # subtype (`isa` is `typeof <: T`), so that sharpened slot type is one no `Lifted` ctor can
-    # build. `typeof` is always instance-valid and agrees with `_typeof` for non-Type-valued tuples.
+    # _typeof sharpens type-valued tuples to Tuple{Type{X},…}, which their runtime
+    # Tuple{DataType,…} cannot inhabit. typeof keeps the Lifted slot instance-valid.
     GP = typeof(group_primal)
-    # An all-non-differentiable (or empty) vararg group has `dual_type === NoDual`; its slot
-    # carries a single `NoDual`, not the element-wise `Tuple{NoDual,…}`. Collapse to match the
-    # canonical V (otherwise the grouped `Lifted`'s V mismatches the rule's slot typeassert,
-    # e.g. in debug-mode forward-over-reverse where the reverse args are non-diff CoDuals).
+    # Empty/non-differentiable groups require one NoDual, not Tuple{NoDual,…},
+    # to match the canonical V and the rule's slot typeassert.
     group_v = dual_type(Val(W), GP) === NoDual ? NoDual() : map(tangent, args[nargs:end])
     grouped_args = Lifted{GP,W}(group_primal, group_v)
     return (args[1:(nargs - 1)]..., grouped_args)
@@ -206,8 +192,7 @@ struct DualInfo
     interp::MooncakeInterpreter
     is_used::Vector{Bool}
     debug_mode::Bool
-    # Chunk width of the forward rule: every lifted slot / constant in the dual IR is
-    # `Lifted{P, width, V}`. `width == 1` is the ordinary single-direction rule.
+    # Every slot and constant in the dual IR has this chunk width.
     width::Int
     # Constant primals an argument must not alias, accumulated by `const_lifted!`.
     consts::Vector{Any}
@@ -304,17 +289,9 @@ end
 """
     const_lifted!(v, info::DualInfo)
 
-Build the width-`info.width` `Lifted` for the constant primal `v`, with a zero tangent — `v` is a
-constant, whose derivative is zero, so its tangent must be zeroed (an uninitialised array tangent
-would leak garbage into any op that reads the constant's tangent). The chunk width is threaded
-through so the constant's V matches the surrounding chunked slots (`1` for a standard forward
-rule).
-
-Every constant the transform lifts goes through here, which is also where the rule's
-`ConstAliasSet` is accumulated. Collecting at the mint site rather than from the finished
-`captures` is what makes the guard version-independent: a constant only reaches `captures` when it
-appears as a statement of its own, and on 1.12 the optimiser folds a `GlobalRef` into the operand
-slots of the calls that use it, where it is emitted as an IR literal instead.
+Build a width-`info.width` constant slot with zero tangent; uninitialised storage would
+leak garbage into operations reading it. Record aliasable primals here, since Julia 1.12
+can fold GlobalRefs into call operands that never reach `captures`.
 """
 function const_lifted!(v, info::DualInfo)
     record_const_alias!(info.consts, v)
@@ -371,14 +348,8 @@ function modify_fwd_ad_stmts!(
             Mooncake.replace_call!(dual_ir, ssa, Expr(:call, identity, d))
         end
     else
-        # A non-const global is read afresh on every call and zero-lifted there, so its forward
-        # value is no more shared with an argument's than a constant's is, and the guard has to
-        # cover it too. Record the BINDING, not the value it holds now: reading afresh means the
-        # object an argument can clash with is whichever one is bound at call time, so a
-        # build-time snapshot leaves the guard hunting an object the caller stopped passing the
-        # moment the global was rebound. Reverse resolves the same staleness the other way --
-        # there the build-time storage is what the rule reuses, so `__verify_const` refuses the
-        # call instead.
+        # Non-const globals are re-read and zero-lifted per call, separately from arguments.
+        # Track the binding so the alias guard follows rebinding instead of a stale value.
         if isdefined(stmt.mod, stmt.name)
             record_const_alias!(
                 info.consts,
@@ -501,11 +472,8 @@ function modify_fwd_ad_stmts!(
     stmt::Expr, dual_ir::IRCode, ssa::SSAValue, captures::Vector{Any}, info::DualInfo
 )
     if isexpr(stmt, :gc_preserve_begin) || isexpr(stmt, :gc_preserve_end)
-        # Forward AD inserts a captures argument before the original arguments, so without
-        # shifting its argument references `gc_preserve_begin` would preserve the wrong values.
-        # `inc_args` shifts them by one to reach the intended `Lifted` slots. `gc_preserve_end`
-        # refers to the result of its matching begin, not an argument position, so `inc_args`
-        # leaves that reference unchanged.
+        # Shift gc_preserve_begin arguments past the added captures slot to preserve
+        # the intended Lifted values; gc_preserve_end's SSA reference stays unchanged.
         replace_call!(dual_ir, ssa, inc_args(stmt))
     elseif isexpr(stmt, :invoke) || isexpr(stmt, :call)
         raw_args = isexpr(stmt, :invoke) ? stmt.args[2:end] : stmt.args

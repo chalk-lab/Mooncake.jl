@@ -116,9 +116,6 @@ end
         end
     end
 
-    # Forward counterpart of the reverse-mode testset of the same name, and bespoke for the same
-    # reason: a `generate_test_functions` row's third slot is allocation bounds, which the driver
-    # drops, so it cannot carry a `throws` expectation.
     @testset "argument aliasing a differentiable global is refused" begin
         G = FwdAliasGlobals.alias_vector
         @testset "$f" for f in
@@ -163,9 +160,7 @@ end
         @test Mooncake.primal(dyn_out) === 3.0f0
     end
 
-    # A cache hit must return an independent copy (as reverse `build_derived_rrule` does),
-    # not the shared cached object: otherwise two builds share one `DynamicFRule.cache`
-    # Dict and race under threads / nested AD.
+    # Separate builds must not share mutable DynamicFRule caches (threads / nested AD).
     @testset "cache-hit returns an independent rule copy" begin
         interp = Mooncake.MooncakeInterpreter(ForwardMode)
         sig = Tuple{typeof(fwd_cache_dyn),Float64}
@@ -173,11 +168,8 @@ end
         r2 = Mooncake.build_frule(interp, sig; skip_world_age_check=true)  # cache HIT
         dyns1 = filter(c -> c isa Mooncake.DynamicFRule, collect(r1.fwd_oc.oc.captures))
         dyns2 = filter(c -> c isa Mooncake.DynamicFRule, collect(r2.fwd_oc.oc.captures))
-        # The `Base.inferencebarrier` in `fwd_cache_dyn` only forces a captured `DynamicFRule` on
-        # Julia ≥ 1.11; 1.10 resolves it with no top-level dynamic-rule capture (empty
-        # `oc.captures`), so the shared-`cache` scenario cannot arise there (the frule still runs
-        # correctly). Check the independent-copy invariant only on ≥ 1.11, where the capture exists;
-        # `only(dyns1)` then fails loudly if a future regression drops it.
+        # Julia 1.10 resolves the callee without a DynamicFRule capture. On 1.11+,
+        # only() also detects regressions that lose the expected capture.
         @static if VERSION >= v"1.11-"
             dyn1 = only(dyns1)
             dyn2 = only(dyns2)
@@ -188,10 +180,8 @@ end
 end;
 
 @testset "a type-observing branch takes the primal's side" begin
-    # `sizeof`/`typeof`/`nfields` answer for the forward representation, not the primal --
-    # `sizeof(NDual{Float64,1})` is 16 against `Float64`'s 8 -- so a branch on one that saw the
-    # representation would take the wrong side and return a wrong VALUE, not merely a wrong
-    # derivative. The transform evaluates these against the primal, which is what these pin.
+    # Type queries must observe the primal: e.g. sizeof(NDual{Float64,1}) == 16,
+    # not Float64's 8, which would change both the branch's value and derivative.
     sz(x) = sizeof(x) == 8 ? x * x : x * x * x
     ty(x) = typeof(x) === Float64 ? x * x : x * x * x
     nf(x) = nfields(x) == 0 ? x * x : x * x * x

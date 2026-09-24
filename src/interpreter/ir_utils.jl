@@ -254,11 +254,9 @@ function __infer_ir!(ir, interp::CC.AbstractInterpreter, mi::CC.MethodInstance)
     return ir
 end
 
-# Julia 1.10's `reprocess_instruction!` has no `UpsilonNode`/`PhiCNode` branch (added in 1.11):
-# an Upsilon whose operand was refined falls to `argextype`, which is a `Const` of the node
-# itself, and is replaced by a `QuoteNode`, after which `verify_ir` fails on the PhiC. Neither
-# node is refined on 1.11 either (the PhiC is "not modeled", so the Upsilon's refinement never
-# reaches a use), so leaving both untouched loses nothing.
+# Julia 1.10 reprocess_instruction! lacks Upsilon/PhiC handling and can replace refined
+# Upsilons with QuoteNodes, failing PhiC verification. Leave both untouched, as in 1.11,
+# where PhiC refinement is not modeled and Upsilon refinements never reach a use.
 @static if VERSION < v"1.11"
     function CC.reprocess_instruction!(
         interp::BugPatchInterpreter,

@@ -7,12 +7,9 @@
 # JuliaLang/julia#56201 fixes this in Julia 1.13. Remove this file once all supported
 # Julia versions contain that fix.
 #
-# Note when judging that: every actual patch below sits inside `@static if VERSION >= v"1.11"`.
-# On 1.10 this file defines only the struct and its forwarding methods, so `BugPatchInterpreter`
-# is a pass-through there apart from the `reprocess_instruction!` override in `ir_utils.jl`. It
-# is still installed unconditionally by `optimise_ir!`, which costs nothing measurable (rule
-# building is 0.055s against 0.057s for a plain `NativeInterpreter`), so the install is left
-# uniform rather than version-gated.
+# On 1.10, only the struct/forwarders apply here; reprocess_instruction! is patched in
+# ir_utils.jl. optimise_ir! installs BugPatchInterpreter uniformly below 1.13:
+# its pass-through on 1.10 has no measurable rule-building overhead.
 #
 # The only place in which this code seeps into Mooncake.jl code is in Mooncake.optimise_ir!,
 # located in src/interpreter/ir_utils.jl . In particular, we replace the `local_interp`
