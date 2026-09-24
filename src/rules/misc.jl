@@ -140,27 +140,31 @@ This approach is identical to the one taken by `Zygote.jl` to circumvent the sam
 lgetfield(x, ::Val{f}) where {f} = getfield(x, f)
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val}
-@inline function frule!!(
-    ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}
-) where {Nw,f}
-    primal_field = getfield(primal(x), f)
-    # A NoDual parent can have a differentiable field (e.g. DataType.parameters);
-    # construct the field's canonical V.
-    # TODO(#1295): those partials do not alias the storage the pass seeded for the field.
-    tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
-    V_i = _get_lifted_field(tangent(x), f)
-    _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-    return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
-end
-
-# NDualRef stores partials separately, so field reads must rebuild the scalar V.
-@inline function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    ::Lifted{<:Union{Val{:x},Val{1}}},
-) where {Nw,P<:NDualEltype}
-    v = getfield(primal(x), :x)
-    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+for order in ((), (:order,))
+    order_arg = [:(::Lifted{Val{$o}}) for o in order]
+    @eval begin
+        @inline function frule!!(
+            ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, $(order_arg...)
+        ) where {Nw,f,$(order...)}
+            primal_field = getfield(primal(x), f, $(order...))
+            # A NoDual parent can have a differentiable field (e.g. DataType.parameters).
+            # TODO(#1295): fresh partials do not alias the pass's seeded field storage.
+            tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
+            V_i = _get_lifted_field(tangent(x), f)
+            _check_lifted_field_ptr_lanes(V_i, Val(Nw))
+            return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
+        end
+        # NDualRef stores partials separately, so field reads must rebuild the scalar V.
+        @inline function frule!!(
+            ::Lifted{typeof(lgetfield),Nw},
+            x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
+            ::Lifted{<:Union{Val{:x},Val{1}}},
+            $(order_arg...),
+        ) where {Nw,P<:NDualEltype,$(order...)}
+            v = getfield(primal(x), :x, $(order...))
+            return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
+        end
+    end
 end
 
 @inline _get_lifted_field(V::Union{NamedTuple,Tuple}, name) = getfield(V, name)
@@ -333,26 +337,6 @@ end
 #
 
 @is_primitive MinimalCtx Tuple{typeof(lgetfield),Any,Val,Val}
-@inline function frule!!(
-    ::Lifted{typeof(lgetfield),Nw}, x::Lifted, ::Lifted{Val{f}}, ::Lifted{Val{order}}
-) where {Nw,f,order}
-    primal_field = getfield(primal(x), f, order)
-    # See the 2-arg `lgetfield` frule: canonical zero V for a non-differentiable parent.
-    tangent(x) isa NoDual && return uninit_lifted(Val(Nw), primal_field)
-    V_i = _get_lifted_field(tangent(x), f)
-    _check_lifted_field_ptr_lanes(V_i, Val(Nw))
-    return Lifted{typeof(primal_field),Nw}(primal_field, V_i)
-end
-# Ordered Ref reads also need to rebuild the scalar V from NDualRef partials.
-@inline function frule!!(
-    ::Lifted{typeof(lgetfield),Nw},
-    x::Lifted{<:Base.RefValue{P},Nw,<:NDualRef},
-    ::Lifted{<:Union{Val{:x},Val{1}}},
-    ::Lifted{Val{order}},
-) where {Nw,P<:NDualEltype,order}
-    v = getfield(primal(x), :x, order)
-    return Lifted{P,Nw}(v, _scalar_ndual(v, tangent(x).partials[]))
-end
 @inline function rrule!!(
     ::CoDual{typeof(lgetfield)}, x::CoDual{P,F}, ::CoDual{Val{f}}, ::CoDual{Val{order}}
 ) where {P,F<:StandardFDataType,f,order}

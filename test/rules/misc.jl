@@ -28,13 +28,9 @@
         @test iszero(gy_tuple)
     end
     @testset "lgetfield" begin
-        x = (5.0, 4)
-        @test lgetfield(x, Val(1)) == getfield(x, 1)
-        @test lgetfield(x, Val(2)) == getfield(x, 2)
-
-        y = (a=5.0, b=4)
-        @test lgetfield(y, Val(:a)) == getfield(y, :a)
-        @test lgetfield(y, Val(:b)) == getfield(y, :b)
+        for x in ((5.0, 4), (a=5.0, b=4)), field in fieldnames(typeof(x))
+            @test lgetfield(x, Val(field)) == getfield(x, field)
+        end
     end
     @testset "lsetfield!" begin
         x = TestResources.MutableFoo(5.0, randn(5))

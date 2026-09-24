@@ -257,14 +257,16 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(*),TWP,Integer}
-function frule!!(
-    ::Lifted{typeof(*),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
-) where {N,P<:TWP}
-    yp = primal(y)
-    z = primal(x) * yp
-    x_parts = tangent(x)
-    dz = ntuple(k -> x_parts[k] * yp, Val(N))
-    return Lifted{P,N}(z, dz)
+for f in (*, /)
+    @eval function frule!!(
+        ::Lifted{typeof($f),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
+    ) where {N,P<:TWP}
+        yp = primal(y)
+        z = $f(primal(x), yp)
+        x_parts = tangent(x)
+        dz = ntuple(k -> $f(x_parts[k], yp), Val(N))
+        return Lifted{P,N}(z, dz)
+    end
 end
 function rrule!!(::CoDual{typeof(*)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
@@ -293,15 +295,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(/),TWP,Integer}
-function frule!!(
-    ::Lifted{typeof(/),N}, x::Lifted{P,N,NTuple{N,P}}, y::Lifted{<:Integer}
-) where {N,P<:TWP}
-    yp = primal(y)
-    z = primal(x) / yp
-    x_parts = tangent(x)
-    dz = ntuple(k -> x_parts[k] / yp, Val(N))
-    return Lifted{P,N}(z, dz)
-end
 function rrule!!(::CoDual{typeof(/)}, x::CoDual{P}, y::CoDual{<:Integer}) where {P<:TWP}
     _y = y.x
     div_twice_precision_and_int_pb(dz::P) = NoRData(), dz / _y, NoRData()
@@ -325,22 +318,25 @@ using Base: range_start_step_length
 @is_primitive(
     MinimalCtx, Tuple{typeof(range_start_step_length),T,T,Integer} where {T<:IEEEFloat}
 )
-function frule!!(
-    ::Lifted{typeof(range_start_step_length),N},
-    a::Lifted{T,N,NDual{T,N}},
-    st::Lifted{T,N,NDual{T,N}},
-    len::Lifted{<:Integer},
-) where {N,T<:IEEEFloat}
-    y = range_start_step_length(primal(a), primal(st), primal(len))
-    a_parts = tangent(a).partials
-    st_parts = tangent(st).partials
-    # `ref == a + (offset-1)*step`; zero-crossing ranges can have offset != 1.
-    # This correction makes d(r[i]) == d(a) + (i-1)*d(step), independent of offset.
-    o = y.offset - 1
-    ref_v = ntuple(k -> TWP{T}(a_parts[k] + o * st_parts[k], zero(T)), Val(N))
-    step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
-    nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
-    return Lifted{typeof(y),N}(y, ImmutableDual(nt))
+for (f, last_type) in
+    ((range_start_step_length, :(Lifted{<:Integer})), ((:), :(Lifted{T,N,NDual{T,N}})))
+    @eval function frule!!(
+        ::Lifted{typeof($f),N},
+        a::Lifted{T,N,NDual{T,N}},
+        st::Lifted{T,N,NDual{T,N}},
+        last::$(last_type),
+    ) where {N,T<:IEEEFloat}
+        y = $f(primal(a), primal(st), primal(last))
+        a_parts = tangent(a).partials
+        st_parts = tangent(st).partials
+        # `ref == a + (offset-1)*step`; zero-crossing ranges can have offset != 1.
+        # This makes d(r[i]) == d(a) + (i-1)*d(step), independent of offset.
+        o = y.offset - 1
+        ref_v = ntuple(k -> TWP{T}(a_parts[k] + o * st_parts[k], zero(T)), Val(N))
+        step_v = ntuple(k -> TWP{T}(st_parts[k], zero(T)), Val(N))
+        nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
+        return Lifted{typeof(y),N}(y, ImmutableDual(nt))
+    end
 end
 function rrule!!(
     ::CoDual{typeof(range_start_step_length)},
@@ -424,22 +420,6 @@ function rrule!!(
 end
 
 @is_primitive MinimalCtx Tuple{typeof(:),P,P,P} where {P<:IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(:),N},
-    start::Lifted{P,N,NDual{P,N}},
-    step::Lifted{P,N,NDual{P,N}},
-    stop::Lifted{P,N,NDual{P,N}},
-) where {N,P<:IEEEFloat}
-    y = (:)(primal(start), primal(step), primal(stop))
-    start_parts = tangent(start).partials
-    step_parts = tangent(step).partials
-    # `ref == start + (offset-1)*step`, and `offset` is 1 only when the range avoids zero.
-    o = y.offset - 1
-    ref_v = ntuple(k -> TWP{P}(start_parts[k] + o * step_parts[k], zero(P)), Val(N))
-    step_v = ntuple(k -> TWP{P}(step_parts[k], zero(P)), Val(N))
-    nt = (ref=ref_v, step=step_v, len=NoDual(), offset=NoDual())
-    return Lifted{typeof(y),N}(y, ImmutableDual(nt))
-end
 function rrule!!(
     ::CoDual{typeof(:)}, start::CoDual{P}, step::CoDual{P}, stop::CoDual{P}
 ) where {P<:IEEEFloat}
