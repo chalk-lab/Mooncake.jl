@@ -267,22 +267,13 @@ end
         irsv::CC.IRInterpretationState,
     )
         inst isa Union{Core.UpsilonNode,Core.PhiCNode} && return false
-        return invoke(
-            CC.reprocess_instruction!,
-            Tuple{
-                CC.AbstractInterpreter,
-                Int,
-                Union{Int,Nothing},
-                Any,
-                Any,
-                CC.IRInterpretationState,
-            },
-            interp,
-            idx,
-            bb,
-            inst,
-            typ,
-            irsv,
+        return @invoke CC.reprocess_instruction!(
+            interp::CC.AbstractInterpreter,
+            idx::Int,
+            bb::Union{Int,Nothing},
+            inst::Any,
+            typ::Any,
+            irsv::CC.IRInterpretationState,
         )
     end
 end

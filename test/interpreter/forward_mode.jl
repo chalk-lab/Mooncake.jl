@@ -185,16 +185,10 @@ end;
     sz(x) = sizeof(x) == 8 ? x * x : x * x * x
     ty(x) = typeof(x) === Float64 ? x * x : x * x * x
     nf(x) = nfields(x) == 0 ? x * x : x * x * x
-    for f in (sz, ty, nf)
-        v, g = Mooncake.value_and_gradient!!(
-            Mooncake.prepare_derivative_cache(f, 2.0), f, 2.0
-        )
-        @test (v, g[2]) == (4.0, 4.0)
-    end
-    # The same branch reached through a TUPLE argument.
     szt(t) = sizeof(t[1]) == 8 ? t[1] * t[1] : t[1] * t[1] * t[1]
-    v, g = Mooncake.value_and_gradient!!(
-        Mooncake.prepare_derivative_cache(szt, (2.0, 5.0)), szt, (2.0, 5.0)
-    )
-    @test (v, g[2]) == (4.0, (4.0, 0.0))
+    for (f, x, grad) in
+        ((sz, 2.0, 4.0), (ty, 2.0, 4.0), (nf, 2.0, 4.0), (szt, (2.0, 5.0), (4.0, 0.0)))
+        v, g = Mooncake.value_and_gradient!!(Mooncake.prepare_derivative_cache(f, x), f, x)
+        @test (v, g[2]) == (4.0, grad)
+    end
 end
