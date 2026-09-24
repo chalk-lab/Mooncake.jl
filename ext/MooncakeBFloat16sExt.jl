@@ -363,21 +363,15 @@ const _PNT{N} = NTuple{N,P}
 using Mooncake: NDual
 
 # Conversions
-function Mooncake.frule!!(
-    ::Lifted{Type{Float32},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    y = Float32(primal(x))
-    parts = tangent(x)
-    dy = ntuple(k -> Float32(parts[k]), Val(Nw))
-    return Lifted{Float32,Nw}(y, NDual{Float32,Nw}(y, dy))
-end
-function Mooncake.frule!!(
-    ::Lifted{Type{Float64},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    y = Float64(primal(x))
-    parts = tangent(x)
-    dy = ntuple(k -> Float64(parts[k]), Val(Nw))
-    return Lifted{Float64,Nw}(y, NDual{Float64,Nw}(y, dy))
+for F in (Float32, Float64)
+    @eval function Mooncake.frule!!(
+        ::Lifted{Type{$F},Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+    ) where {Nw}
+        y = $F(primal(x))
+        parts = tangent(x)
+        dy = ntuple(k -> $F(parts[k]), Val(Nw))
+        return Lifted{$F,Nw}(y, NDual{$F,Nw}(y, dy))
+    end
 end
 function Mooncake.frule!!(
     ::Lifted{Type{P},Nw}, x::Lifted{Float32,Nw,NDual{Float32,Nw}}
@@ -434,25 +428,17 @@ for (op, deriv_expr, guarded) in (
 end
 
 # sin / cos — use separate calls because sincos(::BFloat16) is broken in 1.12.
-function Mooncake.frule!!(
-    ::Lifted{typeof(sin),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    _x = primal(x)
-    s = sin(_x)
-    c = cos(_x)
-    parts = tangent(x)
-    dy = ntuple(k -> parts[k] * c, Val(Nw))
-    return Lifted{P,Nw}(s, dy)
-end
-function Mooncake.frule!!(
-    ::Lifted{typeof(cos),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    _x = primal(x)
-    s = sin(_x)
-    c = cos(_x)
-    parts = tangent(x)
-    dy = ntuple(k -> -parts[k] * s, Val(Nw))
-    return Lifted{P,Nw}(c, dy)
+for (op, value, partial) in ((:sin, :s, :(parts[k] * c)), (:cos, :c, :(-parts[k] * s)))
+    @eval function Mooncake.frule!!(
+        ::Lifted{typeof($op),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+    ) where {Nw}
+        _x = primal(x)
+        s = sin(_x)
+        c = cos(_x)
+        parts = tangent(x)
+        dy = ntuple(k -> $partial, Val(Nw))
+        return Lifted{P,Nw}($value, dy)
+    end
 end
 
 function Mooncake.frule!!(
@@ -490,29 +476,19 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(z, dz)
 end
 
-function Mooncake.frule!!(
-    ::Lifted{typeof(max),Nw},
-    x::Lifted{P,Nw,_PNT{Nw}},
-    y::Lifted{P,Nw,_PNT{Nw}},
-) where {Nw}
-    _x = primal(x)
-    _y = primal(y)
-    x_parts = tangent(x)
-    y_parts = tangent(y)
-    dz = ntuple(k -> _x >= _y ? x_parts[k] : y_parts[k], Val(Nw))
-    return Lifted{P,Nw}(max(_x, _y), dz)
-end
-function Mooncake.frule!!(
-    ::Lifted{typeof(min),Nw},
-    x::Lifted{P,Nw,_PNT{Nw}},
-    y::Lifted{P,Nw,_PNT{Nw}},
-) where {Nw}
-    _x = primal(x)
-    _y = primal(y)
-    x_parts = tangent(x)
-    y_parts = tangent(y)
-    dz = ntuple(k -> _x <= _y ? x_parts[k] : y_parts[k], Val(Nw))
-    return Lifted{P,Nw}(min(_x, _y), dz)
+for (op, cmp) in ((:max, :>=), (:min, :<=))
+    @eval function Mooncake.frule!!(
+        ::Lifted{typeof($op),Nw},
+        x::Lifted{P,Nw,_PNT{Nw}},
+        y::Lifted{P,Nw,_PNT{Nw}},
+    ) where {Nw}
+        _x = primal(x)
+        _y = primal(y)
+        x_parts = tangent(x)
+        y_parts = tangent(y)
+        dz = ntuple(k -> $cmp(_x, _y) ? x_parts[k] : y_parts[k], Val(Nw))
+        return Lifted{P,Nw}($op(_x, _y), dz)
+    end
 end
 
 function Mooncake.frule!!(
@@ -530,15 +506,12 @@ function Mooncake.frule!!(
     return Lifted{P,Nw}(eps(primal(x)), ntuple(_ -> zero(P), Val(Nw)))
 end
 
-function Mooncake.frule!!(
-    ::Lifted{typeof(nextfloat),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    return Lifted{P,Nw}(nextfloat(primal(x)), tangent(x))
-end
-function Mooncake.frule!!(
-    ::Lifted{typeof(prevfloat),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
-) where {Nw}
-    return Lifted{P,Nw}(prevfloat(primal(x)), tangent(x))
+for op in (:nextfloat, :prevfloat)
+    @eval function Mooncake.frule!!(
+        ::Lifted{typeof($op),Nw}, x::Lifted{P,Nw,_PNT{Nw}}
+    ) where {Nw}
+        return Lifted{P,Nw}($op(primal(x)), tangent(x))
+    end
 end
 
 end # @static if BFloat16s.BFloat16 === Core.BFloat16

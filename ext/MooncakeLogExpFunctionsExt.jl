@@ -141,13 +141,6 @@ end
 end
 
 @is_primitive DefaultCtx Tuple{typeof(xlogx),IEEEFloat}
-function frule!!(
-    ::Lifted{typeof(xlogx),Nw}, x::Lifted{P,Nw,NDual{P,Nw}}
-) where {Nw,P<:IEEEFloat}
-    dy = xlogx(tangent(x))
-    y = dy.value
-    return Lifted{typeof(y),Nw}(y, dy)
-end
 function rrule!!(::CoDual{typeof(xlogx)}, x::CoDual{<:IEEEFloat})
     z, d = xlogx_value_and_partial(primal(x))
     xlogx_pb!!(dz) = (NoRData(), scale_partial(d, dz))
@@ -172,15 +165,15 @@ xexpy_partials(x, y, z) = (exp(y), z)
 # 1.52x/1.13x at widths 1/8. Reverse stays derived; log1pexp, log1mexp and
 # logexpm1 measured at parity (1.02x-1.12x), so get no rule.
 for f in (:log1psq, :log2mexp)
-    @eval begin
-        @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),P} where {P<:IEEEFloat}
-        function frule!!(
-            ::Lifted{typeof($f),Nw}, x::Lifted{P,Nw,NDual{P,Nw}}
-        ) where {Nw,P<:IEEEFloat}
-            dy = $f(tangent(x))
-            y = dy.value
-            return Lifted{typeof(y),Nw}(y, dy)
-        end
+    @eval @is_primitive MinimalCtx ForwardMode Tuple{typeof($f),P} where {P<:IEEEFloat}
+end
+for f in (:xlogx, :log1psq, :log2mexp)
+    @eval function frule!!(
+        ::Lifted{typeof($f),Nw}, x::Lifted{P,Nw,NDual{P,Nw}}
+    ) where {Nw,P<:IEEEFloat}
+        dy = $f(tangent(x))
+        y = dy.value
+        return Lifted{typeof(y),Nw}(y, dy)
     end
 end
 
