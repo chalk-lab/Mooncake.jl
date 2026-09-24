@@ -1541,9 +1541,14 @@ end
 # NamedTuple `fieldtype(dual_type(Val(N), P), 1)` — abstract fields stored as
 # `Any`, possibly-uninit fields wrapped in `PossiblyUninitTangent` — mirroring
 # reverse-mode's `backing_type(P)(...)`. Keeps `typeof(seed) === dual_type(Val(N), P)`.
-for (f, helper) in
-    ((:zero_dual, :_zero_dual_zero_field), (:uninit_dual, :_uninit_dual_zero_field))
-    @eval @generated function $f(::Val{N}, x::P) where {N,P}
+for (f, helper) in (
+    (:zero_dual, :_zero_dual_zero_field),
+    (:uninit_dual, :_uninit_dual_zero_field),
+    (:randn_dual, :_randn_dual_zero_field),
+)
+    rng_args = f === :randn_dual ? (:(rng::AbstractRNG),) : ()
+    rng_vals = f === :randn_dual ? (:rng,) : ()
+    @eval @generated function $f(::Val{N}, $(rng_args...), x::P) where {N,P}
         isconcretetype(P) || return :(error($("$($f): P=$P is not concrete")))
         # NoDual has no backing to seed. Resolve dual_type at the call world.
         if fieldcount(P) == 0
@@ -1551,13 +1556,18 @@ for (f, helper) in
                 if dual_type(Val($N), typeof(x)) === NoDual
                     NoDual()
                 else
-                    $($(QuoteNode(helper)))(Val($N), x)
+                    $($(QuoteNode(helper)))(Val($N), $($(QuoteNode(rng_vals))...), x)
                 end
             )
         end
         seeds = map(1:fieldcount(P)) do i
             nm = QuoteNode(fieldnames(P)[i])
-            return _seed_field_expr(N, P, i, :($($f)(Val($N), getfield(x, $nm))))
+            return _seed_field_expr(
+                N,
+                P,
+                i,
+                :($($f)(Val($N), $($(QuoteNode(rng_vals))...), getfield(x, $nm))),
+            )
         end
         wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
         msg =
@@ -1571,37 +1581,6 @@ for (f, helper) in
             V <: $wrapper || error($msg)
             $wrapper(fieldtype(V, 1)(($(seeds...),)))
         end
-    end
-end
-
-@generated function randn_dual(::Val{N}, rng::AbstractRNG, x::P) where {N,P}
-    isconcretetype(P) || return :(error("randn_dual: P=$P is not concrete"))
-    # As `zero_dual` / `uninit_dual` above: `NoDual` V has no backing; the
-    # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
-    if fieldcount(P) == 0
-        return :(
-            if dual_type(Val($N), typeof(x)) === NoDual
-                NoDual()
-            else
-                _randn_dual_zero_field(Val($N), rng, x)
-            end
-        )
-    end
-    seeds = map(1:fieldcount(P)) do i
-        nm = QuoteNode(fieldnames(P)[i])
-        return _seed_field_expr(N, P, i, :(randn_dual(Val($N), rng, getfield(x, $nm))))
-    end
-    wrapper = ismutabletype(P) ? :MutableDual : :ImmutableDual
-    msg =
-        "randn_dual: $P declares a `dual_type` that is not the structural lift, so this " *
-        "fallback cannot seed it. A type with its own V needs BOTH seed entry points: define " *
-        "`zero_dual`/`uninit_dual`/`randn_dual` for it alongside its `_*_dual_internal` " *
-        "overloads (see `TwicePrecision`)."
-    return quote
-        V = dual_type(Val($N), typeof(x))
-        V === NoDual && return NoDual()
-        V <: $wrapper || error($msg)
-        $wrapper(fieldtype(V, 1)(($(seeds...),)))
     end
 end
 
@@ -1654,40 +1633,44 @@ for (factory, internal) in (
 )
     rng_args = factory === :randn_dual ? (:(rng::AbstractRNG),) : ()
     rng_vals = factory === :randn_dual ? (:rng,) : ()
-    if factory !== :randn_dual
-        @eval begin
-            @generated function $internal(w::Val{N}, x::P, d::MaybeCache) where {N,P}
-                # `fieldcount(P) == 0` is world-independent (gen-time); the
-                # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
-                fieldcount(P) == 0 && return :($$(QuoteNode(factory))(w, x))
-                seeds = map(1:fieldcount(P)) do i
-                    nm = QuoteNode(fieldnames(P)[i])
-                    _seed_field_expr(
-                        N, P, i, :($$(QuoteNode(internal))(w, getfield(x, $nm), d))
-                    )
+    @eval begin
+        @generated function $internal(
+            w::Val{N}, $(rng_args...), x::P, d::MaybeCache
+        ) where {N,P}
+            # `fieldcount(P) == 0` is world-independent (gen-time); the
+            # `dual_type(...) === NoDual` test goes in the returned expression, not the body.
+            fieldcount(P) == 0 &&
+                return :($$(QuoteNode(factory))(w, $($(QuoteNode(rng_vals))...), x))
+            seeds = map(1:fieldcount(P)) do i
+                nm = QuoteNode(fieldnames(P)[i])
+                _seed_field_expr(
+                    N,
+                    P,
+                    i,
+                    :($$(QuoteNode(internal))(
+                        w, $($(QuoteNode(rng_vals))...), getfield(x, $nm), d
+                    )),
+                )
+            end
+            if ismutabletype(P)
+                return quote
+                    V = dual_type(Val(N), P)
+                    V === NoDual && return NoDual()
+                    backing = fieldtype(V, 1)
+                    haskey(d, x) && return d[x]::MutableDual{backing}
+                    shell = MutableDual{backing}()
+                    d[x] = shell
+                    shell.fields = backing(($(seeds...),))
+                    return shell
                 end
-                if ismutabletype(P)
-                    return quote
-                        V = dual_type(Val(N), P)
-                        V === NoDual && return NoDual()
-                        backing = fieldtype(V, 1)
-                        haskey(d, x) && return d[x]::MutableDual{backing}
-                        shell = MutableDual{backing}()
-                        d[x] = shell
-                        shell.fields = backing(($(seeds...),))
-                        return shell
-                    end
-                else
-                    return quote
-                        V = dual_type(Val(N), P)
-                        V === NoDual && return NoDual()
-                        ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
-                    end
+            else
+                return quote
+                    V = dual_type(Val(N), P)
+                    V === NoDual && return NoDual()
+                    ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
                 end
             end
         end
-    end
-    @eval begin
         # Assert cache hits to the concrete V or IdDict{Any,Any} poisons inference.
         # Numeric elements cannot cycle; their blocks still share the backing Memory's V.
         function $internal(
@@ -1804,35 +1787,6 @@ for (factory, internal) in (
     end
 end
 
-@generated function _randn_dual_internal(
-    w::Val{N}, rng::AbstractRNG, x::P, d::MaybeCache
-) where {N,P}
-    # `fieldcount(P) == 0` is world-independent (gen-time); the `dual_type(...) === NoDual`
-    # test goes in the returned expression, not the body.
-    fieldcount(P) == 0 && return :(randn_dual(w, rng, x))
-    seeds = map(1:fieldcount(P)) do i
-        nm = QuoteNode(fieldnames(P)[i])
-        _seed_field_expr(N, P, i, :(_randn_dual_internal(w, rng, getfield(x, $nm), d)))
-    end
-    if ismutabletype(P)
-        return quote
-            V = dual_type(Val(N), P)
-            V === NoDual && return NoDual()
-            backing = fieldtype(V, 1)
-            haskey(d, x) && return d[x]::MutableDual{backing}
-            shell = MutableDual{backing}()
-            d[x] = shell
-            shell.fields = backing(($(seeds...),))
-            return shell
-        end
-    else
-        return quote
-            V = dual_type(Val(N), P)
-            V === NoDual && return NoDual()
-            ImmutableDual(fieldtype(V, 1)(($(seeds...),)))
-        end
-    end
-end
 for (factory, internal) in (
     (:zero_lifted, :_zero_dual_internal),
     (:uninit_lifted, :_uninit_dual_internal),
