@@ -78,10 +78,8 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
-# Real eltype only, as the `AbstractTriangular` overload above: for a real `T` a `Hermitian` IS a
-# `Symmetric`, so the convention is settled. A complex one conjugates the mirrored triangle and
-# reads the diagonal as real, a different tangent map, so it is left to the derived path rather
-# than given this one's convention.
+# Real Hermitian has the Symmetric tangent map; complex Hermitian also conjugates
+# and projects the diagonal to real, so leave its reverse rule to the derived path.
 function arrayify(
     x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
 ) where {T<:IEEEFloat}
@@ -117,24 +115,15 @@ function arrayify(x::A, dx::DA) where {A,DA}
     return error(msg)
 end
 
-# Forward-mode analogue of `arrayify(::CoDual)`. Returns the primal array and an N-tuple of
-# per-lane tangent arrays, each canonicalised to the primal's wrapper. This mirrors the reverse
-# `arrayify` wrapper methods, applied across the parallel per-lane partials: no copy — BLAS/LAPACK run on the
-# (possibly strided) views directly, and in-place writes flow back through the view into the
-# parent's partials.
+# Return aliased lane views in the primal's wrapper type, so writes reach its partials.
 function arrayify(x::Lifted{<:AbstractArray{P},N}) where {P<:BlasFloat,N}
     A = primal(x)
     return A, ntuple(lane -> _arrayify_lane(A, tangent(x), lane), Val(N))
 end
-# `_arrayify_lane` is the per-wrapper analogue of a reverse `arrayify` method, applied per lane: it
-# recurses through the wrapper's V (`ImmutableDual` whose NamedTuple mirrors the wrapper's fields)
-# and re-wraps, exactly as reverse `arrayify` recurses through the tangent. Base case: a dense
-# `NDualArray`'s lane partial.
-# The trailing `Val{dense}` selects the dense leaf's backing: `Val(false)` (the 3-arg default,
-# used by the block-op callers gemm/gemv/_partials_block) returns the lazy stride-`N` block-row
-# view; `Val(true)` `collect`s it, so the reconstructed wrapper is backed by CONTIGUOUS memory —
-# needed by the `dotc`/`dotu` non-contiguous fallback, where BLAS must read an operand's partials
-# exactly as it reads the primal. `dense` is a static parameter, so the leaf branch constant-folds.
+# Recurse through the wrapper's ImmutableDual and reconstruct the primal wrapper.
+# Val(false) keeps stride-N lane views for block operations; Val(true) copies dense
+# leaves so dotc/dotu's raw-memory fallback reads partials in the primal's layout.
+# The static Val lets the dense leaf choice constant-fold.
 @inline _arrayify_lane(x, V, lane::Integer) = _arrayify_lane(x, V, lane, Val(false))
 @inline _dense_lane_partial(x::Lifted, k::Integer) = _arrayify_lane(
     primal(x), tangent(x), k, Val(true)
@@ -143,9 +132,7 @@ end
     ::DenseArray, V::NDualArray, lane::Integer, ::Val{dense}
 ) where {dense} = dense ? collect(tangent_view(V, lane)) : tangent_view(V, lane)
 @inline function _arrayify_lane(x::Ptr, V::NTuple{N,<:Ptr}, lane::Integer, ::Val) where {N}
-    # A zero-seeded `Ptr` slot carries the `uninit_*` placeholder -- its own primal address -- in
-    # every lane, so the BLAS calls downstream would scale and accumulate over the user's buffer.
-    # Same condition the reverse chokepoint checks, hence the same message.
+    # Reject the uninit_* placeholder (the primal address) before BLAS can mutate it.
     dx = V[lane]
     IntrinsicsWrappers._check_tangent_ptr(x, dx)
     return dx
@@ -173,19 +160,15 @@ end
 @inline _arrayify_lane(x::Symmetric, V::ImmutableDual, lane::Integer, d::Val) = Symmetric(
     _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
 )
-# No eltype bound, as the `Symmetric` method above: differentiating `Hermitian(A + t*dA)` gives
-# exactly `Hermitian(dA)` -- the stored triangle contributes `dA[i,j]`, the mirrored one
-# `conj(dA[j,i])`, and the diagonal `real(dA[i,i])`, the primal's diagonal being real already. So
-# wrapping the lane partial IS the JVP, for a complex eltype as much as a real one.
+# Hermitian(dA) is the JVP for real and complex eltypes: conjugate the mirrored
+# triangle and read the diagonal as real.
 @inline _arrayify_lane(x::Hermitian, V::ImmutableDual, lane::Integer, d::Val) = Hermitian(
     _arrayify_lane(x.data, V.fields.data, lane, d), Symbol(x.uplo)
 )
-# Infer the lane's storage type; the primal's concrete parent type can copy or reject it.
-#
-# For the two unit variants the result reads a structural `1` on the diagonal, a constant of the
-# primal with derivative zero. It is not masked here because the block scatter writes through this
-# result, which must keep aliasing the slot's storage; a consumer that READS the partial masks the
-# diagonal itself (`_mask_unit_diagonal` forward, `increment_densified_tangent!!` reverse).
+# Infer storage type: the primal's concrete parent type can copy or reject a lane.
+# Unit triangulars read 1 on the diagonal, whose derivative is zero. Preserve the
+# aliased wrapper for block scatter; consumers mask its diagonal on reads
+# (_mask_unit_diagonal forward, increment_densified_tangent!! reverse).
 for W in (UpperTriangular, LowerTriangular, UnitUpperTriangular, UnitLowerTriangular)
     @eval @inline _arrayify_lane(x::$W, V::ImmutableDual, lane::Integer, d::Val) = $W(
         _arrayify_lane(x.data, V.fields.data, lane, d)
@@ -300,9 +283,8 @@ function viewify(
     n::BLAS.BlasInt, x_dx::CoDual{Ptr{P}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
-    # `unsafe_wrap` would launder the `uninit_*` placeholder into a `Vector` nothing downstream can
-    # tell from real tangent storage, and the pullback's `.+=` would land in the primal. Checked
-    # here because every reverse BLAS pointer rule wraps its tangent through this one method.
+    # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
+    # pointer rule comes through here, and accumulating into it would mutate the primal.
     IntrinsicsWrappers._check_tangent_ptr(x, dx)
     xinds = 1:incx:(incx * n)
     return (
@@ -365,10 +347,8 @@ for (fname, jlfname, elty) in (
 )
     isreal = jlfname == :dot
 
-    # Forward mode: only real `dot` (cblas returns the result by value) is handled at
-    # the foreigncall boundary. Complex `dotc`/`dotu` (which write into a scalar
-    # result `Ref`) are forward primitives at the `BLAS.dotc`/`dotu` level instead —
-    # see below. Reverse mode handles all three here.
+    # Real cblas dot returns by value. Complex dotc/dotu write a Ref and need
+    # forward primitives at the BLAS wrapper instead; reverse handles all here.
     if isreal
         @eval @inline function frule!!(
             ::Lifted{typeof(_foreigncall_),Nw},
@@ -389,11 +369,7 @@ for (fname, jlfname, elty) in (
                 DX = primal(_DX)
                 DY = primal(_DY)
                 result = BLAS.$jlfname(n, DX, incx, DY, incy)
-                # Through `_blas_lane_partial`, as every other forward pointer consumer here
-                # does: it is the one path that runs `_check_tangent_ptr`, and a zero-seeded
-                # `Ptr` slot carries the `uninit_*` placeholder — its own primal address — in
-                # every lane. Reading `tangent(_DX)[lane]` straight into BLAS dereferenced that
-                # and returned the PRIMAL as the derivative, 32.0 for a seed of zero.
+                # _blas_lane_partial checks for the uninit_* primal-address placeholder.
                 dresult_lanes = ntuple(Val(Nw)) do lane
                     dDX = _blas_lane_partial(_DX, lane)
                     dDY = _blas_lane_partial(_DY, lane)
@@ -478,12 +454,8 @@ for (fname, jlfname, elty) in (
     end
 end
 
-# BLAS and LAPACK resolve their character flags with LSAME, which is case-insensitive, so `'u'` and
-# `'U'` name the same call. A rule body branches on the character, so it has to see what the routine
-# sees: reading every flag through this is what keeps the two in step. `trmm!` with `diag = 'u'`
-# took the non-unit-diagonal branch and returned a gradient of [1, 0, 1, 1] where the routine's own
-# answer is [0, 0, 1, 0], on an unchanged primal. Validation is left to the routine, which rejects
-# what it does not accept; matching its case-folding is the whole job here.
+# Match BLAS/LAPACK's case-insensitive LSAME before branching on flags; leave
+# validation to the routine.
 _lsame_flag(c::Char) = uppercase(c)
 
 @is_primitive(
@@ -492,11 +464,8 @@ _lsame_flag(c::Char) = uppercase(c)
         typeof(BLAS.nrm2),Integer,X,Integer
     } where {T<:BlasFloat,X<:Union{Ptr{T},AbstractArray{T}}},
 )
-# `LinearAlgebra.norm2` calls the ONE-argument `BLAS.nrm2(x)` for length >= 32, and Julia inlines
-# both it and the `ccall` it wraps, so the three-argument boundary declared above no longer exists
-# by the time a rule could fire and the raw pointer reaches the transform. Declaring the
-# one-argument form keeps a boundary that survives inlining; the rules below just supply the length
-# and stride the wrapper would have computed.
+# At length >= 32, norm2 inlines nrm2(x) and its ccall past the three-argument
+# boundary. Keep a one-argument primitive so the raw pointer stays out of the transform.
 @is_primitive(
     MinimalCtx, Tuple{typeof(BLAS.nrm2),X} where {T<:BlasFloat,X<:AbstractArray{T}}
 )
@@ -519,12 +488,7 @@ function rrule!!(
     nrm2_len_pb!!(dy) = (NoRData(), pb(dy)[3])
     return y, nrm2_len_pb!!
 end
-# `axpy!` (y := a*x + y) and `axpby!` (y := a*x + b*y) had no rule in either mode, so ordinary
-# level-1 BLAS code failed at the foreigncall. Both are linear in every argument, so the JVP is the
-# same operation on the partials plus the `da`/`db` terms, and the pullback scatters the output
-# cotangent back. `∇a` and `∇b` contract with the strong zero on the cotangent, as the `gemv!`
-# family does: an entry the output does not depend on must not carry a `NaN` into the scalar
-# gradient.
+# Guard scalar cotangent contractions against NaN in unused entries, as in gemv!.
 # Complex OpenBLAS kernels can read an overwritten real component when X and Y alias.
 # Compare raw walks, including views and pointers; disjoint strided walks remain valid.
 @inline function _axpy_overlaps(x, y, n::Integer, incx::Integer, incy::Integer)
@@ -617,7 +581,6 @@ function rrule!!(
     return Y_dY, axpy!_pb!!
 end
 
-# The short form, inlined into the long one exactly as `dot`/`scal!`'s are.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -625,13 +588,9 @@ end
     } where {P<:BlasFloat,X<:AbstractArray{P},Y<:AbstractArray{P}},
 )
 
-# `axpy!`/`axpby!`'s short forms take ANY `Number` and convert it with `P(alpha)` before the ccall,
-# so the rules must serve that whole domain. Narrowing the declaration to `P` instead would leave
-# `axpy!(2, x, y)` with no rule at all: the primal hands `pointer(x)` to the long form, and the
-# raw-pointer call matches neither long-form rule. Conversion is linear, so a lane partial converts
-# with the value, and a scalar Mooncake gives no tangent (`Integer`, `Rational`, `Irrational`,
-# `Complex{Int}`) contributes nothing. A scalar whose tangent is neither -- `BigFloat`,
-# `TwicePrecision` -- still has no rule and raises a `MethodError` here.
+# Short forms accept any Number and convert with P(alpha); narrower rules miss
+# calls such as axpy!(2, x, y). Convert lane partials too, or zero for NoDual.
+# Unsupported tangents (e.g. BigFloat, TwicePrecision) still raise MethodError.
 function _fwd_blas_alpha(::Type{P}, a::Lifted{<:Number,Nw,NoDual}) where {P<:BlasFloat,Nw}
     v = P(primal(a))
     return Lifted{P,Nw}(v, zero_dual(Val(Nw), v))
@@ -752,12 +711,8 @@ function rrule!!(
     return Y_dY, axpby!_pb!!
 end
 
-# The TWO-argument convenience forms. Julia inlines them into the long form and its `ccall`, so by
-# the time a rule could fire the boundary is gone and the raw pointer reaches the transform, which
-# refuses it above chunk width 1 -- including the DEFAULT width, so ordinary forward use failed
-# while width 1 and reverse both worked. Declaring the short forms keeps a boundary that survives
-# inlining. Both pass the whole array with its own stride, measured: `scal!(2.0, view(w, 1:2:10))`
-# doubles the view's LOGICAL elements, and `dot` over two such views sums their logical products.
+# Keep the convenience forms primitive: Julia otherwise inlines through their ccall
+# into raw pointers, unsupported above width 1. Both use the array's own stride.
 @is_primitive MinimalCtx Tuple{
     typeof(BLAS.scal!),P,X
 } where {P<:BlasFloat,X<:AbstractArray{P}}
@@ -784,10 +739,7 @@ function rrule!!(
     return y, scal!_short_pb!!
 end
 
-# `BLAS.dot(x, y)` gets its own body rather than delegating: the five-argument form has no
-# array-level rule to call, only the raw-pointer one. Bilinear, so the JVP is
-# `<dx, y> + <x, dy>` and the pullback scatters `dv` onto each operand -- the same shape as the
-# `LinearAlgebra.dot` rule below.
+# The five-argument BLAS.dot has only a raw-pointer rule, so handle arrays here.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -822,50 +774,26 @@ function rrule!!(
     return zero_fcodual(BLAS.dot(x, y)), blas_dot_pb!!
 end
 
-# BLAS Lifted parallels — each rule iterates lanes and calls the BLAS
-# routine on the per-lane partial array (or Ptr) directly. Supports both
-# `Array{T, D}` slots (NDualArray V) and `Ptr{T}` slots (NTuple{N, Ptr{T}}
-# V); real and complex element types both routed.
-#
-# `_blas_lane_partial` extracts a Lifted matrix/vector/Ptr slot's per-lane partial
-# in the right shape, via the wrapper-aware `_arrayify_lane`. This covers dense
-# `NDualArray`, the `NTuple{N, Ptr}` V, and the wrapper structural-lift V's
-# (SubArray/ReshapedArray/Adjoint/…), so the slot may be any `AbstractVecOrMat`.
+# Wrapper-aware lane extraction for arrays and pointers.
 @inline _blas_lane_partial(x::Lifted, lane::Integer) = _arrayify_lane(
     primal(x), tangent(x), lane
 )
 
 # ── Lane-leading partials blocks for BLAS/LAPACK forward rules ──────────────────
 
-# `_partials_block(x)` returns `(block, copied)`: a dense lane-leading array of shape
-# `(N, size(primal(x))...)` holding the slot's per-lane partials — lane `k` of element `i`
-# is `block[k, i...]`, and each element's `N` lanes are one contiguous column. For a
-# dense-primal slot this is the `NDualArray`'s own block (`copied == false`): mutations
-# land in the slot directly. Wrapper primals (SubArray/Reshaped/Adjoint/…) gather the
-# per-lane views into a fresh block (`copied == true`); a rule that mutates such a block
-# must `_write_back_partials!` it into the slot afterwards.
-#
-# Why dense blocks: BLAS/LAPACK matrix arguments need unit first-dim stride. A single lane
-# of the element-major block is stride-`N` (never BLAS-compatible for `N > 1`), but the
-# block itself IS BLAS-compatible with the lane axis leading, so a lane-invariant linear
-# map applies to all `N` lanes in one wide call: right-multiplying the `(N, len)` lane
-# matrix by the map's transpose batches every lane (see the per-rule comments).
+# Return (block, copied) with shape (N, size(primal(x))...), contiguous lanes per
+# element. Dense slots alias their NDualArray block; wrapper slots gather into a
+# copy, requiring _write_back_partials! after mutation. Lane views have stride N,
+# but the block has unit first-dimension stride for BLAS/LAPACK: right-multiplying
+# its (N, len) matrix by a lane-invariant map's transpose processes all lanes.
 @inline function _partials_block(
     x::Lifted{P,N,<:NDualArray}
 ) where {T,D,P<:AbstractArray{T,D},N}
     return getfield(tangent(x), :partials_block), false
 end
-# A lane partial READ must not carry the primal wrapper's structural CONSTANTS. Every wrapper
-# A tangent must not carry the primal wrapper's structural constants. Every wrapper `arrayify`
-# admits stores structural ZEROS off-pattern, which are correct derivatives; the two unit
-# triangulars are the exception, their diagonal reading a constant `1` whose derivative is zero.
-# The mask cannot live upstream in `_blas_lane_partial`/`_arrayify_lane`, which must keep aliasing
-# the slot's storage because the block scatter writes back through it, so it sits on each read
-# path instead. Used by `_partials_block` here and by the `kron` JVP in `performance_patches.jl`.
-#
-# No BLAS rule reaches this with a unit triangular today -- they take a data matrix plus a `diag`
-# character rather than a wrapper -- so on that path it guards a seam a future reader would use.
-# `kron` does admit one, and is why the masking is not merely defensive.
+# Unit triangulars read a structural 1 on the diagonal, whose derivative is zero.
+# Mask on reads (_partials_block and kron), not in _arrayify_lane: block scatter
+# must write through the aliased wrapper to the slot's storage.
 @inline _mask_unit_diagonal(z) = z
 @inline _mask_unit_diagonal(z::UnitUpperTriangular) = triu(parent(z), 1)
 @inline _mask_unit_diagonal(z::UnitLowerTriangular) = tril(parent(z), -1)
@@ -889,15 +817,8 @@ end
     return nothing
 end
 
-# `dβ = Σ conj(yᵢ)·ȳᵢ` over the ORIGINAL `y`, with a strong zero on the cotangent: where `ȳᵢ` is
-# zero the output does not depend on `yᵢ`, so a `NaN` there must contribute exactly 0 rather than
-# `0 * NaN`. `y` may hold undefined values wherever `β == 0` discarded them, and a plain `dot`
-# lets one such entry poison the whole `β` gradient. The forward rules already skip those entries.
-#
-# The `α` gradients alongside each caller contract the same way and share the exposure -- a `NaN`
-# confined to one row of a factor gives a finite primal and a `NaN` `dα`. They are NOT converted
-# here: several use the three-argument `dot(dy, A, x)` or a hoisted temporary, so each needs its
-# own formulation rather than this substitution.
+# Strong zero on the cotangent: unused NaN entries must not poison scalar gradients.
+# In particular, BLAS permits undefined input y wherever β == 0 discards it.
 @inline function _rvs_guarded_dot(y, dy)
     s = zero(promote_type(eltype(y), eltype(dy)))
     @inbounds for i in eachindex(y, dy)
@@ -907,9 +828,8 @@ end
     return s
 end
 
-# The three-argument `dot(dy, B, x)'` with the same strong zero: rows whose cotangent is zero are
-# skipped, so a `NaN` in `B` or `x` confined to such a row cannot reach `dα`. Accumulates each row
-# product in place rather than materialising `B*x`, as the three-argument `dot` does.
+# Strong-zero dot(dy, B, x)': skip unused rows before reading potentially NaN
+# factors, accumulating the row product without materialising B*x.
 @inline function _rvs_guarded_dot3(dy, B, x)
     s = zero(promote_type(eltype(dy), eltype(B), eltype(x)))
     @inbounds for i in eachindex(dy)
@@ -924,12 +844,8 @@ end
     return s
 end
 
-# `β`-scale a tangent block with BLAS's β semantics: `β == 0` overwrites (strong zero)
-# rather than multiplying, so a NaN already in the tangent cannot leak through `0 * NaN`.
-# `contracted` is the dimension BLAS sums over. BLAS takes a quick return when it is zero and does
-# NOT apply `β` there, so a rule folding `β` in by hand must skip it too — otherwise the tangent is
-# scaled where the primal was left alone, which is a silently wrong derivative. Reproduced for
-# `gemv!` with a 0-column `A`: the primal `y` is untouched while the tangent came back `β * dy`.
+# BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
+# A zero contracted dimension quick-returns without applying β (e.g. gemv!).
 @inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
     iszero(β) ? fill!(B, zero(T)) : (B .*= β)
     return nothing
@@ -966,12 +882,9 @@ end
     end
 end
 
-# Block fast path: accumulate all Nw lanes in one pass over the contiguous element-major partials
-# block (each element's Nw lanes are a contiguous NTuple column, so the length-Nw update vectorises,
-# ~4×). Removable singularity: `s == 0` ⇒ `s/(2y)` is `0/0` ⇒ 0.
-# Lane accumulate / final scale as helpers taking `acc` by value: an inline `acc = ntuple(k -> acc[k]
-# + …)` would capture the reassigned `acc` in the closure, boxing it to `Any` (runtime dispatch JET
-# flags). Bind only `Nw` — `NTuple{Nw,R}` degenerates to `Tuple{}` at `Nw=0`, unbinding `R` (Aqua).
+# Contiguous NTuple columns let lane updates vectorise (~4×). Zero sums map to
+# zero at the removable singularity. Pass acc by value: capturing a reassigned
+# accumulator boxes it to Any. Bind only Nw; NTuple{0,R} leaves R unbound (Aqua).
 @inline _nrm2_accum(acc::NTuple{Nw}, xi, col) where {Nw} = ntuple(
     k -> acc[k] + 2 * real(xi' * col[k]), Val(Nw)
 )
@@ -988,11 +901,8 @@ end
     return _nrm2_scale(acc, y * r)
 end
 
-# Dispatch the lane JVP on the slot kind — a function barrier that keeps the frule type-stable
-# despite its `Union{Ptr,AbstractArray}` signature (`getfield(tangent(X_dX), :partials_block)` on the
-# Union is a dynamic access JET flags). Array slot: block fast path with `incx == 1` (the
-# block accessor `_partials_block` needs a dense, unit-stride layout); per-lane otherwise. Ptr slot:
-# always per-lane (raw pointers, no block).
+# Dispatch separates array block access from Ptr lanes to keep the frule type-stable.
+# Only logical step 1 permits the block fast path; pointers always use per-lane accumulation.
 @inline function _nrm2_lanes(
     X_dX::Lifted{P,Nw}, _n, step, Xv, y, ::Type{R}
 ) where {T,P<:AbstractArray{T},Nw,R}
@@ -1018,10 +928,8 @@ function frule!!(
     _n = primal(n)
     _inc = primal(incx)
     Xp = primal(X_dX)
-    # Both lane paths index the partials by LOGICAL linear position, as `_viewify_one` does on the
-    # primal side, so neither can follow BLAS's raw walk over a non-dense operand: the derivative
-    # would then be taken of different elements from the ones `nrm2` summed. Unlike `dotc`/`dotu`
-    # there is no per-lane BLAS fallback to fall to, so refuse.
+    # Lane paths use logical indices, so refuse a raw walk over other elements.
+    # Unlike dotc/dotu, nrm2 has no per-lane BLAS fallback.
     step = _blas_walk_step(Xp, _inc, _n)
     if step === nothing
         _throw_no_walk_step("Forward-mode `BLAS.nrm2`", Xp, _inc)
@@ -1031,11 +939,8 @@ function frule!!(
     R = typeof(y)  # nrm2 returns the real-valued norm.
     return Lifted{R,Nw}(y, _scalar_ndual(y, _nrm2_lanes(X_dX, _n, step, Xv, y, R)))
 end
-# Shared single-side viewify: handles both Ptr and Array uniformly so the
-# Lifted bodies don't have to branch on input shape.
-# `step` is computed ONCE from the primal and used for its partial too: the partial mirrors the
-# primal's index space, but not necessarily its stride, so re-deriving the step from the partial
-# would index different elements.
+# Reuse the primal's logical step for its partial: their index spaces match,
+# but their strides can differ.
 @inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
     x, 1:step:(1 + (n - 1) * step)
 )
@@ -1043,10 +948,8 @@ end
     unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
 )
 
-# `_blas_walk_step` returns `nothing` where the routine's walk leaves the operand, and every caller
-# has to refuse that. Pairing the refusal with the computation is what stops one forgetting:
-# `axpy!`'s frule reached `_viewify_one` with `nothing` and raised a `MethodError` rather than the
-# message above, which says what to do about it.
+# Pair walk validation with computation so invalid layouts get the diagnostic,
+# rather than passing nothing to _viewify_one.
 @inline function _checked_walk_step(label, n::Integer, x, inc::Integer)
     step = _blas_walk_step(x, inc, n)
     step === nothing && _throw_no_walk_step(label, x, inc)
@@ -1075,34 +978,21 @@ function rrule!!(
     return CoDual(y, NoFData()), nrm2_pb!!
 end
 
-# dot(x, y) — real inner product, intercepted at the array level. `LinearAlgebra.dot` on a pair of
-# strided `BlasReal` vectors inlines the cblas `ccall` directly (reading each operand's
-# `.ref.ptr_or_offset`), so without this it is differentiated only at that raw-pointer
-# `_foreigncall_` (below). That descends to raw pointers in *forward-over-reverse* (HVP/Hessian):
-# the reverse pullback reads its fdata through those pointers, and lifting a pointer out of an
-# element-major partials block is unsupported — a lane is strided (stride N), so there is no dense
-# per-lane buffer to address (see `_get_lifted_field(::NDualMemoryRef, :ptr_or_offset)`).
-# Intercepting `dot` at the array level keeps every access on the `NDualArray`/view path, which
-# handles the block, so `dot`'s HVP/Hessian works at any chunk width. The reverse is a cheap axpy,
-# so this matches the foreigncall's cost. Complex inner products are `dotc`/`dotu` (below),
-# unaffected. Scoped to the concrete `Vector` (the inlining case above): disjoint from the CUDA
-# extension's `dot(::CuArray, ::CuArray)` rule (no method ambiguity), and strided-wrapper operands
-# — never supported through the raw-pointer path at width > 1 — stay guarded by the same throw.
+# Intercept concrete real vectors before Julia inlines dot into its raw-pointer
+# ccall. Forward-over-reverse cannot address dense lanes in the element-major block;
+# array-level access preserves HVP/Hessian at every width. Concrete Vector also
+# keeps this disjoint from CUDA's dot rule; strided wrappers retain the pointer guard.
 @is_primitive(MinimalCtx, Tuple{typeof(dot),Vector{P},Vector{P}} where {P<:BlasRealFloat})
 function frule!!(
     ::Lifted{typeof(dot),Nw}, x_dx::Lifted{Vector{P}}, y_dy::Lifted{Vector{P}}
 ) where {Nw,P<:BlasRealFloat}
     x, y = primal(x_dx), primal(y_dy)
     result = dot(x, y)
-    # Bilinear JVP: d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. Each term is one matvec of the contiguous
-    # (Nw, K) partials block against the primal — `out = Xblock·y + Yblock·x` in two `gemv!`s,
-    # replacing the Nw strided per-lane dots (~3.5×; the length-Nw output alloc is fine — no
-    # `:allocs` guard here).
+    # Two wide gemv! calls contract contiguous blocks (~3.5× faster than lane dots).
+    # The length-Nw output allocation is permitted here (no :allocs guard).
     Xb = getfield(tangent(x_dx), :partials_block)
     Yb = getfield(tangent(y_dy), :partials_block)
-    # Zeroed, not `undef`: `gemv` returns early on an empty operand WITHOUT applying `beta`, so
-    # for `dot(P[], P[])` neither call below writes `out` and the lanes would be whatever the
-    # allocator handed back — a garbage derivative, and an intermittent one.
+    # Empty gemv skips even β scaling, so empty dot needs explicitly zeroed lanes.
     out = zeros(P, Nw)
     BLAS.gemv!('N', one(P), Xb, y, zero(P), out)
     BLAS.gemv!('N', one(P), Yb, x, one(P), out)
@@ -1123,37 +1013,16 @@ function rrule!!(
     return CoDual(result, NoFData()), dot_pb!!
 end
 
-# dotc/dotu (complex) — forward mode only. Unlike real `dot` (which the cblas
-# routine returns by value), the complex routines write into a scalar `result =
-# Ref{T}()` passed to the ccall. The canonical NDualArray-style dual of that Ref stores a
-# `Complex{NDual{R,Nw}}`, which is not layout-compatible with the `Nw` contiguous
-# `T`-cells the foreigncall needs, so the `_foreigncall_` frule cannot land the
-# per-lane partials there. Instead we make `BLAS.dotc`/`dotu` themselves forward
-# primitives and assemble the result directly, bypassing the Ref roundtrip. The
-# JVP is linear: d(⟨x,y⟩) = ⟨dx,y⟩ + ⟨x,dy⟩ (with conjugation folded into the same
-# routine). Reverse mode is unaffected — it still descends to the `_foreigncall_`
-# rrule above.
-# `BLAS.dotc`/`dotu` read each operand as a raw `pointer(op) + increment` walk, ignoring the
-# operand's own memory stride. A contiguous (unit-stride) array or a `Ptr` is read the same as
-# logical indexing, so the width-`N` block loop below is exact and fast. A non-contiguous operand
-# (e.g. `view(v, 1:2:end)`) is read out of view order by BLAS; the element-major partials block
-# cannot be walked raw, so those operands take the per-lane BLAS fallback: each lane's partials
-# are rebuilt in the operand's own structure but over CONTIGUOUS memory (`_dense_lane_partial`),
-# so `BLAS.$fname` reads the partial exactly as it reads the primal operand. Correct at all widths,
-# but O(Nw) BLAS calls plus a materialisation per lane — hence only for the non-contiguous case.
-#
-# Two things must hold for the logical walk to match the raw one. The operand must be genuinely
-# DENSE — unit first-dim stride is not enough above one dimension, since `view(A, 1:3, 1:2)` over a
-# 5x5 has strides `(1, 5)` where a dense `(3, 2)` has `(1, 3)`, so its logical index 4 is raw offset
-# 6. And the increment must be POSITIVE: BLAS starts a negative walk at `(-n+1)*inc + 1` and runs
-# backwards over the same elements, where `1 + (t-1)*inc` would run off the front of the block.
-# The step, in `x`'s OWN logical indices, that follows BLAS's raw walk by `inc`; `nothing` when no
-# such step exists. A dense operand steps by `inc`. A strided vector already carries part of the
-# walk in its own stride, so it steps by `inc ÷ stride` -- `norm(view(A, 1, :))` passes
-# `inc == stride`, one step per element, where indexing by `inc` ran off the end. When the stride
-# does not divide `inc`, BLAS visits memory the operand does not address at all and there is no
-# step: `BLAS.scal!(5, 2.0, view(w, 1:2:10), 1)` walks `w[1:5]`, which is not a subset of the
-# view's elements. Above one dimension only a dense operand walks its own elements linearly.
+# Forward complex dotc/dotu need an array-level primitive: cblas writes a Ref whose
+# Complex{NDual} dual is incompatible with contiguous per-lane scalar cells. Reverse
+# still uses the foreigncall rule. Dense operands with positive increments use the
+# block loop; other layouts rebuild each lane over contiguous memory and call BLAS,
+# preserving its raw pointer walk at the cost of O(Nw) calls and materialisations.
+# Unit first-dimension stride alone does not imply density (e.g. a matrix subview).
+# Negative increments start at (-n+1)*inc + 1 and also require the fallback.
+# _blas_walk_step maps a raw increment to logical indices: dense arrays step by inc,
+# strided vectors by inc ÷ stride. If stride does not divide inc, BLAS reads elements
+# outside the operand; above one dimension only dense layouts admit a logical step.
 @inline function _blas_walk_step(x, inc::Integer, n::Integer)
     inc > 0 || return nothing
     x isa Ptr && return inc
@@ -1190,23 +1059,15 @@ end
     )
 end
 
-# Does BLAS's `n`-element walk stay inside `x`'s own elements? Both `dot` branches index by
-# LOGICAL position with `inc` as the step -- the block path directly, the fallback through a dense
-# rebuild of the same length -- so both need the last position to exist. Magnitude, not sign: a
-# NEGATIVE increment starts at the far end and walks back over the same span, and it is the
-# per-lane fallback that serves it, so rejecting it here would refuse a case that works.
+# Both dot paths need this span: the fallback rebuilds only length(x) elements.
+# Negative increments walk the same span backwards and are valid in the fallback.
 @inline _blas_walk_inbounds(x, inc::Integer, n::Integer) =
     1 + (n - 1) * abs(inc) <= length(x)
 
-# Resolve an operand into what BLAS's raw walk actually reads: the span to hand the routine, the
-# slot holding that span's partials, and how many leading elements of those partials to drop.
-#
-# BLAS walks `n` elements from `pointer(x)` in RAW memory, so for a view the walk can run past the
-# view into its parent. Those elements still belong to the parent, which is itself an argument, so
-# they carry partials -- the reverse `_foreigncall_` rule reads exactly them through the tangent
-# pointer. A one-dimensional view of a dense vector therefore widens to a span of its parent from
-# the view's own first element: same `pointer`, so BLAS reads it identically, but long enough to
-# hold the walk. Any other operand must contain its own walk.
+# Return the primal span, its partials slot, and the partials' leading offset.
+# A raw BLAS walk can leave a vector view while staying in its dense parent. Widen
+# from the view's first element (same pointer) to include those parent partials,
+# matching the reverse pointer rule. Other operands must contain their own walk.
 @inline function _dot_walk_widen(label, slot::Lifted, inc::Integer, n::Integer)
     x = primal(slot)
     _blas_walk_inbounds(x, inc, n) || _throw_walk_past_operand(label, x, inc, n)
@@ -1246,14 +1107,9 @@ end
     x isa Ptr && return true
     return strides(x) === Base.size_to_strides(1, size(x)...)
 end
-# `_dense_lane_partial` (defined with `_arrayify_lane` above) rebuilds a lane over CONTIGUOUS
-# memory, so BLAS reads it identically to the primal operand.
 
-# Lane accumulate as a helper taking `acc` BY VALUE, for the reason given at `_nrm2_accum` above: an
-# inline `a = ntuple(k -> a[k] + …, Val(Nw))` captures the reassigned `a` and boxes it to `Any`,
-# which cost ~195 B per element here (49776 B at n = 256, Nw = 1, against 64 B for this form). One
-# helper per conjugation rather than per `(name, eltype)` pair — the body does not depend on the
-# element type. Bind only `Nw`, as there (Aqua).
+# Pass acc by value to avoid boxing a reassigned closure capture (see _nrm2_accum).
+# Share by conjugation, independent of eltype; bind only Nw for the empty tuple (Aqua).
 @inline _dotc_accum(acc::NTuple{Nw}, xc, yc, x, y) where {Nw} = ntuple(
     k -> acc[k] + conj(xc[k]) * y + conj(x) * yc[k], Val(Nw)
 )
@@ -1263,11 +1119,7 @@ end
 
 for (jlfname, elty) in
     ((:dotc, :ComplexF64), (:dotc, :ComplexF32), (:dotu, :ComplexF64), (:dotu, :ComplexF32))
-    # Two independent type vars (X, Y): the two array arguments need not share a concrete type
-    # (e.g. a dense `Vector` dotted with a strided `SubArray`/`Adjoint`). A single shared `X` would
-    # leave differently-typed pairs non-primitive, falling to the derived forward path that cannot
-    # land complex per-lane partials (the reason these are primitives at all) — the frule method
-    # below already binds the two arguments independently.
+    # Independent X/Y allow mixed array wrappers, matching the frule's coverage.
     @eval @is_primitive(
         MinimalCtx,
         ForwardMode,
@@ -1293,11 +1145,7 @@ for (jlfname, elty) in
         DX, DY = primal(_DX), primal(_DY)
         result = BLAS.$jlfname(n, DX, incx, DY, incy)
         acc = if !(_blas_walk_inbounds(DX, incx, n) && _blas_walk_inbounds(DY, incy, n))
-            # BLAS walks `n` elements from `pointer(X)`, which can leave the operand while staying
-            # inside a larger parent. Neither branch below survives that: the block path indexes the
-            # partials block past its end and the fallback hands BLAS a buffer of `length(X)`
-            # elements to walk `n` times. `_dot_walk_widen` re-expresses such an operand over its
-            # parent, where the partials for the whole walk exist.
+            # Widen to the parent partials before either path can read past the view.
             _dot_widened_acc(
                 BLAS.$jlfname,
                 Val(Nw),
@@ -1323,9 +1171,7 @@ for (jlfname, elty) in
             end
             a
         else
-            # Non-contiguous operand: BLAS reads it out of view order, so let BLAS itself
-            # contract each lane's partials (rebuilt over contiguous memory) against the primal
-            # — d⟨x,y⟩ = ⟨dx,y⟩ + ⟨x,dy⟩. Correct at all widths; O(Nw) BLAS calls, less efficient.
+            # Dense lane rebuilds preserve BLAS's raw walk for non-contiguous operands.
             ntuple(Val(Nw)) do k
                 dX = _dense_lane_partial(_DX, k)
                 dY = _dense_lane_partial(_DY, k)
@@ -1334,11 +1180,8 @@ for (jlfname, elty) in
         end
         return Lifted{$elty,Nw}(result, _scalar_ndual(result, acc))
     end
-    # Raw-pointer path: per-lane tangent pointers are dense buffers by the `Ptr` dual
-    # protocol, so the per-lane BLAS calls below read them correctly at any width. A
-    # strided block lane, by contrast, cannot be read by the pointer-based wrapper, so a
-    # mixed Ptr/array call keeps a loud width guard (the all-array case takes the
-    # block-based method above).
+    # Ptr lanes are dense by protocol; array lanes are stride-Nw, so mixed calls
+    # require width 1. All-array calls use the block method above.
     @eval @inline function frule!!(
         ::Lifted{typeof(BLAS.$jlfname),Nw},
         _n::Lifted{<:Integer},
@@ -1388,10 +1231,8 @@ function frule!!(
     incx = primal(_incx)
     a = primal(a_da)
     X = primal(X_dX)
-    # The block is element-major by LOGICAL index while BLAS scales raw memory from
-    # `pointer(X)` by `incx`; those agree only for a contiguous operand. `dotc`/`dotu` fall
-    # back to `_dense_lane_partial` here, but that rebuild is a copy and this rule mutates in
-    # place. Supporting strided operands means updating the PARENT block at its raw offset.
+    # Partial blocks follow logical indices, whereas BLAS walks raw memory. Unlike
+    # dotc/dotu, this mutating rule cannot use a copied dense-lane fallback.
     step = _blas_walk_step(X, incx, n)
     if step === nothing
         _throw_no_walk_step("Forward-mode `BLAS.scal!`", X, incx)
@@ -2070,10 +1911,8 @@ end
 # LEVEL 3
 #
 
-# A and B may be vectors (the rules reshape them to matrices), but the output C must be a
-# matrix: both frule!! and rrule!! take `C::AbstractMatrix{T}`. Keeping the C slot at the
-# broader `AbstractVecOrMat{T}` would declare a vector-C `gemm!` primitive with no matching
-# rule method, giving a `MethodError` at call time instead of falling back to recursion.
+# Keep primitive coverage in lockstep with both rules: A/B allow vectors, C does
+# not. Declaring vector C primitive would prevent fallback and raise MethodError.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -2234,16 +2073,11 @@ end
         tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
         tmp_ref[] = tmp
         if iszero(a)
-            # The reference spec lets `gemm!` skip `A` at `alpha == 0`, and builds disagree on
-            # whether it does: emulating the term as `a .* tmp` propagates a NaN that a skipping
-            # build never reads, so the primal would differ from the routine being
-            # differentiated. Ask the routine instead. Costs a second multiply, in a degenerate
-            # case that already paid for `tmp` to get `alpha`'s gradient.
+            # Builds differ on skipping A at α == 0; call BLAS to preserve its NaN
+            # semantics, even though the α gradient already required a product.
             BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
         else
-            # `_scale_or_zero!` gives `b` BLAS's strong-zero semantics: at `b == 0` it
-            # OVERWRITES, so a NaN sitting in a `C` that BLAS never reads cannot leak in through
-            # `0 * NaN`.
+            # β == 0 must overwrite C, which may contain NaN.
             _scale_or_zero!(p_C, b)
             p_C .+= a .* tmp
         end
@@ -3053,10 +2887,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
 
-        # `axpy!`/`axpby!`, in both the long and short forms, dense and strided. The width sweep is
-        # what matters here: a first version called `BLAS.axpy!` on a lane partial, which above
-        # width 1 is a stride-`Nw` view the pointer wrapper misreads, and it silently dropped the
-        # last element while width 1 stayed correct.
+        # Dense/strided long and short forms; width > 1 catches lane-stride misreads.
         Any[
             (false, :none, nothing, BLAS.axpy!, P(2), randn(rng, P, 5), randn(rng, P, 5)),
             (
@@ -3100,18 +2931,13 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
                 P(3),
                 view(randn(rng, P, 10), 1:2:10),
             ),
-            # The short forms' scalar slot is declared `Number`, because the primal converts it
-            # with `P(alpha)` and narrowing the declaration would leave the call with no rule at
-            # all. Both halves of that domain: an `Int`, whose tangent is `NoTangent`, and a float
-            # of a different precision, whose lane partials and gradient must convert.
+            # Number scalars: NoTangent Int and mixed-precision floating tangents.
             (false, :none, nothing, BLAS.axpy!, 2, randn(rng, P, 5), randn(rng, P, 5)),
             (false, :none, nothing, BLAS.axpy!, Q(2), randn(rng, P, 5), randn(rng, P, 5)),
             (false, :none, nothing, BLAS.axpby!, 2, randn(rng, P, 5), 3, randn(rng, P, 5)),
         ]...,
 
-        # The two-argument convenience forms, which reach the raw pointer without their own rules
-        # and then fail above chunk width 1. Strided operands included: both use the array's own
-        # stride, so a view exercises a different path from a dense vector.
+        # Convenience forms need their own boundary above width 1; cover strides too.
         Any[
             (false, :none, nothing, BLAS.scal!, P(2), randn(rng, P, 5)),
             (false, :none, nothing, BLAS.scal!, P(2), view(randn(rng, P, 10), 1:2:10)),
@@ -3154,17 +2980,12 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             ),
         ]...,
 
-        # nrm2(x) — the one-argument form `LinearAlgebra.norm2` calls at length >= 32. Julia inlines
-        # it and its `ccall`, so the three-argument primitive above never sees a boundary and the
-        # raw pointer reached the transform: `norm` of any array that size threw at chunk width > 1,
-        # which is the DEFAULT width for it. Length 40 to stay above LinearAlgebra's threshold.
+        # Length 40 exceeds norm2's threshold (32) for the inlined nrm2(x) boundary.
         map([randn(rng, P, 40)]) do x
             (false, :stability, nothing, BLAS.nrm2, x)
         end...,
 
-        # dot(x, y) — real only (complex inner products are dotc/dotu). `n = 0` is the case
-        # `gemv` skips without applying `beta`, which left the forward lanes reading uninitialised
-        # memory; the derivative there is exactly zero, so garbage fails against finite differences.
+        # Empty dot exercises gemv's quick return without β scaling.
         (
             if P <: BlasRealFloat
                 map([0, 3, 5]) do n
@@ -3181,11 +3002,8 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             return (flags..., BLAS.scal!, n, randn(rng, P), randn(rng, P, n * incx), incx)
         end,
 
-        # dotc, dotu — complex only, and forward primitives only, so `skip_reverse`. The derived
-        # rows below cover reverse. These exist for what a derived row cannot check: widths 2-3 (a
-        # derived case never runs them) and `:stability`, which is what catches a boxed lane
-        # accumulator in the block fast path. The strided second operand takes the per-lane BLAS
-        # fallback rather than the block loop.
+        # Forward primitives; derived rows cover reverse. Keep the direct chunk-width
+        # sweep and stability checks for boxed block accumulators; and the strided operand exercises the per-lane fallback.
         (
             if P <: BlasRealFloat
                 []
@@ -3285,10 +3103,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
             end
         end...,
 
-        # gemv! with a zero-length `x`. BLAS takes its quick return there and never applies `β`, so
-        # a rule that folds `β` in by hand must skip it too: with `β` applied unconditionally the
-        # tangent came back scaled while the primal `y` was left untouched. The `M`/`N` product
-        # above never reaches a zero dimension.
+        # Zero-length x quick-returns without β scaling; the size sweep above is nonempty.
         map(βs) do β
             P <: BlasRealFloat && imag(β) != 0 && return []
             return [(
@@ -3345,12 +3160,9 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
     # BLAS LEVEL 3
     #
 
-    # `α` with `β`, and `dα` with `dβ`, are PAIRED rather than crossed. Both rules branch on the
-    # scalars in only four ways each: the `α == 1 && β == 0` fast path, `α == 0` (where the
-    # reference spec lets `gemm!` skip `A`, so the primal has to come from the routine), and
-    # otherwise whether `β` is zero; in the tangents, only whether each of `dα`, `dβ` is zero.
-    # Crossing the four axes costs 81 rows per flag combination to reach 16 distinct branches.
-    # The complex entries carry a nonzero imaginary part, without which a dropped `conj` passes.
+    # Pair scalar seeds rather than crossing them: preserve α==1 && β==0, α==0,
+    # and β zero/nonzero branches, plus every dα/dβ zero combination. Nonzero
+    # imaginary parts catch missing conjugation in complex rules.
     αβs = if P <: BlasComplexFloat
         [(1.0, 0.0), (0.0, 0.33), (0.46 + 0.32im, 0.0), (0.46 + 0.32im, 0.39 + 0.27im)]
     else
@@ -3827,19 +3639,12 @@ function derived_rule_test_cases(rng_ctor, ::Val{:blas_basic})
 end
 
 function _blas_throwing_rows(P::Type{<:BlasFloat})
-    # What has no step: the operand's stride does NOT divide `incx`, so BLAS walks memory the
-    # operand does not address. Stride 2 with `incx == 1` reads `w[1:5]` where the view holds the
-    # odd entries. The divisible cases (`incx == 2` here, and the one-argument form, which passes
-    # `incx = stride`) are supported and registered as working cases instead.
+    # Nondivisible stride: BLAS walks elements outside the view. Divisible strides
+    # and nrm2's one-argument form are covered as working cases.
     x = view(P[i for i in 1:10], 1:2:10)
-    # A >=2-D operand with unit FIRST-dim stride but a non-dense layout: `strides` is `(1, 5)` where
-    # a dense `(3, 2)` has `(1, 3)`, so logical index 4 is raw offset 6. No single step describes
-    # that walk, and the old first-dim-stride test admitted it and scaled the wrong elements.
+    # Unit first-dimension stride but non-dense: logical index 4 is raw offset 6.
     m = view(reshape(P[i for i in 1:25], 5, 5), 1:3, 1:2)
-    # Both modes; the two messages share this substring.
-    # A walk that leaves the parent as well as the view: widening has nothing to widen to, so this
-    # is still refused. A walk that stays inside the parent is supported and registered as a working
-    # case instead.
+    # Widening cannot support a walk that also leaves the parent.
     short = view(P[i for i in 1:40], 36:39)
     cases = Any[
         ((ArgumentError, "does not support operand"), BLAS.scal!, (5, P(2), x, 1), (;)),
@@ -3868,10 +3673,8 @@ function _blas_throwing_rows(P::Type{<:BlasFloat})
              (f, opts) in two_operand)...,
         ],
     )
-    # BLAS walking past the operand AND past its parent: the `dotc`/`dotu` block path read the
-    # partials block out of bounds there, returning uninitialised heap. COMPLEX only -- real `dot`
-    # takes a different forward path that indexes nothing out of range, measured. FORWARD only --
-    # reverse works from the tangent pointer and has no operand length to check.
+    # Complex forward dot must reject walks past the parent. Real dot takes a
+    # different path; reverse uses tangent pointers with no operand length to check.
     P <: Complex && append!(
         cases,
         Any[

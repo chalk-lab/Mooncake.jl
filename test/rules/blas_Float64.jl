@@ -59,9 +59,7 @@
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:blas_basic))
 
-    # Regression: gemm!'s frule!!/rrule!! only cover a matrix C, so the @is_primitive C slot
-    # must be AbstractMatrix (not AbstractVecOrMat) to stay in lockstep with the rule methods — a
-    # vector-C gemm! must NOT be declared primitive (else a MethodError instead of a clean fallback).
+    # Primitive C coverage must match the matrix-only rules; vector C needs fallback.
     @testset "gemm! is_primitive C-slot lockstep" begin
         w = Base.get_world_counter()
         gemm = typeof(BLAS.gemm!)
@@ -77,11 +75,8 @@
         end
     end
 
-    # Regression: an empty `dot` must give EXACTLY zero lane partials. `gemv` returns early on an
-    # empty operand without applying `beta`, so the frule's output buffer used to keep whatever the
-    # allocator handed back. The registered `n = 0` case cannot pin this: the garbage is typically
-    # denormal (~1e-310), so it passes a finite-difference comparison against zero. Only an exact
-    # check catches it, hence a bespoke assertion rather than a registry entry.
+    # Empty gemv skips β scaling; uninitialised dot lanes can be denormal garbage
+    # that passes finite differences. Pin exact zero with bespoke assertions.
     @testset "empty dot gives exactly-zero partials: width $Nw" for Nw in (1, 2, 3)
         o = Mooncake.frule!!(
             Mooncake.zero_lifted(Val(Nw), dot),
@@ -92,11 +87,8 @@
         @test all(k -> tangent(o, k) === 0.0, 1:Nw)
     end
 
-    # Regression: BLAS's strong zeros. `β == 0` leaves the destination unreferenced and `α == 0`
-    # leaves `A`/`B` unreferenced, so either may legally hold NaN. Recomputing the primal as
-    # `α*tmp + β*C` (reverse) or solving unconditionally then scaling by `α` (forward `trsm!`) made
-    # `0*NaN` a NaN RESULT, not merely a NaN derivative. A finite-difference comparison cannot
-    # express a NaN operand, so these are bespoke exact checks.
+    # Strong zeros permit NaN in unreferenced operands. Finite differences cannot
+    # express these inputs, so check the primal exactly against its BLAS semantics.
     @testset "BLAS strong zeros with a NaN operand" begin
         A = randn(StableRNG(3), 3, 3)
         B = randn(StableRNG(4), 3, 3)
@@ -141,10 +133,8 @@
         )[1]
         @test all(iszero, primal(o))
 
-        # The beta GRADIENT, not just the primal: `dβ = Σ conj(Cᵢ)·dCᵢ` contracted the whole of
-        # `C`, so one `NaN` in an entry the selected output does not depend on poisoned it, while
-        # forward returned the right number. Not a registry case: `test_rule`'s finite-difference
-        # oracle perturbs every entry, the NaN one included, so the oracle itself returns NaN.
+        # Ignore NaN outside the selected output. The finite-difference oracle
+        # perturbs every entry (including NaN), so these need bespoke checks.
         @testset "beta gradient ignores a NaN in an unused entry" begin
             xx = randn(StableRNG(5), 3)
             ynan = [NaN, 1.0, 2.0]
@@ -165,8 +155,7 @@
             ) == Cnan[2, 2]
         end
 
-        # The alpha gradient has the same shape: a `NaN` confined to row 1 of a factor leaves the
-        # selected output finite, but `dα` contracted the whole product and returned `NaN`.
+        # NaN outside the selected output must not poison the scalar α gradient.
         @testset "alpha gradient ignores a NaN outside the selected output" begin
             Mn = [NaN 0.0 0.0; 1.0 2.0 3.0; 4.0 5.0 6.0]
             v3 = randn(StableRNG(6), 3)
@@ -184,10 +173,8 @@
             @test grad(a -> (z=[NaN, 2.0, 3.0]; BLAS.scal!(3, a, z, 1); z[2]), 2.0) == 2.0
         end
 
-        # `trmm!`/`trsm!` complete the alpha family: their `∇α` contracted the whole of `B`, so a
-        # `NaN` in a column the selected output does not depend on poisoned it. Locals, not the
-        # `A`/`B` above, because a captured const global's tangent accumulates across
-        # differentiations and would make the second assertion here depend on the first.
+        # Cover NaN in unused columns for triangular α gradients. Keep operands
+        # local to avoid sharing a captured global's tangent between differentiations.
         @testset "trmm!/trsm! alpha gradient ignores a NaN in an unused column" begin
             At = [2.0 1.0 1.0; 0.0 3.0 1.0; 0.0 0.0 4.0]
             Bt = [1.0 NaN 2.0; 3.0 NaN 4.0; 5.0 NaN 6.0]
@@ -220,10 +207,8 @@
             @test all(k -> all(iszero, tangent(r, k)), 1:Nw)
         end
 
-        # The early return above requires EVERY dα lane to be zero. A seeded dα takes the solve
-        # path, which legitimately reads `A` for the derivative — but the primal at `α == 0` is
-        # still BLAS's zero fill, and rebuilding it as `α*X` turned the NaN in `A` into a NaN
-        # PRIMAL. Same reason as above for it being a bespoke check.
+        # Seeded dα needs the solve, but the α == 0 primal must still be zero
+        # even when the solve reads NaN from A.
         @testset "trsm! α=0 with a seeded dα: width $Nw" for Nw in (1, 2, 3)
             r = Mooncake.frule!!(
                 Mooncake.zero_lifted(Val(Nw), BLAS.trsm!),
@@ -239,9 +224,7 @@
         end
     end
 
-    # Regression: the syrk!/herk! frule's `dβ*C` term must mask NaN input-C elements (the β==0
-    # convention lets the caller pass an uninitialised/NaN C, overwritten by the primal), matching the
-    # sibling level-3 frules. Unguarded `dβ .* triu(C)` leaked NaN into the tangent.
+    # At β=0, C may be uninitialised/NaN; the dβ*C term must mask NaN entries.
     @testset "syrk! dβ*C NaN-C guard at β=0" begin
         A = randn(StableRNG(1), 3, 2)
         # NaN input C, β=0, dβ=1: the output tangent's upper triangle must be NaN-free.
@@ -277,11 +260,8 @@ end
 end
 
 @testset "gemm! reproduces its own primal at the alpha/beta zeros" begin
-    # OpenBLAS multiplies even at `alpha == 0`, though the reference spec permits skipping `A`,
-    # so a rule emulating the skip returns a different value than the routine it differentiates.
-    # Compared against `BLAS.gemm!` on the RUNNING build rather than a hardcoded NaN, since a
-    # build that does skip is equally valid. Not a `test_rule` case: the harness is not NaN-safe
-    # -- four of its checks fail on NaN operands whatever the rule does.
+    # Builds may multiply or skip A at α=0: compare with the running BLAS.
+    # The registry's finite-difference harness cannot handle NaN operands.
     Anan = [NaN 0.0; 0.0 0.0]
     I2 = [1.0 0.0; 0.0 1.0]
     C0 = [1.0 2.0; 3.0 4.0]
@@ -294,11 +274,8 @@ end
         I2,
     )[1]
     @test isequal(got, alpha_zero(copy(C0), Anan, I2))
-    # `beta == 0` keeps BLAS's strong zero the other way: a NaN in a `C` BLAS never reads must
-    # not leak in through `0 * NaN`.
-    # DISTINCT `A` and `B`: one object at both positions is a repeated mutable argument, which a
-    # prepared cache refuses, so the assertion would measure that refusal instead of the `beta`
-    # semantics it is here for.
+    # β=0 must ignore NaN in C. Keep A/B distinct to isolate β semantics from
+    # repeated-mutable-argument handling in the prepared cache.
     Cnan = [NaN 0.0; 0.0 0.0]
     Aone = [1.0 0.0; 0.0 1.0]
     Bone = [1.0 0.0; 0.0 1.0]
