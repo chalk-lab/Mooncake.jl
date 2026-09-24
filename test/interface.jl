@@ -1717,36 +1717,24 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             @test Mooncake.value_and_gradient!!(tuple_cache_grad_fwd, f_tuple, tuple_x) ==
                 (x^2 + sin(y), (Mooncake.NoTangent(), (2 * x, cos(y))))
 
-            # A differentiable `Ref` within a multi-dimension gradient input forces the chunked
-            # `basis_lifted!!` seeding path (2 dimensions at chunk_size=2); `_basis_seed!!` had no
-            # `NDualRef` method, so this threw a MethodError. Forward must match the reverse
-            # oracle (the `Ref`'s cotangent is a `MutableTangent`).
-            g_ref = t -> t[1][]^2 + sin(t[2])
-            ref_fwd = Mooncake.prepare_derivative_cache(
-                g_ref, (Ref(x), y); config=Mooncake.Config(; chunk_size=2, kwargs...)
+            # Ref seeds use the generic chunked path; complex Refs consume two dimensions.
+            for (ref_f, ref_x) in (
+                (t -> t[1][]^2 + sin(t[2]), (Ref(x), y)),
+                (t -> abs2(t[1][]) + sin(t[2]), (Ref(ComplexF64(x, y)), y)),
             )
-            ref_rev = Mooncake.prepare_gradient_cache(g_ref, (Ref(x), y))
-            yf_ref, gf_ref = Mooncake.value_and_gradient!!(ref_fwd, g_ref, (Ref(x), y))
-            yr_ref, gr_ref = Mooncake.value_and_gradient!!(ref_rev, g_ref, (Ref(x), y))
-            @test yf_ref == yr_ref
-            @test TestUtils.has_equal_data(gf_ref, gr_ref)
-
-            # Complex `Ref` exercises the distinct complex `NDualRef` `_basis_seed!!` (two cursor
-            # steps per dimension: real then imag).
-            g_cref = t -> abs2(t[1][]) + sin(t[2])
-            cref0 = ComplexF64(x, y)
-            cref_fwd = Mooncake.prepare_derivative_cache(
-                g_cref, (Ref(cref0), y); config=Mooncake.Config(; chunk_size=2, kwargs...)
-            )
-            cref_rev = Mooncake.prepare_gradient_cache(g_cref, (Ref(cref0), y))
-            yf_cref, gf_cref = Mooncake.value_and_gradient!!(
-                cref_fwd, g_cref, (Ref(cref0), y)
-            )
-            yr_cref, gr_cref = Mooncake.value_and_gradient!!(
-                cref_rev, g_cref, (Ref(cref0), y)
-            )
-            @test yf_cref == yr_cref
-            @test TestUtils.has_equal_data(gf_cref, gr_cref)
+                ref_fwd = Mooncake.prepare_derivative_cache(
+                    ref_f, ref_x; config=Mooncake.Config(; chunk_size=2, kwargs...)
+                )
+                ref_rev = Mooncake.prepare_gradient_cache(ref_f, ref_x)
+                yf_ref, gf_ref = Mooncake.value_and_gradient!!(
+                    ref_fwd, ref_f, deepcopy(ref_x)
+                )
+                yr_ref, gr_ref = Mooncake.value_and_gradient!!(
+                    ref_rev, ref_f, deepcopy(ref_x)
+                )
+                @test yf_ref == yr_ref
+                @test TestUtils.has_equal_data(gf_ref, gr_ref)
+            end
 
             h = (sp::SimplePair) -> sp.x1^2 + sin(sp.x2)
             sp = SimplePair(x, y)
@@ -1992,115 +1980,58 @@ _ndual_prepare_side_effect(x) = (NFWD_PREPARE_COUNTER[] += 1; x^2 + one(x))
             )
             check_allocs && @test scalar_allocs == 0
 
-            scalar_f = CountedChunkScalarCall()
-            scalar_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                scalar_f,
-                x,
-                y;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-            )
-            CHUNK_SCALAR_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(scalar_cache_grad_fwd, scalar_f, x, y) ==
-                (z, (Mooncake.NoTangent(), y - sin(x), x))
-            @test CHUNK_SCALAR_EVAL_COUNT[] == 1
-
-            scalar_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                scalar_f,
-                x,
-                y;
-                config=Mooncake.Config(;
-                    debug_mode=false, friendly_tangents=false, chunk_size=1
-                ),
-            )
-            CHUNK_SCALAR_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(
-                scalar_cache_grad_fwd_chunked, scalar_f, x, y
-            ) == (z, (Mooncake.NoTangent(), y - sin(x), x))
-            @test CHUNK_SCALAR_EVAL_COUNT[] == 2
-
-            array_f = CountedChunkArrayCall()
+            # Keep the width-1, automatic-width, singleton and friendly cases distinct.
             x_arr = [x, y]
-            array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                array_f,
-                x_arr;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-            )
-            CHUNK_ARRAY_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(array_cache_grad_fwd, array_f, x_arr) ==
-                (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-            check_allocs && @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!, array_cache_grad_fwd, array_f, x_arr
-            ) == 0
-
-            array_cache_grad_fwd_chunked = Mooncake.prepare_derivative_cache(
-                array_f,
-                x_arr;
-                config=Mooncake.Config(;
-                    debug_mode=false, friendly_tangents=false, chunk_size=1
-                ),
-            )
-            CHUNK_ARRAY_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(
-                array_cache_grad_fwd_chunked, array_f, x_arr
-            ) == (sum(abs2, x_arr), (Mooncake.NoTangent(), 2 .* x_arr))
-            @test CHUNK_ARRAY_EVAL_COUNT[] == 2
-
             singleton_x_arr = [x]
-            singleton_array_cache_grad_fwd = Mooncake.prepare_derivative_cache(
-                array_f,
-                singleton_x_arr;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+            for (args, chunk_size, friendly, calls, allocs) in (
+                ((x, y), nothing, false, 1, false),
+                ((x, y), 1, false, 2, false),
+                ((x_arr,), nothing, false, 1, true),
+                ((x_arr,), 1, false, 2, false),
+                ((singleton_x_arr,), nothing, false, 1, true),
+                ((singleton_x_arr,), nothing, true, 1, false),
             )
-            CHUNK_ARRAY_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(
-                singleton_array_cache_grad_fwd, array_f, singleton_x_arr
-            ) == (sum(abs2, singleton_x_arr), (Mooncake.NoTangent(), 2 .* singleton_x_arr))
-            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-            check_allocs && @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!,
-                singleton_array_cache_grad_fwd,
-                array_f,
-                singleton_x_arr,
-            ) == 0
+                scalar = first(args) isa Number
+                cf = scalar ? CountedChunkScalarCall() : CountedChunkArrayCall()
+                counter = scalar ? CHUNK_SCALAR_EVAL_COUNT : CHUNK_ARRAY_EVAL_COUNT
+                expected = if scalar
+                    (z, (Mooncake.NoTangent(), y - sin(x), x))
+                else
+                    a = only(args)
+                    (sum(abs2, a), (friendly ? cf : Mooncake.NoTangent(), 2 .* a))
+                end
+                counted_cache = Mooncake.prepare_derivative_cache(
+                    cf,
+                    args...;
+                    config=Mooncake.Config(;
+                        debug_mode=false, friendly_tangents=friendly, chunk_size
+                    ),
+                )
+                counter[] = 0
+                @test Mooncake.value_and_gradient!!(counted_cache, cf, args...) == expected
+                @test counter[] == calls
+                check_allocs &&
+                    allocs &&
+                    @test TestUtils.count_allocs(
+                        Mooncake.value_and_gradient!!, counted_cache, cf, args...
+                    ) == 0
+            end
 
-            singleton_array_cache_grad_fwd_friendly = Mooncake.prepare_derivative_cache(
-                array_f,
-                singleton_x_arr;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=true),
-            )
-            CHUNK_ARRAY_EVAL_COUNT[] = 0
-            @test Mooncake.value_and_gradient!!(
-                singleton_array_cache_grad_fwd_friendly, array_f, singleton_x_arr
-            ) == (sum(abs2, singleton_x_arr), (array_f, 2 .* singleton_x_arr))
-            @test CHUNK_ARRAY_EVAL_COUNT[] == 1
-
-            # Regression: _check_prepared_cache must not allocate.
-            # length-5 vector: a single full-width (chunk_size=5) native chunk pass.
-            x5 = collect(1.0:5.0)
-            f5 = x -> sum(abs2, x)
-            cache_5 = Mooncake.prepare_derivative_cache(
-                f5, x5; config=Mooncake.Config(; debug_mode=false, friendly_tangents=false)
-            )
-            @test Mooncake.value_and_gradient!!(cache_5, f5, x5) ==
-                (sum(abs2, x5), (Mooncake.NoTangent(), 2 .* x5))
-            check_allocs && @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!, cache_5, f5, x5
-            ) == 0
-
-            # length-10 vector: dimension > max chunk width (8), so two chunks (8 + 2).
-            x10 = collect(1.0:10.0)
-            f10 = x -> sum(abs2, x)
-            cache_10 = Mooncake.prepare_derivative_cache(
-                f10,
-                x10;
-                config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
-            )
-            @test Mooncake.value_and_gradient!!(cache_10, f10, x10) ==
-                (sum(abs2, x10), (Mooncake.NoTangent(), 2 .* x10))
-            check_allocs && @test TestUtils.count_allocs(
-                Mooncake.value_and_gradient!!, cache_10, f10, x10
-            ) == 0
+            # Full and partial final chunks must both validate and run without allocation.
+            for n in (5, 10)
+                xn = collect(1.0:n)
+                fn = x -> sum(abs2, x)
+                cn = Mooncake.prepare_derivative_cache(
+                    fn,
+                    xn;
+                    config=Mooncake.Config(; debug_mode=false, friendly_tangents=false),
+                )
+                @test Mooncake.value_and_gradient!!(cn, fn, xn) ==
+                    (sum(abs2, xn), (Mooncake.NoTangent(), 2 .* xn))
+                check_allocs && @test TestUtils.count_allocs(
+                    Mooncake.value_and_gradient!!, cn, fn, xn
+                ) == 0
+            end
 
             # Non-packable inputs (here a NamedTuple) also chunk through the generic
             # chunked gradient path: multi-dimension builds a native chunk rule and the
