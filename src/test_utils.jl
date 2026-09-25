@@ -557,7 +557,7 @@ function test_frule_correctness(
 )
     @nospecialize rng x_ẋ
 
-    x_ẋ = _deepcopy_all(x_ẋ) # defensive copy
+    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
@@ -656,7 +656,7 @@ function test_rrule_correctness(
 )
     @nospecialize rng x_x̄
 
-    x_x̄ = _deepcopy_all(x_x̄) # defensive copy
+    x_x̄ = map(_deepcopy, x_x̄) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_x̄)
