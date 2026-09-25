@@ -25,6 +25,7 @@ end
     @testset "tangent interface" begin
         rng = sr(123)
         test_tangent_interface(rng, P(1.5))
+        test_tangent_interface(rng, (P(1.5), P(2.0)))
         test_tangent_splitting(rng, P(1.5))
     end
 
