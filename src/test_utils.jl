@@ -557,7 +557,7 @@ function test_frule_correctness(
 )
     @nospecialize rng x_ẋ
 
-    x_ẋ = map(_deepcopy, x_ẋ) # defensive copy
+    x_ẋ = _deepcopy_all(x_ẋ) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_ẋ)
@@ -656,7 +656,7 @@ function test_rrule_correctness(
 )
     @nospecialize rng x_x̄
 
-    x_x̄ = map(_deepcopy, x_x̄) # defensive copy
+    x_x̄ = _deepcopy_all(x_x̄) # defensive copy
 
     # Run original function on deep-copies of inputs.
     x = map(primal, x_x̄)
@@ -758,13 +758,19 @@ get_address(x) = ismutable(x) ? pointer_from_objref(x) : nothing
 
 _deepcopy(x) = deepcopy(x)
 _deepcopy(x::Module) = x
+_deepcopy(x, d::IdDict) = Base.deepcopy_internal(x, d)
+_deepcopy(x::Module, ::IdDict) = x
+
+# Share one copy cache to preserve aliases without merging distinct objects.
+# Tuple-level deepcopy would lose the Module carve-out.
+_deepcopy_all(t::Tuple) = (d=IdDict(); map(x -> _deepcopy(x, d), t))
 
 rrule_output_type(::Type{Ty}) where {Ty} = Tuple{Mooncake.fcodual_type(Ty),Any}
 
 function test_frule_reuse(x_ẋ...; frule)
     @nospecialize x_ẋ
-    x_ẋ_a = map(_deepcopy, x_ẋ)
-    x_ẋ_b = map(_deepcopy, x_ẋ)
+    x_ẋ_a = _deepcopy_all(x_ẋ)
+    x_ẋ_b = _deepcopy_all(x_ẋ)
 
     # Snapshot every observable at the same point in each cycle. Without snapshots,
     # an aliased mutable buffer would let call B overwrite call A's data; snapshotting
@@ -843,7 +849,7 @@ function test_frule_interface(x_ẋ...; frule)
     @nospecialize x_ẋ
 
     # Pull out primals and run primal computation.
-    x_ẋ = map(_deepcopy, x_ẋ)
+    x_ẋ = _deepcopy_all(x_ẋ)
     x = map(primal, x_ẋ)
 
     # Run the primal programme. Bail out early if this doesn't work.
@@ -880,7 +886,7 @@ function test_rrule_interface(f_f̄, x_x̄...; rrule)
     # Pull out primals and run primal computation.
     f = primal(f_f̄)
     f̄ = tangent(f_f̄)
-    x_x̄ = map(_deepcopy, x_x̄)
+    x_x̄ = _deepcopy_all(x_x̄)
     x = map(primal, x_x̄)
     x̄ = map(tangent, x_x̄)
 
