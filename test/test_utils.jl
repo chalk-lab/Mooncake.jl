@@ -1,6 +1,14 @@
 @testset "test_utils" begin
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
+        # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s
+        # `rtol`, so a fixed relative error used to pass at 1e5 and fail at 1e6.
+        @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
+        @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
+        # `exact_floats` drops the tolerance, and reaches the leaves through the structural
+        # recursion rather than only the top level.
+        @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
+        @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
         @test has_equal_data(5.0, 5.0)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
