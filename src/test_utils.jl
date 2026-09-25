@@ -88,6 +88,13 @@ interfaces that this package defines have been implemented correctly.
 module TestUtils
 
 using Random, Mooncake, Test
+using LinearAlgebra:
+    Hermitian,
+    LowerTriangular,
+    Symmetric,
+    UnitLowerTriangular,
+    UnitUpperTriangular,
+    UpperTriangular
 using Mooncake:
     CoDual,
     NoTangent,
@@ -189,19 +196,51 @@ function report_opt(tt)
 end
 report_opt_internal(::Any, tt) = throw(error("Load JET to use this function."))
 
-"""
-    has_equal_data(x, y; equal_undefs=true)
+# Options travel in `visited` to preserve the four-argument extension interface.
+# A fifth argument would lose the option below extension-defined nodes.
+# Singleton option keys cannot collide with visited `(x, y)` pairs.
+struct ExactFloats end
 
-Determine if two objects `x` and `y` have equivalent data. If `equal_undefs` 
-is `true`, undefined elements in arrays or unassigned fields in structs are 
-considered equal.
+# Only precision narrower than a leaf loosens its tolerance, so
+# `_float_tolerance` only needs to check Float16 and Float32.
+struct FloatPrecision{P} end
+
+"""
+    has_equal_data(x, y; equal_undefs=true, exact_floats=false, float_precision=Float64)
+
+Determine if two objects `x` and `y` have equivalent data. If `equal_undefs`
+is `true`, undefined elements in arrays or unassigned fields in structs are
+considered equal. If `exact_floats` is `true`, floats compare by `isequal` rather than within
+the default tolerance -- use it for structural questions, where a tolerance calibrated for
+comparing computed derivatives is a false positive.
+
+`float_precision` names the precision the values were *computed* in, where that is narrower than
+their own type: a `Float32` reduction feeding a `Float64` result agrees only to `Float32` eps,
+whatever the result's type says, so two implementations free to reduce in different orders differ
+by more than the default tolerance allows. Floats then compare at the looser of the two.
 
 The main logic is implemented in `has_equal_data_internal`, which is a recursive function
 that takes an additional `visited` dictionary to track visited objects and avoid infinite
 recursion in cases of circular references.
 """
-function has_equal_data(x, y; equal_undefs=true)
-    return has_equal_data_internal(x, y, equal_undefs, IdDict{Any,Bool}())
+function has_equal_data(
+    x, y; equal_undefs=true, exact_floats=false, float_precision=Float64
+)
+    float_precision in (Float16, Float32, Float64) || throw(
+        ArgumentError(
+            "float_precision must be Float16, Float32 or Float64, got $float_precision"
+        ),
+    )
+    visited = IdDict{Any,Bool}()
+    exact_floats && (visited[ExactFloats()] = true)
+    float_precision === Float64 || (visited[FloatPrecision{float_precision}()] = true)
+    return has_equal_data_internal(x, y, equal_undefs, visited)
+end
+
+function _float_tolerance(::Type{P}, d::IdDict{Any,Bool}) where {P<:Base.IEEEFloat}
+    haskey(d, FloatPrecision{Float16}()) && return max(√eps(P), √eps(Float16))
+    haskey(d, FloatPrecision{Float32}()) && return max(√eps(P), √eps(Float32))
+    return √eps(P)
 end
 
 function has_equal_data_internal(x::Type, y::Type, equal_undefs::Bool, d::IdDict{Any,Bool})
@@ -220,8 +259,10 @@ end
 function has_equal_data_internal(
     x::P, y::P, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {P<:Base.IEEEFloat}
-    # Pass an atol such that we can compare approximately against 0 values.
-    return isapprox(x, y; atol=(√eps(P)), nans=true)
+    haskey(d, ExactFloats()) && return isequal(x, y)
+    # Passing `atol` alone defaults `rtol` to zero, making strictness magnitude-dependent.
+    tol = _float_tolerance(P, d)
+    return isapprox(x, y; atol=tol, rtol=tol, nans=true)
 end
 function has_equal_data_internal(
     x::Module, y::Module, equal_undefs::Bool, d::IdDict{Any,Bool}
@@ -278,6 +319,28 @@ function has_equal_data_internal(
     x::T, y::T, equal_undefs::Bool, d::IdDict{Any,Bool}
 ) where {T<:Core.SimpleVector}
     return all(map((a, b) -> has_equal_data_internal(a, b, equal_undefs, d), x, y))
+end
+
+# Compare logical entries: unread backing entries may be uninitialised
+# (e.g. the unused triangle from `kron(Symmetric, Symmetric)`).
+# Recurse rather than use `==`, so NaNs still compare equal. Forward tangents of these
+# wrappers are snapshotted through the same visible entries (`_snapshot_forward_tangent`).
+for T in (
+    :Symmetric,
+    :Hermitian,
+    :UpperTriangular,
+    :LowerTriangular,
+    :UnitUpperTriangular,
+    :UnitLowerTriangular,
+)
+    @eval function has_equal_data_internal(
+        x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
+    )
+        size(x) == size(y) || return false
+        return all(
+            has_equal_data_internal(x[i], y[i], equal_undefs, d) for i in eachindex(x, y)
+        )
+    end
 end
 
 # `Method`, `CodeInstance` and `MethodInstance` reference one another, so field descent
