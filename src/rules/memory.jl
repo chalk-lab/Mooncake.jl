@@ -631,9 +631,7 @@ end
     function rrule!!(
         ::CoDual{typeof(Core.memorynew)}, ::CoDual{Type{Memory{P}}}, n::CoDual{Int}
     ) where {P}
-        x = Core.memorynew(Memory{P}, primal(n))
-        dx = Core.memorynew(Memory{tangent_type(P)}, primal(n))
-        return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
+        return rrule!!(zero_fcodual(Memory{P}), zero_fcodual(undef), n)
     end
 end
 
@@ -646,6 +644,7 @@ function rrule!!(
     ::CoDual{Type{Memory{P}}}, ::CoDual{UndefInitializer}, n::CoDual{Int}
 ) where {P}
     x = Memory{P}(undef, primal(n))
+    # Fresh tangents must be zero even when the primal allocation contains stale data.
     dx = zero_tangent_internal(x, NoCache())
     return CoDual(x, dx), NoPullback((NoRData(), NoRData(), NoRData()))
 end
