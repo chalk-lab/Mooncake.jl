@@ -31,6 +31,21 @@ foo_throws(e) = throw(e)
 
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
+    # `b^2` under/overflows Float32 while `a / b` and its derivatives are finite.
+    @testset "div_float derivatives at extreme magnitudes: $f, $b" for f in (
+            IntrinsicsWrappers.div_float, IntrinsicsWrappers.div_float_fast
+        ),
+        b in (1.0f-30, 1.0f30)
+
+        a = 2b
+        dual = Mooncake.frule!!(Dual(f, NoTangent()), Dual(a, 1.0f0), Dual(b, 1.0f0))
+        @test tangent(dual) ≈ (1 - 2) / b
+        _, pullback = Mooncake.rrule!!(zero_fcodual(f), zero_fcodual(a), zero_fcodual(b))
+        _, da, db = pullback(1.0f0)
+        @test da ≈ 1 / b
+        @test db ≈ -2 / b
+    end
+
     # Unhandled built-in throws an intelligible error.
     @test_throws(
         Mooncake.MissingRuleForBuiltinException,
