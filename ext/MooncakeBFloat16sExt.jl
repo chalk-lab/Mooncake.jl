@@ -45,6 +45,9 @@ import Mooncake:
 
 const P = Core.BFloat16
 
+# Transitional: keep Float64 conversions scalar on LLVM 16 until the Lifted migration.
+@noinline _scalar_float64(x::Union{P,Float32}) = Float64(x)
+
 # zero(P) calls P(0), which requires BFloat16s.jl to define convert(Core.BFloat16, ::Int).
 # These therefore live here rather than in src/rules/bfloat16.jl.
 zero_tangent_internal(::P, ::MaybeCache) = zero(P)
@@ -55,7 +58,7 @@ increment_internal!!(::IncCache, x::P, y::P) = x + y
 
 set_to_zero_internal!!(::SetToZeroCache, ::P) = zero(P)
 
-_scale_internal(::MaybeCache, a::Float64, t::P) = P(a * Float64(t))
+_scale_internal(::MaybeCache, a::Float64, t::P) = P(a * _scalar_float64(t))
 
 # Must return Float64: _dot_internal is always accumulated into a Float64 scalar.
 # `@noinline` is load-bearing on Julia 1.11: the caller maps this over a tangent tuple, and LLVM 16
@@ -92,11 +95,11 @@ end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{Float64},P}
 function Mooncake.frule!!(::Dual{Type{Float64}}, x::Dual{P})
-    return Dual(Float64(primal(x)), Float64(tangent(x)))
+    return Dual(_scalar_float64(primal(x)), _scalar_float64(tangent(x)))
 end
 function Mooncake.rrule!!(::CoDual{Type{Float64}}, x::CoDual{P})
     pb(dy::Float64) = NoRData(), P(Float32(dy))
-    return zero_fcodual(Float64(primal(x))), pb
+    return zero_fcodual(_scalar_float64(primal(x))), pb
 end
 
 Mooncake.@is_primitive MinimalCtx Tuple{Type{P},Float32}
@@ -113,7 +116,7 @@ function Mooncake.frule!!(::Dual{Type{P}}, x::Dual{Float64})
     return Dual(P(Float32(primal(x))), P(Float32(tangent(x))))
 end
 function Mooncake.rrule!!(::CoDual{Type{P}}, x::CoDual{Float64})
-    pb(dy::P) = NoRData(), Float64(Float32(dy))
+    pb(dy::P) = NoRData(), _scalar_float64(Float32(dy))
     return zero_fcodual(P(Float32(primal(x)))), pb
 end
 
