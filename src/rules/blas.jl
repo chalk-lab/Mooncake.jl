@@ -282,6 +282,23 @@ end
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.set_num_threads),Union{Integer,Nothing}}
 @zero_derivative MinimalCtx Tuple{typeof(BLAS.lbt_set_num_threads),Any}
 
+# These rules require an output disjoint from their read-only operands. BLAS
+# may overwrite a later read, and shared partials/cotangents have the same hazard.
+# Supporting overlap would require snapshot semantics in both the primal and AD;
+# reject it at the boundary until the underlying operation guarantees those semantics.
+@inline function _check_blas_output_alias(f, output, inputs...)
+    any(input -> Base.mightalias(output, input), inputs) && _throw_blas_output_alias(f)
+    return nothing
+end
+@noinline function _throw_blas_output_alias(f)
+    throw(
+        ArgumentError(
+            "Mooncake cannot differentiate $(nameof(f)) with overlapping input and output operands. " *
+            "Pass a copy of the input or use an elementwise Julia update.",
+        ),
+    )
+end
+
 #
 # LEVEL 1
 #
@@ -630,6 +647,7 @@ end
     beta::Dual{P},
     y_dy::Dual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemv!, primal(y_dy), primal(A_dA), primal(x_dx))
     A, dA = matrixify(A_dA)
     x, dx = arrayify(x_dx)
     y, dy = arrayify(y_dy)
@@ -681,6 +699,7 @@ end
     _beta::CoDual{P},
     _y::CoDual{<:AbstractVector{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemv!, primal(_y), primal(_A), primal(_x))
 
     # Pull out primals and tangents (the latter only where necessary).
     trans = _lsame_flag(primal(_tA))
@@ -781,6 +800,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         beta::Dual{T},
         y_dy::Dual{<:AbstractVector{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
         # Extract primals.
         ul = primal(uplo)
         α, dα = extract(alpha)
@@ -815,6 +835,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         beta::CoDual{T},
         y_dy::CoDual{<:AbstractVector{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
 
         # Extract primals.
         ul = _lsame_flag(primal(uplo))
@@ -896,6 +917,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{T}},
     x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
     # Extract primals.
     uplo = primal(_uplo)
     trans = primal(_trans)
@@ -926,6 +948,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
 
     # Extract primals.
     uplo = _lsame_flag(primal(_uplo))
@@ -1006,6 +1029,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{T}},
     x_dx::Dual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
     uplo = primal(_uplo)
     trans = primal(_trans)
     diag = primal(_diag)
@@ -1033,6 +1057,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{T}},
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
     uplo = _lsame_flag(primal(_uplo))
     trans = _lsame_flag(primal(_trans))
     diag = _lsame_flag(primal(_diag))
@@ -1113,6 +1138,7 @@ end
     beta::Dual{T},
     C_dC::Dual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemm!, primal(C_dC), primal(A_dA), primal(B_dB))
     tA = primal(transA)
     tB = primal(transB)
     α, dα = extract(alpha)
@@ -1152,6 +1178,7 @@ end
     beta::CoDual{T},
     C::CoDual{<:AbstractMatrix{T}},
 ) where {T<:BlasFloat}
+    _check_blas_output_alias(BLAS.gemm!, primal(C), primal(A), primal(B))
     tA = _lsame_flag(primal(transA))
     tB = _lsame_flag(primal(transB))
     a = primal(alpha)
@@ -1266,6 +1293,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         beta::Dual{T},
         C_dC::Dual{<:AbstractMatrix{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
 
         # Extract primals.
         s = primal(side)
@@ -1302,6 +1330,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         beta::CoDual{T},
         C_dC::CoDual{<:AbstractMatrix{T}},
     ) where {T<:$elty}
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
 
         # Extract primals.
         s = _lsame_flag(primal(side))
@@ -1400,6 +1429,7 @@ for (fname, elty, relty) in (
         β_dβ::Dual{$relty},
         C_dC::Dual{<:AbstractMatrix{$elty}},
     )
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
 
         # Extract values from pairs.
         uplo = primal(_uplo)
@@ -1433,6 +1463,7 @@ for (fname, elty, relty) in (
         β_dβ::CoDual{$relty},
         C_dC::CoDual{<:AbstractMatrix{$elty}},
     )
+        _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
 
         # Extract values from pairs.
         uplo = _lsame_flag(primal(_uplo))
@@ -1500,6 +1531,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
 
     # Extract data.
     side = primal(_side)
@@ -1534,6 +1566,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
 
     # Extract values.
     side = _lsame_flag(primal(_side))
@@ -1617,6 +1650,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
 
     # Extract parameters.
     side = primal(_side)
@@ -1656,6 +1690,7 @@ function rrule!!(
     A_dA::CoDual{<:AbstractMatrix{P}},
     B_dB::CoDual{<:AbstractMatrix{P}},
 ) where {P<:BlasFloat}
+    _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
 
     # Extract parameters.
     side = _lsame_flag(primal(_side))
@@ -2106,6 +2141,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    append!(test_cases, _blas_alias_test_cases(P))
     memory = Any[]
     return test_cases, memory
 end
@@ -2257,4 +2293,35 @@ end
     end
     step === nothing && return nothing
     return 1 + (n - 1) * step <= length(x) ? step : nothing
+end
+
+# Aliases are intentional: the registry seeds and copies them with shared caches.
+function _blas_alias_test_cases(P)
+    rows = Any[]
+    flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
+    A = P[2 1; 1 3]
+    v = P[1, 2]
+    for f in (BLAS.gemv!, BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
+        flag = f === BLAS.gemv! ? 'N' : 'U'
+        push!(rows, (flags..., f, flag, P(2), A, v, P(3), v))
+        push!(rows, (flags..., f, flag, P(2), A, v, P(3), view(A, :, 1)))
+    end
+    for f in (BLAS.gemm!, BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
+        chars = f === BLAS.gemm! ? ('N', 'N') : ('L', 'U')
+        B = copy(A)
+        for C in (A, B)
+            push!(rows, (flags..., f, chars..., P(2), A, B, P(3), C))
+        end
+    end
+    for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
+        Q = f === BLAS.herk! ? real(P) : P
+        push!(rows, (flags..., f, 'U', 'N', Q(2), A, Q(3), A))
+    end
+    for f in (BLAS.trmv!, BLAS.trsv!)
+        push!(rows, (flags..., f, 'U', 'N', 'N', A, view(A, :, 1)))
+    end
+    for f in (BLAS.trmm!, BLAS.trsm!)
+        push!(rows, (flags..., f, 'L', 'U', 'N', 'N', P(2), A, A))
+    end
+    return rows
 end
