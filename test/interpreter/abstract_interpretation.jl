@@ -146,4 +146,24 @@ end
         @test val ≈ sin(x[1]) + x[2]^2
         @test grad[2] ≈ [cos(x[1]), 2x[2]]
     end
+
+    # Until 1.12 the pkgimage loader inserts every serialised `CodeInstance` into its
+    # `MethodInstance`'s native cache, so Mooncake's inference results must stay out of
+    # the precompile-time `newly_inferred` list.
+    @static if VERSION < v"1.12-"
+        @testset "inference results stay out of newly_inferred" begin
+            ccall(:jl_set_newly_inferred, Cvoid, (Any,), CC.newly_inferred)
+            CC.track_newly_inferred.x = true
+            try
+                interp = get_interpreter(ReverseMode)
+                Mooncake.lookup_ir(interp, Tuple{typeof(contains_non_primitive),Float32})
+                cis = Base.IdSet{Any}(values(interp.code_cache.dict))
+                @test !isempty(cis)
+                @test !any(in(cis), CC.newly_inferred)
+            finally
+                CC.track_newly_inferred.x = false
+                empty!(CC.newly_inferred)
+            end
+        end
+    end
 end
