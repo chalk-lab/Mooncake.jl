@@ -132,7 +132,18 @@ end
 function rrule!!(
     ::CoDual{typeof(unsafe_copyto!)}, dest::CoDual{Ptr{T}}, src::CoDual{Ptr{T}}, n::CoDual
 ) where {T}
+    # Both pointers are dereferenced below, so both must address real tangent
+    # bytes. Same guard as the load/store rules and reverse `unsafe_wrap`; it lives
+    # in `IntrinsicsWrappers`, not the top-level module.
+    IntrinsicsWrappers._check_tangent_ptr(primal(dest), tangent(dest))
+    IntrinsicsWrappers._check_tangent_ptr(primal(src), tangent(src))
     _n = primal(n)
+
+    # Exact self-copy is identity: accumulating then restoring the same buffer would
+    # erase downstream cotangents. Partial overlap still uses snapshot-and-restore.
+    if primal(dest) === primal(src)
+        return dest, NoPullback(ntuple(_ -> NoRData(), 4))
+    end
 
     # Record values that will be overwritten.
     dest_copy = Vector{T}(undef, _n)
