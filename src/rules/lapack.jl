@@ -112,6 +112,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.trtrs!, primal(B_dB), primal(A_dA))
 
     # Extract data.
     uplo = primal(_uplo)
@@ -149,6 +150,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.trtrs!, primal(_B), primal(_A))
     # Extract everything and make a copy of B for the reverse-pass.
     uplo, trans, diag = primal(_uplo), primal(_trans), primal(_diag)
     A, dA = arrayify(_A)
@@ -191,6 +193,7 @@ function frule!!(
     _ipiv::Dual{<:AbstractVector{Int}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.getrs!, primal(B_dB), primal(A_dA))
 
     # Extract data.
     trans = primal(_trans)
@@ -226,6 +229,7 @@ function rrule!!(
     _ipiv::CoDual{<:AbstractVector{Int}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.getrs!, primal(_B), primal(_A))
 
     # Extract data.
     trans = _trans.x
@@ -470,6 +474,7 @@ function frule!!(
     A_dA::Dual{<:AbstractMatrix{P}},
     B_dB::Dual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.potrs!, primal(B_dB), primal(A_dA))
 
     # Extract args and take a copy of B.
     uplo = primal(_uplo)
@@ -500,6 +505,7 @@ function rrule!!(
     _A::CoDual{<:AbstractMatrix{P}},
     _B::CoDual{<:AbstractVecOrMat{P}},
 ) where {P<:BlasRealFloat}
+    _check_blas_output_alias(LAPACK.potrs!, primal(_B), primal(_A))
 
     # Extract args and take a copy of B.
     uplo = _uplo.x
@@ -544,6 +550,8 @@ end
         A_dA::Dual{<:AbstractMatrix{P}},
         _uplo::Dual{Char},
     ) where {P<:BlasFloat}
+        primal(A_dA) === primal(B_dB) ||
+            _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
 
@@ -557,6 +565,8 @@ end
         A_dA::CoDual{<:AbstractMatrix{P}},
         _uplo::CoDual{Char},
     ) where {P<:BlasFloat}
+        same = primal(A_dA) === primal(B_dB)
+        same || _check_blas_output_alias(LAPACK.lacpy!, primal(B_dB), primal(A_dA))
         B, dB = arrayify(B_dB)
         A, dA = arrayify(A_dA)
         uplo = _lsame_flag(primal(_uplo))
@@ -564,9 +574,11 @@ end
         B_copy = copy(B)
         LAPACK.lacpy!(B, A, uplo)
         # fill dB with zeros in the copied region
-        zero_tri!(dB, uplo)
+        same || zero_tri!(dB, uplo)
 
         function lacpy_pb!!(::NoRData)
+            # An identity copy must preserve the one shared cotangent buffer.
+            same && return (NoRData(), NoRData(), NoRData(), NoRData())
             if uplo == 'U'
                 dA .+= UpperTriangular(dB)
             elseif uplo == 'L'
@@ -971,6 +983,10 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:lapack})
             return [(true, :none, nothing, logabsdet, S)]
         end...,
     )
+    test_cases = Any[test_cases...]
+    for P in complexPs
+        append!(test_cases, _lapack_alias_test_cases(P))
+    end
     memory = Any[]
     return test_cases, memory
 end
@@ -1006,4 +1022,28 @@ function derived_rule_test_cases(rng_ctor, ::Val{:lapack})
     )
     memory = Any[]
     return test_cases, memory
+end
+
+function _lapack_alias_test_cases(P)
+    A = P[2 1; 1 3]
+    flags = (false, :none, (throws=(ArgumentError, "overlapping input and output"),))
+    rows = Any[]
+    if P <: Real
+        append!(
+            rows,
+            [
+                (flags..., LAPACK.trtrs!, 'U', 'N', 'N', A, A),
+                (flags..., LAPACK.getrs!, 'N', A, [1, 2], A),
+                (flags..., LAPACK.potrs!, 'U', A, A),
+            ],
+        )
+    end
+    @static if VERSION > v"1.11-"
+        for uplo in ('U', 'L', 'A')
+            push!(rows, (false, :stability, nothing, LAPACK.lacpy!, A, A, uplo))
+        end
+        B = P[1 2; 3 4; 5 6]
+        push!(rows, (flags..., LAPACK.lacpy!, view(B, 1:2, :), view(B, 2:3, :), 'A'))
+    end
+    return rows
 end
