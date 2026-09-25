@@ -375,6 +375,7 @@ function rrule!!(
     p::CoDual{<:Ptr{T}},
     dims::CoDual,
 ) where {T}
+    _check_tangent_ptr(primal(p), tangent(p))
     _check_tangent_ptr(tangent(p), prod(primal(dims)))
     primal_arr = unsafe_wrap(Array, primal(p), primal(dims))
     tangent_arr = unsafe_wrap(Array, tangent(p), primal(dims))
@@ -401,6 +402,7 @@ function rrule!!(::CoDual{typeof(atomic_pointerref)}, x, order)
     _x = primal(x)
     _order = primal(order)
     dx = tangent(x)
+    _check_tangent_ptr(_x, dx)
     # Tangent bookkeeping uses :monotonic: a load-only primal ordering (e.g. :acquire) would
     # throw ConcurrencyViolationError if reused for the pullback's store.
     a = atomic_pointerref(_x, _order)
@@ -431,6 +433,7 @@ end
 )
     _p = primal(p)
     _order = primal(order)
+    _check_tangent_ptr(primal(p), tangent(p))
     # Bookkeeping loads/stores use :monotonic: a store-only primal ordering (e.g. :release)
     # would throw ConcurrencyViolationError if reused for these save/restore loads.
     old_value = atomic_pointerref(_p, :monotonic)
@@ -453,6 +456,39 @@ end
 end
 
 # atomic_pointerswap
+
+const _PLACEHOLDER_TANGENT_PTR_MSG =
+    "Cannot differentiate a load or store through a `Ptr` whose tangent is the placeholder that " *
+    "the `uninit_*` convention builds from the pointer's own address. There is no derivative " *
+    "buffer behind it, so writing a derivative through it would land in the primal buffer. " *
+    "This arises when a bare `Ptr` reaches AD as a differentiable input; differentiate the " *
+    "underlying array instead, so a real tangent buffer exists."
+
+const _NULL_TANGENT_PTR_MSG =
+    "Cannot differentiate a load or store through a `Ptr` with no tangent storage behind it. " *
+    "The pointer derives from a buffer whose element type is non-differentiable (a " *
+    "`Vector{UInt8}`, say), so no derivative buffer exists to read or write and its tangent " *
+    "pointer is NULL. Reinterpreting such a buffer as a differentiable element type under AD " *
+    "is not supported; allocate it with the differentiable element type instead."
+
+# NULL is safe only for zero-size tangent elements. Every consumer, including
+# container constructors such as unsafe_wrap, must reject it otherwise.
+# Representing absent storage with its own type would enforce this by dispatch,
+# but requires changing every rule accepting a Ptr tangent.
+@inline function _check_tangent_ptr(x, dx)
+    if dx isa Ptr && _elements_occupy_storage(eltype(dx))
+        iszero(UInt(dx)) && throw(ArgumentError(_NULL_TANGENT_PTR_MSG))
+        # The non-NULL uninit_* placeholder aliases the primal's own bytes.
+        x isa Ptr &&
+            UInt(dx) == UInt(x) &&
+            throw(ArgumentError(_PLACEHOLDER_TANGENT_PTR_MSG))
+    end
+    return nothing
+end
+
+# Reference elements occupy pointer-sized slots. sizeof is only safe for isbits
+# elements: abstract types and even concrete String are unsized.
+@inline _elements_occupy_storage(::Type{E}) where {E} = !isbitstype(E) || sizeof(E) > 0
 
 @intrinsic bitcast
 function frule!!(f::Dual{typeof(bitcast)}, t::Dual{Type{T}}, x) where {T}
@@ -839,6 +875,7 @@ function rrule!!(::CoDual{typeof(pointerref)}, x, y, z)
     _y = primal(y)
     _z = primal(z)
     dx = tangent(x)
+    _check_tangent_ptr(_x, dx)
     a = pointerref(_x, _y, _z)
     da = _check_tangent_ptr(dx) ? pointerref(dx, _y, _z) : _null_tangent(dx)
     a = CoDual(a, fdata(da))
@@ -864,6 +901,7 @@ end
     _p = primal(p)
     _idx = primal(idx)
     _z = primal(z)
+    _check_tangent_ptr(primal(p), tangent(p))
     old_value = pointerref(_p, _idx, _z)
     dp = tangent(p)
     old_tangent = _check_tangent_ptr(dp) ? pointerref(dp, _idx, _z) : _null_tangent(dp)
