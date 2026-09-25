@@ -85,6 +85,14 @@ function arrayify(
     _, _dx = arrayify(x.data, _fields(dx).data)
     return x, Symmetric(_dx, Symbol(x.uplo))
 end
+# Real Hermitian has the Symmetric tangent map; complex Hermitian also conjugates
+# and projects the diagonal to real, so leave its reverse rule to the derived path.
+function arrayify(
+    x::Hermitian{T,<:StridedMatrix{T}}, dx::TangentOrFData
+) where {T<:IEEEFloat}
+    _, _dx = arrayify(x.data, _fields(dx).data)
+    return x, Hermitian(_dx, Symbol(x.uplo))
+end
 function arrayify(
     x::Adjoint{T,<:AbstractArray{T}}, dx::TangentOrFData
 ) where {T<:Union{IEEEFloat,BlasFloat}}
@@ -128,7 +136,19 @@ even if indexing makes the view itself non-strided, so the common case costs not
 """
 densify_tangent(dx::StridedArray) = dx
 densify_tangent(dx::SubArray{T,N,A}) where {T,N,A<:StridedArray{T}} = dx
-function densify_tangent(dx::Union{UpperTriangular,LowerTriangular,Diagonal,Symmetric})
+function densify_tangent(
+    dx::Union{
+        UpperTriangular,
+        LowerTriangular,
+        UnitUpperTriangular,
+        UnitLowerTriangular,
+        Diagonal,
+        Symmetric,
+        Hermitian,
+        Adjoint,
+        Transpose,
+    },
+)
     return zeros(eltype(dx), size(dx))
 end
 
@@ -150,15 +170,36 @@ function increment_densified_tangent!!(
     parent(dx) .+= T(dense)
     return nothing
 end
+# The unit variants store only the STRICT triangle: their diagonal reads a constant `1`, a
+# non-parameter whose contribution is dropped exactly as the off-structure entries are.
+function increment_densified_tangent!!(dx::UnitUpperTriangular, dense)
+    p = parent(dx)
+    for j in axes(dense, 2), i in 1:(j - 1)
+        @inbounds p[i, j] += dense[i, j]
+    end
+    return nothing
+end
+function increment_densified_tangent!!(dx::UnitLowerTriangular, dense)
+    p = parent(dx)
+    for j in axes(dense, 2), i in (j + 1):size(dense, 1)
+        @inbounds p[i, j] += dense[i, j]
+    end
+    return nothing
+end
 function increment_densified_tangent!!(dx::Diagonal, dense)
     dx.diag .+= view(dense, diagind(dense))
     return nothing
+end
+# `Adjoint`/`Transpose` store every entry, just at the transposed position.
+increment_densified_tangent!!(dx::Adjoint, dense) = (parent(dx) .+= adjoint(dense); nothing)
+function increment_densified_tangent!!(dx::Transpose, dense)
+    (parent(dx) .+= transpose(dense); nothing)
 end
 
 # `Symmetric` is the one wrapper for which this is not masking: with `uplo == 'U'`, the
 # stored `A[i, j]` is read at both `S[i, j]` and `S[j, i]` when `i < j`, so its adjoint
 # picks up both. Dropping the fold would silently halve those gradients rather than throw.
-function increment_densified_tangent!!(dx::Symmetric, dense)
+function increment_densified_tangent!!(dx::Union{Symmetric,Hermitian}, dense)
     folded = dense .+ transpose(dense)
     folded[diagind(folded)] .= view(dense, diagind(dense))
     parent(dx) .+= dx.uplo == 'U' ? UpperTriangular(folded) : LowerTriangular(folded)
@@ -191,18 +232,45 @@ function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{Ptr{P}},CoDual{Ptr{P}}}, incx::BLAS.BlasInt
 ) where {P<:BlasFloat}
     x, dx = arrayify(x_dx)
+    # Check before unsafe_wrap hides the placeholder's identity: every reverse BLAS
+    # pointer rule comes through here, and accumulating into it would mutate the primal.
+    IntrinsicsWrappers._check_tangent_ptr(x, dx)
     xinds = 1:incx:(incx * n)
     return (
         view(unsafe_wrap(Vector{P}, x, n * incx), xinds),
         view(unsafe_wrap(Vector{P}, dx, n * incx), xinds),
     )
 end
+# Raised where `_blas_walk_step` finds no logical step, i.e. BLAS visits memory the operand does not
+# address. `label` names the caller so the message says which rule refused.
+@noinline function _throw_no_walk_step(label, x, incx)
+    throw(
+        ArgumentError(
+            LazyString(
+                label,
+                " does not support operand `",
+                typeof(x),
+                "` with strides ",
+                strides(x),
+                " and `incx = ",
+                incx,
+                "`: the routine reads raw memory from `pointer(X)`, and no step over this ",
+                "operand's own elements follows that walk, so the derivative would be taken of ",
+                "different elements from the ones it read. A positive increment that the ",
+                "operand's stride divides works, as does a dense operand or the raw-pointer form.",
+            ),
+        ),
+    )
+end
 function viewify(
     n::BLAS.BlasInt, x_dx::Union{Dual{A},CoDual{A}}, incx::BLAS.BlasInt
 ) where {A<:AbstractArray{<:BlasFloat}}
     x, dx = arrayify(x_dx)
-    xinds = 1:incx:(incx * n)
-    return view(x, xinds), view(dx, xinds)
+    step = _blas_walk_step(x, incx, n)
+    if step === nothing
+        _throw_no_walk_step("Reverse-mode BLAS", x, incx)
+    end
+    return _viewify_one(n, x, step), _viewify_one(n, dx, step)
 end
 
 #
@@ -2083,4 +2151,26 @@ for P in (Float64, Float32, ComplexF64, ComplexF32)
     @eval function derived_rule_test_cases(rng_ctor, ::Val{$(QuoteNode(sym))})
         return derived_rule_test_cases(rng_ctor, Val(:blas), $P)
     end
+end
+
+# Reuse the primal's logical step for its partial: their index spaces match,
+# but their strides can differ.
+@inline _viewify_one(n::Integer, x::AbstractArray, step::Integer) = view(
+    x, 1:step:(1 + (n - 1) * step)
+)
+@inline _viewify_one(n::Integer, x::Ptr{T}, step::Integer) where {T} = view(
+    unsafe_wrap(Vector{T}, x, 1 + (n - 1) * step), 1:step:(1 + (n - 1) * step)
+)
+
+@inline function _blas_walk_step(x, inc::Integer, n::Integer)
+    inc > 0 || return nothing
+    x isa Ptr && return inc
+    step = if x isa AbstractVector
+        st = stride(x, 1)
+        (st > 0 && iszero(inc % st)) ? inc ÷ st : nothing
+    else
+        strides(x) === Base.size_to_strides(1, size(x)...) ? inc : nothing
+    end
+    step === nothing && return nothing
+    return 1 + (n - 1) * step <= length(x) ? step : nothing
 end
