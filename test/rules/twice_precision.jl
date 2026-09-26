@@ -11,5 +11,6 @@
     @test has_equal_data(a, TwicePrecision(1.00001, 0.0); float_precision=Float32)
     TestUtils.test_tangent_interface(rng, p)
     TestUtils.test_tangent_splitting(rng, p)
+    TestUtils.test_lifted(rng, p)
     TestUtils.run_rule_test_cases(StableRNG, Val(:twice_precision))
 end
