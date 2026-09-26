@@ -89,11 +89,11 @@ julia> Mooncake.value_and_gradient!!(rule, foo, 2.0)
 ```
 Observe that while it has correctly computed the identity function, the gradient is zero.
 
-The takeaway: do not attempt to differentiate functions which modify global state. Reading globals is fine; mutating globals is not.
+The takeaway: do not attempt to differentiate functions which modify global state. Reading a global is fine, with one exception: the same object must not also be an argument.
 
 ## Mutable aliases involving `NoTangent` parents or globals
 
-Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent or global. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295).
+Mooncake may silently return incorrect derivatives when the same mutable storage is differentiated directly and also reachable through a `NoTangent` parent. Reverse and `frule!!`-based forward modes are affected. See [issue #1295](https://github.com/chalk-lab/Mooncake.jl/issues/1295). The same aliasing through a global is now refused rather than silent.
 
 A `NoTangent` parent:
 
@@ -120,7 +120,7 @@ julia> Mooncake.value_and_gradient!!(rule, f, state)
 
 `state` exposes one vector as `x` and `box.x`. Mooncake differentiates `x`, but reading through the `NoTangent` `Box` creates separate derivative storage. Mutation through `box.x` updates only that storage, so Mooncake returns `[1.0]`. This program should be rejected.
 
-A global:
+A global, which is refused:
 
 ```jldoctest global-alias
 julia> const X = [3.0];
@@ -133,10 +133,12 @@ julia> function g(x)
 julia> rule = Mooncake.build_rrule(g, X);
 
 julia> Mooncake.value_and_gradient!!(rule, g, X)
-(6.0, (NoTangent(), [1.0]))
+ERROR: ArgumentError: An argument is the same object as a constant or global read inside the function being differentiated (a Vector{Float64}). Their derivative storage is separate — the constant's is created once when the rule is built — so the contribution through the constant would be silently dropped and the derivative returned would be wrong. Pass a copy of the argument, or read the value through an argument instead of a global.
+[...]
 ```
 
-`X` and `x` are the same vector. Mooncake treats `X` as constant and initializes its derivative storage separately from `x`'s. Mutation through `X` updates only the global storage, so Mooncake returns `[1.0]`. This program should be rejected.
+`X` and `x` are the same vector, and their derivative storage is separate, so the contribution
+through `X` would be dropped. Mooncake raises an `ArgumentError` instead of returning an incorrect derivative.
 
 ## Passing Differentiable Data as a Type
 
@@ -154,8 +156,8 @@ mysquare (generic function with 1 method)
 
 julia> cache = Mooncake.prepare_derivative_cache(mysquare, 3.0);
 
-julia> Mooncake.value_and_derivative!!(cache, Mooncake.zero_dual(mysquare), Mooncake.Dual(3.0, 1.0))
-Mooncake.Dual{Float64, Float64}(9.0, 0.0)
+julia> Mooncake.value_and_derivative!!(cache, (mysquare, Mooncake.NoTangent()), (3.0, 1.0))
+(9.0, 0.0)
 ```
 As you can see, the tangent is `0.0` rather than `6.0`.
 
