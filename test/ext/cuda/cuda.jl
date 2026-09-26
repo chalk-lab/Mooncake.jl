@@ -10,7 +10,7 @@ using Mooncake.TestUtils:
     test_tangent_interface,
     test_tangent_splitting,
     test_rule,
-    test_rule_throws,
+    _test_rule_throws,
     test_frule_interface,
     test_rrule_interface
 using LinearAlgebra, Statistics
@@ -74,15 +74,18 @@ end
             @test Random.rand(rng, Float32, 8) == expected_next
 
             Random.seed!(rng, 123)
+            x_slot = Mooncake.zero_lifted(Val(1), x)
+            _, x_partials = Mooncake.arrayify(x_slot)
+            fill!(x_partials[1], 2.0f0)
             out = Mooncake.frule!!(
-                Mooncake.zero_dual(rand!),
-                Mooncake.zero_dual(rng),
-                Mooncake.zero_dual(sampler),
-                Mooncake.Dual(x, dx),
+                Mooncake.zero_lifted(Val(1), rand!),
+                Mooncake.zero_lifted(Val(1), rng),
+                Mooncake.zero_lifted(Val(1), sampler),
+                x_slot,
             )
             @test Mooncake.primal(out) === x
             @test x == expected_x
-            @test all(iszero, dx)
+            @test all(iszero, x_partials[1])
             @test Random.rand(rng, Float32, 8) == expected_next
 
             test_rule(
@@ -155,6 +158,11 @@ end
         _bcast_copy_sin(x) = sum(copy(Base.Broadcast.broadcasted(sin, x)))
         _sum_f_sin(x) = sum(sin, x)
         _sum_f_exp(x) = sum(exp, x)
+        # Bool mappings reduce to Int: forward must return NoDual (dense and adjoint).
+        _sum_f_pred(x) = sum(y -> y > 0.5, x)
+        # A concrete Float32 cast strips partials but requires a differentiable V.
+        # oftype(y, ...) would retain the dual and miss this branch.
+        _sum_f_pred_f32(x) = sum(y -> Float32(y > 0), x)
         # complex sum(f, x) wrappers
         _sum_f_cx_abs2(x) = sum(abs2, x)
         _sum_f_cx_sin_re(x) = real(sum(sin, x))
@@ -192,6 +200,8 @@ end
         _sum_f_cx_abs2_d1(x) = sum(abs2, x; dims=1)
         _sum_f_cx_sin_d2(x) = sum(sin, x; dims=2)
         _mapreduce_abs2_d1(x) = mapreduce(abs2, +, x; dims=1)
+        # dims returns an array: compare init's type against its element type.
+        _mapreduce_abs2_d1_init(x) = mapreduce(abs2, +, x; dims=1, init=0.0f0)
         _mapreduce_abs2_add_sum_d1(x) = mapreduce(abs2, Base.add_sum, x; dims=1)
         _reduce_plus(x) = reduce(+, x)
         # _reduce_plus_cx returns a complex scalar for complex input (no real() wrap), unlike
@@ -296,10 +306,12 @@ end
         # shifts every gradient by that many elements.  The weighted case pins which element
         # each cotangent reached, and the parent fixtures are longer than the views so the
         # offsets are nonzero.
-        _view_sum(a) = sum(view(a, 1:3))
+        _view_sum_range(a) = sum(view(a, 1:3))
         _view_weighted(a) = sum(view(a, 1:3) .* CuArray(Float32[1, 2, 3]))
         _view_reshaped(a) = sum(reshape(a, 2, 3) .* CuArray(Float32[1 3 5; 2 4 6]))
         _view_of_view(a) = sum(view(view(a, 2:5), 1:2))
+        # Full coverage inherits the offset of a parent that is itself a view.
+        _full_view_of_view(a) = sum(view(view(a, 2:5), 1:4))
         _view_cols(m) = sum(view(m, :, 1) .* CuArray(Float32[1, 2, 3]))
         _view_weighted_cx(a) = real(sum(view(a, 1:3) .* CuArray(ComplexF32[1, 2im, 3])))
         _gather_sum_cx(x, idx) = real(sum(x[idx]))
@@ -356,6 +368,8 @@ end
         # reattached belongs to the array at the bottom rather than to the outer cast's
         # immediate argument.  Both modes agreed on an exact zero before, so nothing but a
         # value comparison catches it.
+        # Scalar cast tangents must not introduce ambiguities with leaf-primal dispatch.
+        _bcast_cast_scalar(x, y) = sum(@. x + Float32(y))
         _bcast_cast_chain_exp(x) = sum(exp.(Float64.(Float32.(x))))
         _bcast_cast_chain_sq(x) = sum(Float64.(Float32.(x)) .^ 2)
         _bcast_cast_chain_same(x) = sum(Float32.(Float32.(x)) .^ 2)
@@ -412,7 +426,7 @@ end
         # in-place broadcast (x .= f.(y)) — exercises materialize! frule!! / rrule!!.
         # _inplace_add_alias! tests the aliasing-safe path: dest appears in bc.args.
         # _inplace_cx_abs2! tests real-output-into-complex-dest: abs2(ℂ)→ℝ written into
-        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-DOF partials.
+        # a ComplexF64 array, exercising Float64→ComplexF64 promotion and 2-dimension partials.
         _inplace_sin!(x, y) = (x.=sin.(y); sum(x))
         _inplace_add_alias!(x, y) = (x.=x .+ y; sum(x))
         _inplace_vec_to_mat!(x, y) = (x.=y; sum(x))
@@ -495,8 +509,8 @@ end
         # `nothing` is Base.repeat's own default for inner/outer, so it can arrive here.
         _repeat_nothing(x) = sum(repeat(x; inner=nothing, outer=(2, 2)))
         # CuPtr arithmetic — exercises the CuPtr{T} + Integer primitives.
-        # _view_sum: view(x, range) triggers SubArray → unsafe_convert(CuPtr{T}, parent) +
-        # offset, which is CuPtr{Float32} + Integer (differentiable T).
+        # Reverse traces contiguous views through CuPtr + Integer; forward intercepts
+        # view directly. Strided SubArray construction is tested separately below.
         _view_sum(x) = sum(view(x, 2:length(x)))
         _view_sum_cx(x) = real(sum(view(x, 2:length(x))))
         # _view_bool_gate_sum: Bool mask applied via a view; CuArray{Bool} is
@@ -615,26 +629,13 @@ end
         _min_idx_init(a, x) = minimum(CuArray([1, 2, 3]); init=a) * sum(x)
         _host_rand = (rng, size...) -> randn(rng, size...)
         @testset "_new_ interface" begin
-            # Test the `_new_` frule!!/rrule!! interfaces directly.
-            # `test_rule` would create `randn_dual` inputs for `CuDataRef`, which would
-            # require custom `randn_tangent_internal`/`zero_tangent_internal` methods.
-            # We avoid that because those methods would mainly exist to satisfy the test helper.
-            #
-            # NOTE: test_frule_interface and test_rrule_interface both take full tangents
-            # (tangent_type) in the second Dual/CoDual slot, then extract fdata internally
-            # via to_fwds before calling the rule.  Non-differentiable args therefore take
-            # NoTangent() here — NOT NoFData(), even for the rrule interface test.
+            # Reverse reconstruction carries the cotangent in DataRef. Forward uses
+            # NoDual handles and constructs NDualArray directly in view/reshape.
+            # test_rule cannot randomise DataRef; supply an opaque handle explicitly.
+            # test_rrule_interface takes full tangents, including NoTangent metadata,
+            # and extracts fdata internally.
             for ET in (Float64, ComplexF64)
                 data = getfield(_rand(rng, ET, 64, 32), :data)
-                test_frule_interface(
-                    Mooncake.Dual(Mooncake._new_, Mooncake.NoTangent()),
-                    Mooncake.Dual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
-                    Mooncake.Dual(data, copy(data)),
-                    Mooncake.Dual(2048, Mooncake.NoTangent()),
-                    Mooncake.Dual(0, Mooncake.NoTangent()),
-                    Mooncake.Dual((64, 32), Mooncake.NoTangent());
-                    frule=Mooncake.frule!!,
-                )
                 test_rrule_interface(
                     Mooncake.CoDual(Mooncake._new_, Mooncake.NoTangent()),
                     Mooncake.CoDual(CuArray{ET,2,CUDA.DeviceMemory}, Mooncake.NoTangent()),
@@ -801,7 +802,6 @@ end
             (false, :none, false, _bcast_adj_cx_abs2, _rand(rng, ComplexF64, 16)),
             (false, :none, false, _bcast_tp_lit_add, _rand(rng, 16)),
             # Non-contiguous SubArray broadcast leaf (rows 1:2 of a 4x3 stay a SubArray)
-            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
             # Shape-broadcasting: vector vs matrix — exercises _unbroadcast in pullback
             (false, :none, false, _bcast_vec_mat_add, _rand(rng, 8), _rand(rng, 8, 4)),
             (false, :none, false, _bcast_vec_mat_mul, _rand(rng, 8), _rand(rng, 8, 4)),
@@ -814,6 +814,12 @@ end
             (false, :none, false, _sum_f_sin, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, 16)),
             (false, :none, false, _sum_f_abs2, _rand(rng, ComplexF64, 16)),
+            # sum(predicate, x): non-differentiable Int result (dense and adjoint)
+            (false, :none, false, _sum_f_pred, _rand(rng, 16)),
+            (false, :none, false, _sum_f_pred, _rand(rng, 4, 3)'),
+            # sum(predicate converted to a concrete float, x): differentiable result, zero derivative
+            (false, :none, false, _sum_f_pred_f32, _rand(rng, Float32, 16)),
+            (false, :none, false, _sum_f_pred_f32, _rand(rng, Float32, 4, 3)'),
             # mapreduce(f, +, x) — explicit rule, redirects to ForwardDiff.Dual machinery
             (false, :none, false, _reduce_plus_d1, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _reduce_plus_init, _rand(rng, Float32, 6)),
@@ -828,6 +834,7 @@ end
             (false, :none, false, _sum_f_cx_abs2_d1, _rand(rng, ComplexF32, 4, 3)),
             (false, :none, false, _sum_f_cx_sin_d2, _rand(rng, ComplexF64, 4, 3)),
             (false, :none, false, _mapreduce_abs2_d1, _rand(rng, Float32, 4, 3)),
+            (false, :none, false, _mapreduce_abs2_d1_init, _rand(rng, Float32, 4, 3)),
             (false, :none, false, _mapreduce_abs2_add_sum_d1, _rand(rng, Float32, 4, 3)),
             (
                 false,
@@ -934,7 +941,6 @@ end
             ),
             (false, :none, false, _bcast_kill, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _bcast_kill_mid, CuArray([0.3, -0.7, 1.2, 2.5])),
-            (false, :none, false, _bcast_kill_view, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _bcast_kill_cast, CuArray([0.3, -0.7, 1.2, 2.5])),
             (false, :none, false, _hoisted_capture, 3.0, _rand(rng, 4)),
             (false, :none, false, _int_capture, _rand(rng, 4)),
@@ -963,12 +969,10 @@ end
             (false, :none, false, _gather_mask_bits, _rand(rng, Float32, 4)),
             (false, :none, false, _gather_mask_cx, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _gather_mask_none, _rand(rng, Float32, 4)),
-            (false, :none, false, _view_sum, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_weighted, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_reshaped, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_of_view, view(_rand(rng, Float32, 8), 3:8)),
-            (false, :none, false, _view_cols, view(_rand(rng, Float32, 3, 4), :, 2:3)),
-            (false, :none, false, _view_weighted_cx, view(_rand(rng, ComplexF32, 8), 3:8)),
+            # A NON-contiguous view stays a `SubArray`, whose V references the parent, so it
+            # aliases like the host and is unaffected by the partial-view refusal (which only hits
+            # the contiguous case CUDA turns into a fresh `CuArray`).
+            (false, :none, false, _bcast_noncontig_view, _rand(rng, 4, 3)),
             (false, :none, false, _bcast_cast_cx_narrow, _rand(rng, ComplexF64, 4)),
             (false, :none, false, _bcast_cast_cx_widen, _rand(rng, ComplexF32, 4)),
             (false, :none, false, _bcast_cast_real_to_cx, _rand(rng, Float64, 4)),
@@ -986,7 +990,6 @@ end
             (false, :none, false, _bcast_setscalar_arg, 1.5f0, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_setscalar_int, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_int_range, _rand(rng, Float32, 4)),
-            (false, :none, false, _bcast_materialised_range, _rand(rng, Float32, 4)),
             (false, :none, false, _bcast_narrow_scalar, 1.5f0, _rand(rng, Float64, 4)),
             (false, :none, false, _bcast_narrow_scalar_add, 1.5f0, _rand(rng, Float64, 4)),
             (
@@ -1253,12 +1256,8 @@ end
             (false, :none, false, _cpu_to_gpu_sum, _rand(rng, 16)),
             # CuPtr{T} + Integer — differentiable T (Float32): view(x, range) internally
             # calls unsafe_convert(CuPtr{Float32}, SubArray) = unsafe_convert(parent) + offset.
-            (false, :none, false, _view_sum, _rand(rng, 16)),
-            (false, :none, false, _view_sum_cx, _rand(rng, ComplexF64, 16)),
             # Bool-masked sum: CuArray{Bool} is non-differentiable; gradient flows through x.
             # Test both Float32 (original) and Float64 (regression for DataRef zero_tangent).
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, 16)),
-            (false, :none, false, _view_bool_gate_sum, _rand_pos(rng, Float64, 16)),
             # fill!(CuArray, val) — GPU fill! has internal try/catch → UpsilonNode.
             # Regression for Flux LSTM hidden-state reset (fill! with integer 0).
             # Also test float value to exercise gradient propagation through x.
@@ -1567,6 +1566,163 @@ end
             )
         end
 
+        # Fused scalar casts exercise leaf dispatch and conversion of kernel-typed
+        # gradients back to the scalar argument's rdata type.
+        @testset "fused scalar cast in a broadcast" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_cast_scalar,
+                _rand(rng, Float32, 4),
+                2.0;
+                perf_flag=:none,
+                is_primitive=false,
+            )
+        end
+
+        # Reverse mode only: forward mode refuses a partial view of a `CuArray` (see the
+        # `known_limitations` entry — a sub-range cannot share the lane-major partials block, and
+        # copying it makes the derivative a snapshot that decays when the parent is written). The
+        # reverse rules are unaffected, so their coverage is kept here.
+        @testset "read through a partial CuArray view (reverse only)" begin
+            @testset "$f" for (f, args) in Any[
+                (_view_sum_range, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_weighted, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_reshaped, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_full_view_of_view, (view(_rand(rng, Float32, 8), 3:8),)),
+                (_view_cols, (view(_rand(rng, Float32, 3, 4), :, 2:3),)),
+                (_view_weighted_cx, (view(_rand(rng, ComplexF32, 8), 3:8),)),
+                (_view_sum, (_rand(rng, 16),)),
+                (_view_sum_cx, (_rand(rng, ComplexF64, 16),)),
+                (_view_bool_gate_sum, (_rand_pos(rng, 16),)),
+                (_view_bool_gate_sum, (_rand_pos(rng, Float64, 16),)),
+            ]
+                test_rule(
+                    StableRNG(123),
+                    f,
+                    args...;
+                    perf_flag=:none,
+                    is_primitive=false,
+                    mode=Mooncake.ReverseMode,
+                )
+            end
+        end
+
+        # Reverse only: Base.TwicePrecision's tuple V is incompatible with scalar
+        # frules. This forward limitation also affects host arrays.
+        @testset "materialising a float range restores the gradient" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_materialised_range,
+                _rand(rng, Float32, 4);
+                perf_flag=:none,
+                is_primitive=false,
+                mode=Mooncake.ReverseMode,
+            )
+        end
+
+        # Full and empty views must remain writable: full views share the parent's
+        # block, and empty views have no partials to detach.
+        @testset "writes that reach the parent tangent stay differentiable" begin
+            @testset "$nm" for (nm, f, x) in (
+                (
+                    "full-extent view",
+                    z -> (y=z .* 2; v=view(y, 1:4); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+                (
+                    "colon view",
+                    z -> (y=z .* 2; v=view(y, :); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+                (
+                    "empty view",
+                    z -> (y=z .* 2; fill!(view(y, 1:0), 0.0f0); sum(y)),
+                    _rand(rng, Float32, 4),
+                ),
+                # Full coverage must permit rank changes, not just equal shapes.
+                (
+                    "rank-changing full-extent view",
+                    z -> (y=z .* 2; v=view(y, :); v.=0.0f0; sum(y)),
+                    _rand(rng, Float32, 2, 2),
+                ),
+            )
+                test_rule(StableRNG(123), f, x; perf_flag=:none, is_primitive=false)
+            end
+        end
+
+        # Reverse only: forward rejects partial contiguous CuArray views because
+        # their strided regions cannot share the lane-major block.
+        @testset "in-place broadcast into a view consumes the view's cotangent" begin
+            test_rule(
+                StableRNG(123),
+                _bcast_kill_view,
+                CuArray([0.3, -0.7, 1.2, 2.5]);
+                perf_flag=:none,
+                is_primitive=false,
+                mode=Mooncake.ReverseMode,
+            )
+        end
+
+        # Float16/ComplexF16 need the GPU arrayify overload (host uses BlasFloat).
+        # Finite differences are unreliable here; linear rearrangements give exact
+        # per-lane JVP oracles.
+        @testset "Float16/ComplexF16 concat forward exact — $ET, width $N" for ET in (
+                Float16, ComplexF16
+            ),
+            N in (1, 2, 3)
+
+            a = CuArray(rand(StableRNG(1), ET, 4, 3))
+            b = CuArray(rand(StableRNG(2), ET, 2, 3))
+            c = CuArray(rand(StableRNG(3), ET, 4, 2))
+            xa = Mooncake.randn_lifted(Val(N), StableRNG(10), a)
+            xb = Mooncake.randn_lifted(Val(N), StableRNG(11), b)
+            xc = Mooncake.randn_lifted(Val(N), StableRNG(12), c)
+            tv(V, i) = Mooncake.Nfwd.tangent_view(V, i)
+            for (f, args, primals, extra) in (
+                (vcat, (xa, xb), (a, b), ()),
+                (hcat, (xa, xc), (a, c), ()),
+                (permutedims, (xa,), (a,), ((2, 1),)),
+            )
+                out = Mooncake.frule!!(
+                    Mooncake.zero_lifted(Val(N), f),
+                    args...,
+                    map(x -> Mooncake.zero_lifted(Val(N), x), extra)...,
+                )
+                @test Array(Mooncake.primal(out)) == Array(f(primals..., extra...))
+                for k in 1:N
+                    lanes = map(x -> tv(Mooncake.tangent(x), k), args)
+                    @test Array(tv(Mooncake.tangent(out), k)) ==
+                        Array(f(lanes..., extra...))
+                end
+            end
+        end
+
+        # The `view` forward frule has two branches: contiguous indices return a CuArray
+        # (NDualArray V, covered by `_view_sum` above) and non-contiguous (strided) indices
+        # return a SubArray whose V is the struct lift `ImmutableDual((parent=tangent(x), …))`.
+        # That SubArray branch can't be reached through `test_rule`: `sum` over a strided GPU
+        # SubArray hits limitations unrelated to the view rule (forward: the `atomic_pointerref`
+        # intrinsic in the reduction kernel, issue #208; reverse: a try/catch in
+        # `GPUArrays._mapreduce`). Exercise the branch's V construction + parent aliasing directly.
+        @testset "view strided SubArray frule branch (width $N)" for N in (1, 3)
+            px = CuArray(rand(StableRNG(1), Float32, 8))
+            xs = Mooncake.zero_lifted(Val(N), px)
+            out = Mooncake.frule!!(
+                Mooncake.zero_lifted(Val(N), view), xs, Mooncake.zero_lifted(Val(N), 1:2:8)
+            )
+            y, V = Mooncake.primal(out), Mooncake.tangent(out)
+            @test y isa SubArray
+            @test Array(y) == Array(view(px, 1:2:8))
+            @test V isa Mooncake.ImmutableDual
+            # parent V aliases the input slot's V so the JVP stays connected (the view's tangent
+            # is the view of the parent's tangent); index metadata is non-differentiable.
+            @test V.fields.parent === Mooncake.tangent(xs)
+            @test V.fields.indices isa Mooncake.NoDual
+            @test V.fields.offset1 isa Mooncake.NoDual
+            @test V.fields.stride1 isa Mooncake.NoDual
+        end
+
         @testset "$name" for (seed, name, fargs) in [
             (
                 71,
@@ -1622,23 +1778,23 @@ end
             # ── frule!! — differentiable T ────────────────────────────────────────────
             # Both primal and tangent pointers must advance by the same byte offset n.
             p32 = CuPtr{Float32}(UInt64(4096))
-            dp32 = Mooncake.Dual(p32, CuPtr{Float32}(UInt64(4096)))  # Mooncake.tangent = same base addr
-            dn = Mooncake.Dual(Int64(64), Mooncake.NoTangent())
+            dp32 = Mooncake.lift(p32, CuPtr{Float32}(UInt64(4096)))  # tangent at lane 1 = same base addr
+            dn = Mooncake.lift(Int64(64), Mooncake.NoTangent())
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(+, Mooncake.NoTangent()), dp32, dn
+                Mooncake.lift(+, Mooncake.NoTangent()), dp32, dn
             )
             @test Mooncake.primal(result) == p32 + 64
-            @test Mooncake.tangent(result) == CuPtr{Float32}(UInt64(4096)) + 64
+            @test Mooncake.tangent(result, 1) == CuPtr{Float32}(UInt64(4096)) + 64
 
             # ── frule!! — non-differentiable T (Cvoid) ───────────────────────────────
             # Only primal advances; tangent must remain NoTangent (not crash or wrong type).
             pv = CuPtr{Cvoid}(UInt64(4096))
-            dpv = Mooncake.Dual(pv, Mooncake.NoTangent())
+            dpv = Mooncake.lift(pv, Mooncake.NoTangent())
             result_v = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(+, Mooncake.NoTangent()), dpv, dn
+                Mooncake.lift(+, Mooncake.NoTangent()), dpv, dn
             )
             @test Mooncake.primal(result_v) == pv + 64
-            @test Mooncake.tangent(result_v) isa Mooncake.NoTangent
+            @test Mooncake.tangent(result_v, 1) isa Mooncake.NoTangent
 
             # ── rrule!! — differentiable T ────────────────────────────────────────────
             # Output tangent (fdata) must be the offset tangent pointer.
@@ -1678,12 +1834,12 @@ end
 
             # frule!!: output is Dual(nothing, NoTangent()).
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(Core.finalizer, Mooncake.NoTangent()),
-                Mooncake.Dual(fin, Mooncake.NoTangent()),
-                Mooncake.Dual(arr, tarr),
+                Mooncake.lift(Core.finalizer, Mooncake.NoTangent()),
+                Mooncake.lift(fin, Mooncake.NoTangent()),
+                Mooncake.lift(arr, tarr),
             )
             @test Mooncake.primal(result) === nothing
-            @test Mooncake.tangent(result) isa Mooncake.NoTangent
+            @test Mooncake.tangent(result, 1) isa Mooncake.NoTangent
 
             # rrule!!: output fdata is NoFData; pullback returns NoRData for all inputs.
             out, pb = _MooncakeCUDAExt.rrule!!(
@@ -1703,11 +1859,11 @@ end
                 expected = hasfieldcount(T)
 
                 result = _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(hasfieldcount, Mooncake.NoTangent()),
-                    Mooncake.Dual(T, Mooncake.NoTangent()),
+                    Mooncake.lift(hasfieldcount, Mooncake.NoTangent()),
+                    Mooncake.lift(T, Mooncake.NoTangent()),
                 )
                 @test Mooncake.primal(result) === expected
-                @test Mooncake.tangent(result) isa Mooncake.NoTangent
+                @test Mooncake.tangent(result, 1) isa Mooncake.NoTangent
 
                 out, pb = _MooncakeCUDAExt.rrule!!(
                     Mooncake.CoDual(hasfieldcount, Mooncake.NoFData()),
@@ -1727,12 +1883,14 @@ end
             tref = copy(ref)
 
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(copy, Mooncake.NoTangent()), Mooncake.Dual(ref, tref)
+                Mooncake.lift(copy, Mooncake.NoTangent()), Mooncake.lift(ref, tref)
             )
             @test Mooncake.primal(result) isa typeof(ref)
             @test Mooncake.primal(result) !== ref    # must be a new handle, not the same object
-            @test Mooncake.tangent(result) isa typeof(tref)
-            @test Mooncake.tangent(result) !== tref  # Mooncake.tangent DataRef also copied
+            # DataRef carries no forward derivative (V === NoDual), but its reverse
+            # tangent type is the handle itself, so the lane materialises a handle —
+            # `zero_tangent`'s `copy` — not a NoTangent.
+            @test Mooncake.tangent(result, 1) isa typeof(ref)
 
             out, pb = _MooncakeCUDAExt.rrule!!(
                 Mooncake.CoDual(copy, Mooncake.NoFData()), Mooncake.CoDual(ref, tref)
@@ -1798,18 +1956,18 @@ end
             )
                 @test !isfinite(dot(x, dx))  # the input the guard exists for
                 d = _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(norm, Mooncake.NoTangent()), Mooncake.Dual(x, dx)
+                    Mooncake.lift(norm, Mooncake.NoTangent()), Mooncake.lift(x, dx)
                 )
                 # dx === x here, so the JVP is norm(x) itself.
-                @test Mooncake.tangent(d) ≈ norm(x) rtol = 1.0f-3
+                @test Mooncake.tangent(d, 1) ≈ norm(x) rtol = 1.0f-3
             end
             # A well-scaled input must still take the single-dot path unchanged.
             x = _rand(rng, Float32, 64)
             dx = _rand(rng, Float32, 64)
             d = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(norm, Mooncake.NoTangent()), Mooncake.Dual(x, dx)
+                Mooncake.lift(norm, Mooncake.NoTangent()), Mooncake.lift(x, dx)
             )
-            @test Mooncake.tangent(d) == real(dot(x, dx)) / norm(x)
+            @test Mooncake.tangent(d, 1) == real(dot(x, dx)) / norm(x)
         end
 
         @testset "unsafe_free! frule!! / rrule!!" begin
@@ -1821,21 +1979,20 @@ end
             tarr = Mooncake.zero_tangent(arr)
 
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(unsafe_free!, Mooncake.NoTangent()), Mooncake.Dual(arr, tarr)
+                Mooncake.lift(unsafe_free!, Mooncake.NoTangent()), Mooncake.lift(arr, tarr)
             )
             @test Mooncake.primal(result) === nothing
-            @test Mooncake.tangent(result) isa Mooncake.NoTangent
+            @test Mooncake.tangent(result, 1) isa Mooncake.NoTangent
 
-            # The claim covers index and mask arrays as well, whose forward tangent is
-            # `NoTangent`; guarding against the reverse mode's `NoFData` let that through
-            # and tried to free it.
+            # The claim covers index and mask arrays as well, whose forward V is `NoDual`:
+            # there is no per-lane storage to free, and the rule must free the primal alone.
             idx = CuArray([1, 2, 3])
             idx_result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(unsafe_free!, Mooncake.NoTangent()),
-                Mooncake.Dual(idx, Mooncake.NoTangent()),
+                Mooncake.lift(unsafe_free!, Mooncake.NoTangent()),
+                Mooncake.lift(idx, Mooncake.NoTangent()),
             )
             @test Mooncake.primal(idx_result) === nothing
-            @test Mooncake.tangent(idx_result) isa Mooncake.NoTangent
+            @test Mooncake.tangent(idx_result, 1) isa Mooncake.NoTangent
 
             arr2 = _rand(rng, Float32, 4)
             tarr2 = Mooncake.zero_tangent(arr2)
@@ -1862,12 +2019,12 @@ end
 
             # frule!!: both primal and tangent pointers returned.
             result = _MooncakeCUDAExt.frule!!(
-                Mooncake.Dual(unsafe_convert, Mooncake.NoTangent()),
-                Mooncake.Dual(CuPtr{Float32}, Mooncake.NoTangent()),
-                Mooncake.Dual(arr, tarr),
+                Mooncake.lift(unsafe_convert, Mooncake.NoTangent()),
+                Mooncake.lift(CuPtr{Float32}, Mooncake.NoTangent()),
+                Mooncake.lift(arr, tarr),
             )
             @test Mooncake.primal(result) isa CuPtr{Float32}
-            @test Mooncake.tangent(result) isa CuPtr{Float32}
+            @test Mooncake.tangent(result, 1) isa CuPtr{Float32}
 
             # rrule!!: output is CoDual of primal and tangent pointers; pullback is NoPullback.
             arr2 = _rand(rng, Float32, 4, 4)
@@ -1892,7 +2049,7 @@ end
         # 1.12 a separate all-NoTangent collapse in tangent_type happens to hide the bug).
         #
         # Fix: _premat_nondiff_args walks the primal Broadcasted tree before flatten and
-        # replaces any sub-Broadcasted whose total Dual-slot count (_total_bcast_dof) is
+        # replaces any sub-Broadcasted whose total Dual-slot count (_total_bcast_dim) is
         # zero with its already-materialized plain CuArray value.  After that replacement
         # flatten only sees plain arrays as leaves, and its composed function is isbits.
         @testset "_premat_nondiff_args makes flat_bc.f isbits" begin
@@ -1904,7 +2061,7 @@ end
             inner = Base.Broadcast.broadcasted(Float64, bool_mask)
             outer = Base.Broadcast.broadcasted(*, x, inner)
 
-            # After _premat_nondiff_args: inner node (dof==0) replaced by plain CuArray.
+            # After _premat_nondiff_args: inner node (dimension==0) replaced by plain CuArray.
             fixed = _MooncakeCUDAExt._premat_nondiff_args(outer)
             @test !(fixed.args[2] isa Base.Broadcast.Broadcasted)
             flat_fixed = Base.Broadcast.flatten(fixed)
@@ -1948,7 +2105,7 @@ end
             @test Array(grads[2]) ≈ expected_grad
         end
 
-        @testset "zero-DOF nested broadcast scalar gradients reconstruct on reverse pass" begin
+        @testset "derivative-free nested broadcast scalar gradients reconstruct on reverse pass" begin
             x = CuArray(randn(rng, 4))
             c = 2.5
             b = CuArray(Float64[-2.0, 1.0, -3.0, 4.0])
@@ -1965,7 +2122,7 @@ end
         @testset "all-scalar nested broadcast leaves keep scalar gradients" begin
             # Regression for the differentiable-scalar guard in _premat_nondiff_args:
             # (s .+ 1.0) is a nested Broadcasted with NoFData fdata (scalar gradients live
-            # in rdata) but one differentiable DOF; collapsing it to a constant dropped s
+            # in rdata) but one differentiable dimension; collapsing it to a constant dropped s
             # from flat_pargs, crashing the reverse pass with UndefRefError.
             x = CuArray(randn(rng, 4))
             s = 0.75
@@ -1976,7 +2133,7 @@ end
             @test grads[3] ≈ sum(Array(x))
         end
 
-        @testset "in-place zero-DOF nested broadcasts reconstruct scalar gradients" begin
+        @testset "in-place derivative-free nested broadcasts reconstruct scalar gradients" begin
             dest = CuArray(zeros(4))
             x = CuArray(randn(rng, 4))
             c = -1.25
@@ -2270,19 +2427,25 @@ end
                     (M32,),
                     (; err=MethodError, primal=true),
                 ),
+                # Reverse mode only: a float range's `ref`/`step` are `Base.TwicePrecision`,
+                # whose `dual_type` is the per-lane tuple fallback while the enclosing
+                # `StepRangeLen`'s declares `NDual`, so building the argument's forward
+                # representation throws a convert error before any rule here runs. Nothing
+                # about it is GPU-specific — `sum(z .* (0.0f0:0.25f0:0.75f0))` over a host
+                # `Array` fails the same way.
                 (
                     280,
                     "float range leaf",
                     z -> sum(z .* (0.0f0:0.25f0:0.75f0)),
                     (_rand(rng, Float32, 4),),
-                    (; msg=r"Materialise the range first"),
+                    (; msg=r"Materialise the range first", mode=Mooncake.ReverseMode),
                 ),
                 (
                     281,
                     "range from a differentiated endpoint",
                     (a, z) -> sum(z .* range(a, 1.0f0; length=4)),
                     (0.0f0, _rand(rng, Float32, 4)),
-                    (; msg=r"would silently be zero"),
+                    (; msg=r"would silently be zero", mode=Mooncake.ReverseMode),
                 ),
                 # A reinterpret that changes the underlying real field would hand back a
                 # tangent whose elements are bit-halves of the primal's.
@@ -2299,6 +2462,62 @@ end
                     z -> Float32(sum(reinterpret(Int32, z))),
                     (_rand(rng, Float32, 4),),
                     (; msg=r"is not differentiable"),
+                ),
+                # Writing through a contiguous `view(::CuArray, …)` in forward mode is refused.
+                # The view's block is a copy of the parent's — the lane-major block cannot
+                # express the view's strided region as a `CuArray` — so the write would land in
+                # the copy and the JVP would come back silently wrong. Reading through the view
+                # is unaffected, and `reshape`/`vec` alias their block outright.
+                (
+                    290,
+                    "broadcast write through a CuArray view",
+                    z -> (y=z .* 2; v=view(y, 3:4); v.=0.0f0; sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    291,
+                    "fill! through a CuArray view",
+                    z -> (y=z .* 2; v=view(y, 3:4); fill!(v, 0.0f0); sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
+                ),
+                # These all now fail where the VIEW is taken rather than at the write: forward mode
+                # refuses a partial `CuArray` view outright, so no detached block can exist for a
+                # write to land in. Kept as separate cases because each spelling reaches the view
+                # through a different rule, and a future relaxation must not silently re-admit one.
+                (
+                    292,
+                    "mul! into a CuArray view",
+                    z -> (
+                        y=z .* 2;
+                        A=fill!(similar(y, 2, 2), 1.0f0);
+                        mul!(view(y, 3:4), A, view(y, 1:2));
+                        sum(y)
+                    ),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
+                ),
+                (
+                    293,
+                    "copyto! into a CuArray view",
+                    z -> (y=z .* 2; copyto!(view(y, 3:4), y[1:2]); sum(y)),
+                    (_rand(rng, Float32, 4),),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
+                ),
+                # `transpose!` lowers straight to `cuBLAS.geam!`, which is a write site of its own —
+                # it was the one the first pass of this guard missed, so a strict sub-region
+                # destination silently lost the JVP there.
+                (
+                    294,
+                    "transpose! into a CuArray view (geam!)",
+                    z -> (
+                        Y=z .* 2;
+                        LinearAlgebra.transpose!(view(Y, :, 1:2), CUDA.ones(Float32, 2, 4));
+                        sum(Y)
+                    ),
+                    (_rand(rng, Float32, 4, 4),),
+                    (; msg=r"cannot take a partial view", mode=Mooncake.ForwardMode),
                 ),
                 # `count` matches `sum`: a differentiated `init` is refused, not zeroed.
                 (
@@ -2333,7 +2552,7 @@ end
                     (; msg=r"init.*constant", mode=Mooncake.ForwardMode),
                 ),
             ]
-                test_rule_throws(StableRNG(seed), f, args...; kw...)
+                _test_rule_throws(StableRNG(seed), f, args...; kw...)
             end
         end
 
@@ -2443,9 +2662,9 @@ end
                 )
 
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(vcat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(s, zero(s)),
+                    Mooncake.lift(vcat, Mooncake.NoTangent()),
+                    Mooncake.lift(gpu1, tgpu1),
+                    Mooncake.lift(s, zero(s)),
                 )
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.rrule!!(
                     Mooncake.CoDual(hcat, Mooncake.NoFData()),
@@ -2453,11 +2672,11 @@ end
                     Mooncake.CoDual(cpu_mat, tcpu_mat),
                 )
                 @test_throws r"mix of GPU" _MooncakeCUDAExt.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((dims=1,), Mooncake.NoTangent()),
-                    Mooncake.Dual(cat, Mooncake.NoTangent()),
-                    Mooncake.Dual(gpu1, tgpu1),
-                    Mooncake.Dual(cpu_vec, tcpu_vec),
+                    Mooncake.lift(Core.kwcall, Mooncake.NoTangent()),
+                    Mooncake.lift((dims=1,), Mooncake.NoTangent()),
+                    Mooncake.lift(cat, Mooncake.NoTangent()),
+                    Mooncake.lift(gpu1, tgpu1),
+                    Mooncake.lift(cpu_vec, tcpu_vec),
                 )
 
                 # N-arg: CPU array sandwiched between two GPU arrays.
@@ -2743,8 +2962,9 @@ end
             @testset "scalar m must match x's underlying precision" begin
                 # Mixed precision makes Statistics' scalar-m varm infer
                 # Union{Float32,Float64} (its n==0 branch types σ² off x alone, its main
-                # branch promotes with m), which Mooncake's rule builder cannot handle
-                # (zero(::Type{Union{...}})).
+                # branch promotes with m). The rule is declared over an invariant
+                # `CuArray{P}`, which pins `P` to a single concrete eltype, so the mixed
+                # signature is not claimed as a primitive.
                 x = _rand(rng, Float32, 4, 3)
                 world = Base.get_world_counter()
                 kwsig = @NamedTuple{corrected::Bool}
@@ -2768,14 +2988,14 @@ end
                 # NaN at n==0, so the JVP must be 0, not the divide-after 0/0 = NaN.
                 x = CuArray(Float32[])
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; corrected=true), Mooncake.NoTangent()),
-                    Mooncake.Dual(varm, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
-                    Mooncake.Dual(0.0f0, 0.0f0),
+                    Mooncake.zero_lifted(Val(1), Core.kwcall),
+                    Mooncake.zero_lifted(Val(1), (; corrected=true)),
+                    Mooncake.zero_lifted(Val(1), varm),
+                    Mooncake.lift(x, Mooncake.zero_tangent(x)),
+                    Mooncake.lift(0.0f0, 0.0f0),
                 )
                 @test isnan(Mooncake.primal(d))
-                @test Mooncake.tangent(d) === 0.0f0
+                @test Mooncake.tangent(d, 1) === 0.0f0
             end
             @testset "Float16 dims=1 avoids overflow on large magnitudes" begin
                 # Regression: summing raw squares before dividing (rather than scaling
@@ -2801,13 +3021,13 @@ end
                 # exercise it): with unit x-tangents the JVP is 2λ·n ≈ 2, whereas a
                 # `one(T)/n` λ would give exactly 0.
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; dims=1, corrected=false), Mooncake.NoTangent()),
-                    Mooncake.Dual(varm, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, CUDA.ones(Float16, 70000)),
-                    Mooncake.Dual(m, CUDA.zeros(Float16, 1)),
+                    Mooncake.zero_lifted(Val(1), Core.kwcall),
+                    Mooncake.zero_lifted(Val(1), (; dims=1, corrected=false)),
+                    Mooncake.zero_lifted(Val(1), varm),
+                    Mooncake.lift(x, CUDA.ones(Float16, 70000)),
+                    Mooncake.lift(m, CUDA.zeros(Float16, 1)),
                 )
-                @test only(Array(Mooncake.tangent(d))) > Float16(1.5)
+                @test only(Array(Mooncake.tangent(d, 1))) > Float16(1.5)
             end
             @testset "scalar m: Float16 huge n matches the generic primal" begin
                 # Unlike the GPUArrays array-m method above, Statistics' scalar-m varm
@@ -2828,13 +3048,13 @@ end
                 # is finite (2 · 1 · 0.5 = 1) and the Inf16-promoted denominator zeroes the
                 # quotient; a λ-prescaled form would give ≈1.4e-5 instead.
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; corrected=true), Mooncake.NoTangent()),
-                    Mooncake.Dual(varm, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
-                    Mooncake.Dual(m, Float16(0)),
+                    Mooncake.zero_lifted(Val(1), Core.kwcall),
+                    Mooncake.zero_lifted(Val(1), (; corrected=true)),
+                    Mooncake.zero_lifted(Val(1), varm),
+                    Mooncake.lift(x, CUDA.fill(Float16(0.5), 70000)),
+                    Mooncake.lift(m, Float16(0)),
                 )
-                @test Mooncake.tangent(d) === Float16(0)
+                @test Mooncake.tangent(d, 1) === Float16(0)
             end
             @testset "scalar m: Float16 residual overflow keeps dm finite" begin
                 # Regression: m's cotangent used a precomputed raw sum(diff), which
@@ -2923,13 +3143,13 @@ end
                 # Forward-mode counterpart: the primal is a constant NaN, so the JVP
                 # is the zero map — not the 0/0 = NaN of the divide-after formula.
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; dims=:), Mooncake.NoTangent()),
-                    Mooncake.Dual(mean, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, Mooncake.zero_tangent(x)),
+                    Mooncake.zero_lifted(Val(1), Core.kwcall),
+                    Mooncake.zero_lifted(Val(1), (; dims=:)),
+                    Mooncake.zero_lifted(Val(1), mean),
+                    Mooncake.lift(x, Mooncake.zero_tangent(x)),
                 )
                 @test isnan(Mooncake.primal(d))
-                @test Mooncake.tangent(d) === 0.0f0
+                @test Mooncake.tangent(d, 1) === 0.0f0
             end
             @testset "dims=: gradient matches bare mean (Float16, n > 65504)" begin
                 # Regression: the Colon primal divides AFTER summing, so its true
@@ -2946,12 +3166,12 @@ end
                 # Pin the frule's divide-after arithmetic too: sum(0.5-tangents) is finite
                 # (35000 < 65504) and / Float16(70000) = / Inf16 gives 0; λ-prescaled ≈ 0.5.
                 d = Mooncake.frule!!(
-                    Mooncake.Dual(Core.kwcall, Mooncake.NoTangent()),
-                    Mooncake.Dual((; dims=:), Mooncake.NoTangent()),
-                    Mooncake.Dual(mean, Mooncake.NoTangent()),
-                    Mooncake.Dual(x, CUDA.fill(Float16(0.5), 70000)),
+                    Mooncake.zero_lifted(Val(1), Core.kwcall),
+                    Mooncake.zero_lifted(Val(1), (; dims=:)),
+                    Mooncake.zero_lifted(Val(1), mean),
+                    Mooncake.lift(x, CUDA.fill(Float16(0.5), 70000)),
                 )
-                @test Mooncake.tangent(d) === Float16(0)
+                @test Mooncake.tangent(d, 1) === Float16(0)
             end
         end
 
@@ -3083,11 +3303,11 @@ end
                     @test size(grads[2]) == (0, 3)
                     d = Mooncake.value_and_derivative!!(
                         Mooncake.build_frule(f, e),
-                        Mooncake.Dual(f, Mooncake.NoTangent()),
-                        Mooncake.Dual(e, CuArray(zeros(Float32, 0, 3))),
+                        Mooncake.lift(f, Mooncake.NoTangent()),
+                        Mooncake.lift(e, CuArray(zeros(Float32, 0, 3))),
                     )
                     @test Mooncake.primal(d) == expected
-                    @test Mooncake.tangent(d) == 0.0f0
+                    @test Mooncake.tangent(d, 1) == 0.0f0
                 end
             end
             # An index array contributes nothing, so `init` carries the whole gradient.
@@ -3168,6 +3388,54 @@ end
             @test_throws r"not yet supported" value_and_hvp!!(
                 prepare_hvp_cache(f, x), f, v, x
             )
+        end
+
+        @testset "prepared forward gradient/Jacobian over a CuArray" begin
+            # CuArray's lane-major seeding differs from the host layout. Sweep widths
+            # below and at length(x); one width can agree by accident. These scalar
+            # seed writes require allowscalar and are not reached by the rule tests.
+            xg = cu(Float32[1, 2, 3, 4, 5])
+            sq(z) = sum(z .* z)
+            CUDA.@allowscalar for W in 1:5
+                cache = Mooncake.prepare_derivative_cache(
+                    sq, xg; config=Mooncake.Config(; chunk_size=W)
+                )
+                _, g = Mooncake.value_and_gradient!!(cache, sq, xg)
+                @test Array(g[2]) == Float32[2, 4, 6, 8, 10]
+            end
+            Bj = cu(Float32[1 2 3; 4 5 6; 7 8 9])
+            lin(z) = Bj * z
+            xj = cu(Float32[1, 2, 3])
+            CUDA.@allowscalar for W in 1:3
+                cache = Mooncake.prepare_derivative_cache(
+                    lin, xj; config=Mooncake.Config(; chunk_size=W)
+                )
+                _, J = Mooncake.value_and_jacobian!!(cache, lin, xj)
+                @test Array(J) == Array(Bj)
+            end
+        end
+
+        @testset "NDualArray element accessors over a lane-major block" begin
+            # Accessors (and maximum/minimum) use _lane_index. Sweep widths around
+            # length(x) to distinguish lane-major from host element-major addressing.
+            # These scalar accesses require allowscalar and are otherwise unreached.
+            xh = Float64[10, 20, 30]
+            Nfwd = Mooncake.Nfwd
+            CUDA.@allowscalar for W in 1:4
+                nda = Mooncake.zero_dual(Val(W), CuArray(xh))
+                for e in 1:3, k in 1:W
+                    Nfwd._set_partial!(nda, e, k, 100.0 * e + k)
+                end
+                for e in 1:3
+                    @test nda[e].value == xh[e]
+                    @test nda[e].partials == ntuple(k -> 100.0 * e + k, W)
+                end
+                @test maximum(nda).partials == nda[3].partials
+                @test minimum(nda).partials == nda[1].partials
+                # A write must land on the element it names, readable through the seam.
+                nda[2] = Nfwd.NDual{Float64,W}(20.0, ntuple(k -> -Float64(k), W))
+                @test [Nfwd._get_partial(nda, 2, k) for k in 1:W] == [-Float64(k) for k in 1:W]
+            end
         end
     else
         println("Tests are skipped because no CUDA device was found.")
