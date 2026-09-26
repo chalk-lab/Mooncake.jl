@@ -838,7 +838,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
 
         # Extract primals.
-        ul = _lsame_flag(primal(uplo))
+        ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
         A, dA = arrayify(A_dA)
@@ -951,7 +951,7 @@ function rrule!!(
     _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
 
     # Extract primals.
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_trans))
     diag = _lsame_flag(primal(_diag))
     A, dA = arrayify(A_dA)
@@ -959,7 +959,7 @@ function rrule!!(
     x_copy = copy(x)
 
     # Run primal computation.
-    BLAS.trmv!(uplo, trans, diag, A, x)
+    BLAS.trmv!(uplo, primal(_trans), primal(_diag), A, x)
 
     # Set dx to zero.
     dx .= zero(T)
@@ -1058,7 +1058,7 @@ function rrule!!(
     x_dx::CoDual{<:AbstractVector{T}},
 ) where {T<:BlasFloat}
     _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_trans))
     diag = _lsame_flag(primal(_diag))
     A, dA = arrayify(A_dA)
@@ -1067,7 +1067,7 @@ function rrule!!(
     x_copy = copy(x)
 
     # Primal
-    BLAS.trsv!(uplo, trans, diag, A, x)
+    BLAS.trsv!(uplo, primal(_trans), primal(_diag), A, x)
 
     function trsv_pb!!(::NoRData)
 
@@ -1192,14 +1192,14 @@ end
     tmp_ref = Ref{Matrix{T}}()
 
     if (a == 1 && b == 0)
-        BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+        BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
     else
-        tmp = BLAS.gemm(tA, tB, one(T), p_A, p_B)
+        tmp = BLAS.gemm(primal(transA), primal(transB), one(T), p_A, p_B)
         tmp_ref[] = tmp
         if iszero(a)
             # Builds differ on skipping A at α == 0; call BLAS to preserve its NaN
             # semantics, even though the α gradient already required a product.
-            BLAS.gemm!(tA, tB, a, p_A, p_B, b, p_C)
+            BLAS.gemm!(primal(transA), primal(transB), a, p_A, p_B, b, p_C)
         else
             # β == 0 must overwrite C, which may contain NaN.
             _scale_or_zero!(p_C, b)
@@ -1334,7 +1334,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
 
         # Extract primals.
         s = _lsame_flag(primal(side))
-        ul = _lsame_flag(primal(uplo))
+        ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
         A, dA = arrayify(A_dA)
@@ -1347,9 +1347,9 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
         C_copy = copy(C)
         tmp_ref = Ref{Matrix{T}}()
         if (α == 1 && β == 0)
-            BLAS.$fname(s, ul, α, A, B, β, C)
+            BLAS.$fname(primal(side), ul, α, A, B, β, C)
         else
-            tmp = $(isherm ? BLAS.hemm : BLAS.symm)(s, ul, one(T), A, B)
+            tmp = $(isherm ? BLAS.hemm : BLAS.symm)(primal(side), ul, one(T), A, B)
             tmp_ref[] = tmp
             # Strong zeros, as in the `gemm!` pullback above.
             _scale_or_zero!(C, β)
@@ -1466,7 +1466,7 @@ for (fname, elty, relty) in (
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
 
         # Extract values from pairs.
-        uplo = _lsame_flag(primal(_uplo))
+        uplo = primal(_uplo)
         trans = _lsame_flag(primal(_t))
         α = primal(α_dα)
         A, dA = matrixify(A_dA)
@@ -1475,7 +1475,7 @@ for (fname, elty, relty) in (
 
         # Run forwards pass, and remember previous value of `C` for the reverse-pass.
         C_copy = collect(C)
-        BLAS.$fname(uplo, trans, α, A, β, C)
+        BLAS.$fname(uplo, primal(_t), α, A, β, C)
 
         function syrk!_or_herk!_adjoint(::NoRData)
             # Restore previous state.
@@ -1570,7 +1570,7 @@ function rrule!!(
 
     # Extract values.
     side = _lsame_flag(primal(_side))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     tA = _lsame_flag(primal(_ta))
     diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
@@ -1579,7 +1579,7 @@ function rrule!!(
     B_copy = copy(B)
 
     # Run primal.
-    BLAS.trmm!(side, uplo, tA, diag, α, A, B)
+    BLAS.trmm!(primal(_side), uplo, primal(_ta), primal(_diag), α, A, B)
 
     function trmm_adjoint(::NoRData)
 
@@ -1694,7 +1694,7 @@ function rrule!!(
 
     # Extract parameters.
     side = _lsame_flag(primal(_side))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_t))
     diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
@@ -1705,7 +1705,7 @@ function rrule!!(
     B_copy = copy(B)
 
     # Run primal computation.
-    trsm!(side, uplo, trans, diag, α, A, B)
+    trsm!(primal(_side), uplo, primal(_t), primal(_diag), α, A, B)
 
     function trsm_adjoint(::NoRData)
         # Compute α gradient. `B` holds `α·op(A)⁻¹·B_old`; `dot(B, dB)/α' = dot(op(A)⁻¹·B_old, dB)` is
@@ -2141,6 +2141,7 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    append!(test_cases, _blas_flag_test_cases(P))
     append!(test_cases, _blas_alias_test_cases(P))
     memory = Any[]
     return test_cases, memory
@@ -2330,6 +2331,56 @@ function _blas_alias_test_cases(P)
     end
     for f in (BLAS.trmm!, BLAS.trsm!)
         push!(rows, (flags..., f, 'L', 'U', 'N', 'N', P(2), A, A))
+    end
+    return rows
+end
+
+function _blas_flag_test_cases(P)
+    A = P[2 1; 0 3]
+    B = P[1 2; 3 4]
+    x = P[1, 2]
+    flags = (false, :none, (throws=(ArgumentError, "uplo argument must be"),))
+    rows = Any[]
+    for f in (BLAS.symv!, (P <: Complex ? (BLAS.hemv!,) : ())...)
+        push!(rows, (flags..., f, 'u', P(2), A, x, P(3), copy(x)))
+    end
+    for f in (BLAS.trmv!, BLAS.trsv!)
+        push!(rows, (flags..., f, 'u', 'N', 'N', A, x))
+    end
+    for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
+        push!(rows, (flags..., f, 'L', 'u', P(2), A, B, P(3), copy(B)))
+    end
+    for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
+        Q = f === BLAS.herk! ? real(P) : P
+        push!(rows, (flags..., f, 'u', 'N', Q(2), A, Q(3), copy(B)))
+    end
+    for f in (BLAS.trmm!, BLAS.trsm!)
+        push!(rows, (flags..., f, 'L', 'u', 'N', 'N', P(2), A, B))
+    end
+    flags = (false, :none, (throws=(DimensionMismatch, nothing),))
+    push!(
+        rows,
+        (
+            flags...,
+            BLAS.gemm!,
+            'n',
+            'N',
+            P(2),
+            ones(P, 2, 3),
+            ones(P, 3, 4),
+            P(1),
+            ones(P, 2, 4),
+        ),
+    )
+    for f in (BLAS.symm!, (P <: Complex ? (BLAS.hemm!,) : ())...)
+        push!(rows, (flags..., f, 'l', 'U', P(2), A, ones(P, 2, 3), P(1), ones(P, 2, 3)))
+    end
+    for f in (BLAS.syrk!, (P <: Complex ? (BLAS.herk!,) : ())...)
+        Q = f === BLAS.herk! ? real(P) : P
+        push!(rows, (flags..., f, 'U', 'n', Q(2), ones(P, 2, 3), Q(1), copy(A)))
+    end
+    for f in (BLAS.trmm!, BLAS.trsm!)
+        push!(rows, (flags..., f, 'l', 'U', 'N', 'N', P(2), A, ones(P, 2, 3)))
     end
     return rows
 end
