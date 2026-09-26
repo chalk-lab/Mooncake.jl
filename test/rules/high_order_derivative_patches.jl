@@ -203,6 +203,15 @@ end
         end
     end
 
+    @testset "BLAS zero coefficients with live perturbations" begin
+        fgemm(b) = only(BLAS.gemm!('N', 'N', 2.0, ones(1, 1), ones(1, 1), b, ones(1, 1)))^2
+        fsymm(a) = only(BLAS.symm!('L', 'U', a, ones(1, 1), ones(1, 1), 1.0, ones(1, 1)))^2
+        for (f, value, gradient) in ((fgemm, 4.0, 4.0), (fsymm, 1.0, 2.0))
+            cache = prepare_hvp_cache(f, 0.0)
+            @test value_and_hvp!!(cache, f, 1.0, 0.0) == (value, gradient, 2.0)
+        end
+    end
+
     @testset "TwicePrecision cotangent accumulation (#1328)" begin
         f(x) = abs2(typeof(x)(TwicePrecision(x)))
         for x in (0.5f0, 0.5)

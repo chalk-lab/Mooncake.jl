@@ -2447,7 +2447,7 @@ end
 
 # BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
 @inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
-    iszero(β) ? fill!(B, zero(T)) : (B .*= β)
+    B .= _rvs_mul.(B, β)
     return nothing
 end
 
