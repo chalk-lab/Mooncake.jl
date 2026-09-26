@@ -323,8 +323,7 @@ end
 
 # Compare logical entries: unread backing entries may be uninitialised
 # (e.g. the unused triangle from `kron(Symmetric, Symmetric)`).
-# Recurse rather than use `==`, so NaNs still compare equal. Forward tangents of these
-# wrappers are snapshotted through the same visible entries (`_snapshot_forward_tangent`).
+# Recurse rather than use `==`, so NaNs and float-comparison options work at the leaves.
 for T in (
     :Symmetric,
     :Hermitian,
