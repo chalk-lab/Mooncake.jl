@@ -884,7 +884,11 @@ const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
 @is_primitive(
     MinimalCtx,
     Tuple{
-        typeof(getindex),CuMaybeComplexArray,_CuSliceIndex,_CuSliceIndex,Vararg{_CuSliceIndex}
+        typeof(getindex),
+        CuMaybeComplexArray,
+        _CuSliceIndex,
+        _CuSliceIndex,
+        Vararg{_CuSliceIndex},
     },
 )
 function frule!!(
