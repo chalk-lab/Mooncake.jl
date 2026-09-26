@@ -196,6 +196,19 @@ using DispatchDoctor: allow_unstable
             end
         end
     end
+    @testset "set_tangent_field! does not convert implicitly" begin
+        # Like `setfield!` and forward lane writes, reject implicit precision conversion.
+        t = MutableTangent((a=5.0, b=NoTangent()))
+        @test Mooncake.set_tangent_field!(t, :a, 3.0) === 3.0
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+        # Non-differentiable fields accept their own tangent type.
+        @test Mooncake.set_tangent_field!(t, :b, NoTangent()) === NoTangent()
+        @test_throws ArgumentError Mooncake.set_tangent_field!(t, :a, Float32(3))
+        @test_throws "Cannot write a `Float32`" Mooncake.set_tangent_field!(
+            t, 1, Float32(3)
+        )
+        @test Mooncake.get_tangent_field(t, :a) === 3.0
+    end
     @testset "restricted inner constructor" begin
         p = TestResources.NoDefaultCtor(5.0)
         t = Mooncake.Tangent((x=5.0,))
