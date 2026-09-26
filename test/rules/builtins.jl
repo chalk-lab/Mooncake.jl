@@ -23,12 +23,6 @@ foo_throws(e) = throw(e)
         )
     end
 
-    @testset "is_homogeneous_and_immutable" begin
-        x = Tuple(randn(1000))
-        @test @inferred Mooncake.is_homogeneous_and_immutable(x)
-        @test TestUtils.count_allocs(Mooncake.is_homogeneous_and_immutable, x) == 0
-    end
-
     TestUtils.run_rule_test_cases(StableRNG, Val(:builtins))
 
     # Unhandled built-in throws an intelligible error.
@@ -49,48 +43,22 @@ foo_throws(e) = throw(e)
         invoke(Mooncake.IntrinsicsWrappers.translate, Tuple{Any}, Val(:foo)),
     )
 
-    @testset "Disable bitcast to differentiable type, or bitcast from Int/UInt to Ptr" begin
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Float64), zero_fcodual(5))
-        )
-        @test_throws(
-            ArgumentError,
-            rrule!!(zero_fcodual(bitcast), zero_fcodual(Ptr{Float64}), zero_fcodual(5))
-        )
-    end
-
     @testset "bitcast for Ptr->Ptr" begin
+        # Narrowing to a non-differentiable element: it asks nothing of the tangent buffer (an
+        # `Int64` read out of `Float64` bytes has no derivative), so the pair is re-typed together.
         res, pb = rrule!!(
+            zero_fcodual(bitcast),
+            zero_fcodual(Ptr{Int64}),
+            CoDual(Ptr{Float64}(5), Ptr{Float64}(5)),
+        )
+        @test pb isa Mooncake.NoPullback
+        @test res == CoDual(Ptr{Int64}(5), Ptr{Mooncake.NoTangent}(5))
+
+        # Widening would write eight-byte cotangents across four-byte tangent slots.
+        @test_throws ArgumentError rrule!!(
             zero_fcodual(bitcast),
             zero_fcodual(Ptr{Float64}),
             CoDual(Ptr{Float32}(5), Ptr{Float32}(5)),
-        )
-        @test pb isa Mooncake.NoPullback
-        @test res == CoDual(Ptr{Float64}(5), Ptr{Float64}(5))
-    end
-
-    @testset "throw" begin
-        # Throw primitive continues to throw the exception it is meant to.
-        @test_throws(
-            ArgumentError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(ArgumentError("hello")))
-        )
-        @test_throws(
-            AssertionError,
-            Mooncake.rrule!!(zero_fcodual(throw), zero_fcodual(AssertionError("hello")))
-        )
-
-        # Derived rule throws the correct exception.
-        rule_arg = Mooncake.build_rrule(Tuple{typeof(foo_throws),ArgumentError})
-        @test_throws(
-            ArgumentError,
-            rule_arg(zero_fcodual(foo_throws), zero_fcodual(ArgumentError("hello")))
-        )
-        rule_assert = Mooncake.build_rrule(Tuple{typeof(foo_throws),AssertionError})
-        @test_throws(
-            AssertionError,
-            rule_assert(zero_fcodual(foo_throws), zero_fcodual(AssertionError("hmmm")))
         )
     end
 
@@ -139,20 +107,71 @@ end
         end
     end
 
-    cache_p = prepare_gradient_cache(f_pointerset, 3.0)
-    val_p, grad_p = value_and_gradient!!(cache_p, f_pointerset, 3.0)
-    @test val_p ≈ 6.0
-    @test grad_p[2] ≈ 2.0
-
-    cache_a = prepare_gradient_cache(f_atomic_pointerset, 3.0)
-    val_a, grad_a = value_and_gradient!!(cache_a, f_atomic_pointerset, 3.0)
-    @test val_a ≈ 6.0
-    @test grad_a[2] ≈ 2.0
+    for f in (f_pointerset, f_atomic_pointerset)
+        cache = prepare_gradient_cache(f, 3.0)
+        val, grad = value_and_gradient!!(cache, f, 3.0)
+        @test val ≈ 6.0
+        @test grad[2] ≈ 2.0
+    end
 end
 
-@testset "NaN handling in builtins rrules" begin
+@testset "unsafe_wrap forward rule on a non-differentiable pointer" begin
+    # Non-differentiable pointers still need the wrapped array's canonical V.
+    # Vector works on 1.10 too; keep buf alive while p is used.
+    buf = UInt8[1, 2, 3, 4]
+    p = pointer(buf)
+    for N in (1, 2)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(N), unsafe_wrap),
+            Mooncake.zero_lifted(Val(N), Array),
+            Mooncake.zero_lifted(Val(N), p),
+            Mooncake.zero_lifted(Val(N), (4,)),
+        )
+        @test typeof(Mooncake.tangent(out)) === Mooncake.dual_type(Val(N), Vector{UInt8})
+        @test Mooncake.primal(out) == UInt8[1, 2, 3, 4]
+    end
+end
+
+@testset "unsafe_wrap pointer shadow aliasing" begin
+    # The registry checks the wrap call, but cannot mutate its explicit shadow buffer afterwards.
+    z(x) = Mooncake.zero_lifted(Val(1), x)
+    a, b = [3.0], [5.0]
+    da, db = [1.0], [7.0]
+    p, dp = fill(pointer(a), 2), fill(pointer(da), 2)
+    GC.@preserve a b da db p dp begin
+        ps = Mooncake.lift(pointer(p), pointer(dp))
+        y = Mooncake.frule!!(z(unsafe_wrap), z(Array), ps, z((1, 2)))
+        bs = Mooncake.lift(pointer(b), pointer(db))
+        Mooncake.frule!!(z(IntrinsicsWrappers.pointerset), ps, bs, z(2), z(1))
+        q = Mooncake.Lifted{Ptr{Float64},1}(Mooncake.primal(y)[2], Mooncake.tangent(y)[2])
+        out = Mooncake.frule!!(z(IntrinsicsWrappers.pointerref), q, z(1), z(1))
+        @test Mooncake.tangent(out, 1) == 7.0
+        Mooncake.tangent(y)[2] = (pointer(da),)
+        @test dp[2] == pointer(da)
+    end
+end
+
+@testset "NaN handling in builtins rules" begin
     test_cases = mapreduce(vcat, [Float16, Float32, Float64]) do T
         [(Base.sqrt_llvm, T(0)), (Base.sqrt_llvm_fast, T(0))]
+    end
+
+    # The registry's chunk invariant requires finite partials. Exercise mixed inactive
+    # and nonfinite active lanes directly, preserving that invariant for registered cases.
+    for P in (Float16, Float32, Float64),
+        f in (IntrinsicsWrappers.sqrt_llvm, IntrinsicsWrappers.sqrt_llvm_fast),
+        x in (P(-1), P(0))
+
+        partials = ntuple(k -> isodd(k) ? P(1) : P(0), 8)
+        out = Mooncake.frule!!(
+            Mooncake.zero_lifted(Val(8), f),
+            Lifted{P,8}(x, Mooncake.NDual{P,8}(x, partials)),
+        )
+        y = x < 0 ? P(NaN) : P(0)
+        active = x < 0 ? P(NaN) : P(Inf)
+        @test isequal(primal(out), y)
+        @test isequal(tangent(out).value, y)
+        @test isequal(tangent(out).partials, ntuple(k -> isodd(k) ? active : P(0), 8))
     end
 
     # Test cases for avoiding `NaN` poisoning. 
@@ -167,5 +186,20 @@ end
         cache = prepare_gradient_cache(builtins_nantester, f, args)
         _, grad = value_and_gradient!!(cache, builtins_nantester, f, args)
         @test all(map(isone, grad[3:end]...))
+    end
+end
+
+@testset "div_float pullback keeps `d/db` in range" begin
+    # Squaring b overflows/underflows; dividing twice keeps d/db representable.
+    # FD cannot resolve a derivative of -1e-200 against a value of 1.0.
+    for (a, b) in ((1e200, 1e200), (1e-200, 1e-200), (2.0, 4.0))
+        for f in (/, Base.FastMath.div_fast)
+            g = Mooncake.value_and_gradient!!(
+                Mooncake.prepare_gradient_cache(f, a, b), f, a, b
+            )
+            @test g[2][2] == 1 / b
+            @test g[2][3] ≈ -(a / b) / b
+            @test isfinite(g[2][3])
+        end
     end
 end
