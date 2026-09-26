@@ -218,4 +218,26 @@
         # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
         @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
     end
+    @testset "test_rule seeds coherent aliases" begin
+        seen = Tuple{Bool,Bool}[]
+        f = (a, b) -> nothing
+        function frule(f, a, b)
+            push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
+            return Mooncake.zero_dual(nothing)
+        end
+        function rrule(f, a, b)
+            push!(seen, (primal(a) === primal(b), tangent(a) === tangent(b)))
+            return zero_fcodual(nothing), Mooncake.NoPullback(f, a, b)
+        end
+        x = [1.0]
+        TestUtils.test_rule(StableRNG(123), f, x, x; frule, rrule, interface_only=true)
+        @test length(seen) == 2
+        @test all(p == t for (p, t) in seen)
+        empty!(seen)
+        d = Mooncake.zero_dual(x)
+        TestUtils.test_frule_interface(Mooncake.zero_dual(f), d, d; frule)
+        c = zero_codual(x)
+        TestUtils.test_rrule_interface(zero_codual(f), c, c; rrule)
+        @test seen == [(true, true), (true, true)]
+    end
 end
