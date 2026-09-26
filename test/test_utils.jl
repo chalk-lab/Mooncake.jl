@@ -1,6 +1,14 @@
 @testset "test_utils" begin
     @testset "has_equal_data" begin
         @test !has_equal_data(5.0, 4.0)
+        # Strictness must not depend on magnitude: passing `atol` alone zeroes `isapprox`'s
+        # `rtol`, so a fixed relative error used to pass at 1e5 and fail at 1e6.
+        @test has_equal_data(1e6, 1e6 * (1 + 1e-13))
+        @test !has_equal_data(1e6, 1e6 * (1 + 1e-6))
+        # `exact_floats` drops the tolerance, and reaches the leaves through the structural
+        # recursion rather than only the top level.
+        @test has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0])
+        @test !has_equal_data(Float32[1e-4, 0], Float32[2e-4, 0]; exact_floats=true)
         @test has_equal_data(5.0, 5.0)
         @test has_equal_data(Float64(NaN), Float64(NaN))
         @test !has_equal_data(5.0, NaN)
@@ -168,5 +176,21 @@
             print_results=false,
             max_fd_step=1e-3,
         )
+    end
+    @testset "_deepcopy_all preserves cross-argument aliasing" begin
+        # Per-element copies would sever cross-argument aliases before a rule sees them.
+        x = [1.0, 2.0]
+        c = Mooncake.TestUtils._deepcopy_all((sum, x, x))
+        @test c[2] === c[3]                    # aliasing between slots survives
+        @test c[2] !== x                       # ...and it is still a copy, not the caller's array
+        c[2][1] = 99.0
+        @test c[3][1] == 99.0                  # a write through one slot is seen by the other
+        @test x[1] == 1.0                      # ...and never reaches the caller
+        # Distinct objects must stay distinct: a shared cache merges only what was already identical.
+        y = [1.0, 2.0]
+        d = Mooncake.TestUtils._deepcopy_all((sum, x, y))
+        @test d[2] !== d[3]
+        # `Module` keeps its carve-out; a tuple-level `deepcopy` would lose it.
+        @test Mooncake.TestUtils._deepcopy(Base, IdDict()) === Base
     end
 end
