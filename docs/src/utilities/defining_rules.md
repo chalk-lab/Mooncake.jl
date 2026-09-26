@@ -44,6 +44,29 @@ Mooncake.rrule!!
 Mooncake.build_primitive_rrule
 ```
 
+## Adding Methods To `frule!!` And `build_primitive_frule`
+
+Forward mode has the same shape, and a new primitive should generally get both: write the reverse
+rule for gradients and the forward one for directional derivatives, Jacobians and the forward half
+of higher-order AD. A signature declared primitive in only one mode falls back to the transform in
+the other, which is correct but usually slower.
+
+`@is_primitive` takes the mode, so declare the forward direction explicitly — `@is_primitive
+MinimalCtx ForwardMode Tuple{typeof(f),P}`. Then implement a method of one of:
+```@docs; canonical=false
+Mooncake.frule!!
+Mooncake.build_primitive_frule
+```
+
+An `frule!!` takes and returns [`Mooncake.Lifted`](@ref) slots rather than `CoDual`s, and must
+return the canonical forward value for its result type — `zero_dual(Val(N), result)` where the
+derivative is zero. It is called at a chunk width `N`, propagating `N` directional derivatives at
+once, so write it for general `N` rather than assuming a single lane.
+
+For scalar primitives there is usually less to write than this suggests: teaching `NDual` the local
+derivative once gives the `frule!!` for free. See
+[Scalar And Low-Dimensional Rules Via `NDual`](@ref).
+
 ## Canonicalising Tangent Types
 
 For some differentiation rules, Mooncake performs an explicit canonicalisation step inside `frule!!`/`rrule!!` that collapses heterogeneous array and tangent types into a small set of canonical representations. By canonicalising at the rule boundary, a single implementation can support many combinations of argument and tangent types without duplicating logic or relying on complex dispatch. This allows the remainder of the rule to assume a single, well-defined tangent representation.
