@@ -1890,7 +1890,7 @@ for (fname, elty) in ((:(symv!), BlasFloat), (:(hemv!), BlasComplexFloat))
         y_dy::Lifted{<:AbstractVector{T}},
     ) where {Nw,T<:$elty}
         _check_blas_output_alias(BLAS.$fname, primal(y_dy), primal(A_dA), primal(x_dx))
-        ul = _lsame_flag(primal(uplo))
+        ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
         A = primal(A_dA)
@@ -2051,7 +2051,7 @@ function frule!!(
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.trmv!, primal(x_dx), primal(A_dA))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_trans))
     diag = _lsame_flag(primal(_diag))
     A = primal(A_dA)
@@ -2183,7 +2183,7 @@ function frule!!(
     x_dx::Lifted{<:AbstractVector{T}},
 ) where {Nw,T<:BlasFloat}
     _check_blas_output_alias(BLAS.trsv!, primal(x_dx), primal(A_dA))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_trans))
     diag = _lsame_flag(primal(_diag))
     A = primal(A_dA)
@@ -2416,7 +2416,7 @@ function frule!!(
     end
     ccopied && _write_back_partials!(C_dC, Cb)
     # 5) Primal update after all tangent terms (they read the original operands).
-    BLAS.gemm!(tA, tB, α, A, B, β, C)
+    BLAS.gemm!(primal(transA), primal(transB), α, A, B, β, C)
     return C_dC
 end
 @inline function rrule!!(
@@ -2540,7 +2540,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
     ) where {Nw,T<:$elty}
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA), primal(B_dB))
         s = _lsame_flag(primal(side))
-        ul = _lsame_flag(primal(uplo))
+        ul = primal(uplo)
         α = primal(alpha)
         β = primal(beta)
         A = primal(A_dA)
@@ -2606,7 +2606,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             end
         end
         ccopied && _write_back_partials!(C_dC, Cb)
-        BLAS.$fname(s, ul, α, A, B, β, C)
+        BLAS.$fname(primal(side), ul, α, A, B, β, C)
         return C_dC
     end
     @eval function rrule!!(
@@ -2738,7 +2738,7 @@ for (fname, elty, relty) in (
         C_dC::Lifted{<:AbstractMatrix{$elty}},
     ) where {Nw}
         _check_blas_output_alias(BLAS.$fname, primal(C_dC), primal(A_dA))
-        uplo = _lsame_flag(primal(_uplo))
+        uplo = primal(_uplo)
         t = _lsame_flag(primal(_t))
         α = primal(α_dα)
         A = primal(A_dA)
@@ -2818,7 +2818,7 @@ for (fname, elty, relty) in (
             end
         end : :())
         ccopied && _write_back_partials!(C_dC, Cb)
-        BLAS.$fname(uplo, t, α, A, β, C)
+        BLAS.$fname(uplo, primal(_t), α, A, β, C)
         return C_dC
     end
     @eval function rrule!!(
@@ -2905,7 +2905,7 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.trmm!, primal(B_dB), primal(A_dA))
     side = _lsame_flag(primal(_side))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     ta = _lsame_flag(primal(_ta))
     diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
@@ -2963,7 +2963,7 @@ function frule!!(
         end
     end
     bcopied && _write_back_partials!(B_dB, Bb)
-    BLAS.trmm!(side, uplo, ta, diag, α, A, B)
+    BLAS.trmm!(primal(_side), uplo, primal(_ta), primal(_diag), α, A, B)
     return B_dB
 end
 function rrule!!(
@@ -3061,7 +3061,7 @@ function frule!!(
 ) where {Nw,P<:BlasFloat}
     _check_blas_output_alias(BLAS.trsm!, primal(B_dB), primal(A_dA))
     side = _lsame_flag(primal(_side))
-    uplo = _lsame_flag(primal(_uplo))
+    uplo = primal(_uplo)
     trans = _lsame_flag(primal(_t))
     diag = _lsame_flag(primal(_diag))
     α = primal(α_dα)
@@ -3081,7 +3081,7 @@ function frule!!(
                 iszero(dαs[k]) || (view(Bb,k,:,:) .= dαs[k] .* B)
             end
         end
-        fill!(B, zero(P))
+        BLAS.trsm!(primal(_side), uplo, primal(_t), primal(_diag), α, A, B)
         bcopied && _write_back_partials!(B_dB, Bb)
         return B_dB
     end
@@ -3093,7 +3093,7 @@ function frule!!(
         db = α * Bb[k, i, j]
         Bb[k, i, j] = iszero(dαs[k]) ? db : db + dαs[k] * B[i, j]
     end
-    BLAS.trsm!(side, uplo, trans, diag, α, A, B)
+    BLAS.trsm!(primal(_side), uplo, primal(_t), primal(_diag), α, A, B)
     # trmm masks dA's triangle; remove the implicit unit diagonal's contribution.
     if !iszero(Ab)
         R = size(A, 1)
@@ -4260,7 +4260,23 @@ function _blas_flag_test_cases(P)
     for f in (BLAS.trmm!, BLAS.trsm!)
         push!(rows, (flags..., f, 'L', 'u', 'N', 'N', P(2), A, B))
     end
-    flags = (false, :none, (throws=(DimensionMismatch, nothing),))
+    push!(
+        rows,
+        (
+            false,
+            :none,
+            (mode=ForwardMode, throws=(ArgumentError, "uplo argument must be")),
+            BLAS.trsm!,
+            'L',
+            'u',
+            'N',
+            'N',
+            zero_lifted(Val(1), zero(P)),
+            A,
+            B,
+        ),
+    )
+    flags = (false, :none, (throws=DimensionMismatch,))
     push!(
         rows,
         (
