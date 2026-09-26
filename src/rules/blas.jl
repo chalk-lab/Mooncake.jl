@@ -2141,6 +2141,35 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:blas}, P::Type{<:BlasFloa
         end...,
     )
 
+    flags = (false, :stability, (mode=ReverseMode,))
+    append!(
+        test_cases,
+        [
+            (flags..., BLAS.nrm2, 2, zeros(P, 2), 1),
+            (flags..., BLAS.nrm2, 2, view(P[3, 9, 4, 9], 1:2:4), 2),
+            (flags..., BLAS.scal!, 2, P(2), view(P[3, 9, 4, 9], 1:2:4), 2),
+            (flags..., BLAS.gemv!, 'N', P(2), zeros(P, 2, 0), P[], P(3), ones(P, 2)),
+            (flags..., BLAS.gemv!, 'n', P(2), P[1 2; 3 4], P[1, 2], P(3), P[3, 4]),
+        ],
+    )
+    for f in (BLAS.trmm!, BLAS.trsm!)
+        push!(
+            test_cases,
+            (flags..., f, 'L', 'U', 'N', 'N', zero(P), P[2 1; 0 3], ones(P, 2, 2)),
+        )
+    end
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "does not support operand")),
+            BLAS.nrm2,
+            2,
+            view(P[3, 9, 4, 9], 1:2:4),
+            1,
+        ),
+    )
     append!(test_cases, _blas_flag_test_cases(P))
     append!(test_cases, _blas_alias_test_cases(P))
     memory = Any[]
