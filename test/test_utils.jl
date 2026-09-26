@@ -30,6 +30,31 @@
         @test !has_equal_data(Complex(5.0, 4.0), Complex(5.0, 5.0))
         @test !has_equal_data(Diagonal(randn(5)), Diagonal(randn(5)))
         @test has_equal_data(Diagonal(ones(5)), Diagonal(ones(5)))
+        for W in (
+            Symmetric,
+            Hermitian,
+            UpperTriangular,
+            LowerTriangular,
+            UnitUpperTriangular,
+            UnitLowerTriangular,
+        )
+            a, b = W(Matrix{Real}(undef, 2, 2)), W(Matrix{Real}(undef, 2, 2))
+            @test has_equal_data(a, b)
+            i = W in (LowerTriangular, UnitLowerTriangular) ? (2, 1) : (1, 2)
+            parent(a)[i...] = 2
+            @test !has_equal_data(a, b)
+            @test !has_equal_data(b, a)
+            @test has_equal_data(a, b; equal_undefs=false)
+            parent(b)[i...] = 2
+            @test has_equal_data(a, b)
+            parent(b)[i...] = 3
+            @test !has_equal_data(a, b)
+        end
+        a, b = UpperTriangular(Matrix{Any}(undef, 1, 1)),
+        UpperTriangular(Matrix{Any}(undef, 1, 1))
+        parent(a)[1] = a
+        parent(b)[1] = b
+        @test has_equal_data(a, b)
         @test has_equal_data("hello", "hello")
         @test !has_equal_data("hello", "goodbye")
         @test has_equal_data(
