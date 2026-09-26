@@ -482,6 +482,18 @@ function hand_written_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, hash, Float64),
     ]
     memory = Any[_x, _dx, _a, _da, _b, _db]
+    push!(
+        test_cases,
+        (
+            false,
+            :none,
+            (mode=ReverseMode, throws=(ArgumentError, "tangent is the placeholder")),
+            unsafe_copyto!,
+            ptr_a,
+            ptr_b,
+            2,
+        ),
+    )
     return test_cases, memory
 end
 
@@ -506,6 +518,7 @@ function derived_rule_test_cases(rng_ctor, ::Val{:foreigncall})
         (false, :none, nothing, reshape, randn(5, 4), (5, 4, 1)),
         (false, :none, nothing, reshape, randn(5, 4), (2, 10, 1)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(3), 2),
+        (false, :none, nothing, x -> unsafe_copyto_tester(x, x, 2), randn(5)),
         (false, :none, nothing, unsafe_copyto_tester, randn(5), randn(6), 4),
         (
             false,

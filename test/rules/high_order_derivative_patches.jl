@@ -206,7 +206,22 @@ end
     @testset "BLAS zero coefficients with live perturbations" begin
         fgemm(b) = only(BLAS.gemm!('N', 'N', 2.0, ones(1, 1), ones(1, 1), b, ones(1, 1)))^2
         fsymm(a) = only(BLAS.symm!('L', 'U', a, ones(1, 1), ones(1, 1), 1.0, ones(1, 1)))^2
-        for (f, value, gradient) in ((fgemm, 4.0, 4.0), (fsymm, 1.0, 2.0))
+        fhemm(a) =
+            real(
+                only(
+                    BLAS.hemm!(
+                        'L',
+                        'U',
+                        complex(a),
+                        ones(ComplexF64, 1, 1),
+                        ones(ComplexF64, 1, 1),
+                        1.0 + 0im,
+                        ones(ComplexF64, 1, 1),
+                    ),
+                ),
+            )^2
+        for (f, value, gradient) in
+            ((fgemm, 4.0, 4.0), (fsymm, 1.0, 2.0), (fhemm, 1.0, 2.0))
             cache = prepare_hvp_cache(f, 0.0)
             @test value_and_hvp!!(cache, f, 1.0, 0.0) == (value, gradient, 2.0)
         end
