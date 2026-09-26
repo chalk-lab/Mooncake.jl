@@ -337,9 +337,24 @@ for T in (
         x::$T, y::$T, equal_undefs::Bool, d::IdDict{Any,Bool}
     )
         size(x) == size(y) || return false
-        return all(
-            has_equal_data_internal(x[i], y[i], equal_undefs, d) for i in eachindex(x, y)
-        )
+        id_pair = (x, y)
+        haskey(d, id_pair) && return d[id_pair]
+        d[id_pair] = true
+        return all(CartesianIndices(x)) do i
+            # Structural zeros may read undefined backing entries to determine their type.
+            x isa Union{UpperTriangular,UnitUpperTriangular} && i[1] > i[2] && return true
+            x isa Union{LowerTriangular,UnitLowerTriangular} && i[1] < i[2] && return true
+            x isa Union{UnitUpperTriangular,UnitLowerTriangular} &&
+                i[1] == i[2] &&
+                return true
+            if isassigned(x, i) != isassigned(y, i)
+                return !equal_undefs
+            elseif !isassigned(x, i)
+                return true
+            else
+                return has_equal_data_internal(x[i], y[i], equal_undefs, d)
+            end
+        end
     end
 end
 
