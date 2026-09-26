@@ -1353,7 +1353,7 @@ for (fname, elty) in ((:(symm!), BlasFloat), (:(hemm!), BlasComplexFloat))
             tmp_ref[] = tmp
             # Strong zeros, as in the `gemm!` pullback above.
             _scale_or_zero!(C, β)
-            iszero(α) || (C .+= α .* tmp)
+            C .+= _rvs_mul.(tmp, α)
         end
 
         function symm!_or_hemm!_adjoint(::NoRData)
@@ -2277,7 +2277,7 @@ end
 
 # BLAS β == 0 overwrites rather than multiplying a possibly NaN tangent.
 @inline function _scale_or_zero!(B::AbstractArray{T}, β) where {T}
-    iszero(β) ? fill!(B, zero(T)) : (B .*= β)
+    B .= _rvs_mul.(B, β)
     return nothing
 end
 
