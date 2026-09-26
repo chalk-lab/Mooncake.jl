@@ -24,9 +24,8 @@ exits successfully (`exit(0)`). Update and pin failures, and conflicts without t
     aggregate summary.
 
     This matters most immediately after a breaking release, when many downstreams still cap the
-    previous version and several suites skip at once. Measured on this branch at Mooncake 0.6.0,
-    `test/ext/differentiation_interface` already takes the skip path. Do not read a green
-    ecosystem run as coverage without checking which suites actually ran.
+    previous version and several suites skip at once. Do not read a green ecosystem run as
+    coverage without checking which suites actually ran.
 """
 function pin_develop_or_skip(dir::AbstractString, targets::AbstractString...)
     Pkg.activate(dir)
